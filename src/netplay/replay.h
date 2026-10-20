@@ -45,6 +45,10 @@ struct Fight {
     int chr[2] = { -1, -1 }, btn[2] = { 0, 0 }, model[2] = { -1, -1 };
     int stage = -1, rounds = 3, pick = 0;
     std::string names[2];
+    /* the custom costume blocks both sides fought in (docs/DIRECTFIGHT.md "Custom costumes online"):
+     * the 0x108 bytes the driver wrote into each side's VS custom data at FIGHT START (format 3) */
+    bool costumes = false;
+    uint8_t cos[2][0x108] = {};
 };
 
 /* ---- recording ----------------------------------------------------------- */

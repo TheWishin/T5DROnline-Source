@@ -18,6 +18,8 @@
 
 #include "../../src/netplay/replay.h"
 
+extern "C" int t5_replay_costumes(unsigned match, unsigned char* out);
+
 /* the netplay core's log line (netplay_core.cpp); here to stdout */
 namespace np {
 void note(const char* fmt, ...)
@@ -56,7 +58,10 @@ static int do_write(const char* dir, uint32_t frames, uint32_t seed)
     rp::Fight ft;
     ft.chr[0] = 9; ft.chr[1] = 33; ft.btn[0] = 2; ft.btn[1] = 4; ft.model[0] = 0x1B; ft.model[1] = 0x4E;
     ft.stage = 27; ft.rounds = 2; ft.pick = 30; ft.names[0] = "Alpha One"; ft.names[1] = "B\xC3\xA9ta";
+    ft.costumes = true;                            /* format 3: the custom costume blocks of the match */
+    for (int i = 0; i < 0x108; i++) ft.cos[0][i] = (uint8_t)(i * 13 + 1);
     rp::rec_fight(ft);
+    ft.costumes = false;
     rp::rec_match_begin(0);
     uint64_t dg = 1469598103934665603ull;
     np::PadInput held[2] = { np::kNeutral, np::kNeutral };
@@ -127,6 +132,15 @@ static int do_read(const char* file, int argc, char** argv, bool map)
         std::string line;
         if (!rp::play_fight_line(m, &line)) break;
         printf("LINE %u %s\n", m, line.c_str());
+    }
+    for (uint32_t m = 1; m < 10; m++) {
+        unsigned char cos[2 * 0x108];
+        std::string ln;
+        if (!rp::play_fight_line(m, &ln)) break;
+        if (!t5_replay_costumes(m, cos)) { printf("COSTUMES %u none\n", m); continue; }
+        uint64_t h = 1469598103934665603ull;
+        for (unsigned char v : cos) { h ^= v; h *= 1099511628211ull; }
+        printf("COSTUMES %u %016llx\n", m, (unsigned long long)h);
     }
     for (uint32_t k = 0;; k++) {
         uint64_t clock = 0; uint32_t c[3] = {};

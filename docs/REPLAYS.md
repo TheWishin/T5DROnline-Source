@@ -21,7 +21,11 @@ on, the default) and holds:
 - each match's setup at FIGHT START: both fighters, their confirm buttons (the costumes), the model
   ids the game fights with, stage, rounds to win, whether it was picked on the in-game select screen,
   and -- unless **Keep the players' names in replays** is off (`T5_REPLAY_NAMES=0`) -- the two
-  names under the health bars;
+  names under the health bars; since format 3 (1.1.3) also the custom costume blocks both
+  fighters wore (docs/DIRECTFIGHT.md "Custom costumes online": the 0x108 bytes the driver wrote
+  for each side at FIGHT START), which the playback writes again -- checked the same way as live --
+  so a replay shows both players' customizations; a format 2 file plays with the default costumes,
+  as its match had them;
 - each match's result: winner, score, the state hash of the deciding frame (the one the result
   file has, equal on both PCs), how many frames mismatched live;
 - every sync point of the session (docs/NETPLAY.md): its kind (the next match's start, the end of a
@@ -47,11 +51,11 @@ T5REPLAY 1                       first line
 <zlib stream>                     the binary below (Python's zlib reads it)
 ```
 
-The binary (little-endian): `T5RP`, version 2, flags (rollback), side, delay, rollback delay,
+The binary (little-endian): `T5RP`, version 3, flags (rollback), side, delay, rollback delay,
 session seed, match seed, frames, hash interval, the last frame the recording game ran (its inputs
 reach the input delay further: decided ahead, never run -- the playback ends at the last frame; a
 format-1 file from development has no such field and plays to frames minus the delay); the matches
-(setup, result, names); the sync
+(setup, result, names; format 3: a flag and the two costume blocks); the sync
 points; the hashes (frame, 64-bit hash); then the inputs as 12 columns (P1 buttons low, high, lx,
 ly, rx, ry, then P2) of one byte per frame, each XORed with the frame before, so a held input is a
 run of zeros. The JSON line is a view of the binary; the game reads only the binary.

@@ -25,6 +25,9 @@ T5_HUD_NAMES=<P1 name>|<P2 name>                     names under the health bars
 T5_HUD_RANKS=<P1 tier>,<P2 tier>                     rank badges, 0-36 in the game's order (0 Beginner, 10 1st Dan, ...)
 T5_CTL_DIR=<dir>                                     persistent game: every match is a control command (below)
 T5_DF_PICK=<seconds>                                 pick=<seconds> for fight lines without one (tests)
+T5_COSTUME_SAVE=<SYS-DATA>|0                         netplay: this player's own save, its customization goes to the opponent
+                                                     ("Custom costumes online"; the launcher sets it); offline tests: P1's
+T5_COSTUME_SAVE2=<SYS-DATA>                          offline tests: P2's customization
 ```
 
 - `p1`, `p2`: character id 0-35, 3-letter code or name prefix (table below).
@@ -101,7 +104,8 @@ T5_DF_PICK=<seconds>                                 pick=<seconds> for fight li
   `T5_DF_STARTVS=N` (the title-to-select jump alone), `T5_DF_FIND=frame:text,...`
   (log every address of that text, ASCII and UTF-16BE, in guest memory at
   that frame), `T5_DF_FRESH_LOG`, `T5_DF_FRESH_AT`, `T5_DF_GUARD`,
-  `T5_DF_STUCK_SECONDS` (persistent game, "After a session ends").
+  `T5_DF_STUCK_SECONDS` (persistent game, "After a session ends"),
+  `T5_DF_SELECT_STUCK_SECONDS`, `T5_DF_READER_GUARD=0` ("Select stall after a fight").
 
 Timeline on this PC (60 fps, frames counted from the first frame after boot):
 title mode at ~890, start-VS call at +30, select mode at ~925, both characters
@@ -721,7 +725,9 @@ min-vblanks word it zeroed at its start (0x106D4D98), and the sound hooks
 forget the session (a session that ended inside a re-simulation left them
 "re-simulating": every later play call matched against stale entries, the
 library tick skipped). A reset or leave that gets nowhere for 60 s
-(`T5_DF_STUCK_SECONDS`, 0 = never) writes `state.json` `error`/`stuck` and ends
+(`T5_DF_STUCK_SECONDS`, 0 = never; since 1.1.2 also at least 20 frames per
+second of it, so a game its PC starves is not taken for stuck: "Select stall
+after a fight") writes `state.json` `error`/`stuck` and ends
 the process with exit code 6; the launcher starts a fresh game for the next
 match and says so on the Play tab.
 
@@ -898,7 +904,137 @@ included); the restart itself 37-60 frames. Seen once in these runs and not a
 restart: a select screen entered from the title after a fight that stayed at
 select phase 1 for good (offline, a heavily loaded PC, pf_off2); the same wait
 is in a main-build log without any restart (build/bo3/runs/e3/p2, 42 s) --
-left for its own investigation.
+the boot-state copy and the game's file reader, fixed in the next section.
+
+## Select stall after a fight (select-stall, 1.1.2)
+
+**The bug.** A select screen that a persistent game opens from the title after a
+fight -- a new opponent, a room's Ready again, a set game played again --
+sometimes stayed at select phase 1 (the phase word 0x1008F070) for good: offline
+on a heavily loaded PC (build/selrestart pf_off2: 4,400+ frames until the run
+ended) and in a lobby match of the main build (build/bo3/runs/e3/p2: 46 s until
+the next command, then the reset waited in mode 6). The players saw a frozen
+character select ("Rematch / character select hangs").
+
+**What phase 1 waits for.** The select mode's exec (0x5AF04, phase table at
+0x5B090): phase 0 waits for the scene's resource manager and asks for three
+loads (0x275CBC: the portrait/preview resources 61/62, 0x119FF4's, 44); phase 1
+waits until those resources are loaded (0x2739F4 -> the resource object's state
++0x48 = 7) and goes to phase 2. Every scene load goes through the game's async
+reader (ZsAread): the main thread's reader service (0x9A784, once per frame)
+starts the request at the head of its queue (service object 0x1009FE28: +8
+busy = 1, posts the reader thread's request semaphore, id at +0), and while busy
+takes the reader thread's completion token with a trywait (semaphore id at +4);
+requests come from a pool of 64 x 0x28 bytes at 0x1009FF68 (+0 status, +4
+next). In both stalls the select had asked for its loads, but no file was ever
+opened again: the reader service said "busy" with 5 requests queued, the
+reader thread sat parked on its request semaphore, and no completion token
+would ever come.
+
+**Cause.** All of the reader's data (0x1009FE20..0x100A0988: thread id, service
+object, path buffer, quit flag, request pool, config copy) lies inside the
+fight-state block the boot-state copy takes and puts back ("Persistent game":
+0x1008E000..0x100A5000). The copy is taken 30 frames into the boot title,
+right before the first start VS. The title starts a read there (T55DATA1
+entry 0x105, 1.2 MB): on a quiet PC it is done after 30 frames, on a loaded PC
+or a slow disk it is not, and the copy then says "busy, the title's request
+queued". At the first title visit after a fight the copy goes back while the
+reader is idle: the service waits for the completion of a read the reader
+thread never got, every later request queues behind it, and the select's
+set-up never ends. The reverse (copy idle, put back during a read) drops the
+read in flight from the queue and leaves its token to complete the next
+request before that one's data is read. Reproduced every time with
+`PS3_TEST_FS_DELAY=150` (150 ms per file open/read): the copy logs `reader busy
+1, queue 0x1009FF68 (1 request(s))`, the first restore puts that back, the next
+select stays at phase 1 with 5 requests queued and 0 tokens (220 s until the run
+gave up). A CPU hog alone (3 busy processes on the game's 4 processors) never
+caught the read in flight at the copy point; a slow disk does.
+
+**Fix** (`df_fight.cpp`, no runtime patch, no game logic changed):
+- The boot-state copy never covers the reader's data (`kReaderData`): the
+  default area is split around it (an area from `T5_DF_FRESH_RANGES` too). At an
+  idle reader those bytes equal the boot copy's anyway (`T5_DF_FRESH_SCAN` over
+  them: no difference after fights), so nothing else the restore does changes.
+- The title waits for the reader before the copy is taken or put back and
+  before start VS: no request queued or in flight (`reader_idle`), at most 10 s
+  from the title's start (then it goes on; safe, the reader is not copied).
+  Logged as "waiting for the title's loads before start VS".
+- Backstop (`select_load_check`): a select screen still loading (Select, or the
+  in-game select's Pick before the screen takes input) whose reader is wedged --
+  busy, no completion token, the reader thread parked on its request semaphore
+  -- for `T5_DF_SELECT_STUCK_SECONDS` (10), or that has nothing to load (reader
+  idle with an empty queue, the reader thread, the "decoder" that inflates what
+  was read and TNUD::ASync all parked on their semaphores, phase word and modes
+  unchanged) for `T5_DF_STUCK_SECONDS` (60), logs what it waits on and ends the
+  game with exit code 6, as a stuck
+  reset does (the launcher starts a fresh game for the match; match_driver
+  reports `game_stuck`, no strike). A slow load never trips it: the reader
+  thread then waits for its data, not for a request, or a loader works (under
+  a CPU hog the decoder alone held one select at phase 1 for 30 s with the
+  reader idle: S1 cycle 30, before the decoder was part of the rule).
+- Stuck exits need frames too (`kStuckMinFps` = 20 frames per second of the
+  wait): the checks run at frame boundaries, so a game really stuck in a mode
+  change keeps its frame rate, while one its PC starves keeps going slowly
+  (select_stall_test O1, the old way under a CPU hog: 0.8-2.7 fps for a minute,
+  and the reset's 60 s ended the game in the frame its select screen had loaded).
+- `T5_DF_READER_GUARD=0` = the old way (reader copied, no wait), for comparisons;
+  the reader's state is in the copy/restore lines and the select's wait lines.
+
+**Test:** `tools/select_stall_test.py` -- one persistent game, offline; every
+cycle is a "fight" command for a new session 0.5-4 s after the last FIGHT START,
+so the old fight is left in its loading, intros or fight, the game goes to the
+title, puts the boot state back and drives a new select screen into the next
+fight. A cycle passes at FIGHT START with no fault line; a cycle without one is a
+stall (reader, pool and threads dumped through PS3_DEBUG).
+
+    python tools/select_stall_test.py --exe <t5dr.exe> --out <dir> [--cycles 30] [--fs-delay MS]
+        [--cpus N --cpu-first K --hog H] [--env K=V] [--keep-going]
+
+**Results** (this PC, 2026-10-19, build/selstall/runs; main merged up to
+7486b0c, so with 0047's power saving; 0048 and later main changes leave the game
+binary as it was):
+- The old way (`T5_DF_READER_GUARD=0`), a slow disk: with 150 ms per read the
+  copy caught the title's read every time and the first select after a fight
+  stayed at phase 1 (d1: 220 s, then the run gave up; dA2: ended by the backstop
+  after 10 s); with 40 ms per read (OLD40 + OLDF, 7 boots, the last on the
+  final exe) every boot copy said "busy 1" and every first select after a fight
+  wedged -- 7 of 7, each ended by the backstop after 10 s ("the async reader
+  waits for a read nobody does", reader busy 1, 5 requests, 0 tokens).
+- The old way under a CPU hog only (O1: 3 busy processes on the game's 4
+  processors, 30 cycles): no wedge -- the copy and all 27 restores found the
+  reader idle; the one failure was the reset's 60 s exit at 0.8-2.7 fps, which
+  the frame rule now prevents.
+- The fix, 150 ms per read (dB2): 4 of 4 cycles (the title waits for its read
+  before the copy; select set-up 2,235-2,263 frames, slow and moving).
+- The fix, CPU hog only, power saving on / off (F1 / F0, `PS3_LAPTOP=1/0`): 30 of
+  30 cycles each. CPU hog plus a 40 ms disk (S1 / S0): 30 of 30 each, select
+  set-up 606-1,144 frames; the boot copy waited for the title's read in each.
+  Final exe, the same load with the PC at up to 97 % (other agents' games too,
+  the game at 0.1-50 fps): power saving on (P1, R1) 28 of 28 cycles that reached
+  their select, power saving off (P0, R0) 35 of 35; two runs counted a cycle as
+  failed that was only starved -- P1 cycle 10 (its select done at 1-4 fps as the
+  old harness gave up; the harness now waits while anything moves) and R1's
+  first boot (0.2-7 fps for 4 minutes, never at the title) -- no stall, no
+  STUCK exit in any of them.
+- Pairs, every match a new session (title visit and restore before each one),
+  mashing, the joiner restarted before match 4 (a game that has played meets a
+  fresh one), the joiner's disk at 40 ms per read (its boot copy waited for the
+  title's read in both of its starts): rollback with power saving on (FRB) and
+  off (QRB, final exe), lockstep with it off (FLS) and on (QLS, final exe): 6 of
+  6 matches each, the same winner and result hash on both PCs, 0 mismatching
+  frames; also without the slow disk (prb1 rollback, pls1 lockstep on 4
+  processors each): 6 of 6 each, in sync.
+- After the merge with main bdabaea (replays, 0044 unlock; exe built from
+  d4c3a66): rollback pair (ZRB, power saving on) and lockstep pair (ZLS, off),
+  slow-disk joiner, fresh joiner before match 4: 6 of 6 each, same hashes, 0
+  mismatching frames; offline Z0 (off) 15 of 15, Z1 (on) 9 of 10 -- its cycle 2
+  was a select loading at 1-10 fps with the decoder working (13-21 other games
+  and 26 compilers on the PC) when the harness's 180 s no-progress limit ran out;
+  no STUCK. Smoke on that exe still to rerun on a quieter PC (two runs under
+  that load: no-hang gaps / "could not write pad file").
+- Smoke quick on the pre-merge final exe: PASS (81 checks; one earlier run failed
+  vs_two_pads' end shot -- its mashed fight ended in a KO before the shot, no
+  HUD; that test alone and the whole suite again passed).
 
 ## Rematches between two real PCs (rematch-fix, 2026-10-18)
 
@@ -969,6 +1105,142 @@ the next match is a new session against a freshly started game), and it fails
 a run on any FIFO stall in the game logs.
 
 Results: see docs/ROLLBACK.md section 31 (the cycle runs).
+
+## Custom costumes online (costumes-online, 1.1.3)
+
+Player request: "unlock all customs and custom skin with the equipment" online.
+Offline the item shop (ITEM SHOP & EQUIP after picking a fighter in Arcade,
+Ghost or Survival) dresses each character; online both fighters always wore
+their default costumes: the direct-fight driver starts VS with the start-VS
+routine, not through the VS menu, so neither side has a profile, and an online
+game plays on a save of its own anyway (docs "Unlocks", patch 0044). Now each
+player fights online in the customization of their own offline save, the same
+on both PCs, under rollback and lockstep.
+
+**Where the game keeps a customization.**
+
+- *The save:* the system save the title loads (`NPUB30009-SYSNET`, file
+  SYS-DATA, 0x218C0 bytes; in memory at 0x10684960). At SYS-DATA + 0x820 +
+  c * 0x108 the block of character c, where c is the game's *item character
+  index* (Lili 31, Heihachi 13, Kazuya 14; not the T5_FIGHT id): three costumes
+  of 0x58 bytes -- +0x00 32 u16 parts bought (item id, in the order bought,
+  0 = none), +0x40 4 u16 the part worn per category (HEAD, FACE, BODY up,
+  BODY down; 0xFFFF none), +0x48 3 u32 the colours bought (a bit per colour of
+  COLOR1..3), +0x54 3 u8 the colour worn (0xFF none), +0x57 0.
+  `src/directfight/costume_logic.h` has the layout.
+- *The fight:* each side's VS custom data (0x106C9934 + side * 0x1F4, also
+  name and rank of the HUD) starts with the same 0x108 bytes for the fighter
+  it plays. Offline the select screen's confirm builds it from the side's
+  profile (0x2A77B0, profile pointers 0x106C9E38[side]); online there is no
+  profile and it is zeros (the default costumes). The fight's loading reads it
+  for the models: writing a block there between the select and the loading
+  dresses the fighter (cos1 of the Unlocks work; here runs o5/o6: Lili's Lace
+  Hairband and the item on her back, Heihachi's Topknot and belt, Kazuya's long
+  hair and shoulder piece).
+- *Which block:* the fighter object (*(0x10091AB0)[side]) +0x40 holds the item
+  character index the game itself uses (0x2A77B0 reads it). The game mode's
+  set-up fills it: it is 0 at the select screen and at the game mode's first
+  frame and set at FIGHT START (the game mode's phase 7), before the models
+  load.
+
+**How a match gets both players' customizations.**
+
+1. *This player's table.* At the first select of a netplay session the driver
+   reads the player's own save, `T5_COSTUME_SAVE` = the offline save's
+   `NPUB30009-SYSNET/SYS-DATA` (the launcher names it for every game started
+   for online play, `launcher/core.py costume_env`; `T5_COSTUME_SAVE=0` in the
+   extra environment sends none), and keeps the blocks in which something is
+   worn as a wire table: `"T5CO"`, version 1, a count, then per character its
+   index and the 0x108 bytes, indices increasing -- at most 8 + 35 * 0x109 =
+   9,283 bytes. Fight Money, names and the rest of the save stay on the PC.
+2. *The handshake.* Netplay sends the table to the opponent from the moment
+   the session is connected (COSTUME packets, protocol v4, docs/NETPLAY.md): in
+   pieces of 1,024 bytes, every 100 ms until the opponent acknowledges the
+   whole table by its FNV-1a hash; the opponent's table arrives the same way and
+   is taken once, when its pieces add up to its hash. Anything else (a table
+   above the bound, a malformed piece) is dropped by the parser; a table that
+   is not a well-formed wire table counts as empty. Both PCs then hold the same
+   two tables byte for byte -- this PC uses for its own player exactly the
+   bytes it sent, never the save again. A new session (another opponent) sends
+   again; rematches use the session's tables.
+3. *No fight without both.* The stage panel is not confirmed before the
+   opponent's table is here ("waiting for the opponent's costume table" every
+   5 s), so neither game reaches the game mode without both tables. In practice
+   the table is there long before: the exchange takes a few round trips at the
+   start of the session.
+4. *FIGHT START.* At the same frame as the rest of the fight's set-up (before
+   `t5_netplay_start()`, lockstep frame 0), each side's VS custom data gets the
+   block of the character it fights with from that player's table -- when the
+   table has one and it passes the check both PCs make (below); otherwise the
+   zero block the game has there online today (the default costumes). Both PCs
+   log the same line: `costumes written: P1 item char 31 (...): custom, P2 item
+   char 13 (...): custom; blocks hash 3BB3...`, and read the blocks back once
+   the loading is over (`blocks hash ... after the loading`).
+
+**The check** (`costume::block_valid`, the same code and data on both PCs):
+every bought part an item of that character (the game's own price table
+*(0x10076724)[c], static data), a compact list without repeats; every worn
+part none or bought; every worn colour none or one bought (index < 32); the
+spare byte 0. One failure anywhere and the whole block is not used: that
+character fights in the default costume, on both PCs. So a damaged or forged
+save cannot make one PC load something the other does not, nor send the
+game's model code an item id the character does not have.
+
+**Why it cannot desync.** The blocks are written before lockstep frame 0 and
+never change during the fight; both PCs write the same bytes for both sides
+(the same tables, the same fighters, the same check); the VS custom data is
+outside the netplay state hash and the rollback state never restores past
+FIGHT START. Whatever an item changes in the match (the models; any item
+move) is then the same on both PCs. Items with a gameplay effect, if T5 has
+any, would be a question for ranked fairness, not for sync (open).
+
+**Mirrors and costumes.** A block holds all three costumes of the character;
+the costume a player fights in is still the confirm button (and, in a mirror
+of one costume, the game's rule that P2 gets the other costume): a
+customization shows when the player customized that costume offline.
+
+**Test hooks:** offline direct fight reads `T5_COSTUME_SAVE` for P1 and
+`T5_COSTUME_SAVE2` for P2; `T5_DF_SHOT=++n` takes a picture n frames after
+every FIGHT START (each match of a session; `+n` stays the first match only).
+`tests/c/costume_test.cpp` (tests/test_costumes.py): the save's blocks, the
+wire table (round trip, every malformed one refused whole), the check;
+`tests/c/netplay_fuzz.cpp`: the COSTUME parser (shuffled and repeated pieces,
+a wrong hash, malformed pieces, acknowledgements, a restarted peer, random
+packets).
+
+**Results** (this PC, runs in build/costume/runs). Test saves: the Unlocks
+work's Lili (Lace Hairband 0x33, item 0x34, COLOR1 1 on costume 1), and
+Heihachi (Topknot 0x03, belt 0x0D, COLOR1 1) and Kazuya (Long Hair 0x03,
+shoulder piece 0x0D) bought in the item shop with free items and taken from the
+VS custom data; host's save A = Lili + Kazuya, joiner's save B = Heihachi +
+Lili. Both games on their own online save (`PS3_SAVEDATA_DIR`), replays
+recorded (`T5_REPLAY_DIR`), `fight_flow_test.py --flow persistent --pattern
+NRNRR --mash` (a new session, a rematch, a new session, two rematches),
+pictures at `T5_DF_SHOT=++450,++900`. The matches: Kazuya (A) vs Lili (B), both
+custom; a Lili mirror, both custom; Heihachi vs Kazuya, neither customized by
+its player; Lili (A) vs Heihachi (B) twice.
+
+| run (build) | matches | costumes written (the same line on both PCs) | sync |
+|---|---|---|---|
+| fin6_rb (rollback; final head: main 4852277 + select-stall + this branch) | 5/5 confirmed, same winner and hash on both PCs | as listed, `custom` / `nothing customized` | 34 checks, 0 mismatching frames, 242 rollbacks |
+| fin6_ls (lockstep, same build; B's Heihachi block made invalid: a part worn but not bought) | 5/5 | as listed, Heihachi "a part worn but not bought" -> default on both PCs | 32 checks, 0 mismatching |
+| fin5_rb / fin4_ls (rollback / lockstep after the select-stall merge, before main 4852277) | 5/5 each | the same lines and blocks hashes | 34 / 34 checks, 0 mismatching; 692 rollbacks |
+| fin3_play (`replay_play.py`: fin3_rb's two recorded sessions played back) | 5/5 identical to the live match | the playback wrote the recorded blocks (`custom (replay)`, the live hashes) | 63 + hashes compared, 0 different |
+| pick_rb (in-game select, rollback, `pick_flow_test.py`) | 3/3 | Kazuya vs Lili, Lili vs Heihachi, Heihachi vs Lili (Circle) | 0 mismatching |
+
+The blocks hashes are the same in every run of a pattern (3C3F.., 3BB3..,
+5BE5.., 80FD.. or CBAB.. with the invalid block), and so are the match hashes of
+the runs with the same netcode. One lockstep run before the select-stall merge
+(fin3_ls) hung both games at select phase 1 after the title (match 3): the
+reader state of the boot-state copy, fixed by select-stall ("Select stall after
+a fight"); with it merged no run hung.
+
+The pictures of both PCs show the same costumes at the same moment
+(`side/shot01*`: the host's Kazuya with his long hair and shoulder piece
+against the joiner's Lili with the hairband; `side/shot07*`: Lili against
+Heihachi with Topknot and belt, in lockstep the invalid Heihachi in his default
+costume on both). Offline (runs o5, o6): the same items, the default costumes
+unchanged where nothing is customized.
 
 ## Known transient mismatches
 
@@ -1133,41 +1405,15 @@ mismatching frames. What a player sets in the game's OPTIONS (button layout,
 difficulty, round time, volumes) therefore applies offline only; buttons for
 online play are set in the launcher (controls.ini), which works below netplay.
 
-**Customization online today:** none, on either PC: the direct-fight driver
-starts VS with 0x4E9DC, not through the VS menu (0x572CC -> 0x1F99BC, which
-copies the save's profile for both sides and sets their profile pointers
-0x106C9E38[side]); with the pointers at 0, 0x2A77B0 builds no custom data and
-both fighters wear their default costumes on both PCs (traced in t_df_items).
-
-**Plan: each player's custom costume online (not in 1.1.2).** Checked by
-hand (run cos1, one game): the fight reads its costumes from the VS custom
-data -- with no profile, as online, Lili's costume block is zeros; the Lace
-Hairband written into it between the select confirm and the fight's loading
-(bought list +0x00 and worn HEAD +0x40 of costume 1) is on her in the fight's
-intro. So:
-
-1. The launcher reads the player's own save (SYS-DATA, profile +0x400): for
-   every character the 0x108-byte costume block at +0x820 + c * 0x108 (only
-   the non-empty ones; Fight Money and names stay out) and announces a cap
-   `costumes` with its queue/ready message.
-2. The lobby server, when both clients have the cap (and a server setting,
-   say `T5L_COSTUMES`, allows it; ranked too only if the items are cosmetic),
-   sends both players' blocks to both in `match_start` (`fight.costumes`,
-   size-checked, at most 35 x 0x108 bytes per player). Both PCs then hold the
-   same bytes from the same message: nothing to agree on over the netplay
-   link, and locked set games, rematches and the in-game select need nothing
-   extra.
-3. The launcher writes them to a file named on the fight line; at FIGHT START
-   (before `t5_netplay_start()` and the fight's loading) the driver writes,
-   for each side, the block of the fighter it fights with (the item
-   character index: the fighter object +0x40, as 0x2A77B0 reads it) into that
-   side's VS custom data. Both PCs load the same item models for both sides.
-4. The VS custom data is outside the netplay hash and does not change during
-   a fight; anything the items change in the match (item models, an item
-   move) is the same on both PCs. Proof wanted: rollback and lockstep pairs
-   with costumes on both sides and mirrors, 0 mismatching frames, frame dumps
-   of both PCs showing the same costumes. Still open: whether any item has a
-   gameplay effect (T5 item moves) -- it decides ranked, not determinism.
+**Customization online (1.1.2: none; 1.1.3: each player's own):** the
+direct-fight driver starts VS with 0x4E9DC, not through the VS menu (0x572CC ->
+0x1F99BC, which copies the save's profile for both sides and sets their profile
+pointers 0x106C9E38[side]); with the pointers at 0, 0x2A77B0 builds no custom
+data and both fighters wore their default costumes on both PCs (traced in
+t_df_items). Writing a block into the VS custom data between the select confirm
+and the fight's loading dresses the fighter (run cos1: the Lace Hairband in the
+fight's intro) -- the way 1.1.3 shows each player's customization online, see
+"Custom costumes online".
 
 ## Character ids
 
@@ -1232,6 +1478,10 @@ host/join pair started with `T5_NET_START=external`.
 - `src/directfight/df_pick.cpp`: the in-game select's helpers (the local pad
   for the select screen, the name plates as hints, the PICK value, model ids);
   its phases are in `df_fight.cpp`.
+- `src/directfight/df_costume.cpp`, `costume_logic.h`: custom costumes online
+  (the player's table from the save, the opponent's from netplay, the check,
+  the blocks written at FIGHT START); `netplay_core.cpp`: COSTUME packets
+  (`t5_netplay_costume_set/peer`).
 - `src/netplay/t5_hooks.cpp`: `t5_netplay_inject(port, on, buttons)` and
   `t5_netplay_enabled()`, `t5_netplay_start()` (netplay's); for a persistent
   game `t5_netplay_session_begin/end`, `t5_netplay_take_session_lost`; for the
@@ -1243,7 +1493,8 @@ host/join pair started with `T5_NET_START=external`.
 - Tests: `tools/pick_flow_test.py` (the in-game select, two games, scripted
   picks; `--aborts`/`--offline`: sessions that end at the select screen, "Select
   restarts"), `tools/fight_flow_test.py` (pairs, many matches, rematch or
-  persistent flow, `--mash`, `--fresh-at`), `tools/reset_cycle_test.py` (one
+  persistent flow, `--mash`, `--fresh-at`; compares the costume blocks both
+  games wrote), `tools/reset_cycle_test.py` (one
   persistent game through every way a session ends), `tools/dryrun_online.py
   --mode persistent --new-opponent` (through a lobby, Accept-to-FIGHT times),
   `lobby/tests/test_driver_persistent.py`.

@@ -16,6 +16,13 @@ part is in the README's status table.
   can report or override a result, reset a set and disqualify a player. The bracket shows live sets and results;
   the server keeps everything in its database and carries on after a restart. Tournament sets do not change the
   rating unless the server's owner turns that on. docs/TOURNAMENTS.md.
+- **Your custom costumes online.** Whatever you bought and put on in the item shop (ITEM SHOP & EQUIP:
+  head, face, body, colours) now shows in online matches, for both players: your opponent sees your
+  customization and you see theirs. It comes from your own save (the one you play offline with), is sent
+  to the opponent when the match connects, and both PCs check it the same way -- a damaged save shows the
+  default costume instead, never something only one PC has. Both players need 1.1.3 (the game's netplay
+  changed: protocol 4). Replays show both costumes too. Tested in rollback and lockstep with different
+  costumes on both sides and in mirror matches: both PCs show the same, 0 desyncs.
 
 ### Servers
 - New settings `T5L_TOUR_*` (who may organize, the no-show time, limits, rated or not) and a read-only JSON of the
@@ -88,6 +95,15 @@ lobby features need the lobby server updated; older launchers keep working with 
 - **The Tekken 5 stages online** (server setting `T5L_OLD_STAGES`, off by default): when a lobby
   turns it on, matches between two 1.1.2 launchers may also be fought on the 15 Tekken 5 stages;
   each was played in sync in both netcode modes.
+- **No more frozen character select before the next match.** On a busy PC the select screen
+  for a new opponent or a character change could stay frozen while loading, for good, until the
+  game was closed ("Rematch / character select hangs"). When the game started, it noted its
+  state at the title screen while the title was still reading a file, and after a fight it put
+  that note back, so the game's file reader waited for a read that never came. The note now
+  leaves the file reader out and is taken only once the title has finished loading. If a select
+  screen ever stops loading anyway, the game closes itself after 10 seconds and the launcher
+  starts a fresh one for the match, instead of a frozen screen (docs/DIRECTFIGHT.md "Select
+  stall after a fight").
 
 ### Training
 - **Training overlay**: your inputs with how long each was held, in Tekken notation, and the frame data of the

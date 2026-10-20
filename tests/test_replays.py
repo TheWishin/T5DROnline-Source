@@ -450,6 +450,15 @@ class GameCodeTest(unittest.TestCase):
         self.assertEqual(self.lines(out, "LINE"), ["1 9,33,27,2 buttons=2|4 pick=30 names=Alpha%20One|B%C3%A9ta",
                                                    "2 9,33,27,2 buttons=2|1 names=Alpha%20One|B%C3%A9ta"])
         self.assertEqual(len(self.lines(out, "BARRIER")), 3)
+        # format 3: match 1's custom costume blocks (P1 a pattern, P2 none), match 2 without any
+        blocks = bytes((i * 13 + 1) & 0xFF for i in range(0x108)) + bytes(0x108)
+        self.assertEqual(p["version"], 3)
+        self.assertEqual(p["matches"][0]["costumes"], [blocks[:0x108].hex(), blocks[0x108:].hex()])
+        self.assertIsNone(p["matches"][1]["costumes"])
+        fnv = 1469598103934665603
+        for v in blocks:
+            fnv = ((fnv ^ v) * 1099511628211) & 0xFFFFFFFFFFFFFFFF
+        self.assertEqual(self.lines(out, "COSTUMES"), [f"1 {fnv:016x}", "2 none"])
         # and a copy without names (problem report) still plays, with no names in its lines
         stripped = os.path.join(d, "stripped" + replays.EXT)
         with open(stripped, "wb") as f:
@@ -458,6 +467,8 @@ class GameCodeTest(unittest.TestCase):
         self.assertEqual(code, 0, out)
         self.assertEqual(int(self.lines(out, "DIGESTPLUS")[0], 16), fnv_digest(frames))
         self.assertEqual(self.lines(out, "LINE")[0], "1 9,33,27,2 buttons=2|4 pick=30")
+        self.assertEqual(self.lines(out, "COSTUMES"), [f"1 {fnv:016x}", "2 none"], "the costumes stay in a copy")
+        self.assertEqual(replays.read_payload(stripped)["matches"][0]["costumes"], p["matches"][0]["costumes"])
 
     def test_game_reads_a_python_file(self):
         ins = sample_inputs(777, seed=3)

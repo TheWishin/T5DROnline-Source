@@ -8,13 +8,15 @@
  *            game needs to play the session back; the JSON is only a view of it
  *
  * Binary, little-endian:
- *   "T5RP" u32 version (2)
+ *   "T5RP" u32 version (3)
  *   u32 flags (bit 0: rollback), slot, delay, rollback delay (0xFFFFFFFF: unknown)
  *   u32 session seed (T5_NET_SEED), match seed, frames N, hash interval, the last frame the
  *       recording game ran (the inputs reach the input delay past it; format 1 had no such field)
  *   u32 matches, each: u32 start, end, frames, hash frame, desync, flags (bit 0 result,
  *       bit 1 hash, bit 2 complete); i32 p1, p2, b1, b2, m1, m2, stage, rounds, pick,
- *       winner (-1: none), score1, score2; u64 hash; str name1, name2 (u16 length + bytes)
+ *       winner (-1: none), score1, score2; u64 hash; str name1, name2 (u16 length + bytes);
+ *       format 3: u32 costume flags (bit 0: the blocks follow), then 2 x 0x108 bytes -- the custom
+ *       costume blocks the driver wrote for P1 and P2 at FIGHT START
  *   u32 sync points, each: u32 kind, frame, continued at, seed, flags (bit 0 counters);
  *       u64 frame clock; u32 counters[3]
  *   u32 hashes, each: u32 frame, u64 hash
@@ -46,7 +48,9 @@ unsigned char* rp_zlib_decompress(const unsigned char* data, int len, int* out_l
 namespace rp {
 namespace {
 
-constexpr uint32_t kVersion = 2;   /* 2: the last frame the recording game ran (after the hash interval) */
+constexpr uint32_t kVersion = 3;   /* 2: the last frame the recording game ran (after the hash interval);
+                                    3: each match's custom costume blocks */
+constexpr uint32_t kCostumeBlock = 0x108;
 constexpr int kMaxDelay = 30;      /* netplay_core.cpp kMaxDelay: the input delay a session can have */
 constexpr char kMagic[] = "T5REPLAY 1\n";
 
@@ -145,6 +149,8 @@ std::vector<uint8_t> to_binary(const Data& d, const InputSource& src)
             put32(b, (uint32_t)v);
         put64(b, m.hash);
         putstr(b, m.ft.names[0]); putstr(b, m.ft.names[1]);
+        put32(b, m.ft.costumes ? 1u : 0u);
+        if (m.ft.costumes) for (int s = 0; s < 2; s++) b.insert(b.end(), m.ft.cos[s], m.ft.cos[s] + kCostumeBlock);
     }
     put32(b, (uint32_t)d.bars.size());
     for (const Barrier& x : d.bars) {
@@ -177,6 +183,7 @@ struct Reader {
         std::string s((const char*)p + i, len); i += len;
         return s;
     }
+    bool bytes(uint8_t* out, size_t len) { if (i + len > n) { bad = true; return false; } memcpy(out, p + i, len); i += len; return true; }
 };
 
 bool from_binary(const uint8_t* p, size_t n, Data& d, std::string* why)
@@ -214,6 +221,9 @@ bool from_binary(const uint8_t* p, size_t n, Data& d, std::string* why)
         for (int* x : v) *x = (int)r.u32();
         m.hash = r.u64();
         m.ft.names[0] = r.str(); m.ft.names[1] = r.str();
+        if (ver >= 3 && (r.u32() & 1)) {
+            m.ft.costumes = r.bytes(m.ft.cos[0], kCostumeBlock) && r.bytes(m.ft.cos[1], kCostumeBlock);
+        }
         /* the playback's fight lines (df_fight.cpp): characters 0..35, stage -1 (random) or a stage id 0..34
          * written into the game as it is -- anything else would hang or break the playback */
         if (!r.bad && (m.ft.chr[0] < 0 || m.ft.chr[0] > 35 || m.ft.chr[1] < 0 || m.ft.chr[1] > 35 ||
@@ -926,14 +936,28 @@ void play_finish(const char* why)
 
 /* ---- the direct-fight driver's side (df_fight.cpp) ----------------------------- */
 extern "C" void t5_replay_fight_start(unsigned match, const int chr[2], const int btn[2], const int model[2], int stage,
-                                      int rounds, int pick, const char* name1, const char* name2)
+                                      int rounds, int pick, const char* name1, const char* name2,
+                                      const unsigned char* costumes)
 {
     Fight ft;
     for (int i = 0; i < 2; i++) { ft.chr[i] = chr[i]; ft.btn[i] = btn[i]; ft.model[i] = model[i]; }
     ft.stage = stage; ft.rounds = rounds; ft.pick = pick;
     ft.names[0] = name1 ? name1 : ""; ft.names[1] = name2 ? name2 : "";
+    if (costumes) { ft.costumes = true; memcpy(ft.cos[0], costumes, kCostumeBlock); memcpy(ft.cos[1], costumes + kCostumeBlock, kCostumeBlock); }
     if (playing()) play_fight(ft, match);
     else rec_fight(ft);
+}
+
+/* The playback's match `match` (1-based): the costume blocks the live match fought in (2 x 0x108 bytes
+ * into out); 0 when the file has none (format 2, or recorded without them). */
+extern "C" int t5_replay_costumes(unsigned match, unsigned char* out)
+{
+    Play& p = P();
+    if (!p.on || match < 1 || match > p.d.matches.size() || !p.d.matches[match - 1].ft.costumes) return 0;
+    const Fight& f = p.d.matches[match - 1].ft;
+    memcpy(out, f.cos[0], kCostumeBlock);
+    memcpy(out + kCostumeBlock, f.cos[1], kCostumeBlock);
+    return 1;
 }
 
 extern "C" int t5_replay_fight_line(unsigned match, char* buf, int size)

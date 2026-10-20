@@ -69,8 +69,11 @@ constexpr uint32_t kMagic    = 0x504E3554u;   /* "T5NP" little-endian */
  * authentication tag, PING and REJECT exist. A v1 peer is a different build.
  * v3 (latency branch): PING carries a time stamp and the echo of the peer's
  * (round-trip time), PING and INPUT carry the rollback input delay the host
- * picked for the match, HELLO the sender's input delay setting (auto/0/1/2). */
-constexpr uint8_t  kVersion  = 3;
+ * picked for the match, HELLO the sender's input delay setting (auto/0/1/2).
+ * v4 (costumes-online): COSTUME -- each player's custom costume table, sent at
+ * the start of the session; a v3 game would never send one (and the stage
+ * confirm waits for it), so it is a different build. */
+constexpr uint8_t  kVersion  = 4;
 constexpr uint32_t kRing     = 1024;          /* frames of history kept */
 constexpr uint32_t kMaxBatch = 64;            /* inputs per packet */
 constexpr uint32_t kHashes   = 8;             /* recent hashes per packet */
@@ -84,8 +87,10 @@ constexpr int      kMaxDelay = 30;            /* input delay frames, at most (T5
  * scene changes. BYE: leaving. PING: keepalive with the sender's progress.
  * REJECT: "I am in another session / a different build" (fail fast).
  * PICK: the character a player picked on the game's own select screen
- * (in-game select, docs/DIRECTFIGHT.md "Character select in the game"). */
-enum : uint8_t { PKT_HELLO = 1, PKT_INPUT = 2, PKT_BYE = 3, PKT_PING = 4, PKT_REJECT = 5, PKT_PICK = 6 };
+ * (in-game select, docs/DIRECTFIGHT.md "Character select in the game").
+ * COSTUME: a piece of the sender's custom costume table and how much of the
+ * receiver's it holds (docs/DIRECTFIGHT.md "Custom costumes online"). */
+enum : uint8_t { PKT_HELLO = 1, PKT_INPUT = 2, PKT_BYE = 3, PKT_PING = 4, PKT_REJECT = 5, PKT_PICK = 6, PKT_COSTUME = 7 };
 enum : uint8_t { REJ_BUILD = 1, REJ_SESSION = 2 };
 
 #pragma pack(push, 1)
@@ -107,6 +112,12 @@ struct RejectExt { uint8_t why; };
  * pick: the sender's pick (0 = none yet; packed by the direct-fight code); ack: the
  * key of the peer's pick the sender holds -- the peer stops resending there */
 struct PickExt  { uint32_t key; uint32_t pick; uint32_t ack; };
+/* COSTUME: hash/total describe the sender's whole table (FNV-1a 32, bytes); offset/len the
+ * piece that follows (len 0: an acknowledgement only); ack_mask the pieces of the receiver's
+ * table the sender holds, ack_hash that table's hash once the sender has all of it (else 0). */
+struct CostumeExt { uint32_t hash; uint16_t total; uint16_t offset; uint16_t len; uint16_t ack_mask; uint32_t ack_hash; };
+constexpr uint32_t kCostumeMax   = 10240;   /* a table, at most (src/directfight/costume_logic.h: 9,283) */
+constexpr uint32_t kCostumeChunk = 1024;    /* a piece: at most 10, one bit each in ack_mask */
 constexpr uint32_t kHelloRollback = 1u;
 constexpr int      kRbAuto = 0xFF;    /* T5_RB_NET_DELAY=auto: the input delay follows the measured round trip */
 #pragma pack(pop)
@@ -224,6 +235,21 @@ struct Session {
     uint32_t peer_pick_key = 0, peer_pick_val = 0;
     int pick_acks_owed = 0;
     ULONGLONG pick_sent_ms = 0;
+    /* Custom costumes: this player's table (sent in pieces every 100 ms until
+     * the peer confirms all of it with its hash) and the peer's (put together,
+     * taken once its hash is right). Read by the direct-fight code. */
+    std::vector<uint8_t> cos_local;
+    bool cos_local_set = false;
+    uint32_t cos_local_hash = 0;
+    uint16_t cos_acked = 0;            /* pieces of ours the peer holds */
+    bool cos_peer_has_ours = false;    /* ... all of them, hash checked */
+    std::vector<uint8_t> cos_peer;
+    uint32_t cos_peer_hash = 0;
+    uint16_t cos_peer_total = 0, cos_peer_mask = 0;
+    bool cos_peer_done = false;
+    int cos_acks_owed = 0;
+    uint32_t cos_next = 0;
+    ULONGLONG cos_sent_ms = 0;
 
     int connect_timeout_s = 60;        /* T5_NET_CONNECT_TIMEOUT: handshake deadline from init (0 = none) */
     int start_timeout_s = 120;         /* T5_NET_START_TIMEOUT: wait for a live peer to reach the match start */
@@ -526,6 +552,95 @@ void send_pick_locked()
     s.pick_sent_ms = GetTickCount64();
 }
 
+/* Custom costumes: FNV-1a 32 of a table; the pieces a table of n bytes has. */
+uint32_t cos_hash(const uint8_t* p, size_t n)
+{
+    uint32_t h = 0x811C9DC5u;
+    for (size_t i = 0; i < n; i++) { h ^= p[i]; h *= 0x01000193u; }
+    return h;
+}
+uint32_t cos_pieces(uint32_t n) { return n ? (n + kCostumeChunk - 1) / kCostumeChunk : 0; }
+
+/* Piece `k` of our table (k < 0: no data, the acknowledgement of the peer's alone). */
+void send_costume_locked(int k)
+{
+    State& s = S();
+    struct { Hdr h; CostumeExt x; uint8_t data[kCostumeChunk]; } p;
+    p.h = make_hdr(PKT_COSTUME);
+    const uint32_t total = s.cos_local_set ? (uint32_t)s.cos_local.size() : 0;
+    uint32_t off = 0, len = 0;
+    if (k >= 0 && (uint32_t)k < cos_pieces(total)) {
+        off = (uint32_t)k * kCostumeChunk;
+        len = std::min<uint32_t>(kCostumeChunk, total - off);
+        memcpy(p.data, s.cos_local.data() + off, len);
+    }
+    p.x = { s.cos_local_set ? s.cos_local_hash : 0u, (uint16_t)total, (uint16_t)off, (uint16_t)len, s.cos_peer_mask,
+            s.cos_peer_done ? s.cos_peer_hash : 0u };
+    send_raw(&p, (int)(sizeof p.h + sizeof p.x + len));
+    s.cos_sent_ms = GetTickCount64();
+}
+
+/* Every 100 ms while connected: up to three pieces the peer does not hold yet,
+ * else an acknowledgement still owed. */
+void costume_tick_locked(ULONGLONG now)
+{
+    State& s = S();
+    if (now - s.cos_sent_ms < 100) return;
+    if (s.cos_local_set && !s.cos_peer_has_ours) {
+        const uint32_t np_ = cos_pieces((uint32_t)s.cos_local.size());
+        int sent = 0;
+        for (uint32_t i = 0; i < np_ && sent < 3; i++) {
+            const uint32_t k = (s.cos_next + i) % np_;
+            if ((s.cos_acked >> k) & 1) continue;
+            send_costume_locked((int)k);
+            sent++;
+            s.cos_next = k + 1;
+        }
+        if (!sent) send_costume_locked(0);   /* every piece acknowledged but not the whole: the peer started over */
+        if (s.cos_acks_owed > 0) s.cos_acks_owed--;
+    } else if (s.cos_acks_owed > 0) {
+        s.cos_acks_owed--;
+        send_costume_locked(-1);
+    }
+}
+
+/* A COSTUME packet from the peer (session and nonce checked). */
+void costume_rx_locked(const CostumeExt& x, const uint8_t* data, int avail)
+{
+    State& s = S();
+    if (s.cos_local_set) {
+        if (x.ack_hash && x.ack_hash == s.cos_local_hash) {
+            if (!s.cos_peer_has_ours) note("the opponent has this player's costume table (%u bytes)", (unsigned)s.cos_local.size());
+            s.cos_peer_has_ours = true;
+        } else if (!s.cos_peer_has_ours) {
+            s.cos_acked = x.ack_mask;
+        }
+    }
+    if (x.len == 0) return;                                  /* an acknowledgement only */
+    const uint32_t total = x.total, off = x.offset, len = x.len;
+    if (total == 0 || total > kCostumeMax || off % kCostumeChunk || off >= total ||
+        len != std::min<uint32_t>(kCostumeChunk, total - off) || (int)len > avail)
+        return;                                              /* not a piece of a table */
+    s.cos_acks_owed = 3;
+    if (s.cos_peer_done) return;                             /* ours already; the ack goes out with the next packets */
+    if (x.hash != s.cos_peer_hash || total != s.cos_peer_total || s.cos_peer.size() != total) {
+        s.cos_peer.assign(total, 0);                         /* another table (the first, or the peer's game restarted) */
+        s.cos_peer_hash = x.hash; s.cos_peer_total = (uint16_t)total; s.cos_peer_mask = 0;
+    }
+    memcpy(s.cos_peer.data() + off, data, len);
+    s.cos_peer_mask |= (uint16_t)(1u << (off / kCostumeChunk));
+    const uint32_t all = (1u << cos_pieces(total)) - 1;
+    if (s.cos_peer_mask == all) {
+        if (cos_hash(s.cos_peer.data(), total) == s.cos_peer_hash) {
+            s.cos_peer_done = true;
+            note("the opponent's costume table is here (%u bytes, hash %08X)", total, s.cos_peer_hash);
+        } else {
+            note("the opponent's costume table did not match its hash -- asking for it again");
+            s.cos_peer_mask = 0;
+        }
+    }
+}
+
 /* The round trip so far: the median of the PING echo samples, else the
  * lobby's measurement (T5_NET_RTT_MS), else -1. */
 float rtt_estimate_locked(int* samples)
@@ -717,6 +832,8 @@ void forget_peer_locked()
     s.peer_ack = 0;
     s.peer_started = false;
     s.rb_peer = false;
+    s.cos_acked = 0; s.cos_peer_has_ours = false;           /* a new process: our table again, its own anew */
+    s.cos_peer.clear(); s.cos_peer_hash = 0; s.cos_peer_total = 0; s.cos_peer_mask = 0; s.cos_peer_done = false;
 }
 
 /* A HELLO in another netplay protocol version ends the handshake (build_mismatch) only when it
@@ -942,6 +1059,14 @@ void handle_packet(const uint8_t* p, int n, const sockaddr_in& from)
         SetEvent(s.rx_event);
         return;
     }
+    if (h->type == PKT_COSTUME) {
+        if (n >= (int)(sizeof(Hdr) + sizeof(CostumeExt))) {
+            CostumeExt x; memcpy(&x, h + 1, sizeof x);
+            costume_rx_locked(x, p + sizeof(Hdr) + sizeof(CostumeExt), n - (int)(sizeof(Hdr) + sizeof(CostumeExt)));
+        }
+        SetEvent(s.rx_event);
+        return;
+    }
     if (h->type != PKT_INPUT) return;
     if (n < (int)(sizeof(Hdr) + sizeof(InputHdr))) return;
     const InputHdr* ih = (const InputHdr*)(h + 1);
@@ -1037,6 +1162,7 @@ DWORD WINAPI tick_thread(LPVOID)
                     if (s.pick_acks_owed > 0) s.pick_acks_owed--;
                     send_pick_locked();
                 }
+                costume_tick_locked(now);
                 if (s.timeout_s > 0 && now - s.last_rx_ms >= (ULONGLONG)s.timeout_s * 1000)
                     lose_locked("peer_timeout", "nothing from the opponent's game for %d s", s.timeout_s);
             }
@@ -1827,6 +1953,31 @@ bool pick_peer(uint32_t key, uint32_t* val)
 void set_script_gate(bool on) { g_script_gate = on; }
 void set_no_start(bool on) { g_no_start = on; }
 
+/* Custom costumes: this player's table for the session (once; later calls change nothing). */
+void costume_set(const uint8_t* p, size_t n)
+{
+    State& s = S();
+    std::lock_guard<std::mutex> lk(s.mu);
+    if (s.cos_local_set || s.mode == Mode::Off) return;
+    if (n > kCostumeMax) n = 0;
+    s.cos_local.assign(p, p + n);
+    s.cos_local_hash = cos_hash(s.cos_local.data(), s.cos_local.size());
+    s.cos_local_set = true;
+    s.cos_acked = 0; s.cos_next = 0;
+    if (s.connected && !s.peer_lost) send_costume_locked(0);
+}
+bool costume_local_set() { State& s = S(); std::lock_guard<std::mutex> lk(s.mu); return s.cos_local_set; }
+/* The peer's table, once all of it is here: copied to out (when cap allows), its size in *n. */
+bool costume_peer(uint8_t* out, size_t cap, size_t* n)
+{
+    State& s = S();
+    std::lock_guard<std::mutex> lk(s.mu);
+    if (!s.cos_peer_done) return false;
+    if (n) *n = s.cos_peer.size();
+    if (out && cap >= s.cos_peer.size()) memcpy(out, s.cos_peer.data(), s.cos_peer.size());
+    return true;
+}
+
 /* ---- sessions in a persistent game (T5_CTL_DIR) -------------------------- */
 
 void session_end(const char* why)
@@ -1893,3 +2044,14 @@ extern "C" const char* t5_env(const char* key)
 extern "C" void t5_netplay_pick_send(unsigned key, unsigned pick) { np::pick_set(key, pick); }
 extern "C" int  t5_netplay_pick_peer(unsigned key, unsigned* pick) { return np::pick_peer(key, pick) ? 1 : 0; }
 extern "C" int  t5_netplay_connected(void) { return np::connected() ? 1 : 0; }
+
+/* Custom costumes (src/directfight/df_costume.cpp) */
+extern "C" void t5_netplay_costume_set(const unsigned char* p, unsigned n) { np::costume_set(p, n); }
+extern "C" int  t5_netplay_costume_local_set(void) { return np::costume_local_set() ? 1 : 0; }
+extern "C" int  t5_netplay_costume_peer(unsigned char* out, unsigned cap, unsigned* n)
+{
+    size_t m = 0;
+    if (!np::costume_peer(out, cap, &m)) return 0;
+    if (n) *n = (unsigned)m;
+    return 1;
+}

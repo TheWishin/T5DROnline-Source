@@ -654,14 +654,19 @@ def main():
         for g in games:
             g.stop()
         fifo_total = {}
+        costumes = {}
         for g in games:
             sync = []
+            cos = costumes.setdefault(g.idx, [])
             for fn in sorted(f for f in os.listdir(g.dir) if f.startswith("game") and f.endswith(".log")):
                 with open(os.path.join(g.dir, fn), encoding="utf-8", errors="replace") as f:
                     for ln in f:
                         mm = re.search(r"sync check through frame (\d+): (\d+) mismatching", ln)
                         if mm:
                             sync.append((fn, int(mm.group(1)), int(mm.group(2))))
+                        mc = re.search(r"costumes written: (.*)$", ln)
+                        if mc:      # what both PCs wrote at FIGHT START (docs/DIRECTFIGHT.md "Custom costumes online")
+                            cos.append(re.sub(r" \(fighter 0x[0-9A-F]+\)", "", mc.group(1).strip()))
                 fifo = scan_fifo(os.path.join(g.dir, fn))
                 if fifo:
                     report.setdefault("fifo", {})[f"{g.idx}/{fn}"] = fifo
@@ -683,6 +688,15 @@ def main():
                     f"{tally[1]} (P2) frames, kept on {tally[2]} (where START skips: a round's replay, the match end)")
                 if opens:
                     ok_all = False
+        # Custom costumes: every match's blocks, as both games wrote them, must be the same (a game started
+        # again for a fresh opponent wrote none for the matches before it: compare the common tail).
+        if len(costumes) == 2 and costumes[1] and costumes[2]:
+            n = min(len(costumes[1]), len(costumes[2]))
+            same = costumes[1][-n:] == costumes[2][-n:]
+            report["costumes"] = {"game1": costumes[1], "game2": costumes[2], "same": same}
+            log(f"costumes written: {n} match(es) compared, {'the same on both PCs' if same else 'DIFFERENT'}")
+            if not same:
+                ok_all = False
         log(f"FIFO: {fifo_total or 'no stall, no resync'}")
         report["ok"] = ok_all
         with open(os.path.join(a.out, "report.json"), "w") as f:

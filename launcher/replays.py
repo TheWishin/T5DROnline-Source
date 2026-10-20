@@ -76,6 +76,9 @@ def split(path):
     return data[:nl + 1], data[nl + 1:]
 
 
+COSTUME_BLOCK = 0x108          # src/directfight/costume_logic.h kBlock (format 3)
+
+
 class _R:
     def __init__(self, b):
         self.b, self.i = b, 0
@@ -134,6 +137,10 @@ def read_payload(path):
             m[k] = r.i32()
         m["hash"] = "%016x" % r.u64()
         m["names"] = [r.s(), r.s()]
+        m["costumes"] = None    # format 3: the custom costume blocks both sides fought in (2 x 0x108 bytes, hex)
+        if out["version"] >= 3 and r.u32() & 1:
+            m["costumes"] = [b[r.i:r.i + COSTUME_BLOCK].hex(), b[r.i + COSTUME_BLOCK:r.i + 2 * COSTUME_BLOCK].hex()]
+            r.i += 2 * COSTUME_BLOCK
         ms.append(m)
     out["matches"] = ms
     bars = []
@@ -320,6 +327,11 @@ def strip_names(path, placeholder="<player>"):
             ln = struct.unpack_from("<H", b, r.i)[0]
             r.i += 2 + ln
             out += b"\0\0"
+        if version >= 3:        # the costume blocks stay (no name in them)
+            flags = struct.unpack_from("<I", b, r.i)[0]
+            n = 4 + (2 * COSTUME_BLOCK if flags & 1 else 0)
+            out += b[r.i:r.i + n]
+            r.i += n
     out += b[r.i:]
     if r.i > len(b):
         raise ReplayError("damaged data")

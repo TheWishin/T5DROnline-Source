@@ -284,3 +284,5 @@ On this PC, nothing outside 127.0.0.1 (`build/deployrehearsal113/`, scripts in i
   (25 checks PASS), `delete-user` of the newest accounts and a new registration under 1.1.2 (id given again, as
   expected for 1.1.2), then 1.1.2 -> 1.1.3 again with a drain: the final called again (attempt 2) and played to its
   champion.
+- Tests on deploy-rehearsal-113: the lobby suite the CI way (29 modules, one process each) all exit 0, `python -m
+  unittest discover -s tests -q` 745 tests OK (10 skipped), `python tools/check_no_game_data.py` exit 0.

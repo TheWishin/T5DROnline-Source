@@ -81,10 +81,29 @@ def log(msg):
 
 
 def below_normal_priority():
-    """This process and everything it starts (Windows children inherit BELOW_NORMAL) at below-normal."""
+    """This process and everything it starts (Windows children inherit BELOW_NORMAL) at below-normal. The runner's
+    own threads (Tk, the lobby clients) get THREAD_PRIORITY_HIGHEST inside that class -- the level of a normal
+    process's normal thread -- so that next to a dozen games (other agents' too) the launcher code still reads its
+    events on time; the games started from here stay below normal (a thread priority is not inherited)."""
     if IS_WIN:
         k32 = ctypes.windll.kernel32
         k32.SetPriorityClass(k32.GetCurrentProcess(), BELOW_NORMAL)
+        _raise_this_thread()
+        orig_run = threading.Thread.run
+
+        def run(self):
+            _raise_this_thread()
+            orig_run(self)
+        threading.Thread.run = run
+
+
+def _raise_this_thread():
+    if IS_WIN:
+        try:
+            k32 = ctypes.windll.kernel32
+            k32.SetThreadPriority(k32.GetCurrentThread(), 2)       # THREAD_PRIORITY_HIGHEST
+        except Exception:      # noqa: BLE001
+            pass
 
 
 def free_port(kind=socket.SOCK_STREAM):
@@ -174,7 +193,7 @@ class LobbyServer:
         lf.close()
         Run.current.own(self.proc)
         self.starts += 1
-        t_end = time.time() + 15
+        t_end = time.time() + 60        # (it took 27 s once, next to two dozen games at 100 % CPU)
         while time.time() < t_end:
             if self.proc.poll() is not None:
                 raise RuntimeError(f"lobby server exited with {self.proc.returncode} (see {self.log_path})")
@@ -697,6 +716,13 @@ class Player:
         tab.show_codes = lambda codes, *a, **kw: me.codes.append(list(codes))
         tab._blocks_window = lambda rows, *a, **kw: me.notes.append((time.time(), {"kind": "blocks_window", "rows": rows}))
         tab.pad_visible = lambda: False
+        self.bars = []                       # (time, text, button labels) of every question bar the tab showed
+        orig_show_bar = tab.show_bar
+
+        def show_bar(text, buttons, *a, **kw):
+            me.bars.append((time.time(), str(text), [str(x[0]) for x in (buttons or ())]))
+            return orig_show_bar(text, buttons, *a, **kw)
+        tab.show_bar = show_bar
         if hasattr(tab, "bring_forward"):
             tab.bring_forward = lambda *a, **kw: None     # the (withdrawn) launcher window never goes to the front
         tab.server_var.set(self.ctx.server.addr if self.ctx.server else "127.0.0.1:1")
@@ -957,6 +983,20 @@ class Player:
         for b, label, _pad in self.tab.bar_spec:
             if any(label == w or label.startswith(w) for w in wanted):
                 return b
+        return None
+
+    def saw_bar(self, prefix, since=0.0):
+        """(text, labels) of a bar shown since `since` with a button starting with `prefix` (also one shown and
+        replaced before the runner looked), or None."""
+        wanted = {prefix}
+        try:
+            from t5lobby import i18n
+            wanted.add(i18n.t(prefix))
+        except Exception:      # noqa: BLE001
+            pass
+        for ts, text, labels in reversed(getattr(self, "bars", [])):
+            if ts >= since and any(lb.startswith(w) for lb in labels for w in wanted):
+                return text, labels
         return None
 
     def click(self, prefix):
@@ -1258,6 +1298,7 @@ class Ctx:
         self.shaper = Shaper()
         self.block_direct = {}
         self.no_nat2 = set()        # player names whose client behaves like 1.1.0 (no "nat2" cap)
+        self.stalls = []            # seconds the runner went without pumping (load), > 3 s each
         self.relays = None          # RelayNodes (regional relay scenarios)
         self.relay_routes = {}      # player name -> {relay id: delay proxy address}
         self.checks = []            # (name, ok, detail, level)
@@ -1288,7 +1329,14 @@ class Ctx:
     # ------------------------------------------------------------------ pumping
     def pump(self, seconds=0.05):
         root = self.run.root
-        t_end = time.monotonic() + seconds
+        now = time.monotonic()
+        gap = now - getattr(self, "_last_pump", now)
+        if gap > 3.0:
+            # the runner itself did not get the CPU (or a Tk callback blocked): what it checks right after may have
+            # gone by unseen -- counted, and the scenario's report says so
+            self.stalls.append(round(gap, 1))
+            log(f"[{self.name}] runner stalled {gap:.1f} s (load)")
+        t_end = now + seconds
         while True:
             try:
                 root.update()
@@ -1297,6 +1345,7 @@ class Ctx:
             for p in self.players:
                 p.bot_tick()
             if time.monotonic() >= t_end:
+                self._last_pump = time.monotonic()
                 return
             time.sleep(0.02)
 
@@ -1404,6 +1453,8 @@ class Ctx:
         dlg = [d for d in getattr(self.run, "dialogs", []) if d[0] >= self.t0]
         if dlg:
             self.note(f"dialogs the code tried to show (answered by the runner): {[(k, a) for _t, k, a, _kw in dlg]}")
+        if self.stalls:
+            self.note(f"runner stalls (load: it did not get the CPU): {len(self.stalls)}, longest {max(self.stalls)} s")
         if getattr(self.run, "replays", False) and self.game and self.players:
             try:
                 self.check_replays()

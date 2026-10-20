@@ -390,12 +390,15 @@ def _rated_once(ctx, a, b, mids, ends, label):
 def _next_set_game(ctx, a, b, mid, label):
     """Between two games: a countdown and "Leave set", no rematch vote; the next game starts by itself."""
     t_res = max(p.matches[mid].get("result") or 0 for p in (a, b))
-    ctx.wait(lambda: a.bar_button("Leave set") is not None and b.bar_button("Leave set") is not None, 10,
+    # (from the bar history too: under load the tab may show the set bar and replace it with the next game inside
+    # one late poll, before the runner looks)
+    since = min(p.matches[mid].get("result") or t_res for p in (a, b)) - 2.0
+    ctx.wait(lambda: a.saw_bar("Leave set", since) and b.saw_bar("Leave set", since), 10,
              f"{label}: the set bar counts down and offers Leave set")
     ctx.check(f"{label}: no rematch vote between two games of a set",
-              a.bar_button("Rematch") is None and b.bar_button("Rematch") is None, [a.bar_labels(), b.bar_labels()])
-    ctx.check(f"{label}: the countdown is shown", "starts in" in a.tab.bar_text.get() or "s" in a.tab.bar_text.get(),
-              a.tab.bar_text.get())
+              not a.saw_bar("Rematch", since) and not b.saw_bar("Rematch", since), [a.bar_labels(), b.bar_labels()])
+    shown = (a.saw_bar("Leave set", since) or ("", []))[0]
+    ctx.check(f"{label}: the countdown is shown", "starts in" in shown or "s" in shown, shown)
     since = t_res - 0.5
     ok = ctx.wait(lambda: latest(a, "match_start", since) and latest(b, "match_start", since), 40,
                   f"{label}: the next game starts by itself")

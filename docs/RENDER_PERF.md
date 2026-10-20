@@ -8,6 +8,9 @@ fits in a vblank only when `game CPU + translation + present` stays under
 16.7 ms. Patch 0023 cuts the translation and removes the first-fight hitch.
 Every change has a switch; all are on by default.
 
+(Compiler settings for the game's own CPU per frame -- profile-guided
+optimisation of the lifted code, and what else was tried: docs/BUILD_PERF.md.)
+
 ## What changed
 
 | Change | Switch (default on) | Effect per fight frame |
@@ -1695,9 +1698,26 @@ Per job and per frame (`SPU_PROF=1`, one 600-walk window per run):
 The `jcsignal` job is 20-28 us either way (its time is the event it sends).
 The SPU threads' context switches fell from ~1,050 to ~750 a second (4
 processors). One "after" run in ~36 had the sound core at 95 % of a processor
-from its boot on (late audio blocks during the title, none in the fight); it
-did not come back in 16 further runs and no "before" run (~22) showed it --
-watch for it.
+from its boot on (late audio blocks during the title). Hunted afterwards with
+72 boots, 3 at a time on this loaded PC: new and old build 36 each, 4, 8 and
+16 processors, power saving on and off, `SPU_PROF=1`, the sound core's CPU
+logged every second from boot (a watcher would have sampled it with
+`tools/thread_sampler.py` above 75 % for 3 s):
+
+| build | runs | sound core, fight window: median (max) | highest 1-s share from boot | seconds above 75 % | runs with late audio blocks (blocks) |
+|---|---|---|---|---|---|
+| new | 36 | 37 % (42 %) | 55 % | 0 of 2,167 | 4 (70) |
+| old | 36 | 66 % (71 %) | 83 % | 66 of 2,176 | 21 (709) |
+
+It never came back (with the 16 earlier checks: 1 in ~88 boots of the new
+build). In the outlier run itself the job lists and the waiting game thread
+looked like every other run (10.4-10.6 us per job, 0.00-0.01 ms blocked), and
+the sound core was already hot before the first skinning list ran; the
+job-help path only touches threads waiting on a queue SPURS attached (queue 1),
+never the sound core (it waits on its own queue, 5). Most likely the PC (its
+processors were shared with 25-30 others' processes); if a player's
+`[cellAudio] sound glitches` lines ever show it, `tools/thread_sampler.py
+--threads spu` on that game names the code.
 
 ### The same results, bit for bit
 

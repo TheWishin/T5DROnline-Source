@@ -177,6 +177,35 @@ class BracketTest(unittest.TestCase):
         with self.assertRaises(BracketError):
             b.disqualify("nobody")
 
+    def test_a_reset_never_brings_back_a_disqualified_player(self):
+        """review-113: a set put back (reset) came back open with a player disqualified since -- the set this player
+        lost by the disqualification, or a walkover that had waited for an opponent -- and the tournament called the
+        disqualified player to play it again (a win then eliminated an innocent opponent)."""
+        b = Bracket.build("single", ["a", "b", "c", "d"])
+        sid = b.disqualify("b")                               # b is in the open W1-2 (b v c): forfeited
+        self.assertEqual(sid, "W1-2")
+        b.forfeit(sid, b.sets[sid].p.index("b"), "dq")
+        self.assertEqual(b.sets[sid].reason, "dq")
+        b.reset(sid)                                          # (the organizer's reset of that forfeit)
+        s = b.sets[sid]
+        self.assertEqual((s.state, s.reason, s.winner_entrant()), ("done", "bye", "c"))
+        for x in b.open_sets():
+            self.assertNotIn("b", x.p)
+        # a walkover decided for a player while the other side was nobody, that player disqualified, the walkover's
+        # source put back and played again: the set must not open with the disqualified player
+        b = Bracket.build("single", list("abcdefgh"))
+        b.double_forfeit("W1-4")                              # (c v f: nobody) -> W2-2 is b's walkover once W1-3 is in
+        b.report("W1-3", 0)
+        self.assertEqual(b.sets["W2-2"].reason, "bye")
+        out = b.sets["W2-2"].winner_entrant()
+        b.disqualify(out)
+        b.reset("W1-4")
+        b.report("W1-4", 0)
+        for s in b.open_sets():
+            self.assertNotIn(out, s.p)
+        self.assertEqual(b.sets["W2-2"].reason, "bye")
+        self.assertEqual(b.sets["W2-2"].winner_entrant(), b.sets["W1-4"].winner_entrant())
+
     def test_reset_and_its_blocker(self):
         b = Bracket.build("single", ["a", "b", "c", "d"])
         b.report("W1-1", 0)
@@ -716,6 +745,28 @@ class OrganizerTest(TourBase):
         # a played set whose result the final used cannot be reset any more
         with self.assertRaises(LobbyError):
             self.org.tour_admin(tid, "reset", set="W1-1")
+
+    def test_a_reset_set_never_calls_a_disqualified_player(self):
+        """review-113: the organizer's reset of a set a disqualification decided opened it again with the disqualified
+        player in it and called both to play it (a win then knocked the other one out). Now it is the other player's
+        walkover again; an override (a winner to choose) is refused."""
+        self.f.accept = {n: False for n in self.names}
+        tid = self.create(players=("Ben", "Cat", "Dan", "Eve"))    # Ann organizes, does not play
+        self.f.run(lambda: self.f.last("Ben", "tour_call") is not None)
+        full = self.org.tour_get(tid)
+        c, d = next(s["p"] for s in full["bracket"]["sets"] if s["id"] == "W1-2")
+        self.org.tour_admin(tid, "dq", player=d)
+        self.assertEqual((self.winner_name(tid, "W1-2"), self.bset(tid, "W1-2").reason), (c, "dq"))
+        calls = len(self.f.events(d, "tour_call"))
+        with self.assertRaises(LobbyError):
+            self.org.tour_admin(tid, "override", set="W1-2", winner=0)
+        self.assertEqual(self.bset(tid, "W1-2").reason, "dq")          # (refused before anything changed)
+        self.org.tour_admin(tid, "reset", set="W1-2")
+        s = self.bset(tid, "W1-2")
+        self.assertEqual((s.state, s.reason, self.winner_name(tid, "W1-2")), ("done", "bye", c))
+        self.assertNotEqual(s.data.get("live"), "called")
+        time.sleep(0.5)
+        self.assertEqual(len(self.f.events(d, "tour_call")), calls)    # never called again
 
     def test_withdrawing_in_the_middle_of_a_set(self):
         tid = self.create(players=("Ben", "Cat"))

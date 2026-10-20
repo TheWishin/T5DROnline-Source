@@ -1,2 +1,4 @@
 # Patches must stay byte-exact for git apply
 *.patch -text
+# The lifted code's PGO profile: generated text (tools/pgo_train.py), checked by tools/profile_check.py
+tools/gamedll/t5dr_lifted.proftext -diff eol=lf

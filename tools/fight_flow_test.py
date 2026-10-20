@@ -288,7 +288,7 @@ class Game:
             "PS3_VFS_ROOT": vfs.replace("\\", "/"), "PS3_HDD0_ROOT": os.path.join(vfs, "dev_hdd0").replace("\\", "/"),
             "PS3_GCM_TICKER_PUMP": "1", "RSX_LIVE_DRAW": "1", "PS3_VERBOSE": "0", "PS3_WINDOW_BACKGROUND": "1",
             "PAD_NO_KEYBOARD": "1", "T5_NET_LOCALPAD": "0", "T5_NET_LOG": os.path.join(self.dir, f"frames{self.starts}.log"),
-            "T5_DF_STATUS_FILE": self.status_path, "T5_NET_TIMEOUT": str(self.a.net_timeout),
+            "T5_DF_STATUS_FILE": self.status_path, "T5_NET_TIMEOUT": str(getattr(self.a, "net_timeout", 20)),
         })
         if self.a.mash:
             env["T5_NET_SCRIPT"] = mash_script(os.path.join(self.dir, "mash.txt"), 100 + self.idx,
@@ -356,7 +356,7 @@ def session_env(a, k, match, game, port0):
     """T5_NET_* for a match of session k as the lobby would hand it out (new ports/seed/key per session)."""
     seed = 1000 + 7919 * k
     env = {
-        "T5_NET_MODE": game.role, "T5_NET_DELAY": str(a.delay), "T5_NET_TIMEOUT": str(a.net_timeout), "T5_NET_MATCH": match,
+        "T5_NET_MODE": game.role, "T5_NET_DELAY": str(a.delay), "T5_NET_TIMEOUT": str(getattr(a, "net_timeout", 20)), "T5_NET_MATCH": match,
         "T5_NET_ROUNDS": str(a.rounds), "T5_NET_PATH": "lan", "T5_NET_RTT_MS": "1", "T5_NET_SEED": str(seed),
         "T5_NET_BUILD": "fight-flow-test", "T5_NET_KEY": f"key-{k}-{seed}", "T5_NET_RESULT_FILE": game.result_path,
         "T5_NET_START": "external", "T5_DF_STATUS_FILE": game.status_path,

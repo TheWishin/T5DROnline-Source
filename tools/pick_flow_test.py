@@ -206,12 +206,12 @@ class Game:
             "PS3_GCM_TICKER_PUMP": "1", "RSX_LIVE_DRAW": "1", "PS3_VERBOSE": "0", "PS3_WINDOW_BACKGROUND": "1",
             "PS3_AUDIO_MUTE": "1",      # silent (the mix is zeroed after AUDIO_WAV): tests run beside people
             "PAD_NO_KEYBOARD": "1", "T5_NET_LOCALPAD": "0", "PS3_PAD_FILE": self.pad_path, "T5_DF_TRACE": "1",
-            "T5_DF_STATUS_FILE": self.status_path, "T5_NET_TIMEOUT": str(self.a.net_timeout), "T5_NET_SCRIPT_FIGHT": "1",
+            "T5_DF_STATUS_FILE": self.status_path, "T5_NET_TIMEOUT": str(getattr(self.a, "net_timeout", 20)), "T5_NET_SCRIPT_FIGHT": "1",
         })
         if self.a.mash:
             env["T5_NET_SCRIPT"] = mash_script(os.path.join(self.dir, "mash.txt"), 100 + self.idx,
-                                               start_every=self.a.mash_start)
-        if self.a.mash_start:
+                                               start_every=getattr(self.a, "mash_start", 0))
+        if getattr(self.a, "mash_start", 0):
             env["T5_DF_WATCH"] = ff.PAUSE_WORD   # the pause menu, logged when it opens
         for kv in self.a.env + (self.a.env1 if self.role == "host" else self.a.env2):
             k, v = kv.split("=", 1)
@@ -344,7 +344,7 @@ def session_env(a, k, match, game, port0):
         return {"T5_NET_ROUNDS": str(a.rounds), "T5_NET_RESULT_FILE": game.result_path, "T5_DF_STATUS_FILE": game.status_path,
                 "T5_HUD_NAMES": "Tester One|Tester Two", "T5_HUD_RANKS": f"{(k * 3) % 37},{(k * 5) % 37}"}
     env = {
-        "T5_NET_MODE": game.role, "T5_NET_DELAY": str(a.delay), "T5_NET_TIMEOUT": str(a.net_timeout), "T5_NET_MATCH": match,
+        "T5_NET_MODE": game.role, "T5_NET_DELAY": str(a.delay), "T5_NET_TIMEOUT": str(getattr(a, "net_timeout", 20)), "T5_NET_MATCH": match,
         "T5_NET_ROUNDS": str(a.rounds), "T5_NET_PATH": "lan", "T5_NET_RTT_MS": "1", "T5_NET_SEED": str(seed),
         "T5_NET_BUILD": "pick-flow-test", "T5_NET_KEY": f"key-{k}-{seed}", "T5_NET_RESULT_FILE": game.result_path,
         "T5_NET_START": "external", "T5_DF_STATUS_FILE": game.status_path,

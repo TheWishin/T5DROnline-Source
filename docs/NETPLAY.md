@@ -1173,7 +1173,9 @@ not game state.
   areas taken whole (no skip list), of each fighter block and bone block, the
   skipped words that the moves use (0x1008F0D0, 0x1008F0C4, +0x174 of each
   fighter, the secondary-motion points) and the projector's words. The last
-  line for a frame is its final state. Two PCs' logs diff per frame.
+  line for a frame is its final state. Two PCs' logs diff per frame. With it,
+  `T5_RB_SHADOW_DUMP=f1,f2,...` writes each fighter's skeleton blocks at those
+  boundaries (`pose_f<f>_P<n>_{cur,prev,sk}.bin`).
 - `T5_RB_RFT=addr:len` + `T5_RB_RFT_NET=from:frames` (`rb_rft.cpp`): every read
   and write of those bytes over those live frames, with the accessing guest
   function and its callers (game log and rb_frames.log `R` lines). The page

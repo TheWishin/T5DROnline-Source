@@ -118,14 +118,16 @@ class Patch(unittest.TestCase):
             self.assertIn(want, doc)
 
     def test_the_problem_report_keeps_the_placement(self):
-        lines = ["[sched] CPU budget: 4 logical processors, 4 cores (affinity mask; PS3_CPUS); sub-ms sleeps: timer",
-                 "[sched] processors: 20 logical / 14 cores in the affinity mask (of 20 in the PC), SMT; hybrid: 6 "
-                 "performance core(s) (12 logical, class 1) + 8 efficiency core(s); one cache group",
-                 "[sched] placement: game thread, translation, sound core and the game's threads on LP 0-11 "
-                 "(performance cores, CPU sets); ideal processors: game thread LP 2, translation LP 0, sound core LP 4",
-                 "[sched] game thread 'main': priority +1, ideal processor LP 2 (ok), CPU set 0-11 (ok), EcoQoS never (ok)",
-                 "[sched] translation 'ticker': priority +2, ideal processor LP 0 (ok), CPU set 0-11 (ok), EcoQoS never (ok)",
-                 "[sched] sound core 'spu': priority +2, ideal processor LP 4 (ok), CPU set 0-11 (ok), EcoQoS never (ok)"]
+        lines = ["[sched] CPU budget: 20 logical processors, 14 cores (affinity mask; PS3_CPUS); sub-ms sleeps: timer",
+                 "[sched] processors: 20 logical, 14 cores (of 20), SMT; hybrid: 6 P-cores (12 logical, class 1) + 8 "
+                 "E-cores; one cache group",
+                 "[sched] placement: game thread, translation, sound core on LP 0-11 (P-cores), ideal LP 2 / 4 / 6; "
+                 "game's other threads the same",
+                 "[sched] placement: workers on LP 0-1,6-19 (not LP 2-5: the game thread's and translation's cores); "
+                 "SPURS 12 at a time, vertex workers 1; priorities: game +2, translation +2, sound +2, workers +1/+1",
+                 "[sched] game thread 'main': priority +2, ideal processor LP 2 (ok), CPU set 0-11 (ok), EcoQoS never (ok)",
+                 "[sched] translation 'ticker': priority +2, ideal processor LP 4 (ok), CPU set 0-11 (ok), EcoQoS never (ok)",
+                 "[sched] sound core 'spu': priority +2, ideal processor LP 6 (ok), CPU set 0-11 (ok), EcoQoS never (ok)"]
         with tempfile.TemporaryDirectory() as d:
             p = os.path.join(d, "game.log")
             with open(p, "w", encoding="utf-8") as f:

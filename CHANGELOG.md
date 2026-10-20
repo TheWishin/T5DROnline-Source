@@ -3,6 +3,26 @@
 All notable changes, newest first. The project is a test release. Short commit hashes are in parentheses. The state of each
 part is in the README's status table.
 
+## v1.1.3 (not released yet)
+
+### Picture and speed
+- **The game's threads are placed for the processor it runs on** (ps3recomp patch 0065).
+  On Intel processors with performance and efficiency cores (12th gen and newer, Core
+  Ultra) the game's main thread, its helper threads, the picture translation and the
+  sound now stay on the performance cores (efficiency cores are 2-3 times slower for
+  them). On Ryzen processors with two core groups (7900X, 7950X, 5900X, ...) the game
+  stays in one group, the one with the bigger cache on an X3D. The main thread and the
+  translation get two different cores, never processor 0's (which handles most of the
+  PC's interrupts), and with Hyper-Threading/SMT and 6 cores or more no busy helper
+  shares their cores. On 4 cores without SMT (laptops like the i5-7300HQ) one more
+  thread skins the fighters, and the game's own threads run above its helpers: on a
+  slowed 4-core stand-in fights ran RESULT_FPS faster and the sound had far fewer late
+  blocks. The game log (and Report a problem) now says where the threads run
+  (`[sched] processors:` / `[sched] placement:` lines). `PS3_SCHED_PLACE=0` (extra
+  settings) is the old placement.
+- **Online: incoming inputs are handled at once** even when the game keeps every
+  processor busy (the receive thread runs above the game's threads).
+
 ## v1.1.2 (2026-10-20)
 
 **Friends and invites, replays of every online match, opponents nearby first, a training overlay, five more languages, all stages and items unlocked offline, less CPU on laptops.** Both players need 1.1.2

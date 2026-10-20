@@ -895,3 +895,154 @@ joiner with): 0 mismatching, the same hash `56c3b7de99c1dee9`.
 Not tried: a real laptop, handheld or APU (this PC has none), the game's
 fps at such a CPU's own clocks, a battery, a thermal sensor (Windows reports
 none here; `system.txt` then says so).
+
+## Thread placement (patch 0065, branch `sched-perf`)
+
+Player report: an i5-7300HQ laptop (4 cores, 4 threads, no SMT) plays fights
+at about 40 fps. This section is the study of where the game's threads run,
+at which priority and how many of them there are -- on that CPU and on kinds
+this PC does not have (Intel hybrid) or has only in part (two CCDs, SMT).
+
+### The threads of a fight
+
+`tools/fight_bench.py`, 4 cores / 4 threads (affinity 0x55), the PC busy with
+other programs (39 fps): CPU per frame of every thread and how it waits.
+Priorities are relative to the process class (+1 above normal, +2 highest).
+
+| thread | what it does | CPU per frame | priority before -> 0065 | how it waits |
+|---|---|---|---|---|
+| `spu` | the SPU sound core (lifted DSP), 187.5 ticks a second | 15.4 ms (0.6 of a core, fixed per second) | +2 | its mailbox: condition variable (10 ms re-poll) |
+| `main` | the game's main PPU thread: game logic, kicks the skinning, builds the RSX commands | 8.5 ms | +1 -> +2 | lv2 cond / semaphore / event queue (its helper threads, the skinning), the flip (WaitOnAddress, 0047) |
+| `ticker` | vblank clock, FIFO walk = render translation, present | 4.4 ms | +2 | high-resolution timer + FIFO kick event, polls the last 250 us before a tick |
+| `spurs-chain` | the skinning job chain's walker; takes jobs itself | 4.1 ms | +1 | an event per chain |
+| `spurs-job` (1 on 4 processors; 0065: 2) | skinning jobs | 3.6 ms | +1 | condition variable per job list |
+| `NU::Draw::RequestManager` | game thread (lv2 priority 1001): the main thread hands it draw work and waits (trace: ~40 waits a second each way) | 3.4 ms | +1 -> +2 | lv2 cond |
+| `rsx-vertex` | vertex fetch for the translation | 2.8 ms | +1 | 300 PAUSEs, then WaitOnAddress |
+| `pad sampler` | 1 ms pad / keyboard sampling (tap latch) | 2.5 ms with the bench's script file, 1-3 % of a core with a real pad | +2 | high-resolution timer |
+| `bnusCoreUpdateThread`, `CnuSound2Thread`, `bnusCoreDecoder*` | the game's sound threads | 0.3 ms | +1 -> +2 | lv2 waits |
+| `audio-mix` | cellAudio mixer | 0.07 ms | time-critical | high-resolution timer to the next block |
+| `keyread`, `NU::File::RequestManager`, `NU::System::RenderDuration`, `NU::Draw::Geometry::RequestManager`, `particle` | game threads (lv2 1000-1001) | ~0 | +1 -> +2 | lv2 waits |
+| loaders: `ZsAread`, `TNUD::ASync`, `decoder`, `data check`, http | lv2 priority >= 1002 | 0 | 0 | semaphores |
+| `audio-device`, PSO writer, prewarm, replay writer, pad hot-plug | background | ~0 | -1 (EcoQoS with power saving) | events, timers |
+| `netplay-rx`, `netplay-tick` (online) | receive inputs, keepalives | ~0 | 0 -> +2 / +1 | `recvfrom`, 50 ms sleep |
+| D3D12 driver threads | | 0.07 ms | -- | -- |
+
+Nothing spins in a fight on a small CPU: sub-millisecond sleeps use the timer
+below 24 logical processors (0047), the flip wait sleeps until the flip, the
+vertex worker's 300 PAUSEs bridge two draws of one walk. A trace
+(`PS3_SCHED_TRACE`, 4 processors, PC busy) shows the frame's critical path:
+in its game part the main thread waits ~26 ms of a 40 ms frame in lv2
+`sys_cond_wait` for `NU::Draw::RequestManager` and ~8 ms for an lwmutex that
+thread holds -- the two hand the frame back and forth -- then the skinning
+and the translation; the sound core runs beside them.
+
+### What the scheduler did, CPU by CPU (before 0065)
+
+**(a) 4 cores / 4 threads.** CPU budget 4 (affinity mask): 2 SPURS job
+threads (walker + 1 worker), 1 vertex worker, sub-ms sleeps on the timer, no
+ideal processors. Oversubscribed? On this PC's ~5 GHz cores the game uses
+1.5-1.8 of its 4 processors; on cores 2-2.5x slower the same work is 3.5-4.5
+processors -- yes, on the player's PC every thread competes. The workers ran
+at +1, the same level as the main thread and the game's own threads; the
+translation (+2) was above them. Making the workers lower is the obvious fix
+and it is wrong: at below normal -15 % (4 of 4 rounds), at normal -6 % --
+the main thread waits for the skinning, and lower workers then lose their
+processor to every other program. What helped: one more job thread, and the
+game's own threads one step up (below).
+
+**(b) Intel hybrid.** EfficiencyClass (`GetSystemCpuSetInformation`) was read
+only to rank cores for the opt-in `PS3_SCHED_CPUS=fast` and
+`PS3_SCHED_IDEAL=1` (which ranked the whole PC, not the affinity mask).
+Nothing kept the main thread or the translation off the efficiency cores:
+Windows' Thread Director decides, and with the performance cores busy (our
+own workers among them) it moves threads to the E-cores. EcoQoS: the process
+opts out of power throttling (EXECUTION_SPEED off), and only background
+threads (audio device, PSO writer, trace) get EcoQoS, with power saving --
+none of the frame's threads. That part was right.
+
+**(c) Two CCDs (7950X).** Nothing by default: at 32 processors 12 job threads
+and 3 vertex workers spread over both CCDs, the main thread, the translation
+and the game's threads wherever Windows put them, the skinning output, the
+command buffer and guest memory crossing between the two caches.
+
+**(d) SMT.** Nothing: Windows prefers an idle core, but once there are more
+busy threads than cores a worker shares the main thread's or the
+translation's core (busy siblings cost the game part 45-60 % on this PC,
+patch 0059's measurements).
+
+### What changed
+
+`runtime/platform/host_sched_plan.h` (new: pure functions over the processor
+table, unit-tested) makes one plan at start; `host_sched.c` applies it to each
+thread as it starts.
+
+| change | for | switch |
+|---|---|---|
+| **The game's own threads one step up**: the main thread and every guest thread of lv2 priority < 1002 (draw request managers, sound threads; their order among themselves stays the PS3's) +1 -> +2, above the SPURS and vertex workers (+1); the translation and the sound core stay +2 | everyone | `PS3_SCHED_PRIO_MAIN`, `_PPU`, `_PPUHI` |
+| **SPURS job threads**: half the logical processors or one per core but the main thread's, whichever is more -- 3 instead of 2 on 4 cores without SMT, 5 instead of 3 on 6c/6t; SMT CPUs unchanged | CPUs without SMT | `SPURS_JOB_THREADS` |
+| **Performance cores only** for the main thread, the game's threads, the translation, the sound core and the vertex worker (the translation waits for it): a CPU set (`SetThreadSelectedCpuSets`) of the processors with the highest EfficiencyClass. The skinning workers may use every core (hundreds of small jobs dealt out as they finish) | Intel 12th gen and later, Core Ultra | `PS3_SCHED_PLACE=0` |
+| **One cache group**: with several last-level caches the frame's threads and the workers stay in the group with the larger L3 when the sizes differ (X3D's V-Cache CCD), else the one holding the best-ranked core -- if it has 6 cores or more (Ryzen 3000's 4-core CCXs do not). The pools size from that group (7950X: 8 job threads, 1 vertex worker), and sub-ms sleeps stay on the timer there (16 processors) | two-CCD Ryzens; Core Ultra (its low-power island stays out) | `PS3_SCHED_PLACE=0` |
+| **Ideal processors**: main thread, translation and sound core on three different physical cores, best-ranked first (CPPC preferred cores, Turbo Boost Max), processor 0's core last (it takes most device interrupts and DPCs; on a CPU that ranks no core, like the i5-7300HQ, "by number" put the main thread there), inside the affinity mask | everyone | `PS3_SCHED_IDEAL=0` |
+| **Workers off the game's two cores**: with SMT and 6 cores or more the SPURS and vertex workers get a CPU set without the main thread's and the translation's cores (both threads of each) | 6c/12t and up, hybrids | `PS3_SCHED_PLACE=0` |
+| The frame's threads and workers say "never EcoQoS" for themselves (`ThreadPowerThrottling`, EXECUTION_SPEED off) besides the process-wide opt-out | hybrids, an older Windows where the process opt-out fails | `PS3_SCHED_THROTTLE=0` |
+| The vertex workers go through `host_sched` (`PS3_SCHED_PRIO_VERTEX`, CPU set) | -- | -- |
+| Online: the netplay receive thread at +2 (was normal: an input packet could wait a time slice behind the game's threads), the tick thread +1, both named | online | -- |
+| `[sched] processors:` / `[sched] placement:` lines and one line each for the main thread, the translation and the sound core (priority, ideal processor, CPU set, EcoQoS, whether Windows took each); the problem report keeps them | everyone | -- |
+
+This PC limited to 4 cores / 4 threads (0x5500):
+
+    [sched] processors: 4 logical, 4 cores (of 32), no SMT, small; one core type; one cache group
+    [sched] placement: game thread, translation, sound core on any processor, ideal LP 10 / 8 / 14; game's other threads anywhere
+    [sched] placement: workers anywhere; SPURS 3 at a time, vertex workers 1; priorities: game +2, translation +2, sound +2, workers +1/+1
+    [sched] game thread 'main': priority +2, ideal processor LP 10 (ok), CPU set none, EcoQoS never (ok)
+
+All 32 processors:
+
+    [sched] processors: 32 logical, 16 cores (of 32), SMT; one core type; 2 cache groups, the game in group 0 (LP 0-15, 8 cores: best-ranked core)
+    [sched] placement: game thread, translation, sound core on LP 0-15 (one cache group), ideal LP 6 / 10 / 4; game's other threads the same
+    [sched] placement: workers on LP 0-5,8-9,12-15 (not LP 6-7,10-11: the game thread's and translation's cores); SPURS 8 at a time, vertex workers 1; ...
+
+A 12700H as the unit test builds it: P-cores LP 0-11 for the frame, ideal
+LP 2 / 4 / 6 (core 2 its favoured core), workers on LP 0-1 and 6-19, the
+vertex worker on LP 0-1, 6-11.
+
+Tried and dropped: the translation waiting for a vertex worker's last job by
+WaitOnAddress instead of spinning (translation 2.9 -> 4.7 ms in a paired
+round under load: the wake-up came later than the spin noticed the job).
+
+### How it was measured
+
+`tools/slow_core.py` (new): slower processors on this PC. One busy process per
+logical processor of a mask, each pinned to its processor at time-critical
+priority (above every thread of a game started below normal), all taking
+their processor for the first part of each 4 ms period on the same clock --
+the game keeps all its processors for the rest, every thread slowed alike
+(`--busy 40` takes ~30-35 % of the time; Windows' timers wake late). Not
+exact: a thread frozen for 2 ms can hold a lock another thread needs, which a
+slow core does not do.
+
+Paired runs: two configurations at the same time on two 4-processor masks of
+CCD0, 4 cores without SMT each (0x55 and 0x5500; their siblings and CCD1 carry
+the other agents' work), swapped every round, each with its own slow_core
+`--busy 40`; fps over fight start +24..42 s. Other agents' games kept 11-29 of
+the 32 processors busy (a round starts once at most 22 are busy and at most 2
+compilers run, or after 4 minutes). The mask alone moved fps by 5-20 % from
+round to round (processor 0 is in 0x55), so only the geometric mean of
+swapped rounds compares two configurations; a single round says little.
+
+### Results
+
+RESULTS_TABLE
+
+### Not done
+
+- No hybrid CPU here: (b) is unit-tested only (`tests/c/sched_plan_test.c`:
+  12700H, 1215U, 13900K, Core Ultra 155H / 125H with the low-power island,
+  7950X, 7950X3D, 7800X3D, 3700X, 4c/4t, 2c/4t, 4c/8t, 6c/6t, 6c/12t, masks
+  across CCDs, processor 0 ranked first, 4,000 random tables against the
+  rules every plan must keep). (c) and (d) ran on this 7950X under other
+  agents' load: no fps difference measurable there (tables above), the
+  placement lines and the CPU sets check out.
+- A real i5-7300HQ: the slow_core stand-in slows every thread alike; a real
+  Kaby Lake core is also slower per clock in the translation's hashing and the
+  lifted code, which this cannot model.

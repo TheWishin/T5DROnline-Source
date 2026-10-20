@@ -720,7 +720,7 @@ class OnlineView:
         self.rooms_count = tk.StringVar(page, value="")
         head, tools = self.section_head(rc, t("Rooms").upper(), self.rooms_count)
         head.grid(row=0, column=0, sticky="we", pady=(0, px(6)))
-        for key, label, cmd in (("room", t("Create room"), lambda: tab.call(tab.client.create_room, None)),
+        for key, label, cmd in (("room", t("Create room"), tab.rooms_ui.create),
                                 ("join", t("Join room"), tab.do_join),
                                 ("leave", t("Leave room"), lambda: tab.call(tab.client.leave_room)),
                                 ("watch_room", t("Watch"), tab.spec.watch_room)):    # (spectating its match)
@@ -732,6 +732,7 @@ class OnlineView:
         tab.tv_rooms.bind("<Double-1>", lambda _e: tab.do_join() if str(tab.actions["join"].cget("state")) ==
                           "normal" else None)
         tab.tv_rooms.bind("<<TreeviewSelect>>", lambda _e: tab.spec.set_actions(), add="+")
+        tab.rooms_ui.build(rc, px, self)    # this player's room under the list (tk_rooms.py), shown while in one
 
         cc = self.card(page, pad=12)
         cc.grid(row=0, column=1, rowspan=2, sticky="nsew", padx=(px(10), 0))
@@ -1029,7 +1030,13 @@ class OnlineView:
             for r in rooms:
                 if me and me.get("id") in (r.get("members") or []):
                     room = r
-            if room is not None:
+            mine = tab.rooms_ui.mine()                     # (a hidden room is in no list: the room's own view)
+            if mine is not None:
+                room = mine
+            if room is not None and room.get("size", 2) > 2:
+                text = t("In the room “{name}”: {count}/{size} players, taking turns.", name=room["name"],
+                         count=len(room.get("members") or []), size=room["size"])
+            elif room is not None:
                 text = (t("In your room “{name}”. Waiting for a second player...", name=room["name"])
                         if len(room.get("members") or []) < 2 else
                         t("In the room “{name}”. The match starts when you are both ready.", name=room["name"]))
@@ -1495,7 +1502,11 @@ class OnlineView:
             row=0, column=0, columnspan=2, sticky="w", pady=(0, px(8)))
         if inv.get("from"):
             self._opponent_row(left, inv["from"], 1)
-        if inv.get("kind") == "room":
+        if inv.get("kind") == "room" and (inv.get("room") or {}).get("private"):
+            # (the invite is the key: no password is asked -- docs/ONLINE.md "Rooms")
+            text = t("invites you to the private room “{room}”. Accept to join it without its password.",
+                     room=(inv.get("room") or {}).get("name") or "?")
+        elif inv.get("kind") == "room":
             text = t("invites you to the room “{room}”. Accept to join it; the match starts at once.",
                      room=(inv.get("room") or {}).get("name") or "?")
         else:

@@ -558,7 +558,7 @@ class UnitTest(unittest.TestCase):
             self.assertEqual(rooms_mod.normalize_code(code), code.replace("-", ""))
             seen.add(code)
         self.assertEqual(len(seen), 200)
-        self.assertIsNone(rooms_mod.normalize_code("ABCD-EFGH-IJK0"))  # I and 0 are not in the alphabet
+        self.assertIsNone(rooms_mod.normalize_code("ABCD-EFGH-IJK0"))   # I and 0 are not in the alphabet
         self.assertIsNone(rooms_mod.normalize_code("short"))
         self.assertIsNone(rooms_mod.normalize_code(None))
 

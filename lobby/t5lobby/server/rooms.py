@@ -55,12 +55,11 @@ import hashlib
 import hmac
 import logging
 import os
-import secrets
 import time
-import unicodedata
 
 from .. import proto
-from ..proto import LobbyError
+from ..proto import (CODE_ALPHABET, CODE_LEN, LobbyError, clean_room_password,  # noqa: F401 -- (tests use them here)
+                     new_room_code as new_code, normalize_room_code as normalize_code)
 from .ratelimit import KeyedBuckets
 from .store import COUNTED, check_password, hash_password
 
@@ -68,39 +67,11 @@ log = logging.getLogger("t5lobby")
 
 ROTATIONS = ("winner", "queue")
 LOCKS = ("password", "code")
-CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"     # no 0/O, 1/I/L: read off a screen, typed back (~59 bits)
-CODE_LEN = 12
-PW_MIN, PW_MAX, PW_MAX_BYTES = 4, 64, 256
 SOON = 1.0                     # seconds before a room's first match once two are in its line
 
 
 def _rid():
     return os.urandom(6).hex()
-
-
-def clean_room_password(pw):
-    """The password as it is hashed (Unicode NFC), or None when it cannot be one (never says what it was)."""
-    if not isinstance(pw, str) or len(pw) > PW_MAX * 4:
-        return None
-    pw = unicodedata.normalize("NFC", pw)
-    if not PW_MIN <= len(pw) <= PW_MAX or len(pw.encode("utf-8", "replace")) > PW_MAX_BYTES:
-        return None
-    if pw != pw.strip() or not all(ch.isprintable() for ch in pw):
-        return None
-    return pw
-
-
-def normalize_code(code):
-    """'k7qf-m2px 9tzr' -> 'K7QFM2PX9TZR'; None when it cannot be a code."""
-    if not isinstance(code, str) or len(code) > 64:
-        return None
-    s = "".join(ch for ch in code.upper() if ch.isalnum())
-    return s if len(s) == CODE_LEN and all(ch in CODE_ALPHABET for ch in s) else None
-
-
-def new_code():
-    raw = "".join(secrets.choice(CODE_ALPHABET) for _ in range(CODE_LEN))
-    return "-".join(raw[i:i + 4] for i in range(0, CODE_LEN, 4))
 
 
 class Room:

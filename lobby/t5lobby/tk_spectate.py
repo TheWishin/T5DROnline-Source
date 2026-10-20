@@ -166,17 +166,25 @@ class Spectating:
         if rb is not None:
             r = self._selected_room() if ok else None
             me = (tab.client.me or {}).get("id") if tab.client else None
-            on = r is not None and r.get("watch") and me not in (r.get("members") or ())
+            if r is not None and r is getattr(tab.client, "my_room", None):
+                on = bool(r.get("watch"))                # this player's own room: the server says (members only)
+            else:
+                on = r is not None and r.get("watch") and me not in (r.get("members") or ())
             try:
                 rb.configure(state="normal" if on else "disabled")
             except tk.TclError:
                 pass
 
     def _selected_room(self):
+        """The room selected in the list -- or, with none selected, this player's own room (a hidden one is in no
+        list; its members watch its match from there: docs/ONLINE.md "Rooms")."""
         tv = getattr(self.tab, "tv_rooms", None)
         sel = tv.selection() if tv is not None else ()
-        if not sel:
-            return None
+        mine = getattr(self.tab.client, "my_room", None)
+        if mine is not None and (self.tab.client.me or {}).get("status") not in ("room", "match", "playing"):
+            mine = None
+        if not sel or (mine is not None and sel[0] == mine.get("id")):
+            return mine
         for r in getattr(self.tab.client, "rooms", None) or ():
             if r.get("id") == sel[0]:
                 return r

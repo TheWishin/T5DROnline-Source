@@ -67,7 +67,7 @@ from .client import LobbyClient
 from .i18n import N_, stamp, t, translate_message
 from .match_driver import MatchDriver, fps_from_logs, game_supports_pick
 from .proto import DEFAULT_PORT, LobbyError
-from . import theme, tk_spectate, tk_tour, tk_views, winfront
+from . import theme, tk_rooms, tk_spectate, tk_tour, tk_views, winfront
 from .ranks import record_label as _record
 
 AVAILABLE = True
@@ -234,6 +234,7 @@ class OnlineTab:
         self._pad_gen = -1
         self._pad_until = 0.0            # no controller action before this (pad clock)
         self.spec = tk_spectate.Spectating(self)   # watching live matches (docs/SPECTATE.md)
+        self.rooms_ui = tk_rooms.RoomsUI(self)     # private and community rooms (docs/ONLINE.md "Rooms")
         self._bar_t = -1e9               # when the question bar's buttons last changed (pad clock): BAR_ARM_S
         self.tours = tk_tour.TourController(self)    # tournaments: the page, the calls (docs/TOURNAMENTS.md)
         self.fw_check = fwcheck.check    # the read-only firewall check (tests replace it)
@@ -347,6 +348,7 @@ class OnlineTab:
             "leave": me and st == "room" and not busy,
             "challenge": me and st in ("idle", "queue") and not busy,
         }
+        on.update(self.rooms_ui.set_actions(me, st, busy))
         for k, b in self.actions.items():
             b.configure(state="normal" if on.get(k) else "disabled")
         self.spec.set_actions(busy)
@@ -510,6 +512,7 @@ class OnlineTab:
         self._show_notice()
         self._pad_tick()
         self.spec.poll()
+        self.rooms_ui.tick()
         self.view.tick()
         try:
             self._after = self.parent.after(100, self._poll)
@@ -844,6 +847,8 @@ class OnlineTab:
         self.match_var.set("")
         self.tv_players.delete(*self.tv_players.get_children())
         self.tv_rooms.delete(*self.tv_rooms.get_children())
+        self.rooms_ui.close_window()
+        self.rooms_ui.refresh()
 
     def do_passwd(self):
         title = t("Change password")
@@ -946,11 +951,7 @@ class OnlineTab:
         return t("Searching for an opponent (ranked: similar rank and a good connection)...")
 
     def do_join(self):
-        sel = self.tv_rooms.selection()
-        if not sel:
-            self.status(t("Select a room first."))
-            return
-        self.call(self.client.join_room, sel[0])
+        self.rooms_ui.join_selected()         # (a locked room asks for its password or code: tk_rooms.py)
 
     def do_challenge(self):
         sel = self.tv_players.selection()
@@ -1230,7 +1231,10 @@ class OnlineTab:
         """A friend invites this player: the question in the bar, Accept (A) starts it with one click."""
         frm = ev.get("from") or {}
         self.invite = ev
-        if ev.get("kind") == "room":
+        if ev.get("kind") == "room" and (ev.get("room") or {}).get("private"):
+            text = t("{name} ({rank}) invites you to the private room “{room}”", name=frm.get("name"),
+                     rank=rank_text(frm), room=(ev.get("room") or {}).get("name") or "?")
+        elif ev.get("kind") == "room":
             text = t("{name} ({rank}) invites you to the room “{room}”", name=frm.get("name"), rank=rank_text(frm),
                      room=(ev.get("room") or {}).get("name") or "?")
         else:
@@ -1449,6 +1453,7 @@ class OnlineTab:
             self.tours.on_event(ev)                        # tournaments (tk_tour.py)
         if self.spec.on_event(ev):
             return
+        self.rooms_ui.on_event(ev)
         if kind == "lobby_state":
             self._fill_lists(ev)
             self._show_me()
@@ -1714,9 +1719,11 @@ class OnlineTab:
         keep = self.tv_rooms.selection()
         self.tv_rooms.delete(*self.tv_rooms.get_children())
         for r in ev.get("rooms", []):
-            state = (_word(ROOM_STATE_TEXT, r["status"]) + (" " + t("(other version)") if r["build"] != mine else "")
-                     + (" " + t("ranked") if r["ranked"] else ""))
-            closed = r["status"] != "open" or r["build"] != mine      # the lock: nobody can join it now
+            state = " ".join([_word(ROOM_STATE_TEXT, r["status"])] + self.rooms_ui.list_state(r)
+                             + ([t("(other version)")] if r["build"] != mine else [])
+                             + ([t("ranked")] if r["ranked"] else []))
+            # the lock: nobody can join it now -- or only with its password / invite code
+            closed = r["status"] != "open" or r["build"] != mine or bool(r.get("private"))
             ms = rtt_of.get(r["owner"].get("id"))
             self.tv_rooms.insert("", "end", iid=r["id"], values=(r["name"], r["owner"]["name"], state,
                                                                  "" if ms is None else f"~{ms:.0f} ms"),

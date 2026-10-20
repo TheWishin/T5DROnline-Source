@@ -27,6 +27,10 @@ import sys
 import threading
 import time
 
+# (A spectator's game opens no socket -- the playback is netplay's local mode -- but the test tools all keep
+# local games on 127.0.0.1: docs/NETPLAY.md "Bind address". An explicit T5_NET_BIND wins.)
+os.environ.setdefault("T5_NET_BIND", "127.0.0.1")
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, os.path.join(ROOT, "launcher"))

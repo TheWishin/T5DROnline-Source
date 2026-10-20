@@ -156,6 +156,13 @@ class DialogKeysTest(tcu.DialogBase):
         self.assertEqual(self.values("3")[0], "Z")                  # classic: Z is 3
         self.assertEqual(str(d.stick_box.cget("state")), "disabled")
 
+    def test_a_keyboard_alone_has_player_1s_row(self):
+        d = self.open(self.keyboard())
+        rows = [d.tv_players.item(i, "values")[1:3] for i in d.tv_players.get_children()]
+        self.assertEqual(rows[0], ("Player 1", "Keyboard  ([keys1])"))
+        self.assertEqual(sum(1 for r in rows if "Keyboard" in r[1]), 1)
+        self.assertEqual(d.chosen, KEYS1)                           # nothing else to choose
+
     def test_l2_r2_and_a_combo_by_key_with_the_conflicts_said(self):
         kb = self.keyboard()
         d = self.open(tcu.FakePad(), kb)

@@ -650,6 +650,10 @@ class ControlsDialog:
             p = self.portmap.port.get(d.key, -1)
             if p >= 0 and d.kind not in KEYS:
                 by_port.setdefault(p, d)
+        for d in devices:                       # a keyboard player alone on its port: that port's row
+            p = self.portmap.port.get(d.key, -1)
+            if p >= 0 and d.kind in KEYS and p not in by_port:
+                by_port[p] = d
         nports = max(2, (max(by_port) + 1) if by_port else 0)
         for p in range(nports):
             d = by_port.get(p)
@@ -657,9 +661,10 @@ class ControlsDialog:
             self._rows[iid] = d.key if d else None
             tv.insert("", "end", iid=iid, values=("", t("Player {n}", n=p + 1), self._device_text(d) if d else
                                                   t("no controller"), ""), tags=() if d else ("none",))
-        for d in devices:                       # the keyboard players: with the pad of their port
+        placed = {d.key for d in by_port.values()}
+        for d in devices:                       # the keyboard players beside the pad of their port
             p = self.portmap.port.get(d.key, -1)
-            if d.kind in KEYS and p >= 0:
+            if d.kind in KEYS and p >= 0 and d.key not in placed:
                 iid = "k:" + d.key
                 self._rows[iid] = d.key
                 tv.insert("", "end", iid=iid, values=("", t("Player {n}", n=p + 1), self._device_text(d), ""))

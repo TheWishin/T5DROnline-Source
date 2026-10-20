@@ -636,7 +636,7 @@ class Player:
     settings and output folder, and the games it started."""
 
     def __init__(self, ctx, name, kind="real", password=None, char=None, input_delay="auto", env=None,
-                 mash_gap=20, game_mode=None, user_dir=None, tag="", sets=None, bot=False, lobby=None):
+                 mash_gap=20, game_mode=None, user_dir=None, tag="", sets=None, bot=False, lobby=None, start_every=0):
         """bot=True: no scripted presses; the player attacks live (T5_NET_PADFILE) only while ctx.plan says
         this player wins the game being fought, else stands still -- planned results (ranked sets 2-0, 2-1).
         sets=False: online.json "sets": false (the old protocol: every ranked game rated, rematch votes)."""
@@ -654,6 +654,7 @@ class Player:
         self.matches = {}         # match id -> what this player saw of it
         self.app = E2EApp(self)
         self.mash_gap = mash_gap
+        self.start_every = start_every     # mash scripts with START about every n-th input (no pause online, 1.1.2)
         self.extra_env = dict(env or {})
         st = self.app.settings
         st["out"] = self.out
@@ -789,8 +790,9 @@ class Player:
                     # file every time would play the same match over and over)
                     import fight_flow_test
                     seed = (1000 + sum(map(ord, me.name)) + me.ctx.run.seed) * 7919 + sum(map(ord, ev.get("match", "")))
+                    kw = {"start_every": me.start_every} if me.start_every else {}
                     env["T5_NET_SCRIPT"] = fight_flow_test.mash_script(
-                        os.path.join(me.dir, f"mash-{ev.get('match')}.txt"), seed, gap=me.mash_gap)
+                        os.path.join(me.dir, f"mash-{ev.get('match')}.txt"), seed, gap=me.mash_gap, **kw)
                 return me.ctx.shaper.rewrite(me, env)
             d.match_env = match_env
         tab._make_driver = make_driver

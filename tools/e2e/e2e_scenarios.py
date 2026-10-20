@@ -2891,3 +2891,26 @@ def old_stages_match(ctx):
             ctx.force_stage = None
             break
     ctx.note(f"stages the lobby drew: {drawn}")
+
+
+@scenario("net_start_mash", "12 1.1.2", game=True, suites=("game", "net"),
+          desc="both players mash START during the fights (about every 4th input, also with an attack): online START "
+               "never pauses -- taken out of both inputs on both PCs alike -- so a match and two rematches finish "
+               "in sync")
+def net_start_mash(ctx):
+    import inspect
+    import fight_flow_test
+    if "start_every" not in inspect.signature(fight_flow_test.mash_script).parameters:
+        raise Skip("no START mashing in this tree's mash scripts (online-no-pause, 1.1.2)")
+    game_server(ctx)
+    a = ctx.player("E2E Pause1", start_every=4, mash_gap=8)
+    b = ctx.player("E2E Pause2", start_every=4, mash_gap=8)
+    login(ctx, a)
+    login(ctx, b)
+    rows = _two_matches(ctx, a, b, "START mashed online", rematches=2)
+    rx = re.compile(r"no pause online, the match: START taken out on (\d+) frame\(s\) of P1's input and (\d+) of P2's")
+    for p in (a, b):
+        cut = [tuple(int(x) for x in m.groups()) for ln in log_lines(p) for m in [rx.search(ln)] if m]
+        ctx.check(f"{p.name}'s game took START out of both players' inputs in every match (no pause)",
+                  len(cut) >= len(rows) and all(x > 0 and y > 0 for x, y in cut[:len(rows)]), cut)
+    ctx.note(f"fight frames per match: {[(r[a.name]['result_file'] or {}).get('frames') for r in rows]}")

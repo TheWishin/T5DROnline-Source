@@ -749,6 +749,9 @@ class TourManager:
         # override / reset: undo what the bracket did with this set (and the walkovers decided from it)
         if op == "override" and (s.state != "done" or s.reason in NOT_PLAYED):
             raise LobbyError(proto.E_STATE, "only a played set can be overridden")
+        if op == "override" and any(e is not EMPTY and e in t.bracket.dq for e in s.p):
+            # (review-113) put back, the set is the other player's walkover (bracket.resolve): no winner to choose
+            raise LobbyError(proto.E_STATE, "a player of that set is disqualified: reset it instead")
         if op == "reset" and s.state == "pending":
             raise LobbyError(proto.E_STATE, "that set has not been played")
         if s.state == "done" and s.reason in NOT_PLAYED:

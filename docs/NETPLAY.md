@@ -147,6 +147,35 @@ one process, `summary.txt` per run; `--mode2 off` is the lockstep fallback).
 `T5_NET_SCRIPT_FIGHT=1` (set by that tool) applies the scripted presses only
 while direct fight is in a fight, so they never touch the menus it drives.
 
+### Bind address
+
+Windows Firewall asks "allow public and private networks to access this app?"
+once per exe path when a program binds a non-loopback address; loopback is
+never filtered. Test runs start `t5dr.exe` from many build folders with both
+games on 127.0.0.1, so they bind 127.0.0.1 (`src/netplay/net_bind.h`):
+
+- `T5_NET_BIND=<IPv4>` binds exactly that address (`0.0.0.0` = every
+  interface). Anything else is noted in the log and every interface is used.
+- Unset: 127.0.0.1 when `T5_NET_PEER` is a loopback address (127.x.x.x or
+  `localhost`) outside a lobby match (`T5_NET_MATCH` unset); otherwise every
+  interface, as before. A lobby match keeps every interface even with a
+  loopback peer: the launcher's relay bridge hands players
+  `T5_NET_PEER=127.0.0.1:<port>`, and a player's game does not change.
+- The log says what was bound and why: `hosting on UDP 127.0.0.1:7461 (bind:
+  T5_NET_BIND)`, `joining 127.0.0.1:7462 from UDP 127.0.0.1:63463 (bind:
+  T5_NET_BIND)`; a player's game says `0.0.0.0 ... (bind: default)`.
+
+The launcher never sets it. Every tool that starts games for a pair on this PC
+sets `T5_NET_BIND=127.0.0.1` with `setdefault` (an explicit value wins); with a
+lobby on this PC (e2e, `lobby/tools/*`, `dryrun_online.py --server
+127.0.0.1:PORT`) the lobby client's game socket follows it too
+(`t5lobby/nat.py bind_ip`), so the punch only finds 127.0.0.1 and the game is
+reachable there. Stub games bind 127.0.0.1; lobby tests set it in
+`lobby/tests/util.py`. The runtime's own sockets: `sys_net` P2P sockets already
+bind `PS3_NET_BIND` (default 127.0.0.1, patch 0011); other `sys_net` sockets
+exist only in the game's dead PSN online mode; `cellHttp`/psnr only connect out.
+Tests: `tests/test_net_bind.py`.
+
 ## Input delay
 
 Like Tekken 6 Native Online, the rollback input delay follows the ping

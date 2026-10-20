@@ -56,6 +56,13 @@ lobby features need the lobby server updated; older launchers keep working with 
   unlocks always count as on a fresh save online. Your own save is never touched by online play;
   the game's own OPTIONS (button layout, round time, volumes) apply offline only -- set the
   buttons in the launcher, they work online as before.
+- **No more voided matches at the start of a fight on stage 27** (the stage with the crowd of
+  fighters behind the ring). The desync check also compared a value that belongs to the picture,
+  not the fight: the size of the box the fighters' shadow is drawn in. In about one match in 30
+  it came out a hair different on the two PCs for the first few frames of the fight, and the
+  lobby voided the match although the fight itself was the same on both. That value is no
+  longer compared; everything the fight depends on still is (docs/NETPLAY.md "Stage 27: the
+  shadow box at the fight's start").
 - **The Tekken 5 stages online** (server setting `T5L_OLD_STAGES`, off by default): when a lobby
   turns it on, matches between two 1.1.2 launchers may also be fought on the 15 Tekken 5 stages;
   each was played in sync in both netcode modes.

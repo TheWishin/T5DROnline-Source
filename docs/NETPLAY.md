@@ -1081,6 +1081,92 @@ Also run on main 2c7ed8a: tests/ (473, OK), the lobby's suite (15 modules, 455
 tests, OK), smoke quick (5/5 PASS), the game-data guard (`--keys` and
 `--history HEAD`: exit 0).
 
+## Stage 27: the shadow box at the fight's start (branch s27-start-desync, 1.1.2)
+
+The 1.1.2 e2e pre-gate (main 7486b0c, every real match forced onto stage 27)
+voided one rollback match in about 30: Roger Jr. vs Armor King, RTT 80 ms, 2 %
+loss, the eighth session of two persistent games. The two games disagreed for
+10 frames at the very start of the fight (session frames 226-235, about 3.8 s
+after FIGHT START), then agreed again; same final state, same winner. Only
+four words differed, as +- pairs: 0x100996C8/CC (+-561..644) and
+0x100996D0/D4 (+-990..1050), apart by 0.004-0.05 and less from frame to frame.
+
+**What the words are.** 0x100996B4 is the renderer's current projection
+(0x24 bytes): +0x0 its type, +0x4/+0x8 near and far, +0x10 the aspect, and
+for an off-centre projection (type 3) left/right/top/bottom at
++0x14..+0x20 -- the four words. Two setters write it: 0x80A94 (perspective)
+and 0x80C94 (off-centre, `-l, l, -t, t, near, far` in f1..f6, also handed to
+the NU renderer by 0x35D27C). On stage 27, during the fight, the last
+projection set before each frame boundary is the shadow pass's
+(write-fault and access traces: render pass 0x268418 -> 0x15A974 ->
+0x80C94, main thread, once per frame): 0x15A974 fits an orthographic box
+around both fighters for the shadow map (0x15A3A0, the shadow projector
+object 0x10627500) from six bone positions of each fighter's skeleton
+(`[[fighter + 0x8A4] + 0x10]`, 0x159310 -> 0x158B3C), and the half-widths of
+that box are the four words.
+
+**Not rollback-made.** The first differing hash is frame 226, the state
+after frame 225. Every input up to frame 225 was neutral on both PCs (the
+intro rule: phase 12 until boundary 223, input delay 2; the first scripted
+press took effect in frame 226), so no misprediction and no rollback can reach
+frame 225, and a rollback never recomputes the hash of the boundary it
+restores to. The box was computed differently on the two PCs from game state
+that hashed the same -- the fighters' bones are not in the hashed areas (the
+heap) -- and the difference faded within 10 frames as the fighters moved.
+The record follows the render passes, not the fight, in other ways too: in a
+traced pair it switched to the result screen's 2D projection (0, 1920, 0,
+1080) one and two frames apart on the two PCs after a match's deciding KO
+(frames no longer compared there).
+
+**Never read by the game.** `T5_RB_RFT=100996B4:24 T5_RB_RFT_NET=300:40`
+(rb_rft.cpp, below) watched every access to the record for 40 fight frames:
+writes only by the two setters from render passes, reads of +0x0..+0x10 only
+by the setters themselves, and of the four frustum words none by any game
+code (only our own hash and snapshot copies). The rest of the fight -- the
+camera matrix 0x100996E0 and its copies, the side flags, positions, health,
+timer -- matched on every frame of that match. So the record is render state,
+not match state: it is now left out of both state hashes
+(`kDefaultHashSkip` in t5_hooks.cpp, `kGameSkip` in rb_state.cpp,
+`100996B4:24`). The fighters' bones stay where they were (in the rollback
+state, restored with the frame, not hashed); what they decide in the fight
+(the camera-projected screen x and from it the side flags, hits) is hashed and
+would still report a real desync. tests/test_hash_skip_sync.py checks that the
+two skip lists are the same.
+
+**Not reproduced on demand.** With the fighters' bones, the projector and the
+skipped words traced on both PCs (`T5_RB_SHADOW_TRACE`, below) the box and its
+inputs were identical on every frame in: 25 e2e net_rollback sessions on
+stage 27 (the gate's flow: persistent games, in-game select, RTT 20-250, loss,
+jitter, relay; old build), 3 + 7 pair matches Roger Jr. vs Armor King at RTT 80 /
+2 % loss, a persistent pair with a slow disk on the joiner
+(`PS3_TEST_FS_DELAY`), and one-process runs (`rb_equiv_test.py`, Roger Jr. vs
+Armor King, stage 27) with forced rollbacks (`--force 5:3`, 255 rollbacks),
+real mispredictions (`--lag 3`, 307), main-thread hitches and the SPURS job
+pages kept in the state: equal on every frame, the record too. Where the
+gate's bones came from is therefore not known; the words that showed it are
+not game state.
+
+**Diagnostics added** (off unless set):
+
+- `T5_RB_SHADOW_TRACE=1` (`rb_shadowtrace.cpp`): `rb_shadow.log` in the game's
+  folder. `S` lines, one per run of the shadow fit (0x15A3A0): frame,
+  re-simulated or not, phase, the box, eye, target, light direction, per
+  fighter the skeleton and bone block pointers, a hash of the bone block and
+  the six bone positions the fit reads, the record. `B` lines, one per frame
+  boundary up to `T5_RB_SHADOW_TRACE_TO` (default 400): hashes of the hashed
+  areas taken whole (no skip list), of each fighter block and bone block, the
+  skipped words that the moves use (0x1008F0D0, 0x1008F0C4, +0x174 of each
+  fighter, the secondary-motion points) and the projector's words. The last
+  line for a frame is its final state. Two PCs' logs diff per frame.
+- `T5_RB_RFT=addr:len` + `T5_RB_RFT_NET=from:frames` (`rb_rft.cpp`): every read
+  and write of those bytes over those live frames, with the accessing guest
+  function and its callers (game log and rb_frames.log `R` lines). The page
+  is made inaccessible and each access single-stepped: slow, tests only.
+
+**What was tested** (this PC, other agents' games running; stage 27):
+
+PROOF_TABLE
+
 ## Limits and next steps
 
 - **Menu transitions are not fully deterministic.** Picking a mode or skipping

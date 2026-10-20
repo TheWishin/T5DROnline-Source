@@ -154,6 +154,8 @@ def main():
                 cmd += ["/DSPU_FAST_FLOAT"]     # render-only skinning jobs: IEEE float ops (CMakeLists.txt)
             elif os.path.basename(os.path.dirname(src)) == "bnuscore":
                 cmd += ["/DSPU_NEAR_FLOAT"]     # the sound core: near-exact IEEE float ops (CMakeLists.txt)
+            if "lifted" in src:
+                cmd += ["/DSPU_LS_NO_HOOKS"]    # no local-store debug hooks in lifted images (CMakeLists.txt)
         else:
             cmd += ["-std:c++20", "-TP", "/EHs-c-", "/Zc:tlsGuards-"] + ppu_opts
         if os.path.basename(src) == "t5dr_game_dll.c":

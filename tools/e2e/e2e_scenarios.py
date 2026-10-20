@@ -2497,3 +2497,150 @@ def bo3_pair_cap(ctx):
               _set_of(a, mid2))
     ctx.check("both were told why", any(ev.get("code") == "pair_cap" for ev in a.events_of("notice", t)) and
               any(ev.get("code") == "pair_cap" for ev in b.events_of("notice", t)))
+
+
+# ============================================================================== 12. spectating (docs/SPECTATE.md)
+def _frame_times(p):
+    """The last whole-run frame-time line of p's games (rb_net.cpp report), its recording cost lines and its live
+    stream's end line."""
+    from e2e_flows import _whole
+    ft, cost, live = None, [], []
+    rx = re.compile(r"frame times, whole run p50 ([\d.]+) p95 ([\d.]+) p99 ([\d.]+) ms; while fighting \((\d+) frames\) "
+                    r"p50 ([\d.]+) p95 ([\d.]+) p99 ([\d.]+) ms")
+    for ln in _whole(p):
+        m = rx.search(ln)
+        if m:
+            ft = {"p50": float(m.group(1)), "p95": float(m.group(2)), "p99": float(m.group(3)),
+                  "fight_frames": int(m.group(4)), "fight_p50": float(m.group(5)), "fight_p95": float(m.group(6)),
+                  "fight_p99": float(m.group(7))}
+        m = re.search(r"recording cost the frame ([\d.]+) us on average, ([\d.]+) us at most", ln)
+        if m:
+            cost.append((float(m.group(1)), float(m.group(2))))
+        if "live stream" in ln and "ended" in ln:
+            live.append(ln.split("] ", 1)[-1].strip())
+    return ft, cost, live
+
+
+def _verdict(p):
+    from e2e_harness import read_json
+    return read_json(os.path.join(p.out, "logs", "online", "watch-verdict.json"))
+
+
+def _friend_watch(p, name):
+    return any(f["name"] == name and f.get("watch") for f in (p.client.friend_list or {}).get("friends") or ())
+
+
+@scenario("spectate_live", "12 spectating", game=True, suites=("game",),
+          desc="a room match and a rematch in the running games (rollback); a friend watches from the start "
+               "(Friends: Watch), a guest joins 60 s late (Rooms: Watch); both spectators' games play the "
+               "session with every recorded hash and result the same, a few seconds behind; a second pair plays "
+               "at the same time without spectators or live stream: the frame times side by side")
+def spectate_live(ctx):
+    if "spectate" not in features():
+        raise Skip("this tree has no spectating")
+    game_server(ctx)
+    a = ctx.player("E2E Ava", char="steve", password="ava-pw-1")
+    b = ctx.player("E2E Bo", char="hwoarang")
+    v = ctx.player("E2E Vi", password="vi-pw-1")
+    w = ctx.player("E2E Wu")
+    c = ctx.player("E2E Cy", char="steve")
+    d = ctx.player("E2E Di", char="hwoarang")
+    for p in (c, d):
+        p.tab.spec.client_kw = lambda: {"spectate": False}      # like an older launcher: no live stream at all
+    login(ctx, a, "register")
+    login(ctx, v, "register")
+    for p in (b, w, c, d):
+        login(ctx, p)
+    for p, ch in ((a, "steve"), (b, "hwoarang"), (c, "steve"), (d, "hwoarang")):
+        p.set_char(ch)
+    # Vi is Ava's friend
+    a.call(a.client.add_friend, "E2E Vi")
+    ctx.wait(lambda: any(r["name"] == "E2E Ava" for r in (v.client.friend_list or {}).get("incoming") or ()), 15,
+             "Vi gets Ava's friend request")
+    v.call(v.client.answer_friend, "E2E Ava", True)
+    ctx.wait(lambda: any(f["name"] == "E2E Ava" for f in (v.client.friend_list or {}).get("friends") or ()), 15,
+             "Vi and Ava are friends")
+    # the watched pair: Ava's room, Bo joins
+    a.press("room")
+    ctx.wait(lambda: (a.me or {}).get("status") == "room", 10, "Ava creates a room")
+    ctx.wait(lambda: len(b.tab.tv_rooms.get_children()) == 1, 10, "the room is listed")
+    rid = b.tab.tv_rooms.get_children()[0]
+    t = time.time()
+    b.tab.tv_rooms.selection_set(rid)
+    b.press("join")
+    mid = found_both(ctx, a, b, t)
+    accept(ctx, a, mid)
+    accept(ctx, b, mid)
+    started_both(ctx, a, b, mid)
+    sa = latest(a, "match_start", t) or {}
+    ctx.check("the watched pair's match has a stream id", sa.get("stream") == mid, sa.get("stream"))
+    # the baseline pair, at the same time
+    t = time.time()
+    mid_c = queue_match(ctx, c, d, "quick")
+    sc = latest(c, "match_start", t) or {}
+    ctx.check("the baseline pair gets no stream id (no live stream)", "stream" not in sc, sc.get("stream"))
+    # Vi watches from the start: Friends -> Ava -> Watch
+    ctx.wait(lambda: _friend_watch(v, "E2E Ava"), 30, "Vi's friends list: Ava can be watched")
+    v.tab._fill_friends()
+    v.tab.tv_friends.selection_set("f:E2E Ava")
+    v.tab._set_friend_actions()
+    ctx.require("Vi's Watch button is on", str(v.tab.friend_actions["watch"].cget("state")) == "normal")
+    v.tab.friend_actions["watch"].invoke()
+    t_v = time.time()
+    ctx.wait(lambda: v.tab.spec.w is not None, 15, "Vi watches (the Spectating card)")
+    ctx.wait(lambda: (v.tab.spec.w or {}).get("game") is not None, 90, "Vi's game starts on the stream")
+    ctx.wait(lambda: a.events_of("spectators", t_v), 15, "Ava is told somebody watches")
+    wait_fight(ctx, mid, (a, b), timeout=180)
+    # Wu joins late: Rooms -> Ava's room -> Watch
+    ctx.sleep(max(0.0, 60.0 - (time.time() - t_v)))
+    ctx.wait(lambda: any(r.get("watch") for r in w.client.rooms), 10, "the room's match can be watched")
+    w.tab.tv_rooms.selection_set(rid)
+    w.tab.spec.set_actions()
+    ctx.require("Wu's Watch button is on", str(w.tab.actions["watch_room"].cget("state")) == "normal")
+    w.tab.actions["watch_room"].invoke()
+    t_w = time.time()
+    ctx.note(f"Wu joins {t_w - t_v:.0f} s after Vi")
+    ctx.wait(lambda: (w.tab.spec.w or {}).get("game") is not None, 90, "Wu's game starts on the stream (from its start)")
+    # the session: the match and a rematch in the running games, then Ava leaves (the session ends)
+    wait_results(ctx, mid, (a, b))
+    row = match_row(ctx, mid, (a, b), "confirmed", "watched match 1")
+    wait_fight(ctx, mid_c, (c, d), timeout=180)
+    wait_results(ctx, mid_c, (c, d))
+    row_c = match_row(ctx, mid_c, (c, d), "confirmed", "baseline match 1")
+    mid2 = rematch(ctx, a, b)
+    ctx.check("the rematch continues the session (and its stream)", a.matches[mid2].get("cont"))
+    mid_c2 = rematch(ctx, c, d)
+    wait_fight(ctx, mid2, (a, b), timeout=120)
+    wait_results(ctx, mid2, (a, b))
+    row2 = match_row(ctx, mid2, (a, b), "confirmed", "watched rematch")
+    wait_fight(ctx, mid_c2, (c, d), timeout=120)
+    wait_results(ctx, mid_c2, (c, d))
+    row_c2 = match_row(ctx, mid_c2, (c, d), "confirmed", "baseline rematch")
+    for p in (a, c):
+        leave(ctx, p)
+    ctx.wait(lambda: all((p.tab.spec.w or {}).get("state") == "over" for p in (v, w)), 600,
+             "both spectators' games end at the end of the stream")
+    for p, label in ((v, "Vi (from the start)"), (w, "Wu (60 s late)")):
+        vd = _verdict(p) or {}
+        ms = vd.get("matches") or []
+        ctx.check(f"{label}: identical to the live game", vd.get("identical") is True,
+                  f"{vd.get('hashes_compared')} hashes compared, {vd.get('hash_mismatches')} different, "
+                  f"{vd.get('uncompared')} uncompared, sync points {vd.get('sync_points')}/{vd.get('sync_points_recorded')}")
+        ctx.check(f"{label}: both matches played, the same results", len(ms) == 2 and all(m.get("same") for m in ms),
+                  [(m.get("winner"), m.get("hash"), m.get("same")) for m in ms])
+        ctx.note(f"{label}: delay avg {vd.get('delay_avg')} s, max {vd.get('delay_max')} s; {vd.get('stalls')} waits "
+                 f"({vd.get('stall_seconds')} s); {vd.get('received_bytes')} bytes for {vd.get('received_frames')} "
+                 f"frames; end {vd.get('end')!r} / {vd.get('stream_end')!r}")
+    fv, fw = _verdict(v) or {}, _verdict(w) or {}
+    ctx.check("both spectators saw the same final hashes", bool(fv.get("matches")) and
+              [m.get("hash") for m in fv.get("matches") or []] == [m.get("hash") for m in fw.get("matches") or []])
+    ctx.check("Vi watched a few seconds behind", isinstance(fv.get("delay_avg"), (int, float)) and 0 < fv["delay_avg"] < 10,
+              fv.get("delay_avg"))
+    # the players: frame times with and without spectators (the same PC, the same time)
+    for p in (a, b, c, d):
+        ft, cost, live = _frame_times(p)
+        ctx.note(f"{p.name}: frame times {ft}; recording cost (avg us, max us) {cost[-3:]}; live {live[-1:]}")
+    for r in (row, row2, row_c, row_c2):
+        ctx.note(f"{r['label']}: " + ", ".join(f"{n}: fps {r[n]['result_file'].get('fps')}, desync "
+                                                f"{r[n]['result_file'].get('desync')}" for n in r
+                                                if isinstance(r[n], dict) and "result_file" in r[n]))

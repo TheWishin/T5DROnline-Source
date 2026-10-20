@@ -13,6 +13,11 @@ sys.path.insert(0, os.path.dirname(HERE))
 os.environ.setdefault("T5_PAD_NAV", "0")
 # Never ask the router of the PC that runs the tests for a port forward (port mapping tests use fakes).
 os.environ["T5_PORTMAP"] = "0"
+# Every test player is on this PC: game sockets (the lobby client's, t5lobby/nat.py bind_ip, and the tests'
+# stand-ins for the game) bind 127.0.0.1, not every interface -- no Windows Firewall prompt
+# (docs/NETPLAY.md "Bind address"). An explicit T5_NET_BIND wins.
+os.environ.setdefault("T5_NET_BIND", "127.0.0.1")
+GAME_IP = os.environ["T5_NET_BIND"]
 
 from t5lobby import proto  # noqa: E402
 from t5lobby.buildid import BuildInfo  # noqa: E402

@@ -61,6 +61,15 @@ lobby features need the lobby server updated; older launchers keep working with 
 - **The Tekken 5 stages online** (server setting `T5L_OLD_STAGES`, off by default): when a lobby
   turns it on, matches between two 1.1.2 launchers may also be fought on the 15 Tekken 5 stages;
   each was played in sync in both netcode modes.
+- **No more frozen character select before the next match.** On a busy PC the select screen
+  for a new opponent or a character change could stay frozen while loading, for good, until the
+  game was closed ("Rematch / character select hangs"). When the game started, it noted its
+  state at the title screen while the title was still reading a file, and after a fight it put
+  that note back, so the game's file reader waited for a read that never came. The note now
+  leaves the file reader out and is taken only once the title has finished loading. If a select
+  screen ever stops loading anyway, the game closes itself after 10 seconds and the launcher
+  starts a fresh one for the match, instead of a frozen screen (docs/DIRECTFIGHT.md "Select
+  stall after a fight").
 
 ### Training
 - **Training overlay**: your inputs with how long each was held, in Tekken notation, and the frame data of the

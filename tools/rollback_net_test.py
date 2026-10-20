@@ -43,6 +43,10 @@ import sys
 import threading
 import time
 
+# Both games of a local pair talk over 127.0.0.1: bind there, not on every interface (no Windows Firewall
+# prompt for each build folder's t5dr.exe; docs/NETPLAY.md "Bind address"). An explicit T5_NET_BIND wins.
+os.environ.setdefault("T5_NET_BIND", "127.0.0.1")
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__))).replace("\\", "/")
 EXE = ROOT + "/build/cmake/t5dr.exe"
 VFS = os.environ.get("PS3_VFS_ROOT", ROOT + "/game/vfs")
@@ -125,6 +129,10 @@ class Proxy(threading.Thread):
             try:
                 data, addr = sock.recvfrom(4096)
             except socket.timeout:
+                continue
+            except ConnectionResetError:
+                # Windows: an ICMP port-unreachable for an earlier send (the joiner's first hellos reached the
+                # host's port before the host had bound it) -- not the end of this socket.
                 continue
             except OSError:
                 break

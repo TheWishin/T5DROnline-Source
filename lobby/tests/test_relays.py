@@ -400,7 +400,7 @@ def game_link(t_host, t_join, timeout=5.0):
     try:
         for t in (t_host, t_join):
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.bind(("0.0.0.0", t.local_port))
+            s.bind((util.GAME_IP, t.local_port))
             proto.disable_udp_connreset(s)
             s.settimeout(0.1)
             socks.append(s)
@@ -854,7 +854,7 @@ class UpgradeFromRegionalTest(Regional):
             socks = []
             for t_ in (host, join):
                 k = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                k.bind(("0.0.0.0", t_.local_port))
+                k.bind((util.GAME_IP, t_.local_port))
                 k.settimeout(0.05)
                 socks.append(k)
             relayed_before = None

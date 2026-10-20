@@ -4081,3 +4081,21 @@ def private_room_turns(ctx):
         ctx.note(f"match {k + 1}: {p1} vs {p2}, winner {winner}; line now {line}")
     for p in (a, b, c):
         p.press("leave") if p.action_on("leave") else None
+
+
+@scenario("cross_build_pair", "13 1.1.3 integration", game=True, suites=("game", "net"),
+          desc="one player on this run's build, the other on another build of the same game code (E2E_OTHER_EXE_DIR: "
+               "its t5dr.exe [+ t5dr_game.dll]); the same code id, so the lobby pairs them: a match and two "
+               "rematches must stay in sync with the same hashes -- the builds simulate the game alike")
+def cross_build_pair(ctx):
+    other = os.environ.get("E2E_OTHER_EXE_DIR")
+    if not other or not os.path.isfile(os.path.join(other, "t5dr.exe")):
+        raise Skip("no other build: E2E_OTHER_EXE_DIR names the folder of another t5dr.exe")
+    game_server(ctx)
+    a = ctx.player("E2E ThisBuild")
+    b = ctx.player("E2E OtherBuild", exe_dir=other)
+    ctx.note(f"{a.name}: {ctx.run.exe}; {b.name}: {other}")
+    login(ctx, a)
+    login(ctx, b)
+    rows = _two_matches(ctx, a, b, "cross-build pair", rematches=2)
+    ctx.note(f"final hashes: {[r[a.name]['result_file'].get('hash') for r in rows]}")

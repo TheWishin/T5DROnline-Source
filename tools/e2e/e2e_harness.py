@@ -645,7 +645,7 @@ class Player:
 
     def __init__(self, ctx, name, kind="real", password=None, char=None, input_delay="auto", env=None,
                  mash_gap=20, game_mode=None, user_dir=None, tag="", sets=None, bot=False, lobby=None, start_every=0,
-                 devices=False):
+                 devices=False, exe_dir=None):
         """bot=True: no scripted presses; the player attacks live (T5_NET_PADFILE) only while ctx.plan says
         this player wins the game being fought, else stands still -- planned results (ranked sets 2-0, 2-1).
         sets=False: online.json "sets": false (the old protocol: every ranked game rated, rematch votes).
@@ -659,6 +659,20 @@ class Player:
         self.out = os.path.join(self.dir, "native")
         os.makedirs(self.dir, exist_ok=True)
         ctx.run.prepare_out(self.out)
+        if exe_dir:
+            # a cross-build pair: this player's game is another build (its t5dr.exe, and t5dr_game.dll when that build
+            # has one); the code id stays the run's, so the lobby pairs the two -- any difference in the games
+            # themselves shows as a desync
+            cm = os.path.join(self.out, "build", "cmake")
+            for name in ("t5dr.exe", "t5dr_game.dll"):
+                dst = os.path.join(cm, name)
+                if os.path.exists(dst):
+                    os.remove(dst)
+                src = os.path.join(exe_dir, name)
+                if os.path.isfile(src):
+                    shutil.copyfile(src, dst)
+            log(f"{self.name}: game from {exe_dir} (cross-build pair)")
+        self.exe_dir = exe_dir
         self.games = []
         self.events = []          # (time, event)
         self.notes = []           # (time, driver note)

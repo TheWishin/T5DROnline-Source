@@ -905,8 +905,10 @@ this PC does not have (Intel hybrid) or has only in part (two CCDs, SMT).
 
 **Result:** on 4 processors slowed to a ~40 fps stand-in, fights run 8.6 %
 faster (39.6 -> 43.0 fps, faster in 8 of 8 paired rounds, p99 35.9 -> 34.0
-ms, a third fewer late audio blocks): one more skinning thread and the game's
-own threads one step above its helpers. Hybrid CPUs get the performance cores
+ms, a third fewer late audio blocks), on the pool stage (id 30, its crowd
+of party guests) 22 % faster (8 of 8): one more skinning thread and the
+game's own threads one step above its helpers. On all 32 processors of this
+busy PC the game held 59.95 fps where it had dropped to 42-54. Hybrid CPUs get the performance cores
 for the frame's threads, two-CCD Ryzens keep them on one CCD, the main thread
 and the translation never share a core; the log says all of it.
 
@@ -1050,7 +1052,7 @@ geometric mean over swapped rounds compares two configurations.
 
 ### Results
 
-4 cores / 4 threads, slow_core `--busy 40` (fights at 30-55 fps):
+4 cores / 4 threads, slow_core `--busy 40` (fights at 30-55 fps), Lili vs Asuka on stage 20 unless the row says otherwise:
 
 | B against A | masks | rounds | B faster in | fps B / A |
 |---|---|---|---|---|
@@ -1062,12 +1064,18 @@ geometric mean over swapped rounds compares two configurations.
 | 0065 draft without ideal processors | CCD0 | 6 | 3 | +0.4 % |
 | 0065 draft with the game's threads +2 | CCD0 | 6 | 3 | +3.5 %; late audio blocks 917 -> 102 |
 | **0065 against before** | CCD0 | 8 | **8** | **+8.6 %**: 39.6 -> 43.0 fps (mean), p99 35.9 -> 34.0 ms, 42.0 -> 40.7 ms CPU per frame, late audio blocks 324 -> 216 |
+| **0065 against before, the pool stage** (id 30: the crowd of party guests around the pool, the stage a 4c/4t player saw drop) | CCD0 | 8 | **8** | **+22.3 %**: 34.8 -> 41.0 fps (mean; the six rounds at 40-58 fps 41.9 -> 48.6), p99 36.4 -> 33.0 ms, 45.2 -> 41.4 ms CPU per frame |
+| the same without slow_core (the other agents' load only: 28 of 32 processors busy) | CCD0 | 6 | **6** | **+19.8 %**: 31.3 -> 36.8 fps (mean), p99 88 -> 54 ms, 51.3 -> 48.3 ms CPU per frame |
 
-Bigger CPUs, without slow_core, one game at a time, before and 0065
-alternating (both at 60 fps; CPU per frame, the walker's CPU per frame
-(`fifo_cpu_us`), mean of 4 runs each):
+Bigger CPUs, without slow_core (the CPU per frame of the whole game and of
+the walker, `fifo_cpu_us`, are means over the runs):
 
-RESULTS_BIG
+| CPU (affinity) | how | fps before -> 0065 | p99 ms | CPU ms per frame | walker ms | other programs (processors) |
+|---|---|---|---|---|---|---|
+| 8c/16t (0x0F0F0F0F / 0xF0F0F0F0: 4 cores of each CCD, so no cache group of 6) | paired, swapped, 5 rounds | 59.10 -> 59.89 (lowest 57.7 -> 59.7) | 24.0 -> 19.0 | 37.5 -> 37.4 | 3.08 -> 2.98 | 18 |
+| all 32 (7950X: the frame's threads on CCD0, workers on both) | one game at a time, alternating, 4 runs each | 48.7 -> 59.95 (every 0065 run 59.95) | 37.7 -> 18.5 | 55.4 -> 48.5 | 3.97 -> 3.75 | 16-29 |
+
+(A sixth 8c/16t round ran while this branch's exe was being linked -- both games froze for 4 s -- and is left out.)
 
 Online: a rollback pair (RTT 150 +-5 ms, 3 % loss, host on 4c/8t, joiner on
 4c/4t) and a lockstep pair (RTT 30, 1 % loss, the masks swapped), one match
@@ -1083,7 +1091,7 @@ and placement are timing only: they never reach the game state.
   7950X, 7950X3D, 7800X3D, 3700X, 4c/4t, 2c/4t, 4c/8t, 6c/6t, 6c/12t, masks
   across CCDs, processor 0 ranked first, 4,000 random tables against the
   rules every plan must keep). (c) and (d) ran on this 7950X under other
-  agents' load: no fps difference (60 either way), CPU per frame above.
+  agents' load (tables above); a two-CCD Ryzen on its own was not tried.
 - A real i5-7300HQ: the slow_core stand-in slows every thread alike; a real
   Kaby Lake core is also slower per clock in the translation's hashing and the
   lifted code, which this cannot model. Its power saving (on by itself: a

@@ -10,8 +10,8 @@ part is in the README's status table.
   for the processor it runs on** (ps3recomp patch 0065). On 4 cores without
   Hyper-Threading/SMT (laptops like the i5-7300HQ) one more thread skins the fighters and
   the game's own threads now run above its helper threads: on a slowed 4-core stand-in
-  fights went from 40 to 43 fps (faster in 8 of 8 paired runs) and the sound had a third
-  fewer late blocks. On Intel processors with performance and efficiency cores (12th gen
+  fights went from 40 to 43 fps (faster in 8 of 8 paired runs), on the pool stage with its
+  crowd 22 % faster (8 of 8), and the sound had fewer late blocks. On Intel processors with performance and efficiency cores (12th gen
   and newer, Core Ultra) the game's main thread, its helper threads, the picture
   translation and the sound now stay on the performance cores (efficiency cores are 2-3
   times slower for them). On Ryzen processors with two core groups (7900X, 7950X, 5900X,

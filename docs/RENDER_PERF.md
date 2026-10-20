@@ -972,6 +972,28 @@ quiet 7950X. Median (range) over the rounds:
 | 16 processors, before | 2 | 59.96 | 182 | 19.0 | 35.7 | 52 % (2.78) | 8.84 (8) | 6.9 |
 | 16 processors, after | 2 | 59.95 | 185 | 18.9 | **28.6** | **33 %** (1.76) | **3.93** (8) | 7.3 |
 
+**The pool stage (stage id 30: the poolside with the crowd dancing round the
+pool; a player on a 4-core i5-7300HQ laptop: "55-60 fps, but on stages with
+lots of 3D models like the pool stage it drops considerably").** The crowd is
+skinned in the same job list: ~420 jobs a fight frame against ~390 on stage
+20, so 7 % more skinning, and the list ran longer than the game's own work
+before it waited -- on 4 processors it blocked 1.0-1.6 ms a frame (2.3 ms in
+one earlier run) where stage 20 blocked 0.65-1.2. Same paired setup, `--fight
+lil,ask,30,3`, 27-30 other processors busy (so these fps are a much weaker
+PC than this one):
+
+| pool stage, 4 processors | runs | fps | frames > 17.5 ms per 1000 | p99 ms | game CPU ms per frame | sound core | skinning CPU ms per frame | skinning job (us) | list wall time | game thread blocked per frame |
+|---|---|---|---|---|---|---|---|---|---|---|
+| before | 4 + 2 | 31.9 (20.8-42.2); 37.4 with `SPU_PROF` | 975; 903 | 53.4; 44.3 | 55.1; 48.7 | 65 % | 10.8 | 28.2-30.2 | 6.0-6.8 ms | 1.0-1.6 ms |
+| after | 4 + 2 | **41.0** (38.3-44.6); **52.9** with `SPU_PROF` | 754; 437 | 46.1; 35.7 | **34.4; 30.9** | **36 %** | **3.9** | **10.0-11.4** | **2.3-2.4 ms** | **0.01 ms** (ran 2-5 jobs itself) |
+
+On a CPU with half this one's speed per core the before list would take
+~12 ms of the frame on two threads (24 ms of CPU) while the game's own work
+before the wait is ~7 ms: ~5 ms of every pool frame spent waiting -- and the sound core alone
+would need ~1.3 processors (more than its 5.33 ms tick). After: ~8 ms of CPU
+over three threads, done before the game needs it, and the sound core ~0.7
+of a processor.
+
 Per job and per frame (`SPU_PROF=1`, one 600-walk window per run):
 
 | | skinning job (us) | jobs per frame | skinning CPU per frame | list wall time | game thread: jobs run / blocked per frame |

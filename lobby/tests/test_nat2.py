@@ -322,7 +322,7 @@ class RelayBridgeTest(E2E):
     def test_bridge_takes_only_the_games_packets(self):
         ca, cb, ta, tb = self.pair(a={"relay_bridge": True}, b={"relay_bridge": True})
         g = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        g.bind(("0.0.0.0", tb.local_port))
+        g.bind((util.GAME_IP, tb.local_port))
         g.settimeout(0.5)
         x = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         x.bind(("127.0.0.1", 0))
@@ -356,7 +356,7 @@ class RelayUpgradeTest(E2E):
             socks = []
             for t_ in (host, join):
                 k = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                k.bind(("0.0.0.0", t_.local_port))
+                k.bind((util.GAME_IP, t_.local_port))
                 k.settimeout(0.05)
                 socks.append(k)
             try:

@@ -362,6 +362,51 @@ class InviteOldTest(Base):
         b.answer_invite(inv["invite"], True)                         # no password asked
         self.assertEqual(self.room_of("Bob").id, room["id"])
 
+    def test_an_invite_never_brings_blocked_players_together(self):
+        # (security review 3) joining a room is refused when a member and the joiner blocked one another, but a friend's
+        # invite let anybody in: into a community room (up to 8) whose line then paired the two -- the one thing a
+        # block promises never to happen. The invite and its accept check every member now.
+        a, b, c = self.acc("Alice"), self.acc("Bob"), self.acc("Cid")
+        self.befriend(a, b)
+        room = a.create_room("Community", size=4)
+        c.join_room(room["id"])
+        c.block("Bob")                                               # Cid never wants to meet Bob
+        with self.assertRaises(LobbyError) as e:
+            a.invite("Bob", "room")
+        self.assertEqual(e.exception.code, "not_allowed")
+        c.unblock("Bob")
+        inv = a.invite("Bob", "room")                                # (no block: fine)
+        expect(b, "invited")
+        c.block("Bob")                                               # ... and Cid blocks him before he accepts
+        with self.assertRaises(LobbyError):
+            b.answer_invite(inv["invite"], True)
+        self.assertIsNone(self.room_of("Bob"))
+        with self.assertRaises(LobbyError):                          # (joining was refused already)
+            b.join_room(room["id"])
+
+    def test_blocked_players_are_never_paired_by_the_line(self):
+        # (the line itself, should two who blocked one another ever be in one room: the next free pair without a block)
+        import types
+        from t5lobby.server.rooms import Room
+        srv = self.srv()
+
+        def run():
+            def mk(n):
+                return types.SimpleNamespace(name=n, id="p" + n, online=True, match=None, status="room", set=None,
+                                             account_id=None, blocks={}, build_id="b", conn=None, guest=True)
+            a, b, c = mk("Ann"), mk("Ben"), mk("Cat")
+            r = Room(a, "x", False, size=4)
+            r.members, r.line = [a, b, c], [a, b, c]
+            for q in (a, b, c):
+                q.room = r
+            before = [q.name for q in srv._room_next_pair(r)]
+            b.blocks["g:ann"] = {"name": "Ann", "guest": True, "since": 0}
+            after = [q.name for q in srv._room_next_pair(r)]
+            c.blocks["g:ann"] = {"name": "Ann", "guest": True, "since": 0}
+            last = [q.name for q in srv._room_next_pair(r)]
+            return before, after, last
+        self.assertEqual(self.s.call(run), (["Ann", "Ben"], ["Ann", "Cat"], ["Ben", "Cat"]))
+
     def test_no_invite_back_after_a_kick(self):
         a, b, c = self.acc("Alice"), self.acc("Bob"), self.acc("Cid")
         self.befriend(a, b)

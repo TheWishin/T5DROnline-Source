@@ -128,7 +128,11 @@ stream is hidden from either player (it is what both screens show), and it comes
 A match needs a few hundred bytes a second compressed (the measurement below); the client sends at
 most 16 KB/s, the server ends a stream that sends more, a piece out of order or over 5 KB. A
 spectator unpacks at most 64 MB. The spectator's game reads untrusted data: every record length,
-count and index is checked (a broken record is skipped or ends the stream).
+count and index is checked (a broken record is skipped or ends the stream). The spectator's launcher
+passes on only whole records its own parser took, and ends the watch on a state hash more than 3,600
+frames behind the newest (the game sorts each one into place: a hand-made stream of ever older hashes
+kept it busy for hours), and it makes a file only for the answer to its own `watch` (a `watching`
+nobody asked for is ignored).
 
 ## Protocol (capability `spectate`, feature `spectate`)
 

@@ -167,6 +167,29 @@ class ReleaseNotesCli(unittest.TestCase):
         self.assertIn("no part of the game", md)
 
 
+class ZipDocs(unittest.TestCase):
+    def test_docs_the_public_readmes_point_into_the_zip_ship(self):
+        """tools/make_public_repo.py turns every Markdown link of README.md, README.de.md and TROUBLESHOOTING.md to
+        a document that is not public into "docs\\NAME (in the release zip)": each of them must be in the zip
+        (package_release.OUR_OPTIONAL_FILES)."""
+        import re
+        pub = load_tool("make_public_repo")
+        root = os.path.dirname(TOOLS)
+        linked = set()
+        for rel in ("README.md", os.path.join("docs", "README.de.md"), os.path.join("docs", "TROUBLESHOOTING.md")):
+            with open(os.path.join(root, rel), encoding="utf-8") as f:
+                text = f.read()
+            for target in re.findall(r"\]\(([^)\s]+)\)", text):
+                if target.startswith(("http://", "https://", "#", "mailto:")):
+                    continue
+                name = target.split("#")[0].split("/")[-1]
+                if name.endswith(".md") and name not in pub.FILES:
+                    linked.add(name)
+        shipped = {os.path.basename(f) for f in package.OUR_OPTIONAL_FILES}
+        self.assertTrue({"TRAINING.md", "REPLAYS.md", "SPECTATE.md", "TOURNAMENTS.md", "WEAK_PC.md"} <= linked, linked)
+        self.assertEqual(sorted(linked - shipped), [])
+
+
 class Versions(unittest.TestCase):
     def test_accepted(self):
         for v, want in [("0.1.0", "0.1.0"), ("0.1.0-preview", "0.1.0-preview"), ("v0.2.0-rc.1", "0.2.0-rc.1"),

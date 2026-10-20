@@ -45,7 +45,8 @@ REQUIRED = [
     "tools/build_game.py", "tools/build_game_dll.py", "tools/prereqs.py", "tools/make_keys.py",
     "deps/ps3recomp/.t5dr-vendored.json", "deps/ps3recomp/tools/ppu_lifter.py",
     "python/python.exe", "python/pythonw.exe",
-    "toolchain/llvm/bin/clang-cl.exe", "toolchain/llvm/bin/lld-link.exe",
+    "toolchain/llvm/bin/clang-cl.exe", "toolchain/llvm/bin/lld-link.exe", "toolchain/llvm/bin/llvm-profdata.exe",
+    "tools/gamedll/t5dr_lifted.proftext", "tools/profile_check.py",
     "runtime/t5dr.exe", "runtime/t5dr.lib",
     "LICENSES/ps3recomp-MIT.txt", "LICENSES/Python-PSF.txt", "LICENSES/LLVM-LICENSE.TXT",
 ]

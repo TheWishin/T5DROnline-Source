@@ -59,6 +59,22 @@ part is in the README's status table.
 - The relay gets 10 seconds to come up instead of 6 (a slow PC's relay was cancelled as "not even through the
   relay" before it had finished measuring).
 
+### Security (review 3)
+- **The relay fallback cannot restart a match any more.** Asking for the relay ("my game hears nothing") starts
+  the match's session again; within 90 seconds of its start a player losing the first round could ask for it and
+  both games began the match anew. Once either game has played the fight for a while (ten seconds: frames that
+  only run with the opponent's input), the lobby refuses.
+- **Blocks hold in community rooms.** A friend's invite into a room for 3-8 players brought in a player whom
+  another member had blocked (or who had blocked them), and the room's line could pair the two. The invite and its
+  accept check every member, and the line never pairs two who blocked one another.
+- **No game code in problem reports.** The compiler quoted the lifted source line under each of its messages, and
+  a failed build's log and the report's copy of the compiler's output kept them. The game's code is now compiled
+  with `-fno-caret-diagnostics` (the objects are byte for byte the same), and the report keeps only the compiler's
+  message lines (`file(line,col): error: ...`) of the compile logs and of build.log -- also from builds made before.
+- **A spectator's launcher takes only what it asked for**: a lobby server sending "watching" by itself no longer
+  makes it unpack up to 64 MB into a new file, and a stream of state hashes far out of order (which kept the
+  spectator's game busy for hours) ends the watch as damaged.
+
 ### Spectating
 - **Watch a live match**: a friend in a match (Friends page: **Watch**, below the list) or any room's match
   (Rooms: **Watch**). Your own game shows it a few seconds behind, exactly as it is played -- the replay's
@@ -131,6 +147,33 @@ part is in the README's status table.
   in one line. Power saving **Auto** now always reaches the game: a `PS3_LAPTOP` left in
   Windows' environment no longer overrules it, and Settings names an Extra-settings line
   that does.
+- **Fights on 4-core processors run about 9 % faster, and the game's threads are placed
+  for the processor it runs on** (ps3recomp patch 0065). On 4 cores without
+  Hyper-Threading/SMT (laptops like the i5-7300HQ) one more thread skins the fighters and
+  the game's own threads now run above its helper threads: on a slowed 4-core stand-in
+  fights went from 40 to 43 fps (faster in 8 of 8 paired runs), on the pool stage with its
+  crowd 22 % faster (8 of 8), and the sound had fewer late blocks. On Intel processors with performance and efficiency cores (12th gen
+  and newer, Core Ultra) the game's main thread, its helper threads, the picture
+  translation and the sound now stay on the performance cores (efficiency cores are 2-3
+  times slower for them). On Ryzen processors with two core groups (7900X, 7950X, 5900X,
+  ...) those threads stay in one group, the one with the bigger cache on an X3D. The main
+  thread and the translation always get two different cores, processor 0's only when
+  there is no other (it handles most of the PC's interrupts). The game log (and Report a problem) now says where
+  the threads run (`[sched] processors:` / `[sched] placement:` lines).
+  `PS3_SCHED_PLACE=0` (extra settings) is the old placement, `PS3_SCHED_PRIO_MAIN=1
+  PS3_SCHED_PRIO_PPU=1 PS3_SCHED_PRIO_PPUHI=1` the old priorities.
+- **Online: incoming inputs are handled at once** even when the game keeps every
+  processor busy (the receive thread runs above the game's threads).
+- **The game needs a little less processor time per frame** (branch cpu-build-opt; build settings only,
+  the game plays exactly the same). BUILD GAME now compiles the game code with a profile of where a fight
+  spends its time (profile-guided optimisation, `tools/gamedll/t5dr_lifted.proftext`): the game's main
+  thread needs about 3 % less CPU per frame, about 6 % with the game-thread work of 1.1.3 (patch 0061),
+  also on the pool stage with its crowd, the heaviest stage for the processor. That helps PCs that are
+  just too slow for a steady 60 fps. BUILD GAME's compile got ~15 % faster and the
+  game DLL 17 % smaller. The profile holds only function names and counts, no game data; the release
+  ships LLVM's `llvm-profdata.exe` to read it. Builds with and without the profile, with and without AVX2,
+  play each other in sync (rollback and lockstep pairs, 0 different frames). After the update press
+  **BUILD GAME** once. docs/BUILD_PERF.md.
 
 ### Servers
 - New settings `T5L_TOUR_*` (who may organize, the no-show time, limits, rated or not) and a read-only JSON of the

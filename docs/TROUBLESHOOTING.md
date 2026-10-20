@@ -169,7 +169,9 @@ What the log shows:
 
 If it fails twice, close other programs and press **BUILD GAME** again. If it
 fails again, press **Report a problem...**: the report includes the compiler's
-full output of the files that failed.
+messages for the files that failed (`file(line,col): error: ...`, never a line of
+the game's code: the compiler does not quote it, and the report keeps only those
+message lines of the compiler's output and of build.log).
 
 ### Which folder? (a warning in the Build tab)
 
@@ -973,6 +975,14 @@ not (on every PC, power saving or not).
   performance".
 - Keep the air vents free; a laptop stand helps. Some laptops have a "fan
   boost" or performance key in their own control app.
+- **Intel processors with performance and efficiency cores** (12th gen and
+  newer, Core Ultra) and **Ryzen processors with two core groups** (7900X,
+  7950X, ...): since 1.1.3 the game keeps its main threads on the
+  performance cores, or in one core group, by itself. The game log's
+  `[sched] processors:` and `[sched] placement:` lines say what it found and
+  where the threads run. Do not limit the game to some cores in Task Manager
+  or tools like Process Lasso: it then gets only those (`[sched] processors:
+  4 logical ... (of 16)`).
 
 **What the log says.** Every 30 seconds with slow frames the game log has a
 line like

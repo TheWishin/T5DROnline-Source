@@ -190,6 +190,59 @@ class RollbackTest(unittest.TestCase):
         st.close()
 
 
+class AccountIdTest(unittest.TestCase):
+    """A deleted account's id is never given to a new account (everything is stored by account id: history, pair
+    counts, friends, blocks, tournament entries, a tournament's organizer)."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.dir, True)
+        self.db = os.path.join(self.dir, "t5lobby.db")
+
+    def test_the_newest_accounts_id_is_not_given_again(self):
+        st = Store(self.db)
+        for n in ("Ann", "Ben", "Cat"):
+            st.create_account(n, "pw-hash")
+        cat = st.account("Cat")["id"]
+        self.assertTrue(st.delete_account("Cat"))
+        self.assertEqual(st.create_account("Dot", "pw-hash")["id"], cat + 1)
+        st.close()
+        st = Store(self.db)                                           # (kept in the database: also after a restart)
+        self.assertTrue(st.delete_account("Dot"))
+        self.assertEqual(st.create_account("Eve", "pw-hash")["id"], cat + 2)
+        st.close()
+
+    def test_purge_inactive_too(self):
+        st = Store(self.db)
+        for n in ("Ann", "Ben"):
+            st.create_account(n, "pw-hash")
+        ben = st.account("Ben")["id"]
+        st.db.execute("UPDATE accounts SET created = 1, last_seen = NULL WHERE name = 'Ben'")
+        self.assertEqual(st.purge_inactive_accounts(30), 1)
+        self.assertEqual(st.create_account("Cid", "pw-hash")["id"], ben + 1)
+        st.close()
+
+    def test_without_deletions_ids_are_as_before(self):
+        st = Store(self.db)
+        ids = [st.create_account(n, "pw-hash")["id"] for n in ("Ann", "Ben", "Cat")]
+        self.assertEqual(ids, [1, 2, 3])
+        self.assertIsNone(st.create_account("ann", "pw-hash"))         # (the name rule is unchanged)
+        st.close()
+
+    def test_a_deleted_organizers_tournament_is_not_run_by_a_newcomer(self):
+        from t5lobby.server import tournaments
+        st = Store(self.db)
+        org = st.create_account("Org", "pw-hash")["id"]
+        tournaments.migrate(st.db)
+        st.db.execute("INSERT INTO tournaments (id, name, organizer_id, organizer_name, format, set_wins, max_players, "
+                      "start_time, seeding, state, created, seed) VALUES ('t1', 'Cup', ?, 'Org', 'single', 2, 8, ?, "
+                      "'random', 'signup', ?, 1)", (org, time.time() + 600, time.time()))
+        st.delete_account("Org")
+        new = st.create_account("Newcomer", "pw-hash")["id"]
+        self.assertNotEqual(new, org)
+        st.close()
+
+
 # ============================================================================== 3. "update your launcher"
 def build(release):
     return BuildInfo("be80165b84e30b6334baa6d6331b9db4ffd5a6a4", "code-" + release, release)

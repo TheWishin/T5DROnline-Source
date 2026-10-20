@@ -305,8 +305,11 @@ d = os.environ["FAKE_CC_DIR"]
 def names(var):
     return {s for s in os.environ.get(var, "").split(",") if s}
 def note(**kw):
-    with open(os.path.join(d, "calls.jsonl"), "a") as f:
-        f.write(json.dumps(kw) + "\n")
+    # one file per call: compilers running side by side never share a file (appends from several processes
+    # are not atomic on Windows -- a loaded PC interleaved two lines once)
+    os.makedirs(os.path.join(d, "calls"), exist_ok=True)
+    with open(os.path.join(d, "calls", "%020d-%06d.json" % (time.time_ns(), os.getpid())), "w") as f:
+        f.write(json.dumps(kw))
 if role == "lld-link":
     for a in args:
         if a.lower().startswith("/out:"):
@@ -346,6 +349,9 @@ try:
         rc = 1
     elif name in names("FAKE_CC_ALWAYS_FAIL"):
         print(f"{src}(7,1): error: unknown type name 'broken'")
+        if "/clang:-fno-caret-diagnostics" not in args:   # what clang prints by default: the source line and a caret
+            print("    broken_t r3 = ctx->gpr[3] + SECRET_LIFTED_CODE;")
+            print("    ^")
         print("1 error generated.")
         rc = 1
     else:
@@ -399,11 +405,14 @@ class EndToEnd(unittest.TestCase):
         return r.returncode, r.stdout, r.stderr
 
     def calls(self):
-        p = os.path.join(self.d, "calls.jsonl")
-        if not os.path.exists(p):
+        p = os.path.join(self.d, "calls")
+        if not os.path.isdir(p):
             return []
-        with open(p) as f:
-            return [json.loads(ln) for ln in f if ln.strip()]
+        out = []
+        for n in sorted(os.listdir(p)):         # (the time of the call, then the process id)
+            with open(os.path.join(p, n)) as f:
+                out.append(json.loads(f.read()))
+        return out
 
     def assert_launcher_safe(self, out):
         """The launcher reads "[step]", "[k/n]", "ERROR:" and "already done" at the start of build lines."""
@@ -468,6 +477,21 @@ class EndToEnd(unittest.TestCase):
         self.assertFalse(os.path.exists(self.out))
         self.assertFalse(os.path.exists(os.path.join(self.obj, "march.txt")))
         self.assert_launcher_safe(out)
+
+    def test_no_source_line_of_the_game_in_any_output(self):
+        # (security review 3) clang quotes the source line under a diagnostic: the lifted code is the game's own, so
+        # every compile runs with -fno-caret-diagnostics and neither the build log nor a compile log holds a line of it
+        rc, out, err = self.run_tool(["--jobs", "2"], FAKE_CC_ALWAYS_FAIL="ppu_recomp_001.cpp")
+        self.assertNotEqual(rc, 0)
+        compiles = [c for c in self.calls() if c.get("role") == "clang-cl" and "args" in c]
+        self.assertTrue(compiles)
+        for c in compiles:
+            self.assertIn("/clang:-fno-caret-diagnostics", c["args"], c.get("name"))
+        with open(os.path.join(self.obj, "ppu_recomp_001.cpp.log"), encoding="utf-8") as f:
+            log = f.read()
+        self.assertIn("error: unknown type name 'broken'", log)
+        for text in (out, err, log):
+            self.assertNotIn("SECRET_LIFTED_CODE", text)
 
     def test_a_compile_that_hangs_is_stopped_and_compiled_again(self):
         rc, out, err = self.run_tool(["--jobs", "2"], FAKE_CC_HANG_ONCE="ppu_recomp_003.cpp",

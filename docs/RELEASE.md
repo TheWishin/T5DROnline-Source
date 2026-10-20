@@ -171,6 +171,10 @@ runtime:
   What the player's PC still needs: clang-cl.exe (105 MB), lld-link.exe
   (72 MB) and clang's resource headers (16 MB) -- 201 MB raw, **72.6 MB
   zipped** -- all shipped in `toolchain/llvm`. Plus the bundled Python.
+  Since branch `cpu-build-opt` also `llvm-profdata.exe` (6.4 MB, 2.7 MB
+  zipped): it turns the shipped PGO profile `tools/gamedll/t5dr_lifted.proftext`
+  into clang's format at compile time (docs/BUILD_PERF.md); without it the
+  DLL is built without the profile.
 
   Costs/risks: every read of `vm_base`/`vm_inline_ok` in the inline load
   path is one extra load through the import slot, and calls into the runtime

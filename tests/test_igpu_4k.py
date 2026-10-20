@@ -148,6 +148,20 @@ class Runtime(unittest.TestCase):
         # the real processor clock from PDH, by English counter names (works on any Windows language)
         self.assertIn('L"\\\\Processor Information(_Total)\\\\% Processor Performance"', p)
 
+    def test_the_clock_query_is_set_up_off_the_vblank_ticker(self):
+        """review-113: host_sched_clock_text's caller is the vblank ticker ([slow-frames]); the PDH query's set-up
+        (PdhOpenQuery + PdhAddEnglishCounter, ~0.3-0.4 s the first time in a process) ran right there and froze the
+        game's clock once per run. The set-up is a thread of its own now; the function itself only collects."""
+        p = patch_text()
+        i = p.index("+int host_sched_clock_text(char* buf, int len)")
+        body = p[i:p.index("\n+}\n", i)]
+        self.assertIn("CreateThread(NULL, 0, hs_clock_setup", body)
+        for call in ("LoadLibraryA(", "open(NULL", "add(", "PdhAddEnglishCounter"):
+            self.assertNotIn(call, body)
+        setup = p[p.index("+static DWORD WINAPI hs_clock_setup"):i]
+        self.assertIn('LoadLibraryA("pdh.dll")', setup)
+        self.assertIn("InterlockedExchange(&s_clk_state, 1)", setup)
+
 
 if __name__ == "__main__":
     unittest.main()

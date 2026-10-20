@@ -78,6 +78,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "tools"))
 import build_game  # noqa: E402
 import check_binaries  # noqa: E402
+import profile_check  # noqa: E402
 import code_signing  # noqa: E402
 import prereqs     # noqa: E402
 
@@ -85,7 +86,7 @@ OUR_FILES = [
     "CMakeLists.txt",
     "tools/build_game.py", "tools/run_game.py", "tools/make_keys.py", "tools/unself.py", "tools/prereqs.py",
     "tools/build_game_dll.py", "tools/lift_spu_jobs.py", "tools/gamedll/t5dr_game_dll.c", "tools/gamedll/t5dr_host.def",
-    "tools/gamedll/ucrt_min.def",
+    "tools/gamedll/ucrt_min.def", "tools/gamedll/t5dr_lifted.proftext", "tools/profile_check.py",
     "launcher/t5dr_launcher.pyw", "launcher/core.py", "launcher/online.py", "launcher/updater.py",
     "launcher/release_sig.py",
     "launcher/problem_report.py", "launcher/problem_report_ui.py",
@@ -96,8 +97,11 @@ OUR_FILES = [
     "lobby/run.py", "lobby/servers.json",
 ]
 # Shipped when present (player docs; the players' README section links them).
+# (every doc the READMEs link: tools/make_public_repo.py calls them "in the release zip", so they ship --
+# tests/test_release_tools.py ZipDocs; README.de.md's developer list links CI.md and RELEASE.md too)
 OUR_OPTIONAL_FILES = ["CHANGELOG.md", "docs/TROUBLESHOOTING.md", "docs/README.de.md", "docs/ONLINE.md",
-                      "docs/RANKED.md", "docs/controls.ini", "docs/HOSTING.md"]
+                      "docs/RANKED.md", "docs/controls.ini", "docs/HOSTING.md", "docs/TRAINING.md", "docs/REPLAYS.md",
+                      "docs/SPECTATE.md", "docs/TOURNAMENTS.md", "docs/WEAK_PC.md", "docs/RELEASE.md", "docs/CI.md"]
 # lobby/t5lobby/*.py is the client side (Online tab, match driver). lobby/t5lobby/server/ ships too:
 # the Online tab's "Host for friends" runs a lobby server from the zip (lobby/run.py host); the
 # Windows deploy scripts stay in the repository: script files in a game download get flagged
@@ -454,7 +458,8 @@ def check_python(stage):
 
 def add_llvm(stage, llvm):
     dst = os.path.join(stage, "toolchain", "llvm")
-    for exe in ("clang-cl.exe", "lld-link.exe"):
+    # llvm-profdata.exe turns the shipped PGO profile (text) into the form clang reads (build_game_dll.py)
+    for exe in ("clang-cl.exe", "lld-link.exe", "llvm-profdata.exe"):
         src = os.path.join(llvm, "bin", exe)
         if not os.path.exists(src):
             fail(f"--llvm {llvm}: no bin\\{exe}")
@@ -801,10 +806,22 @@ def classify(name, data):
         why.append("PARAM.SFO")
     # lifted code under any name or cut into pieces: it names guest functions func_XXXXXXXX
     # everywhere (a 100 KB piece has ~150); the most any ps3recomp source has is 38.
+    if is_profile_path(name):
+        # the lifted code's PGO profile names 7,000+ lifted functions by design: accepted at its one path
+        # only when it holds nothing but function names, structural hashes and execution counts
+        why += ["PGO profile: " + p for p in profile_check.check(data)]
+        return why
     n = len(RE_LIFTED.findall(data))
     if n >= 100:
         why.append(f"looks like lifted game code ({n} func_XXXXXXXX names)")
     return why
+
+
+def is_profile_path(name):
+    """tools/gamedll/t5dr_lifted.proftext in the staged folder, or one folder down in the zip."""
+    n = name.replace("\\", "/")
+    return n == profile_check.PROFILE_PATH or (n.endswith("/" + profile_check.PROFILE_PATH)
+                                               and n.count("/") == profile_check.PROFILE_PATH.count("/") + 1)
 
 
 def scan_files(items, key_pats, game_index):

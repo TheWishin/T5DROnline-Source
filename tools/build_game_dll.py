@@ -31,9 +31,16 @@ Test hooks (environment): T5DR_COMPILE_TEST_FREE_MB = the free memory auto_jobs 
 T5DR_COMPILE_TEST_FAIL_ONCE = source file names whose first compile gets a real compiler error,
 T5DR_COMPILE_TIMEOUT_S = the per-file time limit, T5DR_COMPILE_TEST_TOOL = a Python script that plays
 clang-cl and lld-link (tests/test_compile_robust.py).
+
+The lifted code is compiled with the shipped PGO profile (tools/gamedll/t5dr_lifted.proftext:
+function names and execution counts, made by tools/pgo_train.py), split into four parts and turned
+into clang's format with llvm-profdata.exe from the same folder as clang-cl; without it, or with a
+profile that tools/profile_check.py refuses, the DLL is built without (the same game, a little
+slower). docs/BUILD_PERF.md.
 """
 import argparse
 import glob
+import hashlib
 import os
 import re
 import subprocess
@@ -90,6 +97,97 @@ def host_cpu_level(cl, scratch):
         if ctypes.windll.kernel32.IsProcessorFeaturePresent(40):   # PF_AVX2_INSTRUCTIONS_AVAILABLE
             return "x86-64-v3", []
     return "none", ["avx2 (not detected)"]
+
+
+def pgo_gen_libs(llvm):
+    """What an instrumented (--pgo-gen) DLL links besides the usual: LLVM's profile runtime and, for the C
+    functions and Windows calls it makes, the Windows SDK's ucrt.lib and kernel32.lib. Developer PCs only --
+    a player's build never instruments."""
+    rt = glob.glob(os.path.join(llvm, "..", "lib", "clang", "*", "lib", "windows", "clang_rt.profile-x86_64.lib"))
+    if not rt:
+        sys.exit("--pgo-gen: clang_rt.profile-x86_64.lib not found next to " + llvm)
+    sdk = sorted(glob.glob(os.path.join(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"),
+                                        "Windows Kits", "10", "Lib", "10.*")))
+    if not sdk:
+        sys.exit("--pgo-gen needs the Windows SDK (ucrt.lib, kernel32.lib)")
+    return [os.path.abspath(rt[0]), os.path.join(sdk[-1], "ucrt", "x64", "ucrt.lib"),
+            os.path.join(sdk[-1], "um", "x64", "kernel32.lib")]
+
+
+# The lifted code is profiled in four parts, each compiled with its own profile: LLVM sorts counts into hot and
+# cold against the whole profile it is given, and the SPU sound core's inner loops (some 10^11 counts in a
+# training run) would make nearly all of the game's PPU code and the skinning jobs "cold" -- optimised for
+# size, the guest-memory helpers no longer inlined.
+PGO_PARTS = ("ppu", "snd", "skin", "spu")
+
+
+def profile_part(name):
+    """The part a profile record belongs to: ppu (the lifted PPU code), snd (the SPU sound core), skin (the
+    SPU skinning jobs) or spu (the other SPU images and C sources of the DLL)."""
+    head = name.split(":", 1)[0]
+    if "bnuscore" in head:
+        return "snd"
+    if "skin" in head:
+        return "skin"
+    if ("_spu_func_" in name or name.endswith("_spu_recomp_register") or name == "t5dr_spu_register_all"
+            or head.endswith(".c")):
+        return "spu"
+    return "ppu"
+
+
+def source_part(src):
+    """The part a source of the DLL is compiled as (see profile_part)."""
+    if not src.endswith(".c"):
+        return "ppu"
+    image = os.path.basename(os.path.dirname(src)) if os.path.basename(src) == "spu_recomp.c" else ""
+    return "snd" if image == "bnuscore" else "skin" if image.startswith("skin") else "spu"
+
+
+def split_profile(data):
+    """{part: profile text} from the shipped profile's text (records in the order they came)."""
+    lines = data.decode("ascii").replace("\r\n", "\n").split("\n")
+    head, recs, i = [], {}, 0
+    while i < len(lines) and (lines[i].startswith((":", "#")) or not lines[i]):
+        head.append(lines[i])
+        i += 1
+    while i < len(lines):
+        if not lines[i]:
+            i += 1
+            continue
+        n = int(lines[i + 4])
+        recs.setdefault(profile_part(lines[i]), []).append("\n".join(lines[i:i + 6 + n]))
+        i += 6 + n
+    return {part: "\n".join(head + [r + "\n" for r in rs]) for part, rs in recs.items()}
+
+
+def prepare_profiles(profile, obj, llvm):
+    """{part: .profdata} for clang from the profile's text form (tools/gamedll/t5dr_lifted.proftext; an
+    indexed .profdata is turned into text first), or {} when it cannot be used (see PGO_PARTS)."""
+    pd = os.path.join(llvm, "llvm-profdata.exe") if llvm else ""
+    if not pd or not os.path.exists(pd):
+        print(f"no llvm-profdata.exe in {llvm}: building without the profile (same game, a little slower)", flush=True)
+        return {}
+    text = profile
+    if not profile.endswith(".proftext"):
+        text = os.path.join(obj, "pgo_in.proftext")
+        subprocess.run([pd, "merge", "--text", "-o", text, profile], check=True, creationflags=NO_WINDOW)
+    with open(text, "rb") as f:
+        data = f.read()
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    import profile_check                        # noqa: E402 -- names, hashes and counts only
+    problems = profile_check.check(data)
+    if problems:
+        print(f"the profile {profile} is not usable ({problems[0]}): building without it", flush=True)
+        return {}
+    out = {}
+    tag = hashlib.sha1(data).hexdigest()[:10]    # a new profile is a new file name: CMake rebuilds what uses it
+    for part, body in split_profile(data).items():
+        t = os.path.join(obj, f"pgo_{part}_{tag}.proftext")
+        with open(t, "w", newline="\n") as f:
+            f.write(body)
+        out[part] = os.path.join(obj, f"pgo_{part}_{tag}.profdata")
+        subprocess.run([pd, "merge", "-o", out[part], t], check=True, creationflags=NO_WINDOW)
+    return out
 
 
 def find_llvm(arg):
@@ -376,9 +474,22 @@ def main():
     ap.add_argument("--march", default="auto",
                     help="target CPU of the lifted PPU code: auto (x86-64-v3 when this PC's CPU and Windows "
                          "support it, else none), x86-64-v3, native, none")
+    ap.add_argument("--copt", action="append", default=[],
+                    help="extra compile option for every lifted source (experiments; repeat for more)")
+    ap.add_argument("--ldopt", action="append", default=[], help="extra lld-link option (experiments; repeat for more)")
+    ap.add_argument("--lto", choices=["", "thin"], default="", help="ThinLTO across the lifted sources")
+    ap.add_argument("--pgo-gen", nargs="?", const="fe", default="", choices=["fe", "ir"],
+                    help="developer only: instrumented training DLL (clang_rt.profile + the Windows SDK's ucrt/kernel32 "
+                         "import libraries); see tools/pgo_train.py. fe (default): clang's front-end "
+                         "instrumentation, ir: LLVM IR instrumentation")
+    ap.add_argument("--profile", default="",
+                    help="PGO profile of the lifted code (text .proftext or LLVM .profdata): 'none', a file, or "
+                         "empty = the shipped tools/gamedll/t5dr_lifted.proftext (docs/RENDER_PERF.md \"Profile-guided "
+                         "optimisation of the lifted code\")")
     a = ap.parse_args()
 
     test_tool = os.environ.get("T5DR_COMPILE_TEST_TOOL")    # tests: a Python script plays clang-cl and lld-link
+    llvm = None
     if test_tool:
         cl = test_tool
         cl_cmd, lld_cmd = [sys.executable, test_tool, "clang-cl"], [sys.executable, test_tool, "lld-link"]
@@ -394,7 +505,11 @@ def main():
     env = {k: v for k, v in os.environ.items()
            if k.upper() not in ("INCLUDE", "LIB", "LIBPATH", "EXTERNAL_INCLUDE", "VCINSTALLDIR", "VCTOOLSINSTALLDIR",
                                 "WINDOWSSDKDIR", "UCRTVERSION", "UNIVERSALCRTSDKDIR")}
+    # /clang:-fno-caret-diagnostics: a diagnostic is file(line,col): message only -- clang does not quote the source line
+    # under it. The lifted code is the game's own code, translated: it must never reach the build log, the compile logs
+    # or a problem report made from them (security review 3). Diagnostics only: the objects are byte for byte the same.
     common = ["/nologo", "/X",                      # /X: no system include paths, only clang's own headers
+              "/clang:-fno-caret-diagnostics",
               "-fms-compatibility-version=19.44", "/O2", "/Ob2", "/DNDEBUG", "/DWIN32", "/D_WINDOWS",
               "/GS-", "/Zl",                        # no stack cookies, no default-library directives
               "/FI" + os.path.join(GDIR, "include", "t5dr_dll_prefix.h"),
@@ -418,6 +533,29 @@ def main():
                " (baseline x86-64: this processor or Windows lacks " + ", ".join(missing) + ")")
     ppu_opts = ["/clang:-ffp-contract=off"] + ([] if march == "none" else [f"/clang:-march={march}"])
     print(f"lifted PPU code: -march={march}{why}", flush=True)
+    profile = a.profile
+    if not profile:
+        shipped = os.path.join(GDIR, "t5dr_lifted.proftext")
+        profile = shipped if os.path.exists(shipped) else "none"
+    opt_opts = list(a.copt)
+    use_opts = {part: [] for part in PGO_PARTS}
+    if a.pgo_gen:
+        # counters only: no value profiling (indirect-call targets, sizes), so the profile holds nothing else
+        if a.pgo_gen == "ir":
+            opt_opts += ["/clang:-fprofile-generate", "-mllvm", "-disable-vp=true"]
+        else:
+            opt_opts += ["/clang:-fprofile-instr-generate", "-mllvm", "-enable-value-profiling=false"]
+    elif profile != "none":
+        for kind, path in prepare_profiles(os.path.abspath(profile), obj, llvm).items():
+            use_opts[kind] = [f"/clang:-fprofile-instr-use={path}", "-Wno-profile-instr-unprofiled",
+                              "-Wno-profile-instr-out-of-date", "-Wno-profile-instr-missing"]
+    if a.lto:
+        opt_opts += ["-flto=thin"]
+    if opt_opts:
+        print("lifted code options: " + " ".join(opt_opts), flush=True)
+    if any(use_opts.values()):
+        print("profile-guided optimisation: %s (%s)" % (profile, ", ".join(p for p in PGO_PARTS if use_opts[p])),
+              flush=True)
     srcs = sorted(glob.glob(os.path.join(a.recomp, "*.cpp")))
     spu_c = sorted(glob.glob(os.path.join(a.spu, "lifted", "*", "spu_recomp.c")))
     spu_w = os.path.join(a.spu, "spu_workloads.c")
@@ -425,15 +563,22 @@ def main():
     if c_srcs:
         c_srcs.append(os.path.join(ps3, "runtime", "spu", "spu_dispatch_mt.c"))
     c_srcs.append(os.path.join(GDIR, "t5dr_game_dll.c"))
+    if a.pgo_gen:
+        c_srcs.append(os.path.join(GDIR, "pgo_train.c"))
     if not srcs:
         sys.exit(f"no lifted sources in {a.recomp}")
 
     # an object is current when it is newer than its source and than everything it was compiled with
     # objects remember the target CPU they were compiled for (a native folder moved to another PC,
     # or a forced --march): any change recompiles everything
+    # (the options and the profile's content count too: a new profile recompiles everything)
     stamp_path = os.path.join(obj, "march.txt")
+    stamp_key = " ".join([march] + opt_opts)
+    if any(use_opts.values()):
+        with open(profile, "rb") as f:
+            stamp_key += " profile-sha1=" + hashlib.sha1(f.read()).hexdigest()
     try:
-        stamp_ok = open(stamp_path).read().strip() == march
+        stamp_ok = open(stamp_path).read().strip() == stamp_key
     except OSError:
         stamp_ok = False
     newest_dep = max(os.path.getmtime(p) for p in
@@ -454,10 +599,18 @@ def main():
                 cmd += ["/DSPU_FAST_FLOAT"]     # render-only skinning jobs: IEEE float ops (CMakeLists.txt)
             elif os.path.basename(os.path.dirname(src)) == "bnuscore":
                 cmd += ["/DSPU_NEAR_FLOAT"]     # the sound core: near-exact IEEE float ops (CMakeLists.txt)
+            if "lifted" in src:
+                cmd += ["/DSPU_LS_NO_HOOKS"]    # no local-store debug hooks in lifted images (CMakeLists.txt)
         else:
             cmd += ["-std:c++20", "-TP", "/EHs-c-", "/Zc:tlsGuards-"] + ppu_opts + PPU_QUIET
         if os.path.basename(src) == "t5dr_game_dll.c":
             cmd += [f'/DT5DR_GAME_MARCH="{march}"']   # t5dr_game_march: checked by the runtime at load
+        elif os.path.basename(src) != "pgo_train.c":
+            cmd += opt_opts + use_opts[source_part(src)]
+        if src.endswith(".c") and os.path.basename(src) == "spu_recomp.c":
+            # every SPU image's source is called spu_recomp.c: give each its own name, so the profile keeps
+            # the static helpers of the sound core and of the skinning jobs apart
+            cmd += ["-Xclang", "-main-file-name", "-Xclang", os.path.basename(os.path.dirname(src)) + "_spu_recomp.c"]
         if attempt == 1 and os.path.basename(src) in fail_once:     # test hook: a real compiler error, once
             cmd += (["/clang:-Werror=unused-value"] if src.endswith(".cpp")
                     else ["/FI" + os.path.join(obj, "t5dr_test_fail_once_missing.h")])
@@ -517,7 +670,7 @@ def main():
               + " (the launcher's Report a problem button includes these files)", flush=True)
         sys.exit("compile failed")
     with open(stamp_path, "w") as f:
-        f.write(march + "\n")
+        f.write(stamp_key + "\n")
     t1 = time.time()
     ran = [(r.peak, s) for s, r in results.items() if not r.skipped and r.peak]
     if ran:
@@ -532,6 +685,11 @@ def main():
             "/OUT:" + a.out, "/IMPLIB:" + os.path.join(obj, "t5dr_game.lib"),
             "/EXPORT:function_table,DATA", "/EXPORT:function_table_count,DATA"]
     link += objs + [os.path.abspath(a.host_lib), ucrt]
+    if a.lto:
+        link += [f"/opt:lldltojobs={jobs}"]
+    link += a.ldopt
+    if a.pgo_gen:
+        link += pgo_gen_libs(llvm)
     r = run_compiler(link, env)
     if not r.ok:
         log = write_log(link_log, "link", 1, link, r)

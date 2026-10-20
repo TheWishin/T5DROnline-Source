@@ -836,7 +836,10 @@ from relays.json, the closest by RTT sum, then the next when one dies), `relay_e
 has arrived on its port (`waiting for the opponent's game to answer (15s, nothing arrived yet)`). The match driver
 (`match_driver._watch_direct`) watches it on a direct or LAN path: 15 s of nothing means the launchers reached each
 other but something drops what comes for the game. It shows the firewall hint and sends `nat_fallback`; the server
-(`h_nat_fallback`: once per match, before any result, within the window) moves the running match onto the relay --
+(`h_nat_fallback`: once per match, before any result, within the window, and not once either launcher has said its
+game played the fight for a while -- `game_started {playing}`, sent at the game's first netplay speed or sync line after
+FIGHT START, 600 lockstep frames that only run with the opponent's inputs; before 1.1.3's security review a player
+losing round 1 could ask for the relay and both games began the match again) moves the running match onto the relay --
 `nat_relay` with `fallback: true`, both launchers bind a new socket with the match's token (the game holds the old
 port), keep it as the relay bridge, and get a second `match_start` for the same match. Both drivers start the
 match's game session again (persistent game: a new session; a game that does not take the command within 10 s is

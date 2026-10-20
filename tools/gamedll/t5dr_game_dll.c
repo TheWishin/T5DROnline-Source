@@ -22,9 +22,17 @@ __declspec(dllexport) const char t5dr_game_march[] = T5DR_GAME_MARCH;
  * until then the windows are 0 and every access takes the out-of-line path. */
 uint8_t* vm_base_k = 0;
 uint32_t vm_ld_lim_k = 0, vm_st_lim_k = 0, vm_refpoll_k = 0xFFFFFFFFu;
+/* The SPU/PPU reserved-line bitmap the inline stores check (ppu_recomp.h PPU_COH_LOCAL, ps3recomp
+ * patch 0069): its address, set by the runtime just before the gates. Until it is set the store window
+ * stays shut -- a runtime that never sets it (PS3_COH_LOCAL=0) gets every store out of line. */
+const unsigned char* vm_coh_bm_k = 0;
+__declspec(dllexport) void ppu_game_set_coh(const unsigned char* bm)
+{
+    vm_coh_bm_k = bm;
+}
 __declspec(dllexport) void ppu_game_set_gates(uint8_t* base, uint32_t ld, uint32_t st, uint32_t refpoll)
 {
-    vm_base_k = base; vm_ld_lim_k = ld; vm_st_lim_k = st; vm_refpoll_k = refpoll;
+    vm_base_k = base; vm_ld_lim_k = ld; vm_st_lim_k = vm_coh_bm_k ? st : 0; vm_refpoll_k = refpoll;
 }
 
 /* ---- stack probe. A function with more than a page of locals (the lifted SPU

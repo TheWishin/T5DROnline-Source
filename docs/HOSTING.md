@@ -555,8 +555,8 @@ on the lobby server, *PC* on the PC that holds the repository (the way the lobby
 `sudo t5lobby-admin ...` on a systemd install (a wrapper that loads `/etc/t5lobby/t5lobby.env`
 and runs as the service user). Elsewhere, use `docker compose exec lobby t5lobby-admin ...`,
 `python lobby/run.py admin ...`, or `python -m t5lobby.server.admin --db FILE ...`. It works on
-the SQLite file directly, which is safe while the server runs. The server polls for bans every
-5 s and kicks the player.
+the SQLite file directly, which is safe while the server runs. The server polls for bans (and
+notices, drains, tournament hosts) every 5 s (`T5L_ADMIN_POLL`) and kicks the player.
 
 | Command | |
 |---|---|
@@ -575,6 +575,7 @@ the SQLite file directly, which is safe while the server runs. The server polls 
 | `notice TEXT [--minutes N \| --hours H]`, `notice --clear`, `notices` | a message for every connected player, for example `notice "server restart in 20 min"`. It shows in the launcher's status bar until it ends (default 60 minutes) or is cleared. The server picks it up within 5 s. Players who log in while it shows get it too. At most 200 characters |
 | `drain [--wait SECONDS] [--off]` | before a restart: no new matches (queues, rooms, challenges, rematches are refused with "the server restarts for an update in a moment"), the running ones and the ranked sets finish. `--wait` returns 0 when none is left (1 on timeout). A restart ends the drain. See Updates and restarts |
 | `release [X.Y.Z] [--clear]` | after the owner has published a release: launchers that report an older one see "T5DR Online X.Y.Z is out ... update the launcher" in their status bar (now and at every login) until `--clear`. Without an argument: what is set |
+| `tour-host add NAME [--admin]`, `tour-host remove NAME`, `tour-hosts` | community tournaments (docs/TOURNAMENTS.md "Who may create tournaments"): `add NAME` makes the account a **tournament host** -- it may create tournaments, with the normal limits, whatever `T5L_TOUR_ORGANIZERS` says; at most `T5L_TOUR_MAX_HOSTS` (20) hosts, beyond that `add` refuses ("remove one first"). `--admin` makes it a **tournament admin** instead, like `T5L_TOUR_ADMINS`: runs every tournament, no limits, takes no host slot. `add` again with or without `--admin` changes the role; `remove` takes it away (their tournaments stay theirs). The account must exist. `tour-hosts` lists hosts, admins (also those of the env file) and "N of 20 host slots used". The server picks a change up within 5 s and tells the player's launcher at once: no restart, no new login |
 | `gen-cert`, `fingerprint`, `server-entry` | see TLS and servers.json |
 
 ### Status, health, metrics

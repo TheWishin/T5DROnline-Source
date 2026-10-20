@@ -103,6 +103,11 @@ firewall fallback need the lobby server updated; older launchers keep working wi
   (docs/TOURNAMENTS.md). Their tables are created at the first start. An organizer who plays does not decide their
   own sets (a `T5L_TOUR_ADMINS` account does); a player whose game crashes twice in one set loses the set;
   `admin drain` also holds the tournaments (no new set starts, no-show times stand still).
+- **Tournament hosts from the console:** `t5lobby-admin tour-host add NAME [--admin]`, `tour-host remove NAME` and
+  `tour-hosts` decide who may create tournaments (`T5L_TOUR_MAX_HOSTS` slots, default 20) and who runs every
+  tournament, on top of `T5L_TOUR_ORGANIZERS` / `T5L_TOUR_ADMINS` and without a restart; an online player's launcher
+  shows **Create** within seconds. `T5L_TOUR_HOST_HINT` is the line players who may not create see instead
+  (docs/TOURNAMENTS.md "Who may create tournaments"). Lobby 1.1.2 still starts on the database.
 - **Rooms and spectating:** `T5L_ROOM_MAX_SIZE` (8; 2 turns community rooms off), `T5L_ROOM_NEXT_SECONDS` and the
   password guess limits; a room password is kept only as a salted hash, in memory, and never logged.
   `T5L_MAX_SPECTATORS` (8 per match) and the `T5L_SPECTATE_*` stream limits (docs/SPECTATE.md).

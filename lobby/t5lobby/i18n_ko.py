@@ -1211,6 +1211,8 @@ MESSAGES = {
     "NEEDS THE ORGANIZER": "주최자 확인 필요",
     "No check-in": "체크인 없음",
     "No tournament selected": "선택한 토너먼트 없음",
+    "Only tournament hosts can create tournaments. Ask the server's owner for a host slot.":
+        "토너먼트 호스트만 토너먼트를 만들 수 있습니다. 서버 운영자에게 호스트 자리를 요청하세요.",
     "Pick a tournament to see its bracket.": "토너먼트를 고르면 대진표가 보입니다.",
     "Pick one in the list, or create one.": "목록에서 고르거나 새로 만드세요.",
     "Players": "인원",

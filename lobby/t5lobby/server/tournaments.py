@@ -1,6 +1,7 @@
 """Community tournaments in the lobby (docs/TOURNAMENTS.md).
 
-An organizer (an account; T5L_TOUR_ORGANIZERS can narrow that) creates a tournament: name, single or double
+An organizer (an account; T5L_TOUR_ORGANIZERS can narrow that, and the hosts the server's owner adds with
+`t5lobby-admin tour-host add NAME` may always) creates a tournament: name, single or double
 elimination, sets of first to 2 or 3 games, a start time, a player limit (8/16/32/64) and an optional check-in
 window. Players (accounts, with a launcher that announced the "tournaments" cap) sign up and, when there is a
 check-in window, check in. At the start time the server seeds them (randomly or by rating), builds the bracket
@@ -16,8 +17,9 @@ it ends, its result goes into the bracket and the next sets are called. A set th
 (crash, broken connection, too many replays) is called again with its score so far, at most T5L_TOUR_RETRIES
 times; then -- and at once for a dispute -- it waits for the organizer.
 
-The organizer (or an account in T5L_TOUR_ADMINS) can start early, cancel, report a set's result, override a
-decided one, reset a set (play it again from 0-0), and disqualify a player.
+The organizer (or an account in T5L_TOUR_ADMINS, or an admin added with `tour-host add NAME --admin`) can start
+early, cancel, report a set's result, override a decided one, reset a set (play it again from 0-0), and disqualify a
+player.
 
 Everything is kept in the database (own tables, own schema version: MIGRATIONS below). A restart resumes the
 tournaments: a set that was being played is called again with the score it had (from the `sets` row of its
@@ -25,14 +27,15 @@ TourSet), a called set gets a fresh no-show time.
 
 Messages (clients with the "tournaments" cap; older clients never get any of them):
 
-    tour_list                                -> tour_list {rows, can_create}
+    tour_list                                -> tour_list {rows, can_create, create_hint (T5L_TOUR_HOST_HINT; optional)}
     tour_get {tournament}                    -> tour {tournament}           (with the bracket)
     tour_create {name, format, set_wins, start, max_players, checkin_minutes, seeding}   -> tour {tournament}
     tour_join / tour_leave / tour_checkin {tournament}                      -> tour {tournament}
     tour_accept {tournament, set}            -> tour_call {...}             (accept a called set)
     tour_admin {tournament, op: start|cancel|report|override|reset|dq, set, winner, score, player} -> tour {...}
     pushed: tour_call, tour_call_end {tournament, set, reason}, tour_changed {id, rev, state},
-            tour_notice {code, tournament, ...}
+            tour_notice {code, tournament, ...}, tour_access {can_create, create_hint} (the admin tool made the player
+            a host or admin, or took it back)
 
 The status port serves the brackets read-only for streamers: GET /tournaments and /tournaments/<id> (JSON).
 """
@@ -40,6 +43,7 @@ import json
 import logging
 import math
 import random
+import sqlite3
 import time
 
 from .. import proto
@@ -113,7 +117,18 @@ CREATE TABLE IF NOT EXISTS tour_sets (
     PRIMARY KEY (tournament_id, set_id)
 );
 """),
+    # the server owner's tournament hosts and admins (`t5lobby-admin tour-host`): on top of T5L_TOUR_ORGANIZERS /
+    # T5L_TOUR_ADMINS, without a restart (TourManager.reload_hosts)
+    (2, "tournament hosts and admins", """
+CREATE TABLE IF NOT EXISTS tour_hosts (
+    account_id INTEGER PRIMARY KEY,     -- account ids are never given twice (store.py MAX_ID_KEY)
+    name TEXT NOT NULL,                 -- the account's name when it was added (the admin tool's list)
+    role TEXT NOT NULL,                 -- host: may create tournaments | admin: like T5L_TOUR_ADMINS
+    added REAL NOT NULL
+);
+"""),
 ]
+HOST_ROLES = ("host", "admin")
 
 
 def migrate(db):
@@ -141,6 +156,38 @@ def migrate(db):
         log.info("database: tournament schema %d (%s)", version, what)
         done.append(version)
     return done
+
+
+# ---------------------------------------------------------------------- hosts and admins (the admin tool's)
+# A row counts only while its account exists and is not younger than the row: a server without the fixed account ids
+# (a rollback to 1.1.2) may give a deleted host's id to a new account, which must not inherit the role.
+_HOSTS_SQL = ("SELECT h.account_id, a.name, h.role, h.added FROM tour_hosts h JOIN accounts a ON a.id = h.account_id "
+              "AND a.created <= h.added")
+
+
+def db_hosts(store):
+    """{account id: (name, role)} of the tour_hosts rows that count (a database not upgraded yet: none)."""
+    try:
+        rows = store._x(_HOSTS_SQL + " ORDER BY h.added").fetchall()
+    except sqlite3.OperationalError:            # (no tour_hosts table yet)
+        return {}
+    return {r[0]: (r[1], r[2] if r[2] in HOST_ROLES else "host") for r in rows}
+
+
+def set_host(store, aid, name, role, now=None):
+    store._x("INSERT OR REPLACE INTO tour_hosts (account_id, name, role, added) VALUES (?, ?, ?, ?)",
+             (aid, name, role, time.time() if now is None else now))
+
+
+def remove_host(store, aid):
+    """-> True when the account was a host or admin."""
+    return store._x("DELETE FROM tour_hosts WHERE account_id = ?", (aid,)).rowcount > 0
+
+
+def prune_hosts(store):
+    """Rows that no longer count (their account was deleted). -> how many were deleted."""
+    return store._x("DELETE FROM tour_hosts WHERE account_id NOT IN (SELECT account_id FROM (" + _HOSTS_SQL + "))"
+                    ).rowcount
 
 
 def _rid():
@@ -235,6 +282,8 @@ class TourManager:
         self.created_from = {}          # tournament id -> address key it was created from (memory only: the limit per
                                         # internet address; never written to the database)
         self.drain_since = None         # `admin drain` on since (time.time()): the no-show clocks stand still
+        self.hosts = {}                 # account id -> "host" | "admin": the admin tool's (tour_hosts), reload_hosts
+        self.reload_hosts()
         self._task = None
         self.handlers = {"tour_list": self.h_list, "tour_get": self.h_get, "tour_create": self.h_create,
                          "tour_join": self.h_join, "tour_leave": self.h_leave, "tour_checkin": self.h_checkin,
@@ -361,15 +410,48 @@ class TourManager:
         return "list", {x.strip() for x in raw.split(",") if x.strip()}
 
     def _is_admin(self, p):
-        return p.account_id is not None and p.name.lower() in {str(x).lower() for x in self.cfg.tour_admins}
-
-    def may_organize(self, p):
+        """T5L_TOUR_ADMINS, or an admin added with `t5lobby-admin tour-host add NAME --admin`."""
         if p.account_id is None:
             return False
-        if self._is_admin(p):
+        return self.hosts.get(p.account_id) == "admin" or \
+            p.name.lower() in {str(x).lower() for x in self.cfg.tour_admins}
+
+    def may_organize(self, p):
+        """May create tournaments: an admin, a host added with the admin tool, or T5L_TOUR_ORGANIZERS says so."""
+        if p.account_id is None:
+            return False
+        if self._is_admin(p) or p.account_id in self.hosts:
             return True
         rule, names = self._organizer_rule()
         return rule == "any" or (rule == "list" and p.name.lower() in names)
+
+    def reload_hosts(self):
+        """The hosts and admins of `t5lobby-admin tour-host` from the database: at the start and every T5L_ADMIN_POLL
+        seconds (lobby.py _tick_admin), so the admin tool's changes work without a restart. A player online whose role
+        changed is told at once (tour_access: the launcher's Create button). -> the account ids that changed."""
+        new = {aid: role for aid, (_name, role) in db_hosts(self.store).items()}
+        if new == self.hosts:
+            return set()
+        changed = {aid for aid in set(new) | set(self.hosts) if new.get(aid) != self.hosts.get(aid)}
+        self.hosts = new
+        log.info("tournament hosts: %d host(s), %d admin(s)", sum(1 for r in new.values() if r == "host"),
+                 sum(1 for r in new.values() if r == "admin"))
+        for p in list(getattr(self.srv, "players", {}).values()):
+            if p.account_id in changed and p.conn is not None and not p.conn.closed and CAP in p.conn.caps:
+                p.send(self.access_msg(p))
+        return changed
+
+    def access_msg(self, p):
+        """tour_access {can_create, create_hint}: may this player create tournaments now (pushed when it changed)."""
+        return dict(t="tour_access", **self._access(p))
+
+    def _access(self, p):
+        can = self.may_organize(p)
+        d = {"can_create": can}
+        hint = str(self.cfg.tour_host_hint or "").strip()
+        if not can and hint and p.account_id is not None:
+            d["create_hint"] = hint             # (T5L_TOUR_HOST_HINT: how to become a host here; shown as it is)
+        return d
 
     def _manages(self, p, t):
         return p.account_id is not None and (p.account_id == t.organizer_id or self._is_admin(p))
@@ -511,8 +593,8 @@ class TourManager:
     # ================================================================== requests
     async def h_list(self, conn, msg):
         p = conn.player
-        return {"t": "tour_list", "rows": [self.summary(t, p) for t in self._listed()][:60],
-                "can_create": self.may_organize(p), "rated": self.cfg.tour_rated}
+        return dict({"t": "tour_list", "rows": [self.summary(t, p) for t in self._listed()][:60],
+                     "rated": self.cfg.tour_rated}, **self._access(p))
 
     async def h_get(self, conn, msg):
         # (security review 2) a whole bracket is ~60 KB of JSON at 64 players: without a limit of its own one connection

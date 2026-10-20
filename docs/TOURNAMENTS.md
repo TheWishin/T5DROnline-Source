@@ -12,6 +12,7 @@ new server and see nothing of it. Accounts only: a guest can look, but not sign 
 
 - [For players](#for-players)
 - [For organizers](#for-organizers)
+- [Who may create tournaments](#who-may-create-tournaments): hosts and admins (`t5lobby-admin tour-host`)
 - [How a set ends](#how-a-set-ends): the rules
 - [Brackets](#brackets): seeding, byes, double elimination, the grand final reset, places
 - [Ratings](#ratings)
@@ -61,8 +62,8 @@ played again on the relay -- not counted twice, the set and the bracket go on as
 
 ## For organizers
 
-Any account can organize, unless the server's owner narrowed it (`T5L_TOUR_ORGANIZERS`, below). On the Tournaments
-page: **Create...**, then
+Any account can organize, unless the server's owner narrowed it (below: [Who may create
+tournaments](#who-may-create-tournaments)). On the Tournaments page: **Create...**, then
 
 | Field | Choices |
 |---|---|
@@ -99,8 +100,41 @@ set they play, and disqualifying the opponent of their open set, are refused ("y
 `T5L_TOUR_ADMINS` account decides those -- or the organizer cancels the tournament. A player the organizer
 disqualified before the start cannot leave and sign up again.
 
-The server's owner can name accounts that may run every tournament (`T5L_TOUR_ADMINS`): the same buttons on every
-tournament, and no limit on how many they run.
+The server's owner can name accounts that may run every tournament (`T5L_TOUR_ADMINS`, or `tour-host add NAME
+--admin`): the same buttons on every tournament, and no limit on how many they run.
+
+## Who may create tournaments
+
+Three things decide it, and any one of them is enough (guests never):
+
+- `T5L_TOUR_ORGANIZERS` (env file, read at the start): `any` (every account, the default), `none`, or a list of
+  account names.
+- `T5L_TOUR_ADMINS` (env file): tournament admins, by name.
+- **Hosts and admins the owner adds from the server console** -- no env file, no restart:
+
+```sh
+sudo t5lobby-admin tour-host add NAME            # a host: may create tournaments (normal limits)
+sudo t5lobby-admin tour-host add NAME --admin    # a tournament admin: runs every tournament, no limits
+sudo t5lobby-admin tour-host remove NAME         # no longer a host or admin
+sudo t5lobby-admin tour-hosts                    # who is what, and "N of 20 host slots used"
+```
+
+A **host** creates tournaments like any organizer: at most `T5L_TOUR_PER_ORGANIZER` (2) open at once, the
+server-wide `T5L_TOUR_MAX_OPEN` (20), no names that pass for the server. There are `T5L_TOUR_MAX_HOSTS` (20) host
+slots: `add` refuses a 21st host ("remove one first"). An **admin** has the powers of `T5L_TOUR_ADMINS` (every
+tournament's buttons, not held by the limits) and takes no host slot. `add` on someone who already has a role changes
+it (host <-> admin). The account must exist (players register in the launcher first). `remove` takes the role away;
+tournaments that player already made stay theirs to run (an admin can cancel them).
+
+The roles are stored by account id (`tour_hosts`, below), the name only for the list; a deleted account's role goes
+with it. The server reads them at its start and every `T5L_ADMIN_POLL` seconds (5): a change works within seconds,
+and a player who is online is told at once (`tour_access`): the Create button appears (or goes) on the Tournaments
+page without a new login.
+
+**What a player sees** who may not create: in place of **Create...**, one line -- the server's `T5L_TOUR_HOST_HINT`
+as it is (for example how to ask for a host slot), else "Only tournament hosts can create tournaments. Ask the
+server's owner for a host slot." (translated). Guests see no line. Launchers before this ask nothing and show the
+Create button greyed out as before.
 
 ## How a set ends
 
@@ -193,8 +227,10 @@ All `T5L_*` (server/config.py):
 
 | Variable | Default | |
 |---|---|---|
-| `T5L_TOUR_ORGANIZERS` | `any` | who may create tournaments: `any` (every account), `none`, or a comma-separated list of account names |
-| `T5L_TOUR_ADMINS` | | account names that may run every tournament (start, cancel, report, override, reset, disqualify) |
+| `T5L_TOUR_ORGANIZERS` | `any` | who may create tournaments: `any` (every account), `none`, or a comma-separated list of account names -- plus, always, the hosts and admins of `t5lobby-admin tour-host` |
+| `T5L_TOUR_ADMINS` | | account names that may run every tournament (start, cancel, report, override, reset, disqualify) -- plus the admins of `tour-host add NAME --admin` |
+| `T5L_TOUR_MAX_HOSTS` | `20` | hosts `t5lobby-admin tour-host add` accepts (admins are not counted); read by the admin tool |
+| `T5L_TOUR_HOST_HINT` | | the line a player who may not create tournaments sees in place of the Create button, as it is (e.g. how to ask for a host slot); empty: the launcher's own line |
 | `T5L_TOUR_RATED` | `0` | tournament sets change the rating (once per set) |
 | `T5L_TOUR_NOSHOW` | `300` | seconds to accept a called set |
 | `T5L_TOUR_RETRIES` | `2` | times a set without a result is called again before it waits for the organizer |
@@ -214,11 +250,14 @@ The sets also use the lobby's `T5L_SET_NEXT_SECONDS` (countdown between games), 
 
 ## The database and restarts
 
-Three tables -- `tournaments`, `tour_entrants`, `tour_sets` (one row per bracket set: its sources, players, state,
-result and what is going on with it) -- with their own schema version (the `kv` entry `schema.tournaments`): each
+Four tables -- `tournaments`, `tour_entrants`, `tour_sets` (one row per bracket set: its sources, players, state,
+result and what is going on with it), and `tour_hosts` (the hosts and admins of `t5lobby-admin tour-host`: account
+id, name, role, when; step 2) -- with their own schema version (the `kv` entry `schema.tournaments`): each
 step of `tournaments.MIGRATIONS` runs once, in one transaction with its version number, at the server's start. They
 are independent of the other numbered upgrades (`store.MIGRATIONS`), so neither renumbers the other. Every change
 is written in the same transaction as the rest of what the server does in that moment (store.py `defer_commits`).
+A lobby 1.1.2 (a rollback) starts on such a database and leaves the tables alone; a `tour_hosts` row whose account
+id was given to a newer account (1.1.2 can do that after `delete-user`) does not count.
 
 A **restart** resumes the tournaments: sign-up and check-in go on (a start time that passed meanwhile starts the
 tournament at once), and a running tournament carries on from its bracket. A set that was being played lived in the
@@ -240,7 +279,7 @@ may read the list.
 
 | Client -> server | Reply |
 |---|---|
-| `tour_list` | `tour_list {rows [summary], can_create, rated}` |
+| `tour_list` | `tour_list {rows [summary], can_create, rated}`, and `create_hint` (`T5L_TOUR_HOST_HINT`) for an account that may not create, when set |
 | `tour_get` `tournament` | `tour {tournament}`: the summary + `entrants`, `bracket {format, size, rounds, losers_rounds, sets}`, `standings` |
 | `tour_create` `name, format, set_wins, start (unix time), max_players, checkin_minutes, seeding` | `tour` |
 | `tour_join` / `tour_leave` / `tour_checkin` `tournament` | `tour` |
@@ -258,6 +297,7 @@ and `can_manage`.
 | `tour_call` | `tournament {id, name}`, `set {id, bracket, round, index, format, rounds, losers_rounds}`, `best_of`, `wins_needed`, `side`, `score [you, opponent]` (a set called again goes on there), `replay`, `opponent` (brief), `opponent_online`, `deadline` (seconds), `noshow`, `accepted [you, opponent]` |
 | `tour_call_end` | `tournament`, `set`, `reason: started \| no_show \| opponent_out \| decided \| reset \| attention \| cancelled` |
 | `tour_changed` | `id, rev, state`: fetch it again if it is on screen (sent at most every `T5L_TOUR_TICK`; also when a set's game starts or ends: its live score and `watch`) |
+| `tour_access` | `can_create`, `create_hint`: `t5lobby-admin tour-host` changed what this player may do (within `T5L_ADMIN_POLL`) |
 | `tour_notice` | `code: started (seed, players) \| checkin_open \| no_checkin \| dq (reason) \| eliminated (place) \| finished (champion, place) \| cancelled (reason) \| attention (set, why; to the organizer)`, `tournament {id, name}` |
 
 The set's games are ordinary `match_found` (origin `tournament`, then `set`; no ready check), `match_start`,
@@ -279,10 +319,14 @@ reason `organizer` when the organizer decided a set whose game was being set up.
   undoing a set), the server (settings and limits, sign-up and check-in, seeding by rating, calls and no-shows, a
   quit at 0-0, a desync replay, a crash called again with its score, a dispute for the organizer, casual and rated
   sets, report/override/reset/disqualify/withdraw/cancel, a restart in the middle of a set, the migration, the JSON
-  endpoint, an older client), four launchers' match drivers with stub games, and **8 stub clients playing a whole
+  endpoint, an older client), the hosts and admins (`tour-host` add/remove/list, unknown names, the slot limit,
+  `--admin`, every `T5L_TOUR_ORGANIZERS` rule, picked up by a running server and pushed to the launcher, kept over a
+  restart, a deleted account's row), four launchers' match drivers with stub games, and **8 stub clients playing a whole
   double-elimination bracket** with a grand final reset on a local lobby (32 games, about 7 s)
 - `lobby/tests/test_tk_tour.py` -- the Online tab with withdrawn windows: the list, Sign up, the call card and
-  Accept, a set in the tab's game, the bracket on the canvas, the Create window, the organizer's buttons, German
+  Accept, a set in the tab's game, the bracket on the canvas, the Create window, the organizer's buttons, German,
+  the host line in place of Create (the server's text, the launcher's own) and the Create button coming back
+- `lobby/tests/test_deploy.py` -- lobby 1.1.2 (the `v1.1.2` tag) starts on a database with `tour_hosts`
 
 ```sh
 cd lobby/tests

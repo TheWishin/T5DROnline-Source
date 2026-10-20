@@ -570,6 +570,12 @@ class Walk:
         tab.client.my_room = dict(MY_ROOM, playing=[], next={"at": time.time() + 8, "players": ["x0", "x1"]})
         tab.on_event({"t": "room", "room": tab.client.my_room})
         self.screen("online my room, next match")
+        # the host of a password room: the wrong passwords line (and, below, the Room settings window with Turn away
+        # the guessers)
+        tab.client.my_room = dict(MY_ROOM, lock="password", guesses={"wrong": 1999, "networks": 1999, "barred": 99,
+                                                                     "busy": True})
+        tab.on_event({"t": "room", "room": tab.client.my_room})
+        self.screen("online my room, wrong passwords")
         saved = tab.new_window
 
         def hidden(parent):

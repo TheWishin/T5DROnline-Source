@@ -154,7 +154,10 @@ if(_lifted_arch STREQUAL "auto")
         endif()
     endif()
 endif()
-set(_lifted_opts /clang:-ffp-contract=off)
+# -fno-caret-diagnostics: clang names file(line,col) and the message, without quoting the lifted source line (the
+# game's own code, translated) -- nothing of it in a build log or a problem report made from one. Diagnostics only:
+# the objects are the same (tools/build_game_dll.py does the same for the player's build).
+set(_lifted_opts /clang:-ffp-contract=off /clang:-fno-caret-diagnostics)
 if(NOT _lifted_arch STREQUAL "none")
     list(APPEND _lifted_opts "/clang:-march=${_lifted_arch}")
 endif()

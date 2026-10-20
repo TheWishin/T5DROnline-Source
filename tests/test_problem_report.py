@@ -417,7 +417,15 @@ class Whole(unittest.TestCase):
                     f"# {name}, attempt 1, 2026-10-20 17:06:30\n# exit code 1 after 4.8 s, peak memory 300 MB\n"
                     f'# "{home}\\toolchain\\llvm\\bin\\clang-cl.exe" /nologo -c {home}\\native\\build\\recomp\\{name}\n'
                     f"{home}\\native\\build\\recomp\\{name}(192,5): warning: unused [-Wunused-value]\n"
-                    "LLVM ERROR: out of memory\n")
+                    # (a build before -fno-caret-diagnostics: clang quoted the lifted source line, with a caret)
+                    "    ctx->gpr[3] = LIFTED_GAME_CODE(ctx, 0x10);\n"
+                    "    ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n"
+                    # (LLVM 23 quotes with a line-number gutter)
+                    "  192 |     return x + LIFTED_GAME_CODE;\n"
+                    "      |                ^~~~~~~~~~~~~~~~\n"
+                    "LLVM ERROR: out of memory\n"
+                    "Stack dump:\n0.\tProgram arguments: clang-cl.exe -c ppu.cpp\n"
+                    "  if (r3 == 0) { goto loc_00123456; } // LIFTED_GAME_CODE\n")
             os.utime(p, (now - 100 * i, now - 100 * i))
         if header:
             put(os.path.join(out, "build.log"), header + "\n[compile]\n# exit code 2\n")
@@ -431,11 +439,55 @@ class Whole(unittest.TestCase):
                          [f"compile/ppu_recomp_{i:03d}.cpp.log" for i in range(report.COMPILE_LOGS)])   # the newest
         t = self.text("compile/ppu_recomp_000.cpp.log")
         self.assertIn("LLVM ERROR: out of memory", t)
+        # (security review 3) only diagnostics: never a line of the game's translated code a compiler quoted
+        self.assertNotIn("LIFTED_GAME_CODE", t)
+        self.assertNotIn("^~~~", t)
+        self.assertIn("other line(s) of the compiler's output left out", t)
+        self.assertIn("# ppu_recomp_000.cpp, attempt 1", t)                 # our header lines stay
         self.assertNotIn(FAKE_USER, t)                                    # scrubbed like every other file
         self.assertIn("C:\\Users\\<user>\\Desktop\\T5DR\\native\\build\\recomp\\ppu_recomp_000.cpp(192,5)", t)
         self.assertIn("compile/ppu_recomp_000.cpp.log", self.text("contents.txt"))
         g = {x.key: x for x in report.discover(self.ctx, "")}
         self.assertEqual([i.arcname for i in g["build"].items][:2], ["build.log", "compile/ppu_recomp_000.cpp.log"])
+
+    def test_build_log_keeps_no_quoted_game_code(self):
+        # (security review 3) build.log quotes a failed compile ("    | " lines) -- from a build before
+        # -fno-caret-diagnostics with the source lines clang showed -- and an older one the raw compiler output
+        out = self.native_with_compile_logs(2)
+        bl = os.path.join(out, "build.log")
+        with open(bl, "a", encoding="utf-8") as f:
+            f.write("[compile] compiling 22 files\n"
+                    "  ppu_recomp_007.cpp: exit code 1, after 4.8 s\n"
+                    "  error lines:\n"
+                    "    | C:\\T5DR\\native\\build\\recomp\\ppu_recomp_007.cpp(91,3): error: unknown type name 'x'\n"
+                    "    |     x r3 = LIFTED_GAME_CODE_A(ctx);\n"
+                    "    |     ^\n"
+                    "    | ...\n"
+                    "    | LLVM ERROR: out of memory\n"
+                    "C:\\T5DR\\native\\build\\recomp\\ppu_recomp_008.cpp(12,9): warning: unused [-Wunused-value]\n"
+                    "        ctx->gpr[4] + LIFTED_GAME_CODE_B;\n"
+                    "        ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n"
+                    "C:\\T5DR\\native\\build\\recomp\\ppu_recomp_009.cpp(2,16): error: use of undeclared identifier\n"
+                    "    2 |     return x + LIFTED_GAME_CODE_C;\n"
+                    "      |                ^~~~~~~~~~~~~~~~~~\n"
+                    "  error lines:\n"
+                    "    | ppu_recomp_010.cpp(9,1): error: expected ';'\n"
+                    "    |     9 |   r3 = LIFTED_GAME_CODE_D\n"
+                    "    |       |                          ^\n"
+                    "[compile] done (lifted PPU code: -march=x86-64-v3 (this processor has AVX2))\n")
+        t = report.build_log_text(bl)
+        self.assertNotIn("LIFTED_GAME_CODE", t)
+        self.assertNotIn("^~~", t)
+        for kept in ("error: unknown type name 'x'", "    | LLVM ERROR: out of memory", "    | ...",
+                     "ppu_recomp_009.cpp(2,16): error: use of undeclared identifier",
+                     "    | ppu_recomp_010.cpp(9,1): error: expected ';'",
+                     "ppu_recomp_008.cpp(12,9): warning: unused", "[compile] compiling 22 files",
+                     "[compile] done (lifted PPU code: -march=x86-64-v3 (this processor has AVX2))"):
+            self.assertIn(kept, t)
+        self.assertIn("line(s) of compiler output left out", t)
+        self.build(ctx={"out": out})
+        self.assertNotIn("LIFTED_GAME_CODE", self.text("build.log"))
+        self.assertIn("unknown type name 'x'", self.text("build.log"))
 
     def test_no_compiler_output_when_the_build_went_fine(self):
         self.build(ctx={"out": self.native_with_compile_logs(0)}, enabled={"build": True})

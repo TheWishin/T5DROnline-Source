@@ -1133,6 +1133,22 @@ state, restored with the frame, not hashed); what they decide in the fight
 would still report a real desync. tests/test_hash_skip_sync.py checks that the
 two skip lists are the same.
 
+**What the traces did show: the fighters' bone blocks before the fight.** A
+skeleton (`[fighter + 0x8A4]`) has two blocks of 27 x 0x90 bytes in the
+game's own heap: the bones now (`+0x10`) and last frame's copy (`+0x14`,
+copied by 0x28C17C every fight frame). The fight writes about two thirds of
+them from its first frame on; before that -- the loading and the intros, which
+the desync check does not compare -- they hold whatever that memory held
+(a fresh game: 172 of 972 words set, the rest zero; a persistent game: what
+its earlier matches left). In 6 of 30 traced e2e sessions one fighter's bone
+block differed between the PCs through the loading and the intro, and became
+equal on the first fight frame. The most likely origin of the gate's 10 frames
+is such a leftover that the first fight frames of that pairing still read.
+Clearing the blocks at the fight-loaded sync point would remove it, but which
+of those words the game's own set-up writes before the fight is not known (a
+fresh game's are not all zero), so it is left as a follow-up; the record that
+showed it is not game state either way.
+
 **Not reproduced on demand.** With the fighters' bones, the projector and the
 skipped words traced on both PCs (`T5_RB_SHADOW_TRACE`, below) the box and its
 inputs were identical on every frame in: 25 e2e net_rollback sessions on
@@ -1165,7 +1181,32 @@ not game state.
 
 **What was tested** (this PC, other agents' games running; stage 27):
 
-PROOF_TABLE
+| run | build | what | matches | result |
+|---|---|---|---|---|
+| e2e net_rollback `--stage s27`, traced (`T5_RB_SHADOW_TRACE`) | before the fix (record hashed) | the gate's flow: persistent games, in-game select, RTT 20-250, loss, jitter, relay | 30 | 0 mismatching frames; the box and its inputs identical in every fight frame on both PCs |
+| pairs, RTT 80 / 2 %, Roger Jr. vs Armor King, traced | before the fix | process mode, mash with motion inputs | 3 | 0 mismatching; box, bones identical |
+| rb_equiv, Roger Jr. vs Armor King, `--force 5:3` / `--lag 3` / `--lag 3` + `T5_RB_JOB_PAGES=keep` / `T5_TEST_HITCH=100:20:60` | before the fix | one process, a reference and a test run | 4 x 1 | equal on every frame (255 forced, 307 and 316 real rollbacks) |
+| pair, RTT 80 / 2 % loss, 20 stage-27 matches (Roger Jr. vs Armor King first and last, 18 other pairs), 1 round, mash with motion inputs, traced | fixed (main f5bed92 merged) | `rollback_net_test.py` (`build/s27b/scripts/rbpair.sh`) | 20 | 0 mismatching frames in 43,200 per side; 8,993 / 8,772 rollbacks (9,972 / 9,758 frames re-simulated); every result (winner, score, frames, hash) the same on both PCs; the shadow box and its inputs identical on all 43,262 traced frames |
+| the same, RTT 150 / 3 % loss | fixed | | 20 | 0 mismatching frames in 43,200 per side; 10,554 / 10,617 rollbacks (29,698 / 29,525 frames re-simulated); results the same; box and inputs identical on all 43,275 frames |
+| e2e net_rollback, a normal pass (the lobby's stages: 18, 19, 22, 23, 26, 28, 31, 32) | fixed | RTT 20/80/150/250, delay Auto/0/1/2, 2 % and 10 % loss, jitter, relay | 11 | PASS, 245 checks, 0 mismatching frames |
+| e2e net_lockstep `--stage s27` | fixed | RTT 20/150, 10 % loss with jitter, relay | 4 | PASS, 87 checks, 0 mismatching frames |
+| pair, lockstep (`T5_RB_MODE=off` both), RTT 80 / 2 %, 10 stage-27 matches | fixed | | 10 | 0 mismatching frames through frame 19,799 on both PCs (delay 5); every result the same |
+
+Also on the fixed build: smoke quick (3 PASS, 2 WARN: fps with 9 other games
+running; exit 0), tests/ (630, OK, 9 skipped), the game-data guard (index and
+`--history 760f8b0..HEAD`: exit 0).
+
+**Not the same bug: the firewall e2e run's Asuka vs Wang on stage 26** (frames
+231-1849 apart, the whole fight). There one game left the intro a frame
+earlier than the other: from frame 231 the phase word itself (0x1008F070, 17
+against 12), the round timer and the input ring differ -- the whole fight runs
+a frame apart, with another final hash. Its log shows the cause's neighbourhood:
+at 0.5 fps its loader drain gave up seven times ("frame 8..16, 31: loader
+threads still busy after 2 s, going on", `t5_hooks.cpp drain_wait`), so loads
+finished in frames that differed between the two PCs before the fight-loaded
+barrier; the other game had no such timeout. That needs its own fix (the
+drain's 2 s limit during a session's loading); the record has nothing to do
+with it.
 
 ## Limits and next steps
 

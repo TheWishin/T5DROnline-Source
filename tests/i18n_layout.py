@@ -230,6 +230,14 @@ class Client:
     class build:
         build_id = "b1"
 
+    my_room = None
+    room_code = None
+    clock_offset = 0.0
+    welcome = {"room_limits": {"max_size": 8, "next_seconds": 8}}
+
+    def private_rooms_ok(self):
+        return True
+
     def __init__(self):
         self.me = {"id": "p1", "name": "Me", "guest": False, "rating": 1500, "record": [3, 2, 0], "status": "idle",
                    "main": "jin", "tier": 31, "rank": "Lord of War", "provisional": False}
@@ -300,7 +308,21 @@ ROOMS = [{"id": "r1", "name": "Room of Rival", "owner": {"name": "Rival_Long_Nam
           "ranked": True},
          {"id": "r2", "name": "R2", "owner": {"name": "Bob"}, "status": "full", "build": "b1", "ranked": False},
          {"id": "r3", "name": "Old room", "owner": {"name": "Old"}, "status": "playing", "build": "other",
-          "ranked": True}]
+          "ranked": True},
+         # a private community room (docs/ONLINE.md "Rooms"): "open 7/8 private"
+         {"id": "r4", "name": "Friday Night Community", "owner": {"name": "Rival_Long_Name"}, "status": "open",
+          "build": "b1", "ranked": False, "size": 8, "rotation": "queue", "private": True, "lock": "password",
+          "members": ["p2", "p3", "p4", "p6", "x1", "x2", "x3"]}]
+_LONG = ("Rival_Long_Name", "Somebody_Else16", "NewFriend_12345", "Another_Player_", "Fifth_Long_Name", "Sixth_Long_Name",
+         "Seventh_Long_Nm")
+# this player's room, as its members see it (tk_rooms.py): eight players, the longest line, a code, hidden
+MY_ROOM = {"id": "r5", "name": "Friday Night Community", "size": 8, "rotation": "winner", "lock": "code",
+           "hidden": True, "owner_id": "p1", "private": True, "status": "playing", "ranked": False, "build": "b1",
+           "members": ["p1"] + [f"x{i}" for i in range(7)],
+           "players": [{"id": "p1", "name": "Me", "state": "line"}] +
+                      [{"id": f"x{i}", "name": n, "state": "away" if i == 6 else "playing" if i < 2 else "line"}
+                       for i, n in enumerate(_LONG)],
+           "line": ["x0", "x1", "p1", "x2", "x3", "x4", "x5"], "playing": ["x0", "x1"], "next": None, "watch": True}
 
 
 def tournament():
@@ -533,6 +555,37 @@ class Walk:
         tab.on_event({"t": "invited", "invite": "i1", "kind": "room", "from": RIVAL, "room": {"name": "Room of Rival"}})
         self.screen("online friend's invite")
         tab.hide_bar()
+        tab.on_event({"t": "invited", "invite": "i2", "kind": "room", "from": RIVAL,
+                      "room": {"name": "Friday Night Community", "private": True}})
+        self.screen("online friend's invite, private room")
+        tab.hide_bar()
+        # this player's room (tk_rooms.py): the row under the rooms list, the code in its field, the next match; the
+        # Create room and Room settings windows (withdrawn)
+        tab.nb.select(0)
+        tab.client.me["status"] = "room"
+        tab.client.my_room, tab.client.room_code = MY_ROOM, "ABCD-EFGH-JKMN"
+        tab.on_event({"t": "room", "room": MY_ROOM})
+        tab.rooms_ui.copy_code()
+        self.screen("online my room")
+        tab.client.my_room = dict(MY_ROOM, playing=[], next={"at": time.time() + 8, "players": ["x0", "x1"]})
+        tab.on_event({"t": "room", "room": tab.client.my_room})
+        self.screen("online my room, next match")
+        saved = tab.new_window
+
+        def hidden(parent):
+            w = tk.Toplevel(parent)
+            w.withdraw()
+            return w
+        tab.new_window = hidden
+        tab.rooms_ui.create()
+        self.screen("create room window", tab.rooms_ui.window)
+        tab.rooms_ui.settings()
+        self.screen("room settings window", tab.rooms_ui.window)
+        tab.rooms_ui.close_window()
+        tab.new_window = saved
+        tab.client.me["status"] = "idle"
+        tab.client.my_room = tab.client.room_code = None
+        tab.rooms_ui.refresh()
         # tournaments (tk_tour.py): the list, a bracket, the call card -- with the Friends page emptied first, so that
         # its own (known, German) width does not hide what this page needs
         tab.client.friend_list = {"max": 100, "friends": [], "incoming": [], "outgoing": []}

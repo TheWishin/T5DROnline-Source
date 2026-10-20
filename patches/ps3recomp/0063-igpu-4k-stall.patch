@@ -487,7 +487,7 @@ index 5560090..a8c2d66 100644
  
  #ifdef __cplusplus
 diff --git a/runtime/platform/host_sched.c b/runtime/platform/host_sched.c
-index b36e3fb..f8da20c 100644
+index b36e3fb..1a85844 100644
 --- a/runtime/platform/host_sched.c
 +++ b/runtime/platform/host_sched.c
 @@ -57,6 +57,7 @@
@@ -548,7 +548,7 @@ index b36e3fb..f8da20c 100644
  
      if (p_SetThreadDescription && name && *name) {
          wchar_t w[64];
-@@ -961,11 +982,105 @@ int host_sched_load_text(char* buf, int len)
+@@ -961,11 +982,118 @@ int host_sched_load_text(char* buf, int len)
      return ok;
  }
  
@@ -602,43 +602,56 @@ index b36e3fb..f8da20c 100644
 +int  host_sched_in_gcm_handler(void) { return t_in_gcm_handler > 0; }
 +int  host_sched_gpu_integrated(void) { return s_gpu_integrated; }
 +
-+/* PDH, loaded on first use (no link dependency): the processors' real clock. */
++/* PDH, loaded on first use (no link dependency): the processors' real clock.
++ * The query's set-up (PdhAddEnglishCounter loads the counter providers) takes
++ * ~0.3-0.4 s once per process; the caller is the vblank ticker (the
++ * [slow-frames] line), so the set-up and the first sample run on a thread of
++ * their own -- on the ticker they held the game's clock and froze the picture
++ * that long once per run, 30 s or 5 minutes in (review-113). Later samples
++ * (one collect, ~1 ms every 30 s or more) stay on the caller's thread. */
 +typedef LONG (WINAPI *pfn_PdhOpenQueryW)(LPCWSTR, DWORD_PTR, HANDLE*);
 +typedef LONG (WINAPI *pfn_PdhAddEnglishCounterW)(HANDLE, LPCWSTR, DWORD_PTR, HANDLE*);
 +typedef LONG (WINAPI *pfn_PdhCollectQueryData)(HANDLE);
 +typedef struct { DWORD CStatus; DWORD pad; double doubleValue; } hs_pdh_value;
 +typedef LONG (WINAPI *pfn_PdhGetFormattedCounterValue)(HANDLE, DWORD, LPDWORD, hs_pdh_value*);
++static volatile LONG s_clk_state = -1;  /* -1 untried, 0 unavailable or being set up, 1 ready */
++static HANDLE s_clk_q, s_clk_perf, s_clk_freq;
++static pfn_PdhCollectQueryData s_clk_collect;
++static pfn_PdhGetFormattedCounterValue s_clk_value;
++static DWORD WINAPI hs_clock_setup(LPVOID arg)
++{
++    (void)arg;
++    HMODULE m = LoadLibraryA("pdh.dll");
++    if (!m) return 0;
++    pfn_PdhOpenQueryW open = (pfn_PdhOpenQueryW)(void*)GetProcAddress(m, "PdhOpenQueryW");
++    pfn_PdhAddEnglishCounterW add = (pfn_PdhAddEnglishCounterW)(void*)GetProcAddress(m, "PdhAddEnglishCounterW");
++    s_clk_collect = (pfn_PdhCollectQueryData)(void*)GetProcAddress(m, "PdhCollectQueryData");
++    s_clk_value = (pfn_PdhGetFormattedCounterValue)(void*)GetProcAddress(m, "PdhGetFormattedCounterValue");
++    if (!open || !add || !s_clk_collect || !s_clk_value || open(NULL, 0, &s_clk_q) != 0) return 0;
++    if (add(s_clk_q, L"\\Processor Information(_Total)\\% Processor Performance", 0, &s_clk_perf) != 0 ||
++        add(s_clk_q, L"\\Processor Information(_Total)\\Processor Frequency", 0, &s_clk_freq) != 0)
++        return 0;
++    s_clk_collect(s_clk_q);                       /* the first sample: the next collect has a rate */
++    InterlockedExchange(&s_clk_state, 1);         /* (a full barrier: the handles above are visible first) */
++    return 0;
++}
 +int host_sched_clock_text(char* buf, int len)
 +{
-+    static int state = -1;            /* -1 untried, 0 unavailable, 1 first sample taken, 2 ready */
-+    static HANDLE q, c_perf, c_freq;
-+    static pfn_PdhCollectQueryData collect;
-+    static pfn_PdhGetFormattedCounterValue value;
 +    if (!buf || len <= 0) return 0;
 +    buf[0] = 0;
-+    if (state < 0) {
-+        state = 0;
++    if (s_clk_state < 0) {                        /* (one caller: the vblank ticker) */
++        s_clk_state = 0;
 +        const char* e = getenv("PS3_CLOCK_SAMPLE");
 +        if (e && *e == '0') return 0;
-+        HMODULE m = LoadLibraryA("pdh.dll");
-+        if (!m) return 0;
-+        pfn_PdhOpenQueryW open = (pfn_PdhOpenQueryW)(void*)GetProcAddress(m, "PdhOpenQueryW");
-+        pfn_PdhAddEnglishCounterW add = (pfn_PdhAddEnglishCounterW)(void*)GetProcAddress(m, "PdhAddEnglishCounterW");
-+        collect = (pfn_PdhCollectQueryData)(void*)GetProcAddress(m, "PdhCollectQueryData");
-+        value = (pfn_PdhGetFormattedCounterValue)(void*)GetProcAddress(m, "PdhGetFormattedCounterValue");
-+        if (!open || !add || !collect || !value || open(NULL, 0, &q) != 0) return 0;
-+        if (add(q, L"\\Processor Information(_Total)\\% Processor Performance", 0, &c_perf) != 0 ||
-+            add(q, L"\\Processor Information(_Total)\\Processor Frequency", 0, &c_freq) != 0)
-+            return 0;
-+        collect(q);
-+        state = 1;
++        HANDLE th = CreateThread(NULL, 0, hs_clock_setup, NULL, 0, NULL);
++        if (th) CloseHandle(th);
 +        return 0;
 +    }
-+    if (state == 0) return 0;
-+    if (collect(q) != 0) return 0;
++    if (InterlockedCompareExchange(&s_clk_state, 1, 1) != 1) return 0;
++    if (s_clk_collect(s_clk_q) != 0) return 0;
 +    hs_pdh_value vp, vf;
-+    if (value(c_perf, 0x200 /* PDH_FMT_DOUBLE */, NULL, &vp) != 0 || vp.CStatus > 1 ||
-+        value(c_freq, 0x200, NULL, &vf) != 0 || vf.CStatus > 1 || vf.doubleValue <= 0)
++    if (s_clk_value(s_clk_perf, 0x200 /* PDH_FMT_DOUBLE */, NULL, &vp) != 0 || vp.CStatus > 1 ||
++        s_clk_value(s_clk_freq, 0x200, NULL, &vf) != 0 || vf.CStatus > 1 || vf.doubleValue <= 0)
 +        return 0;
 +    snprintf(buf, (size_t)len, "processors at %.2f GHz on average (%.0f %% of their %.2f)",
 +             vp.doubleValue * vf.doubleValue / 100000.0, vp.doubleValue, vf.doubleValue / 1000.0);

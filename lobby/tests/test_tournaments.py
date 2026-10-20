@@ -554,16 +554,16 @@ class CallTest(TourBase):
         self.assertEqual(self.tour(tid).champion, "Ann")
 
     def test_a_queued_player_leaves_the_queue_when_called(self):
-        tid = self.create(start_in=2.0, wait=False)
         self.f.accept = {n: False for n in self.names}
+        tid = self.create(start_in=2.0, wait=False)
         self.f.c["Cat"].quick_match()
         self.wait_state(tid, "running")
         self.f.run(lambda: self.f.last("Cat", "tour_call") is not None)
         self.assertEqual(self.s.call(lambda: self.s.srv.by_name["cat"].status), "idle")
 
     def test_no_show_loses_and_is_out(self):
-        tid = self.create()
-        self.f.accept["Ben"] = False                             # Ben never accepts
+        self.f.accept["Ben"] = False                             # Ben never accepts (set before create(): its wait
+        tid = self.create()                                      # pumps the calls already)
         self.f.run(lambda: self.bset(tid, "W1-1").state == "done", 15)
         s = self.bset(tid, "W1-1")
         self.assertEqual((s.reason, self.winner_name(tid, "W1-1")), ("no_show", "Ann"))
@@ -574,8 +574,8 @@ class CallTest(TourBase):
         self.wait_state(tid, "finished")
 
     def test_both_no_show_gives_the_next_opponent_a_walkover(self):
-        tid = self.create()
         self.f.accept.update(Cat=False, Dan=False)               # W1-2: nobody comes
+        tid = self.create()
         self.f.run(lambda: self.tour(tid).state == "finished", 20)
         self.assertEqual(self.bset(tid, "W1-2").reason, "no_show")
         self.assertIsNone(self.bset(tid, "W1-2").winner)
@@ -584,8 +584,8 @@ class CallTest(TourBase):
         self.assertEqual(self.tour(tid).champion, "Ann")
 
     def test_a_called_player_who_logs_in_again_gets_the_call(self):
-        tid = self.create()
         self.f.accept = {n: False for n in self.names}
+        tid = self.create()
         self.f.run(lambda: self.f.last("Dan", "tour_call") is not None)
         self.f.c["Dan"].close()
         pw = "pw-dan-x"
@@ -598,24 +598,24 @@ class CallTest(TourBase):
 # ============================================================================== 4. the games of a set
 class SetRulesTest(TourBase):
     def test_a_quit_at_zero_loses_the_set(self):
-        tid = self.create()
         self.f.special[("W1-1", 1)] = "quit"                     # Ben (the loser) closes his game in game 1
+        tid = self.create()
         self.f.run(lambda: self.bset(tid, "W1-1").state == "done")
         s = self.bset(tid, "W1-1")
         self.assertEqual((self.winner_name(tid, "W1-1"), s.reason), ("Ann", "forfeit"))
         self.wait_state(tid, "finished")
 
     def test_a_desynced_game_is_played_again(self):
-        tid = self.create()
         self.f.special[("W1-1", 1)] = "desync"
+        tid = self.create()
         self.f.run(lambda: self.bset(tid, "W1-1").state == "done")
         games = self.bset(tid, "W1-1").data["games"]
         self.assertEqual([g["status"] for g in games], ["void", "confirmed", "confirmed"])
         self.assertEqual(self.bset(tid, "W1-1").score, [2, 0])
 
     def test_a_crash_calls_the_set_again_with_its_score(self):
-        tid = self.create()
         self.f.special[("W1-1", 2)] = "crash"                    # 1-0, then Ben's game dies in game 2
+        tid = self.create()
         self.f.run(lambda: self.bset(tid, "W1-1").state == "done")
         calls = [e for e in self.f.events("Ann", "tour_call") if e["set"]["id"] == "W1-1"]
         again = [e for e in calls if e["replay"]]
@@ -626,8 +626,8 @@ class SetRulesTest(TourBase):
         self.assertEqual(self.winner_name(tid, "W1-1"), "Ann")
 
     def test_a_dispute_waits_for_the_organizer(self):
-        tid = self.create()
         self.f.special[("W1-2", 1)] = "dispute"
+        tid = self.create()
         self.f.run(lambda: self.bset(tid, "W1-2").data.get("live") == "attention")
         self.assertEqual(self.bset(tid, "W1-2").data["why"], "disputed")
         self.f.run(lambda: any(e["code"] == "attention" for e in self.f.events("Ann", "tour_notice")))
@@ -675,8 +675,8 @@ class OrganizerTest(TourBase):
     names = ("Ann", "Ben", "Cat", "Dan", "Eve")
 
     def test_override_reset_and_disqualify(self):
-        tid = self.create(players=("Ben", "Cat", "Dan", "Eve"))    # Ann organizes, does not play
         self.f.accept = {n: False for n in self.names}
+        tid = self.create(players=("Ben", "Cat", "Dan", "Eve"))    # Ann organizes, does not play
         self.f.run(lambda: self.f.last("Ben", "tour_call") is not None)
         full = self.org.tour_get(tid)
         pairs = {s["id"]: s["p"] for s in full["bracket"]["sets"] if s["bracket"] == "W" and s["round"] == 1}
@@ -818,8 +818,8 @@ class BlamedVoidTest(TourBase):
     def test_crashing_twice_loses_the_set(self):
         # a game ended by one player's own doing (a crash) called the set again with its score: a losing player could
         # kill the game for a do-over, T5L_TOUR_RETRIES times a set. One is forgiven (T5L_TOUR_BLAMED_VOIDS), not two.
-        tid = self.create()
         self.f.special[("W1-1", 2)] = "crash"                    # 1-0, then Ben's game "dies" in game 2 ...
+        tid = self.create()
         self.f.run(lambda: int(self.bset(tid, "W1-1").data.get("voids") or 0) == 1)
         self.f.special[("W1-1", 2)] = "crash"                    # ... and again in the replay
         self.f.run(lambda: self.bset(tid, "W1-1").state == "done")
@@ -1001,11 +1001,11 @@ class EndToEndTest(TourBase):
 
     def test_double_elimination_with_eight_players(self):
         t0 = time.monotonic()
-        tid = self.create(fmt="double", start_in=0.5)
         # side 0 wins every game -- except the grand final, which the losers' champion takes 2-1: the reset is played
         gf = {("GF1", 1): 1, ("GF1", 2): 0, ("GF1", 3): 1}
         self.f.plan = lambda sid, number: gf.get((sid, number), 0)
         self.f.special[("L1-1", 1)] = "desync"                   # one replay on the way
+        tid = self.create(fmt="double", start_in=0.5)            # (after the plans: its wait pumps the calls already)
         self.wait_state(tid, "finished", timeout=150)
         full = self.org.tour_get(tid)
         sets = {s["id"]: s for s in full["bracket"]["sets"]}

@@ -1,8 +1,9 @@
 # Deploying lobby 1.1.2: central server and relay node
 
 The exact steps to update the two production servers from the 1.1.1 lobby to 1.1.2, in order, with the checks
-after each step and the way back. Rehearsed end to end on a local copy of both servers on 2026-10-19 (see
-"What the rehearsal did" at the end): no command here was run against the real servers.
+after each step and the way back. Rehearsed end to end on a local copy of both servers on 2026-10-19, and the
+steps the later merges touch again on 2026-10-20 with main 67e3591 merged (see "What the rehearsal did" at the
+end): no command here was run against the real servers.
 
 | | Central lobby (Nuremberg) | Relay node `usw` (Hillsboro) |
 |---|---|---|
@@ -44,11 +45,20 @@ Time: 20-30 minutes, most of it the drain. Downtime: the central restart, a few 
   control requests stamped before it started (a request recorded before a node restart cannot be played back
   after it); password changes and new recovery codes 3 per account, then one per 20 s; the UDP total limit only
   counts pings; the database files lose "others" permissions at every start.
-- From this rehearsal (branch `deploy-rehearsal`): `drain --wait` also waits for ranked sets; friends rows of
-  deleted accounts are dropped at start (after a rollback); `t5lobby-admin release X.Y.Z`; launchers from 1.1.2 on
-  keep their saved login when the server is unreachable and log in again by themselves after a restart.
-- **Not in main yet**: `T5L_OLD_STAGES` (branch unlock-stages). If it is merged before the deploy, leave it off
-  (the default) for this deploy; it only ever affects matches between two launchers that announce `old_stages`.
+- **Security review 2** (main e080edd): at most `T5L_FRIEND_REQUESTS_ADDRESS` friend requests a day from one internet
+  address (all its accounts together); after a declined or taken-back invite or challenge the same two wait
+  `T5L_INVITE_RETRY_SECONDS` before the next one; a request taken back and sent again within a day is not announced
+  again; an invite to a **ranked** room keeps the room's ready check; a profile shows "last seen" only to the
+  account itself and its friends (a 1.1.1 launcher never showed it). Launcher side only: relay pings paced, Discord
+  status hardened, controller presses on a new question ignored for 0.4 s.
+- **Tekken 5 stages online** (unlock-stages, main 64ef2f5): `T5L_OLD_STAGES`, **off by default**. With 1 a match's
+  stage may be one of the 15 Tekken 5 stages, but only when both launchers announce `old_stages` (1.1.2): a 1.1.1
+  launcher always gets the stage select's own stages (rehearsed). Leave it off for this deploy; switching it on is
+  one env line and a drained restart, best once most players have 1.1.2.
+- **From this rehearsal** (branch `deploy-rehearsal`): `drain --wait` also waits for ranked sets (the drain fix);
+  friends rows of deleted accounts are dropped at start (after a rollback); `t5lobby-admin release X.Y.Z`;
+  launchers from 1.1.2 on keep their saved login when the server is unreachable and log in again by themselves
+  after a restart.
 
 ## Settings (`/etc/t5lobby/t5lobby.env`)
 
@@ -70,13 +80,18 @@ New settings, all optional (the env file will not list them; the defaults apply)
 | `T5L_FRIEND_REQUEST_DAYS` | 14 | days before an unanswered request runs out |
 | `T5L_FRIEND_RETRY_DAYS` | 7 | days before a declined request may be sent again |
 | `T5L_INVITE_SECONDS` | 60 | seconds an invite waits for its answer |
-| `T5L_OLD_STAGES` (only with unlock-stages) | 0 | 1 = Tekken 5 stages may be drawn when both launchers know them |
+| `T5L_FRIEND_REQUESTS_ADDRESS` | 60 | friend requests per 24 h from one internet address, all its accounts (0 = no limit) |
+| `T5L_INVITE_RETRY_SECONDS` | 30 | after a no or a take-back, seconds before the same player may invite or challenge the same player again (0 = off) |
+| `T5L_OLD_STAGES` | 0 | 1 = Tekken 5 stages may be drawn when both launchers know them (leave 0 for this deploy) |
+
+Built in, no setting: password changes and new recovery codes (3 per account, then one per 20 s); the drain also
+waiting for ranked sets.
 
 ## Before the day
 
 - The code to deploy is the 1.1.2 release commit **with branch `deploy-rehearsal` merged** (the drain, rollback
-  and update-notice fixes). Call it `REF` below (the tag `v1.1.2` once it exists). Deploying main 7486b0c as it is
-  also works; then read "Without the deploy-rehearsal fixes" at the end.
+  and update-notice fixes; it already contains main 67e3591). Call it `REF` below (the tag `v1.1.2` once it exists).
+  Deploying main as it is also works; then read "Without the deploy-rehearsal fixes" at the end.
 - `python tools/check_no_game_data.py` and the lobby tests pass on `REF` (CI's `lobby` job).
 - The owner decides the time: the evening's quietest hour. Check `sudo t5lobby-admin status` the day before for
   what "quiet" is.
@@ -150,6 +165,10 @@ sudo t5lobby-admin drain --wait 900
 From now on no new match starts (queues, rooms, challenges, rematches are refused with "the server restarts for
 an update in a moment"); running matches finish; a ranked set's next game still starts by itself. The tool prints
 "N match(es) still running" and ends with `no match running: restart now`.
+
+**The drain fix.** The 1.1.2 admin tool (deploy-rehearsal) also waits for ranked sets: it prints "N match(es) still
+running, M ranked set(s) not finished" and says "restart now" only when both are 0. Today the installed tool is
+still 1.1.1's, so C3 does that check by hand; from the next update on `drain --wait` alone is enough.
 
 ### C3. The quiet check (central) -- do not skip
 
@@ -245,6 +264,8 @@ sudo t5lobby-admin user OWNER-ACCOUNT                     # rating, record and "
   `integrity ok`.
 - File modes: the database files `600` (or `640`), owner `t5lobby:t5lobby`; nothing readable by "others" (the
   systemd unit's `UMask=0077` already made them so; 1.1.2 also takes "others" away at every start).
+- `grep -E 'OLD_STAGES|FRIEND_REQUESTS_ADDRESS|INVITE_RETRY' /etc/t5lobby/t5lobby.env` prints nothing: the defaults
+  (old stages off, 60 friend requests per address a day, 30 s between invites after a no).
 - Then a real login: the owner's 1.1.1 launcher logs in, a quick match against a second PC or the test account,
   and one relayed match if possible (on the central server the log says `match m...: relay usw (...)`, and no
   "older version" warning).
@@ -291,7 +312,8 @@ build/lobby_111.tgz v1.1.1 lobby` on the PC, copied and unpacked like P1/P2. Cop
 
 - The upgraded database stays: v1.1.1 opens it and works (tested: logins, remembered logins, quick, ranked sets,
   relayed matches through a 1.1.2 node). It does not know the friends tables and leaves them alone; it ignores the
-  `release` setting. No data written by 1.1.2 has to be removed.
+  `release` setting and the new env settings (`T5L_OLD_STAGES`, `T5L_FRIEND_REQUESTS_ADDRESS`, ...: a server reads
+  only the settings it knows). No data written by 1.1.2 has to be removed.
 - While rolled back, avoid `delete-user` and `purge-inactive`: v1.1.1 deletes accounts without their friends rows,
   and SQLite gives the next new account the deleted one's id. 1.1.2 with the deploy-rehearsal fix drops those
   rows at its next start (rehearsed: `dropped 4 friends row(s) of deleted accounts`); main 7486b0c without it
@@ -337,16 +359,23 @@ central server (tested), so the order of the two rollbacks does not matter.
 6. **Clocks**: a 1.1.2 node refuses control requests stamped more than 5 s before its own start. If the central
    server's clock is behind the node's by more than 5 s, the node refuses everything for that long after each
    node restart (DOWN, matches take the central relay). P2 checks NTP on both.
-7. **Matchmaking changes with the defaults**: the quick queue no longer pairs two far-apart players at once (up to
+7. **Tekken 5 stages (`T5L_OLD_STAGES`)**: off by default and for this deploy. Switched on in the rehearsal (env line,
+   drained restart): 2 of 4 pairs of 1.1.2 launchers got `t5s07`, the 1.1.1 pairs only the stage select's own
+   stages, all matches confirmed. Switch it on only when the 1.1.2 game is out (its game must know those stages).
+8. **Security review 2 limits** are new for players: an invite or challenge right after a "no" is refused for 30 s
+   ("your last invite to that friend ended a moment ago; try again in N s", rehearsed); the same holds for any kind
+   of invite between the same two. More than 60 friend requests a day from one address are refused (LAN parties:
+   raise `T5L_FRIEND_REQUESTS_ADDRESS`).
+9. **Matchmaking changes with the defaults**: the quick queue no longer pairs two far-apart players at once (up to
    30 s), the ranked queue may pair any ping after 60 s (before: never above 400 ms). Visible to players; tune with
    the `T5L_PING_*` settings if needed (restart).
-8. **install.sh replaces the code before its check**: if "code ok" fails, the running server still has the old code
+10. **install.sh replaces the code before its check**: if "code ok" fails, the running server still has the old code
    in memory but the new code on disk; run the old `install.sh` (Rollback) before anything restarts the service.
    P2's check makes this unlikely.
-9. **Not checked here**: file permissions on Linux (this PC is Windows; the logic is unit-tested with a fake POSIX
+11. **Not checked here**: file permissions on Linux (this PC is Windows; the logic is unit-tested with a fake POSIX
    `stat`), systemd, ufw. C5 checks the modes on the real server.
 
-### Without the deploy-rehearsal fixes (deploying main 7486b0c as it is)
+### Without the deploy-rehearsal fixes (deploying main as it is)
 
 The steps are the same; C3 is needed for every later update too; C6 does not exist (`t5lobby-admin notice "T5DR
 Online 1.1.2 is out: update the launcher" --hours 72` instead, which every player sees); while rolled back to 1.1.1
@@ -381,6 +410,16 @@ On this PC, nothing outside 127.0.0.1 (`build/deployrehearsal/`, scripts in `bui
   the 1.1.1 launchers only ever got message types a 1.1.1 server sends. 34 + 45 + 6 + 22 checks, all PASS.
 - **Relay node** checks (HMAC, replays, clock, node id, sealed and readable tokens) on 1.1.1 and 1.1.2: a request
   recorded before a node restart was taken again by 1.1.1 and refused by 1.1.2 (`clock`).
+- **2026-10-20, main 67e3591 merged** (security review 2, unlock-stages old stages): deploy 3 (deploy-rehearsal
+  a336a53 -> 00978ff) with 8 players playing on: the fixed `drain --wait` went on through a moment with 0 matches
+  and 3 sets between games (03:06:16) and said "restart now" at 03:08:20 when the sets had ended; `install.sh`,
+  restart; only the drain flag changed in the database. Then the clients again (login, quick, cross-version,
+  relayed through usw with sealed tokens, friends incl. the 30 s invite hold after a "no", `release` notice, message
+  audit): all PASS after three harness fixes (a relative stub path, a filter that took the admin notice for the
+  update notice, friends left from the day before). `T5L_OLD_STAGES=1`: see risk 7; then off again.
+- Tests on that head (00978ff + this doc and the env template): the lobby suite the CI way (22 modules, one process
+  each) all exit 0, `python -m unittest discover -s tests -q` 603 tests OK (9 skipped), `python
+  tools/check_no_game_data.py` exit 0.
 - **Deploy 2** (main -> deploy-rehearsal) with 3 ranked pairs playing: the installed (main) admin said "restart now"
   at 20:35:26 while 3 sets were between games; the fixed one waited until 20:39:25, when they had ended.
 - `release 1.1.2`: the v1.1.1 Online tab (hidden window) showed the update text in its status bar; 1.1.2

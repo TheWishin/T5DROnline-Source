@@ -1792,9 +1792,13 @@ switch lifts again). A post-pass over each function's final C body:
   next exit anyway.
 
 Guest memory accesses, their order and their values are unchanged: the pass
-only moves where register values live between two escapes. The lift takes
-~25 s longer (the pass runs at emission, one process); the DLL grows from
-44.3 to 47.7 MB.
+only moves where register values live between two escapes. Build cost
+(`build_game.py`'s player-side steps, this PC under load): the lift 18 ->
+~45 s (the pass runs while the lifter writes the source, in one process);
+the DLL compile (`build_game_dll.py --jobs 8`, interleaved runs) 63.7 / 66.0 s
+before, 66.2 / 62.2 s after -- the same wall time, 17 chunks instead of 15,
+compiler CPU +7 % (436-456 -> 468-497 s summed); `t5dr_game.dll` 44.3 ->
+47.7 MB.
 
 ### Results
 

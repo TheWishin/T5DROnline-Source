@@ -2527,6 +2527,7 @@ class LobbyServer(SpectateMixin):
             p.status = "playing"
             self._send_match_start(m, side)
         self._spec_match_started(m)
+        self.tours.match_live(m)                 # (a tournament set's game: the bracket can show Watch)
         self._timer(m, "match", self.cfg.match_timeout, self._match_timeout, m)
         self._save(m, "playing")
         if m.set is not None and m.set.rated:
@@ -3605,6 +3606,7 @@ class LobbyServer(SpectateMixin):
 
     def _set_game_over(self, gs, m, status, winner, score, reason, blame):
         """One game of a rated set ended (`_finish`): count it, then the next game or the end of the set."""
+        self.tours.match_live(m)                 # (a tournament set: its live score in the bracket)
         same = m.players[0] is gs.players[0]                 # (always: the games keep the set's sides)
         win_side = None if winner is None else (winner if same else 1 - winner)
         gs.log.append({"match": m.id, "number": gs.number, "status": status,

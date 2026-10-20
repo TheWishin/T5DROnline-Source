@@ -461,6 +461,10 @@ class TourManager:
                 if lg is not None:
                     row["wins"] = lg.score()
                     row["game"] = lg.number
+                    # spectating (docs/SPECTATE.md "Tournaments"): its game can be watched right now -- being played,
+                    # both players allow spectators, room for one more (who may: may_watch; the server checks again)
+                    watchable = getattr(self.srv, "_spec_watchable", None)
+                    row["watch"] = bool(watchable is not None and lg.current is not None and watchable(lg.current))
                 sets.append(row)
             d["bracket"] = {"format": b.format, "size": b.size, "rounds": b.k, "losers_rounds": b.losers_rounds,
                             "sets": sets}
@@ -1072,6 +1076,41 @@ class TourManager:
         self._save(t, [])
         self._tell_set_players(t, s, "attention")
         self._notice_organizer(t, "attention", set=s.id, why=why)
+
+    # ---------------------------------------------------------------- spectating (server/spectating.py)
+    def may_watch(self, viewer, m):
+        """SpectateMixin._spec_tournament_may_watch: a tournament's sets are public (the bracket is on the status port
+        for anybody), so anybody whose launcher shows tournaments may watch one being played -- if both players allow
+        spectators (their own setting; the rest of spectating's rules apply: blocks, the limit, not a player of it)."""
+        gs = getattr(m, "set", None)
+        if not isinstance(gs, TourSet) or gs.detached or gs.state != "active" or gs.tour.state != "running":
+            return False
+        c = getattr(viewer, "conn", None)
+        return c is not None and CAP in getattr(c, "caps", ())
+
+    def set_match(self, tid, sid):
+        """watch {tournament, set}: the match of that set being played (None between its games)."""
+        t = self.tours.get(str(tid or ""))
+        if t is None:
+            raise LobbyError(proto.E_NOT_FOUND, "no such tournament")
+        s = t.bracket.sets.get(str(sid or "")) if t.bracket is not None else None
+        if s is None:
+            raise LobbyError(proto.E_NOT_FOUND, "no such set")
+        ts = self.live.get(s.data.get("lobby_set")) if s.data.get("live") == "playing" else None
+        return ts.current if ts is not None else None
+
+    def match_live(self, m):
+        """lobby.py: a game of a tournament set started playing or ended -- the bracket's live part (can it be
+        watched, the set's score) changed, so the launchers showing it fetch it again (tour_changed). Nothing is
+        written: only the announcement's revision moves."""
+        gs = getattr(m, "set", None)
+        if not isinstance(gs, TourSet) or gs.detached or gs.tour.state != "running":
+            return
+        t = gs.tour
+        t.rev += 1
+        self.dirty.add(t.id)
+        self.http_cache.pop(t.id, None)
+        self.http_cache.pop(None, None)
 
     # ---------------------------------------------------------------- lobby hooks
     def check_free(self, p, requester=None):

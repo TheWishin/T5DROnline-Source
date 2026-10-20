@@ -377,6 +377,24 @@ class TourController:
         self.sel_set = sid if sid != self.sel_set else None
         self.render_detail(redraw=True)
 
+    # ------------------------------------------------------------------ spectating (docs/SPECTATE.md "Tournaments")
+    def watchable_set(self):
+        """The bracket set clicked on, if its game is being played and can be watched (the server's "watch") and
+        this player is not one of its two: its id, else None."""
+        s, row = self._summary(), self._set_row()
+        if s is None or row is None or s.get("state") != "running" or row.get("live") != "playing" or \
+                not row.get("watch"):
+            return None
+        me = ((self.tab.client.me or {}).get("name") if self.tab.client is not None else None) or ""
+        if me and me in (row.get("p") or ()):
+            return None
+        return row["id"]
+
+    def do_watch(self):
+        sid = self.watchable_set()
+        if sid and self.selected:
+            self.tab.spec.watch_tour(self.selected, sid)
+
     # ------------------------------------------------------------------ drawing
     def render_list(self):
         pg = self.page
@@ -500,6 +518,9 @@ class TourController:
             pg["set_tools"]["win1"].configure(text=t("Side 2 wins"))
             pg["set_label"].configure(text=t("Click a set in the bracket.") if s.get("can_manage") and
                                       st == "running" else "")
+        spec = getattr(self.tab, "spec", None)
+        if spec is not None:
+            spec.set_actions()                 # (the Watch button: the selected set's game, if it can be watched)
 
 
 # ====================================================================== the page
@@ -570,6 +591,10 @@ def build_page(view, page):
     bc.rowconfigure(2, weight=1)
     head, tools = view.section_head(bc, t("Bracket").upper())
     head.grid(row=0, column=0, sticky="we")
+    # spectating: the clicked set's game, live in this PC's game (docs/SPECTATE.md "Tournaments")
+    pg["watch"] = ttk.Button(tools, text=t("Watch"), style="Card.Small.TButton", state="disabled",
+                             command=ctl.do_watch)
+    pg["watch"].pack(side="left", padx=(px(6), 0))
     pg["set_tools"] = {}
     for key, label, cmd, style in (("win0", t("Side 1 wins"), lambda: ctl.do_report(0), "Card.Small.TButton"),
                                    ("win1", t("Side 2 wins"), lambda: ctl.do_report(1), "Card.Small.TButton"),

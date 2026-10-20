@@ -46,8 +46,13 @@ def _str(b, i):
     return b[i + 2:i + 2 + n].decode("utf-8", "replace"), i + 2 + n
 
 
+COSTUME_BLOCK = 0x108       # src/directfight/costume_logic.h kBlock: one side's custom costume block
+
+
 def parse_match(b):
-    """A MATCH record's payload -> dict (the fields the launcher shows)."""
+    """A MATCH record's payload -> dict (the fields the launcher shows). The match is the replay binary's of this
+    build (format 3): after the names, u32 costume flags and -- bit 0 -- both sides' custom costume blocks
+    (docs/DIRECTFIGHT.md "Custom costumes online"; the spectator's game writes them at its FIGHT START)."""
     if len(b) < 4 + 24 + 48 + 8 + 4:
         raise LiveError("short match record")
     idx = _u32(b, 0)
@@ -60,10 +65,15 @@ def parse_match(b):
         names.append(s)
     if not (0 <= v[0] <= 35 and 0 <= v[1] <= 35 and -1 <= v[6] <= 34):   # (as the game checks a match table)
         raise LiveError("fighters or stage out of range")
+    costumes = None
+    if len(b) >= i + 4 and _u32(b, i) & 1:
+        if len(b) < i + 4 + 2 * COSTUME_BLOCK:
+            raise LiveError("short costume blocks")
+        costumes = [b[i + 4:i + 4 + COSTUME_BLOCK].hex(), b[i + 4 + COSTUME_BLOCK:i + 4 + 2 * COSTUME_BLOCK].hex()]
     return {"index": idx, "start": start, "end": end, "frames": frames, "desync": desync,
             "have_result": bool(flags & 1), "complete": bool(flags & 4),
             "p1": v[0], "p2": v[1], "stage": v[6], "rounds": v[7], "pick": v[8],
-            "winner": None if v[9] < 0 else v[9], "score": [v[10], v[11]], "names": names}
+            "winner": None if v[9] < 0 else v[9], "score": [v[10], v[11]], "names": names, "costumes": costumes}
 
 
 class LiveParser:
@@ -348,11 +358,14 @@ class ClientMixin:
             await self._safe(self._send({"t": "spec_prefs", "allow": self.spec_prefs[0], "ranked": self.spec_prefs[1]}))
 
     # ---------------------------------------------------------------- watching
-    def watch(self, name=None, room=None):
-        """Watch the match friend `name` plays, or room `room`'s match. -> the `watching` reply
-        {stream, match, players, ranked, began, spectators}; then spec_ready / spec_end events."""
+    def watch(self, name=None, room=None, tournament=None, set_id=None):
+        """Watch the match friend `name` plays, room `room`'s match, or the game of tournament set `set_id` of
+        `tournament` being played (docs/TOURNAMENTS.md). -> the `watching` reply {stream, match, players, ranked,
+        began, spectators[, tournament]}; then spec_ready / spec_end events."""
         msg = {"t": "watch"}
-        if room is not None:
+        if tournament is not None:
+            msg.update(tournament=tournament, set=set_id)
+        elif room is not None:
             msg["room"] = room
         else:
             msg["name"] = name

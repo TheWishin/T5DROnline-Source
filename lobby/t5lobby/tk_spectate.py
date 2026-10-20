@@ -115,8 +115,8 @@ class Spectating:
         names = [p.get("name", "?") for p in w.get("players") or ()] + ["?", "?"]
         self.names.configure(text=t("{p1} vs {p2}", p1=names[0], p2=names[1]))
         ranked = w.get("ranked")
-        self.pill.configure(text=t("RANKED") if ranked else t("CASUAL"),
-                            style="Card.PillAccent.TLabel" if ranked else "Card.Pill.TLabel")
+        self.pill.configure(text=t("TOURNAMENT") if w.get("tournament") else t("RANKED") if ranked else t("CASUAL"),
+                            style="Card.PillAccent.TLabel" if ranked or w.get("tournament") else "Card.Pill.TLabel")
         st = w["state"]
         if st == "waiting":
             text, col = t("Waiting for the match data..."), C["warn"]
@@ -154,6 +154,14 @@ class Spectating:
                 fb.configure(state="normal" if f is not None and f.get("watch") else "disabled")
             except tk.TclError:
                 pass
+        tours = getattr(tab, "tours", None)
+        tb = ((getattr(tours, "page", None) or {}).get("watch")) if tours is not None else None
+        if tb is not None:                         # the Tournaments page (tk_tour.py): the selected set's game
+            on = ok and bool(tours.watchable_set())
+            try:
+                tb.configure(state="normal" if on else "disabled")
+            except tk.TclError:
+                pass
         rb = (getattr(tab, "actions", None) or {}).get("watch_room")
         if rb is not None:
             r = self._selected_room() if ok else None
@@ -185,7 +193,12 @@ class Spectating:
         if r is not None:
             self._watch(room=r["id"])
 
-    def _watch(self, name=None, room=None):
+    def watch_tour(self, tid, sid):
+        """The Tournaments page's Watch: the game of bracket set `sid` being played (tk_tour.py)."""
+        if tid and sid:
+            self._watch(tournament=tid, set_id=sid)
+
+    def _watch(self, name=None, room=None, tournament=None, set_id=None):
         tab = self.tab
         if self.w is not None or not self.ok():
             return
@@ -198,6 +211,7 @@ class Spectating:
         def done(r):
             self.w = {"stream": r["stream"], "match": r.get("match"), "players": r.get("players"),
                       "ranked": r.get("ranked"), "room": r.get("room"), "began": r.get("began"),
+                      "tournament": r.get("tournament"),
                       "spectators": r.get("spectators"), "state": "waiting", "game": None, "t0": time.monotonic(),
                       "end": None, "delay": None}
             names = [p.get("name", "?") for p in r.get("players") or ()] + ["?", "?"]
@@ -207,7 +221,7 @@ class Spectating:
             if path and self.w["stream"] == (tab.client.spec_watch or {}).get("stream"):
                 self._start_game(path)
             tab._set_actions()
-        tab.call(tab.client.watch, name, room, then=done)
+        tab.call(tab.client.watch, name, room, tournament, set_id, then=done)
 
     def _start_game(self, path):
         tab, w = self.tab, self.w

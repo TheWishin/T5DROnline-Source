@@ -232,6 +232,49 @@ class TkTourOrganizerTest(TkTourBase):
         self.pump(lambda: (tab.tours.detail or {}).get("state") == "cancelled")
 
 
+class TkTourWatchTest(TkTourBase):
+    def test_watch_a_set_from_the_bracket(self):
+        """The Tournaments page's Watch (docs/SPECTATE.md "Tournaments"): a set being played, both players allow
+        spectators -> the clicked set can be watched in this PC's game, the Spectating card says TOURNAMENT."""
+        tab = self.tab
+        self.login("Tabby")
+        org = self.player("Org")
+        ps = []
+        for n in ("Ana", "Bo"):
+            pw = "pw-" + n.lower() + "-x"
+            self.s.call(lambda n=n, pw=pw: self.s.srv.store.create_account(n, hash_password(pw, n=1 << 10)))
+            c = client(self.s, n, password=pw, sets=True, tournaments=True, spectate=True,
+                       live_dir=os.path.join(self.dir, n, "live"), watch_dir=os.path.join(self.dir, n, "watch"))
+            c.set_spectate_prefs(True, False)
+            self.others[n] = c
+            ps.append(c)
+        t = org.tour_create("Watch Cup", fmt="single", start=time.time() + 600)
+        for c in ps:
+            c.tour_join(t["id"])
+        org.tour_admin(t["id"], "start")
+        # both accept; nobody reports a result: the set's first game is being played
+        self.pump_all(lambda: self.s.call(lambda: all(
+            (self.s.srv.by_name[n].match is not None and self.s.srv.by_name[n].match.state == "playing")
+            for n in ("ana", "bo"))), timeout=30)
+        self.show_page()
+        tab.tours.select(t["id"])
+        self.pump_all(lambda: "W1-1" in tab.tours.bracket.boxes)
+        tab.tours.select_set("W1-1")
+        watch = tab.tours.page["watch"]
+        self.pump_all(lambda: (tab.tours._set_row() or {}).get("watch") and str(watch.cget("state")) == "normal",
+                      timeout=30)
+        watch.invoke()
+        self.pump_all(lambda: tab.spec.w is not None and tab.spec.w.get("game") is not None)
+        self.assertEqual((tab.spec.w["tournament"] or {}).get("set"), "W1-1")
+        self.assertEqual(self.app.games[-1].env.get("T5_NET_MODE"), "replay")     # this PC's game plays the stream
+        self.root.update()
+        tab.spec.update_card()
+        self.assertEqual(str(tab.spec.pill.cget("text")), "TOURNAMENT")
+        self.assertEqual(str(watch.cget("state")), "disabled")                    # (watching already)
+        tab.spec.stop()
+        self.pump_all(lambda: str(watch.cget("state")) == "normal")
+
+
 class TkTourGermanTest(TkTourBase):
     def test_the_page_in_german(self):
         tab = self.tab

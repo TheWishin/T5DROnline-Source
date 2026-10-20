@@ -17,7 +17,8 @@ these messages.
 
 Messages (client -> server):
     spec_prefs {allow, ranked}             a player's privacy setting (sent after login and on change)
-    watch {name} | {room}                  watch the match a friend plays / a room's match -> watching
+    watch {name} | {room} | {tournament, set}   watch the match a friend plays / a room's match / the game
+                                           of a tournament set being played -> watching
     unwatch {}                             stop watching
     spec_data {stream, off, data, eof}     the streamer's next piece (base64), in order
     spec_fail {stream, why}                the streamer cannot send this stream
@@ -68,10 +69,11 @@ class SpectateMixin:
 
     # ------------------------------------------------------------------ who may watch
     def _spec_tournament_may_watch(self, viewer, m):
-        """Hook for the tournaments branch: may `viewer` watch tournament match `m` (players of the
-        tournament, its organizer, anybody for a public one)? The rest of the rules (both players allow
-        it, blocks, the limit) still apply. Nothing here knows tournaments yet."""
-        return False
+        """May `viewer` watch tournament match `m`? The tournaments decide (tournaments.py TourManager.may_watch:
+        a set being played, anybody whose launcher shows tournaments -- they are public). The rest of the rules
+        (both players allow it, blocks, the limit) still apply."""
+        tours = getattr(self, "tours", None)
+        return bool(tours is not None and tours.may_watch(viewer, m))
 
     @staticmethod
     def _spec_allowed_by(q, m):
@@ -151,6 +153,11 @@ class SpectateMixin:
         return None
 
     def _spec_target(self, viewer, msg):
+        if msg.get("tournament") is not None:
+            tours = getattr(self, "tours", None)      # a tournament set (docs/TOURNAMENTS.md): its game being played
+            if tours is None:
+                raise LobbyError(proto.E_NOT_FOUND, "no such tournament")
+            return tours.set_match(msg.get("tournament"), msg.get("set"))
         if msg.get("room") is not None:
             r = self.rooms.get(str(msg["room"]))
             if r is None:
@@ -186,9 +193,13 @@ class SpectateMixin:
             self._spec_want(st)
         self._spec_count(st)
         asyncio.get_running_loop().call_soon(self._spec_pump, st)
+        gs = getattr(m, "set", None)
+        tour = getattr(gs, "label", None) if getattr(gs, "tour", None) is not None else None
         return {"t": "watching", "stream": st.id, "match": m.id, "players": [q.brief() for q in m.players],
                 "ranked": m.ranked, "room": m.room.name if m.room is not None else None, "began": st.began,
-                "spectators": len(st.viewers)}
+                "spectators": len(st.viewers),
+                **({"tournament": {"id": tour.get("id"), "name": tour.get("name"), "set": tour.get("set")}}
+                   if tour else {})}
 
     async def h_unwatch(self, conn, msg):
         if conn.player.watching is not None:

@@ -509,12 +509,27 @@ void live_append(const std::shared_ptr<Store>& st, const char* end_why)
     if (st->live_h == INVALID_HANDLE_VALUE) return;
     std::vector<uint8_t> out;
     uint32_t n, last;
+    bool started;
     {
         std::lock_guard<std::mutex> rk(r.mu);
-        if (!st->live_started && !end_why) return;
+        started = st->live_started;
+        if (!started && !end_why) return;
         out.swap(st->live_pend);
         n = st->frames();
         last = st->last.load(std::memory_order_relaxed);
+    }
+    if (!started) {
+        /* The session ends before its handshake: no SESSION went out, so there is nothing for a spectator -- the
+         * file keeps only its magic, no LAST/END. A session started again for the same match (the relay fallback,
+         * docs/NETPLAY.md "When Windows Firewall blocks the game": the same stream id, so the same file) then
+         * continues the stream byte for byte where its uploader stands (spectate.py reads on from its offset), and
+         * the spectators' games, still waiting for the session, get the new one. A stream that never gets a
+         * session at all is ended by the server (spectating.py _spec_tick). */
+        note("live stream %s: the session ended before the handshake (%s): nothing to send", st->live_path.c_str(),
+             end_why);
+        CloseHandle(st->live_h);
+        st->live_h = INVALID_HANDLE_VALUE;
+        return;
     }
     while (n > st->live_n) {
         const uint32_t first = st->live_n, cnt = std::min<uint32_t>(n - first, 3600);   /* a minute per record at most */
@@ -953,8 +968,14 @@ void rec_session_begin(int slot, const char* build, uint32_t session_seed)
         st->path += name;
     }
     if (live) {
-        st->live_h = CreateFileA(live, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr, CREATE_ALWAYS,
-                                 FILE_ATTRIBUTE_NORMAL, nullptr);
+        /* (a game started again for the same match -- process mode's relay fallback -- may find the old process
+         * still letting go of this file for a moment: a sharing violation is tried again, 2 s at most) */
+        for (int k = 0;; k++) {
+            st->live_h = CreateFileA(live, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr, CREATE_ALWAYS,
+                                     FILE_ATTRIBUTE_NORMAL, nullptr);
+            if (st->live_h != INVALID_HANDLE_VALUE || GetLastError() != ERROR_SHARING_VIOLATION || k >= 40) break;
+            Sleep(50);
+        }
         DWORD wr = 0;
         if (st->live_h != INVALID_HANDLE_VALUE &&
             WriteFile(st->live_h, kLiveMagic, (DWORD)(sizeof kLiveMagic - 1), &wr, nullptr) && wr == sizeof kLiveMagic - 1) {

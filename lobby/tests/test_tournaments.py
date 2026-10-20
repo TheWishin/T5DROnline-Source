@@ -1084,3 +1084,134 @@ class EndToEndTest(TourBase):
         self.assertEqual(sum(1 for r in rows if r["status"] == "confirmed"), 2 * 14 + 3)
         self.assertTrue({r["origin"] for r in rows} <= {"tournament", "set"})
         print(f"\n  8-player double elimination: {len(rows)} games in {time.monotonic() - t0:.1f} s")
+
+
+# ============================================================================== 10. with spectating and the relay fallback
+class SpectateSetTest(TourBase):
+    """A tournament set's game can be watched (docs/SPECTATE.md "Tournaments"): the bracket says so for a set being
+    played when both players allow spectators, anybody whose launcher shows tournaments may watch it, the players'
+    own setting still decides."""
+    names = ("Ann", "Ben")
+
+    def setUp(self):
+        import shutil
+        cfg = dict(TOUR)
+        cfg.update(self.server_cfg)
+        self.s = ServerThread(**cfg).start()
+        self.tmp = tempfile.mkdtemp(prefix="t5tourspec")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        kw = dict(spectate=True, live_dir=os.path.join(self.tmp, "live"), watch_dir=os.path.join(self.tmp, "watch"))
+        self.f = Field(self.s, self.names, **kw)
+        for c in self.f.c.values():
+            c.set_spectate_prefs(True, False)
+        self.org = self.f.c["Ann"]
+        self.others = []
+
+    def tearDown(self):
+        for c in self.others:
+            c.close()
+        super().tearDown()
+
+    def viewer(self, name, **kw):
+        pw = "pw-" + name.lower() + "-x"
+        self.s.call(lambda: self.s.srv.store.create_account(name, hash_password(pw, n=1 << 10)))
+        kw.setdefault("spectate", True)
+        c = client(self.s, name, password=pw, live_dir=os.path.join(self.tmp, name, "live"),
+                   watch_dir=os.path.join(self.tmp, name, "watch"), **kw)
+        self.others.append(c)
+        return c
+
+    def row(self, c, tid, sid):
+        return next(s for s in c.tour_get(tid)["bracket"]["sets"] if s["id"] == sid)
+
+    def test_watch_a_set_being_played(self):
+        self.f.special[("W1-1", 1)] = "hold"                     # game 1 goes on: there is something to watch
+        vic = self.viewer("Vic", tournaments=True)
+        old = self.viewer("Olaf", tournaments=False)            # spectating, but no tournaments in this launcher
+        tid = self.create(players=["Ann", "Ben"])
+        self.f.run(lambda: self.srv(lambda: (self.s.srv.by_name["ann"].match or None) is not None and
+                                    self.s.srv.by_name["ann"].match.state == "playing"), 30)
+        mid = self.srv(lambda: self.s.srv.by_name["ann"].match.id)
+        t_end = time.monotonic() + 10
+        while not self.row(vic, tid, "W1-1").get("watch") and time.monotonic() < t_end:
+            self.f.pump()
+            time.sleep(0.6)                                      # (tour_get: 2 a second)
+        row = self.row(vic, tid, "W1-1")
+        self.assertEqual((row["live"], row["watch"]), ("playing", True))
+        # the bracket's change reached the launchers (tour_changed), so a shown page fetches Watch in time
+        self.assertTrue(any(e.get("id") == tid for e in self.f.events("Ann", "tour_changed")))
+        r = vic.watch(tournament=tid, set_id="W1-1")
+        self.assertEqual((r["match"], r["stream"]), (mid, mid))
+        self.assertEqual(r["tournament"], {"id": tid, "name": "Test Cup", "set": "W1-1"})
+        self.assertEqual(sorted(p["name"] for p in r["players"]), ["Ann", "Ben"])
+        self.f.run(lambda: any(e.get("count") == 1 for e in self.f.events("Ann", "spectators")), 10)
+        vic.unwatch()
+        # no tournaments in the launcher, not a friend: not this way (a room or a friend would be)
+        with self.assertRaises(LobbyError) as cm:
+            old.watch(tournament=tid, set_id="W1-1")
+        self.assertIn("only friends", cm.exception.msg)
+        with self.assertRaises(LobbyError) as cm:
+            vic.watch(tournament=tid, set_id="W9-9")
+        self.assertIn("no such set", cm.exception.msg)
+        with self.assertRaises(LobbyError):
+            vic.watch(tournament="nope", set_id="W1-1")
+        # a player who switches spectators off: nobody watches the set
+        self.f.c["Ben"].set_spectate_prefs(False, False)
+        t_end = time.monotonic() + 10
+        while self.row(vic, tid, "W1-1").get("watch") and time.monotonic() < t_end:
+            time.sleep(0.6)
+        self.assertFalse(self.row(vic, tid, "W1-1").get("watch"))
+        with self.assertRaises(LobbyError) as cm:
+            vic.watch(tournament=tid, set_id="W1-1")
+        self.assertIn("do not allow", cm.exception.msg)
+        # a player of the set cannot watch it
+        self.f.c["Ben"].set_spectate_prefs(True, False)
+        with self.assertRaises(LobbyError) as cm:
+            self.f.c["Ann"].watch(tournament=tid, set_id="W1-1")
+        self.assertIn("you are playing", cm.exception.msg)
+
+
+class FallbackSetTest(TourBase):
+    """The relay fallback (docs/NETPLAY.md "When Windows Firewall blocks the game") in a tournament set: the game that
+    heard nothing moves the set's game onto the relay, the same game is played there (not counted twice), the set and
+    the bracket go on as if nothing happened."""
+    names = ("Ann", "Ben")
+
+    def setUp(self):
+        cfg = dict(TOUR)
+        cfg.update(self.server_cfg)
+        self.s = ServerThread(**cfg).start()
+        self.f = Field(self.s, self.names, relay_bridge=True)
+        self.org = self.f.c["Ann"]
+
+    def test_fallback_in_game_one(self):
+        from unittest import mock
+        self.f.special[("W1-1", 1)] = "hold"                     # game 1: the games hear nothing (no result)
+        with mock.patch("t5lobby.client.local_ipv4s", lambda ip: []):      # (a direct path, not the LAN)
+            tid = self.create(players=["Ann", "Ben"])
+            self.f.run(lambda: len(self.f.events("Ann", "match_start")) == 1 and
+                       len(self.f.events("Ben", "match_start")) == 1, 30)
+            first = self.f.last("Ann", "match_start")
+            self.assertEqual((first["path"], (first["set"] or {}).get("number")), ("direct", 1))
+            self.assertEqual(first["set"]["tournament"]["set"], "W1-1")
+            self.assertTrue(self.f.c["Ann"].nat_fallback(first["match"]))
+            # the same game again on the relay: both launchers get its second match_start; then it is played
+            self.f.run(lambda: len(self.f.events("Ann", "match_start")) >= 2 and
+                       len(self.f.events("Ben", "match_start")) >= 2, 30)
+            again = [e for e in self.f.events("Ann", "match_start")][1]
+            self.assertEqual((again["match"], again["path"]), (first["match"], "relay"))
+            self.assertEqual((again["set"] or {}).get("number"), 1)              # still game 1 of the set
+            self.assertEqual((again["set"] or {}).get("tournament"), first["set"]["tournament"])
+            self.wait_state(tid, "finished", timeout=60)
+        s = self.bset(tid, "W1-1")
+        self.assertEqual((s.state, s.score), ("done", [2, 0]))
+        self.assertEqual(self.winner_name(tid, "W1-1"), "Ann")
+        games = s.data.get("games") or []
+        self.assertEqual([g.get("number") for g in games], [1, 2])               # the fallback is no game of its own
+        self.assertEqual([g.get("status") for g in games], ["confirmed", "confirmed"])
+        self.assertEqual(self.srv(lambda: self.s.srv.counters["game_fallbacks"]), 1)
+        rows = self.s.call(lambda: [dict(r) for r in self.s.srv.store._x(
+            "SELECT id, status, path FROM matches WHERE set_id IS NOT NULL ORDER BY created").fetchall()])
+        self.assertEqual([(r["status"], r["path"]) for r in rows][0], ("confirmed", "relay"))
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(self.tour(tid).champion, "Ann")

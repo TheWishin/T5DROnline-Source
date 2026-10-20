@@ -59,6 +59,7 @@ extern "C" unsigned t5_netplay_match_seed(void);
 extern "C" int  t5_netplay_session_begin(void);
 extern "C" void t5_netplay_session_end(const char* why);
 extern "C" const char* t5_netplay_take_session_lost(void);
+extern "C" void t5_netplay_give_up(const char* reason, const char* text);   /* src/netplay/t5_hooks.cpp: this side ends the session */
 extern "C" const char* t5_env(const char* key);
 extern "C" void t5_netplay_pick_send(unsigned key, unsigned pick);
 extern "C" int  t5_netplay_pick_peer(unsigned key, unsigned* pick);
@@ -403,6 +404,7 @@ bool g_intro_hold = false;      /* the pads are held through the fight's loading
 uint32_t g_decided = 0;         /* frame the match was decided (hold_pads) */
 bool g_fresh = false;           /* the select screen was entered from the title and no fight was driven on it since */
 bool g_autosave_wait = false;   /* the title waits for its savedata autosave before start VS */
+ULONGLONG g_autosave_noted = 0; /* ... last "still running" line */
 bool g_over_wait = false;       /* a match end seen on predicted input, waiting for its confirmation */
 ULONGLONG g_cmd_ms = 0;         /* when the pending "fight" came (stuck_check) */
 bool g_mode_asked = false;      /* Reset / Leave: the mode request is out */
@@ -916,7 +918,8 @@ struct Pick {
     uint8_t last_st = 0;
     uint16_t hold = 0;           /* P2's confirm (its face button), held until P1 is confirmed on this PC (below) */
     bool held = false;           /* ... and pressed */
-    bool peer_none = false;      /* no pick came from the opponent: the line's character */
+    bool peer_none = false;      /* no netplay: the other side keeps the line's character */
+    bool gave_up = false;        /* no pick came from the opponent: the session was ended */
 };
 Pick g_pick;
 
@@ -1164,14 +1167,26 @@ bool take_peer_pick(uint32_t f)
         }
     }
     /* The opponent's own clock runs out after the same N seconds (its select
-     * screen may have come up a few seconds after this one) and then sends the
-     * launcher's character; only a game that never gets to pick is waited out. */
-    if (!go && (!k.net || GetTickCount64() - k.t0 > (ULONGLONG)(k.secs + 45) * 1000)) {
+     * screen may have come up later than this one) and then sends the launcher's
+     * character; only a game that never gets to pick is waited out -- and then the
+     * session ends. This PC never decides the opponent's fighter itself any more:
+     * it took the line's character after N + 45 s, and an opponent whose select
+     * screen came up later than that (a slow PC still loading it) could pick
+     * another one on its own screen -- two different matches (docs/NETPLAY.md
+     * "Slow loading"). A select screen comes up within the stuck check's 60 s of
+     * the command, or that game ends itself (its pick never comes: silence). */
+    if (!go && !k.net) {
         g_cfg.btn[other] = 0;
         k.peer_none = true;
         go = true;
-        note("frame %u: in-game select: %s -- player %d plays %s (the line's character)", f,
-             k.net ? "no pick came from the opponent" : "no netplay", other + 1, kName[g_cfg.chr[other]]);
+        note("frame %u: in-game select: no netplay -- player %d plays %s (the line's character)", f, other + 1,
+             kName[g_cfg.chr[other]]);
+    } else if (!go && !k.gave_up && GetTickCount64() - k.t0 > (ULONGLONG)(k.secs + 90) * 1000) {
+        k.gave_up = true;
+        note("frame %u: in-game select: no pick came from the opponent within %u s -- the session ends", f, k.secs + 90);
+        char why[96];
+        snprintf(why, sizeof why, "no pick came from the opponent within %u s", k.secs + 90);
+        t5_netplay_give_up("peer_stalled", why);
     }
     if (go) g_steps[other] = 0;
     return go;
@@ -1240,12 +1255,20 @@ void fight_on_frame(uint32_t f)
          * compared frame (reset_cycle_test F11 cycle 5: S's block at
          * 0x45C00000, O's at 0x45D00000, 38 differing words, all pointers
          * 0x100000 apart). Both games wait for it here, so both allocate in the
-         * same order. At most 10 s (an autosave takes well under one).
+         * same order. As long as it takes (an autosave takes well under a second;
+         * it used to be at most 10 s, and a PC whose disk took longer would have
+         * started VS beside it -- the heap apart again, docs/NETPLAY.md "Slow
+         * loading"); an autosave that never ends is the stuck check's (60 s: the
+         * game ends, the launcher starts a fresh one).
          * The boot state goes back after the wait, right before start VS as
          * before. */
-        if ((f >= g_title_seen + 30 || (g_restore_due && f >= g_title_seen + g_fresh_at)) &&
-            autosave_running() && GetTickCount64() - g_ph_ms < 10000) {
-            if (!g_autosave_wait) { g_autosave_wait = true; note("frame %u: waiting for the title's autosave before start VS", f); }
+        if ((f >= g_title_seen + 30 || (g_restore_due && f >= g_title_seen + g_fresh_at)) && autosave_running()) {
+            if (!g_autosave_wait) { g_autosave_wait = true; g_autosave_noted = GetTickCount64(); note("frame %u: waiting for the title's autosave before start VS", f); }
+            else if (GetTickCount64() - g_autosave_noted >= 10000) {
+                g_autosave_noted = GetTickCount64();
+                note("frame %u: the title's autosave is still running (%.0f s) -- start VS waits for it", f,
+                     (GetTickCount64() - g_ph_ms) / 1000.0);
+            }
             break;
         }
         if (g_restore_due && f >= g_title_seen + g_fresh_at) { g_restore_due = false; fresh_restore(f); }

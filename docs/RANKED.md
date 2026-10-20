@@ -204,6 +204,18 @@ button, unverified). Rounds: first to 3 (`T5L_ROUNDS`), like Tekken 6 online.
 The stage is always resolved by the server: the game's own random pick happens
 before lockstep starts and would differ between the two PCs.
 
+**The Tekken 5 stages** (1.1.2): `data/fighters.json` also lists the old
+stages of Tekken 5, keys `t5s01`..`t5s15` ("t5": the game's stage ids 0-13 and
+15, the ones the stage select offers once they are unlocked; docs/DIRECTFIGHT.md
+"Unlocks"). The server draws a match's stage from them too when
+`T5L_OLD_STAGES=1` (default off) and both clients announced the `old_stages`
+cap (1.1.2 launchers do: they know the keys; an older one could not start the
+fight). Otherwise the draw is exactly the old one (the same stage for the same
+seed). The direct-fight driver writes the stage id itself, so a stage plays the
+same whether or not a player unlocked it in their game, and online games
+answer the unlock check as a fresh save does on both PCs. Every one of the 15
+stages was played in sync in both netcode modes (runs old_rb / old_ls).
+
 ### Character select in the game
 
 The server offers it in `match_start`: `fight.pick` = seconds to pick
@@ -822,13 +834,14 @@ New `T5L_*` variables (all in `server/config.py`):
 | `T5L_RANKED_ROOMS` | 1 | rooms may be ranked |
 | `T5L_ROUNDS` | 3 | rounds to win (`T5_FIGHT`) |
 | `T5L_INGAME_PICK` | 30 | seconds to pick on the game's own select screen when both clients can (`fight.pick`); 0 = the launchers' characters |
+| `T5L_OLD_STAGES` | 0 | 1 = a match's stage may also be one of the Tekken 5 stages (`t5s01`..`t5s15`) when both clients announce `old_stages` |
 | `T5L_RANKED_INPUT_DELAY` | 2 | rollback input delay of ranked matches, frames, the same for everybody (`-1`: the players' own settings) |
 | `T5L_READY_TIMEOUT` | 15 | seconds to accept a found match (was 20) |
 | `T5L_BLIND_READY` | 1 | a queue match shows only the ping until both accepted (for clients that ask); 0 = names at once |
 | `T5L_STRICT_RANGE` | 150 | rating points a strict ranked search stays within |
 | `T5L_PAIR_COOLDOWN` | 30 | seconds before the ranked queue matches the same two players again (0 = off) |
 | `T5L_MAX_BLOCKS` | 200 | blocked players per account or guest session |
-| `T5L_MAX_FRIENDS`, `T5L_FRIEND_REQUESTS_DAY`, `T5L_FRIEND_PENDING`, `T5L_FRIEND_REQUEST_DAYS`, `T5L_FRIEND_RETRY_DAYS`, `T5L_INVITE_SECONDS` | 100, 20, 30, 14, 7, 60 | friends and invites (docs/ONLINE.md "Friends and invites") |
+| `T5L_MAX_FRIENDS`, `T5L_FRIEND_REQUESTS_DAY`, `T5L_FRIEND_PENDING`, `T5L_FRIEND_REQUEST_DAYS`, `T5L_FRIEND_RETRY_DAYS`, `T5L_INVITE_SECONDS`, `T5L_INVITE_RETRY_SECONDS`, `T5L_FRIEND_REQUESTS_ADDRESS` | 100, 20, 30, 14, 7, 60, 30, 60 | friends and invites (docs/ONLINE.md "Friends and invites") |
 | `T5L_LAG_TOLERANCE` | 1 | extra frames of waiting before the lag check says "more than the ping explains" |
 | `T5L_LAG_WAIT` | 6 | seconds the lag check waits for the second player's report |
 | `T5L_MIN_FPS` | 40 | a PC whose last match ran slower may not play ranked (0 = off) |

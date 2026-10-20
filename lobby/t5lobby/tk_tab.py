@@ -91,10 +91,16 @@ CHALLENGE_TEXT = {"declined": N_("Challenge declined."), "cancelled": N_("Challe
                   "expired": N_("Challenge expired.")}
 # A friend's state in the Friends list: the lobby status when online (STATUS_TEXT), else these.
 FRIEND_STATE_TEXT = {"in_match": N_("in a match"), "offline": N_("offline")}
-FRIEND_INVITE_TEXT = {"update": N_("(older launcher: no invites)"), "version": N_("(other version)")}
+# ... and, when they cannot be invited for a reason of their side, that reason instead (the presence icon still
+# says online or in a match).
+FRIEND_INVITE_TEXT = {"update": N_("older launcher: no invites"), "version": N_("other version")}
 PATH_TEXT = {"direct": N_("direct"), "lan": N_("local network"), "relay": N_("via the lobby server's relay")}
 PAD_STALE_S = 1.0       # a controller press this old by the time the tab sees it (a dialog held the loop) is dropped
 PAD_COOLDOWN_S = 0.6    # after a controller action the next one waits (A and B hit together do only one thing)
+# A question's controller buttons (Accept (A) ...) take only presses made this long after it came up: a press meant
+# for what was there before -- A for a search, a menu -- must not answer a challenge or an invite that popped up in
+# the same moment (security review 2: a challenger or a friend could time one against a player using the pad).
+BAR_ARM_S = 0.4
 
 
 def _word(table, key):
@@ -196,6 +202,7 @@ class OnlineTab:
         self.bar_spec = []               # (button, text, controller button) of the bar's buttons
         self._pad_gen = -1
         self._pad_until = 0.0            # no controller action before this (pad clock)
+        self._bar_t = -1e9               # when the question bar's buttons last changed (pad clock): BAR_ARM_S
         self._build_ui()
         self._after = self.parent.after(100, self._poll)
 
@@ -374,6 +381,8 @@ class OnlineTab:
             self.bar_spec.append((b, label, pad))
             if pad:
                 self.bar_pad[pad] = cmd
+        if self.bar_pad:
+            self._bar_t = (self.pad.clock if self.pad is not None else time.monotonic)()
         self.view.show_bar()
         self._pad_relabel()
 
@@ -854,7 +863,7 @@ class OnlineTab:
         if st == "offline" and f.get("last_seen"):
             text = t("offline, last seen {when}", when=stamp(f["last_seen"]))
         if f.get("invite") in FRIEND_INVITE_TEXT:
-            text += " " + _word(FRIEND_INVITE_TEXT, f["invite"])
+            text = _word(FRIEND_INVITE_TEXT, f["invite"])
         return text
 
     def _fill_friends(self):
@@ -1061,13 +1070,16 @@ class OnlineTab:
             slot = info.get("slot") or 0
             fight = info.get("fight")
             fighters = None
-            if fight and all(x and x != fighters_random() for x in fight):
+            # Only fighters of our own table and whole-number scores: the status is public on the player's Discord
+            # profile, and a lobby server (any server a player adds) sent the keys -- an unknown key used to go there
+            # as it came, any text up to 128 characters (security review 2).
+            if fight and len(fight) == 2 and all(isinstance(x, str) and self.table.fighter(x) for x in fight):
                 names = [self.table.fighter_name(x) for x in fight]
                 fighters = (names[0], names[1]) if slot == 0 else (names[1], names[0])
-            st = info.get("set") or {}
+            st = info.get("set") if isinstance(info.get("set"), dict) else {}
             score = None
-            if st.get("rated"):
-                w = st.get("wins") or [0, 0]
+            w = st.get("wins")
+            if st.get("rated") and isinstance(w, (list, tuple)) and len(w) == 2 and                     all(isinstance(v, int) and not isinstance(v, bool) and 0 <= v < 100 for v in w):
                 score = (w[0], w[1]) if slot == 0 else (w[1], w[0])
             spec = dict(kind="match", ranked=info.get("ranked"), fighters=fighters, set_score=score)
         elif c.me.get("status") == "queue":
@@ -1426,9 +1438,8 @@ class OnlineTab:
         self.tv_players.delete(*self.tv_players.get_children())
         rtt_of = {}
         for p in ev.get("players", []):
-            status = _word(STATUS_TEXT, p["status"])
-            if p["build"] != mine:
-                status += " " + t("(other version)")
+            # another version: that is what matters (no challenge either way), not what they are doing
+            status = _word(STATUS_TEXT, p["status"]) if p["build"] == mine else t("other version")
             ms = None if p["rtt"] is None or (me and p["id"] == me["id"]) else p["rtt"] + my_rtt
             rtt_of[p["id"]] = ms
             ping = "" if ms is None else f"~{ms:.0f} ms"
@@ -1782,6 +1793,8 @@ class OnlineTab:
         act = self._pad_plan().get(ev.button)
         if act is None:
             return
+        if act[0] is None and ev.t < self._bar_t + BAR_ARM_S:
+            return                  # a question's button, pressed before the question was there to be read
         self._pad_until = now + PAD_COOLDOWN_S
         act[1]()
 

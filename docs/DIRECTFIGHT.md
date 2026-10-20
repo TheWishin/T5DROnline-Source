@@ -1014,6 +1014,153 @@ neither changed the fight (the same hash again afterwards, the same result).
   menu-transition limit of NETPLAY.md, on main (1 of 3 runs) as on this branch
   (2 of 4). Online play does not go through the menus (direct fight).
 
+## Unlocks (branch unlock-stages, 1.1.2)
+
+Player request: "an option to auto unlock the stages from the base Tekken 5 --
+clearing Arcade Mode a few times to unlock them is tedious". Then the owner:
+"also unlock all customs". Launcher Settings -> Unlocks: **Unlock all stages**
+(`T5_UNLOCK_STAGES=1`) and **Unlock all customization items**
+(`T5_UNLOCK_ITEMS=1`), both off by default, offline only. Code:
+`src/directfight/df_unlock.cpp` (entry detours, `rb::detour`; installed at
+static init in the exe build, at the first frame boundary in the game-DLL build).
+
+**How the game keeps its unlocks** (found by diffing saves before and after
+Arcade runs -- the offline-soak agent's arcade saves -- and the lifted code):
+
+- One byte of the system save, SYS-DATA +0x4A (in memory 0x106849AA: the save
+  image lives at 0x10684960, 0x218C0 bytes; its "setting" objects at
+  0x10684690, this one 0x106848B8). Bits: 0x01 Tekken 5 stages earned, 0x02
+  Jinpachi earned, 0x10 / 0x20 the same two **offered** (the title says
+  "... now available" once and sets them: 0x2A7358). Earned by the counter at
+  SYS-DATA +0x4C (0x2A76F8, one per fight of Arcade, Ghost, VS, Survival:
+  game types in the mask 0x353; > 49 -> 0x01, > 99 -> 0x02), Jinpachi also by
+  clearing Arcade (0x42FAC). The counter goes up in online fights too.
+- Everything that offers them asks 0x2A732C(mask) = (byte & mask) != 0, with
+  0x10 or 0x20: the stage tables' availability callbacks (table 0x4410BC, three
+  columns per stage id: the old stages 0-13 and 15 are `0x613F8` = check(0x10)
+  in two of them, never in the third; ids 14 and 16 are never offered), the
+  stage select's OLD/NEW switch (0x1151D0), the random stage picker (0x5C930:
+  with 0x10 its 50-bit mask takes the old ids too), the select grid's Jinpachi
+  and random cells (0x112F04, 0x58F64: the top row grows from 10 to 12 cells)
+  and a select set-up (0x248768). Nothing in a fight calls it
+  (`T5_UNLOCK_TRACE=1` logs each caller once with the mode: modes 0, 1 and 6).
+- `T5_UNLOCK_STAGES=1` answers 1 for mask 0x10. No guest memory is written:
+  the save keeps the player's byte, autosaves write it back unchanged, and the
+  setting off is the old game. Checked: the VS stage panel's list (0x1009405C)
+  holds 17..34 without it and 0..13, 15, 17..34, 37 with it on a fresh save
+  (runs t_on / t_fixed), and PRACTICE's stage select shows NEW STAGE SELECT /
+  OLD STAGE SELECT with the same list (run prac1); the save file is not
+  rewritten. (Poking the byte
+  instead, the first try, went into the save with the title's autosave.)
+
+**Customization items.** The item shop (ITEM SHOP & EQUIP after picking a
+fighter in Arcade, Ghost or Survival; `tcb_cusswg_shop_t`) works on each
+side's VS custom data, 0x106C9934 + side * 0x1F4: the fighter's three costumes,
+0x58 bytes each -- +0x00 32 u16 parts bought (item id in the low byte, in the
+order bought), +0x40 4 u16 the parts worn (HEAD, FACE, BODY up, BODY down; -1
+none), +0x48 3 u32 colours bought (a bit per colour of COLOR1..3), +0x54 3 u8
+the colours worn -- and +0x114 the Fight Money (name +0x134, rank +0x11C).
+0x2A77B0(side) builds it at the fighter's confirm from the side's profile
+(SYS-DATA +0x400: +8 Fight Money, +0x420 + c * 0x108 the three costumes of
+character c in the item numbering, Lili = 0x1F), and the shop writes it back.
+Checked by buying with Fight Money poked in (runs shop6, shop9): Lace
+Hairband = item 0x33 into +0x00 and worn at +0x40. `T5_UNLOCK_ITEMS=1` makes
+every price 0: 0x152A18(character, costume, category, index) tail-calls one
+of two price functions -- the lifted code runs a tail call only after the
+function returned, so the detours sit on the two: parts 0x152918 (the body of 0x1528F0;
+the per-character table *(0x10076724)[c] of {item id, price}) and colours
+0x1522C8. The shop then sells everything for 0 G through its own buy path
+(bought list, worn slot, Fight Money unchanged; run shop12; Lili wears the
+hairband in the Arcade fight after it, run shop13). Answering "bought" from the
+shop's checks instead (0x29E754 parts, 0x29E7F4 colours) is not enough: the
+shop then shows EQUIPPED and equips nothing, its equip path searches the list
+itself (runs shop4, shop8). What is taken for free stays in the save like a
+bought item; the launcher copies the save folder to `save-backups/free-items-*`
+once before the first game with the setting.
+
+**Online: one answer on both PCs.** The unlocks reach what two netplay games
+must agree on whenever the select screens or the stage pickers run in step: in
+a lockstep rematch (no in-game select) each PC drives only its own cursor and
+the peer replays those presses on its own grid, so a grid with Jinpachi's and
+the random cell on one PC puts the same presses on another fighter or costume.
+Run ctrl_ls (`--env1 T5_UNLOCK_ONLINE=save`: the host's save has 0x33 and
+both settings on, the joiner a fresh save, lockstep, `fight_flow_test --pattern
+NRRNR`): match 1 in sync, the first rematch put P2 (Devil Jin) on model 0x43 on
+one PC and 0x45 on the other -- 1,327 mismatching frames, different winners.
+So a game started for online play (`T5_NET_MODE`, `T5_CTL_DIR`, `T5_FIGHT`,
+`T5_FIGHT_FILE`) answers every check as a fresh save does (stages and Jinpachi
+not offered), whatever its save and settings; the launcher also leaves the two
+settings out of online games. The stage of an online match is the lobby's and
+the driver writes it, which works for every stage id with or without the
+unlock (the Tekken 5 stages online: docs/RANKED.md "Characters and stages").
+With the rule (runs rule_rb / rule_ls: the same pair and pattern, stages 0, 13,
+15, 5, 9, the host's save with every unlock and free-bought items, both
+settings on; the joiner fresh, both off): 5/5 matches in rollback and 5/5 in
+lockstep, 0 mismatching frames, the same hash. `T5_UNLOCK_ONLINE=save` keeps
+the old behaviour (tests only).
+
+The Tekken 5 stages themselves in netplay (for the lobby's `T5L_OLD_STAGES`):
+every one of them, ids 0-13 and 15, in one persistent session of 15 matches (a
+new session, then 14 rematches; 30 different fighters; both players mashing
+with motion inputs, 1 round): runs old_rb (rollback) 15/15 and old_ls
+(lockstep) 15/15, 28,919 and 29,852 frames, 0 mismatching frames, the same
+hash and winner on both PCs.
+
+**The game's own options online (found by the same pair tests).** A
+player's save reaches the match through the game's own OPTIONS too: the
+start-game routine copies Difficulty (SYS-DATA +4, 0x1008F094), Round Time
+(+6, 0x1008F09C, which 0x4E8C0 turns into the round timer 0x1008F054) and +7
+(0x1008F098) into the hashed battle state, and 0x1CC28 copies Difficulty again
+during the match. A host whose save had EASY / 1 round (an Arcade soak save)
+against a fresh save: every compared frame mismatching (run c2: 1,411 of
+1,634; desync dumps of opt_dump: 0x1008F094 3 vs 1 and its copy 0x1008F0CC).
+Writing the three words after start VS was not enough (0x1CC28). So **an online
+game keeps a save of its own**: ps3recomp patch 0044 adds `PS3_SAVEDATA_DIR`
+(the save folder; default ./gamedata/...), and the launcher points every game
+it starts for online play at `<game folder>/gamedata-online` -- both PCs start
+from the same fresh save, and the player's own save is never read or written
+by online play. Runs osave_rb / osave_ls (the host's own save the EASY one with
+every unlock and both settings, its online save fresh): 3/3 and 3/3, 0
+mismatching frames. What a player sets in the game's OPTIONS (button layout,
+difficulty, round time, volumes) therefore applies offline only; buttons for
+online play are set in the launcher (controls.ini), which works below netplay.
+
+**Customization online today:** none, on either PC: the direct-fight driver
+starts VS with 0x4E9DC, not through the VS menu (0x572CC -> 0x1F99BC, which
+copies the save's profile for both sides and sets their profile pointers
+0x106C9E38[side]); with the pointers at 0, 0x2A77B0 builds no custom data and
+both fighters wear their default costumes on both PCs (traced in t_df_items).
+
+**Plan: each player's custom costume online (not in 1.1.2).** Checked by
+hand (run cos1, one game): the fight reads its costumes from the VS custom
+data -- with no profile, as online, Lili's costume block is zeros; the Lace
+Hairband written into it between the select confirm and the fight's loading
+(bought list +0x00 and worn HEAD +0x40 of costume 1) is on her in the fight's
+intro. So:
+
+1. The launcher reads the player's own save (SYS-DATA, profile +0x400): for
+   every character the 0x108-byte costume block at +0x820 + c * 0x108 (only
+   the non-empty ones; Fight Money and names stay out) and announces a cap
+   `costumes` with its queue/ready message.
+2. The lobby server, when both clients have the cap (and a server setting,
+   say `T5L_COSTUMES`, allows it; ranked too only if the items are cosmetic),
+   sends both players' blocks to both in `match_start` (`fight.costumes`,
+   size-checked, at most 35 x 0x108 bytes per player). Both PCs then hold the
+   same bytes from the same message: nothing to agree on over the netplay
+   link, and locked set games, rematches and the in-game select need nothing
+   extra.
+3. The launcher writes them to a file named on the fight line; at FIGHT START
+   (before `t5_netplay_start()` and the fight's loading) the driver writes,
+   for each side, the block of the fighter it fights with (the item
+   character index: the fighter object +0x40, as 0x2A77B0 reads it) into that
+   side's VS custom data. Both PCs load the same item models for both sides.
+4. The VS custom data is outside the netplay hash and does not change during
+   a fight; anything the items change in the match (item models, an item
+   move) is the same on both PCs. Proof wanted: rollback and lockstep pairs
+   with costumes on both sides and mirrors, 0 mismatching frames, frame dumps
+   of both PCs showing the same costumes. Still open: whether any item has a
+   gameplay effect (T5 item moves) -- it decides ranked, not determinism.
+
 ## Character ids
 
 The game's own order (3-letter codes at 0x1001CE58, 8 bytes apart; names at
@@ -1039,7 +1186,9 @@ display order).
 
 The stage select lists ids 17-34 (0x11-0x22, the list at 0x1009405C the stage
 panel is built from; its random pick lands in 0x1008F088 at the confirm). The
-old Tekken 5 stages have the sprite names `stage_1_old` .. `stage_16_old`.
+old Tekken 5 stages have the sprite names `stage_1_old` .. `stage_16_old`:
+ids 0-13 and 15, offered once unlocked (14 and 16 are empty slots; with the
+unlock the panel also lists 37, not tried). See "Unlocks".
 Verified by forcing the id and looking at the fight: 20 (scrapyard with
 wrecked trucks), 33 (industrial yard). The game's own picks seen in runs: 24,
 25, 31, 33. Names for every id are still to be matched to screenshots.

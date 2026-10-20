@@ -305,8 +305,14 @@ d = os.environ["FAKE_CC_DIR"]
 def names(var):
     return {s for s in os.environ.get(var, "").split(",") if s}
 def note(**kw):
-    with open(os.path.join(d, "calls.jsonl"), "a") as f:
-        f.write(json.dumps(kw) + "\n")
+    # one file per record: several of these run at once, and appends from several processes to one file can land
+    # on the same bytes on Windows (review-113: a JSONDecodeError in calls(), now and then)
+    calls = os.path.join(d, "calls")
+    os.makedirs(calls, exist_ok=True)
+    tmp = os.path.join(calls, "%d-%d.tmp" % (time.time_ns(), os.getpid()))
+    with open(tmp, "w") as f:
+        f.write(json.dumps(kw))
+    os.replace(tmp, tmp[:-4] + ".json")
 if role == "lld-link":
     for a in args:
         if a.lower().startswith("/out:"):
@@ -399,11 +405,16 @@ class EndToEnd(unittest.TestCase):
         return r.returncode, r.stdout, r.stderr
 
     def calls(self):
-        p = os.path.join(self.d, "calls.jsonl")
-        if not os.path.exists(p):
+        """The fake tools' records in the order they were written (one file each, named by the time)."""
+        p = os.path.join(self.d, "calls")
+        if not os.path.isdir(p):
             return []
-        with open(p) as f:
-            return [json.loads(ln) for ln in f if ln.strip()]
+        out = []
+        for n in sorted((n for n in os.listdir(p) if n.endswith(".json")),
+                        key=lambda n: tuple(int(x) for x in n[:-5].split("-"))):
+            with open(os.path.join(p, n)) as f:
+                out.append(json.loads(f.read()))
+        return out
 
     def assert_launcher_safe(self, out):
         """The launcher reads "[step]", "[k/n]", "ERROR:" and "already done" at the start of build lines."""

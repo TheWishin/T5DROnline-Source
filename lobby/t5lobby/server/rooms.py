@@ -717,8 +717,9 @@ class RoomsMixin:
         if r.next_at is not None:
             pair = self._room_next_pair(r)
             d["next"] = {"at": round(r.next_at, 1), "players": [q.id for q in pair] if pair else []}
-        if r.match is not None and viewer not in playing and self._can(viewer, "spectate"):
-            d["watch"] = self._spec_refusal(viewer, r.match) is None
+        m = self._spec_room_match(r)                 # (between a match and its rematch: while its stream is alive)
+        if m is not None and viewer not in m.players and self._can(viewer, "spectate"):
+            d["watch"] = self._spec_refusal(viewer, m) is None
         return d
 
     def _room_push(self):

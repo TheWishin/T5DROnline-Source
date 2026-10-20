@@ -25,6 +25,14 @@ part is in the README's status table.
   with real customizations on both sides, a forged block from one side (default on both PCs) and against a 1.1.3
   build: both PCs showed the same costumes, 0 desyncs. Both players need 1.1.4 (the lobby pairs equal builds only).
 
+### Online
+- **A room stays watchable between a match and its rematch.** The Rooms list took the Watch button away from a
+  room as soon as its match ended, so whoever came by while the players chose their rematch could not watch,
+  although the spectators already watching went on into the rematch. Now the room keeps Watch while its players'
+  session is being watched: you join those spectators, from the session's start as always, and see the rematch
+  with them. Only when both players allow spectators; switching it off in that pause stops the spectators at once,
+  as during a match. A server change: launchers from 1.1.3 on get it once the lobby server is updated.
+
 ## v1.1.3 (2026-10-20)
 
 **Tournaments, private rooms, watching live matches, your custom costumes online, matches that connect through a blocking firewall, and more speed on slower PCs.** Both players need 1.1.3

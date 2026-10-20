@@ -16,6 +16,14 @@ fewer than T5L_MAX_SPECTATORS of them. Clients without the "spectate" cap never 
 so a match with an older launcher on either side cannot be watched, and they never get any of
 these messages.
 
+Between a match and its rematch (1.1.4): a room's match that is over while its set still runs -- the players'
+games keep the netplay session for the rematch -- can still be watched from the room (the Rooms list's Watch,
+`watch {room}`) while its session's stream is alive: somebody started watching it and it was not ended. The
+spectators already watching follow the stream into the rematch (_spec_match_started), a newcomer joins them.
+Same rules (both players allow it, blocks, private rooms, the limits); switching spectators off in that gap ends
+the stream at once, as during a match. A session nobody watched yet has no stream: its room is watchable again
+when the rematch starts.
+
 Limits (hardening 1.1.4; before, ~50 guest connections from ~7 addresses took every stream slot of the
 server and every place at a match):
     close viewers   a friend of either player, a member of the match's room, the organizer or a player of
@@ -168,9 +176,50 @@ class SpectateMixin:
                 return q
         return None
 
+    @staticmethod
+    def _spec_session_open(m):
+        """m's netplay session may still go on: m is being played, on its way to the relay (the relay fallback,
+        docs/NETPLAY.md "When Windows Firewall blocks the game": its games start the session again, on this same
+        stream), or over while its set still runs (a rematch in the running games carries the session's stream on:
+        _spec_match_started)."""
+        moving = bool(getattr(m, "fallback", False)) and m.state == "relay"
+        return m.state == "playing" or moving or (m.set is not None and m.set.state == "active")
+
+    def _spec_gap_stream(self, m):
+        """Between a match and its rematch: m's session stream if m is over, its set still runs and the stream is
+        alive (somebody started watching it, it was not ended and has not moved on to a rematch) -- else None."""
+        if m is None or m.state != "done":
+            return None
+        st = self.streams.get(m.stream_id)
+        if st is None or st.match is not m or st.ended is not None or st.eof or not self._spec_session_open(m):
+            return None
+        return st
+
+    def _spec_on_air(self, m):
+        """m can be watched as far as its state goes: it is being played, or it is over and its session's stream is
+        alive until the rematch (_spec_gap_stream)."""
+        return m is not None and (m.state == "playing" or self._spec_gap_stream(m) is not None)
+
+    def _spec_room_match(self, r):
+        """The match a room's Watch shows: the one being played, else -- between a match and its rematch -- the
+        room's last match while its session's stream is alive."""
+        if r.match is not None:
+            return r.match
+        last = r.set.last if r.set is not None else None
+        if last is not None and last.room is r and self._spec_gap_stream(last) is not None:
+            return last
+        return None
+
+    def _spec_player_gap(self, p):
+        """p's session stream between p's match and its rematch (_spec_gap_stream), or None."""
+        for st in self.streams.values():
+            if p in st.match.players and self._spec_gap_stream(st.match) is st:
+                return st
+        return None
+
     def _spec_watchable(self, m):
         """Can anybody watch match m at all now (both players allow it, a streamer, room left)?"""
-        if m is None or m.state != "playing" or not all(self._spec_allowed_by(q, m) for q in m.players):
+        if not self._spec_on_air(m) or not all(self._spec_allowed_by(q, m) for q in m.players):
             return False
         if self._spec_streamer_for(m) is None:
             return False
@@ -181,7 +230,7 @@ class SpectateMixin:
         """None if `viewer` may watch m now, else a LobbyError to raise."""
         if not self._can(viewer, "spectate"):
             return LobbyError(proto.E_NOT_ALLOWED, "this launcher cannot watch matches; update it")
-        if m is None or m.state != "playing":
+        if not self._spec_on_air(m):
             return LobbyError(proto.E_STATE, "that match is not being played right now")
         if viewer in m.players:
             return LobbyError(proto.E_STATE, "you are playing in that match")
@@ -239,7 +288,7 @@ class SpectateMixin:
     def _spec_refresh_rooms(self):
         """Room.public's "watch": a room's match anybody may watch (before each lobby list)."""
         for r in self.rooms.values():
-            r.watch = self._spec_watchable(r.match)
+            r.watch = self._spec_watchable(self._spec_room_match(r))
 
     # ------------------------------------------------------------------ requests
     async def h_spec_prefs(self, conn, msg):
@@ -251,7 +300,10 @@ class SpectateMixin:
         p.spec_allow, p.spec_ranked = allow, ranked
         if changed:
             m = p.match
-            st = self.streams.get(m.stream_id) if m is not None else None
+            # (between a match and its rematch the stream is still the session's: _spec_gap_stream)
+            st = self.streams.get(m.stream_id) if m is not None else self._spec_player_gap(p)
+            if m is None and st is not None:
+                m = st.match
             if st is not None and not self._spec_allowed_by(p, m):
                 self._spec_end(st, "not_allowed", flush=False)     # privacy: at once, not after the buffer
             self.dirty = True
@@ -267,7 +319,7 @@ class SpectateMixin:
             r = self.rooms.get(str(msg["room"]))
             if r is None:
                 raise LobbyError(proto.E_NOT_FOUND, "no such room")
-            return r.match
+            return self._spec_room_match(r)
         name = str(msg.get("name") or "")
         q = self.by_name.get(name.lower())
         if q is None or not q.online:
@@ -399,6 +451,7 @@ class SpectateMixin:
         if st.ended is None:
             st.ended = reason
             log.info("stream %s ends: %s (%d bytes, %d spectator(s))", st.id, reason, len(st.buf), len(st.viewers))
+            self.dirty = True                    # (a room watchable only through this stream is not any more)
         if st.wanted and not st.eof:
             st.streamer.send({"t": "spec_stop", "stream": st.id})
             st.wanted = False
@@ -473,7 +526,7 @@ class SpectateMixin:
             # (a match moving onto the relay -- the relay fallback, docs/NETPLAY.md "When Windows Firewall blocks the
             # game" -- is still the one being played: its games start the session again, on this same stream)
             moving = bool(getattr(m, "fallback", False)) and m.state == "relay"
-            set_over = m.state != "playing" and not moving and (m.set is None or m.set.state != "active")
+            set_over = not self._spec_session_open(m)
             if st.ended is None and not st.eof and idle > 10 and set_over:
                 # the set is over (no rematch in these games any more): the session's stream is complete; a
                 # persistent game keeps its netplay session open until the next one, so no END would come

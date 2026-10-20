@@ -3520,6 +3520,7 @@ class LobbyServer(SpectateMixin, RoomsMixin):
         else:
             self._close_set(gs)
         self._announce_set_end(gs, reason, by)
+        self.dirty = True       # (a room watchable between its match and the rematch is not any more: spectating.py)
 
     def _close_set(self, gs):
         gs.state = "ended"

@@ -38,9 +38,10 @@ sys.path.insert(0, os.path.join(ROOT, "lobby"))
 from t5lobby import spectate  # noqa: E402
 
 
-def feed(src, dst, chunk_s, stop):
+def feed(src, dst, chunk_s, stop, rate=0):
     """Copy what src got since the last pass to dst, every chunk_s seconds, until src has its END
-    record and everything is copied (or stop is set)."""
+    record and everything is copied (or stop is set). rate: at most that many bytes a second (a finished
+    stream fed as if it were being played: the spectator's game waits for its data)."""
     pos = 0
     parser = spectate.LiveParser()
     with open(dst, "wb") as out:
@@ -48,7 +49,7 @@ def feed(src, dst, chunk_s, stop):
             try:
                 with open(src, "rb") as f:
                     f.seek(pos)
-                    data = f.read()
+                    data = f.read(max(1, int(rate * chunk_s)) if rate and pos >= len(spectate.MAGIC) else -1)
             except OSError:
                 data = b""
             if data:
@@ -69,7 +70,7 @@ def run_spectator(a, k, ready_at, results):
         time.sleep(0.2)
     copy = os.path.join(d, "live.t5live")
     stop = threading.Event()
-    th = threading.Thread(target=feed, args=(a.live, copy, a.chunk, stop), daemon=True)
+    th = threading.Thread(target=feed, args=(a.live, copy, a.chunk, stop, a.rate), daemon=True)
     th.start()
     # the launcher starts the game at once (Watch): it boots while the players' games load, and waits for the
     # session and the first fight; here once the copy has the magic
@@ -132,6 +133,7 @@ def main():
     ap.add_argument("--spectators", type=int, default=2)
     ap.add_argument("--late", type=float, default=60.0, help="seconds between one spectator's start and the next one's")
     ap.add_argument("--chunk", type=float, default=0.5, help="seconds between two pieces of the copy")
+    ap.add_argument("--rate", type=float, default=0, help="bytes a second at most (a finished stream fed as if live)")
     ap.add_argument("--wait", type=float, default=900, help="seconds to wait for the stream's session and first match")
     ap.add_argument("--timeout", type=float, default=1800, help="seconds per spectator game")
     ap.add_argument("--env", action="append", default=[], help="NAME=VALUE for every spectator's game")

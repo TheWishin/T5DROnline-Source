@@ -65,7 +65,7 @@ index b34bdc2..f706a50 100644
  }
  
 diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
-index 2fe417b..3fd166f 100644
+index 2fe417b..002337a 100644
 --- a/libs/video/rsx_live_draw.c
 +++ b/libs/video/rsx_live_draw.c
 @@ -88,6 +88,7 @@ void rsx_pf_guest_flip(void)
@@ -76,7 +76,7 @@ index 2fe417b..3fd166f 100644
  int  rsx_live_draw_display_hybrid(void) { return -1; }
  #endif
  
-@@ -2089,6 +2090,122 @@ static D3D12_GPU_DESCRIPTOR_HANDLE sampler_table(const u32 slots[SMP_TABLE_SIZE]
+@@ -2089,6 +2090,125 @@ static D3D12_GPU_DESCRIPTOR_HANDLE sampler_table(const u32 slots[SMP_TABLE_SIZE]
  static int g_ld_lazy_reset = 0;   /* list submitted at present, not yet reset */
  static void ld_tex_release(ID3D12Resource* r);   /* texture pool, below */
  
@@ -97,7 +97,12 @@ index 2fe417b..3fd166f 100644
 + * retired list moves with the slot), every other buffer the CPU writes for
 + * the GPU (present descriptors per backbuffer, the overlay's 8 slots) already
 + * rotates, and a flush that waits for the GPU waits for all of it.
-+ * RSX_FRAMES_IN_FLIGHT=1: the old single slot. */
++ * RSX_FRAMES_IN_FLIGHT=2 turns it on; the default stays one slot: on
++ * integrated graphics (one memory for the processor and the GPU) recording
++ * the next frame while the GPU draws made the GPU's passes slower by more
++ * than the overlap saved (4K on the 7950X's Radeon: 23.5 -> 31.8 ms of GPU
++ * per frame, 35-37 -> 31-32 fps; docs/RENDER_PERF.md "4K on integrated
++ * graphics"). A discrete GPU slower than the game is where it can help. */
 +#define LD_SLOTS_MAX 2
 +typedef struct {
 +    ID3D12CommandAllocator* alloc;
@@ -118,7 +123,7 @@ index 2fe417b..3fd166f 100644
 +    static int v = -1;
 +    if (v < 0) {
 +        const char* e = getenv("RSX_FRAMES_IN_FLIGHT");
-+        v = e && *e == '1' ? 1 : 2;
++        v = e && *e == '2' ? 2 : 1;   /* default 1: on integrated graphics 2 was slower (RENDER_PERF.md) */
 +        { const char* a = getenv("RSX_ASYNC_PRESENT"); if (a && *a == '0') v = 1; }
 +    }
 +    return v;
@@ -159,9 +164,7 @@ index 2fe417b..3fd166f 100644
 +    s0->srv_heap = g.srv_heap; s0->smp_heap = g.smp_heap;
 +    g_ld_nslots = 1; g_ld_cur = 0;
 +    if (ld_frames_in_flight_cfg() < 2) {
-+        fprintf(stderr, "[pacing] frames in flight: 1 (RSX_FRAMES_IN_FLIGHT=1): the walker waits for the GPU "
-+                        "before it records the next frame\n");
-+        return;
++        return;   /* the default: no line */
 +    }
 +    ld_slot_t* s1 = &g_ld_slot[1];
 +    D3D12_RANGE rr = {0, 0};
@@ -193,13 +196,13 @@ index 2fe417b..3fd166f 100644
 +    }
 +    g_ld_nslots = 2;
 +    fprintf(stderr, "[pacing] frames in flight: 2 (the next frame is recorded while the GPU draws this one; "
-+                    "RSX_FRAMES_IN_FLIGHT=1: one)\n");
++                    "RSX_FRAMES_IN_FLIGHT)\n");
 +}
 +
  /* Present latency (RSX_PRESENT_MODE, RSX_FRAME_LATENCY). The swap chain is a
   * flip-model chain with a frame-latency waitable object, max frame latency 1
   * by default: at most one presented frame waits for the display, so a flip
-@@ -2418,6 +2535,14 @@ static void ld_check_display_adapter(HWND hwnd)
+@@ -2418,6 +2538,14 @@ static void ld_check_display_adapter(HWND hwnd)
          fprintf(stderr, "[gpu] display: no adapter output found for the window's screen (a remote or virtual display?)\n");
  }
  int rsx_live_draw_display_hybrid(void) { return g_ld_display_hybrid; }
@@ -214,7 +217,7 @@ index 2fe417b..3fd166f 100644
  void rsx_live_draw_wait_totals(long long* gpu_wait_ticks, long long* present_ticks)
  {
      *gpu_wait_ticks = (long long)g_pf.flush_wait_ticks;          /* the CPU waiting for GPU fences */
-@@ -2587,9 +2712,11 @@ static void ld_gt_init(void)
+@@ -2587,9 +2715,11 @@ static void ld_gt_init(void)
  {
      if (g_gt.on >= 0) return;
      g_gt.on = 0;
@@ -228,7 +231,7 @@ index 2fe417b..3fd166f 100644
      UINT64 freq = 0;
      if (!g.queue || FAILED(g.queue->lpVtbl->GetTimestampFrequency(g.queue, &freq)) || !freq) return;
      D3D12_QUERY_HEAP_DESC qd = {0};
-@@ -2873,6 +3000,30 @@ static void ld_begin_recording(void)
+@@ -2873,6 +3003,30 @@ static void ld_begin_recording(void)
  {
      if (!g_ld_lazy_reset) return;
      g_ld_lazy_reset = 0;
@@ -259,7 +262,7 @@ index 2fe417b..3fd166f 100644
      const u64 v = g.fence_value;
      if (g.fence->lpVtbl->GetCompletedValue(g.fence) < v) {
          const LONGLONG w0 = ld_pf_qpc();
-@@ -2882,6 +3033,7 @@ static void ld_begin_recording(void)
+@@ -2882,6 +3036,7 @@ static void ld_begin_recording(void)
      for (u32 i = 0; i < g.n_retired_textures; i++)
          ld_tex_release(g.retired_textures[i]);
      g.n_retired_textures = 0;
@@ -267,7 +270,7 @@ index 2fe417b..3fd166f 100644
      g.alloc->lpVtbl->Reset(g.alloc);
      g.list->lpVtbl->Reset(g.list, g.alloc, NULL);
      ld_gt_begin();
-@@ -2922,6 +3074,7 @@ static void ld_flush(ld_flush_reason reason)
+@@ -2922,6 +3077,7 @@ static void ld_flush(ld_flush_reason reason)
      ID3D12CommandList* lists[] = {(ID3D12CommandList*)g.list};
      g.queue->lpVtbl->ExecuteCommandLists(g.queue, 1, lists);
      const u64 v = ++g.fence_value;
@@ -275,7 +278,7 @@ index 2fe417b..3fd166f 100644
      ld_gt_submitted(gt_slot, v);
      ld_gp_submitted(gp_slot, v);
      const HRESULT signal_hr =
-@@ -2963,6 +3116,7 @@ static void ld_flush(ld_flush_reason reason)
+@@ -2963,6 +3119,7 @@ static void ld_flush(ld_flush_reason reason)
      for (u32 i = 0; i < g.n_retired_textures; i++)
          ld_tex_release(g.retired_textures[i]);
      g.n_retired_textures = 0;
@@ -283,7 +286,7 @@ index 2fe417b..3fd166f 100644
      g.alloc->lpVtbl->Reset(g.alloc);
      g.list->lpVtbl->Reset(g.list, g.alloc, NULL);
      ld_gt_begin();
-@@ -7575,9 +7729,9 @@ static int ld_vjob_submit(u32 prim, const rsx_vertex_layout_plan* layout,
+@@ -7575,9 +7732,9 @@ static int ld_vjob_submit(u32 prim, const rsx_vertex_layout_plan* layout,
      if (!n_idx) return -2;
      const u64 vb_bytes = n * layout->stride;
      const u64 ib_bytes = n_idx * sizeof(u32);
@@ -296,7 +299,7 @@ index 2fe417b..3fd166f 100644
          ld_flush(LD_FLUSH_VERTEX_RING);       /* drains the jobs first */
          g.vb_used = 0;
          g.ib_used = 0;
-@@ -9757,14 +9911,14 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+@@ -9757,14 +9914,14 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
          ? (const void*)dc.compact_verts : (const void*)dc.verts;
      draw_vb_bytes = (u64)uploaded_vertices * vertex_stride;
      draw_ib_bytes = indexed ? (u64)n_tri * sizeof(u32) : 0;
@@ -314,7 +317,71 @@ index 2fe417b..3fd166f 100644
          /*
           * The replay-proven renderer recycles this upload ring mid-frame.
           * Live used to drop every remaining draw instead, which discarded
-@@ -11707,12 +11861,16 @@ int rsx_live_draw_init(void* hwnd, u32 width, u32 height,
+@@ -10963,6 +11120,37 @@ static float ld_res_parse(const char* e, int* ok)
+ }
+ 
+ static const char* g_ld_res_source = "default";
++static char g_ld_res_auto_why[160];
++
++/* Patch 0063: PS3_INTERNAL_RES=auto -- the highest step whose picture fits the
++ * screen the game window is on (like the launcher's "matches your screen"),
++ * at most 1080p on integrated graphics: there the GPU shares the processor's
++ * memory and power, and 1440p/4K slow the game's own CPU work as well
++ * (docs/RENDER_PERF.md "4K on integrated graphics"). *known = 0 while the
++ * adapter is not known yet (then the answer is not final). */
++static float ld_res_auto(int* known)
++{
++    const int igpu = host_sched_gpu_integrated();
++    *known = igpu >= 0;
++    MONITORINFO mi;
++    memset(&mi, 0, sizeof mi);
++    mi.cbSize = sizeof mi;
++    HMONITOR mon = MonitorFromWindow(g_ld_main_hwnd ? g_ld_main_hwnd : GetDesktopWindow(), MONITOR_DEFAULTTOPRIMARY);
++    long w = 1920, h = 1080;
++    if (mon && GetMonitorInfoA(mon, &mi)) {
++        w = mi.rcMonitor.right - mi.rcMonitor.left;
++        h = mi.rcMonitor.bottom - mi.rcMonitor.top;
++    }
++    static const float steps[] = { 1.5f, 2.0f, 3.0f };
++    float s = 1.0f;
++    for (u32 i = 0; i < sizeof steps / sizeof steps[0]; i++)
++        if (1280.0f * steps[i] <= (float)w + 8.0f && 720.0f * steps[i] <= (float)h + 8.0f) s = steps[i];
++    const float matched = s;
++    if (igpu == 1 && s > 1.5f) s = 1.5f;
++    snprintf(g_ld_res_auto_why, sizeof g_ld_res_auto_why, "PS3_INTERNAL_RES=auto (screen %ldx%ld%s)", w, h,
++             igpu == 1 && matched > s ? ", integrated graphics: at most 1080p" : igpu == 1 ? ", integrated graphics" : "");
++    return s;
++}
+ 
+ float rsx_internal_res_scale(void)
+ {
+@@ -10971,7 +11159,12 @@ float rsx_internal_res_scale(void)
+     float s = 1.0f;
+     int ok = 0;
+     const char* e = getenv("PS3_INTERNAL_RES");
+-    if (e && e[0]) {
++    if (e && e[0] && _stricmp(e, "auto") == 0) {
++        int known = 0;
++        s = ld_res_auto(&known);
++        g_ld_res_source = g_ld_res_auto_why;
++        if (!known) return s;            /* the window's title asked before the device existed: not final */
++    } else if (e && e[0]) {
+         s = ld_res_parse(e, &ok);
+         g_ld_res_source = ok ? "PS3_INTERNAL_RES" : "default (PS3_INTERNAL_RES not understood)";
+         if (!ok) fprintf(stderr, "[display] PS3_INTERNAL_RES=%s not understood; native\n", e);
+@@ -10995,8 +11188,10 @@ float rsx_internal_res_scale(void)
+ const char* rsx_internal_res_label(void)
+ {
+     static char label[48];
++    static float label_s = 0.0f;
+     const float s = rsx_internal_res_scale();
+-    if (!label[0]) {
++    if (!label[0] || label_s != s) {   /* patch 0063: auto may settle after the first call */
++        label_s = s;
+         if (s == 0.5f)        snprintf(label, sizeof label, "Lowest (0.5x)");
+         else if (s == 0.75f)  snprintf(label, sizeof label, "Lower (0.75x)");
+         else if (s == 1.0f)   snprintf(label, sizeof label, "Native (720p)");
+@@ -11707,12 +11902,16 @@ int rsx_live_draw_init(void* hwnd, u32 width, u32 height,
      D3D12_RANGE rr = {0, 0};
      g.upload->lpVtbl->Map(g.upload, 0, &rr, (void**)&g.upload_mapped);
  
@@ -333,7 +400,7 @@ index 2fe417b..3fd166f 100644
      g.dev->lpVtbl->CreateCommittedResource(g.dev, &hp, D3D12_HEAP_FLAG_NONE, &bd,
          D3D12_RESOURCE_STATE_GENERIC_READ, NULL, &IID_ID3D12Resource, (void**)&g.ib);
      g.ib->lpVtbl->Map(g.ib, 0, &rr, (void**)&g.ib_mapped);
-@@ -11766,6 +11924,7 @@ int rsx_live_draw_init(void* hwnd, u32 width, u32 height,
+@@ -11766,6 +11965,7 @@ int rsx_live_draw_init(void* hwnd, u32 width, u32 height,
          def.MaxLOD = D3D12_FLOAT32_MAX; def.MaxAnisotropy = 1;
          g.dev->lpVtbl->CreateSampler(g.dev, &def, smp_cpu(SMP_DEFAULT));
      }
@@ -341,7 +408,7 @@ index 2fe417b..3fd166f 100644
  
      /* depth */
      D3D12_DESCRIPTOR_HEAP_DESC dhd = {0};
-@@ -12161,6 +12320,10 @@ void rsx_live_draw_present_rgba(const uint8_t* rgba, u32 w, u32 h)
+@@ -12161,6 +12361,10 @@ void rsx_live_draw_present_rgba(const uint8_t* rgba, u32 w, u32 h)
          return;
      }
  

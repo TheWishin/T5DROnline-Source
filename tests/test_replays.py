@@ -493,9 +493,16 @@ class GameCodeTest(unittest.TestCase):
         code1, out1 = self.run_exe("read", path)
         code2, out2 = self.run_exe("read", live)
         self.assertEqual((code1, code2), (0, 0), out2)
-        for tag in ("DIGESTPLUS", "LINE", "BARRIER", "SLOT"):
+        for tag in ("DIGESTPLUS", "LINE", "BARRIER", "SLOT", "COSTUMES"):
             self.assertEqual(self.lines(out2, tag), self.lines(out1, tag), tag)
         self.assertIn("watching the live stream", out2)
+        # custom costumes (format 3 matches in the MATCH records): a spectator's game writes the blocks the live
+        # match fought in (match 1: P1's pattern, P2 none; match 2: none recorded)
+        self.assertEqual(self.lines(out2, "COSTUMES")[1], "2 none")
+        self.assertNotEqual(self.lines(out2, "COSTUMES")[0], "1 none")
+        blocks = bytes((i * 13 + 1) & 0xFF for i in range(0x108)) + bytes(0x108)
+        self.assertEqual(p.matches[0]["costumes"], [blocks[:0x108].hex(), blocks[0x108:].hex()])
+        self.assertIsNone(p.matches[1]["costumes"])
         # cut short (the stream stopped in the middle of a record, no END): what is whole still plays
         cut = os.path.join(d, "cut.t5live")
         with open(cut, "wb") as f:
@@ -508,6 +515,32 @@ class GameCodeTest(unittest.TestCase):
         self.assertEqual(code, 0, out)
         self.assertIn("SLOT 1 DELAY 2 ROLLBACK 1", out)
         self.assertIn("nothing new for 5 s", out)
+
+    def test_live_stream_of_a_restarted_session(self):
+        """The relay fallback (docs/NETPLAY.md "When Windows Firewall blocks the game"): the match's first session
+        never shook hands and ended; the same match's session started again on the same live file (the same stream
+        id). The first leaves nothing but the magic -- no LAST, no END -- so the stream an uploader read on from there
+        is the second session's, whole and in order."""
+        if os.path.join(ROOT, "lobby") not in sys.path:
+            sys.path.append(os.path.join(ROOT, "lobby"))
+        from t5lobby import spectate
+        d = tempfile.mkdtemp(dir=self.tmp)
+        live = os.path.join(d, "live.t5live")
+        code, out = self.run_exe("restart", d, "900", "0x77", live)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.lines(out, "SIZE1"), [str(len(spectate.MAGIC))])
+        self.assertIn("ended before the handshake", out)
+        with open(live, "rb") as f:
+            data = f.read()
+        p = spectate.LiveParser()
+        self.assertEqual(p.feed(data), data)
+        self.assertTrue(p.ready and p.ended and p.bad is None)
+        self.assertEqual((p.frames, len(p.matches), p.end_why), (900, 2, "test end"))
+        # what an uploader that had read the first session's magic sends on is exactly the rest
+        self.assertEqual(data[:len(spectate.MAGIC)], spectate.MAGIC)
+        code2, out2 = self.run_exe("read", live)
+        self.assertEqual(code2, 0, out2)
+        self.assertIn("watching the live stream", out2)
 
     def test_game_reads_a_python_file(self):
         ins = sample_inputs(777, seed=3)

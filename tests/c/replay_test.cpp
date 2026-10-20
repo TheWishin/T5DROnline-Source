@@ -10,6 +10,9 @@
  *   replay_test read <file>                    plays it the way the game does: "DIGEST", "MATCH", "LINE",
  *                                             "BARRIER" lines, or "ERROR <why>" (exit code 2)
  *   replay_test map <file> <frame> ...          the playback frame numbering after the sync points
+ *   replay_test restart <dir> <frames> <seed> <live>   the relay fallback: a session that ends before its
+ *                                             handshake, then the same match's session again on the same live
+ *                                             file ("SIZE1 <bytes the first left>"), then as write
  */
 #include <windows.h>
 #include <stdarg.h>
@@ -159,11 +162,29 @@ static int do_read(const char* file, int argc, char** argv, bool map)
     return 0;
 }
 
+/* The relay fallback (docs/NETPLAY.md "When Windows Firewall blocks the game"): the match's first session never
+ * shakes hands, the launcher starts it again with the same live stream (file) -- the first must leave nothing but
+ * the magic there, so the stream an uploader already read on goes on byte for byte. */
+static int do_restart(const char* dir, uint32_t frames, uint32_t seed, const char* live)
+{
+    _putenv_s("T5_REPLAY_DIR", dir);
+    _putenv_s("T5_REPLAY_LIVE", live);
+    rp::rec_session_begin(0, "test-build-id", 0x0BADF00D);
+    if (!rp::recording()) { printf("ERROR not recording\n"); return 2; }
+    rp::rec_session_end("no_peer");
+    WIN32_FILE_ATTRIBUTE_DATA a{};
+    if (!GetFileAttributesExA(live, GetFileExInfoStandard, &a)) { printf("ERROR no live file\n"); return 2; }
+    printf("SIZE1 %lu\n", a.nFileSizeLow);
+    return do_write(dir, frames, seed, live);
+}
+
 int main(int argc, char** argv)
 {
     setvbuf(stdout, nullptr, _IONBF, 0);
     if (argc >= 5 && !strcmp(argv[1], "write"))
         return do_write(argv[2], (uint32_t)atoi(argv[3]), (uint32_t)strtoul(argv[4], nullptr, 0), argc >= 6 ? argv[5] : nullptr);
+    if (argc >= 6 && !strcmp(argv[1], "restart"))
+        return do_restart(argv[2], (uint32_t)atoi(argv[3]), (uint32_t)strtoul(argv[4], nullptr, 0), argv[5]);
     if (argc >= 3 && !strcmp(argv[1], "read")) return do_read(argv[2], 0, nullptr, false);
     if (argc >= 3 && !strcmp(argv[1], "map")) return do_read(argv[2], argc - 3, argv + 3, true);
     printf("usage: replay_test write <dir> <frames> <seed> | read <file> | map <file> k:f ...\n");

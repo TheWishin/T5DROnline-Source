@@ -28,6 +28,10 @@ import sys
 import tempfile
 import time
 
+# Both games of a local pair talk over 127.0.0.1: bind there, not on every interface (no Windows Firewall
+# prompt for each build folder's t5dr.exe; docs/NETPLAY.md "Bind address"). An explicit T5_NET_BIND wins.
+os.environ.setdefault("T5_NET_BIND", "127.0.0.1")
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "tools"))
 from run_game import game_command  # noqa: E402

@@ -30,7 +30,7 @@ def game_link(t_host, t_join):
     try:
         for t in (t_host, t_join):
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.bind(("0.0.0.0", t.local_port))
+            s.bind((util.GAME_IP, t.local_port))
             proto.disable_udp_connreset(s)
             s.settimeout(0.2)
             socks.append(s)
@@ -239,7 +239,7 @@ class MatchTest(Base):
         x.bind(("127.0.0.1", 0))
         x.settimeout(0.3)
         h = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        h.bind(("0.0.0.0", ta.local_port))
+        h.bind((util.GAME_IP, ta.local_port))
         h.settimeout(0.3)
         try:
             for _ in range(5):
@@ -362,7 +362,7 @@ class MatchTest(Base):
         ta, tb = self.start_quick(a, b)
         self.assertIn("T5_NET_SOCKET_FILE", ta.game_env())
         peer = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        peer.bind(("0.0.0.0", tb.local_port))
+        peer.bind((util.GAME_IP, tb.local_port))
         peer.settimeout(5)
         path = os.path.join(tempfile.mkdtemp(), "sock.hex")
         code = ("import os,socket,sys,time\n"

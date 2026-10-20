@@ -744,7 +744,7 @@ std::string drain_sems()
  * not count it). Only three things end the wait:
  *   - the loaders are parked (the normal case);
  *   - the session is over (lost, failed, ended): nothing is compared any more;
- *   - one frame waited T5_NET_LOAD_TIMEOUT (default 60 s): a load that hangs.
+ *   - one frame waited T5_NET_LOAD_TIMEOUT (default 120 s): a load that hangs.
  *     This side then ends the match with "load_timeout" (the peer is told:
  *     "peer_load_timeout") -- a clean end, never a match played out of step.
  * T5_TEST_DRAIN_HOLD=ms[:frame] (tests): the wait also lasts at least ms at frame

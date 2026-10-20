@@ -20,7 +20,7 @@
  *                   connected and alive but still loading (default 120)
  *   T5_NET_LOAD_TIMEOUT     seconds one frame may wait for this PC's loaders during a session
  *                   (t5_hooks.cpp drain_wait) before this side ends the match ("load_timeout");
- *                   default 60, 0 = never. While it waits, every PING says so (PING_LOADING) and
+ *                   default 120, 0 = never. While it waits, every PING says so (PING_LOADING) and
  *                   the peer's T5_NET_TIMEOUT stall limits leave that time out
  *   T5_NET_KEY      match secret (the lobby's): every packet carries a SipHash-2-4 tag
  *                   under it; without it the key comes from T5_NET_MATCH + T5_NET_SEED when
@@ -234,7 +234,7 @@ struct Session {
 
     int connect_timeout_s = 60;        /* T5_NET_CONNECT_TIMEOUT: handshake deadline from init (0 = none) */
     int start_timeout_s = 120;         /* T5_NET_START_TIMEOUT: wait for a live peer to reach the match start */
-    int load_timeout_s = 60;           /* T5_NET_LOAD_TIMEOUT: one frame's wait for this PC's loaders (0 = none) */
+    int load_timeout_s = 120;          /* T5_NET_LOAD_TIMEOUT: one frame's wait for this PC's loaders (0 = none) */
     bool loading = false;              /* this PC's main thread waits for its loaders (PING_LOADING) */
     ULONGLONG peer_loading_ms = 0;     /* when a PING last said the peer is loading */
     bool keyed = false;                /* packets carry a SipHash tag under `key` */
@@ -704,12 +704,26 @@ bool peer_loading_locked(ULONGLONG now)
  * one frame's loads take longer than its T5_NET_LOAD_TIMEOUT. */
 struct StallClock {
     ULONGLONG start, last, held = 0;
+    uint32_t contig = UINT32_MAX;      /* (progress(): the peer's inputs and start seen so far) */
+    bool started = false;
     explicit StallClock(ULONGLONG now) : start(now), last(now) {}
     ULONGLONG ms_locked(ULONGLONG now)     /* time of the wait so far, the peer's loading left out */
     {
         if (peer_loading_locked(now)) held += now - last;
         last = now;
         return now - start - held;
+    }
+    /* For a wait for one frame's input: the clock starts again whenever the peer
+     * shows progress -- new inputs in order, or its lockstep beginning (the limit
+     * then changes from T5_NET_START_TIMEOUT to T5_NET_TIMEOUT: a peer that took
+     * 60 s to start must not count as stalled for 60 s at once). */
+    void progress_locked(const State& s, ULONGLONG now)
+    {
+        if (s.remote_contig != contig || s.peer_started != started) {
+            if (contig != UINT32_MAX) { start = last = now; held = 0; }
+            contig = s.remote_contig;
+            started = s.peer_started;
+        }
     }
 };
 
@@ -1645,6 +1659,7 @@ void begin_frame(uint32_t f, uint64_t state_hash, PadInput out[2], bool neutral_
                  * counting the time its PINGs say it waits for its loaders. */
                 const bool at_start = !s.peer_started;
                 const int limit = at_start ? s.start_timeout_s : s.timeout_s;
+                stall.progress_locked(s, now);
                 const ULONGLONG stalled = stall.ms_locked(now);
                 if (now - last_note >= 1000) {
                     last_note = now;
@@ -1835,6 +1850,7 @@ uint32_t rb_wait_input(uint32_t f)
                 lose_locked("peer_timeout", "nothing from the opponent's game for %d s", s.timeout_s);
                 return s.remote_contig;
             }
+            stall.progress_locked(s, now);
             const ULONGLONG stalled = stall.ms_locked(now);
             if (now - last_note >= 5000) {
                 last_note = now;

@@ -104,7 +104,7 @@ bool  connected();
  * than load_timeout_s() for one frame ends the session from this side:
  * give_up("load_timeout", ...) -- BYE with the reason (the peer: "peer_load_timeout"). */
 void     set_loading(bool on);
-int      load_timeout_s();                   /* T5_NET_LOAD_TIMEOUT, seconds (default 60; 0 = never) */
+int      load_timeout_s();                   /* T5_NET_LOAD_TIMEOUT, seconds (default 120; 0 = never) */
 void     give_up(const char* reason, const char* fmt, ...);
 /* Per match: mismatching frames counted from frame f on (the match's sync
  * point), the frames whose hashes were compared, this PC's own speed. */

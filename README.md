@@ -521,6 +521,8 @@ Where to read on:
 - `docs/TRAINING.md` — the training overlay (input display, frame data) and the
   runtime's overlay layer it draws with.
 - `docs/TROUBLESHOOTING.md` — fixes for players.
+- `docs/WEAK_PC.md` — why some PCs run fights at 40-50 fps (causes, what the logs
+  show, measurements, D3D12 vs Vulkan) and a checklist to paste to players.
 - `CHANGELOG.md` — what landed, by day.
 
 **Never commit anything game-derived.** The repository is public.

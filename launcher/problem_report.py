@@ -622,6 +622,19 @@ def power_plan_info():
     return text
 
 
+def graphics_settings_info():
+    """Windows' Game Mode and hardware-accelerated GPU scheduling (HAGS), read only: two settings
+    players change when a game runs at 40-50 fps (docs/WEAK_PC.md). 'default' = never set by hand."""
+    wr = _winreg()
+    if wr is None:
+        return "?"
+    gm = _reg(r"Software\Microsoft\GameBar", "AutoGameModeEnabled", root=wr.HKEY_CURRENT_USER)
+    hags = _reg(r"SYSTEM\CurrentControlSet\Control\GraphicsDrivers", "HwSchMode")
+    gm_t = "default (on)" if gm is None else ("on" if gm else "off")
+    hags_t = "default (the driver's choice)" if hags is None else {1: "off", 2: "on"}.get(hags, str(hags))
+    return f"Game Mode {gm_t}; hardware-accelerated GPU scheduling {hags_t}"
+
+
 def power_source_info():
     """AC or battery, the charge, battery saver; 'desktop' when there is no battery."""
     if os.name != "nt":
@@ -741,8 +754,9 @@ GAME_LOG_FACTS = re.compile(r"^\[(?:gpu|display|pacing|cpu|sched|game-dll|netpla
                             r"(?:adapter|res_scale|window on|display|stage blur|FATAL|CPU budget|built for|mode |lobby match|"
                             r"power saving|on AC|on battery|power source)")
 # Lines that sum up how the game ran (patch 0047: slow frames with their reason, the display lock's
-# late frames); the last few of each kind go into system.txt.
-GAME_LOG_RUN = re.compile(r"^\[(?:slow-frames|pacing\] display lock:|cellAudio\] sound glitches)")
+# late frames; online, the match's speed against this PC's own -- a slow opponent's PC makes both
+# games slow, docs/WEAK_PC.md); the last few of each kind go into system.txt.
+GAME_LOG_RUN = re.compile(r"^\[(?:slow-frames|pacing\] display lock:|cellAudio\] sound glitches|netplay\] speed:)")
 
 
 def facts_from_log(path, limit=12):
@@ -773,7 +787,7 @@ def run_lines_from_log(path, keep=4, limit=64 * 1024 * 1024):
                 m = GAME_LOG_RUN.match(line)
                 if m:
                     q = last.setdefault(m.group(0), collections.deque(maxlen=keep))
-                    q.append(line.rstrip()[:600])
+                    q.append(line.rstrip()[:900])
     except OSError:
         pass
     return [ln for q in last.values() for ln in q]
@@ -795,7 +809,8 @@ def system_text(ctx, now=None, game_log=None):
           f"Prebuilt runtime: {rel.get('prebuilt_host', '?')}",
           f"Source commit: {rel.get('commit') or '?'}   ps3recomp: {rel.get('ps3recomp', '?')}",
           f"Launcher Python: {platform.python_version()} ({platform.architecture()[0]})", ""]
-    L += ["== This PC ==", f"Windows: {windows_version()}", f"Processor: {cpu_info()}", f"Memory: {memory_info()}"]
+    L += ["== This PC ==", f"Windows: {windows_version()}", f"Processor: {cpu_info()}", f"Memory: {memory_info()}",
+          f"Windows graphics settings: {graphics_settings_info()}"]
     gpus = gpu_info()
     for g in gpus or [("?", "?", "?", None)]:
         L.append(f"Graphics: {g[0]}, driver {g[1]} ({g[2]})" + (f", {_gb(g[3])} video memory" if g[3] else ""))

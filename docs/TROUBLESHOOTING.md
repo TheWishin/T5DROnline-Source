@@ -959,9 +959,19 @@ not (on every PC, power saving or not).
   processor's memory and power -- so the busy graphics also slow the game's
   own work (a long "game" time in `[slow-frames]`, not the graphics' own
   time). Choose **1080p**, or **Auto (matches the screen)**, which picks
-  1080p there (since 1.1.3; Settings also says "4K (3x) on integrated
-  graphics: try 1080p (1.5x) for 60 fps."). On a 1080p screen 1080p still
-  looks sharp. docs/RENDER_PERF.md "4K on integrated graphics".
+  1080p there (since 1.1.3; since 1.1.4 the default on integrated graphics,
+  and above Auto's step Settings and, after every game, the Play offline tab
+  say "4K (3x) on integrated graphics: a busy built-in GPU slows the
+  processor too ..."). On a 1080p screen 1080p still looks sharp.
+  docs/RENDER_PERF.md "4K on integrated graphics".
+- **"Your processor ran at 2.26 GHz (81 % of its normal speed): set Windows
+  power mode to Best performance."** (the Play offline tab, once, since
+  1.1.4): fights had late frames while the processor, on AC power, averaged
+  well under its normal clock (the `processors at ... GHz` part of
+  `[slow-frames]`). Windows Settings -> System -> Power (& battery) -> Power
+  mode -> **Best performance**; the launcher changes no Windows setting
+  itself. On integrated graphics a lower Internal resolution also leaves the
+  processor more of the shared power.
 - **The log says `power saving off (PS3_LAPTOP=0 ...)` although Settings
   shows Auto**: a `PS3_LAPTOP=0` line in Settings -> "Advanced: extra
   settings" (it wins over the choice; since 1.1.3 Settings says so), or a

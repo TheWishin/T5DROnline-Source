@@ -45,7 +45,7 @@ Online wurde zwischen zwei echten PCs über das Internet getestet
 | Menüs, Kämpfe | 60 fps, auch wenn andere Programme den PC auslasten. Das Spiel wartet nicht mehr aktiv auf seine Frames: etwa 30 % weniger CPU bei 8 Kernen / 16 Threads. Seit 1.1.3 brauchen die eigene Arbeit des Spiels und das Übersetzen seiner Zeichenbefehle etwa ein Viertel weniger Prozessorzeit pro Kampf-Frame, und ein PC, der knapp zu langsam für 60 fps ist, schafft in Kämpfen 45-55 statt 30-45 fps (gemessen mit gebremsten Test-Spielen; echte schwache PCs sind noch nicht gemessen). |
 | Laptops, Handhelds | **Stromsparen** (Launcher-Einstellungen; Auto schaltet es ein bei Akku, Energiesparplan, mobilem Prozessor oder integrierter Grafik): weniger Hilfs-Threads, kein aktives Warten, online dasselbe Spiel. Noch nicht auf einem echten Laptop oder Handheld ausprobiert. |
 | Spielmodi | Arcade, Ghost, Versus (zwei Spieler an einem PC), Survival und Practice laufen. Gallery und das Online-Menü des Spiels brauchen die Server von Namco und Sony (abgeschaltet) und sagen das. |
-| Kämpfer, Stages | Alle Kämpfer und Stages werden richtig dargestellt, auch Gesichter, Bodenschatten und Figuren im Hintergrund. Stage-Unschärfe und das Leuchten der Sonne sehen bei jeder internen Auflösung aus wie auf der PS3 (Settings -> Stage blur / glow schaltet sie aus). |
+| Kämpfer, Stages | Alle Kämpfer und Stages werden richtig dargestellt, auch Gesichter, Bodenschatten und Figuren im Hintergrund. Stage-Unschärfe und das Leuchten der Sonne sehen bei jeder internen Auflösung aus wie auf der PS3, wenn Settings -> Stage blur / glow auf An steht (Aus, scharf und ohne Leuchten, ist seit 1.1.4 der Standard). |
 | Freischaltungen, Kostüme | Offline, in den Launcher-Einstellungen -> Unlocks (beides anfangs aus): alle Stages ohne die Kämpfe, die sie sonst kosten, und alle Customize-Items für 0 Fight Money (dein Spielstand wird vorher gesichert). Online-Spiele haben einen eigenen frischen Spielstand, auf beiden PCs derselbe; nur dein eigenes Kostüm kommt aus deinem Spielstand, und beide Spieler sehen beide Kostüme (1.1.3). |
 | Anzeige | Fenster in jeder Größe, randloses Vollbild (Alt+Enter oder F11). **Interne Auflösung** von Lowest (0,5x) über Native (720p) bis 1080p, 1440p und 4K, oder Auto (die Stufe des Bildschirms, mit integrierter Grafik höchstens 1080p) (Launcher-Einstellungen, `PS3_INTERNAL_RES`); jede Stufe in Kämpfen, Menüs, Videos und Charakterwahl geprüft. Weniger Arbeit für die Grafikkarte ab 1080p (1.1.3). |
 | Musik, Soundeffekte, Videos | Funktionieren. |
@@ -165,8 +165,12 @@ Sprachen gleich.
   kleiner für schwache Grafikkarten (Laptops, integrierte Grafik), das HUD
   bleibt scharf. **Auto** nimmt die Stufe, die zu deinem Bildschirm passt,
   mit integrierter Grafik höchstens 1080p (sie teilt sich Speicher und Strom
-  mit dem Prozessor, ein größeres Bild bremst dort das ganze Spiel). Es
-  ändert nur das Bild, der andere Spieler online braucht also nicht dieselbe
+  mit dem Prozessor, ein größeres Bild bremst dort das ganze Spiel). Seit
+  1.1.4 ist Auto mit integrierter Grafik der Standard (ab dem zweiten Spiel:
+  der Launcher liest es aus dem Log des ersten); eine Stufe, die du wählst,
+  bleibt, und über der Stufe von Auto sagen die Einstellungen und der
+  Reiter Offline spielen, dass sie auch den Prozessor bremst. Es ändert nur
+  das Bild, der andere Spieler online braucht also nicht dieselbe
   Einstellung. Fallen Kämpfe unter 60 fps, geh eine Stufe
   herunter. Mehr in [TROUBLESHOOTING.md](TROUBLESHOOTING.md#low-frame-rate)
   (englisch).
@@ -176,9 +180,9 @@ Sprachen gleich.
   jeder Spieler selbst wählen.
 - **Settings** -> **Stage blur / glow** (Stage-Unschärfe / Leuchten): Manche
   Stages machen das ganze Bild weich (der neblige Sumpf und drei weitere) oder
-  lassen die Sonne leuchten (der Schrottplatz). An (Standard) sieht aus wie auf
-  der PS3, bei jeder internen Auflösung; Aus zeigt diese Stages scharf, ohne
-  das Leuchten. Online kann jeder Spieler selbst wählen.
+  lassen die Sonne leuchten (der Schrottplatz). Aus (seit 1.1.4 der Standard,
+  einmalig auch für Spieler älterer Versionen) zeigt diese Stages scharf, ohne
+  das Leuchten; An sieht aus wie auf der PS3, bei jeder internen Auflösung. Online kann jeder Spieler selbst wählen.
 - **Settings** -> **Power saving (laptops, handhelds)** (Stromsparen): Auto
   (Standard) schaltet es ein bei Akkubetrieb, Stromsparmodus oder dem
   Energiesparplan, einem mobilen Prozessor oder integrierter Grafik; mit An und

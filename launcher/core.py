@@ -90,8 +90,11 @@ DEFAULTS = {
     "nickname": "",
     "display": "window",       # window | window1080 | window1440 | maximized | borderless
     "internal_res": "native",  # internal resolution: lowest | lower | native | 1080p | 1440p | 4k | auto, PS3_INTERNAL_RES
+    "internal_res_set": False, # ... picked by the player; until then Auto on integrated graphics (internal_res_choice)
+    "clock_hint_shown": False, # the Play tab's "Your processor ran at X GHz" (clock_hint) was shown: once
+    "settings_version": 0,     # SETTINGS_VERSION once Settings migrated an older launcher.json
     "vsync": "on",             # on | off (PS3_VSYNC=0): only how pictures reach the screen; the game stays at 60 fps
-    "stage_blur": "on",        # on | off (PS3_STAGE_BLUR=0): the blur / glow some stages put on the picture
+    "stage_blur": "off",       # on | off (PS3_STAGE_BLUR=0): the blur / glow some stages put on the picture
     "input_delay": "auto",     # online input delay: auto (by ping) | 0 | 1 | 2 frames, T5_RB_NET_DELAY
     "training": "frames",      # training overlay in Practice: off | inputs | frames (inputs + frame data), T5_TRAINING
     "training_all": False,     # ... also in the other offline modes (T5_TRAINING_ALL=1)
@@ -134,10 +137,16 @@ def ui_family(default="Segoe UI"):
     return i18n.ui_family(default) if I18N else default
 
 
+# launcher.json's settings_version. 1 (1.1.4): Stage blur / glow Off by default, Auto Internal resolution on
+# integrated graphics unless the player chose a step. A launcher.json without it is migrated once (Settings).
+SETTINGS_VERSION = 1
+
+
 class Settings(dict):
     def __init__(self, path=SETTINGS_FILE):
         super().__init__(DEFAULTS)
         self.path = path
+        saved = None
         try:
             with open(path, encoding="utf-8") as f:
                 saved = json.load(f)
@@ -146,15 +155,27 @@ class Settings(dict):
             if "internal_res" not in saved and "render_scale" in saved:
                 self["internal_res"] = OLD_RENDER_SCALES.get(str(saved["render_scale"]), "native")
         except (OSError, ValueError, AttributeError):
-            pass
+            saved = None
         if self["internal_res"] not in INTERNAL_RES:
             self["internal_res"] = "native"
+        version = saved.get("settings_version") if isinstance(saved, dict) else SETTINGS_VERSION
+        if not isinstance(version, int) or version < 1:
+            # A launcher.json of 1.1.3 or older stores every default, so its "on" / "native" were not chosen:
+            # Stage blur / glow goes Off once (On, chosen in Settings, stays from then on), and only a step
+            # other than Native was the player's own choice (Auto on integrated graphics replaces the default).
+            self["stage_blur"] = "off"
+            self["internal_res_set"] = self["internal_res"] != "native"
+        self["settings_version"] = SETTINGS_VERSION
+        if not isinstance(self["internal_res_set"], bool):
+            self["internal_res_set"] = False
+        if not isinstance(self["clock_hint_shown"], bool):
+            self["clock_hint_shown"] = False
         if not isinstance(self["vsync"], str) or self["vsync"] not in VSYNC_MODES:
             self["vsync"] = "on"
         if not isinstance(self["power_saving"], str) or self["power_saving"] not in POWER_SAVING:
             self["power_saving"] = "auto"
         if not isinstance(self["stage_blur"], str) or self["stage_blur"] not in STAGE_BLUR_MODES:
-            self["stage_blur"] = "on"
+            self["stage_blur"] = "off"
         if not isinstance(self["training"], str) or self["training"] not in TRAINING_MODES:
             self["training"] = "frames"
 
@@ -173,6 +194,17 @@ class Settings(dict):
     def replay_dir(self):
         return os.path.join(self.out_dir, "replays")
 
+    def internal_res_choice(self, integrated=None):
+        """The Internal resolution the game gets: the step the player chose in Settings, else Auto on integrated
+        graphics (integrated True / False; None: as the newest game log says, last_gpu) and Native elsewhere --
+        a built-in GPU busy above Auto's step slows the processor too (igpu_res_better)."""
+        if self["internal_res_set"]:
+            return self["internal_res"]
+        if integrated is None:
+            gpu = last_gpu(self.out_dir)
+            integrated = bool(gpu and gpu[1])
+        return "auto" if integrated else "native"
+
     def env_overrides(self):
         env = {}
         if self["nickname"].strip():
@@ -181,8 +213,9 @@ class Settings(dict):
             env["PS3_NO_AUDIO"] = "1"
         if self["background"]:
             env["PS3_WINDOW_BACKGROUND"] = "1"
-        if self["internal_res"] in INTERNAL_RES and self["internal_res"] != "native":
-            env["PS3_INTERNAL_RES"] = self["internal_res"]
+        res = self.internal_res_choice()
+        if res in INTERNAL_RES and res != "native":
+            env["PS3_INTERNAL_RES"] = res
         if self["vsync"] == "off":
             env["PS3_VSYNC"] = "0"
         # Auto goes to the game as PS3_LAPTOP=auto (the game decides): a PS3_LAPTOP left in Windows' environment
@@ -812,7 +845,8 @@ INTERNAL_RES = {          # key: (English label, t(label) where it is shown; fac
     "1440p": (N_("1440p (2x)"), 2.0),
     "4k": (N_("4K (3x)"), 3.0),
     # Patch 0063: the game picks the step that matches its screen, at most 1080p on integrated graphics
-    # (PS3_INTERNAL_RES=auto). A choice next to the others; Native stays the default.
+    # (PS3_INTERNAL_RES=auto). Since 1.1.4 the default on integrated graphics (Settings.internal_res_choice);
+    # Native stays the default elsewhere.
     "auto": (N_("Auto (matches the screen)"), None),
 }
 INTERNAL_RES_LABELS = {k: v[0] for k, v in INTERNAL_RES.items()}
@@ -932,13 +966,14 @@ def power_saving_auto(status=None, plan=None, cpu=None):
 
 
 # Stage blur / glow: some stages filter the whole picture -- a soft focus on the misty swamp (stage
-# 34) and stages 24, 26 and 28, a glow around the sun on stage 20. On (default): as the game draws
-# it, at every internal resolution like at Native. Off: PS3_STAGE_BLUR=0, those stages sharp and
-# without the glow; the HUD and every other stage stay as they are. Only the picture changes, so the
-# two players of an online match may choose differently. docs/RENDER_PERF.md "Stage blur and glow".
+# 34) and stages 24, 26 and 28, a glow around the sun on stage 20. On: as the game draws it, at
+# every internal resolution like at Native. Off (the default since 1.1.4): PS3_STAGE_BLUR=0, those
+# stages sharp and without the glow; the HUD and every other stage stay as they are. Only the
+# picture changes, so the two players of an online match may choose differently.
+# docs/RENDER_PERF.md "Stage blur and glow".
 STAGE_BLUR_MODES = {     # English; t(label) where it is shown
-    "on": N_("On (default)"),
-    "off": N_("Off"),
+    "on": N_("On"),
+    "off": N_("Off (default)"),
 }
 
 
@@ -997,16 +1032,23 @@ def last_gpu(out_dir, logs=None):
 
 
 def igpu_res_better(key, screen, integrated):
-    """Settings -> Internal resolution: on integrated graphics, a step whose picture is larger than the screen
-    costs the GPU work nobody sees and -- with one memory for processor and GPU -- slows the game's own work
-    too (docs/RENDER_PERF.md "4K on integrated graphics"). The step to suggest instead (the Settings tab says
-    "4K on integrated graphics: try 1080p for 60 fps"), or None."""
-    if not integrated or not screen or key not in INTERNAL_RES or not INTERNAL_RES[key][1]:
+    """On integrated graphics, a step larger than Auto's (the screen's, at most 1080p) keeps the GPU busy, and a
+    busy built-in GPU slows the processor too: one power budget, one memory (docs/RENDER_PERF.md "4K on
+    integrated graphics"; the 780M player's 4K fights: GPU busy 61 %, processors at 81 % of their clock, not
+    GPU-bound). Auto's step to suggest instead (Settings, and the Play tab after every game: igpu_res_text), or
+    None. screen None: Auto's at most 1080p."""
+    if not integrated or key not in INTERNAL_RES or not INTERNAL_RES[key][1]:
         return None
-    f = INTERNAL_RES[key][1]
-    if 1280 * f <= screen[0] + 8 and 720 * f <= screen[1] + 8:
-        return None
-    return internal_res_auto(screen[0], screen[1], True)
+    auto = internal_res_auto(screen[0], screen[1], True) if screen else "1080p"
+    return auto if INTERNAL_RES[key][1] > INTERNAL_RES[auto][1] else None
+
+
+def igpu_res_text(step, better):
+    """The sentence for igpu_res_better's suggestion (Settings, in the warning colour; the Play tab after a game);
+    step and better are the steps' labels, already translated (the launcher's t(INTERNAL_RES[key][0]))."""
+    return t("{step} on integrated graphics: a busy built-in GPU slows the processor too (they share its power "
+             "and memory). For 60 fps choose Auto in Settings -> Internal resolution: {better} here.",
+             step=step, better=better)
 
 
 # [slow-frames] (ps3recomp patches 0047, 0059, 0063) ends with a verdict when a 30 s window was GPU-bound, or the
@@ -1030,6 +1072,35 @@ def speed_hint(lines):
         return t("Fights were slower than 60 fps: the integrated graphics were busy and slowed the processor "
                  "too. A lower Internal resolution in Settings helps.")
     return None
+
+
+# The processors' real clock in a [slow-frames] line (patch 0063: PDH "% Processor Performance", 100 % = the
+# processor's normal clock) and the power state after it (host_sched_power_text, the text of the [power] line).
+SLOW_CLOCK = re.compile(r"^\[slow-frames\] last [0-9.]+ s: (\d+) frames, (\d+) slow .*?; processors at ([0-9.]+) GHz "
+                        r"on average \((\d+) % of their [0-9.]+\) \| ([^|]*)")
+CLOCK_HINT_PERCENT = 90       # "well under" the normal clock
+
+
+def clock_hint(lines):
+    """The Play tab's one-time note after a game (settings clock_hint_shown), from its [slow-frames] lines: in the
+    30 s windows with late frames (10 or more, 5 % or more of the window over 20.9 ms) on AC power, the processors
+    averaged under 90 % of their normal clock -- the 780M player's online fights: 2.26 GHz, 81 % of 2.79, on the
+    Balanced plan. A sentence, or None. The launcher changes no Windows setting itself; the player does."""
+    ghz = pct = n = 0
+    for line in lines:
+        m = SLOW_CLOCK.match(line)
+        if not m:
+            continue
+        frames, slow = int(m.group(1)), int(m.group(2))
+        if slow < 10 or slow * 20 < frames or not m.group(5).strip().startswith("on AC power"):
+            continue
+        ghz += float(m.group(3))
+        pct += int(m.group(4))
+        n += 1
+    if not n or pct / n >= CLOCK_HINT_PERCENT:
+        return None
+    return t("Your processor ran at {ghz} GHz ({percent} % of its normal speed): set Windows power mode to "
+             "Best performance.", ghz=i18n.num(ghz / n, 2) if I18N else f"{ghz / n:.2f}", percent=round(pct / n))
 
 
 def slow_frame_lines(path, limit=64 * 1024 * 1024):

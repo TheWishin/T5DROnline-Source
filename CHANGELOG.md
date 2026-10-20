@@ -41,6 +41,21 @@ part is in the README's status table.
   into a call through a pointer that may be empty. The speed profile of 1.1.3 still fits the new translation (0 of
   its functions out of date), so it is used as it is.
 
+### Settings
+- **Integrated graphics get Internal resolution Auto by default.** On a PC whose game runs on built-in graphics
+  (laptops, mini PCs, handhelds; the launcher knows from the last game's log), the default is now **Auto**: the
+  step of your screen, at most 1080p. A step you chose yourself stays. If it is larger than Auto's, Settings says
+  so in orange and the Play offline tab after every game: a busy built-in GPU also slows the processor, because
+  both share one power budget and one memory -- a player's 780M mini PC at 4K had its GPU busy 61 % of the time and
+  its processor at 81 % of its clock, with 6-10 % late frames, although the graphics themselves were fast enough.
+  Texts in all languages.
+- **"Your processor ran at 2.26 GHz (81 % of its normal speed)".** When fights had late frames and the processor
+  ran well under its normal clock on AC power, the Play offline tab says so once and suggests setting Windows'
+  power mode to Best performance. The launcher itself changes no Windows setting. Texts in all languages.
+- **Stage blur / glow is Off by default**: the misty swamp and three more stages are sharp, the scrapyard's sun has
+  no glow (on integrated graphics at 4K the scrapyard needs ~10 % less GPU time a frame). Players of older versions get Off once too; whoever turns it back On in Settings keeps On. Online each
+  player still chooses for himself.
+
 ### Online
 - **A room stays watchable between a match and its rematch.** The Rooms list took the Watch button away from a
   room as soon as its match ended, so whoever came by while the players chose their rematch could not watch,

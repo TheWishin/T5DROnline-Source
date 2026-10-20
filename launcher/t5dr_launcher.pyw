@@ -528,7 +528,7 @@ class App(tk.Tk):
         sb = ttk.LabelFrame(left, text="  " + t("Stage blur / glow") + "  ", padding=(12, 6))
         sb.pack(fill="x", pady=(6, 0))
         self.stage_blur_var = tk.StringVar(value=self.settings["stage_blur"]
-                                           if self.settings["stage_blur"] in core.STAGE_BLUR_MODES else "on")
+                                           if self.settings["stage_blur"] in core.STAGE_BLUR_MODES else "off")
         row = ttk.Frame(sb)
         row.pack(anchor="w")
         for key, label in core.STAGE_BLUR_MODES.items():
@@ -595,8 +595,8 @@ class App(tk.Tk):
         # "Internal resolution"): below Native for weak graphics cards, above for big screens.
         gfx = ttk.LabelFrame(right, text="  " + t("Internal resolution") + "  ", padding=(12, 6))
         gfx.pack(fill="x", pady=(6, 0))
-        self.internal_res_var = tk.StringVar(value=self.settings["internal_res"]
-                                             if self.settings["internal_res"] in core.INTERNAL_RES else "native")
+        # (Auto on integrated graphics until the player picks a step: core.Settings.internal_res_choice)
+        self.internal_res_var = tk.StringVar(value=self.settings.internal_res_choice())
         keys = list(core.INTERNAL_RES)
         for part in (keys[:3], keys[3:6], keys[6:]):      # Lowest..Native / 1080p..4K / Auto
             row = ttk.Frame(gfx)
@@ -606,6 +606,8 @@ class App(tk.Tk):
                                 command=self._internal_res_changed).pack(side="left", padx=(0, 14))
         self.internal_res_hint = ttk.Label(gfx, style="Muted.TLabel", wraplength=390, justify="left")
         self.internal_res_hint.pack(anchor="w", pady=(4, 0))
+        # above Auto's step on integrated graphics: in the warning colour, not in the muted hint (core.igpu_res_text)
+        self.internal_res_warn = ttk.Label(gfx, style="warn.TLabel", wraplength=390, justify="left")
         self._internal_res_changed(save=False)
 
         # Like Tekken 6 Native Online's input delay option (T5_RB_NET_DELAY, docs/NETPLAY.md
@@ -1058,9 +1060,13 @@ class App(tk.Tk):
 
     def _internal_res_changed(self, save=True):
         key = self.internal_res_var.get()
+        if save:                                        # (a click: the player's own step from now on)
+            self.settings["internal_res_set"] = True
         text = t(core.INTERNAL_RES_HINTS.get(key, ""))
         size = core.screen_size(core.window_center(self._hwnd()))
         gpu = core.last_gpu(self.settings.out_dir)      # (name, integrated) from the last game log, or None
+        if key == "auto" and gpu and gpu[1] and not self.settings["internal_res_set"]:
+            text += "\n" + t("Auto is the default on integrated graphics.")
         if size:
             match = core.internal_res_for_screen(*size)
             text += "\n" + t("Your screen: {width} x {height}. In fullscreen, {step} matches it.",
@@ -1068,11 +1074,14 @@ class App(tk.Tk):
             if key == "auto" and gpu:
                 text += "\n" + t("On this PC: {step}.", step=t(core.INTERNAL_RES[core.internal_res_auto(
                     size[0], size[1], gpu[1])][0]))
-            better = core.igpu_res_better(key, size, bool(gpu and gpu[1]))
-            if better:
-                text += "\n" + t("{step} on integrated graphics: try {better} for 60 fps.",
-                                 step=t(core.INTERNAL_RES[key][0]), better=t(core.INTERNAL_RES[better][0]))
         self.internal_res_hint.configure(text=text)
+        better = core.igpu_res_better(key, size, bool(gpu and gpu[1]))
+        self.internal_res_warn.configure(text=core.igpu_res_text(t(core.INTERNAL_RES[key][0]),
+                                                                 t(core.INTERNAL_RES[better][0])) if better else "")
+        if better:
+            self.internal_res_warn.pack(anchor="w", pady=(4, 0))
+        else:
+            self.internal_res_warn.pack_forget()
         if save:
             self.save_settings()
 
@@ -1236,6 +1245,33 @@ class App(tk.Tk):
                                                   issues_url=core.ISSUES_URL, log=core.log)
         return self._report_dlg
 
+    def _speed_notes(self):
+        """The Play tab's speed sentences after a game, from its log, or None: on integrated graphics a step above
+        Auto's after every game (a busy built-in GPU slows the processor too, GPU-bound or not), else the
+        [slow-frames] verdicts (patch 0063); then, once, a processor well under its normal clock on AC power."""
+        path = self.game.log_path
+        if not path:
+            return None
+        lines = core.slow_frame_lines(path)
+        gpu = core.last_gpu(None, logs=[path])          # the adapter this game rendered on
+        notes = []
+        if gpu and gpu[1]:
+            key = self.settings.internal_res_choice(True)
+            better = core.igpu_res_better(key, core.screen_size(core.window_center(self._hwnd())), True)
+            if better:
+                notes.append(core.igpu_res_text(t(core.INTERNAL_RES[key][0]), t(core.INTERNAL_RES[better][0])))
+        if not notes:
+            speed = core.speed_hint(lines)
+            if speed:
+                notes.append(speed)
+        if not self.settings["clock_hint_shown"]:
+            clock = core.clock_hint(lines)
+            if clock:
+                notes.append(clock)
+                self.settings["clock_hint_shown"] = True
+                self.save_settings()
+        return " ".join(notes) or None
+
     # ------------------------------------------------------------------ loop
     def _tick(self):
         if self.build:
@@ -1250,7 +1286,7 @@ class App(tk.Tk):
                 self._run_shown = False
                 why = core.explain_exit(self.game.proc.returncode, self.game.last_lines)
                 # patch 0063: the game log's [slow-frames] verdicts -- the graphics were the limit
-                speed = core.speed_hint(core.slow_frame_lines(self.game.log_path)) if self.game.log_path else None
+                speed = self._speed_notes()
                 core.log(f"game ended: exit code {self.game.proc.returncode}" + (", explained to the player"
                                                                                if why else "")
                          + (", speed hint shown" if speed else ""))

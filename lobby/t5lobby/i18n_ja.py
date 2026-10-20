@@ -515,7 +515,7 @@ MESSAGES = {
     "Off (lowest latency, may tear)": "オフ（最小遅延、ティアリングあり）",
     "The game always runs at 60 fps, like on the PS3.": "ゲームは PS3 と同じく常に 60fps で動作します。",
     "Stage blur / glow": "ステージのぼかし / 光彩",
-    "On (default)": "オン（標準）",
+    "Off (default)": "オフ（標準）",
     "Off": "オフ",
     "Some stages blur the picture (the misty swamp) or let the sun glow. Off shows them sharp, "
     "without the glow. Only your picture changes: online, both players can choose differently.":
@@ -2062,8 +2062,12 @@ MESSAGES = {
         "起動時に画面に合う段階をゲームが選びます。内蔵グラフィックでは最大1080p（プロセッサーとメモリーと電力を共有するため）。",
     "On this PC: {step}.":
         "このPCでは：{step}。",
-    "{step} on integrated graphics: try {better} for 60 fps.":
-        "内蔵グラフィックで{step}：60 fpsには{better}を試してください。",
+    "{step} on integrated graphics: a busy built-in GPU slows the processor too (they share its power and memory). For 60 fps choose Auto in Settings -> Internal resolution: {better} here.":
+        "内蔵グラフィックで{step}：内蔵GPUの負荷が高いとプロセッサーも遅くなります（電力とメモリーを共有しているため）。60 fpsには設定 -> 内部解像度で自動を選んでください（このPCでは{better}）。",
+    "Auto is the default on integrated graphics.":
+        "内蔵グラフィックでは自動が標準です。",
+    "Your processor ran at {ghz} GHz ({percent} % of its normal speed): set Windows power mode to Best performance.":
+        "プロセッサーは{ghz} GHz（通常の速度の{percent} %）で動作していました：Windowsの電源モードを「最適なパフォーマンス」にしてください。",
     "Extra settings below set {setting}: that wins over this choice.":
         "下の追加設定で{setting}が設定されています：この選択より優先されます。",
     "Fights were slower than 60 fps because of the graphics (GPU-bound): choose a lower Internal resolution in Settings.":

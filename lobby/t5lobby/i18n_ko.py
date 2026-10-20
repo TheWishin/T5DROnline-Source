@@ -1478,6 +1478,8 @@ MESSAGES = {
     "The game opens straight into the fight.": "게임이 바로 대전 화면으로 열립니다.",
     "The result comes back here: rematch or next game.": "결과는 여기로 돌아옵니다: Rematch 또는 다음 경기.",
     "With a controller: A accepts, B declines.": "컨트롤러: A 수락, B 거절.",
+    "Online nobody can pause the fight: Start does not open the pause menu.":
+        "온라인에서는 누구도 대전을 일시정지할 수 없습니다. Start로 일시정지 메뉴가 열리지 않습니다.",
     "Lobby": "로비",
     "Leaderboard": "순위표",
     "Profile": "프로필",

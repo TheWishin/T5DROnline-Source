@@ -461,6 +461,14 @@ mx_cpus4_rb: a 4-processor joiner, KO at frame 2022 undone, the match ran on to
 4689). Now the driver goes back to the fight when the decided byte is 0 again
 in the fight phase, and releases the pads.
 
+**Online START reaches the game only where it skips** (1.1.2, NETPLAY.md "No pause
+online"): in a session both games take START out of both players' inputs except in a
+round's replay and from 40 frames after a decision seen in this fight until the select
+screen is asked for -- exactly where this driver's skip presses (and the rollback loop's
+post-match rule) land. A START press in a fight that went on (the case above) can no
+longer pause it; the driver needs START nowhere else (its menu presses are face buttons
+and directions, the in-game select blocks START).
+
 **The fight's loading and intros take no input either** under netplay: from
 FIGHT START until the fight phase word 0x1008F070 passes 12 (7 = game mode
 start, 8-12 loading and intros, 17 = fighting; again between rounds) the

@@ -131,7 +131,12 @@ def evaluate(run, known_nids=(), thresholds=None, strict=False):
                          evidence="game.log"))
     else:
         first = fps_t[0]
-        pts = fps_t + ([end_t] if not run.get("aborted") or "exited" not in run["aborted"] else [])
+        # Up to the moment the harness began to stop the game, not to the end
+        # of the run: killing a game on a loaded PC took 10-11 s and read as a
+        # hang right after the last check.
+        stop_t = next((e[0] for e in run.get("events", []) if e[2] == "stop"), None)
+        last = min(end_t, stop_t) if stop_t is not None else end_t
+        pts = fps_t + ([last] if not run.get("aborted") or "exited" not in run["aborted"] else [])
         worst = max(((b - a, a) for a, b in zip(pts, pts[1:])), default=(0.0, first))
         if first > th["first_frame_s"]:
             out.append(check("no-hang", "fail", f"first [fps] line only at {first:.0f}s", value=round(first, 1),

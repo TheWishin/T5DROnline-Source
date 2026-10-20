@@ -141,6 +141,11 @@ lobby/
    the launcher. A rematch goes back to the select screen the same way; in a
    ranked set only the first game is picked, the rest keep those fighters
    (docs/RANKED.md "Character select in the game").
+   **No pause** (1.1.2): neither player can pause the fight -- both games take START out of
+   both players' inputs (docs/NETPLAY.md "No pause online"). START still skips the replay
+   after a round, and the games skip the last replay and the win pose by themselves. Quitting a
+   match is closing the game (Esc twice, Alt+F4, the window's X), which counts as a loss
+   (forfeit) as before; the launcher's Leave / Leave set after a game works as before.
 9. **Result.** After the game both launchers report the winner (from the
    game's result file, or the player answers "I won / I lost") and, after an
    in-game pick, the fighters. The server reconciles the two reports and

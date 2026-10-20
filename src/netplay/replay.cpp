@@ -47,6 +47,7 @@ namespace rp {
 namespace {
 
 constexpr uint32_t kVersion = 2;   /* 2: the last frame the recording game ran (after the hash interval) */
+constexpr int kMaxDelay = 30;      /* netplay_core.cpp kMaxDelay: the input delay a session can have */
 constexpr char kMagic[] = "T5REPLAY 1\n";
 
 struct Match {
@@ -184,6 +185,22 @@ struct Reader {
     }
 };
 
+/* the playback's fight lines (df_fight.cpp): characters 0..35, stage -1 (random) or a stage id 0..34
+ * written into the game as it is -- anything else would hang or break the playback (a file, or a live
+ * stream from another player's launcher) */
+bool match_ok(const Match& m)
+{
+    return m.ft.chr[0] >= 0 && m.ft.chr[0] <= 35 && m.ft.chr[1] >= 0 && m.ft.chr[1] <= 35 && m.ft.stage >= -1 &&
+           m.ft.stage <= 34;
+}
+
+/* The playback indexes the two players by the slot and fills the input ring up to the delay
+ * (netplay_core.cpp): a damaged or hand-made file must not take either outside 0..1 / 0..30. */
+bool session_ok(int slot, int delay, int rb_delay)
+{
+    return slot >= 0 && slot <= 1 && delay >= 0 && delay <= kMaxDelay && rb_delay >= -1 && rb_delay <= kMaxDelay;
+}
+
 Match get_match(Reader& r)
 {
     Match m;
@@ -215,6 +232,13 @@ bool from_binary(const uint8_t* p, size_t n, Data& d, std::string* why)
     if (ver < 1 || ver > kVersion) { *why = "replay format " + std::to_string(ver) + " (this game reads 1 to " + std::to_string(kVersion) + ")"; return false; }
     d.rollback = (r.u32() & 1) != 0;
     d.slot = (int)r.u32(); d.delay = (int)r.u32(); d.rb_delay = (int)r.u32();
+    /* The playback indexes the two players by the slot and fills the input ring up to the delay
+     * (netplay_core.cpp): a damaged or hand-made file must not take either outside 0..1 / 0..30. */
+    if (r.bad || d.slot < 0 || d.slot > 1) { *why = "broken header (player side)"; return false; }
+    if (d.delay < 0 || d.delay > kMaxDelay || d.rb_delay < -1 || d.rb_delay > kMaxDelay) {
+        *why = "broken header (input delay)";
+        return false;
+    }
     d.session_seed = r.u32(); d.match_seed = r.u32();
     const uint32_t frames = r.u32(); d.hash_every = r.u32();
     if (ver >= 2) d.last = r.u32();
@@ -224,7 +248,11 @@ bool from_binary(const uint8_t* p, size_t n, Data& d, std::string* why)
     }
     const uint32_t nm = r.u32();
     if (nm > 10000) { *why = "broken match table"; return false; }
-    for (uint32_t k = 0; k < nm && !r.bad; k++) d.matches.push_back(get_match(r));
+    for (uint32_t k = 0; k < nm && !r.bad; k++) {
+        Match m = get_match(r);
+        if (!r.bad && !match_ok(m)) { *why = "broken match table"; return false; }
+        d.matches.push_back(m);
+    }
     const uint32_t nb = r.u32();
     if (nb > 100000) { *why = "broken sync point table"; return false; }
     for (uint32_t k = 0; k < nb && !r.bad; k++) d.bars.push_back(get_barrier(r));
@@ -656,6 +684,11 @@ bool live_record(Play& p, uint8_t type, const uint8_t* b, uint32_t n)
         const int slot = (int)r.u32(), delay = (int)r.u32(), rb_delay = (int)r.u32();
         const uint32_t sseed = r.u32(), mseed = r.u32(), every = r.u32();
         if (r.bad) return false;
+        if (!session_ok(slot, delay, rb_delay)) {   /* (another player's launcher sent it: as a file's header is checked) */
+            p.live_end = true;
+            p.live_why = "the live data is damaged (session)";
+            return false;
+        }
         if (!p.have_session && p.on) p.session_new = true;
         if (p.have_session && (rb != d.rollback || slot != d.slot || delay != d.delay || sseed != d.session_seed ||
                                mseed != d.match_seed)) {
@@ -705,6 +738,11 @@ bool live_record(Play& p, uint8_t type, const uint8_t* b, uint32_t n)
         const uint32_t k = r.u32();
         Match m = get_match(r);
         if (r.bad || k > d.matches.size()) return false;
+        if (!match_ok(m)) {
+            p.live_end = true;
+            p.live_why = "the live data is damaged (match table)";
+            return false;
+        }
         if (k == d.matches.size()) d.matches.push_back(m); else d.matches[k] = m;
         if (p.mc.size() < d.matches.size()) p.mc.resize(d.matches.size());
         settle_match(p, k);

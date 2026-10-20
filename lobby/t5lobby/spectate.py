@@ -58,6 +58,8 @@ def parse_match(b):
     for _ in range(2):
         s, i = _str(b, i)
         names.append(s)
+    if not (0 <= v[0] <= 35 and 0 <= v[1] <= 35 and -1 <= v[6] <= 34):   # (as the game checks a match table)
+        raise LiveError("fighters or stage out of range")
     return {"index": idx, "start": start, "end": end, "frames": frames, "desync": desync,
             "have_result": bool(flags & 1), "complete": bool(flags & 4),
             "p1": v[0], "p2": v[1], "stage": v[6], "rounds": v[7], "pick": v[8],
@@ -126,6 +128,8 @@ class LiveParser:
             if len(b) < 32:
                 raise LiveError("short session record")
             ver, flags, slot, delay, rb_delay, seed, mseed, every = struct.unpack_from("<8I", b, 0)
+            if slot > 1 or delay > 30:                                          # (as the game checks a header)
+                raise LiveError("player side or input delay out of range")
             build, i = _str(b, 32)
             created, _ = _str(b, i)
             self.session = {"version": ver, "rollback": bool(flags & 1), "slot": slot, "delay": delay,

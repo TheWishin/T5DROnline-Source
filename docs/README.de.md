@@ -290,6 +290,10 @@ Gut zu wissen:
   spielen. Stell deine Tasten im Launcher ein (Settings -> Set up
   controllers); die gelten auch online. Dein eigener Spielstand wird beim
   Online-Spielen nie angefasst.
+- Einen Online-Kampf kann niemand pausieren (ab 1.1.2): **Start** öffnet dort
+  für keinen der beiden Spieler das Pausenmenü. Das Replay nach einer Runde
+  überspringt Start weiterhin. Wer ein Match abbrechen will, schließt das Spiel
+  (zweimal Esc): Das zählt wie bisher als Niederlage.
 - Ranked nutzt eine Glicko-2-Wertung mit den Rang-Namen aus Tekken 5. Verlassen
   oder Verbindungsabbruch zählt als Niederlage. Ein Desync macht das Match
   ungültig.

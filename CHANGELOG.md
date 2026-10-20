@@ -17,6 +17,13 @@ part is in the README's status table.
 - At most 8 spectators per match (server setting). Launchers before 1.1.3 never see any of it, and their
   matches cannot be watched. Needs the lobby server updated. docs/SPECTATE.md.
 
+### Fixes
+- **The intro movie can no longer freeze on a white screen.** On a busy PC the video decoder
+  sometimes never answered, and the intro stayed white with START doing nothing. The decoder
+  now starts while the game boots, uses 4 threads instead of one per processor, and if it
+  still does not answer within 5 seconds the movie goes on black with its sound (START skips
+  it). Later movies try the decoder again.
+
 ## v1.1.2 (not released yet)
 
 **Opponents nearby first, friends, invites, training overlay, sharper stages at high resolution, every stage and item unlocked offline.** The new
@@ -33,6 +40,12 @@ lobby features need the lobby server updated; older launchers keep working with 
   left out. **Report a problem** adds the newest replay, without names. docs/REPLAYS.md.
 
 ### Online
+- **No more pausing online.** Pressing Start in an online fight opened the pause menu in both
+  games, so one player could freeze the other in the middle of a combo. Now neither player can
+  pause an online fight -- also not with a changed game: both games take Start out of both
+  players' inputs, the same way on both PCs, so the match stays in sync. Start still skips the
+  replay after a round, the games still skip the replay and win pose at the end of a match, and
+  offline Start pauses as before. To quit a match, close the game (counts as a loss, as before).
 - **Opponents nearby first.** The ping shown when a match is found is now the best path the
   two of you can get, through the nearest relay server: two players in California see about
   50 ms instead of about 300 ms through Germany. Quick and ranked search look for opponents

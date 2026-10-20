@@ -282,6 +282,9 @@ Good to know:
   offline only, so both players always play the same game. Set your buttons in
   the launcher (Settings -> Set up controllers); they work online too. Your own
   save is never touched by online play.
+- Nobody can pause an online fight (from 1.1.2): **Start** does not open the
+  pause menu there, for either player. It still skips the replay after a round.
+  To quit a match, close the game (Esc twice): that counts as a loss, as before.
 - Ranked uses a Glicko-2 rating shown with Tekken 5's own rank names. Leaving or
   disconnecting counts as a loss. A desync voids the match.
 - **Friends** (accounts, from 1.1.2): add a friend by account name on the Online

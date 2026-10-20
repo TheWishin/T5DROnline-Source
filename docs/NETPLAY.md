@@ -316,6 +316,98 @@ session's own socket and key:
   two select screens ran for different numbers of frames), the match's
   mismatch count starts there, and the rollback loop starts again.
 
+## No pause online (branch online-no-pause, 1.1.2)
+
+Player report (1.1.1): "you gotta remove the fact that you can pause when you're playing against
+the opponent. I was in the middle of doing my combo, the guy spammed pause." START opens the
+game's pause menu in a VS fight (RETURN TO GAME PLAY, COMMAND LIST, CONTROLLER SETUP, RETURN TO
+TITLE SCREEN). Online START was an input like any other: both games get both players' inputs, so
+either player's START paused the fight in both games. Tekken 6 and 7 online have no pause. Now
+nobody can pause an online fight. src/ only, no runtime patch (0054 stays unused).
+
+**The rule** (`src/netplay/no_pause.h`, applied by `t5_hooks.cpp` `no_pause_rule()`): in every
+direct-fight session -- every online match (quick, ranked, casual, rooms, invites) and the replay
+of one -- START is taken out of **both** players' inputs of a frame right where they go to the
+game (`g_cur`, what `cellPadGetData` returns): live frames, frames a rollback re-simulates, and
+frames a replay plays back alike, after the exchange and after any prediction. Two exceptions,
+both places where START skips something and cannot pause:
+
+| where (game state at the frame's boundary) | START | why |
+|---|---|---|
+| fight phase 17, round state `0x1009322C` = 9: the replay after a round's KO | kept | it skips the replay (~9 s), as it always did online; either player may, both games skip together (probe s1900: replay 9 -> 0xC 5 frames after the press, no pause) |
+| from 40 frames after the match was decided in this fight (decided byte `0x1008EBD5` rising after a fought frame) until the game asks for the select screen | kept | the direct-fight driver (lockstep, `df_fight.cpp post_match_skip`) and the rollback loop's post-match rule (`rb_net.cpp post_record`) skip the last KO replay and the win pose with START from 40 frames after the decision ("After the match", DIRECTFIGHT.md) |
+| everything else: the round's READY/FIGHT (round state 4), the fight (5), the KO frame and its slow motion (6, 8: START did nothing there, probe s1760), on to the next round (0xC), the intros, a rematch's select screen in lockstep | taken out | the pause menu |
+
+The window after the decision opens only where the decided byte rises after a frame that was
+fought: the last match's byte is still set ~230 frames into a rematch's fight, where the pause
+menu works again.
+
+**Each player's own START never goes out** (`netplay_core.cpp device_input`, `np::set_no_start`):
+in a direct-fight session the local devices' START bit -- the pad's START, the keyboard's Enter,
+any remap or macro that ends in START -- is dropped before the input is sent. The driver's own
+presses (`g_local_inject`), the rollback rule's forced input and the test inputs
+(`T5_NET_SCRIPT`, `T5_NET_PADFILE`) are not touched there; the tests use the latter to play a
+modified client that sends START anyway, and the frame rule takes it out again.
+
+**Why both games stay equal (the proof).** What the rule does to frame f is a function of the game
+state at the boundaries up to f's (the phase word, the decided byte, the round state, the mode
+manager's next mode -- the same on both PCs while they are in sync, which the per-frame state hash
+checks) and of frame f's two inputs (the same on both PCs: lockstep exchanges them before the
+frame runs; under rollback the final re-simulation runs with the confirmed inputs; a replay reads
+them from the file). It never looks at which PC runs it, which slot is local or where an input
+came from, and it treats P1 and P2 alike (`apply(swap(in)) == swap(apply(in))`). So both games
+hand the game identical inputs for every frame, by induction identical states. The window's start
+is kept per boundary (frame mod 4096, tagged with the frame) and is not part of the rollback
+snapshot: a re-simulated boundary is recorded again from the restored state, and the boundary a
+record reads (its predecessor) always comes from the latest run of that frame -- a rollback to
+first_wrong re-runs every boundary from first_wrong on, and the ones before it ran on correct
+inputs. The records are cleared at every frame 0 (a session numbers its frames anew). The replay
+recorder keeps the raw inputs from the rings; playback applies the same rule at the same
+boundaries, so a recording plays back identically. The replay viewer's own START (pause the
+playback, docs/REPLAYS.md) is read from this PC's pad, outside the session's inputs, and works as
+before. Offline (no netplay, also an offline `T5_FIGHT`) nothing changes: START pauses.
+
+**The pause menu in memory** (for tests; probes p1/p4 in build/nopause): `0x10092EA0` goes 0 -> 2
+when the menu opens and back to 0 when it closes, together with `0x1008F0B4`/`B8` 1 -> 0 and
+`0x100996B4` 1 -> 3. `tools/fight_flow_test.py` and `tools/pick_flow_test.py` take
+`--mash-start N` (with `--mash`: about every N-th mashed input is START, alone or with an attack);
+they watch that word (`T5_DF_WATCH`) and fail the run if the menu ever opens, and print how many
+START frames the rule took out of each player's input and kept (round replays and the match end;
+the game's log line calls both "the post-match skip") from the games' `no pause online` log lines. `--net-timeout S` gives the games more slack on a PC busy with
+other games. The log says `frame N: START taken out of P1's input (no pause online; ...)` once
+per match and the tally at its end and at the next sync point (`no pause online, the match: ...`,
+`after the last match: ...`). The tally counts live frames; under rollback those include
+predicted inputs (the last input repeats, START too), so the two PCs' tallies differ -- what has
+to agree is the state hash, and it does.
+
+**Tests.** `tests/test_no_pause.py`: `tests/c/no_pause_test.cpp` runs the rule against a model of
+the game (rounds with KO, replay and the next round's intro; the pause menu in every round state
+but the replay; a decided byte that stays set into the next fight; START mashed by P1, P2 or both)
+on two PCs in lockstep, under rollback (inputs 0-9 frames late, predictions, ~8,000 rollbacks per
+PC per run) and as a replay: identical hashes on both PCs at every frame, the pause menu never
+opens, round replays and match ends are still skipped by START; without the rule the same inputs
+do pause (the model has teeth; a rule that let START through in the KO slow motion, or on the
+stale decided byte, fails it). The source checks: both places that hand inputs to the game run the
+rule first, the device path drops START, the rule names no slot.
+
+In the game (build/nopause/runs; two games on this PC, minimized, muted, below-normal priority;
+"START out / kept" = the games' tallies, P1 + P2):
+
+| run | what | result |
+|---|---|---|
+| p1, p4 (main's code) | local lockstep, START at frame 900, then every 60 frames | the PAUSE menu (screenshot); opened 18 times |
+| p5 (this branch) | the same presses | no menu, the fight's timer runs on (screenshots) |
+| ffA_rb | rollback, persistent game, new session + 2 rematches, first to 3 rounds, both players mash (every ~8th input START), Lili/Dragunov, Jin/Xiaoyu, Kazuya/Heihachi | 3/3 confirmed, same winner and hash (d0dc4cf2.., 89c5ef7a.., 2b7d413a..), 0 mismatching frames through 23,399; menu opened 0 times; START out 1129 + 1130 / 3211 + 2754 frames (predictions included), kept 55 / 74 (round replays, match ends) |
+| ffB_ls | the same in lockstep (`T5_RB_MODE=off`), Bryan/Steve, King/Christie, Asuka/Law | 3/3, hashes 4387a2b6.., c120376c.., 1024092d.., 0 mismatching frames through 17,399; menu 0; START out 818 + 842 and kept 51 -- the same numbers on both PCs |
+| pfA_rb_ranked | rollback, in-game select (Jin RP vs Lili LK picked on the select screen), then games 2 and 3 locked: a best-of-3 ranked set (2-1), mashing START, 2 rounds | 3/3, 0 mismatching frames through 12,599; menu 0; START out 691 + 775 / 657 + 679, kept 44 / 43 |
+| pfB_ls_picks | lockstep, in-game select in every match: Jin vs Lili, then two rematches picked again (random vs Kazuya LP: Anna; Asuka vs Xiaoyu), the lockstep paused at each select screen and resumed, mashing START, 2 rounds | 3/3, 0 mismatching frames through 11,999; menu 0; START out 581 + 572 and kept 43 on both PCs |
+| ffC_rb_merged | rollback after merging main 06adda9 (loopback bind), new session + rematch, first to 3, Yoshimitsu/Feng, Steve/Hwoarang, START every ~6th input | 2/2, 0 mismatching frames through 12,599; menu 0 |
+| replays of pfA | both players' recordings of the ranked set played back (`tools/replay_play.py --press 8:START,13:START`: the viewer's own pause) | both IDENTICAL: 217 hashes, 3 results, 6/6 sync points each; "paused ... going on (paused 5.0 s)" |
+| dev2 | local lockstep, this PC's "pad" (PS3_PAD_FILE, the device path) pressing START + CROSS 1,007 times | CROSS in P1's input on 3,350 of 6,642 frames, START on none, menu 0 |
+| s1760 / s1900 (main's code) | START in a round's KO slow motion / in its replay | nothing / the replay skipped 5 frames later; no menu either time |
+| off1 | offline direct fight (no netplay), START in the fight | the PAUSE menu opens (0x10092EA0 -> 2 at the press; screenshot) |
+| smoke quick | offline menus, arcade, VS with two pads, practice, title twice | PASS (81 checks) with up to 10 other games running; an earlier run beside 16-20 other games failed `practice` (black frames, no fight HUD) -- main's exe failed it the same way at that load |
+
 ## Connection problems
 
 How a session starts, survives trouble, and ends when it cannot go on

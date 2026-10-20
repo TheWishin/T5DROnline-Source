@@ -138,6 +138,7 @@ class GameLog:
         self.pos = 0
         self.partial = ""
         self.mismatches = 0          # netplay's cumulative mismatch count (sync check lines)
+        self.syncs = 0               # sync check lines (one per 600 compared frames)
         self.desync_lines = 0        # DESYNC lines (the first 10 mismatches are logged one by one)
         self.last_frame = 0
         self.overs = []              # (frame, n, p1 rounds, p2 rounds)
@@ -188,6 +189,7 @@ class GameLog:
         self.lines += 1
         m = RE_SYNC.search(ln)
         if m:
+            self.syncs += 1
             self.last_frame = max(self.last_frame, int(m.group(1)))
             self.mismatches = max(self.mismatches, int(m.group(2)))
             return
@@ -406,6 +408,8 @@ class MatchDriver:
         self.game_state = None       # last "state" from it
         self.df_status = None        # the whole last status
         self.saw_fight = False       # this match's fight was seen in the status file
+        self.play_mark = None        # (speed lines, sync lines) of the game log when it was seen (_watch_playing)
+        self.playing_sent = None     # the match whose fight this launcher reported as played (game_playing)
         self.fight_chars = None      # [P1 id, P2 id] the game fought this match with (status file at FIGHT START)
         self.fight_buttons = None    # [P1, P2] their confirm buttons = costumes (1-4, 0 = default), from the same
         self.t_over = None           # when the status said the fight is over (no result file yet)
@@ -588,6 +592,7 @@ class MatchDriver:
             self.mark = self.glog.mark()
             self.reported = False
             self.saw_fight = False
+            self.play_mark = None
             self.fight_chars = None
             self.fight_buttons = None
             self.t_over = None
@@ -616,6 +621,7 @@ class MatchDriver:
         self.match_ev = ev
         self.reported = False
         self.saw_fight = False
+        self.play_mark = None
         self.fight_chars = None
         self.fight_buttons = None
         self.t_over = None
@@ -748,6 +754,20 @@ class MatchDriver:
         if not accept and self.mode == "process":
             self.stop_game()
 
+    def _watch_playing(self, t):
+        """Tell the lobby once per match when this game has played its fight for a while: a netplay speed or sync line
+        after FIGHT START (every 600 lockstep frames -- frames that only run with the opponent's inputs). The lobby then
+        refuses a relay fallback for the match (security review 3: asking for one restarted a running match)."""
+        mid = getattr(t, "match_id", None)
+        if not self.saw_fight or self.play_mark is None or self.glog is None or mid is None or self.playing_sent == mid:
+            return
+        self.glog.poll()
+        if len(self.glog.speeds) > self.play_mark[0] or self.glog.syncs > self.play_mark[1]:
+            self.playing_sent = mid
+            fn = getattr(self.client, "game_playing", None)
+            if fn is not None:
+                self._call(fn, mid)
+
     def _call(self, fn, *args):
         if self.async_calls:
             # The thread gets the queue and the call, not the driver: a UI's objects must never be
@@ -763,6 +783,7 @@ class MatchDriver:
         self._watch_state()
         t = self.ticket
         if t is not None and not self.reported:
+            self._watch_playing(t)
             self._watch_direct(t)
             if self.fallback_wait is None or time.monotonic() > self.fallback_wait[1]:
                 self._check(t)          # (while the server moves the match onto the relay, this game's end is not it)
@@ -799,6 +820,9 @@ class MatchDriver:
         # Only this match's fight counts (the status may still show the previous one for a moment).
         if state == "fight" and self.ticket is not None and k > self.df_base and not self.saw_fight:
             self.saw_fight = True
+            if self.glog is not None:
+                self.glog.poll()
+                self.play_mark = (len(self.glog.speeds), self.glog.syncs)
             # the fighters of this match (with the in-game select: what the players picked)
             if isinstance(st.get("p1"), int) and isinstance(st.get("p2"), int):
                 self.fight_chars = [st["p1"], st["p2"]]

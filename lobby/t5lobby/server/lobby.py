@@ -290,6 +290,8 @@ class Match:
         self.results = [None, None]          # nat_result (punch or relay phase)
         self.punch_retry = False             # the one second chance of a side that failed while the other made it
         self.fallback = False                # the games could not connect directly: moved onto the relay (nat_fallback)
+        self.game_playing = [False, False]   # side -> its launcher said its game has played this match's fight for a while
+                                             # (game_started {playing}): the games hear each other, no relay fallback
         self.nat_plan = None                 # what the punch phase was told (log, tests)
         self.upgraded = None                 # a relayed match that moved onto the direct path: its round trip
         self.relay = None
@@ -2337,6 +2339,12 @@ class LobbyServer(SpectateMixin, RoomsMixin):
             why = "too late"
         elif any(r is not None for r in getattr(m, "reports", [None, None]) or ()):
             why = "a result is in"
+        elif any(m.game_playing):
+            # (security review 3) a game that has played the fight for a while heard its opponent: a request now is not
+            # a firewall -- it would only start a running match again
+            why = "the games are playing"
+            log.warning("match %s: side %d asked for the relay while %s game had played the fight -- refused", m.id,
+                        m.side(p), "its own" if m.game_playing[m.side(p)] else "the opponent's")
         elif not all("game_fallback" in getattr(q.conn, "caps", ()) for q in m.players) or not self.cfg.relay:
             why = "not supported"
         if why is not None:
@@ -2532,6 +2540,18 @@ class LobbyServer(SpectateMixin, RoomsMixin):
         return list(got[0])
 
     async def h_game_started(self, conn, msg):
+        if msg.get("playing") is True:
+            # The launcher's game has run 600 lockstep frames of this match's fight (a netplay speed or sync line after
+            # FIGHT START): frames that only run with the opponent's inputs, so the two games hear each other. From
+            # then on nat_fallback is refused -- it starts the match's session again, and a player losing round 1 used
+            # to get a new match by asking for it (security review 3). Never an error: the launcher says it on its own.
+            p = conn.player
+            m = p.match if p is not None else None
+            if m is not None and m.id == msg.get("match") and m.state == "playing" and m.side(p) is not None:
+                if not m.game_playing[m.side(p)]:
+                    m.game_playing[m.side(p)] = True
+                    self.note("game_playing", match=m.id, side=m.side(p))
+            return None
         self._get_match(conn.player, msg, ("playing",))
 
     # A result report (`result`):
@@ -3356,6 +3376,10 @@ class LobbyServer(SpectateMixin, RoomsMixin):
                 raise LobbyError(proto.E_FULL, "room is full")
             if self._block_key(q) in room.kicked:
                 raise LobbyError(proto.E_NOT_ALLOWED, "the room's host removed that player from this room")
+            if any(self._is_blocked(q, x) for x in room.members if x is not p):
+                # (security review 3) a community room holds up to 8: the friend and another member have blocked one
+                # another -- the invite must not bring them together (joining the room is refused the same way)
+                raise LobbyError(proto.E_NOT_ALLOWED, "that player is not available")
         elif p.status not in ("idle", "queue"):
             raise LobbyError(proto.E_BUSY, f"you are {p.status}")
         self._set_free(p)
@@ -3408,7 +3432,8 @@ class LobbyServer(SpectateMixin, RoomsMixin):
             gone = gone or src.status not in ("idle", "queue") or src.match is not None
         else:
             gone = (gone or r.id not in self.rooms or src not in r.members or len(r.members) >= r.size
-                    or (not r.community and r.match is not None) or self._block_key(p) in r.kicked)
+                    or (not r.community and r.match is not None) or self._block_key(p) in r.kicked
+                    or any(self._is_blocked(p, x) for x in r.members))
         if gone:
             self._end_invite(inv, "cancelled")
             raise LobbyError(proto.E_BUSY, "the invite is no longer possible")

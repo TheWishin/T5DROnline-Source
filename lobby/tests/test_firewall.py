@@ -337,6 +337,24 @@ class FallbackTest(unittest.TestCase):
         r = expect(ca, "match_result", 15)
         self.assertEqual(r["status"], "confirmed")
 
+    def test_a_fight_being_played_is_not_restarted(self):
+        # (security review 3) nat_fallback starts the match's session again. Within T5L_GAME_FALLBACK (90 s) of the
+        # start a player losing round 1 could ask for it -- the server took the word "my game heard nothing" -- and the
+        # opponent's game began the match anew. Once a launcher has said its game played the fight for a while (600
+        # lockstep frames: they only run with the opponent's inputs), the server refuses.
+        ca, cb, ta, tb = self.pair()
+        self.assertEqual(ta.path, "direct")
+        cb.game_playing(tb.match_id)                                       # Bob's game is in the fight
+        self.assertTrue(self.s.wait_for(lambda: self.s.srv.by_name["bob"].match.game_playing[1]))
+        self.assertFalse(ca.nat_fallback(ta.match_id))                     # Alice's "heard nothing": not believed
+        m = self.s.call(lambda: self.s.srv.by_name["alice"].match)
+        self.assertEqual((m.state, m.path, m.fallback), ("playing", "direct", False))
+        self.assertEqual(self.s.call(lambda: self.s.srv.counters["game_fallbacks"]), 0)
+        self.assertIsNone(ca.next_event(1.0, ("match_start",)))            # nobody got a second match_start
+        cb.game_playing("m000000000000")                                   # (another match: ignored, no error)
+        cb.game_playing(tb.match_id)                                       # (twice: no harm)
+        self.assertIsNone(cb.next_event(0.5, ("error",)))
+
     def test_refused(self):
         ca, cb, ta, tb = self.pair(b={"relay_bridge": False})                # Bob's launcher cannot bridge
         self.assertNotIn("game_fallback", cb.welcome["caps"])
@@ -354,12 +372,14 @@ class FallbackLateTest(FallbackTest):
         self.assertFalse(ca.nat_fallback(ta.match_id))                     # too late: the games had their chance
 
     test_refused = None
+    test_a_fight_being_played_is_not_restarted = None
 
 
 # ============================================================================== the match driver
 class _Client:
     def __init__(self):
         self.asked = []
+        self.playing = []
 
     def nat_fallback(self, mid):
         self.asked.append(mid)
@@ -367,6 +387,9 @@ class _Client:
 
     def game_started(self, mid=None):
         return {}
+
+    def game_playing(self, mid):
+        self.playing.append(mid)
 
 
 class _Game:
@@ -427,6 +450,40 @@ class DriverFallbackTest(unittest.TestCase):
             drv.on_event({"t": "match_start", "match": "m1", "ticket": relay, "opponent": {"name": "Bob"}})
         self.assertIsNone(drv.fallback_wait)
         self.assertIs(drv.ticket, relay)
+
+    def test_driver_says_once_when_the_fight_runs(self):
+        # (security review 3) the launcher tells the lobby when its game has played the fight for a while -- the first
+        # netplay speed or sync line after FIGHT START -- so that the opponent's launcher cannot restart it by asking for
+        # the relay; once per match, never before the fight
+        import json
+        from t5lobby.handover import MatchTicket
+        d = tempfile.mkdtemp()
+        log = os.path.join(d, "game.log")
+        st = os.path.join(d, "status.json")
+        with open(log, "w") as f:
+            f.write("[netplay] connected (host, P1), delay 2, peer 203.0.113.5:7000\n"
+                    "[netplay] speed: 59.9 fps, this PC 60.0 fps without the waits for the peer (waited 0.1 s of 10.0 s)\n")
+        c = _Client()
+        drv = MatchDriver(c, launch=lambda env: _Game(log), workdir=d, async_calls=False)
+        drv.game = _Game(log)
+        drv.glog = GameLog(log)
+        drv.status_path = st
+        drv.ticket = MatchTicket(match_id="m3", role="host", slot=0, local_port=7000, peer=("203.0.113.5", 7000),
+                                 path="direct", rtt_ms=10.0, jitter_ms=1.0, delay=2)
+        drv.poll()
+        self.assertEqual(c.playing, [])                               # a speed line from before the fight: not this
+        with open(st, "w") as f:
+            json.dump({"state": "fight", "match": 1, "p1": 1, "p2": 2}, f)
+        drv.poll()
+        self.assertEqual(c.playing, [])                               # FIGHT START: not yet
+        with open(log, "a") as f:
+            f.write("[netplay] sync check through frame 599: 0 mismatching frame(s)\n")
+        drv.poll()
+        self.assertEqual(c.playing, ["m3"])
+        with open(log, "a") as f:
+            f.write("[netplay] speed: 59.9 fps, this PC 60.0 fps without the waits for the peer (waited 0.1 s of 10.0 s)\n")
+        drv.poll()
+        self.assertEqual(c.playing, ["m3"])                           # once
 
     def test_relay_path_never_asks(self):
         from t5lobby.handover import MatchTicket

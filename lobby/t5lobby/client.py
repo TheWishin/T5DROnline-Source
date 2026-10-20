@@ -1252,6 +1252,13 @@ class LobbyClient(TourCalls, SpectateClientMixin):
         r = self._call({"t": "nat_fallback", "match": match_id})
         return bool(r.get("ok"))
 
+    def game_playing(self, match_id):
+        """This player's game has played this match's fight for a while (600 lockstep frames: the netplay's first speed
+        or sync line after FIGHT START), so the two games hear each other: the server refuses a relay fallback from then
+        on (a game that heard nothing never gets there). Sent once per match, no answer."""
+        if self.welcome and "game_fallback" in (self.welcome.get("features") or ()):
+            self._fire({"t": "game_started", "match": match_id, "playing": True})
+
     def report_lag(self, match_id, frames, waited_ms, pc_fps=None, fps=None):
         """The game's own numbers for a finished match: frames played, milliseconds spent waiting for
         the opponent's input, this PC's speed without those waits. Both players then get `lag_check`.

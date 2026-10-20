@@ -468,7 +468,8 @@ launcher (the one that made it) and launchers that joined with it know it.
   (the index that finds a room by its code); a server restart ends all rooms anyway.
 - **Wrong guesses** (a wrong password, a wrong code, a malformed one) are limited per player (5, then one per
   `T5L_ROOM_GUESS_SECONDS`, 30 s), per internet address (10, then one per 15 s; IPv6 per /64) and per room (20, then
-  one per 10 s, for guesses from many addresses together; a friend's invite still works then). A guess is counted
+  one per 10 s, for guesses from many addresses together; a friend's invite still works then -- and so does an invite
+  code: a room that is being guessed at can switch to one). A guess is counted
   before the slow check and given back when it was right, so parallel tries on several connections cannot all pass
   while the first is hashed. The refusal says how long to wait (`rate_limited` "... try again in N s" with `retry`
   N, like a held-back invite). Setting a password costs a hash: limited like a password change (per player), and

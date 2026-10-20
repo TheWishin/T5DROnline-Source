@@ -59,6 +59,18 @@ part is in the README's status table.
 - The relay gets 10 seconds to come up instead of 6 (a slow PC's relay was cancelled as "not even through the
   relay" before it had finished measuring).
 
+### Security (review 3)
+- **The relay fallback cannot restart a match any more.** Asking for the relay ("my game hears nothing") starts
+  the match's session again; within 90 seconds of its start a player losing the first round could ask for it and
+  both games began the match anew. Once either game has played the fight for a while (ten seconds: frames that
+  only run with the opponent's input), the lobby refuses.
+- **Blocks hold in community rooms.** A friend's invite into a room for 3-8 players brought in a player whom
+  another member had blocked (or who had blocked them), and the room's line could pair the two. The invite and its
+  accept check every member, and the line never pairs two who blocked one another.
+- **A spectator's launcher takes only what it asked for**: a lobby server sending "watching" by itself no longer
+  makes it unpack up to 64 MB into a new file, and a stream of state hashes far out of order (which kept the
+  spectator's game busy for hours) ends the watch as damaged.
+
 ### Spectating
 - **Watch a live match**: a friend in a match (Friends page: **Watch**, below the list) or any room's match
   (Rooms: **Watch**). Your own game shows it a few seconds behind, exactly as it is played -- the replay's

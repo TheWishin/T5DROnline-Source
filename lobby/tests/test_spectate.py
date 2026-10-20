@@ -399,6 +399,23 @@ class OlderTest(Base):
             self.assertNotIn("watch", f)
 
 
+class UnaskedTest(Base):
+    def test_a_watching_nobody_asked_for_makes_no_file(self):
+        # (security review 3) a server sending `watching` by itself (no watch request) made the launcher open a new file
+        # and unpack up to 64 MB into it from a few KB -- again and again with new stream ids
+        a = self.acc("Alice")
+        sid = "m0123456789ab"
+
+        def push():
+            pl = self.s.srv.by_name["alice"]
+            pl.conn.send({"t": "watching", "stream": sid, "match": sid, "players": [], "began": 0, "spectators": 1})
+            pl.conn.send({"t": "watching", "stream": sid, "match": sid, "players": [], "re": 999})
+        self.s.call(push)
+        time.sleep(1.0)
+        self.assertIsNone(a.spec_watch)
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "Alice", "watch", f"watch-{sid}.t5live")))
+
+
 class ParserTest(unittest.TestCase):
     def test_pieces_of_any_size_and_end(self):
         data = spectate.MAGIC + session_rec() + match_rec(0) + inputs_rec(0, 100) + end_rec("x")
@@ -429,6 +446,18 @@ class ParserTest(unittest.TestCase):
         p = spectate.LiveParser()
         p.feed(spectate.MAGIC + inputs_rec(5, 10))             # inputs that do not start where the last ended
         self.assertIsNotNone(p.bad)
+
+    def test_hashes_far_out_of_order(self):
+        # (security review 3) the spectator's game sorts each HASH into place: a hand-made stream of hashes, each one
+        # older than the last, kept it busy for hours. A few frames back (a rollback recorded a frame again) is fine.
+        def hash_rec(f):
+            return rec(spectate.R_HASH, struct.pack("<IQ", f, 0x1234))
+        p = spectate.LiveParser()
+        p.feed(spectate.MAGIC + session_rec() + match_rec(0) + hash_rec(600) + hash_rec(660) + hash_rec(540)
+               + hash_rec(7200) + hash_rec(7200 - spectate.HASH_BACK))
+        self.assertIsNone(p.bad)
+        p.feed(hash_rec(100))
+        self.assertIn("out of order", p.bad or "")
 
     def test_uploader_to_receiver(self):
         d = tempfile.mkdtemp(prefix="t5spec")

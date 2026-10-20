@@ -1628,6 +1628,7 @@ MESSAGES = {
     "Friends": "フレンド",
     "Invite to a match": "対戦に招待",
     "Invite to my room": "自分のルームに招待",
+    "Invite in {seconds} s": "招待まであと {seconds} 秒",
     "Remove": "削除",
     "Invite a friend who is online: one click on their side starts a casual match, or brings them into your room.":
         "オンラインのフレンドを招待しましょう：相手のワンクリックでカジュアル対戦が始まるか、あなたのルームに入ります"

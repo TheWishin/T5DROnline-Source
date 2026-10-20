@@ -1628,6 +1628,7 @@ MESSAGES = {
     "Friends": "Amigos",
     "Invite to a match": "Convidar para uma partida",
     "Invite to my room": "Convidar para minha sala",
+    "Invite in {seconds} s": "Convidar em {seconds} s",
     "Remove": "Remover",
     "Invite a friend who is online: one click on their side starts a casual match, or brings them into your room.":
         "Convide um amigo que está online: um clique do lado dele começa uma partida casual ou o traz para a sua "

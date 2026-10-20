@@ -1600,6 +1600,7 @@ MESSAGES = {
     "Friends": "친구",
     "Invite to a match": "매치에 초대",
     "Invite to my room": "내 방에 초대",
+    "Invite in {seconds} s": "{seconds}초 후 초대",
     "Remove": "삭제",
     "Invite a friend who is online: one click on their side starts a casual match, or brings them into your room.":
         "접속 중인 친구를 초대하세요: 상대가 한 번 클릭하면 일반 매치가 시작되거나 내 방으로 들어옵니다.",

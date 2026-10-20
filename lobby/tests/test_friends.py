@@ -501,6 +501,70 @@ class InviteTest(Base):
         b.answer_invite(r["invite"], True)
         expect(b, "match_found")
 
+    def test_the_wait_after_a_no_is_the_servers(self):
+        # (1.1.3) A no holds the next invite to that friend back (T5L_INVITE_RETRY_SECONDS), and the launcher used to
+        # learn it only from the refusal of the next try. The server says how long: `retry` in the invite_update to
+        # the inviter, in the friends list and friend_status, and with the refusal. The client keeps that number
+        # (invite_wait) for the invite buttons; it guesses none, and the server still refuses what it holds back.
+        a, b = self.friends()
+        self.assertEqual(a.invite_wait("Bob"), 0)
+        r = a.invite("Bob")
+        expect(b, "invited")
+        b.answer_invite(r["invite"], False)
+        ev = expect(a, "invite_update")
+        self.assertEqual(ev["state"], "declined")
+        self.assertIn(ev["retry"], (29, 30))
+        self.assertIn(a.invite_wait("bob"), (29, 30))                       # (any spelling of the name)
+        self.assertNotIn("retry", expect(b, "invite_update"))              # Bob's next invite to Alice is not held
+        self.assertEqual(b.invite_wait("Alice"), 0)
+        self.assertIn([f["retry"] for f in a.friends_list()["friends"]], ([29], [30]))
+        self.assertEqual([f["retry"] for f in b.friends_list()["friends"]], [0])
+        b.create_room("Bob's dojo")                                       # a presence change: friend_status
+        st = expect(a, "friend_status")
+        self.assertEqual((st["name"], st["activity"]), ("Bob", "room"))
+        self.assertIn(st["retry"], (28, 29, 30))
+        b.leave_room()
+        time.sleep(2.1)                                                   # (one invite per 2 s)
+        with self.assertRaises(LobbyError) as e:                          # the server refuses it, with the seconds
+            a.invite("Bob")
+        self.assertEqual(e.exception.code, proto.E_RATE)
+        self.assertTrue(25 <= e.exception.extra["retry"] <= 28, e.exception.extra)
+        self.assertIn("try again in", e.exception.msg)
+        a.create_room("Alice's dojo")                                     # a room invite: the same wait
+        with self.assertRaises(LobbyError) as e:
+            a.invite("Bob", "room")
+        self.assertTrue(25 <= e.exception.extra["retry"] <= 28, e.exception.extra)
+        self.assertTrue(25 <= a.invite_wait("Bob") <= 28)
+
+    def test_the_wait_counts_down_and_ends(self):
+        self.s.stop()
+        self.s = server(invite_retry_seconds=1.5)
+        a, b = self.friends()
+        r = a.invite("Bob")
+        expect(b, "invited")
+        a.cancel_invite(r["invite"])                                      # taking it back holds the next one too
+        ev = expect(a, "invite_update")
+        self.assertEqual((ev["state"], ev["retry"]), ("cancelled", 2))
+        self.assertEqual(a.invite_wait("Bob"), 2)
+        time.sleep(2.1)
+        self.assertEqual(a.invite_wait("Bob"), 0)
+        r = a.invite("Bob")                                               # over on both sides at the same time
+        expect(b, "invited")
+        b.answer_invite(r["invite"], True)
+        ev = expect(a, "invite_update")
+        self.assertEqual((ev["state"], ev["retry"]), ("accepted", 0))    # a yes holds nothing back
+        self.assertEqual(a.invite_wait("Bob"), 0)
+
+    def test_a_retry_the_client_cannot_use(self):
+        a, _b = self.friends()
+        for bad in (None, "30", True, -1, float("nan"), [30]):
+            a._note_invite_wait("Bob", bad)
+            self.assertEqual(a.invite_wait("Bob"), 0, bad)
+        a._note_invite_wait("Bob", 10 ** 9)                              # a day at most (a button, not a ban)
+        self.assertEqual(a.invite_wait("Bob"), 86400)
+        a._note_invite_wait("Bob", 0)                                     # the server says: now
+        self.assertEqual(a.invite_wait("Bob"), 0)
+
     def test_a_ranked_room_invite_keeps_the_ready_check(self):
         # (security review 2) a room invite starts the room's match at once -- in a ranked room that was a rated
         # match (with ranked sets: a best of 3, lost by leaving it) the invited friend never saw called ranked: the
@@ -807,6 +871,55 @@ class OldServerTest(unittest.TestCase):
                 c.quick_match()
             for c in clients:
                 expect(c, "match_start", 30)
+        finally:
+            for c in clients:
+                c.close()
+            asyncio.run_coroutine_threadsafe(srv.stop(), loop).result(10)
+            loop.call_soon_threadsafe(loop.stop)
+            th.join(10)
+            loop.close()
+
+    def test_the_invite_wait_on_a_1_1_2_server(self):
+        # A 1.1.2 server sends no `retry`: nothing to count down after a no, the invite buttons stay as they were;
+        # its refusal of the next invite says the seconds in its text, and the 1.1.3 client takes them from there.
+        _oldc, olds, _st = _old_tree(self, os.environ.get("T5L_COMPAT_SERVER_112", "df72a78"))
+        loop = proto.new_event_loop()
+        srv = olds.LobbyServer(olds.Config(**util.FAST))
+        ready = threading.Event()
+
+        def run():
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(srv.start())
+            ready.set()
+            loop.run_forever()
+        th = threading.Thread(target=run, daemon=True)
+        th.start()
+        clients = []
+        try:
+            self.assertTrue(ready.wait(10))
+            for name in ("Alice", "Bob"):
+                c = LobbyClient(f"127.0.0.1:{srv.port}", BUILD, relay_bridge=False)
+                c.connect()
+                c.register(name, name.lower() + "-pw1")
+                clients.append(c)
+            a, b = clients
+            self.assertTrue(a.has_friends())
+            a.add_friend("Bob")
+            expect(b, "friend_request")
+            b.answer_friend("Alice", True)
+            wait_list(a, lambda fl: names(fl["friends"]) == ["Bob"])
+            r = a.invite("Bob")
+            expect(b, "invited")
+            b.answer_invite(r["invite"], False)
+            ev = expect(a, "invite_update")
+            self.assertNotIn("retry", ev)
+            self.assertEqual(a.invite_wait("Bob"), 0)                     # nothing guessed
+            time.sleep(2.1)
+            with self.assertRaises(LobbyError) as e:
+                a.invite("Bob")
+            self.assertIn("try again in", e.exception.msg)
+            self.assertTrue(25 <= e.exception.extra["retry"] <= 28, e.exception.extra)
+            self.assertTrue(25 <= a.invite_wait("Bob") <= 28)
         finally:
             for c in clients:
                 c.close()

@@ -11,6 +11,21 @@ part is in the README's status table.
   now starts while the game boots, uses 4 threads instead of one per processor, and if it
   still does not answer within 5 seconds the movie goes on black with its sound (START skips
   it). Later movies try the decoder again.
+- **Match scores are the real round counts.** The game reported the winner right, but the
+  score was made up: a 3-2 or 3-1 showed as 3-0, and now and then a 3-0 showed as 0-1. A
+  drawn match (time-out with equal health, or a double KO, in the deciding round) was counted
+  as Player 1's win. The game now reads the rounds each fighter won and reports draws as
+  draws. This matters beyond the result card: when the opponent's connection broke after the
+  last round, only a full score lets the lobby keep the win (a wrong score voided the match).
+  docs/NETPLAY.md "Match result".
+
+### Online
+- **Invite buttons show the wait after a no.** When a friend declines your invite (or you take
+  it back), the lobby holds the next invite to that friend back for 30 seconds. The invite
+  buttons are now off for that friend during the wait, and the one you would use counts the
+  seconds down ("Invite in 27 s"), for match and room invites alike. The seconds come from the
+  server, which still has the last word. With a lobby server older than 1.1.3 the countdown
+  starts only after a refused try (that server names the wait only in its refusal).
 
 ## v1.1.2 (not released yet)
 

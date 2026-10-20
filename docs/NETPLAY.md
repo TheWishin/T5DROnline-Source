@@ -62,6 +62,36 @@ of the deciding frame (equal on both PCs when they agree); `fps` is this PC's
 own speed in the match (time waiting for the peer left out). A match that could
 not be played to the end has `"winner": null` and a `reason` (next section).
 
+**Match result** (`src/netplay/match_score.h`, 1.1.3). `score` is the rounds
+each player won: the u8 at +0xA1 of each fighter's block (P1 0x10090030 ->
+0x100900D1, P2 0x10090900 -> 0x100909A1; +0xA2 is an i16 with the fighter's
+last round, 1 won / -1 lost). The game counts a round there on its KO frame --
+the last one on the very frame the decided byte 0x1008EBD5 rises -- and clears
+both counts when the next match's game mode starts, ~230 frames after its FIGHT
+START (the decided byte goes back to 0 on the same frame). `winner` is the one
+with more rounds (equal = a draw, `null`). The decided byte itself says how the
+match ended: 1 P1 won, 2 P2 won, 3 a draw (a time-out with equal health or a
+double KO in the deciding round counts the round for both: a no-input pair,
+first to 1, ended 1-1). Before 1.1.3 the score came from the
+battle config's bytes 0x1008EBDA/DB, which a menu-driven VS game was thought to
+count rounds in: they stay 0 in direct fights, so the score was made up from
+the winner byte 0x1008EBD6 as rounds-to-win : 0 (every 3-2 and 3-1 read 3-0),
+and the few times one of them was 1 at the end (mashing rollback pairs) that was
+the score: `[0, 1]` for a match P2 won 3-0, `[1, 0]` for P1's. A drawn match
+was P1's win (the winner byte is 0 in a draw). The winner was right otherwise
+(it decides ratings and sets), but the lobby also decides on
+the score: a result whose opponent reports a lost connection stands only with a
+full score -- the winner at the rounds to win (docs/RANKED.md "Results") -- so
+`[0, 1]` turned a won match into a void there; history, result cards and the
+admin's match list showed the made-up score. Found by dumping guest memory at
+every round's replay of a rollback pair and watching the words frame by frame
+(`T5_DF_WATCH`): 3-2, 3-1, 0-3 and 3-0 matches. When the counts cannot be the
+match's (both 0, above the rounds to win, or another verdict than the decided
+byte's) the decided byte decides with rounds-to-win : 0 and the log says so
+("do not fit the match"). A
+session that ends mid-match writes the rounds won so far (0-0 while the last
+match's decided byte is still up: its counts are still there).
+
 **Starting at the fight (direct-fight mode).** Lockstep does not have to run
 from boot. With `T5_NET_START=external` both games boot, load and do whatever
 they do at their own pace with both pads neutral; when the game side calls
@@ -677,9 +707,9 @@ the second match's intro, nothing else: docs/ROLLBACK.md section 21).
 **Match state** (what the detector hashes, `kDefaultHash`): the two pad state
 blocks (0x10099F24), the input ring, the game frame clock, all random
 generator states, and the fight block 0x1008E000-0x10091FFF: round state at
-0x1008EBD0 (+0xA/+0xB rounds won by P1/P2, +0x5 non-zero once the match is
-decided), round timer 0x1008F054 (frames left), the fighters at roughly
-0x1008F800 and 0x100900D0 (0x8D0 apart), plus 0x10099600-0x10099BFF,
+0x1008EBD0 (+0x5 non-zero once the match is decided), round timer 0x1008F054
+(frames left), the fighters at roughly 0x1008F800 and 0x100900D0 (0x8D0 apart;
+each one's rounds won at +0xA1 of its block, "Match result" above), plus 0x10099600-0x10099BFF,
 0x100A0900-0x100A0AFF and 0x100A3B00-0x100A3DFF. About 25 KB per frame.
 
 ## One save for online play, and the unlocks (branch unlock-stages, 1.1.2)

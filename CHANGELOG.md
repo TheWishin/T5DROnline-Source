@@ -80,6 +80,9 @@ firewall fallback need the lobby server updated; older launchers keep working wi
 - **A failed "Compile" step gets a second try.** A file that fails is compiled once more at the end, on its own,
   and the build goes on if that works; fewer compilers run at once when little memory is free. A failure now shows
   the compiler's error lines in the log, and **Report a problem** adds its full output.
+- **No false warning for the second PSN package name.** The same game also comes from PSN as
+  `UP0700-NPUB30009_00-0000000000010000` (same size, same program); the Build tab showed it with a yellow "not the
+  supported package" warning, although the build always worked with it. It is now a green check.
 
 ### Security (review 3)
 - **The relay fallback cannot restart a match any more.** Asking for the relay ("my game hears nothing") starts

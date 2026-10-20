@@ -51,6 +51,9 @@ PS3RECOMP_COMMIT = "f17bcd3"
 TITLE_ID = "NPUB30009"
 TITLE_VERSION = "01.00"
 CONTENT_ID = "UP0700-NPUB30009_00-UPDATE0000010000"
+# The same package (619,430,240 bytes, the same program: ELF_SHA1) also comes from PSN under this content ID,
+# with its own .rap (a player's build, 1.1.3). The build checks the program itself, so both are supported.
+CONTENT_IDS = (CONTENT_ID, "UP0700-NPUB30009_00-0000000000010000")
 GAME_NAME = "Tekken 5: Dark Resurrection Online (PS3, US PSN, NPUB30009 v01.00)"
 ELF_SHA1 = "be80165b84e30b6334baa6d6331b9db4ffd5a6a4"
 PKG_SIZE = 619430240

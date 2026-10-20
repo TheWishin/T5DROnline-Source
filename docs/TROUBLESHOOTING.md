@@ -69,7 +69,10 @@ How to tell what you have: choose the `.pkg` in the Build tab. The line under it
 shows the content ID and size.
 
 - Green check, "the supported version": content ID
-  `UP0700-NPUB30009_00-UPDATE0000010000`, size 619,430,240 bytes. This is right.
+  `UP0700-NPUB30009_00-UPDATE0000010000` or `UP0700-NPUB30009_00-0000000000010000`
+  (the same game from PSN under two names), size 619,430,240 bytes. This is right.
+  Launchers before 1.1.3 showed the second one with a yellow warning; the build
+  works with it all the same.
 - Yellow warning "Tekken 5 DR, but not the supported package": the right game,
   a different version. There is no workaround. The port supports only this one
   version today.

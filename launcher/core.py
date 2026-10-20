@@ -240,7 +240,7 @@ def describe_pkg(path):
     size = os.path.getsize(path)
     if cid is None:
         return False, "error", t("This is not a PS3 package (.pkg).")
-    if cid == build_game.CONTENT_ID:
+    if cid in build_game.CONTENT_IDS:
         return True, "ok", t("{id}  ({size} bytes) -- the supported version", id=cid, size=f"{size:,}")
     if build_game.TITLE_ID in cid:
         return True, "warn", t("{id}  ({size} bytes) -- Tekken 5 DR, but not the supported package ({supported}). "

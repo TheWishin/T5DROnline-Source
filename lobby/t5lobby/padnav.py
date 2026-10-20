@@ -40,7 +40,7 @@ from collections import namedtuple
 
 from . import padmap
 from .i18n import t
-from .padmap import DINPUT, XINPUT
+from .padmap import DINPUT, KEYS, KEYS1, KEYS2, XINPUT
 
 BUTTONS = ("cross", "circle", "triangle")
 ARM_S = 0.30            # a button must have been up this long (launcher in front) before a press counts
@@ -895,9 +895,57 @@ class HidSource(PadSource):
         return out
 
 
+# ---------------------------------------------------------------------- the keyboard (Controls window only)
+
+# Keys the Controls window never reports: the mouse buttons (VK 1 2 4 5 6) and Cancel, the generic Shift / Ctrl /
+# Alt (their left and right keys are reported, the names the game uses), the Windows keys.
+KEY_SKIP = frozenset((0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x10, 0x11, 0x12, 0x5B, 0x5C, 0xE7, 0xFF))
+
+
+class KeyboardSource(PadSource):
+    """The keyboard as the game reads it (GetAsyncKeyState), for the Controls window -- never for the Online tab's
+    navigation, where the keyboard works the window as usual. One device per keyboard player of the game: the
+    [keys1] one, and the [keys2] one when that section binds anything. Read only while the window is in front
+    (DevicePoller's rule), so no key typed into another program is ever seen."""
+
+    def __init__(self, get_state=None):
+        self.get_state = get_state
+        if self.get_state is None and os.name == "nt":
+            try:
+                user32 = ctypes.WinDLL("user32")
+                user32.GetAsyncKeyState.restype = ctypes.c_short
+                user32.GetAsyncKeyState.argtypes = [ctypes.c_int]
+                self.get_state = user32.GetAsyncKeyState
+            except (OSError, AttributeError):
+                self.get_state = None
+        self.second = False
+
+    def configure(self, controls):
+        try:
+            self.second = bool(controls.table(KEYS2).binds)
+        except Exception:               # noqa: BLE001 -- a file the parser cannot read: one keyboard player
+            self.second = False
+
+    def held(self):
+        if self.get_state is None:
+            return frozenset()
+        return frozenset(padmap.key_name(vk) for vk in range(1, 255)
+                         if vk not in KEY_SKIP and self.get_state(vk) & 0x8000)
+
+    def read(self):
+        if self.get_state is None:
+            return []
+        held = self.held()
+        out = [Device(KEYS1, KEYS1, t("Keyboard"), 0, 0, None, held)]
+        if self.second:
+            out.append(Device(KEYS2, KEYS2, t("Keyboard, second player"), 0, 0, None, held))
+        return out
+
+
 class FileSource(PadSource):
     """T5_PAD_FILE: one virtual pad holding the sources named in a file. 'A B' = an XInput pad with A and
-    B held; 'dinput B2' or 'dinput:054C:09CC B2' = a DirectInput-style stick. Read at every poll."""
+    B held; 'dinput B2' or 'dinput:054C:09CC B2' = a DirectInput-style stick; 'keys Q E' = the keyboard (its
+    [keys1] player). Read at every poll."""
 
     def __init__(self, path):
         self.path = path
@@ -919,15 +967,19 @@ class FileSource(PadSource):
                     pass
         elif toks and toks[0].lower().startswith("xinput"):
             toks.pop(0)
+        elif toks and toks[0].lower() in ("keys", KEYS1, KEYS2):
+            kind = KEYS2 if toks.pop(0).lower() == KEYS2 else KEYS1
         held = {padmap.canon_source(kind, t) for t in toks}
         held.discard(None)
-        return [Device(kind, "file", "scripted pad (T5_PAD_FILE)", vid, pid, 0 if kind == XINPUT else None,
+        key = kind if kind in KEYS else "file"
+        return [Device(kind, key, "scripted pad (T5_PAD_FILE)", vid, pid, 0 if kind == XINPUT else None,
                        frozenset(held))]
 
 
-def default_sources(env=None):
+def default_sources(env=None, keyboard=False):
     """The sources for this PC: physical pads, or the T5_PAD_FILE pad (physical pads only with T5_PAD_DEVICES=1).
-    In the game's order: XInput, the PlayStation pads read directly, then WinMM (without those)."""
+    In the game's order: XInput, the PlayStation pads read directly, then WinMM (without those). keyboard: the
+    keyboard too (the Controls window; the Online tab never reads it)."""
     env = os.environ if env is None else env
     out = []
     f = env.get("T5_PAD_FILE")
@@ -937,6 +989,8 @@ def default_sources(env=None):
         xi = XInputSource()
         hid = HidSource(env=env, xinput_present=lambda: bool(xi.slots))
         out += [xi, hid, WinMMSource(covered=hid.covers)]
+        if keyboard:
+            out.append(KeyboardSource())
     return out
 
 

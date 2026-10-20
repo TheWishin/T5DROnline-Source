@@ -1,6 +1,6 @@
 """The launcher's Controls screen: Settings -> "Set up controllers...".
 
-Players with pads, arcade sticks and hitboxes set their buttons here instead of editing controls.ini:
+Players with pads, arcade sticks, hitboxes and the keyboard set their buttons here instead of editing controls.ini:
 
 * every controller the game would see, on the player port it would get, with a live "press a button" test;
 * the Tekken buttons (1 2 3 4, 1+2, 3+4, 1+2+3+4 and the other macros, Start, Select, the directions): "Press
@@ -31,7 +31,7 @@ from controls_edit import N_, t  # noqa: F401  (N_ marks texts for translation)
 from controls_edit import DeviceRef
 from t5lobby import dialogs, padmap, padnav, theme
 from t5lobby.i18n import ui_family
-from t5lobby.padmap import XINPUT
+from t5lobby.padmap import KEYS, XINPUT
 
 POLL_HZ = 60
 SCAN_S = 1.0
@@ -226,6 +226,8 @@ def nav_map(editor, dev):
     """{source: action} for moving through the screen with this controller: the sources that are 3 (Cross)
     accept, 4 (Circle) go back, 2 (Triangle) clear, Start saves, the d-pad / hat and the left stick go up
     and down. A button the person has cleared falls back to the default layout's."""
+    if dev.kind in KEYS:
+        return {}                       # the keyboard works the window the usual way (Tab, arrows, Enter)
     cur = editor.table(dev)
     dflt = padmap.Controls("").table(dev.kind, -1, dev.vid, dev.pid)
     bit = padmap.PS3_BIT
@@ -276,6 +278,8 @@ def _ask(kind, title, text, parent):
 
 
 def _kind_name(kind):
+    if kind in KEYS:
+        return t("Keyboard")
     return t("Xbox pad (XInput)") if kind == XINPUT else t("DirectInput controller")
 
 
@@ -306,7 +310,7 @@ class ControlsDialog:
         self.path = path or ce.controls_path(getattr(settings, "out_dir", os.getcwd()), env)
         self.editor = ce.ControlsEditor.load(self.path)
         if sources is None:
-            sources = padnav.default_sources()
+            sources = padnav.default_sources(keyboard=True)
         self.no_pads = not sources
         if foreground is None:
             foreground = padnav.window_foreground_check(padnav.toplevel_hwnd(self.top))
@@ -523,6 +527,14 @@ class ControlsDialog:
         self.btn_revert.grid(row=0, column=2, padx=4)
         ttk.Button(bar, text=t("Close"), command=self.close).grid(row=0, column=3, padx=(4, 0))
         top.bind("<Escape>", lambda _e: self._escape())
+        # while a key is asked for, the keys go here and nowhere else (the poller reads them; Enter, Space or the
+        # arrows must not also press a button of this window)
+        self.key_sink = tk.Frame(top, width=1, height=1, takefocus=0)
+        self.key_sink.place(x=0, y=0)
+        self.key_sink.bindtags(("KeySink",))
+        self.key_sink.bind_class("KeySink", "<KeyPress>", lambda _e: "break")
+        self.key_sink.bind_class("KeySink", "<KeyRelease>", lambda _e: "break")
+        self._focus_before = None
 
     # ---------------------------------------------------------------- helpers
     def alive(self):
@@ -590,7 +602,8 @@ class ControlsDialog:
         known = {d.key for d in devices}
         if self.capture is None:
             for e in edges:
-                if e.key in known and e.key != self.chosen and self.portmap.reads(e.key):
+                # (the keyboard is picked by clicking its row: keys also work this window)
+                if e.key in known and e.key != self.chosen and self.portmap.reads(e.key) and e.key not in KEYS:
                     self._choose(e.key)
                     edges = [x for x in edges if x.key == self.chosen and x.t > e.t]
                     break
@@ -624,8 +637,9 @@ class ControlsDialog:
         self._refresh_all()
 
     def _default_choice(self, devices):
-        by_port = sorted((p, k) for k, p in self.portmap.port.items() if p >= 0 and any(d.key == k for d in devices))
-        return by_port[0][1] if by_port else None
+        by_port = sorted((k in KEYS, p, k) for k, p in self.portmap.port.items()
+                         if p >= 0 and any(d.key == k for d in devices))         # a pad before the keyboard
+        return by_port[0][2] if by_port else None
 
     def _fill_players(self, devices):
         tv = self.tv_players
@@ -634,7 +648,7 @@ class ControlsDialog:
         by_port = {}
         for d in devices:
             p = self.portmap.port.get(d.key, -1)
-            if p >= 0:
+            if p >= 0 and d.kind not in KEYS:
                 by_port.setdefault(p, d)
         nports = max(2, (max(by_port) + 1) if by_port else 0)
         for p in range(nports):
@@ -643,13 +657,19 @@ class ControlsDialog:
             self._rows[iid] = d.key if d else None
             tv.insert("", "end", iid=iid, values=("", t("Player {n}", n=p + 1), self._device_text(d) if d else
                                                   t("no controller"), ""), tags=() if d else ("none",))
+        for d in devices:                       # the keyboard players: with the pad of their port
+            p = self.portmap.port.get(d.key, -1)
+            if d.kind in KEYS and p >= 0:
+                iid = "k:" + d.key
+                self._rows[iid] = d.key
+                tv.insert("", "end", iid=iid, values=("", t("Player {n}", n=p + 1), self._device_text(d), ""))
         for d in devices:
             if self.portmap.port.get(d.key, -1) < 0:
                 iid = "u:" + d.key
                 self._rows[iid] = d.key
                 tv.insert("", "end", iid=iid, values=("", "-", self._device_text(d) + "  (" + self._why_unused(d) + ")",
                                                       ""), tags=("none",))
-        tv.configure(height=min(max(len(self._rows), 3), 5))
+        tv.configure(height=min(max(len(self._rows), 3), 6))
         self._select_row()
         self._live_sig = None
         if self.no_pads:
@@ -660,6 +680,8 @@ class ControlsDialog:
             self.pad_note.configure(text="")
 
     def _device_text(self, d):
+        if d.kind in KEYS:
+            return f"{d.name}  ([{d.kind}])"
         ids = f", {d.vid:04X}:{d.pid:04X}" if d.vid else ""
         kind = t("PlayStation pad, read directly") if padmap.is_hid_key(d.key) else _kind_name(d.kind)
         return f"{d.name}  ({kind}{ids})"
@@ -731,6 +753,8 @@ class ControlsDialog:
                  if dev.vid else t("This controller model (no USB ID)"),
                  ce.SCOPE_KIND: t("All Xbox pads (XInput)") if dev.kind == XINPUT else t("All DirectInput controllers"),
                  ce.SCOPE_PORT: t("Only the controller on player {n}'s port", n=dev.port + 1)}
+        if dev.kind in KEYS:
+            names[ce.SCOPE_KIND] = t("The keyboard ([{section}] in controls.ini)", section=dev.kind)
         for sc, b in self.scope_btns.items():
             b.configure(text=names[sc], state="normal" if sc in avail else "disabled")
         port_txt = t("player {n}", n=dev.port + 1) if dev.port >= 0 else t("no player")
@@ -753,6 +777,9 @@ class ControlsDialog:
         else:
             for b in (self.stick_box, self.socd_box):
                 b.configure(state="disabled")
+        if dev.kind in KEYS:
+            self.stick_var.set("")
+            self.stick_box.configure(state="disabled")              # a keyboard has no stick
         pinned = self._pinned_port(d)
         self.player_var.set(self.player_opts[0][1] if pinned is None else
                             (self.player_opts[pinned + 1][1] if pinned < 2 else t("Player {n}", n=pinned + 1)))
@@ -767,6 +794,8 @@ class ControlsDialog:
         return f"dinput:{d.vid:04X}:{d.pid:04X}" if d.vid else "dinput:" + re.sub(r"[\s;#]+", " ", d.name).strip()
 
     def _pinned_port(self, d):
+        if d.kind in KEYS:
+            return self.editor.keyboard_pinned(d.kind)
         spec = self._device_spec(d).lower()
         for p in range(padmap.MAX_PORTS):
             if self.editor.pinned(p).lower() == spec:
@@ -798,6 +827,10 @@ class ControlsDialog:
         self.preset_text.set(t("Buttons you set yourself, or a mix. Pick a layout to start from it."))
 
     def pad_hint(self, dev):
+        if dev is not None and dev.kind in KEYS:
+            self.intro_var.set(t("Keyboard: pick a game button, then Set selected (or double-click it) and press the "
+                                 "key. Esc stops. The game reads the keyboard while its window has the focus."))
+            return
         if dev is None or not self.pad_var.get():
             self.intro_var.set(t("Press a button on a controller to pick it, then set its buttons. "
                                  "The game reads the file when it starts."))
@@ -890,6 +923,12 @@ class ControlsDialog:
         self.cap_total = len(keys)
         self.pad_started = pad
         self.prompt.grid()
+        if self.dev().kind in KEYS:
+            try:
+                self._focus_before = self.top.focus_get()
+            except (tk.TclError, KeyError):
+                self._focus_before = None
+            self.key_sink.focus_set()
         self._next_capture()
 
     def _next_capture(self):
@@ -901,6 +940,9 @@ class ControlsDialog:
         n = self.cap_total - len(self.queue)
         self.prompt_var.set(t("Press the button for {button}...", button=self.slot_label(self.cap_key)))
         hint = t("Press only that one button on the controller.")
+        if self.dev() is not None and self.dev().kind in KEYS:
+            self.prompt_var.set(t("Press the key for {button}...", button=self.slot_label(self.cap_key)))
+            hint = t("Press only that one key. Esc stops.")
         if self.cap_total > 1:
             hint = t("{n} of {total}.", n=n, total=self.cap_total) + " " + hint
         if self.pad_started:
@@ -915,6 +957,12 @@ class ControlsDialog:
         self.cap_key = None
         self.pad_started = False
         self.prompt.grid_remove()
+        if self._focus_before is not None:
+            try:
+                self._focus_before.focus_set()
+            except tk.TclError:
+                pass
+            self._focus_before = None
         self.nav.reset()
         self._refresh_all()
         if message:
@@ -923,6 +971,14 @@ class ControlsDialog:
     def _capture_result(self, res):
         kind, payload = res
         key = self.cap_key
+        dev = self.dev()
+        if dev is not None and dev.kind in KEYS and kind == "ok" and payload in ce.GAME_KEYS:
+            if payload == "ESC":
+                self.cap_stop()
+                return
+            self.status(t("{key} is the game's own key; press another one.", key=t(ce.GAME_KEYS[payload])), WARN)
+            self.capture = Capture(self.poller.clock())
+            return
         if kind == "ok":
             self._assign(key, payload)
             self._next_capture()
@@ -944,12 +1000,19 @@ class ControlsDialog:
             return
         lost = [s.key for s in ce.SLOTS if s.key != key and src in before[s.key] and not self.editor.sources(dev, s.key)]
         msg = t("{button} = {source}.", button=self.slot_label(key), source=src)
+        level = MUTED
         if lost:
             msg += " " + t("{source} was {other}; that one has no button now.", source=src,
                            other=", ".join(self.slot_label(k) for k in lost))
+            level = WARN
+        also = self.editor.key_conflicts(dev, src)
+        if also:
+            msg += " " + t("{source} is also {other} for the second keyboard player.", source=src,
+                           other=", ".join(also))
+            level = WARN
         if self.editor.notes:
             msg += " " + " ".join(self.editor.notes)
-        self.status(msg)
+        self.status(msg, level)
         self._refresh_all()
 
     def cap_skip(self):
@@ -1008,7 +1071,7 @@ class ControlsDialog:
         dev = self.dev()
         if dev is None:
             return
-        shared = self.editor.has_content(dev.kind, preset_counts=False)
+        shared = dev.kind not in KEYS and self.editor.has_content(dev.kind, preset_counts=False)
         text = t("Put {name} back to the default buttons? Your comments and other settings in controls.ini stay.",
                  name=self.device().name)
         if shared:
@@ -1031,7 +1094,10 @@ class ControlsDialog:
         if dev is None:
             return
         pick = self._opt_key(self.player_opts, self.player_var.get())
-        self.editor.assign_port(self._device_spec(d), None if pick == "auto" else int(pick))
+        if dev.kind in KEYS:
+            self.editor.assign_keyboard(dev.kind, None if pick == "auto" else int(pick))
+        else:
+            self.editor.assign_port(self._device_spec(d), None if pick == "auto" else int(pick))
         self.status(t("{name} is {player}. Save to keep it.", name=d.name,
                       player=self.player_var.get().lower()))
         self._refresh_all()

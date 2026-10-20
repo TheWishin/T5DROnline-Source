@@ -1520,8 +1520,9 @@ def net_dualsense(ctx):
     b = ctx.player("E2E Rival", env={"T5_NET_LOG": logs["rival"]})
     login(ctx, a)
     login(ctx, b)
+    ds_port = 0
     for k in range(2):
-        label = f"DualSense on port 2, match {k + 1}"
+        label = f"DualSense behind port 1, match {k + 1}"
         if k:
             for p in (a, b):
                 leave(ctx, p)
@@ -1543,16 +1544,18 @@ def net_dualsense(ctx):
             fg.stop()
         match_row(ctx, mid, (a, b), "confirmed", label)
         if k == 0:
-            port_line = log_line(a, r"\[pad\] port \d \(player \d\): HID 'Fake DualSense'")
-            ctx.check("the runtime put the DualSense (Bluetooth, extended reports) on port 2: port 1 has another "
-                      "source", bool(port_line) and "port 2 (player 2)" in port_line and "Bluetooth" in port_line,
-                      port_line)
+            # port 1 is the picker's pad file's; a controller plugged into this PC (an XInput pad) comes before it
+            port_line = log_line(a, r"\[pad\] port \d \(player \d\): HID 'Fake DualSense'") or ""
+            m = re.search(r"port (\d) \(player", port_line)
+            ds_port = int(m.group(1)) if m else 0
+            ctx.check("the runtime put the DualSense (Bluetooth, extended reports) behind port 1: another source "
+                      "has port 1", ds_port >= 2 and "Bluetooth" in port_line, port_line)
             kb = log_line(a, r"\[pad\] keyboard -> port 1")
             ctx.check("the keyboard is there too (port 1)", bool(kb), kb)
         ctx.check(f"{label}: the DualSense player's game window was never the foreground window during the fight",
                   fg.samples >= 10 and fg.front == 0, f"{fg.front} of {fg.samples} samples in front")
-        ctx.check(f"{label}: netplay took the online player from the DualSense's port",
-                  log_has(a, r"\[netplay\] local player: port 2 now", mid))
+        ctx.check(f"{label}: netplay took the online player from the DualSense's port {ds_port}",
+                  log_has(a, rf"\[netplay\] local player: port {ds_port} now", mid))
         peer = [x - y for x, y in zip(frames_pressed(logs["rival"], col, DS_MASK), peer0)]
         own = [x - y for x, y in zip(frames_pressed(logs["pad"], col, DS_MASK, confirmed_only=False), own0)]
         sent = masher.presses - presses0

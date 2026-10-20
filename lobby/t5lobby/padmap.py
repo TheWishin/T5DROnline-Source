@@ -15,6 +15,8 @@ Sources are named the way controls.ini names them, in upper case:
            RUP RDOWN RLEFT RRIGHT (stick directions past half deflection)
   DInput   B1..B128, HAT_UP/HAT_RIGHT/HAT_DOWN/HAT_LEFT (HAT2_... for more hats),
            X+ X- Y+ Y- Z+ Z- RX+ RX- RY+ RY- RZ+ RZ- S0+ S0- S1+ S1-
+  Keyboard A..Z 0..9, F1..F24, the names in KEY_NAMES (UP, ENTER, LSHIFT, NUM4, SEMICOLON, ...), VK_xx for
+           any other key ([keys1] = the keyboard player, [keys2] = a second player on the same keyboard)
 
 Only the face buttons matter here. A source counts as Cross only when the binding is exactly
 Cross: a macro such as `3+4 = B8` presses Cross and Circle together in the game and is never
@@ -40,6 +42,9 @@ FACE = {"cross": CROSS, "circle": CIRCLE, "triangle": TRIANGLE}
 
 XINPUT = "xinput"
 DINPUT = "dinput"
+KEYS1 = "keys1"         # the keyboard player ([keys1]; [general] keyboard = its port, default 1)
+KEYS2 = "keys2"         # a second player on the same keyboard ([keys2]; [general] keyboard2, default 2)
+KEYS = (KEYS1, KEYS2)
 MAX_PORTS = 7           # PADH_MAX_PORTS: [port1] .. [port7]
 
 XINPUT_SOURCES = ("DUP", "DDOWN", "DLEFT", "DRIGHT", "START", "BACK", "LS", "RS", "LB", "RB", "A", "B",
@@ -71,15 +76,101 @@ PRESETS = {
         "UP=HAT_UP", "DOWN=HAT_DOWN", "LEFT=HAT_LEFT", "RIGHT=HAT_RIGHT",
         "LX=X", "LY=Y", "RX=RX", "RY=RY"),
 }
+# the keyboard's (k_keys_classic, k_keys_tekken = wasd, k_keys_numpad in the patch); keyed by "keys"
+KEY_PRESETS = {
+    "classic": (
+        "UP=UP", "DOWN=DOWN", "LEFT=LEFT", "RIGHT=RIGHT",
+        "SQUARE=A", "TRIANGLE=S", "CROSS=Z", "CIRCLE=X",
+        "L1=Q", "R1=W", "L2=1", "R2=2", "START=ENTER", "SELECT=TAB"),
+    "tekken": (
+        "UP=W", "LEFT=A", "DOWN=S", "RIGHT=D",
+        "1=U", "2=I", "3=J", "4=K", "1+2=O", "3+4=L",
+        "L1=Y", "R1=P", "L2=H", "R2=SEMICOLON", "START=ENTER", "SELECT=BACKSPACE"),
+    "numpad": (
+        "UP=UP", "DOWN=DOWN", "LEFT=LEFT", "RIGHT=RIGHT",
+        "1=NUM4", "2=NUM5", "3=NUM1", "4=NUM2", "1+2=NUM6", "3+4=NUM3",
+        "L1=NUM7", "R1=NUM8", "L2=NUM9", "R2=NUM0", "START=NUMADD", "SELECT=NUMSUB"),
+}
+KEY_PRESETS["wasd"] = KEY_PRESETS["tekken"]
+for _name, _lines in KEY_PRESETS.items():
+    PRESETS[("keys", _name)] = _lines
 MACROS_TEKKEN = {
     XINPUT: ("1+2=RB", "3+4=RT", "1+3=LB", "2+4=LT"),
     DINPUT: ("1+2=B6", "3+4=B8", "1+3=B5", "2+4=B7"),
 }
 VID_NINTENDO, VID_MICROSOFT = 0x057E, 0x045E
 
+# Keyboard names (k_keys in the patch, in its order: the first name of a key is the one the game prints) -> VK.
+KEY_NAMES = (
+    ("UP", 0x26), ("DOWN", 0x28), ("LEFT", 0x25), ("RIGHT", 0x27),
+    ("SPACE", 0x20), ("ENTER", 0x0D), ("RETURN", 0x0D), ("TAB", 0x09),
+    ("ESC", 0x1B), ("ESCAPE", 0x1B), ("BACKSPACE", 0x08),
+    ("LSHIFT", 0xA0), ("RSHIFT", 0xA1), ("SHIFT", 0x10),
+    ("LCTRL", 0xA2), ("RCTRL", 0xA3), ("CTRL", 0x11),
+    ("LALT", 0xA4), ("RALT", 0xA5), ("ALT", 0x12),
+    ("CAPSLOCK", 0x14), ("INSERT", 0x2D), ("DELETE", 0x2E),
+    ("HOME", 0x24), ("END", 0x23), ("PGUP", 0x21), ("PGDN", 0x22),
+    ("NUM0", 0x60), ("NUM1", 0x61), ("NUM2", 0x62), ("NUM3", 0x63),
+    ("NUM4", 0x64), ("NUM5", 0x65), ("NUM6", 0x66), ("NUM7", 0x67),
+    ("NUM8", 0x68), ("NUM9", 0x69), ("NUMADD", 0x6B), ("NUMSUB", 0x6D),
+    ("NUMMUL", 0x6A), ("NUMDIV", 0x6F), ("NUMDEC", 0x6E),
+    ("SEMICOLON", 0xBA), ("EQUALS", 0xBB), ("COMMA", 0xBC),
+    ("MINUS", 0xBD), ("PERIOD", 0xBE), ("SLASH", 0xBF),
+    ("GRAVE", 0xC0), ("LBRACKET", 0xDB), ("BACKSLASH", 0xDC),
+    ("RBRACKET", 0xDD), ("APOSTROPHE", 0xDE),
+)
+_VK_OF = {}
+for _n, _v in KEY_NAMES:
+    _VK_OF.setdefault(_n, _v)
+_NAME_OF_VK = {}
+for _n, _v in KEY_NAMES:
+    _NAME_OF_VK.setdefault(_v, _n)
+
+
+def is_keys(kind):
+    return kind in KEYS
+
+
+def key_vk(token):
+    """A keyboard source name -> its virtual-key code (0 = not a key the game knows): parse_key() in the patch."""
+    s = token.strip()
+    if len(s) == 1 and s.isascii() and s.isalnum():
+        return ord(s.upper())
+    u = s.upper()
+    if len(u) >= 2 and u[0] == "F" and u[1].isdigit():
+        n = int(re.match(r"F(\d+)", u).group(1))
+        if 1 <= n <= 24:
+            return 0x70 + n - 1
+    if u in _VK_OF:
+        return _VK_OF[u]
+    if u.startswith("VK_") or u.startswith("0X"):
+        try:
+            v = int(re.match(r"[0-9A-F]*", u[3:] if u.startswith("VK_") else u[2:]).group(0) or "0", 16)
+        except ValueError:
+            return 0
+        if 0 < v < 255:
+            return v
+    return 0
+
+
+def key_name(vk):
+    """The name the game gives a key (source_name() in the patch): the first name in its table, a letter or
+    digit, F1..F24, else VK_xx."""
+    if vk in _NAME_OF_VK:
+        return _NAME_OF_VK[vk]
+    if 0x30 <= vk <= 0x39 or 0x41 <= vk <= 0x5A:
+        return chr(vk)
+    if 0x70 <= vk <= 0x87:
+        return f"F{vk - 0x70 + 1}"
+    return f"VK_{vk:02X}"
+
 
 def default_preset(kind, vid=0):
     """The preset the game picks for a device that no section names one for."""
+    if kind == KEYS1:
+        return "classic"
+    if kind == KEYS2:
+        return "none"                 # a second keyboard player only when [keys2] says so
     if kind == XINPUT:
         return "standard"
     if vid == VID_NINTENDO:
@@ -92,6 +183,9 @@ def default_preset(kind, vid=0):
 def canon_source(kind, token):
     """A controls.ini source name in its one canonical spelling, or None if it is not one."""
     s = token.strip().upper()
+    if kind in KEYS:
+        vk = key_vk(token)
+        return key_name(vk) if vk else None
     if kind == XINPUT:
         return s if s in XINPUT_SOURCES else None
     m = re.fullmatch(r"B(\d{1,3})", s)
@@ -281,8 +375,29 @@ class Controls:
             self.warnings.append(f"unknown device '{v}'")
         return spec
 
+    def keyboard_port(self, kind):
+        """The port a keyboard player drives (0-based), -1 = none: [general] keyboard (default 1) / keyboard2
+        (default 2); a keyboard player without a single binding is off (as in the game)."""
+        key, dflt = ("keyboard", 0) if kind == KEYS1 else ("keyboard2", 1)
+        v = (self._get("general", key) or "").strip()
+        if not v:
+            port = dflt
+        elif v.lower() in ("off", "none"):
+            port = -1
+        else:
+            try:
+                n = int(v)
+            except ValueError:
+                n = -99
+            port = n - 1 if 1 <= n <= MAX_PORTS else (-1 if n == 0 else dflt)
+        if port >= 0 and not self.table(kind).binds:
+            port = -1
+        return port
+
     def reads_kind(self, dev):
         """Does the game read this kind of device at all ([general] xinput / dinput / hid)? dev: .kind .key"""
+        if dev.kind in KEYS:
+            return self.keyboard_port(dev.kind) >= 0
         if dev.kind == XINPUT:
             return self.use_xinput
         if is_hid_key(getattr(dev, "key", "")):
@@ -316,6 +431,24 @@ class Controls:
     def _build_table(self, kind, port, vid, pid):
         t = Table()
         warn = self.warnings.append
+        if kind in KEYS:
+            # a keyboard player: its own section only, no macros overlay (build_table with CLS_KEYS in the patch)
+            sec = self._section(kind)
+            pname = None
+            for k, v in reversed(sec or []):
+                if k.lower() == "preset":
+                    pname = v
+                    break
+            pname = pname or default_preset(kind)
+            preset = PRESETS.get(("keys", pname.lower()))
+            if preset:
+                _apply_lines(t, kind, preset, False, pname, warn)
+                t.desc.append(pname.lower())
+            elif pname.lower() != "none":
+                warn(f"unknown keyboard preset '{pname}'")
+            for k, v in sec or []:
+                _bind_line(t, kind, k, v, True, "controls.ini", warn)
+            return t
         layers = [self._section(kind),
                   self._section(f"dinput.{vid:04X}:{pid:04X}") if kind == DINPUT else None,
                   self._section(f"port{port + 1}.{kind}") if port >= 0 else None]
@@ -454,10 +587,19 @@ class PortMap:
                 self._seq += 1
                 self.order[d.key] = self._seq
         c = self.controls
-        for d in sorted((d for d in devices if d.key not in self.port), key=lambda d: self.order[d.key]):
+        for d in devices:
+            if d.kind in KEYS:              # a keyboard player joins its port; it takes none from the pads
+                p = c.keyboard_port(d.kind)
+                if p >= 0:
+                    self.port[d.key] = p
+                else:
+                    self.port.pop(d.key, None)
+        keys = {d.key for d in devices if d.kind in KEYS}
+        for d in sorted((d for d in devices if d.key not in self.port and d.kind not in KEYS),
+                        key=lambda d: self.order[d.key]):
             if not c.reads_kind(d):
                 continue                    # the game does not read this kind of device at all
-            taken = set(p for p in self.port.values() if p >= 0)
+            taken = set(p for k, p in self.port.items() if p >= 0 and k not in keys)
             port = -1
             for p in range(MAX_PORTS):
                 if c.port_matches(p, d) and p not in taken:

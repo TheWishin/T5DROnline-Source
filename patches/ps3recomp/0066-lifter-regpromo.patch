@@ -1,8 +1,8 @@
 diff --git a/tools/ppu_lifter.py b/tools/ppu_lifter.py
-index 7606dbd..59e22ce 100644
+index 7606dbd..0ced5b0 100644
 --- a/tools/ppu_lifter.py
 +++ b/tools/ppu_lifter.py
-@@ -825,6 +825,379 @@ def _fuse_cr(body_lines: list[str]) -> list[str]:
+@@ -825,6 +825,402 @@ def _fuse_cr(body_lines: list[str]) -> list[str]:
      return out
  
  
@@ -39,7 +39,7 @@ index 7606dbd..59e22ce 100644
 +# strict recognizer of the lifter's own line shapes: a function with any line
 +# it does not understand is emitted unchanged (counted in the lift summary).
 +# ---------------------------------------------------------------------------
-+REGPROMO_DEFAULT = False
++REGPROMO_DEFAULT = True    # --regpromo off lifts the old way (the same results, slower)
 +
 +# Types as in ppu_context (HEADER_PREAMBLE): a local must have its field's type
 +# exactly, so every expression that reads or writes it computes the same.
@@ -81,6 +81,10 @@ index 7606dbd..59e22ce 100644
 +def _rp_split_comments(line: str):
 +    """[(is_comment, text)] pieces of a line; None when a comment is left open
 +    or a // or string literal makes the split unsafe."""
++    if "/*" not in line:
++        if "//" in line or '"' in line or "'" in line or "*/" in line:
++            return None
++        return [(False, line)]
 +    parts, pos = [], 0
 +    while True:
 +        k = line.find("/*", pos)
@@ -99,10 +103,26 @@ index 7606dbd..59e22ce 100644
 +    return parts
 +
 +
++_RP_BRACKETS_RE = re.compile(r"[()\[\]{}]")
++_RP_ASSIGN_RE = re.compile(r"(?:[-+*/%&|^]|<<|>>)?=(?!=)")
++_RP_LOC_DEF_RE = re.compile(r"\bloc_[0-9A-F]{8}\s*:(?!:)")
++_RP_CALL_RE = re.compile(r"\b([A-Za-z_]\w*)\s*\(")
++_RP_OPAQUE_BAD_RE = re.compile(r"\b(?:case|default|break|continue|while|do|asm|__asm__|__asm|__try|__except|"
++                               r"__finally|__leave|throw|try|catch|setjmp|longjmp|_setjmp)\b")
++_RP_CALL_OK = {}
++
++
++def _rp_call_ok(name: str) -> bool:
++    ok = _RP_CALL_OK.get(name)
++    if ok is None:
++        ok = _RP_CALL_OK[name] = bool(_RP_CALL_OK_RE.match(name))
++    return ok
++
++
 +def _rp_balanced(code: str) -> bool:
 +    depth = {"(": 0, "[": 0, "{": 0}
 +    close = {")": "(", "]": "[", "}": "{"}
-+    for ch in code:
++    for ch in _RP_BRACKETS_RE.findall(code):
 +        if ch in depth:
 +            depth[ch] += 1
 +        elif ch in close:
@@ -137,8 +157,9 @@ index 7606dbd..59e22ce 100644
 +        else:
 +            return None
 +        refs.add(key)
-+        before = code[:m.start()].rstrip()
-+        after = code[m.end():].lstrip()
++        st, en = m.start(), m.end()
++        before = code[max(0, st - 64):st].rstrip() or code[:st].rstrip()
++        after = code[en:en + 64].lstrip() or code[en:].lstrip()
 +        # `&` right before the field takes its address -- unless what precedes the
 +        # `&` ends an operand, which makes it a binary AND (`a & ctx->gpr[n]`).
 +        amp = before.endswith("&") and not before.endswith("&&")
@@ -149,7 +170,7 @@ index 7606dbd..59e22ce 100644
 +            writes.add(key)
 +        elif after.startswith(("++", "--")):
 +            writes.add(key)
-+        elif re.match(r"(?:[-+*/%&|^]|<<|>>)?=(?!=)", after):
++        elif _RP_ASSIGN_RE.match(after):
 +            writes.add(key)
 +    return refs, writes, bare
 +
@@ -199,7 +220,8 @@ index 7606dbd..59e22ce 100644
 +    promoted = set()
 +    for i, raw in enumerate(body):
 +        s = raw.strip()
-+        lm = _RP_LABEL_RE.match(s) or _RP_LABEL_RE.match(re.sub(r"\s*/\*.*?\*/\s*$", "", s))
++        lm = s.startswith("loc_") and (_RP_LABEL_RE.match(s) or
++                                       _RP_LABEL_RE.match(re.sub(r"\s*/\*.*?\*/\s*$", "", s)))
 +        if lm:
 +            if lm.group(1) in labels:
 +                _RP_STATS["kept: duplicate label"] += 1
@@ -215,7 +237,7 @@ index 7606dbd..59e22ce 100644
 +        if not _rp_balanced(code):
 +            _RP_STATS["kept: unbalanced line"] += 1
 +            return None
-+        if re.search(r"\bloc_[0-9A-F]{8}\s*:(?!:)", code):
++        if "loc_" in code and _RP_LOC_DEF_RE.search(code):
 +            _RP_STATS["kept: label inside a line"] += 1
 +            return None
 +        if code in ("", ";"):
@@ -226,20 +248,21 @@ index 7606dbd..59e22ce 100644
 +            _RP_STATS["kept: unknown ctx field"] += 1
 +            return None
 +        refs, writes, bare = sc
-+        gotos = _RP_GOTO_RE.findall(code)
-+        if len(re.findall(r"\bgoto\b", code)) != len(gotos):
-+            _RP_STATS["kept: goto shape"] += 1
-+            return None
++        if "goto" in code:
++            gotos = _RP_GOTO_RE.findall(code)
++            if len(re.findall(r"\bgoto\b", code)) != len(gotos):
++                _RP_STATS["kept: goto shape"] += 1
++                return None
++        else:
++            gotos = []
 +        if bare:
-+            if re.search(r"\bswitch\b", code):
++            if "switch" in code and re.search(r"\bswitch\b", code):
 +                if not _RP_SWITCH_RE.match(code):
 +                    _RP_STATS["kept: switch shape"] += 1
 +                    return None
 +                info.append(("switch", parts, set(), set(), gotos))
 +                continue
-+            if gotos or re.search(r"\b(?:case|default|break|continue|while|do|asm|__asm__|__asm|"
-+                                  r"__try|__except|__finally|__leave|throw|try|catch|setjmp|"
-+                                  r"longjmp|_setjmp)\b", code):
++            if gotos or _RP_OPAQUE_BAD_RE.search(code):
 +                _RP_STATS["kept: control flow in a call line"] += 1
 +                return None
 +            # A line that hands ctx to a function is kept verbatim around a
@@ -257,8 +280,8 @@ index 7606dbd..59e22ce 100644
 +            if _RP_BAD_RE.search(code):
 +                _RP_STATS["kept: control flow shape"] += 1
 +                return None
-+            for cm in re.finditer(r"\b([A-Za-z_]\w*)\s*\(", code):
-+                if not _RP_CALL_OK_RE.match(cm.group(1)):
++            for cm in _RP_CALL_RE.finditer(code):
++                if not _rp_call_ok(cm.group(1)):
 +                    _RP_STATS[f"kept: call to {cm.group(1)}"] += 1
 +                    return None
 +            info.append(("pure", parts, refs, writes, None))
@@ -269,8 +292,8 @@ index 7606dbd..59e22ce 100644
 +            if not _rp_balanced(cond) or _RP_BAD_RE.search(cond):
 +                _RP_STATS["kept: condition shape"] += 1
 +                return None
-+            for cm in re.finditer(r"\b([A-Za-z_]\w*)\s*\(", cond):
-+                if not _RP_CALL_OK_RE.match(cm.group(1)):
++            for cm in _RP_CALL_RE.finditer(cond):
++                if not _rp_call_ok(cm.group(1)):
 +                    _RP_STATS[f"kept: call to {cm.group(1)}"] += 1
 +                    return None
 +        elif refs:
@@ -382,7 +405,7 @@ index 7606dbd..59e22ce 100644
  @dataclass
  class LiftedFunction:
      """A single lifted C function."""
-@@ -3974,8 +4347,8 @@ class PPULifter:
+@@ -3974,8 +4370,8 @@ class PPULifter:
              lines.append(f"/* {label} */")
          weak = "__attribute__((weak)) " if getattr(self, "weak_emit", False) else ""
          lines.append(f"void {weak}{func.name}(ppu_context* ctx) {{")
@@ -393,7 +416,7 @@ index 7606dbd..59e22ce 100644
  
          # If a function doesn't end with blr/b/bctr (a return or unconditional
          # branch), PPC execution falls through to the next address. The lifter
-@@ -4003,12 +4376,17 @@ class PPULifter:
+@@ -4003,12 +4399,17 @@ class PPULifter:
                      if nxt.start_addr == func.fallthrough_to:
                          target = nxt.name
              if target:
@@ -413,7 +436,7 @@ index 7606dbd..59e22ce 100644
          lines.append("}")
          lines.append("")
          return lines
-@@ -5056,6 +5434,13 @@ def main() -> None:
+@@ -5056,6 +5457,13 @@ def main() -> None:
                               "instead of its literal .lib.stub trampoline, and "
                               "split out as its own 0x20-byte function so direct "
                               "calls to it dispatch to the HLE handler.")
@@ -427,7 +450,7 @@ index 7606dbd..59e22ce 100644
      args = parser.parse_args()
  
      # Load firmware-import stubs (addr -> NID) up front; applied to func_bounds
-@@ -5512,6 +5897,13 @@ def main() -> None:
+@@ -5512,6 +5920,13 @@ def main() -> None:
      lifter.hle_stub_nids = hle_stubs
      lifter.function_entries = _func_entries
      lifter.jump_tables = jt_dispatchers
@@ -441,7 +464,7 @@ index 7606dbd..59e22ce 100644
  
      # Optional: load a recovered-name map (from Ghidra analysis) to annotate
      # generated functions with meaningful names as comments.
-@@ -5603,6 +5995,11 @@ def main() -> None:
+@@ -5603,6 +6018,11 @@ def main() -> None:
                f"{os.path.basename(paths[0])} .. {os.path.basename(paths[-1])}")
      print(f"  {len(lifter.functions)} functions lifted")
      print(f"  {len(lifter.call_targets)} unique call targets")
@@ -455,10 +478,10 @@ index 7606dbd..59e22ce 100644
          print(f"  peak memory of the lifter process: {peak >> 20} MB")
 diff --git a/tools/regpromo_diff.py b/tools/regpromo_diff.py
 new file mode 100644
-index 0000000..279d3c6
+index 0000000..bcb33ec
 --- /dev/null
 +++ b/tools/regpromo_diff.py
-@@ -0,0 +1,443 @@
+@@ -0,0 +1,449 @@
 +#!/usr/bin/env python3
 +"""Differential test of the lifter's register promotion (--regpromo).
 +
@@ -509,6 +532,7 @@ index 0000000..279d3c6
 +ROOT = os.path.dirname(TOOLS)
 +sys.path.insert(0, TOOLS)
 +
++LABEL_RE = re.compile(r"^\s*loc_[0-9A-F]{8}:(?:\s*;)?(?:\s*/\*.*\*/)?$")
 +FUNC_DEF_RE = re.compile(r"^(?:__attribute__\(\(weak\)\) )?void (?:__attribute__\(\(weak\)\) )?"
 +                         r"(?P<name>(?:[A-Za-z_]\w*?)?func_(?P<addr>[0-9A-F]{8}))\(ppu_context\* ctx\) \{$")
 +
@@ -635,6 +659,9 @@ index 0000000..279d3c6
 +}
 +static void harn_tramp(void* c) { harn_effect((ppu_context*)c, 0x800000000ull); }
 +static __attribute__((noinline)) void harn_call(ppu_context* ctx, uint32_t addr) { harn_effect(ctx, 0x700000000ull | addr); }
++/* At every label of the functions under test (both forms alike): a loop that touches no guest memory
++ * (a spin on a register, the title's `b .` hang) still counts events and ends at the limit. */
++static __attribute__((noinline)) void harn_tick(void) { ev(0xD00000000ull, 0); }
 +extern "C" void ps3_indirect_call(ppu_context* ctx) { harn_effect(ctx, 0x900000000ull | (uint32_t)ctx->ctr); }
 +extern "C" void ps3_indirect_call_to(ppu_context* ctx, uint32_t t) { harn_effect(ctx, 0xA00000000ull | t); }
 +extern "C" void ps3_hle_call(unsigned int nid, ppu_context* ctx) { harn_effect(ctx, 0xB00000000ull | nid); }
@@ -775,8 +802,10 @@ index 0000000..279d3c6
 +    for addr, o, n, name in pairs:
 +        for tag, txt in (("old", o), ("new", n)):
 +            first, rest = txt.split("\n", 1)
++            # dcbz clears its line through vm_base directly: fold it into the sandbox like every access
++            rest = rest.replace("vm_base + (uint32_t)ea", "vm_base + HARN_EA(ea)")
 +            out.append(f"__attribute__((noinline)) void harn_{tag}_{addr:08X}(ppu_context* ctx) {{")
-+            out.append(rest)
++            out.append("\n".join(ln + (" harn_tick();" if LABEL_RE.match(ln) else "") for ln in rest.split("\n")))
 +        tbl.append(f"    {{ 0x{addr:08X}u, harn_old_{addr:08X}, harn_new_{addr:08X} }},")
 +    out.append("struct HarnFn { uint32_t addr; void (*o)(ppu_context*); void (*n)(ppu_context*); };")
 +    out.append("static const HarnFn g_fns[] = {")

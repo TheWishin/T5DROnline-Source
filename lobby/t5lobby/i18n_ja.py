@@ -795,6 +795,12 @@ MESSAGES = {
     "you cannot add yourself": "自分自身は追加できません",
     "you blocked that player; unblock them first": "そのプレイヤーをブロックしています。先にブロックを解除してください",
     "your friends list is full ({max})": "フレンドリストがいっぱいです（{max}）",
+    "your last invite to that friend ended a moment ago; try again in {seconds} s":
+        "このフレンドへの前回の招待は終わったばかりです。{seconds} 秒後にもう一度試してください",
+    "your last challenge to that player ended a moment ago; try again in {seconds} s":
+        "このプレイヤーへの前回の対戦申し込みは終わったばかりです。{seconds} 秒後にもう一度試してください",
+    "too many friend requests from this internet address today; try again tomorrow":
+        "このインターネットアドレスからの今日のフレンド申請が多すぎます。明日もう一度試してください",
     "you can send {count} friend requests a day; try again tomorrow":
         "フレンド申請は1日 {count} 件までです。明日もう一度試してください",
     "{count} of your friend requests are waiting for an answer; cancel some first":

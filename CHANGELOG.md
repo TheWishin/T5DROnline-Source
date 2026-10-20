@@ -13,8 +13,13 @@ itself; after it, press **BUILD GAME** once.
 ### Online
 - **Friends and invites** (accounts): add friends by account name on the Online tab's new **Friends** page. The
   list shows who is online, searching, in a match or offline, as it changes. **Invite** a friend to a casual match
-  or into your room: one click on **Accept** (or A / Cross on a pad) starts it, no ready check. Blocking a player
-  ends the friendship. Limits against spam: 20 friend requests a day, 100 friends, one invite at a time.
+  or into your room: one click on **Accept** (or A / Cross on a pad) starts it, no ready check (a ranked room keeps
+  its ready check, which says it is ranked). Blocking a player ends the friendship. Limits against spam: 20 friend
+  requests a day (60 per internet address), 100 friends, one invite at a time; after a no, the same player can
+  invite or challenge you again only after 30 seconds, and a friend request taken back and sent again does not pop
+  up again.
+- **No accepting a question by accident:** a challenge or invite only takes a controller press made after it came
+  up (the A for the search button could accept one that popped up in that same moment).
 - **Opponents nearby first.** Quick and ranked search try opponents with a low ping first and widen the search
   while you wait (any ping after 30 s in quick, 60 s in ranked). The ping shown for a found match now counts the
   nearest relay server: two players in California see about 50 ms instead of about 300 ms through Germany.
@@ -31,9 +36,10 @@ itself; after it, press **BUILD GAME** once.
   set your buttons in the launcher.
 <!-- PENDING online-no-pause (branch online-no-pause): its entry here -->
 <!-- PENDING select-stall (branch select-stall): its entry here -->
+<!-- PENDING s27 fix: its entry here -->
 
-<!-- PENDING pad-online (branch pad-online, DualSense in the launcher and the Online tab): its entry here, with
-the heading:
+<!-- PENDING DualSense/binds (branch pad-online: DualSense in the launcher and the Online tab, binds): its entry
+here, with the heading:
 ### Controllers
 -->
 
@@ -79,11 +85,13 @@ the heading:
   refuses one that somebody else put on GitHub. Updating from 1.1.1 to 1.1.2 works as before.
   <!-- RELEASE: keep this entry only if RELEASE_PUBLIC_KEYS in launcher/updater.py has the owner's key
   (docs/RELEASING.md "Release signature"); without it updates are not checked yet. -->
-- **A lobby server can no longer touch your files:** a match name could make the launcher write or delete files
-  outside its folder. Match names are checked now.
+- **A lobby server has less say over your launcher:** a match name could make it write or delete files outside its
+  folder, a relay list could make it send pings anywhere and as often as the server liked, and any text could reach
+  your Discord status. Match names, relay addresses and Discord texts are checked now.
 - **Matches are harder to disturb:** a stranger who found your game's port can no longer end a match before it
   starts, and recorded match traffic can no longer send your game's packets elsewhere.
-- Problem reports also remove lobby recovery codes.
+- When an account was last online is shown only to its friends; problem reports also remove lobby recovery codes.
+<!-- PENDING review fixes: their entries here, or in the subsection each belongs to -->
 
 ### Servers
 - Friends, invites and the ping estimate need the updated lobby server; 1.1.0 and 1.1.1 launchers keep working
@@ -94,6 +102,7 @@ the heading:
 - Hardening: relay tokens are sealed on the way to regional relays, relay nodes refuse requests recorded before
   their restart, a flood of pings no longer blocks match setup, password changes are rate-limited, and the database
   is readable only by the server's user (docs/HOSTING.md).
+<!-- PENDING deploy-rehearsal lobby fixes: their entries here -->
 
 ## v1.1.1 (2026-10-19)
 

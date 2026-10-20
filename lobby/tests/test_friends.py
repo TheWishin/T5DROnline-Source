@@ -194,6 +194,35 @@ class RequestTest(Base):
         self.assertNotIn("friend", a.profile("Alice"))                                 # yourself
         self.assertIsNone(c.profile("Alice").get("friend"))
 
+    def test_last_seen_is_for_friends(self):
+        # (security review 2) when an account was last online: its friends' list says it, and a profile tells it only
+        # to the account itself and its friends -- not to anybody who opens the profile
+        a, b, c = self.acc("Alice"), self.acc("Bob"), self.acc("Cid")
+        self.befriend(a, b)
+        self.assertIn("last_seen", a.profile("Alice"))
+        self.assertIn("last_seen", b.profile("Alice"))
+        self.assertNotIn("last_seen", c.profile("Alice"))
+        self.assertIn("member_since", c.profile("Alice"))                            # (the rest of the profile stays)
+
+    def test_asking_again_after_taking_it_back_does_not_pop_up(self):
+        # (security review 2) "add, take back, add ..." put "X wants to be your friend" on the other's screen up to
+        # 20 times a day: a request again within a day of taking one back waits in the list but is not announced
+        a, b = self.acc("Alice"), self.acc("Bob")
+        a.add_friend("Bob")
+        expect(b, "friend_request")
+        a.cancel_friend_request("Bob")
+        wait_list(b, lambda fl: fl["incoming"] == [])
+        drain(b)
+        self.assertEqual(a.add_friend("Bob")["state"], "pending")
+        wait_list(b, lambda fl: names(fl["incoming"]) == ["Alice"])                   # it is there to answer
+        time.sleep(0.5)
+        self.assertEqual([e for e in drain(b) if e["t"] == "friend_request"], [])     # but it did not pop up
+        b.answer_friend("Alice", True)
+        wait_list(a, lambda fl: names(fl["friends"]) == ["Bob"])
+        c = self.acc("Cid")                                                           # someone else's first request
+        c.add_friend("Bob")
+        expect(b, "friend_request")
+
     def test_friendships_survive_a_restart(self):
         d = tempfile.mkdtemp()
         db = os.path.join(d, "lobby.db")
@@ -314,6 +343,25 @@ class LimitTest(Base):
         self.assertEqual(a.add_friend("Bob")["state"], "pending")                    # and may be asked again
 
 
+class AddressLimitTest(Base):
+    server_cfg = {"friend_requests_address": 3}
+
+    def test_requests_per_address(self):
+        # (security review 2) the per-account limits times every account one address can make: one internet address
+        # sends T5L_FRIEND_REQUESTS_ADDRESS requests a day, all its accounts together (the test players share 127.0.0.1)
+        a, m = self.acc("Alice"), self.acc("Mallory")
+        for n in ("Bob", "Cid", "Dan", "Eve"):
+            self.acc(n)
+        a.add_friend("Bob")
+        a.add_friend("Cid")
+        m.add_friend("Dan")
+        with self.assertRaises(LobbyError) as e:
+            m.add_friend("Eve")
+        self.assertEqual(e.exception.code, proto.E_RATE)
+        self.assertIn("this internet address", e.exception.msg)
+        self.assertEqual(a.add_friend("Bob")["state"], "pending")                    # (asked already: not counted)
+
+
 class BlockTest(Base):
     def test_a_block_ends_the_friendship(self):
         a, b = self.acc("Alice"), self.acc("Bob")
@@ -408,6 +456,11 @@ class InviteTest(Base):
         b.answer_invite(r["invite"], False)
         self.assertEqual(expect(a, "invite_update")["state"], "declined")
         time.sleep(2.1)                                                   # (one invite per 2 s)
+        with self.assertRaises(LobbyError) as e:                          # a no holds the next one back a while
+            a.invite("Bob")
+        self.assertEqual(e.exception.code, proto.E_RATE)
+        self.assertIn("try again in", e.exception.msg)
+        self.s.call(lambda: self.s.srv.retry_after.clear())               # (T5L_INVITE_RETRY_SECONDS later)
         r = a.invite("Bob")
         expect(b, "invited")
         a.cancel_invite(r["invite"])
@@ -419,22 +472,77 @@ class InviteTest(Base):
         self.assertIn("that invite is over", e.exception.msg)
 
     def test_inviting_again_too_soon_says_wait(self):
-        """The first invite is over (declined), but it is less than 2 s old: the answer names the rate limit, not
-        "one invite at a time" (there is none waiting); while one waits, that one is the answer."""
+        """An invite less than 2 s after the last one, which is over already (declined): the answer names the rate
+        limit, not "one invite at a time" (there is none waiting). While one waits, that one is the answer; the same
+        friend again after a no gets the longer hold with its seconds."""
         a, b = self.friends()
+        c = self.acc("Cid")
+        self.befriend(a, c)
+        drain(a)
         r = a.invite("Bob")
         expect(b, "invited")
         with self.assertRaises(LobbyError) as e:                          # one waits
-            a.invite("Bob")
+            a.invite("Cid")
         self.assertEqual((e.exception.code, e.exception.msg), (proto.E_RATE, "one invite at a time"))
         b.answer_invite(r["invite"], False)
         self.assertEqual(expect(a, "invite_update")["state"], "declined")
-        with self.assertRaises(LobbyError) as e:                          # none waits, but too soon
+        with self.assertRaises(LobbyError) as e:                          # Bob said no: his hold, with seconds
             a.invite("Bob")
+        self.assertEqual(e.exception.code, proto.E_RATE)
+        self.assertIn("your last invite to that friend ended a moment ago; try again in", e.exception.msg)
+        with self.assertRaises(LobbyError) as e:                          # none waits, but too soon
+            a.invite("Cid")
         self.assertEqual((e.exception.code, e.exception.msg), (proto.E_RATE, "wait a moment before inviting again"))
         time.sleep(2.1)
-        a.invite("Bob")                                                   # later it goes
+        a.invite("Cid")                                                   # later it goes
+        expect(c, "invited")
+
+    def test_no_invite_spam(self):
+        # (security review 2) invite, take it back, invite ... put the question (with A as its answer) up on the
+        # friend's screen every 2 s; and so did inviting again right after a no
+        self.s.stop()
+        self.s = server(invite_retry_seconds=1.5)
+        a, b = self.friends()
+        c = self.acc("Cid")
+        self.befriend(a, c)
+        drain(a)
+        r = a.invite("Bob")
         expect(b, "invited")
+        a.cancel_invite(r["invite"])
+        expect(b, "invite_update")
+        time.sleep(2.1)                                                   # past the 2 s between any two invites
+        self.s.call(lambda: self.s.srv.retry_after.update(
+            {k: v + 2.0 for k, v in self.s.srv.retry_after.items()}))     # (still held back)
+        with self.assertRaises(LobbyError) as e:
+            a.invite("Bob")
+        self.assertIn("try again in", e.exception.msg)
+        a.invite("Cid")                                                   # another friend: fine
+        r = expect(c, "invited")
+        c.answer_invite(r["invite"], False)
+        self.s.call(lambda: self.s.srv.retry_after.pop(("invite", self.s.srv.by_name["alice"].account_id,
+                                                        self.s.srv.by_name["bob"].account_id)))
+        time.sleep(2.1)
+        r = a.invite("Bob")                                               # Bob's hold is over
+        expect(b, "invited")
+        b.answer_invite(r["invite"], True)
+        expect(b, "match_found")
+
+    def test_a_ranked_room_invite_keeps_the_ready_check(self):
+        # (security review 2) a room invite starts the room's match at once -- in a ranked room that was a rated
+        # match (with ranked sets: a best of 3, lost by leaving it) the invited friend never saw called ranked: the
+        # invite names the room only, by its owner's free text. A ranked room's match keeps its ready check.
+        a, b = self.friends()
+        room = a.create_room("just for fun", ranked=True)
+        r = a.invite("Bob", "room")
+        ev = expect(b, "invited")
+        self.assertTrue(ev["room"]["ranked"])
+        got = b.answer_invite(r["invite"], True)
+        self.assertEqual(got["room"]["id"], room["id"])
+        fa, fb = expect(a, "match_found"), expect(b, "match_found")
+        for f in (fa, fb):
+            self.assertEqual((f["origin"], f["ready_check"], f["ranked"]), ("room", True, True))
+        b.ready(False, fb["match"])                                       # Bob says no: nothing is played
+        self.assertEqual(expect(b, "match_cancel")["reason"], "declined")
 
     def test_an_invite_runs_out(self):
         self.s.stop()

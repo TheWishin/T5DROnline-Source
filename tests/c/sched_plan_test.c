@@ -103,7 +103,14 @@ static void invariants(const char* what, const table* t, uint64_t allowed, const
     }
     CHECK(p->set[HSP_MAIN] == p->set[HSP_TICKER] && p->set[HSP_MAIN] == p->set[HSP_SPU] &&
           p->set[HSP_MAIN] == p->set[HSP_GAME], "%s: the frame's threads have different sets", what);
-    CHECK(p->set[HSP_SPURS] == p->set[HSP_VERTEX], "%s: worker sets differ", what);
+    if (!p->hybrid) CHECK(p->set[HSP_SPURS] == p->set[HSP_VERTEX], "%s: worker sets differ", what);
+    else {
+        const uint64_t crit = p->set[HSP_MAIN];
+        CHECK(p->set[HSP_VERTEX] != 0 && (p->set[HSP_VERTEX] & ~crit) == 0, "%s: hybrid, vertex worker off the "
+              "performance cores: 0x%llx", what, (unsigned long long)p->set[HSP_VERTEX]);
+        if ((p->set[HSP_SPURS] & crit) != 0)
+            CHECK((p->set[HSP_VERTEX] & p->reserved) == 0, "%s: hybrid, vertex worker on reserved cores", what);
+    }
     CHECK((p->reserved & p->set[HSP_SPURS]) == 0, "%s: workers may run on reserved LPs", what);
     if (p->reserved) {
         CHECK(p->set[HSP_SPURS] != 0, "%s: reserved cores but no worker set", what);
@@ -214,6 +221,8 @@ static void test_12700h(void)      /* 6 P-cores with HT + 8 E-cores, one L3 */
           p.ideal[HSP_TICKER], p.ideal[HSP_SPU]);
     CHECK(eff_of(&t, p.ideal[HSP_TICKER]) == 1 && eff_of(&t, p.ideal[HSP_SPU]) == 1, "12700H: ideal on P-cores");
     CHECK((p.set[HSP_SPURS] & ec) == ec, "12700H: workers may use every E-core");
+    CHECK(p.set[HSP_VERTEX] == (pc & ~0x3Cull), "12700H: the vertex worker on the other 4 P-cores: 0x%llx",
+          (unsigned long long)p.set[HSP_VERTEX]);
     CHECK(p.reserved == 0x3Cull, "12700H: the two P-cores of the game thread and the translation reserved, got 0x%llx",
           (unsigned long long)p.reserved);
     CHECK(p.spurs_threads == 12, "12700H: 12, got %d", p.spurs_threads);
@@ -244,6 +253,17 @@ static void test_core0(void)       /* processor 0's core is ranked best by the f
     add(&h, 4, 1, 0, 0, 0, 12288);
     hsp_plan q = plan("1P+4E", &h, all_of(&h), 0, 0);
     CHECK(q.ideal[HSP_MAIN] == 0 || q.ideal[HSP_MAIN] == 1, "one P-core: the game thread there, got %d", q.ideal[HSP_MAIN]);
+}
+
+static void test_1215u(void)       /* i3-1215U: 2 P-cores with HT + 4 E-cores: both P-cores reserved */
+{
+    table t = { 0 };
+    add(&t, 2, 2, 1, 0, 0, 10240);
+    add(&t, 4, 1, 0, 0, 0, 10240);
+    hsp_plan p = plan("1215U", &t, all_of(&t), 0, 0);
+    CHECK(p.cores == 6 && p.reserved == 0xFull, "1215U: both P-cores reserved, got 0x%llx", (unsigned long long)p.reserved);
+    CHECK(p.set[HSP_SPURS] == 0xF0ull, "1215U: skinning on the E-cores");
+    CHECK(p.set[HSP_VERTEX] == 0xFull, "1215U: the vertex worker with the game on the P-cores");
 }
 
 static void test_13900k(void)      /* 8P/16 + 16E */
@@ -391,6 +411,7 @@ int main(void)
     test_6c6t();
     test_12700h();
     test_core0();
+    test_1215u();
     test_13900k();
     test_meteor_lake();
     test_7950x();

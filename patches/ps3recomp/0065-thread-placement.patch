@@ -606,10 +606,10 @@ index 5f134a1..ce4b9ba 100644
   * a handheld's processor stays below its thermal and power limit. PS3_LAPTOP=1
 diff --git a/runtime/platform/host_sched_plan.h b/runtime/platform/host_sched_plan.h
 new file mode 100644
-index 0000000..94b698f
+index 0000000..0dc040e
 --- /dev/null
 +++ b/runtime/platform/host_sched_plan.h
-@@ -0,0 +1,346 @@
+@@ -0,0 +1,356 @@
 +/*
 + * ps3recomp - where the runtime's threads run (t5dr patch 0065, thread placement).
 + *
@@ -631,8 +631,10 @@ index 0000000..94b698f
 + *  - Hybrid CPUs (Intel 12th gen and later, Core Ultra): Windows marks the
 + *    performance cores with a higher EfficiencyClass. The game thread, the
 + *    guest threads of the frame, the translation and the sound core get a CPU
-+ *    set of the performance cores -- never an efficiency core, 2-3x slower.
-+ *    Workers may run on any core.
++ *    set of the performance cores -- never an efficiency core, 2-3x slower --
++ *    and so does the vertex-fetch worker the translation waits for. The SPURS
++ *    job workers (skinning: hundreds of small jobs dealt out as they finish)
++ *    may run on any core.
 + *  - Several last-level caches (Ryzen CCDs/CCXs, Core Ultra's low-power
 + *    island): when one cache group has at least HSP_HOT_MIN_CORES cores, the
 + *    frame's threads and the workers stay in it -- the one with the larger L3
@@ -909,7 +911,15 @@ index 0000000..94b698f
 +        p->reserved = hsp_core_lps(c, n, allowed, two);
 +        wk &= ~p->reserved;
 +    }
-+    p->set[HSP_SPURS] = p->set[HSP_VERTEX] = wk == all ? 0 : wk;
++    p->set[HSP_SPURS] = wk == all ? 0 : wk;
++    /* The vertex-fetch worker is on the translation's path (the walker waits
++     * for its last job at every flush): on a hybrid it stays on performance
++     * cores too -- the ones left after the reservation, else with the game's. */
++    {
++        uint64_t vx = wk;
++        if (p->hybrid) { vx = wk & crit; if (!vx) vx = crit; }
++        p->set[HSP_VERTEX] = vx == all ? 0 : vx;
++    }
 +    hsp_pools(p, budget, 0, laptop);
 +}
 +

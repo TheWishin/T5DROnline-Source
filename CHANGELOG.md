@@ -61,6 +61,15 @@ part is in the README's status table.
 - At most 8 spectators per match (server setting). Launchers before 1.1.3 never see any of it, and their
   matches cannot be watched. Needs the lobby server updated. docs/SPECTATE.md.
 
+### Picture and speed
+- **Less GPU work at 1080p, 1440p and 4K** (ps3recomp patch 0051). The stages with a blur or a glow
+  filter a PS3-size copy of the picture (1.1.2); making that copy and shrinking a large picture
+  into a smaller window are now done with fewer texture reads, with exactly the same result.
+  On integrated graphics this cut 17-40 % of the GPU time around the 3D scene at 1440p and 4K.
+  With power saving on (on by itself with integrated graphics) the shadow map and the sun's glow
+  keep the PS3's size above Native as well. The log can show where the GPU time of a frame goes
+  (`RSX_GPU_PASSES=1`).
+
 ### Servers
 - New settings `T5L_TOUR_*` (who may organize, the no-show time, limits, rated or not) and a read-only JSON of the
   brackets on the status port (`/tournaments`, `/tournaments/<id>`) for streamers' overlays (docs/TOURNAMENTS.md).

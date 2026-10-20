@@ -2808,6 +2808,22 @@ def cs_pick(ctx):
     _cs_match(ctx, pf, a, b, {a.name: "jin:lk", b.name: "asuka:lp"}, "pick")
 
 
+def _grid_offered(p):
+    """The game's select screen offered Jinpachi and the random cell (T5_NET_UNLOCKS=open, df_fight.cpp)."""
+    return _log_has_line(p, r"in-game select: the select screen is live.*Jinpachi and the random cell offered")
+
+
+@scenario("cs_jinpachi_random", "9 character select", game=True, suites=("game",), needs="ingame_pick",
+          desc="1.1.4: a casual (quick) match offers Jinpachi and the random cell on both PCs (T5_NET_UNLOCKS=open from "
+               "the lobby's match event): one picks the random cell, the other Jinpachi; the same fighters on both PCs")
+def cs_jinpachi_random(ctx):
+    pf, a, b = _cs_two(ctx, "E2E Jnp1", "E2E Jnp2")
+    _cs_match(ctx, pf, a, b, {a.name: "rnd:lp", b.name: "jnp:lk"}, "random cell vs Jinpachi")
+    for p in (a, b):
+        ctx.check(f"{p.name}: the casual match's grid offers Jinpachi and the random cell", bool(_grid_offered(p)),
+                  _log_has_line(p, r"in-game select: the select screen is live"))
+
+
 @scenario("cs_costume", "9 character select", game=True, suites=("game",), needs="ingame_pick",
           desc="the costume is the confirm button: Xiaoyu with RK, Lili with RP, the same model on both PCs")
 def cs_costume(ctx):
@@ -2856,6 +2872,9 @@ def cs_ranked_lock(ctx):
     _mid, f2 = _cs_match(ctx, pf, a, b, {}, "ranked game 2 (locked)", again=True, expect_pick=False,
                          prev=mid if _set_of(a, mid).get("rated") else None)
     ctx.check("game 2 kept game 1's fighters (the lock)", f1 is not None and f1 == f2, [f1, f2])
+    for p in (a, b):        # 1.1.4: ranked stays a fresh save's grid (T5_NET_UNLOCKS=closed)
+        ctx.check(f"{p.name}: the ranked grid has no Jinpachi and no random cell", not _grid_offered(p),
+                  _log_has_line(p, r"in-game select: the select screen is live"))
     prof = profile(ctx, a) or {}
     ctx.check("the history records the fighters the game fought with",
               any(h.get("you_char") in ("bryan", "julia") for h in prof.get("history", [])), prof.get("history"))

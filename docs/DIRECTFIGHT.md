@@ -204,8 +204,9 @@ What the select screen does (probes with scripted pads, build/cs/exp):
   the other side still chooses (always on P2; on P1 at the select screen a
   match returns to, not at a fresh one), then 0x15 on P1 and 0x0D on P2.
 - L1 loads customize data ("L1 BUTTON : LOAD CUSTOMIZE DATA"); Start, Select,
-  R1, L2, R2, L3 and R3 do nothing here. There is no random cell (Jinpachi's
-  cell 24 is skipped by the cursor).
+  R1, L2, R2, L3 and R3 do nothing here. On a fresh save there is no random
+  cell and no Jinpachi (the cursor skips cells 24 and 35); a casual match
+  offers both (1.1.4, "Unlocks" below: the random cell 24, Jinpachi 35).
 - The name and rank plates of the select screen come from the VS custom data
   (see "Names and ranks in the HUD") and are read every frame: written at the
   select screen they show at once.
@@ -347,8 +348,8 @@ screen.
 
 Not done: no in-game text beyond the name plates (the launcher's status line
 says the same: "Pick your fighter in the game", "Waiting for your opponent to
-pick..."); Jinpachi stays unpickable (no cell); the customize data (L1) is not
-offered online.
+pick..."); the customize data (L1) is not offered online. Jinpachi and the
+random cell: casual matches only (1.1.4, "Unlocks").
 
 Test: `tools/pick_flow_test.py` -- two games on this PC, each player's picks
 pressed through its `PS3_PAD_FILE` closed-loop on the cursor cell the game
@@ -1419,6 +1420,68 @@ With the rule (runs rule_rb / rule_ls: the same pair and pattern, stages 0, 13,
 settings on; the joiner fresh, both off): 5/5 matches in rollback and 5/5 in
 lockstep, 0 mismatching frames, the same hash. `T5_UNLOCK_ONLINE=save` keeps
 the old behaviour (tests only).
+
+**Jinpachi and Random online by match kind (1.1.4).** The owner: "Random and
+Jinpachi online in casual and rooms, not in ranked; Mokujin and Random
+different every match; offline random on every start; Jinpachi offline as a
+setting." The answer for 0x20 (Jinpachi offered, which also gives the grid its
+random cell) is now the match's, the same on both PCs, never a player's
+setting: the launcher puts `T5_NET_UNLOCKS=open|closed` into both games'
+environment from the lobby's match_start event (`handover.match_unlocks`):
+**open** for casual quick matches, rooms and friend invites (and their
+rematches), **closed** for ranked matches and **tournament sets** -- the
+competitive ones; to offer them there too, change `match_unlocks` (one
+function). Unset or anything else (an older launcher) is closed. The stages
+(0x10) stay off online either way. A persistent game sets each new session's
+answer when its "fight" command comes (`t5_unlock_set_open`, before the select
+screen it is picked on is built); a fresh select screen built with the other
+answer is built again (a select restart), so both grids are the same. A replay
+keeps the answer in its header (format 4, docs/REPLAYS.md) and plays back with
+it. The lobby takes Jinpachi in a casual match's result (server cap
+`boss_chars`; in ranked matches and tournament sets it still refuses him), so
+the history shows him; the launcher reports him only to a server that says so.
+
+The open grid (probe runs off0-off7, offline with `T5_UNLOCK_JINPACHI=1`,
+`T5_SELECT_TRACE=1`): the top row has 12 cells and the cursor cycles all of
+them, every column reaches it; cell **24** (left end) is the **random cell**,
+cell **35** (right end) is **Jinpachi** (models 0x52 with Cross, 0x53 with
+Triangle). The random cell draws a
+fighter and a costume at its confirm (the record holds the drawn model: Steve
+0x2A, Jack-5 0x30, Paul 0x01, once Jinpachi 0x52), not from the TLS generator
+alone (with every generator pinned at the select screen two starts still drew
+different ones). So in the in-game select a random-cell pick travels as the
+fighter it gave: the driver sends that character on its own cell with the
+button that gives the drawn model there (`pick_button_for`, the model table of
+"Mirror matches"), and the peer confirms exactly that model; the playback of
+the replay drives the same. Mokujin's copy is drawn later, at the game mode's
+set-up, from the select screen's pinned generator (docs/NETPLAY.md: since 1.1.4
+mixed with the match number, so it changes from match to match). FIGHT START
+logs what each fighter block plays (+0x4C of 0x10090030 / 0x10090900: the
+fighter in the low byte -- Mokujin's block holds the fighter it copies; the
+numbers match the select's ids for most, not all: Lili 0x1E, Jinpachi 0x22 --
+and bit 16 on P2's block).
+
+**Checked** (this PC, two games, muted, below-normal priority, other agents'
+games beside them; `tools/pick_flow_test.py --unlocks open|closed`, picks
+`rnd:<button>` / `jnp:<button>`, a session of 6 matches, both mashing):
+casual rollback (pair_rb) and lockstep (pair_ls) 6/6 matches each, 0
+mismatching frames, the same result hash on both PCs -- match 1 the random
+cell (P1: Lili in one run, Eddy in the other) against Jinpachi (P2, Cross,
+0x52), match 2 Jinpachi (P1, Triangle, 0x53) against the random cell (P2:
+Jinpachi once, Anna once), then a Mokujin rematch chain of 4: P1 Mokujin
+copied 0x0C, 0x16, 0x05, 0x10 in matches 3-6 (and P2's Mokujin 0x1B in
+match 6), the same on both PCs in every match. Their replays (format 4) play
+back identical (2 of 2, 12 matches, every hash and result). Ranked (pair_closed,
+`T5_NET_UNLOCKS=closed`): the select screen offers neither, every 0x20 check
+answers 0 (`T5_UNLOCK_TRACE=1`), 1/1 in sync. Through the launcher and a local
+lobby: e2e `cs_jinpachi_random` (quick match: both grids open, random cell vs
+Jinpachi) and `cs_ranked_lock` (ranked: neither on either grid).
+
+**Offline:** `T5_UNLOCK_JINPACHI=1` (launcher Settings -> Unlocks -> "Unlock
+Jinpachi and Random select") answers yes for 0x20 like the stages setting for
+0x10: Jinpachi and the random cell on every select screen, nothing written to
+the save; the launcher leaves it out of online games. Random draws at every
+start: docs/NETPLAY.md "Offline".
 
 The Tekken 5 stages themselves in netplay (for the lobby's `T5L_OLD_STAGES`):
 every one of them, ids 0-13 and 15, in one persistent session of 15 matches (a

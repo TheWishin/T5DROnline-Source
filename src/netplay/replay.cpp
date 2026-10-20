@@ -8,8 +8,11 @@
  *            game needs to play the session back; the JSON is only a view of it
  *
  * Binary, little-endian:
- *   "T5RP" u32 version (3)
- *   u32 flags (bit 0: rollback), slot, delay, rollback delay (0xFFFFFFFF: unknown)
+ *   "T5RP" u32 version (4)
+ *   u32 flags (bit 0: rollback; format 4: bit 1 the select screen's random generator is pinned
+ *       to the session's seed mixed with the match number -- older files: one seed per session --
+ *       bit 2 Jinpachi and the random cell were offered, T5_NET_UNLOCKS=open),
+ *       slot, delay, rollback delay (0xFFFFFFFF: unknown)
  *   u32 session seed (T5_NET_SEED), match seed, frames N, hash interval, the last frame the
  *       recording game ran (the inputs reach the input delay past it; format 1 had no such field)
  *   u32 matches, each: u32 start, end, frames, hash frame, desync, flags (bit 0 result,
@@ -42,14 +45,17 @@
 
 #include "replay.h"
 
+extern "C" int t5_unlock_online_open(void);   /* src/directfight/df_unlock.cpp: T5_NET_UNLOCKS=open of this session */
 unsigned char* rp_zlib_compress(const unsigned char* data, int len, int* out_len);     /* replay_zlib.cpp */
 unsigned char* rp_zlib_decompress(const unsigned char* data, int len, int* out_len);
 
 namespace rp {
 namespace {
 
-constexpr uint32_t kVersion = 3;   /* 2: the last frame the recording game ran (after the hash interval);
-                                    3: each match's custom costume blocks */
+constexpr uint32_t kVersion = 4;   /* 2: the last frame the recording game ran (after the hash interval);
+                                    3: each match's custom costume blocks;
+                                    4: header flags bit 1 (select seed per match) and bit 2 (unlocks open) */
+constexpr uint32_t kFlagRollback = 1, kFlagSelectMix = 2, kFlagUnlocksOpen = 4;
 constexpr uint32_t kCostumeBlock = 0x108;
 constexpr int kMaxDelay = 30;      /* netplay_core.cpp kMaxDelay: the input delay a session can have */
 constexpr char kMagic[] = "T5REPLAY 1\n";
@@ -66,6 +72,8 @@ struct Match {
 struct Data {
     int slot = 0, delay = 0, rb_delay = -1;
     bool rollback = false;
+    bool select_mix = true;       /* format 4: the select seed mixes the match number (older: false) */
+    bool unlocks_open = false;    /* format 4: T5_NET_UNLOCKS=open (Jinpachi and the random cell offered) */
     uint32_t session_seed = 0, match_seed = 0, hash_every = 60;
     uint32_t last = 0;            /* the last frame the recording game ran (its inputs go `delay` frames further) */
     std::string build, created;
@@ -149,12 +157,17 @@ struct DataInputs : InputSource {
     uint32_t frames() const override { return (uint32_t)std::min(d.in[0].size(), d.in[1].size()); }
 };
 
+uint32_t header_flags(const Data& d)
+{
+    return (d.rollback ? kFlagRollback : 0u) | (d.select_mix ? kFlagSelectMix : 0u) | (d.unlocks_open ? kFlagUnlocksOpen : 0u);
+}
+
 std::vector<uint8_t> to_binary(const Data& d, const InputSource& src)
 {
     std::vector<uint8_t> b;
     b.insert(b.end(), { 'T', '5', 'R', 'P' });
     put32(b, kVersion);
-    put32(b, d.rollback ? 1u : 0u);
+    put32(b, header_flags(d));
     put32(b, (uint32_t)d.slot); put32(b, (uint32_t)d.delay); put32(b, (uint32_t)d.rb_delay);
     put32(b, d.session_seed); put32(b, d.match_seed);
     const uint32_t n = src.frames();
@@ -240,7 +253,10 @@ bool from_binary(const uint8_t* p, size_t n, Data& d, std::string* why)
     r.i = 4;
     const uint32_t ver = r.u32();
     if (ver < 1 || ver > kVersion) { *why = "replay format " + std::to_string(ver) + " (this game reads 1 to " + std::to_string(kVersion) + ")"; return false; }
-    d.rollback = (r.u32() & 1) != 0;
+    const uint32_t hf = r.u32();
+    d.rollback = (hf & kFlagRollback) != 0;
+    d.select_mix = ver >= 4 && (hf & kFlagSelectMix);       /* format 3 and older: one select seed per session */
+    d.unlocks_open = ver >= 4 && (hf & kFlagUnlocksOpen);
     d.slot = (int)r.u32(); d.delay = (int)r.u32(); d.rb_delay = (int)r.u32();
     /* The playback indexes the two players by the slot and fills the input ring up to the delay
      * (netplay_core.cpp): a damaged or hand-made file must not take either outside 0..1 / 0..30. */
@@ -305,10 +321,10 @@ std::string to_json(const Data& d, bool names, uint32_t frames)
     std::string j = "{";
     snprintf(b, sizeof b, "\"format\": %u, \"build\": %s, \"created\": %s, \"mode\": \"%s\", \"slot\": %d, \"delay\": %d, "
                           "\"rb_delay\": %d, \"seed\": %u, \"match_seed\": %u, \"frames\": %zu, \"last_frame\": %u, \"hash_every\": %u, "
-                          "\"sync_points\": %zu, \"hashes\": %zu, \"matches\": [",
+                          "\"sync_points\": %zu, \"hashes\": %zu, \"unlocks\": \"%s\", \"matches\": [",
              kVersion, jstr(d.build).c_str(), jstr(d.created).c_str(), d.rollback ? "rollback" : "lockstep", d.slot, d.delay,
              d.rb_delay, d.session_seed, d.match_seed, (size_t)frames, d.last, d.hash_every,
-             d.bars.size(), d.hashes.size());
+             d.bars.size(), d.hashes.size(), d.unlocks_open ? "open" : "closed");
     j += b;
     for (size_t k = 0; k < d.matches.size(); k++) {
         const Match& m = d.matches[k];
@@ -449,7 +465,8 @@ void write_store(const std::shared_ptr<Store>& st, uint32_t seq)
 /* ---- the live stream ---------------------------------------------------------
  * <T5_REPLAY_LIVE> (a spectator's game reads it while it grows, docs/SPECTATE.md):
  *   "T5LIVE 1", newline, then records: u8 type, u32 payload length, payload (little-endian)
- *   SESSION  u32 version 1, flags (bit 0 rollback), slot, delay, rollback delay, session seed,
+ *   SESSION  u32 version 1, flags (bit 0 rollback, bits 1 and 2 as in the replay's header),
+ *            slot, delay, rollback delay, session seed,
  *            match seed, hash interval; str build, created (again when the rollback delay is
  *            known: the latest counts)
  *   INPUTS   u32 first frame, count; 12 columns of `count` bytes (P1 buttons low, high, lx, ly,
@@ -479,7 +496,7 @@ void live_rec(std::vector<uint8_t>& out, uint8_t type, const std::vector<uint8_t
 std::vector<uint8_t> session_payload(const Data& d)
 {
     std::vector<uint8_t> b;
-    put32(b, 1); put32(b, d.rollback ? 1u : 0u);
+    put32(b, 1); put32(b, header_flags(d));
     put32(b, (uint32_t)d.slot); put32(b, (uint32_t)d.delay); put32(b, (uint32_t)d.rb_delay);
     put32(b, d.session_seed); put32(b, d.match_seed); put32(b, d.hash_every);
     putstr(b, d.build); putstr(b, d.created);
@@ -707,7 +724,10 @@ bool live_record(Play& p, uint8_t type, const uint8_t* b, uint32_t n)
     switch (type) {
     case L_SESSION: {
         if (r.u32() != 1) return false;
-        const bool rb = (r.u32() & 1) != 0;
+        const uint32_t lf = r.u32();
+        const bool rb = (lf & kFlagRollback) != 0;
+        d.select_mix = (lf & kFlagSelectMix) != 0;
+        d.unlocks_open = (lf & kFlagUnlocksOpen) != 0;
         const int slot = (int)r.u32(), delay = (int)r.u32(), rb_delay = (int)r.u32();
         const uint32_t sseed = r.u32(), mseed = r.u32(), every = r.u32();
         if (r.bad) return false;
@@ -955,6 +975,7 @@ void rec_session_begin(int slot, const char* build, uint32_t session_seed)
     st->d.slot = slot;
     st->d.build = build ? build : "";
     st->d.session_seed = session_seed;
+    st->d.unlocks_open = t5_unlock_online_open() != 0;   /* (a persistent game: set from the session's command before) */
     st->d.created = utc_now();
     SYSTEMTIME tm; GetLocalTime(&tm);
     LARGE_INTEGER q; QueryPerformanceCounter(&q);
@@ -1175,6 +1196,11 @@ uint32_t play_session_seed() { return P().d.session_seed; }
 uint32_t play_match_seed() { return P().d.match_seed; }
 uint32_t play_target() { return P().target; }
 uint32_t play_match_index() { return P().begun; }
+bool play_select_mix() { return P().d.select_mix; }
+} // namespace rp
+/* df_unlock.cpp: a playback offers Jinpachi and the random cell as the recorded session did (-1: no playback) */
+extern "C" int t5_replay_unlocks_open(void) { return rp::P().on ? (rp::P().d.unlocks_open ? 1 : 0) : -1; }
+namespace rp {
 const char* play_error() { return P().error.c_str(); }
 
 bool peek_rollback(const char* path)

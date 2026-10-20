@@ -66,7 +66,7 @@ import time
 import urllib.parse
 
 from . import fighters, proto, ranks, spectate
-from .handover import MatchTicket, read_result_file
+from .handover import MatchTicket, match_unlocks, read_result_file
 from .i18n import N_, t, translate_message
 
 CTL_MARKER = b"T5_CTL_DIR"
@@ -1021,9 +1021,14 @@ class MatchDriver:
             self._call(fn, self.last_fps)
 
     def _key(self, fid):
-        """The lobby key of a game character id (status file), or None."""
+        """The lobby key of a game character id (status file), or None. Jinpachi (a boss) only in a casual match
+        whose server takes him in a result (cap "boss_chars"): the games offer him there (T5_NET_UNLOCKS=open)."""
         f = self.table.fighter_by_id(fid) if isinstance(fid, int) and not isinstance(fid, bool) else None
-        return f["key"] if f and not f.get("boss") else None
+        return f["key"] if f and (not f.get("boss") or self._boss_ok()) else None
+
+    def _boss_ok(self):
+        w = getattr(self.client, "welcome", None) or {}
+        return "boss_chars" in (w.get("caps") or ()) and match_unlocks(self.match_ev or {}) == "open"
 
     def _picked_chars(self):
         """[P1 key, P2 key] this match was fought with, when its characters were picked in the game."""

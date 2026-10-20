@@ -1229,6 +1229,37 @@ draws were not.
   seed (T5_NET_SEED, the lobby's, the same on both PCs before the handshake)
   at every boundary while the select mode runs, so the game mode's set-up
   (Mokujin's pick) draws the same on both PCs however long the select took.
+  **Since 1.1.4 the pin is mixed with the match number** (`select_seed()` in
+  t5_hooks.cpp: `(session seed ^ 0x7E1EC7ED) + k * 0x9E3779B9`, k = the fights
+  this session has started, counted by the direct-fight driver at FIGHT START --
+  the same on both PCs at their select screens and in a playback): with the
+  session seed alone every rematch drew the same, so Mokujin copied the same
+  fighter in every match of a session (owner report; the integration-114 base
+  build, run pair_base: Mokujin copied fighter 0x06 in all three matches of a
+  session, on both PCs; this build, runs pair_rb / pair_ls: 0x0C, 0x16, 0x05,
+  0x10 in four rematches, the same on both PCs). k = 0 is 1.1.3's seed; a
+  replay of format 3 or older plays back with k = 0 for every match, as it was
+  recorded (docs/REPLAYS.md "Format 4"). Each new seed is logged once ("select
+  screen: TLS generator pinned to ... (session s, match k of it)"), and FIGHT
+  START logs what each fighter block plays ("P1 plays 0x...", +0x4C of the
+  blocks 0x10090030 / 0x10090900: Mokujin's block holds the fighter he copies).
+
+**Offline** the generator is not reseeded by anything (no sync points), and it
+starts from the same state word at every boot, so with the same timing the same
+draws came out after every start (Mokujin's copy: runs off2, two boots, Christie
+both times; run off0 differed only through the players' timing). An offline game
+(no T5_NET_MODE / T5_CTL_DIR / T5_FIGHT / T5_FIGHT_FILE / T5_REPLAY_FILE) now
+seeds it once at the first frame boundary from the OS's random numbers
+(`offline_seed()`, BCryptGenRandom; the log says "offline: the scene's random
+generator seeded with ..."). `T5_OFFLINE_SEED=<n>` (tests): that seed, and every
+generator pinned at the select screens as online, so the same picks give the
+same Mokujin copy at every start; `T5_OFFLINE_SEED=0`: not seeded (the old
+behaviour). `tools/offline_random_test.py` checks both (two boots, VS, the
+random cell and Mokujin): default seeding, two boots each (off3, off6): a
+different Mokujin copy (0x08 / 0x1B) or a different random-cell fighter (Steve /
+Jack-5); `T5_OFFLINE_SEED=123` (off4, off7, off9): Mokujin copied the same
+fighter in both boots every time. The random cell itself does not repeat even
+then: it follows the frame it is pressed on, not only the generators.
 
 The TLS block (0x0E000000, 128 KB) is in the rollback state already
 (`rb_state.cpp` kSave): a restore puts the generator back with the frame,

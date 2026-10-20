@@ -19,6 +19,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string>
+#include <string.h>
 
 #include "../../src/netplay/replay.h"
 
@@ -38,6 +39,9 @@ void replay_session_known() { printf("SESSIONKNOWN\n"); }   /* (a live stream's 
 }
 /* the session environment (netplay_core.cpp): here the process's */
 extern "C" const char* t5_env(const char* key) { return getenv(key); }
+/* df_unlock.cpp: the session's match kind (T5_NET_UNLOCKS=open), which a recording keeps */
+extern "C" int t5_unlock_online_open(void) { const char* u = getenv("T5_NET_UNLOCKS"); return u && !strcmp(u, "open"); }
+extern "C" int t5_replay_unlocks_open(void);
 
 static uint64_t fnv(uint64_t h, uint32_t v)
 {
@@ -117,6 +121,7 @@ static int do_write(const char* dir, uint32_t frames, uint32_t seed, const char*
 static int do_read(const char* file, int argc, char** argv, bool map)
 {
     if (!rp::play_load(file)) { printf("ERROR %s\n", rp::play_error()); return 2; }
+    printf("FLAGS select_mix %d unlocks_open %d\n", rp::play_select_mix() ? 1 : 0, t5_replay_unlocks_open());
     printf("SLOT %d DELAY %d ROLLBACK %d SEED %08x MATCHSEED %08x\n", rp::play_slot(), rp::play_delay(),
            rp::play_rollback() ? 1 : 0, rp::play_session_seed(), rp::play_match_seed());
     if (map) {

@@ -497,14 +497,15 @@ MESSAGES = {
     "Unlocks": "アンロック",
     "Unlock all stages (the Tekken 5 stages, without clearing Arcade)":
         "全ステージをアンロック（Tekken 5 のステージ、Arcade をクリアしなくても）",
+    "Unlock Jinpachi and Random select (without clearing Arcade)":
+        "Jinpachi と Random セレクトをアンロック（Arcade をクリアしなくても）",
     "Unlock all customization items (free in the item shop)":
         "全カスタマイズアイテムをアンロック（ITEM SHOP で無料）",
     "Offline only (Arcade, VS, Practice and the rest). Your save is not changed; items you take for free "
     "stay yours (the save is backed up first, in save-backups). Online, both players always get the "
-    "same stages and the default costumes.":
-        "オフライン専用です（Arcade、VS、Practice など）。セーブは変更されません。無料で手に入れたアイテムはそのまま"
-        "自分のものになります（先にセーブを save-backups にバックアップします）。オンラインでは両プレイヤーが常に"
-        "同じステージとデフォルトのコスチュームになります。",
+    "same stages; Jinpachi and Random are there in casual matches and rooms, not in ranked.":
+        "オフライン専用です（Arcade、VS、Practice など）。セーブは変更されません。無料で手に入れたアイテムはそのまま自分のものになります（先にセーブを save-backups "
+        "にバックアップします）。オンラインでは両プレイヤーが常に同じステージになります。Jinpachi と Random はカジュアルマッチとルームで使えますが、Ranked では使えません。",
     "Sound and start": "サウンドと起動",
     "Mute sound": "ミュート",
     "Start minimized, without taking focus (for testing)": "最小化して起動、フォーカスを奪わない（テスト用）",

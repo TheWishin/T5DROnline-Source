@@ -43,6 +43,7 @@ unsigned char* rp_zlib_decompress(const unsigned char*, int, int* n) { *n = 0; r
 #define stderr (__acrt_iob_func(2))
 
 extern "C" int32_t cellPad_sample_local(uint32_t, HostPadData* out) { out->len = 0; return 0; }
+extern "C" int t5_unlock_online_open(void) { return 0; }   /* src/directfight/df_unlock.cpp (a recording keeps it) */
 /* src/netplay/local_pad.cpp (which controller is this PC's player): no controller here */
 int np::local_player_sample(HostPadData* out) { memset(out, 0, sizeof *out); return 0; }
 

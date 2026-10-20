@@ -49,11 +49,12 @@ def fnv_digest(frames):
 
 
 def make_file(path, inputs, matches, bars=(), hashes=(), rollback=True, slot=0, names=("A", "B"),
-              build="b1", created="2026-10-19T12:00:00Z", version=2, delay=2, rb_delay=1):
+              build="b1", created="2026-10-19T12:00:00Z", version=2, delay=2, rb_delay=1, select_mix=0, unlocks_open=0):
     """A replay file written by Python (the same layout as replay.cpp's)."""
     n = len(inputs[0])
     b = bytearray(b"T5RP")
-    b += struct.pack("<IIIIiIIII", version, 1 if rollback else 0, slot, delay, rb_delay, 7, 7, n, 60)
+    flags = (1 if rollback else 0) | (select_mix << 1) | (unlocks_open << 2)
+    b += struct.pack("<IIIIiIIII", version, flags, slot, delay, rb_delay, 7, 7, n, 60)
     if version >= 2:
         b += struct.pack("<I", max(0, n - 1))            # the last frame the recording game ran: all of them here
     b += struct.pack("<I", len(matches))
@@ -66,6 +67,8 @@ def make_file(path, inputs, matches, bars=(), hashes=(), rollback=True, slot=0, 
         for nm in names:
             e = nm.encode()
             b += struct.pack("<H", len(e)) + e
+        if version >= 3:
+            b += struct.pack("<I", 0)                    # format 3: no custom costume blocks
     b += struct.pack("<I", len(bars))
     for x in bars:
         b += struct.pack("<5IQ3I", x["kind"], x["f"], x["nf"], x["seed"], 1, x["f"], 1, 2, 3)
@@ -452,8 +455,12 @@ class GameCodeTest(unittest.TestCase):
         self.assertEqual(len(self.lines(out, "BARRIER")), 3)
         # format 3: match 1's custom costume blocks (P1 a pattern, P2 none), match 2 without any
         blocks = bytes((i * 13 + 1) & 0xFF for i in range(0x108)) + bytes(0x108)
-        self.assertEqual(p["version"], 3)
+        self.assertEqual(p["version"], 4)
         self.assertEqual(p["matches"][0]["costumes"], [blocks[:0x108].hex(), blocks[0x108:].hex()])
+        # format 4: the select seed mixes the match number; a session without T5_NET_UNLOCKS is closed
+        self.assertTrue(p["select_mix"])
+        self.assertEqual(p["unlocks"], "closed")
+        self.assertEqual(self.lines(out, "FLAGS"), ["select_mix 1 unlocks_open 0"])
         self.assertIsNone(p["matches"][1]["costumes"])
         fnv = 1469598103934665603
         for v in blocks:
@@ -552,6 +559,37 @@ class GameCodeTest(unittest.TestCase):
         self.assertIn("SLOT 1 DELAY 2 ROLLBACK 1", out)
         self.assertEqual(int(self.lines(out, "DIGESTPLUS")[0], 16),
                          fnv_digest(list(zip(ins[0], ins[1]))))
+
+    def test_format_4_keeps_the_match_kind(self):
+        """A casual session (T5_NET_UNLOCKS=open: Jinpachi and the random cell offered) plays back with the same
+        grid; the JSON line says so."""
+        d = tempfile.mkdtemp(dir=self.tmp)
+        os.environ["T5_NET_UNLOCKS"] = "open"
+        try:
+            code, out = self.run_exe("write", d, "600", "0x77")
+        finally:
+            del os.environ["T5_NET_UNLOCKS"]
+        self.assertEqual(code, 0, out)
+        path = self.lines(out, "FILE")[0]
+        p = replays.read_payload(path)
+        self.assertEqual((p["version"], p["select_mix"], p["unlocks"]), (4, True, "open"))
+        self.assertEqual(replays.read_header(path)["unlocks"], "open")
+        code, out = self.run_exe("read", path)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.lines(out, "FLAGS"), ["select_mix 1 unlocks_open 1"])
+
+    def test_format_3_files_play_as_recorded(self):
+        """1.1.3 files (format 3): one select seed for the whole session (no match number mixed in) and the
+        closed grid, as they were recorded -- and the same inputs as before."""
+        ins = sample_inputs(400, seed=5)
+        path = os.path.join(self.tmp, "v3" + replays.EXT)
+        make_file(path, ins, [{"start": 0, "end": 300, "p1": 19, "p2": 19, "stage": 20, "winner": 1}], version=3)
+        p = replays.read_payload(path)
+        self.assertEqual((p["version"], p["select_mix"], p["unlocks"]), (3, False, "closed"))
+        code, out = self.run_exe("read", path)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.lines(out, "FLAGS"), ["select_mix 0 unlocks_open 0"])
+        self.assertEqual(int(self.lines(out, "DIGESTPLUS")[0], 16), fnv_digest(list(zip(ins[0], ins[1]))))
 
     def test_format_1_files_still_play(self):
         """Development files of format 1 had no last frame: the playback stops the input delay before the end

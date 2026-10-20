@@ -182,11 +182,15 @@ It is game data. Do not share it. To uninstall, delete the whole folder.
   it can also be on in the other offline modes, and online (only your own
   inputs). **F2** in the game switches it. It only reads the game, so it never
   changes a match. More in [docs/TRAINING.md](docs/TRAINING.md).
-- **Settings** -> **Unlocks** (offline play; both Off by default):
+- **Settings** -> **Unlocks** (offline play; all Off by default):
   - **Unlock all stages**: the Tekken 5 stages (the old ones, normally earned
     after about 50 fights, a few Arcade runs) are there in Arcade, VS, Practice
     and the rest, without clearing Arcade. Your save is not changed: switched off, the
     game is as before.
+  - **Unlock Jinpachi and Random select**: the character select has Jinpachi
+    (top row, right end) and the random cell (top row, left end) without
+    clearing Arcade. Your save is not changed. Online you do not need it: casual
+    matches and rooms always have both, ranked never.
   - **Unlock all customization items**: everything in **ITEM SHOP & EQUIP**
     (after picking a fighter in Arcade, Ghost or Survival) costs 0 Fight Money.
     What you take stays in your save like a bought item, also after switching
@@ -284,7 +288,11 @@ Keyboard (default) and Xbox controller:
 4. The game shows its own character select. Pick your fighter with the pad,
    stick or keyboard within 30 seconds: the button you confirm with picks the
    costume, **Select** (Tab on the keyboard, Back on an Xbox pad) picks at
-   random. If you pick nothing, you get the character set in the launcher.
+   random. In quick matches, rooms and friend invites the top row also has
+   **Jinpachi** (right end) and the game's **random cell** (left end) for both
+   players; ranked matches and tournaments have neither. Mokujin's copied
+   fighter and the random cell draw anew in every match (the same on both
+   PCs). If you pick nothing, you get the character set in the launcher.
    When both of you have picked, the fight starts: first to 3 rounds. The name
    under your fighter counts the seconds down; "PICKING..." under the opponent
    means you wait for their pick.

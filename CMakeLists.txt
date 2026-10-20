@@ -188,8 +188,9 @@ set(T5DR_PGO_SPU "" CACHE STRING ".profdata for the other lifted SPU sources")
 foreach(_spu_src ${SPU_LIFTED})
     get_filename_component(_spu_img "${_spu_src}" DIRECTORY)
     get_filename_component(_spu_img "${_spu_img}" NAME)
-    set_property(SOURCE "${_spu_src}" APPEND PROPERTY COMPILE_OPTIONS
-        "SHELL:-Xclang -main-file-name" "SHELL:-Xclang ${_spu_img}_spu_recomp.c")
+    # (COMPILE_FLAGS, a plain string: a source's COMPILE_OPTIONS list would take no SHELL: groups)
+    set_property(SOURCE "${_spu_src}" APPEND_STRING PROPERTY COMPILE_FLAGS
+        " -Xclang -main-file-name -Xclang ${_spu_img}_spu_recomp.c")
 endforeach()
 if(T5DR_PGO STREQUAL "gen")
     set_property(SOURCE ${RECOMP_SOURCES} APPEND PROPERTY COMPILE_OPTIONS /clang:-fprofile-instr-generate)

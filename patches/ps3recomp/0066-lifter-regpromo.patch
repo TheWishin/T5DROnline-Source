@@ -932,7 +932,7 @@ index 0000000..bcb33ec
 +if __name__ == "__main__":
 +    main()
 diff --git a/tools/test_ppu_lift.py b/tools/test_ppu_lift.py
-index 096fc3a..21d4948 100644
+index 096fc3a..9aca47c 100644
 --- a/tools/test_ppu_lift.py
 +++ b/tools/test_ppu_lift.py
 @@ -42,7 +42,7 @@ sys.path.insert(0, TOOLS)
@@ -944,7 +944,44 @@ index 096fc3a..21d4948 100644
  
  MASK64 = (1 << 64) - 1
  MASK32 = (1 << 32) - 1
-@@ -804,8 +804,26 @@ def check_barrier_lowering():
+@@ -696,12 +696,11 @@ build_vcases()
+ 
+ # ---------------------------------------------------------------------------
+ # Decode/lift-only checks: FPSCR bit ops (mtfsb0/mtfsb1/mtfsfi) and the
+-# VRSAVE mfspr/mtspr pair. Their correct lift is a leading "/* ... */"
+-# comment (a visible no-op, since FPSCR/VRSAVE are unmodeled), which is
+-# indistinguishable from an unhandled instruction to the CASES driver above
+-# (its "code.startswith('/*')" skip heuristic would drop them from the
+-# generated C file either way), so verify them here directly against
+-# ppu_disasm.decode and PPULifter._translate instead.
++# VRSAVE mfspr/mtspr pair, verified directly against ppu_disasm.decode and
++# PPULifter._translate. These used to expect a "/* ... unmodeled */" no-op;
++# the lifter now models both registers (ppu_mtfsb/ppu_mtfsf keep FPSCR with
++# its summary bits; VRSAVE is plain 32-bit state, a read returns what was
++# written), so the expectations follow the lowering it emits.
+ # ---------------------------------------------------------------------------
+ 
+ def check_decode_and_lift():
+@@ -732,13 +731,13 @@ def check_decode_and_lift():
+             return
+         print(f"[fpscr/vrsave] ok {label}: {insn.mnemonic} {insn.operands} -> {code}")
+ 
+-    check("mtfsb0", fp_x_form(70, 5), "mtfsb0", code_substr="unmodeled")
+-    check("mtfsb1", fp_x_form(38, 5), "mtfsb1", code_substr="unmodeled")
+-    check("mtfsfi", fp_x_form(134, 5), "mtfsfi", code_substr="unmodeled")
++    check("mtfsb0", fp_x_form(70, 5), "mtfsb0", code_substr="ppu_mtfsb(ctx, 5, 0)")
++    check("mtfsb1", fp_x_form(38, 5), "mtfsb1", code_substr="ppu_mtfsb(ctx, 5, 1)")
++    check("mtfsfi", fp_x_form(134, 5), "mtfsfi", code_substr="ppu_mtfsf(ctx, 0x40u, 0x00000000u)")
+     check("mfspr VRSAVE", spr_form(339, 3, 256), "mfspr",
+-          operand_substr="VRSAVE", code_substr="ctx->gpr[3] = 0")
++          operand_substr="VRSAVE", code_substr="ctx->gpr[3] = ctx->vrsave")
+     check("mtspr VRSAVE", spr_form(467, 3, 256), "mtspr",
+-          operand_substr="VRSAVE", code_substr="unmodeled")
++          operand_substr="VRSAVE", code_substr="ctx->vrsave = (uint32_t)ctx->gpr[3]")
+ 
+     n_ok = 5 - fails[0]
+     print(f"[fpscr/vrsave] {n_ok} checks passed, {fails[0]} FAILED")
+@@ -804,8 +803,26 @@ def check_barrier_lowering():
  # C driver generation
  # ---------------------------------------------------------------------------
  
@@ -972,7 +1009,7 @@ index 096fc3a..21d4948 100644
      dummy = LiftedFunction(name="conf", start_addr=0, end_addr=0x10000)
      pre = lifter._preamble_lines()
      # Replace the generated-header include with the real (small) context
-@@ -879,6 +897,8 @@ static void check_fpr(const char* name, int reg, uint64_t got, uint64_t want) {
+@@ -879,6 +896,8 @@ static void check_fpr(const char* name, int reg, uint64_t got, uint64_t want) {
  #include <stdlib.h>   /* MSVC _byteswap_* */
  static uint8_t g_vm_stub[65536];
  extern "C" { uint8_t* vm_base = g_vm_stub; }
@@ -981,7 +1018,7 @@ index 096fc3a..21d4948 100644
  #define VMOFF(a) ((uint32_t)(a) & 0xFFFFu)
  /* Trap guard. A "may_trap" case exists to prove lifted code does NOT fault --
   * e.g. divw by zero must be lowered to a defined result, not a hardware trap.
-@@ -930,6 +950,7 @@ extern "C" void vm_write32(uint64_t a, uint32_t v) { v = CONF_BSWAP32(v); memcpy
+@@ -930,6 +949,7 @@ extern "C" void vm_write32(uint64_t a, uint32_t v) { v = CONF_BSWAP32(v); memcpy
  extern "C" uint64_t vm_read64(uint64_t a) { uint64_t v; memcpy(&v, g_vm_stub + VMOFF(a), 8); return CONF_BSWAP64(v); }
  extern "C" void vm_write64(uint64_t a, uint64_t v) { v = CONF_BSWAP64(v); memcpy(g_vm_stub + VMOFF(a), &v, 8); }
  """)
@@ -989,7 +1026,7 @@ index 096fc3a..21d4948 100644
      out.append("int main(void) {")
      out.append("    ppu_context* ctx = &g_ctx;")
      n_encoding_skipped = 0
-@@ -962,7 +983,7 @@ extern "C" void vm_write64(uint64_t a, uint64_t v) { v = CONF_BSWAP64(v); memcpy
+@@ -962,7 +982,7 @@ extern "C" void vm_write64(uint64_t a, uint64_t v) { v = CONF_BSWAP64(v); memcpy
                         f"memcpy(g_vm_stub + VMOFF(0x{addr:X}), _m, {len(blob)}); }}")
          for reg, bits in c["in_fpr"].items():
              out.append(f"      {{ uint64_t _b = 0x{bits:016X}ULL; memcpy(&ctx->fpr[{reg}], &_b, 8); }}")
@@ -998,7 +1035,7 @@ index 096fc3a..21d4948 100644
          for reg, val, mask in c["expects"]:
              body.append(f'        check_reg("{nm}", {reg}, ctx->gpr[{reg}], '
                          f"0x{val:016X}ULL, 0x{mask:016X}ULL);")
-@@ -1018,7 +1039,7 @@ extern "C" void vm_write64(uint64_t a, uint64_t v) { v = CONF_BSWAP64(v); memcpy
+@@ -1018,7 +1038,7 @@ extern "C" void vm_write64(uint64_t a, uint64_t v) { v = CONF_BSWAP64(v); memcpy
              vc_hex = ", ".join(f"0x{b:02X}" for b in c["vc_bytes"])
              out.append(f"      {{ uint8_t _vc[16] = {{ {vc_hex} }}; "
                          f"memcpy(&ctx->vr[{c['vc_reg']}], _vc, 16); }}")
@@ -1007,7 +1044,7 @@ index 096fc3a..21d4948 100644
          out.append(f"      {{ uint8_t _want[16] = {{ {want_hex} }}; "
                      f'check_vr("{nm}", (const uint8_t*)&ctx->vr[{c["vd_reg"]}], _want); }}')
          out.append("    }")
-@@ -1049,7 +1070,7 @@ extern "C" void vm_write64(uint64_t a, uint64_t v) { v = CONF_BSWAP64(v); memcpy
+@@ -1049,7 +1069,7 @@ extern "C" void vm_write64(uint64_t a, uint64_t v) { v = CONF_BSWAP64(v); memcpy
                                 "g_vm_stub[0x220+k] = (uint8_t)(0xA0+k); }")
                      out.append(f"      ctx->gpr[0]=0x1000; ctx->gpr[3]=0x200; "
                                 f"ctx->gpr[4]={ea if ra == 0 else ea-0x200};")
@@ -1016,7 +1053,7 @@ index 096fc3a..21d4948 100644
                      if load:
                          want = ",".join(str(0xA0+lane+k) for k in range(width))
                          out.append(f"      const uint8_t want[] = {{{want}}};")
-@@ -1071,6 +1092,10 @@ extern "C" void vm_write64(uint64_t a, uint64_t v) { v = CONF_BSWAP64(v); memcpy
+@@ -1071,6 +1091,10 @@ extern "C" void vm_write64(uint64_t a, uint64_t v) { v = CONF_BSWAP64(v); memcpy
      return g_fail ? 1 : 0;
  }
  """)
@@ -1027,7 +1064,7 @@ index 096fc3a..21d4948 100644
      text = "\n".join(out)
      with open(path, "w") as f:
          f.write(text)
-@@ -1096,9 +1121,30 @@ extern "C" void vm_write64(uint64_t a, uint64_t v) { v = CONF_BSWAP64(v); memcpy
+@@ -1096,9 +1120,30 @@ extern "C" void vm_write64(uint64_t a, uint64_t v) { v = CONF_BSWAP64(v); memcpy
  
  # ---------------------------------------------------------------------------
  
@@ -1058,7 +1095,7 @@ index 096fc3a..21d4948 100644
      args = ap.parse_args()
  
      decode_ok = check_decode_and_lift()
-@@ -1108,11 +1154,14 @@ def main():
+@@ -1108,11 +1153,14 @@ def main():
      cpath = os.path.join(ROOT, "scratch", "ppu_conformance.cpp")   # preamble is C++ (extern "C")
      epath = os.path.join(ROOT, "scratch", "ppu_conformance.exe"
                           if os.name == "nt" else "ppu_conformance")
@@ -1075,7 +1112,7 @@ index 096fc3a..21d4948 100644
  
      # The generated driver has to be COMPILED AND RUN to be worth anything:
      # decoding and lifting alone never executes a single lifted statement, and
-@@ -1132,7 +1181,11 @@ def main():
+@@ -1132,7 +1180,11 @@ def main():
              f.write("@echo off\n")
              f.write(f'call "{vcvars}" >nul 2>nul\n')
              f.write(f'cd /d "{ROOT}"\n')
@@ -1088,7 +1125,7 @@ index 096fc3a..21d4948 100644
              f.write("if errorlevel 1 exit /b 2\n")
              f.write(f'"{epath}" >> "{log}" 2>&1\n')
          rc = subprocess.run(["cmd", "/c", bat], cwd=ROOT).returncode
-@@ -1155,7 +1208,7 @@ def main():
+@@ -1155,7 +1207,7 @@ def main():
                  with open(log, "a") as f:
                      rc = subprocess.run([epath], cwd=ROOT, stdout=f,
                                          stderr=subprocess.STDOUT).returncode

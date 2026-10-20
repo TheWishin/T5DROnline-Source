@@ -1876,11 +1876,11 @@ line bit), every load two gates; the VMX float helpers are out-of-line calls.
 - **Instruction by instruction** (`tools/test_ppu_lift.py --regpromo`): every
   conformance case runs as a promoted function of its own (1,174 of 1,202
   cases; 28 vector-only cases touch no promoted register): 1,533 checks, 0
-  failed, as without. The suite now compiles with clang-cl and gets the raw
-  access macros it was missing: plain `cl` cannot compile the lifter's FP
-  helpers since patch 0032, so it had been compiling nothing; 5 stale
-  FPSCR/VRSAVE expectations in its decode check fail before and after (the
-  lifter models those registers now).
+  failed, as without. The suite runs again: it compiles with clang-cl and
+  gets the raw access macros it was missing (plain `cl` cannot compile the
+  lifter's FP helpers since patch 0032, so it had been compiling nothing),
+  and its 5 FPSCR/VRSAVE decode checks expect the lowering the lifter has
+  emitted since it models those registers (they expected no-ops).
 - **Online, old build against new build** (`tools/cross_build_test.py`, RTT
   100 +-5 ms, 3 % loss, three matches per mode, the pool stage first; final
   state hash of every frame compared, built-in sync check, result files):

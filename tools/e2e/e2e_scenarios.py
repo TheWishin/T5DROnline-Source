@@ -387,6 +387,18 @@ def _rated_once(ctx, a, b, mids, ends, label):
                   last is not None and whole is not None and abs(last - whole) < 0.01, f"game {last}, set {whole}")
 
 
+def _server_gap(ctx, mid, nxt):
+    """Seconds from match `mid` confirmed to match `nxt` starting, by the lobby server's log, or None."""
+    import datetime as _dt
+    text = ctx.server.log_text() if ctx.server is not None else ""
+
+    def at(pattern):
+        m = re.search(r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d,\d{3}) .*" + pattern, text, re.M)
+        return _dt.datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S,%f") if m else None
+    t0, t1 = at(rf"match {mid} confirmed"), at(rf"match {nxt} starts")
+    return (t1 - t0).total_seconds() if t0 and t1 else None
+
+
 def _next_set_game(ctx, a, b, mid, label):
     """Between two games: a countdown and "Leave set", no rematch vote; the next game starts by itself."""
     t_res = max(p.matches[mid].get("result") or 0 for p in (a, b))
@@ -406,8 +418,13 @@ def _next_set_game(ctx, a, b, mid, label):
         raise Abort("the set's next game did not start")
     nxt = latest(a, "match_start", since)["match"]
     dt = a.matches[nxt]["started"] - t_res
+    srv = _server_gap(ctx, mid, nxt)
+    how = "launcher events"
+    if srv is not None:
+        # the lobby's own clock (its log): under load the runner may read the result late and the start on time
+        dt, how = srv, "lobby log"
     ctx.check(f"{label}: started {dt:.1f} s after the result (countdown {SET_NEXT:g} s)", SET_NEXT - 1.0 <= dt <= SET_NEXT + 12,
-              f"{dt:.1f} s")
+              f"{dt:.1f} s ({how})")
     ctx.check(f"{label}: continues in the running games", a.matches[nxt].get("cont"), a.matches[nxt].get("cont"))
     if not ((a.matches[mid].get("fight") or {}).get("pick") and getattr(ctx, "manual_pick", False)):
         # (game 1 picked in the game by the scenario: the lock is what it picked, not the lobby's fallback --

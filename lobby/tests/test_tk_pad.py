@@ -390,5 +390,27 @@ class PadStickTest(PadTabBase):
         self.pump(lambda: self.status_of("tabuser") == "queue")
 
 
+@unittest.skipIf(tk is None, "no tkinter")
+class PadWindowHandleTest(TkBase):
+    """The tab's own foreground check (no test hook): the launcher window's handle is looked up again when Tk
+    shows the window -- before that, Tk on Windows has only its inner window, never the foreground window
+    (the Controls window's 1.1.0-1.1.3 bug; tests/test_controls_ui.py ForegroundHandleTest)."""
+    INNER, WRAPPER = 0xC02A6, 0xE0A52
+
+    def test_the_pad_reads_once_the_launcher_is_shown(self):
+        from unittest import mock
+        shown = [False]
+        pad = FakePad()
+        self.tab.pad = None
+        with mock.patch.object(padnav, "toplevel_hwnd", lambda w: self.WRAPPER if shown[0] else self.INNER), \
+                mock.patch.object(padnav, "foreground_window", lambda: self.WRAPPER):
+            nav = self.tab.start_pad([pad], clock=FakeClock(), thread=False)
+            self.assertIsInstance(nav.foreground, padnav.ForegroundCheck)
+            self.assertFalse(nav.foreground_now())
+            shown[0] = True
+            self.root.event_generate("<Map>")
+            self.assertTrue(nav.foreground_now())
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1948,7 +1948,7 @@ class OnlineTab:
             if not sources:                 # (not Windows, no scripted pad)
                 return None
         if foreground is None:
-            foreground = padnav.window_foreground_check(padnav.toplevel_hwnd(self.parent.winfo_toplevel()))
+            foreground = padnav.ForegroundCheck(self.parent)
         settings = self.app.settings
         files = padmap.ControlsFile(lambda: _controls_path_for(settings))
         self.pad = padnav.PadNav(sources, controls=files, foreground=foreground, **({"clock": clock} if clock else {}))

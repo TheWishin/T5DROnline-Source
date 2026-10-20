@@ -1,8 +1,8 @@
 diff --git a/libs/video/cellGcmSys.c b/libs/video/cellGcmSys.c
-index b34bdc2..4b55d7a 100644
+index 08c82ea..4b5e6b2 100644
 --- a/libs/video/cellGcmSys.c
 +++ b/libs/video/cellGcmSys.c
-@@ -2217,6 +2217,45 @@ static void gcm_rsx_process_fifo_unlocked(void)
+@@ -2266,6 +2266,45 @@ static void gcm_rsx_process_fifo_unlocked(void)
                        }
                    }
                    s_fifo_getoff += 4 + count * 4;

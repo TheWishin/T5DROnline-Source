@@ -1,8 +1,8 @@
 diff --git a/libs/video/cellGcmSys.c b/libs/video/cellGcmSys.c
-index 4b55d7a..505fd4d 100644
+index 4b5e6b2..604551b 100644
 --- a/libs/video/cellGcmSys.c
 +++ b/libs/video/cellGcmSys.c
-@@ -669,8 +669,10 @@ void cellGcmSetWaitFlip(void)
+@@ -708,8 +708,10 @@ void cellGcmSetWaitFlip(void)
      }
      const ULONGLONG t_end = GetTickCount64() + 64;
      HANDLE ev = (HANDLE)gcm_flip_event();
@@ -13,7 +13,7 @@ index 4b55d7a..505fd4d 100644
      s_flip_status = CELL_GCM_FLIP_STATUS_DONE;
  }
  
-@@ -757,6 +759,7 @@ static int gcm_usleep_flip_wait(uint64_t usec)
+@@ -796,6 +798,7 @@ static int gcm_usleep_flip_wait(uint64_t usec)
      u32 waiting = CELL_GCM_FLIP_STATUS_WAITING;
      if (s_flip_status != waiting) return 1;            /* done meanwhile: the poll sees it now */
      const ULONGLONG t_end = GetTickCount64() + 20;
@@ -21,7 +21,7 @@ index 4b55d7a..505fd4d 100644
      InterlockedIncrement(&s_flip_waiters);
      while (s_flip_status == waiting) {
          const ULONGLONG now = GetTickCount64();
-@@ -764,6 +767,7 @@ static int gcm_usleep_flip_wait(uint64_t usec)
+@@ -803,6 +806,7 @@ static int gcm_usleep_flip_wait(uint64_t usec)
          WaitOnAddress((volatile VOID*)&s_flip_status, &waiting, sizeof waiting, (DWORD)(t_end - now));
      }
      InterlockedDecrement(&s_flip_waiters);
@@ -29,7 +29,7 @@ index 4b55d7a..505fd4d 100644
      return 1;
  }
  static int gcm_flip_wait_on(void)
-@@ -773,9 +777,18 @@ static int gcm_flip_wait_on(void)
+@@ -812,9 +816,18 @@ static int gcm_flip_wait_on(void)
      return on;
  }
  
@@ -48,15 +48,15 @@ index 4b55d7a..505fd4d 100644
      if (gcm_flip_wait_on()) {
          if (!g_host_sched_usleep_hook) g_host_sched_usleep_hook = gcm_usleep_flip_wait;
          t_flip_polled = s_flip_status == CELL_GCM_FLIP_STATUS_WAITING;
-@@ -859,6 +872,7 @@ void cellGcm_request_tick(void)
- void ppu_gcm_pump(void)
- {
+@@ -905,6 +918,7 @@ void ppu_gcm_pump(void)
+     if (!*(volatile LONG*)&s_gcm_pending && !*(volatile LONG64*)&s_user_pending) return;
+ #endif
      if (!GCM_PUMP_TRY_ENTER()) return;
 +    host_sched_gcm_handler(1);   /* patch 0063: what the handlers post is the renderer's */
      long p = (long)GCM_PENDING_TAKE();
      u64 user = GCM_USER_PENDING_TAKE();
      /* GCM_PUMP_DBG=1: how often each guest handler is actually delivered. */
-@@ -894,6 +908,7 @@ void ppu_gcm_pump(void)
+@@ -943,6 +957,7 @@ void ppu_gcm_pump(void)
              g_ps3_guest_caller(s_user_handler_opd, (uint64_t)cmd, 0, 0, 0, 0, 0, 0, 0);
          rsx_pf_stamp(RSX_PF_USERCMD_QPC);
      }
@@ -706,7 +706,7 @@ index 31b7a69..2aca3c2 100644
  }
  #endif
 diff --git a/runtime/ppu/tests/boot_main.cpp b/runtime/ppu/tests/boot_main.cpp
-index e755453..4dc7b56 100644
+index e8db428..b555dea 100644
 --- a/runtime/ppu/tests/boot_main.cpp
 +++ b/runtime/ppu/tests/boot_main.cpp
 @@ -441,8 +441,25 @@ extern "C" unsigned ppu_boot_frames_presented(void) { return (unsigned)g_frames_

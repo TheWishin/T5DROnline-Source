@@ -37,7 +37,7 @@ class RoomsUI:
         self.code_var = None      # the invite code field (empty until Copy invite code)
         self.code_entry = None
         self.window = None        # Create room / Room settings (one at a time)
-        self._shown = None        # the room id the code field shows a code of
+        self._shown = None        # (room id, code) the code field shows
 
     # ------------------------------------------------------------------ helpers
     @property
@@ -128,8 +128,8 @@ class RoomsUI:
                 self.frame.grid(row=2, column=0, sticky="we", pady=(self.px(8), 0))
         except tk.TclError:
             return
-        if self._shown is not None and (self._shown != r.get("id") or not self.client.room_code):
-            self.code_var.set("")
+        if self._shown is not None and self._shown != (r.get("id"), self.client.room_code):
+            self.code_var.set("")                     # (another room, or a new code: shown again on the next press)
             self._shown = None
         self.text.set(self.summary(r))
 
@@ -240,7 +240,7 @@ class RoomsUI:
         if not code or r is None:
             return
         self.code_var.set(code)
-        self._shown = r.get("id")
+        self._shown = (r.get("id"), code)
         try:
             self.code_entry.focus_set()
             self.code_entry.selection_range(0, "end")

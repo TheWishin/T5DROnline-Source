@@ -115,6 +115,15 @@ class TkRoomsTest(TkBase):
         self.assertEqual(str(tab.rooms_ui.code_entry.cget("exportselection")), "0")
         self.assertEqual(self._clip, [], "nothing went to the clipboard")
         self.assertIn("Ctrl+C", tab.status_var.get())
+        # a new code (Room settings): the field empties; the next press shows the new one
+        old = tab.client.room_code
+        tab.actions["room_settings"].invoke()
+        tab.rooms_ui.window.code_button.invoke()
+        self.pump(lambda: tab.client.room_code != old and tab.rooms_ui.code_var.get() == "")
+        tab.rooms_ui.close_window()
+        tab.actions["room_code"].invoke()
+        self.assertEqual(tab.rooms_ui.code_var.get(), tab.client.room_code)
+        self.assertEqual(self._clip, [])
         # a friend types the code into Join room with nothing selected
         guest = self.peer("Guesty")
         guest.join_room(code=tab.client.room_code)

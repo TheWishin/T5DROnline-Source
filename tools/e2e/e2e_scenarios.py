@@ -368,8 +368,12 @@ def _set_of(p, mid):
     return (p.matches.get(mid) or {}).get("set") or {}
 
 
-def _set_game(ctx, a, b, mid, label, timeout=240):
+def _set_game(ctx, a, b, mid, label, timeout=None):
     """Play one game of a ranked set to its result; no game of a set changes a rating on its own."""
+    if timeout is None:
+        # 240 s for a game of one round to win; run.py --rounds 3: a bot set's 3-0 took 274 s once (the planned
+        # loser stands still, the winner's random attacks take a while) -- 120 s per round to win, 240 at least
+        timeout = max(240, 120 * int(ctx.run.rounds or 1))
     wait_fight(ctx, mid, (a, b), timeout=150)
     wait_results(ctx, mid, (a, b), timeout)
     return match_row(ctx, mid, (a, b), "confirmed", label)

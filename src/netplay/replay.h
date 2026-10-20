@@ -56,6 +56,7 @@ bool recording();                                   /* this session is being rec
 void rec_session_begin(int slot, const char* build, uint32_t session_seed);   /* netplay_core configure() (host/join) */
 void rec_session_end(const char* why);              /* the session is over: the file is written now (this thread) */
 void rec_start(uint32_t match_seed, bool rollback, int delay);   /* lockstep frame 0 (t5_hooks) */
+void rec_session_known(uint32_t match_seed, bool rollback, int delay);   /* the handshake (netplay_core): the live SESSION */
 void rec_rollback_delay(int d);                     /* the rollback loop's input delay for the session */
 void rec_input(uint32_t f, const np::PadInput& p1, const np::PadInput& p2);   /* frames in order, from 0 */
 void rec_hash(uint32_t f, uint64_t h);              /* the state hash the peers compare for frame f */
@@ -95,5 +96,17 @@ void play_finish(const char* why);                  /* write T5_REPLAY_RESULT, l
 void play_fail(const char* path, const char* why);  /* the file could not be played: T5_REPLAY_RESULT says why */
 uint32_t play_target();                             /* the match being watched (1-based) */
 uint32_t play_match_index();                        /* matches begun so far in the playback */
+
+/* ---- spectating (docs/SPECTATE.md) ----------------------------------------
+ * Players: T5_REPLAY_LIVE=<file> (the session's environment) appends the session
+ * to that file while it is played -- the same data as the replay, as records
+ * (replay.cpp "the live stream"); the writer thread does it, the frame never waits.
+ * Spectators: T5_REPLAY_FILE=<that file, growing> plays it like a replay; the
+ * frame waits for the data (a buffer of T5_REPLAY_LIVE_BUFFER frames, default 120),
+ * hashes and results are compared when the recorded ones come. */
+bool play_live();                                   /* the playback reads a live stream */
+/* every playback frame boundary (main thread), after play_frame(): 0 = the viewer
+ * quit while it waited (quit() polled), 1 = go on, 2 = go on after a wait */
+int  play_live_wait(uint32_t p, bool (*quit)());
 
 } // namespace rp

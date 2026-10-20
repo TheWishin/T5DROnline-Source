@@ -61,7 +61,7 @@ from .client import LobbyClient
 from .i18n import N_, stamp, t, translate_message
 from .match_driver import MatchDriver, fps_from_logs, game_supports_pick
 from .proto import DEFAULT_PORT, LobbyError
-from . import theme, tk_tour, tk_views, winfront
+from . import theme, tk_spectate, tk_tour, tk_views, winfront
 from .ranks import record_label as _record
 
 AVAILABLE = True
@@ -212,6 +212,7 @@ class OnlineTab:
         self.bar_spec = []               # (button, text, controller button) of the bar's buttons
         self._pad_gen = -1
         self._pad_until = 0.0            # no controller action before this (pad clock)
+        self.spec = tk_spectate.Spectating(self)   # watching live matches (docs/SPECTATE.md)
         self._bar_t = -1e9               # when the question bar's buttons last changed (pad clock): BAR_ARM_S
         self.tours = tk_tour.TourController(self)    # tournaments: the page, the calls (docs/TOURNAMENTS.md)
         self._build_ui()
@@ -318,7 +319,8 @@ class OnlineTab:
             "challenge": me and st in ("idle", "queue") and not busy,
         }
         for k, b in self.actions.items():
-            b.configure(state="normal" if on[k] else "disabled")
+            b.configure(state="normal" if on.get(k) else "disabled")
+        self.spec.set_actions(busy)
         connected = self.client is not None
         for b in (self.b_guest, self.b_login, self.b_register, self.b_forgot):
             b.configure(state="disabled" if connected else "normal")
@@ -472,6 +474,7 @@ class OnlineTab:
         self._presence_tick()
         self._show_notice()
         self._pad_tick()
+        self.spec.poll()
         self.view.tick()
         try:
             self._after = self.parent.after(100, self._poll)
@@ -515,7 +518,9 @@ class OnlineTab:
                         sets=bool(self.cfg.get("sets", True)),   # online.json "sets": false: no ranked sets
                         # launcher Settings -> "Open the game's port on my router" (docs/NETPLAY.md)
                         port_mapping=bool(getattr(self.app, "settings", {}).get("router_ports", True)),
-                        tournaments=True)
+                        tournaments=True,
+                        **self.spec.client_kw())
+        self.spec.new_client(c)
         # this PC's game speed from its last online match (the lobby warns / keeps slow PCs out of ranked);
         # before the first one, from the newest game log (offline play)
         try:
@@ -1010,6 +1015,7 @@ class OnlineTab:
                 b.configure(state="normal" if on.get(key) else "disabled")
             except tk.TclError:
                 pass
+        self.spec.set_actions(busy)
         text = t("Cancel the invite") if pending else t("Invite to a match")
         try:
             if str(acts["invite"].cget("text")) != text:
@@ -1299,6 +1305,8 @@ class OnlineTab:
         c = self.client
         if kind.startswith("tour_") or kind == "match_found":
             self.tours.on_event(ev)                        # tournaments (tk_tour.py)
+        if self.spec.on_event(ev):
+            return
         if kind == "lobby_state":
             self._fill_lists(ev)
             self._show_me()

@@ -460,6 +460,16 @@ update, in one transaction with the version number. A database from a newer serv
 server still opens an upgraded database (tested), so going back to an older release works. Deleting an account
 (admin tool) deletes its friends and requests.
 
+## Spectating
+
+Friends of a player in a match, and anybody for a room's match, can watch it live in their own game, a few
+seconds behind (launcher 1.1.3, cap and feature `spectate`): one player's launcher sends the session's live
+stream (the replay's data) while somebody watches, the server keeps it from the session's start and sends it
+to every spectator. Both players must allow it (Settings -> Spectators; ranked off by default). Messages
+`spec_prefs`, `watch`, `unwatch`, `spec_data`, `spec_fail` (client) and `watching`, `spec_want`, `spec_stop`,
+`spec_data`, `spec_end`, `spectators` (server); `match_start.stream`, friends' `watch`, rooms' `watch`. All of
+it, with the limits and the reasons: [SPECTATE.md](SPECTATE.md).
+
 ## Discord Rich Presence
 
 Optional, **off by default**: launcher **Settings -> Discord -> "Show what I play in my Discord status"**. Then the
@@ -518,7 +528,7 @@ Client to server:
 
 | t | fields | reply / effect |
 |---|---|---|
-| `hello` | `proto`, `client`, `build: {elf, code, net, release, id}`, `caps` (optional: `delta`, `blind_ready`, `notices`, `ingame_pick`, `sets`, `nat2`, `relays`, `friends`, `tournaments`) | `welcome {server, proto, udp_port, udp_port2, build, accounts, guests, motd, ip, time, ..., caps, relay_only}`; with the `relays` cap also `relays [{id, name, host, port}]` (regional relays); with the `friends` cap also `friend_limits {max, per_day, invite_seconds}`; with the `tournaments` cap also `tournaments {noshow, organizers}` (the `tour_*` messages: docs/TOURNAMENTS.md "Protocol") |
+| `hello` | `proto`, `client`, `build: {elf, code, net, release, id}`, `caps` (optional: `delta`, `blind_ready`, `notices`, `ingame_pick`, `sets`, `nat2`, `relays`, `friends`, `tournaments`, `spectate`) | `welcome {server, proto, udp_port, udp_port2, build, accounts, guests, motd, ip, time, ..., caps, relay_only}`; with the `relays` cap also `relays [{id, name, host, port}]` (regional relays); with the `friends` cap also `friend_limits {max, per_day, invite_seconds}`; with the `tournaments` cap also `tournaments {noshow, organizers}` (the `tour_*` messages: docs/TOURNAMENTS.md "Protocol") |
 | `login` | `mode: guest\|account\|register\|resume`, `name`, `password`, `token` | `login_ok {you, token, resumed?}` |
 | `ping` | | `pong {time}` (keepalive; silent clients are dropped after 90 s) |
 | `udp_rtt` | `ms` | the client's UDP ping to the server (lobby list, matchmaking) |

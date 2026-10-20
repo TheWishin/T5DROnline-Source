@@ -49,6 +49,7 @@ from ..proto import LobbyError
 from .config import Config
 from .ratelimit import BanList, KeyedBuckets, TokenBucket
 from .relays import MAIN as RELAY_MAIN, MAX_RELAYS, RelayPool
+from .spectating import SpectateMixin
 from .store import COUNTED, SET_COUNTED, Store, check_password, hash_password
 from .udp import UdpService
 
@@ -57,12 +58,12 @@ log = logging.getLogger("t5lobby")
 SERVER_NAME = "t5lobby/0.2"
 # optional protocol features a client may announce in hello
 CAPS = frozenset(("delta", "blind_ready", "notices", "sets", "ingame_pick", "nat2", "relays", "friends", "old_stages",
-                  "tournaments"))
+                  "tournaments", "spectate"))
 QUEUE_MODES = ("quick", "ranked")
 # What this server supports beyond protocol 1's base (the client checks before using them).
 FEATURES = ["ranks", "sessions", "recovery", "passwd", "profile", "history", "chars", "integrity", "rematch",
             "blind_ready", "blocks", "strict", "set_lock", "lag_check", "notices", "ranked_sets", "ingame_pick",
-            "nat2", "relays", "friends", "tournaments"]
+            "nat2", "relays", "friends", "tournaments", "spectate"]
 REPORT_SOURCES = ("game", "manual", "quit", "crash", "disconnect")
 DAY = 86400.0
 
@@ -116,6 +117,9 @@ class Player:
         self.set = None                 # the GameSet this player is in (games in a row with one opponent)
         self.friends = set()            # account ids of this account's friends (guests have none)
         self.last_invite = 0.0
+        self.spec_allow = False         # spectators allowed (spec_prefs; never sent by a client without the cap)
+        self.spec_ranked = False        # ... in ranked matches too
+        self.watching = None            # the spectating.Stream this player watches
         if account:
             self.rating = glicko.Rating(account["rating"], account["rd"], account["vol"])
             self.record = [account["wins"], account["losses"], account["draws"]]
@@ -162,12 +166,14 @@ class Room:
         self.match = None
         self.set = None                 # the room's running set (rematches in the room keep it)
         self.build_id = owner.build_id
+        self.watch = False              # its match can be watched (spectating.py, set before each lobby list)
 
     def public(self):
         return {"id": self.id, "name": self.name, "owner": self.owner.brief(),
                 "members": [p.id for p in self.members], "ranked": self.ranked,
                 "build": self.build_id,
-                "status": "playing" if self.match else ("full" if len(self.members) >= 2 else "open")}
+                "status": "playing" if self.match else ("full" if len(self.members) >= 2 else "open"),
+                "watch": self.watch}
 
 
 class _ConnOf:
@@ -330,6 +336,7 @@ class Match:
         self.lag_verdict = None              # the lag check's verdict (a ranked set may be left for free after "more_lag")
         self.set_number = None               # its number in a rated set (1, 2, 3; a replay keeps it)
         self.lost_lobby = [False, False]     # side -> its lobby connection dropped while the match ran
+        self.stream_id = self.id             # the live stream of its netplay session (a continued rematch: the first's)
 
     def side(self, player):
         return 0 if self.players[0] is player else 1 if self.players[1] is player else None
@@ -469,7 +476,7 @@ class Conn:
 
 # =============================================================================== server
 
-class LobbyServer:
+class LobbyServer(SpectateMixin):
     def __init__(self, cfg=None):
         self.cfg = cfg or Config.from_env()
         self.store = Store(self.cfg.db)
@@ -481,6 +488,7 @@ class LobbyServer:
         self.by_name = {}          # lower name -> Player
         self.by_account = {}       # account id -> Player (online or resumable)
         self.invites = {}          # invite id -> Invite (friends)
+        self.streams = {}          # stream id -> spectating.Stream (live matches being watched)
         self.retry_after = {}      # (kind, asker, asked) -> monotonic time a new invite / challenge may go again
         self.friend_req_addr = KeyedBuckets(rate=max(1, self.cfg.friend_requests_address) / DAY,
                                             burst=max(1, self.cfg.friend_requests_address))   # per internet address
@@ -1162,6 +1170,7 @@ class LobbyServer:
         asyncio.get_running_loop().call_soon(self._send_active_notices, p)
         asyncio.get_running_loop().call_soon(self._send_friends, p)
         asyncio.get_running_loop().call_soon(self.tours.player_online, p)
+        asyncio.get_running_loop().call_soon(self._spec_player_back, p)
         m = p.match
         if m is not None and m.state == "playing":
             side = m.side(p)
@@ -1314,6 +1323,7 @@ class LobbyServer:
         """Connection gone (or logout). Keep the player resumable while a match needs them."""
         p.conn = None
         p.dropped_at = time.monotonic()
+        self._spec_player_gone(p)
         self._leave_queue(p)
         self._leave_room(p)
         for c in [c for c in self.challenges.values() if p in (c.src, c.dst)]:
@@ -1841,6 +1851,7 @@ class LobbyServer:
         for side, p in enumerate(m.players):
             p.match = m
             p.status = "match"
+            self._spec_new_match(p)
             # A queue match between strangers is blind: ping and rules first, names and sides after both accepted.
             m.blind[side] = (origin == "queue" and not skip_ready and self.cfg.blind_ready
                              and "blind_ready" in getattr(p.conn, "caps", ()))
@@ -1865,6 +1876,7 @@ class LobbyServer:
             m.ready = [True, True]
             m.results = rematch_of.results
             m.continued = True
+            m.stream_id = rematch_of.stream_id     # the same netplay session: the same live stream
             if rematch_of.relay is not None:
                 m.relay, m.relay_id = rematch_of.relay, rematch_of.relay_id
                 m.relay_node, m.relay_info = rematch_of.relay_node, rematch_of.relay_info
@@ -2476,6 +2488,7 @@ class LobbyServer:
         for side, p in enumerate(m.players):
             p.status = "playing"
             self._send_match_start(m, side)
+        self._spec_match_started(m)
         self._timer(m, "match", self.cfg.match_timeout, self._match_timeout, m)
         self._save(m, "playing")
         if m.set is not None and m.set.rated:
@@ -2505,6 +2518,8 @@ class LobbyServer:
                 "start_time": int(m.started),          # PS3_FIXED_TIME: the same game clock on both PCs
                 "players": [q.brief() for q in m.players],
                 "continue": m.continued, "rematch_of": m.rematch_of,
+                # spectating: the live stream's id (the session's first match) -- the game writes it to a file
+                **({"stream": m.stream_id} if self._can(p, "spectate") else {}),
                 "min_seconds": self.cfg.min_match_seconds,
                 "set": m.set.info() if m.set is not None else None})
 
@@ -3156,6 +3171,8 @@ class LobbyServer:
         status, activity = self._presence_of(q)
         d = {"name": row["name"], "status": status, "activity": activity, "since": row["since"],
              "last_seen": row["last_seen"], "invite": self._invitable(viewer, q)}
+        if self._can(viewer, "spectate"):
+            d["watch"] = self._spec_watch_flag(viewer, q)
         if q is not None:
             d["rating"] = round(q.rating.r)
             d.update(q.rank_info())
@@ -3338,7 +3355,7 @@ class LobbyServer:
         for q in self.players.values():
             if q.account_id is not None and q.online:
                 st, act = self._presence_of(q)
-                now[q.account_id] = (st, act, q.name, q.build_id, self._can(q, "friends"))
+                now[q.account_id] = (st, act, q.name, q.build_id, self._can(q, "friends"), self._spec_watchable(q.match))
         old = self._presence
         changed = [aid for aid, v in now.items() if old.get(aid) != v] + [aid for aid in old if aid not in now]
         self._presence = now
@@ -3352,7 +3369,8 @@ class LobbyServer:
             for w in watchers:
                 if aid in w.friends:
                     w.send({"t": "friend_status", "name": name, "status": st, "activity": act,
-                            "invite": self._invitable(w, q)})
+                            "invite": self._invitable(w, q),
+                            **({"watch": self._spec_watch_flag(w, q)} if self._can(w, "spectate") else {})})
 
     # ------------------------------------------------------------------ invites (friends)
     async def h_invite(self, conn, msg):
@@ -3941,6 +3959,7 @@ class LobbyServer:
     LEGACY_PLAYERS, LEGACY_ROOMS = 300, 100
 
     def _snapshot(self, full=False):
+        self._spec_refresh_rooms()
         players = [p.public() for p in self.players.values() if p.online]
         rooms = [r.public() for r in self.rooms.values()]
         if not full:
@@ -3949,6 +3968,7 @@ class LobbyServer:
                 "queue": {m: len(q) for m, q in self.queues.items()}}
 
     def _broadcast_lobby(self):
+        self._spec_refresh_rooms()
         players = {p.id: p.public() for p in self.players.values() if p.online}
         rooms = {r.id: r.public() for r in self.rooms.values()}
         queue = {m: len(q) for m, q in self.queues.items()}
@@ -4017,6 +4037,7 @@ class LobbyServer:
                 if m is None or m.state != "playing":
                     self.udp.close_relay(mid)
             self._expire_long_relays()
+            self._spec_tick()
             self.ip_connects.prune()
             self.login_fail.prune()
             self.registrations.prune()
@@ -4145,6 +4166,7 @@ class LobbyServer:
             "tls_handshakes": self.handshakes, "password_checks_waiting": self.pw_waiting,
             "draining": self.draining,
             "rooms": len(self.rooms),
+            "spectate": self.spectate_status(),
             "queue": {m: len(q) for m, q in self.queues.items()},
             "matches": {"running": sum(by_state.values()), "by_state": by_state},
             "relay": {"sessions": len(self.udp.relays), "max": self.cfg.max_relays,

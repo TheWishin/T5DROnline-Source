@@ -117,6 +117,25 @@ void set_col(np::PadInput& in, int c, uint8_t v)
     }
 }
 
+void put_match(std::vector<uint8_t>& b, const Match& m)
+{
+    put32(b, m.start); put32(b, m.end); put32(b, m.frames); put32(b, m.hash_frame); put32(b, m.desync);
+    put32(b, (m.have_result ? 1u : 0u) | (m.have_hash ? 2u : 0u) | (m.complete ? 4u : 0u));
+    for (int v : { m.ft.chr[0], m.ft.chr[1], m.ft.btn[0], m.ft.btn[1], m.ft.model[0], m.ft.model[1], m.ft.stage,
+                   m.ft.rounds, m.ft.pick, m.winner, m.score[0], m.score[1] })
+        put32(b, (uint32_t)v);
+    put64(b, m.hash);
+    putstr(b, m.ft.names[0]); putstr(b, m.ft.names[1]);
+    put32(b, m.ft.costumes ? 1u : 0u);     /* format 3: the custom costume blocks (both sides) */
+    if (m.ft.costumes) for (int s = 0; s < 2; s++) b.insert(b.end(), m.ft.cos[s], m.ft.cos[s] + kCostumeBlock);
+}
+
+void put_barrier(std::vector<uint8_t>& b, const Barrier& x)
+{
+    put32(b, x.kind); put32(b, x.f); put32(b, x.nf); put32(b, x.seed); put32(b, x.has_state ? 1u : 0u);
+    put64(b, x.clock); put32(b, x.c[0]); put32(b, x.c[1]); put32(b, x.c[2]);
+}
+
 /* the inputs of frame f for player p: Data's vectors (a loaded file) or the
  * recorder's chunks (Store below) */
 struct InputSource {
@@ -141,22 +160,9 @@ std::vector<uint8_t> to_binary(const Data& d, const InputSource& src)
     const uint32_t n = src.frames();
     put32(b, n); put32(b, d.hash_every); put32(b, d.last);
     put32(b, (uint32_t)d.matches.size());
-    for (const Match& m : d.matches) {
-        put32(b, m.start); put32(b, m.end); put32(b, m.frames); put32(b, m.hash_frame); put32(b, m.desync);
-        put32(b, (m.have_result ? 1u : 0u) | (m.have_hash ? 2u : 0u) | (m.complete ? 4u : 0u));
-        for (int v : { m.ft.chr[0], m.ft.chr[1], m.ft.btn[0], m.ft.btn[1], m.ft.model[0], m.ft.model[1], m.ft.stage,
-                       m.ft.rounds, m.ft.pick, m.winner, m.score[0], m.score[1] })
-            put32(b, (uint32_t)v);
-        put64(b, m.hash);
-        putstr(b, m.ft.names[0]); putstr(b, m.ft.names[1]);
-        put32(b, m.ft.costumes ? 1u : 0u);
-        if (m.ft.costumes) for (int s = 0; s < 2; s++) b.insert(b.end(), m.ft.cos[s], m.ft.cos[s] + kCostumeBlock);
-    }
+    for (const Match& m : d.matches) put_match(b, m);
     put32(b, (uint32_t)d.bars.size());
-    for (const Barrier& x : d.bars) {
-        put32(b, x.kind); put32(b, x.f); put32(b, x.nf); put32(b, x.seed); put32(b, x.has_state ? 1u : 0u);
-        put64(b, x.clock); put32(b, x.c[0]); put32(b, x.c[1]); put32(b, x.c[2]);
-    }
+    for (const Barrier& x : d.bars) put_barrier(b, x);
     put32(b, (uint32_t)d.hashes.size());
     for (const auto& h : d.hashes) { put32(b, h.first); put64(b, h.second); }
     for (int p = 0; p < 2; p++)
@@ -186,6 +192,47 @@ struct Reader {
     bool bytes(uint8_t* out, size_t len) { if (i + len > n) { bad = true; return false; } memcpy(out, p + i, len); i += len; return true; }
 };
 
+/* the playback's fight lines (df_fight.cpp): characters 0..35, stage -1 (random) or a stage id 0..34
+ * written into the game as it is -- anything else would hang or break the playback (a file, or a live
+ * stream from another player's launcher) */
+bool match_ok(const Match& m)
+{
+    return m.ft.chr[0] >= 0 && m.ft.chr[0] <= 35 && m.ft.chr[1] >= 0 && m.ft.chr[1] <= 35 && m.ft.stage >= -1 &&
+           m.ft.stage <= 34;
+}
+
+/* The playback indexes the two players by the slot and fills the input ring up to the delay
+ * (netplay_core.cpp): a damaged or hand-made file must not take either outside 0..1 / 0..30. */
+bool session_ok(int slot, int delay, int rb_delay)
+{
+    return slot >= 0 && slot <= 1 && delay >= 0 && delay <= kMaxDelay && rb_delay >= -1 && rb_delay <= kMaxDelay;
+}
+
+/* a match as put_match wrote it in replay format `ver` (a live stream's MATCH record: kVersion) */
+Match get_match(Reader& r, uint32_t ver)
+{
+    Match m;
+    m.start = r.u32(); m.end = r.u32(); m.frames = r.u32(); m.hash_frame = r.u32(); m.desync = r.u32();
+    const uint32_t fl = r.u32();
+    m.have_result = fl & 1; m.have_hash = (fl & 2) != 0; m.complete = (fl & 4) != 0;
+    int* v[] = { &m.ft.chr[0], &m.ft.chr[1], &m.ft.btn[0], &m.ft.btn[1], &m.ft.model[0], &m.ft.model[1], &m.ft.stage,
+                 &m.ft.rounds, &m.ft.pick, &m.winner, &m.score[0], &m.score[1] };
+    for (int* x : v) *x = (int)r.u32();
+    m.hash = r.u64();
+    m.ft.names[0] = r.str(); m.ft.names[1] = r.str();
+    if (ver >= 3 && (r.u32() & 1))         /* format 3: the custom costume blocks the match was fought in */
+        m.ft.costumes = r.bytes(m.ft.cos[0], kCostumeBlock) && r.bytes(m.ft.cos[1], kCostumeBlock);
+    return m;
+}
+
+Barrier get_barrier(Reader& r)
+{
+    Barrier x;
+    x.kind = r.u32(); x.f = r.u32(); x.nf = r.u32(); x.seed = r.u32(); x.has_state = (r.u32() & 1) != 0;
+    x.clock = r.u64(); x.c[0] = r.u32(); x.c[1] = r.u32(); x.c[2] = r.u32();
+    return x;
+}
+
 bool from_binary(const uint8_t* p, size_t n, Data& d, std::string* why)
 {
     Reader r{ p, n };
@@ -212,35 +259,13 @@ bool from_binary(const uint8_t* p, size_t n, Data& d, std::string* why)
     const uint32_t nm = r.u32();
     if (nm > 10000) { *why = "broken match table"; return false; }
     for (uint32_t k = 0; k < nm && !r.bad; k++) {
-        Match m;
-        m.start = r.u32(); m.end = r.u32(); m.frames = r.u32(); m.hash_frame = r.u32(); m.desync = r.u32();
-        const uint32_t fl = r.u32();
-        m.have_result = fl & 1; m.have_hash = (fl & 2) != 0; m.complete = (fl & 4) != 0;
-        int* v[] = { &m.ft.chr[0], &m.ft.chr[1], &m.ft.btn[0], &m.ft.btn[1], &m.ft.model[0], &m.ft.model[1], &m.ft.stage,
-                     &m.ft.rounds, &m.ft.pick, &m.winner, &m.score[0], &m.score[1] };
-        for (int* x : v) *x = (int)r.u32();
-        m.hash = r.u64();
-        m.ft.names[0] = r.str(); m.ft.names[1] = r.str();
-        if (ver >= 3 && (r.u32() & 1)) {
-            m.ft.costumes = r.bytes(m.ft.cos[0], kCostumeBlock) && r.bytes(m.ft.cos[1], kCostumeBlock);
-        }
-        /* the playback's fight lines (df_fight.cpp): characters 0..35, stage -1 (random) or a stage id 0..34
-         * written into the game as it is -- anything else would hang or break the playback */
-        if (!r.bad && (m.ft.chr[0] < 0 || m.ft.chr[0] > 35 || m.ft.chr[1] < 0 || m.ft.chr[1] > 35 ||
-                       m.ft.stage < -1 || m.ft.stage > 34)) {
-            *why = "broken match table";
-            return false;
-        }
+        Match m = get_match(r, ver);
+        if (!r.bad && !match_ok(m)) { *why = "broken match table"; return false; }
         d.matches.push_back(m);
     }
     const uint32_t nb = r.u32();
     if (nb > 100000) { *why = "broken sync point table"; return false; }
-    for (uint32_t k = 0; k < nb && !r.bad; k++) {
-        Barrier x;
-        x.kind = r.u32(); x.f = r.u32(); x.nf = r.u32(); x.seed = r.u32(); x.has_state = (r.u32() & 1) != 0;
-        x.clock = r.u64(); x.c[0] = r.u32(); x.c[1] = r.u32(); x.c[2] = r.u32();
-        d.bars.push_back(x);
-    }
+    for (uint32_t k = 0; k < nb && !r.bad; k++) d.bars.push_back(get_barrier(r));
     const uint32_t nh = r.u32();
     if (nh > 10000000) { *why = "broken hash table"; return false; }
     for (uint32_t k = 0; k < nh && !r.bad; k++) { const uint32_t f = r.u32(); d.hashes.push_back({ f, r.u64() }); }
@@ -321,6 +346,14 @@ struct Store : InputSource {
     std::atomic<uint32_t> last{ 0 };               /* the last live frame this game ran (rec_frame) */
     std::string path;
     bool names = true;
+    /* the live stream (T5_REPLAY_LIVE): records appended by the writer thread */
+    std::string live_path;
+    HANDLE live_h = INVALID_HANDLE_VALUE;          /* g_live_mu */
+    uint32_t live_n = 0, live_last = 0;            /* g_live_mu: inputs / last frame written */
+    np::PadInput live_prev[2] = { np::kNeutral, np::kNeutral };
+    uint64_t live_bytes = 0;
+    bool live_started = false;                     /* mu: the SESSION record is out (the handshake, or rec_start) */
+    std::vector<uint8_t> live_pend;                /* mu: records waiting for the writer */
     Store() { chunks.reserve(kMaxChunks); }
     np::PadInput get(int p, uint32_t f) const override { return chunks[f / kChunk]->in[p][f % kChunk]; }
     uint32_t frames() const override { return n.load(std::memory_order_acquire); }
@@ -413,19 +446,148 @@ void write_store(const std::shared_ptr<Store>& st, uint32_t seq)
          1000.0 * (double)(q1.QuadPart - q0.QuadPart) / (double)qf.QuadPart);
 }
 
+/* ---- the live stream ---------------------------------------------------------
+ * <T5_REPLAY_LIVE> (a spectator's game reads it while it grows, docs/SPECTATE.md):
+ *   "T5LIVE 1", newline, then records: u8 type, u32 payload length, payload (little-endian)
+ *   SESSION  u32 version 1, flags (bit 0 rollback), slot, delay, rollback delay, session seed,
+ *            match seed, hash interval; str build, created (again when the rollback delay is
+ *            known: the latest counts)
+ *   INPUTS   u32 first frame, count; 12 columns of `count` bytes (P1 buttons low, high, lx, ly,
+ *            rx, ry, then P2), each byte XORed with the frame before (the last frame of the
+ *            record before; neutral before frame 0)
+ *   HASH     u32 frame, u64 hash          (a frame sent again replaces it)
+ *   BARRIER  a sync point, as in the replay binary
+ *   MATCH    u32 index (0-based), the match as in the replay binary of this build (format 3: with the
+ *            custom costume blocks both sides fought in, which the spectator's game writes at its
+ *            FIGHT START -- docs/DIRECTFIGHT.md "Custom costumes online"); sent again with its result
+ *   LAST     u32 the last frame the game ran, u64 the wall clock then (ms since 1970)
+ *   END      str why -- the session is over
+ * Only the writer thread appends (every 200 ms), and the session's end on its own thread;
+ * the frame only queues the small records under the mutex it takes for them anyway. */
+constexpr char kLiveMagic[] = "T5LIVE 1\n";
+enum LiveRec : uint8_t { L_SESSION = 1, L_INPUTS = 2, L_HASH = 3, L_BARRIER = 4, L_MATCH = 5, L_LAST = 6, L_END = 7 };
+constexpr uint32_t kLiveMaxRecord = 1u << 24;
+std::mutex g_live_mu;
+
+void live_rec(std::vector<uint8_t>& out, uint8_t type, const std::vector<uint8_t>& payload)
+{
+    out.push_back(type);
+    put32(out, (uint32_t)payload.size());
+    out.insert(out.end(), payload.begin(), payload.end());
+}
+
+std::vector<uint8_t> session_payload(const Data& d)
+{
+    std::vector<uint8_t> b;
+    put32(b, 1); put32(b, d.rollback ? 1u : 0u);
+    put32(b, (uint32_t)d.slot); put32(b, (uint32_t)d.delay); put32(b, (uint32_t)d.rb_delay);
+    put32(b, d.session_seed); put32(b, d.match_seed); put32(b, d.hash_every);
+    putstr(b, d.build); putstr(b, d.created);
+    return b;
+}
+
+/* caller holds mu */
+void live_queue_locked(Store& st, uint8_t type, const std::vector<uint8_t>& payload)
+{
+    if (st.live_path.empty() || !st.live_started) return;
+    live_rec(st.live_pend, type, payload);
+}
+
+uint64_t unix_ms()
+{
+    FILETIME ft; GetSystemTimeAsFileTime(&ft);
+    const uint64_t t = ((uint64_t)ft.dwHighDateTime << 32) | ft.dwLowDateTime;
+    return t / 10000 - 11644473600000ull;
+}
+
+/* Append what is new to the live file: the queued records, the inputs since the last
+ * append, the last frame (and END at the session's end). */
+void live_append(const std::shared_ptr<Store>& st, const char* end_why)
+{
+    Rec& r = R();
+    std::lock_guard<std::mutex> lk(g_live_mu);
+    if (st->live_h == INVALID_HANDLE_VALUE) return;
+    std::vector<uint8_t> out;
+    uint32_t n, last;
+    {
+        std::lock_guard<std::mutex> rk(r.mu);
+        if (!st->live_started && !end_why) return;
+        out.swap(st->live_pend);
+        n = st->frames();
+        last = st->last.load(std::memory_order_relaxed);
+    }
+    while (n > st->live_n) {
+        const uint32_t first = st->live_n, cnt = std::min<uint32_t>(n - first, 3600);   /* a minute per record at most */
+        std::vector<uint8_t> b;
+        put32(b, first); put32(b, cnt);
+        for (int p = 0; p < 2; p++)
+            for (int c = 0; c < 6; c++) {
+                uint8_t prev = col(st->live_prev[p], c);
+                for (uint32_t f = first; f < first + cnt; f++) {
+                    const uint8_t v = col(st->get(p, f), c);
+                    b.push_back((uint8_t)(v ^ prev));
+                    prev = v;
+                }
+            }
+        for (int p = 0; p < 2; p++) st->live_prev[p] = st->get(p, first + cnt - 1);
+        st->live_n = first + cnt;
+        live_rec(out, L_INPUTS, b);
+    }
+    if (last != st->live_last || end_why) {
+        std::vector<uint8_t> b;
+        put32(b, last); put64(b, unix_ms());
+        live_rec(out, L_LAST, b);
+        st->live_last = last;
+    }
+    if (end_why) { std::vector<uint8_t> b; putstr(b, end_why); live_rec(out, L_END, b); }
+    if (!out.empty()) {
+        DWORD wr = 0;
+        if (!WriteFile(st->live_h, out.data(), (DWORD)out.size(), &wr, nullptr) || wr != out.size()) {
+            note("live stream %s: cannot write (error %lu) -- no more live data", st->live_path.c_str(), GetLastError());
+            CloseHandle(st->live_h);
+            st->live_h = INVALID_HANDLE_VALUE;
+            return;
+        }
+        st->live_bytes += out.size();
+    }
+    if (end_why) {
+        note("live stream %s ended (%s): %llu bytes, %u frames", st->live_path.c_str(), end_why, (unsigned long long)st->live_bytes,
+             st->live_n);
+        CloseHandle(st->live_h);
+        st->live_h = INVALID_HANDLE_VALUE;
+    }
+}
+
 DWORD WINAPI writer_thread(LPVOID)
 {
     Rec& r = R();
     for (;;) {
-        WaitForSingleObject(r.ev, INFINITE);
-        std::shared_ptr<Store> st;
+        bool live;
+        {
+            std::lock_guard<std::mutex> lk(r.mu);
+            live = r.on && r.cur && !r.cur->live_path.empty();
+        }
+        WaitForSingleObject(r.ev, live ? 200 : INFINITE);
+        std::shared_ptr<Store> st, lst;
         uint32_t seq;
         {
             std::lock_guard<std::mutex> lk(r.mu);
             st.swap(r.want);
             seq = ++g_seq;
+            if (r.on && r.cur && !r.cur->live_path.empty()) lst = r.cur;
         }
+        if (lst) live_append(lst, nullptr);
         if (st) write_store(st, seq);
+    }
+}
+
+void ensure_writer_locked(Rec& r)
+{
+    if (r.ev) return;
+    r.ev = CreateEventA(nullptr, FALSE, FALSE, nullptr);
+    if (HANDLE th = CreateThread(nullptr, 0, writer_thread, nullptr, 0, nullptr)) {
+        SetThreadPriority(th, THREAD_PRIORITY_BELOW_NORMAL);
+        CloseHandle(th);
     }
 }
 
@@ -434,13 +596,7 @@ void request_write_locked(Rec& r)
 {
     if (!r.on || !r.cur || r.cur->d.matches.empty()) return;
     r.want = r.cur;
-    if (!r.ev) {
-        r.ev = CreateEventA(nullptr, FALSE, FALSE, nullptr);
-        if (HANDLE th = CreateThread(nullptr, 0, writer_thread, nullptr, 0, nullptr)) {
-            SetThreadPriority(th, THREAD_PRIORITY_BELOW_NORMAL);
-            CloseHandle(th);
-        }
-    }
+    ensure_writer_locked(r);
     SetEvent(r.ev);
 }
 
@@ -455,7 +611,10 @@ std::string hexq(bool have, uint64_t h)   /* "\"0123456789abcdef\"" or null */
 }
 
 /* ---- playback ---------------------------------------------------------------- */
-struct MatchCheck { bool seen = false, result = false, same = false; int winner = -1, score[2] = { 0, 0 }; uint64_t hash = 0; bool have_hash = false; };
+struct MatchCheck {
+    bool seen = false, result = false, same = false, settled = false;   /* settled: compared with a recorded result */
+    int winner = -1, score[2] = { 0, 0 }; uint64_t hash = 0; bool have_hash = false;
+};
 struct Play {
     bool on = false;
     std::string error;
@@ -471,19 +630,273 @@ struct Play {
     bool finished = false;
     std::string end_why;
     uint32_t model_bad = 0;
-    /* the last frame to play: the last one the recording game ran (its inputs reach `delay` frames further) */
+    /* a live stream (spectating): the file grows while it plays */
+    bool live = false, live_end = false, have_session = false, buffering = true;
+    bool session_new = false;                  /* the SESSION came after the netplay core was set up: tell it */
+    HANDLE lh = INVALID_HANDLE_VALUE;
+    std::vector<uint8_t> lbuf;                 /* bytes read, not yet a whole record */
+    np::PadInput lprev[2] = { np::kNeutral, np::kNeutral };
+    uint64_t lbytes = 0;
+    std::string live_why;                      /* the END record's reason */
+    uint32_t buffer = 120, poll_tick = 0, stalls = 0, live_bad = 0;
+    double stall_s = 0;
+    ULONGLONG grew_ms = 0;                     /* when the file last grew */
+    uint32_t timeout_s = 300;                  /* (between matches nothing comes while the players decide) */
+    std::vector<std::pair<uint32_t, uint64_t>> pend_hash;    /* the playback's hashes whose recorded one has not come yet */
+    std::vector<std::pair<uint32_t, uint64_t>> clock;        /* LAST records: (frame, wall clock ms), the last few */
+    double delay_sum = 0, delay_max = 0; uint32_t delay_n = 0; double delay_now = -1;
+    std::string status_path;
+    ULONGLONG status_ms = 0;
+    /* the last frame to play: the last one the recording game ran (its inputs reach `delay` frames further);
+     * a live stream has none until it ends */
     uint32_t end_frame() const
     {
+        if (live && !live_end) return UINT32_MAX;
         const uint32_t n = (uint32_t)d.in[0].size();
         return d.last && d.last < n ? d.last : (n ? n - 1 : 0);
     }
 };
 Play& P() { static Play p; return p; }
 
+/* ---- the live stream, read while it grows (spectating) ------------------------- */
+void settle_match(Play& p, uint32_t k)   /* k: 0-based; a result the playback has, against the recorded one once it is there */
+{
+    if (k >= p.mc.size() || k >= p.d.matches.size()) return;
+    MatchCheck& c = p.mc[k];
+    const Match& m = p.d.matches[k];
+    if (!c.result || c.settled || !m.have_result) return;
+    c.settled = true;
+    c.same = m.complete && c.winner == m.winner && c.score[0] == m.score[0] && c.score[1] == m.score[1] &&
+             (!m.have_hash || (c.have_hash && c.hash == m.hash));
+    note("match %u: winner %s, %d-%d, hash %016llx -- recorded: winner %s, %d-%d, hash %016llx: %s", k + 1,
+         c.winner < 0 ? "none" : c.winner == 0 ? "P1" : "P2", c.score[0], c.score[1], (unsigned long long)c.hash,
+         m.winner < 0 ? "none" : m.winner == 0 ? "P1" : "P2", m.score[0], m.score[1], (unsigned long long)m.hash,
+         c.same ? "THE SAME" : "DIFFERENT");
+}
+
+void compare_hash(Play& p, uint32_t r, uint64_t h, uint64_t rec)
+{
+    p.compared++;
+    if (rec == h) return;
+    p.mismatched++;
+    if (p.first_bad < 0 || (int64_t)r < p.first_bad) p.first_bad = r;
+    if (p.mismatched <= 10)
+        note("HASH MISMATCH at recorded frame %u: %016llx, recorded %016llx", r, (unsigned long long)h, (unsigned long long)rec);
+}
+
+/* one whole record of the live stream */
+bool live_record(Play& p, uint8_t type, const uint8_t* b, uint32_t n)
+{
+    Reader r{ b, n };
+    Data& d = p.d;
+    switch (type) {
+    case L_SESSION: {
+        if (r.u32() != 1) return false;
+        const bool rb = (r.u32() & 1) != 0;
+        const int slot = (int)r.u32(), delay = (int)r.u32(), rb_delay = (int)r.u32();
+        const uint32_t sseed = r.u32(), mseed = r.u32(), every = r.u32();
+        if (r.bad) return false;
+        if (!session_ok(slot, delay, rb_delay)) {   /* (another player's launcher sent it: as a file's header is checked) */
+            p.live_end = true;
+            p.live_why = "the live data is damaged (session)";
+            return false;
+        }
+        if (!p.have_session && p.on) p.session_new = true;
+        if (p.have_session && (rb != d.rollback || slot != d.slot || delay != d.delay || sseed != d.session_seed ||
+                               mseed != d.match_seed)) {
+            /* the playback runs with what the first SESSION said (the handshake's): the players' games
+             * changed it later (a reconnect before frame 0) -- this playback cannot follow */
+            p.model_bad++;
+            note("live stream: the session changed after the playback began (%s, delay %d, seeds %08X/%08X -> %s, delay %d, "
+                 "seeds %08X/%08X)", d.rollback ? "rollback" : "lockstep", d.delay, d.session_seed, d.match_seed,
+                 rb ? "rollback" : "lockstep", delay, sseed, mseed);
+        }
+        d.rollback = rb; d.slot = slot; d.delay = delay; d.rb_delay = rb_delay;
+        d.session_seed = sseed; d.match_seed = mseed; d.hash_every = every ? every : 60;
+        d.build = r.str(); d.created = r.str();
+        p.have_session = true;
+        break;
+    }
+    case L_INPUTS: {
+        const uint32_t first = r.u32(), cnt = r.u32();
+        if (r.bad || first != d.in[0].size() || (size_t)cnt * 12 != n - 8) return false;
+        const uint8_t* q = b + 8;
+        for (int pl = 0; pl < 2; pl++) {
+            d.in[pl].resize((size_t)first + cnt, np::kNeutral);
+            for (int c = 0; c < 6; c++) {
+                uint8_t prev = col(p.lprev[pl], c);
+                for (uint32_t f = 0; f < cnt; f++) {
+                    prev = (uint8_t)(prev ^ *q++);
+                    set_col(d.in[pl][first + f], c, prev);
+                }
+            }
+            if (cnt) p.lprev[pl] = d.in[pl][first + cnt - 1];
+        }
+        break;
+    }
+    case L_HASH: {
+        const uint32_t f = r.u32(); const uint64_t h = r.u64();
+        auto& hs = d.hashes;
+        if (hs.empty() || hs.back().first < f) hs.push_back({ f, h });
+        else {
+            auto it = std::lower_bound(hs.begin(), hs.end(), std::make_pair(f, (uint64_t)0));
+            if (it != hs.end() && it->first == f) it->second = h;
+            else hs.insert(it, { f, h });
+        }
+        break;
+    }
+    case L_BARRIER: d.bars.push_back(get_barrier(r)); break;
+    case L_MATCH: {
+        const uint32_t k = r.u32();
+        Match m = get_match(r, kVersion);   /* (with the costume blocks: the spectator's game writes them too) */
+        if (r.bad || k > d.matches.size()) return false;
+        if (!match_ok(m)) {
+            p.live_end = true;
+            p.live_why = "the live data is damaged (match table)";
+            return false;
+        }
+        if (k == d.matches.size()) d.matches.push_back(m); else d.matches[k] = m;
+        if (p.mc.size() < d.matches.size()) p.mc.resize(d.matches.size());
+        settle_match(p, k);
+        break;
+    }
+    case L_LAST: {
+        const uint32_t f = r.u32(); const uint64_t ms = r.u64();
+        if (f > d.last) d.last = f;
+        p.clock.push_back({ f, ms });
+        if (p.clock.size() > 64) p.clock.erase(p.clock.begin(), p.clock.begin() + 32);
+        break;
+    }
+    case L_END: p.live_end = true; p.live_why = r.str(); break;
+    default: break;   /* (a newer writer's record: skipped) */
+    }
+    return !r.bad;
+}
+
+/* read what the file got since the last call; true if it grew */
+bool live_poll(Play& p)
+{
+    if (p.lh == INVALID_HANDLE_VALUE) return false;
+    uint8_t buf[65536];
+    bool grew = false;
+    for (;;) {
+        DWORD got = 0;
+        if (!ReadFile(p.lh, buf, sizeof buf, &got, nullptr) || got == 0) break;
+        p.lbuf.insert(p.lbuf.end(), buf, buf + got);
+        p.lbytes += got;
+        grew = true;
+    }
+    if (!grew) return false;
+    p.grew_ms = GetTickCount64();
+    size_t i = 0;
+    if (p.lbytes == p.lbuf.size()) {   /* the start of the file: the magic */
+        const size_t ml = sizeof kLiveMagic - 1;
+        if (p.lbuf.size() < ml) return true;
+        if (memcmp(p.lbuf.data(), kLiveMagic, ml)) { p.live_bad++; p.live_end = true; p.live_why = "not a live stream"; return true; }
+        i = ml;
+    }
+    while (p.lbuf.size() - i >= 5) {
+        const uint8_t type = p.lbuf[i];
+        uint32_t len = 0;
+        for (int k = 0; k < 4; k++) len |= (uint32_t)p.lbuf[i + 1 + k] << (8 * k);
+        if (len > kLiveMaxRecord) { p.live_bad++; p.live_end = true; p.live_why = "damaged live data"; break; }
+        if (p.lbuf.size() - i - 5 < len) break;
+        if (!live_record(p, type, p.lbuf.data() + i + 5, len) && p.live_bad++ < 5)
+            note("live stream: record type %u (%u bytes) does not fit -- skipped", type, len);
+        i += 5 + (size_t)len;
+    }
+    p.lbuf.erase(p.lbuf.begin(), p.lbuf.begin() + (ptrdiff_t)i);
+    /* the hashes the playback computed before their recorded ones came */
+    if (!p.pend_hash.empty()) {
+        const auto& hs = p.d.hashes;
+        size_t w = 0;
+        for (const auto& x : p.pend_hash) {
+            auto it = std::lower_bound(hs.begin(), hs.end(), std::make_pair(x.first, (uint64_t)0));
+            if (it != hs.end() && it->first == x.first) compare_hash(p, x.first, x.second, it->second);
+            else p.pend_hash[w++] = x;
+        }
+        p.pend_hash.resize(w);
+    }
+    return true;
+}
+
+/* the wall-clock delay behind the live game at recorded frame r (seconds; -1: unknown) */
+double live_delay(const Play& p, int64_t r)
+{
+    const std::pair<uint32_t, uint64_t>* best = nullptr;
+    for (const auto& c : p.clock) if ((int64_t)c.first <= r && (!best || c.first > best->first)) best = &c;
+    if (!best) return -1;
+    const double live_ms = (double)best->second + (double)(r - best->first) * (1000.0 / 59.94);
+    return ((double)unix_ms() - live_ms) / 1000.0;
+}
+
+void write_status(Play& p, uint32_t pf, bool force)
+{
+    if (p.status_path.empty()) return;
+    const ULONGLONG now = GetTickCount64();
+    if (!force && now - p.status_ms < 1000) return;
+    p.status_ms = now;
+    char b[512];
+    snprintf(b, sizeof b, "{\"frame\": %u, \"received\": %zu, \"match\": %u, \"matches\": %zu, \"delay\": %.1f, \"buffering\": %s, "
+                          "\"ended\": %s, \"hashes_compared\": %u, \"hash_mismatches\": %u}",
+             pf, p.d.in[0].size(), p.begun, p.d.matches.size(), p.delay_now, p.buffering ? "true" : "false",
+             p.live_end ? "true" : "false", p.compared, p.mismatched);
+    const std::string tmp = p.status_path + ".tmp";
+    if (FILE* fp = fopen(tmp.c_str(), "wb")) {
+        fputs(b, fp);
+        fclose(fp);
+        MoveFileExA(tmp.c_str(), p.status_path.c_str(), MOVEFILE_REPLACE_EXISTING);
+    }
+}
+
+/* wait (polling the file) until `ok` holds, the stream ends, the viewer quits or nothing came for timeout_s */
+template <class Ok, class Quit>
+bool live_block(Play& p, Ok ok, Quit quit, const char* what)
+{
+    if (ok() || p.live_end) return true;
+    LARGE_INTEGER t0, t1, qf; QueryPerformanceCounter(&t0); QueryPerformanceFrequency(&qf);
+    if (!p.grew_ms) p.grew_ms = GetTickCount64();
+    p.stalls++;
+    bool told = false;
+    for (;;) {
+        live_poll(p);
+        if (ok() || p.live_end) break;
+        if (quit && quit()) return false;
+        if (GetTickCount64() - p.grew_ms > (ULONGLONG)p.timeout_s * 1000) {
+            p.live_end = true;
+            p.live_why = "the live data stopped coming";
+            note("live stream: nothing new for %u s -- the end", p.timeout_s);
+            break;
+        }
+        if (!told && p.stalls <= 20) { note("live stream: waiting for %s", what); told = true; }
+        Sleep(10);
+    }
+    QueryPerformanceCounter(&t1);
+    const double s = (double)(t1.QuadPart - t0.QuadPart) / (double)qf.QuadPart;
+    p.stall_s += s;
+    if (told) note("live stream: went on after %.2f s", s);
+    return true;
+}
+
 } // namespace
 
 /* ======================================================================= recording */
 bool recording() { return R().on; }
+
+namespace {
+/* the session's newest match to the live stream (caller holds mu) */
+void live_match_locked(Rec& r)
+{
+    Store& st = *r.cur;
+    if (st.live_path.empty() || st.d.matches.empty()) return;
+    std::vector<uint8_t> b;
+    put32(b, (uint32_t)(st.d.matches.size() - 1));
+    Match m = st.d.matches.back();
+    if (!st.names) m.ft.names[0].clear(), m.ft.names[1].clear();
+    put_match(b, m);
+    live_queue_locked(st, L_MATCH, b);
+}
+} // namespace
 uint32_t hash_every()
 {
     Store* st = R().live.load(std::memory_order_acquire);
@@ -502,6 +915,7 @@ void end_locked_then_write(std::unique_lock<std::mutex>& lk, const char* why)
     r.want.reset();
     std::shared_ptr<Store> st = r.cur;
     lk.unlock();
+    if (!st->live_path.empty()) live_append(st, why ? why : "session_end");
     write_store(st, ++g_seq);
     cost_note();
     lk.lock();
@@ -516,9 +930,11 @@ void rec_session_begin(int slot, const char* build, uint32_t session_seed)
     r.have_fight = false;
     r.flush_at = UINT32_MAX;
     const char* dir = env("T5_REPLAY_DIR");
-    if (!dir) return;
+    const char* live = t5_env("T5_REPLAY_LIVE");   /* (a persistent game: this session's overlay) */
+    if (live && !*live) live = nullptr;
+    if (!dir && !live) return;
     auto st = std::make_shared<Store>();
-    CreateDirectoryA(dir, nullptr);
+    if (dir) CreateDirectoryA(dir, nullptr);
     { const char* n = env("T5_REPLAY_NAMES"); st->names = !(n && *n == '0'); }
     if (const char* h = env("T5_REPLAY_HASH_EVERY")) { const int v = atoi(h); if (v >= 1 && v <= 600) st->d.hash_every = (uint32_t)v; }
     st->d.slot = slot;
@@ -531,14 +947,36 @@ void rec_session_begin(int slot, const char* build, uint32_t session_seed)
     char name[96];
     snprintf(name, sizeof name, "T5R-%04u%02u%02u-%02u%02u%02u-%04x.t5replay", tm.wYear, tm.wMonth, tm.wDay, tm.wHour, tm.wMinute,
              tm.wSecond, tag);
-    st->path = dir;
-    if (!st->path.empty() && st->path.back() != '\\' && st->path.back() != '/') st->path += '\\';
-    st->path += name;
+    if (dir) {
+        st->path = dir;
+        if (!st->path.empty() && st->path.back() != '\\' && st->path.back() != '/') st->path += '\\';
+        st->path += name;
+    }
+    if (live) {
+        st->live_h = CreateFileA(live, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr, CREATE_ALWAYS,
+                                 FILE_ATTRIBUTE_NORMAL, nullptr);
+        DWORD wr = 0;
+        if (st->live_h != INVALID_HANDLE_VALUE &&
+            WriteFile(st->live_h, kLiveMagic, (DWORD)(sizeof kLiveMagic - 1), &wr, nullptr) && wr == sizeof kLiveMagic - 1) {
+            st->live_path = live;
+            st->live_bytes = wr;
+        } else {
+            note("live stream %s: cannot create it (error %lu)", live, GetLastError());
+            if (st->live_h != INVALID_HANDLE_VALUE) CloseHandle(st->live_h);
+            st->live_h = INVALID_HANDLE_VALUE;
+            if (!dir) return;
+        }
+    }
     r.next_periodic = 3600;
     r.cur = st;
     r.live = st.get();
     r.on = true;
-    note("recording this session to %s (player names %s)", st->path.c_str(), st->names ? "kept" : "left out");
+    if (dir) note("recording this session to %s (player names %s)", st->path.c_str(), st->names ? "kept" : "left out");
+    if (!st->live_path.empty()) {
+        note("live stream for spectators: %s", st->live_path.c_str());
+        ensure_writer_locked(r);
+        SetEvent(r.ev);   /* (the writer thread's next wait has the 200 ms timeout) */
+    }
 }
 
 void rec_session_end(const char* why)
@@ -546,6 +984,23 @@ void rec_session_end(const char* why)
     Rec& r = R();
     std::unique_lock<std::mutex> lk(r.mu);
     end_locked_then_write(lk, why);
+}
+
+/* The session's parameters as soon as the two games have shaken hands (netplay_core connect_locked):
+ * the same values rec_start() records at frame 0 -- the seeds and the delay are the host's, rollback is
+ * what both offered. The live stream's SESSION goes out now, so a spectator's game can boot while the
+ * players' games still load the fight (it then waits at the select screen for the first fight). */
+void rec_session_known(uint32_t match_seed, bool rollback, int delay)
+{
+    Rec& r = R();
+    std::lock_guard<std::mutex> lk(r.mu);
+    if (!r.on || r.cur->live_path.empty() || r.cur->live_started) return;
+    r.cur->d.match_seed = match_seed;
+    r.cur->d.rollback = rollback;
+    r.cur->d.delay = delay;
+    r.cur->live_started = true;
+    live_queue_locked(*r.cur, L_SESSION, session_payload(r.cur->d));
+    note("live stream: the session is known at the handshake (%s, delay %d)", rollback ? "rollback" : "lockstep", delay);
 }
 
 void rec_start(uint32_t match_seed, bool rollback, int delay)
@@ -556,9 +1011,18 @@ void rec_start(uint32_t match_seed, bool rollback, int delay)
     r.cur->d.match_seed = match_seed;
     r.cur->d.rollback = rollback;
     r.cur->d.delay = delay;
+    r.cur->live_started = !r.cur->live_path.empty();
+    live_queue_locked(*r.cur, L_SESSION, session_payload(r.cur->d));
 }
 
-void rec_rollback_delay(int d) { Rec& r = R(); std::lock_guard<std::mutex> lk(r.mu); if (r.on) r.cur->d.rb_delay = d; }
+void rec_rollback_delay(int d)
+{
+    Rec& r = R();
+    std::lock_guard<std::mutex> lk(r.mu);
+    if (!r.on) return;
+    r.cur->d.rb_delay = d;
+    live_queue_locked(*r.cur, L_SESSION, session_payload(r.cur->d));
+}
 
 /* main thread, frames in order (no lock: see Store) */
 void rec_input(uint32_t f, const np::PadInput& p1, const np::PadInput& p2)
@@ -592,6 +1056,7 @@ void rec_hash(uint32_t f, uint64_t h)
     Timed t;
     std::lock_guard<std::mutex> lk(r.mu);
     if (!r.on) return;
+    if (!r.cur->live_path.empty()) { std::vector<uint8_t> b; put32(b, f); put64(b, h); live_queue_locked(*r.cur, L_HASH, b); }
     auto& hs = r.cur->d.hashes;
     if (!hs.empty() && hs.back().first == f) { hs.back().second = h; return; }
     if (!hs.empty() && hs.back().first > f) {
@@ -610,6 +1075,7 @@ void rec_barrier(const Barrier& b)
     std::lock_guard<std::mutex> lk(r.mu);
     if (!r.on) return;
     r.cur->d.bars.push_back(b);
+    if (!r.cur->live_path.empty()) { std::vector<uint8_t> x; put_barrier(x, b); live_queue_locked(*r.cur, L_BARRIER, x); }
 }
 
 void rec_fight(const Fight& ft)
@@ -632,6 +1098,7 @@ void rec_match_begin(uint32_t f)
     m.started = utc_now();
     r.cur->d.matches.push_back(m);
     r.have_fight = false;
+    live_match_locked(r);
 }
 
 void rec_result(const char* winner, unsigned w1, unsigned w2, const char* reason, uint32_t frames, bool have_hash, uint64_t hash,
@@ -654,6 +1121,7 @@ void rec_result(const char* winner, unsigned w1, unsigned w2, const char* reason
     m.complete = reason == nullptr;
     if (reason) m.reason = reason;
     m.ended = utc_now();
+    live_match_locked(r);
     request_write_locked(r);
     r.flush_at = at_frame + 420;    /* again once the frames after the KO are in (the playback shows them) */
 }
@@ -679,7 +1147,9 @@ void rec_frame(uint32_t f)
 bool playing() { return P().on; }
 int  play_slot() { return P().d.slot; }
 int  play_delay() { return P().d.delay; }
-bool play_rollback() { return P().d.rollback; }
+/* a live stream whose SESSION has not come yet: rollback, the lobby's netcode (rb_net.cpp offers it at the
+ * game's start; netplay_core replay_session_known() takes the offer back for a lockstep session) */
+bool play_rollback() { const Play& p = P(); return p.live && !p.have_session ? true : p.d.rollback; }
 uint32_t play_session_seed() { return P().d.session_seed; }
 uint32_t play_match_seed() { return P().d.match_seed; }
 uint32_t play_target() { return P().target; }
@@ -695,10 +1165,75 @@ bool peek_rollback(const char* path)
     const size_t n = fread(buf, 1, sizeof buf - 1, fp);
     fclose(fp);
     buf[n] = 0;
+    if (n >= sizeof kLiveMagic - 1 && !memcmp(buf, kLiveMagic, sizeof kLiveMagic - 1)) {
+        /* a live stream: its first record is the SESSION (u32 version, u32 flags). Not there yet (the
+         * spectator's game starts before the players' handshake): rollback, the lobby's netcode -- this
+         * only turns the write watch on during static initialisation; a lockstep session plays fine
+         * with it (rb_net.cpp asks the file again once it is loaded) */
+        const unsigned char* q = (const unsigned char*)buf + sizeof kLiveMagic - 1;
+        if (n < sizeof kLiveMagic - 1 + 13) return true;
+        return q[0] == L_SESSION && (q[9] & 1) != 0;
+    }
     if (strncmp(buf, kMagic, sizeof kMagic - 1)) return false;
     char* nl = strchr(buf + sizeof kMagic - 1, 10);   /* the end of the JSON line */
     if (nl) *nl = 0;
     return strstr(buf, "\"mode\": \"rollback\"") != nullptr;
+}
+
+/* A live stream (spectating): its session and first match must be there (the launcher
+ * starts the game once they are; up to T5_REPLAY_LIVE_WAIT seconds, default 60). */
+bool live_load(const char* path)
+{
+    Play& p = P();
+    p.live = true;
+    p.lh = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+                       FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (p.lh == INVALID_HANDLE_VALUE) { p.error = "the live data cannot be opened"; return false; }
+    if (const char* b = env("T5_REPLAY_LIVE_BUFFER")) { const int v = atoi(b); if (v >= 0 && v <= 3600) p.buffer = (uint32_t)v; }
+    if (const char* t = env("T5_REPLAY_LIVE_TIMEOUT")) { const int v = atoi(t); if (v >= 5 && v <= 3600) p.timeout_s = (uint32_t)v; }
+    if (const char* st = env("T5_REPLAY_STATUS")) p.status_path = st;
+    /* The game starts at Watch, usually before the players' games have shaken hands: it boots to the
+     * select screen meanwhile (like theirs) and waits there for the first fight's line. The session's
+     * parameters come before that line (the handshake): netplay_core takes them then
+     * (replay_session_known); until then rollback is assumed (play_rollback). */
+    live_poll(p);
+    if (p.live_bad) { p.error = "the live data is damaged"; return false; }
+    if (p.mc.size() < p.d.matches.size()) p.mc.resize(p.d.matches.size());
+    p.target = UINT32_MAX;     /* every match the stream brings */
+    p.tail = 0;
+    if (const char* rf = env("T5_REPLAY_RESULT")) p.result_path = rf;
+    p.on = true;
+    note("watching the live stream %s: %s, recorded on P%d's PC, %zu match(es) and %zu frames so far, a buffer of %u frames",
+         path, p.d.rollback ? "rollback" : "lockstep", p.d.slot + 1, p.d.matches.size(), p.d.in[0].size(), p.buffer);
+    return true;
+}
+
+bool play_live() { return P().live; }
+
+int play_live_wait(uint32_t pf, bool (*quit)())
+{
+    Play& p = P();
+    if (!p.live || p.finished) return 1;
+    const int64_t r = (int64_t)pf - p.offset;
+    constexpr int64_t kMargin = 16;   /* the frames past this one the loop may read (input delay) */
+    if (++p.poll_tick >= 8 || (int64_t)p.d.in[0].size() <= r + kMargin) { p.poll_tick = 0; live_poll(p); }
+    bool waited = false;
+    if (!p.live_end && (p.buffering || (int64_t)p.d.in[0].size() <= r + kMargin)) {
+        /* (re)fill the buffer: playing on frame by frame as the data trickles in would stutter */
+        p.buffering = true;
+        const int64_t want = r + kMargin + (int64_t)p.buffer;
+        if ((int64_t)p.d.in[0].size() < want) {
+            waited = true;
+            if (!live_block(p, [&] { return (int64_t)p.d.in[0].size() >= want; }, quit, "the live data")) return 0;
+        }
+        p.buffering = false;
+    }
+    if (pf % 60 == 0) {
+        const double dl = live_delay(p, r);
+        if (dl >= 0) { p.delay_now = dl; p.delay_sum += dl; p.delay_n++; if (dl > p.delay_max) p.delay_max = dl; }
+    }
+    write_status(p, pf, waited);
+    return waited ? 2 : 1;
 }
 
 bool play_load(const char* path)
@@ -707,6 +1242,12 @@ bool play_load(const char* path)
     p.path = path ? path : "";
     FILE* fp = path ? fopen(path, "rb") : nullptr;
     if (!fp) { p.error = "the file cannot be opened"; return false; }
+    {
+        char head[sizeof kLiveMagic] = {};
+        const size_t hn = fread(head, 1, sizeof kLiveMagic - 1, fp);
+        if (hn == sizeof kLiveMagic - 1 && !memcmp(head, kLiveMagic, hn)) { fclose(fp); return live_load(path); }
+        rewind(fp);
+    }
     std::vector<uint8_t> all;
     uint8_t buf[65536];
     for (size_t k; (k = fread(buf, 1, sizeof buf, fp)) > 0;) all.insert(all.end(), buf, buf + k);
@@ -744,6 +1285,9 @@ void play_inputs(uint32_t pf, np::PadInput out[2])
     Play& p = P();
     out[0] = out[1] = np::kNeutral;
     const int64_t r = (int64_t)pf - p.offset;
+    if (p.live && !p.live_end && r >= (int64_t)p.d.in[0].size()) {   /* (play_live_wait keeps ahead of this) */
+        live_block(p, [&] { return r < (int64_t)p.d.in[0].size(); }, (bool (*)())nullptr, "the inputs of the next frame");
+    }
     if (r < 0 || r >= (int64_t)p.d.in[0].size()) return;
     out[0] = p.d.in[0][(size_t)r];
     out[1] = p.d.in[1][(size_t)r];
@@ -753,6 +1297,8 @@ uint32_t play_barrier(uint32_t k, uint32_t f)
 {
     Play& p = P();
     p.bar_seen = k + 1;
+    if (p.live && k >= p.d.bars.size())   /* the live game may not have sent it yet */
+        live_block(p, [&] { return k < p.d.bars.size(); }, (bool (*)())nullptr, "the next sync point");
     if (k >= p.d.bars.size()) {
         /* at the recording's last frame the live game may simply not have got there before the session ended */
         if ((int64_t)f - p.offset >= (int64_t)p.end_frame()) return f;
@@ -797,7 +1343,14 @@ void play_hash(uint32_t pf, uint64_t h)
     if (r < 0) return;
     const auto& hs = p.d.hashes;
     auto it = std::lower_bound(hs.begin(), hs.end(), std::make_pair((uint32_t)r, (uint64_t)0));
-    if (it == hs.end() || it->first != (uint32_t)r) return;
+    if (it == hs.end() || it->first != (uint32_t)r) {
+        /* live: the recorded hash of this frame may still be on its way (compared when it comes) */
+        if (p.live && !p.live_end && p.have_session && (uint32_t)r % p.d.hash_every == 0) {
+            if (!p.pend_hash.empty() && p.pend_hash.back().first == (uint32_t)r) p.pend_hash.back().second = h;
+            else if (p.pend_hash.size() < 100000) p.pend_hash.push_back({ (uint32_t)r, h });
+        }
+        return;
+    }
     p.compared++;
     if (it->second == h) return;
     p.mismatched++;
@@ -830,11 +1383,29 @@ void play_fight(const Fight& ft, uint32_t match)
         note("match %u: FIGHT START with models 0x%X / 0x%X on stage %d, the recording had 0x%X / 0x%X on stage %d", match,
              ft.model[0], ft.model[1], ft.stage, rec.model[0], rec.model[1], rec.stage);
     }
+    /* the custom costumes (format 3): what this playback wrote for both sides must be what the live match fought
+     * in -- a spectator (or a replay) shows both players' customizations; none recorded = the default (zero) blocks */
+    static const uint8_t kZero[kCostumeBlock] = {};
+    for (int s = 0; s < 2; s++) {
+        const uint8_t* want = rec.costumes ? rec.cos[s] : kZero;
+        const uint8_t* got = ft.costumes ? ft.cos[s] : kZero;
+        if (memcmp(want, got, kCostumeBlock)) {
+            p.model_bad++;
+            note("match %u: P%d's custom costume block differs from the recording's", match, s + 1);
+        }
+    }
 }
 
 bool play_fight_line(uint32_t match, std::string* line)
 {
     Play& p = P();
+    /* live: the direct fight asks at the select screen (every 15 frames) until the players' games got to
+     * that fight -- nothing else reads the file there */
+    if (p.on && p.live && match > p.d.matches.size()) live_poll(p);
+    if (p.session_new) {   /* (before the fight's line: the select's TLS pin and frame 0 use what it says) */
+        p.session_new = false;
+        np::replay_session_known();
+    }
     if (!p.on || match < 1 || match > p.d.matches.size()) return false;
     const Fight& f = p.d.matches[match - 1].ft;
     char b[256];
@@ -867,6 +1438,12 @@ void play_result(const char* winner, unsigned w1, unsigned w2, uint32_t frames, 
     c.winner = !winner || !strcmp(winner, "null") ? -1 : atoi(winner);
     c.score[0] = (int)w1; c.score[1] = (int)w2;
     c.have_hash = have_hash; c.hash = hash;
+    if (p.live && !m.have_result) {   /* the live game's result is on its way: compared when it comes */
+        note("match %u over at playback frame %u after %u frames: winner %s, %u-%u, hash %016llx (the live result is not here yet)",
+             k, pf, frames, c.winner < 0 ? "none" : c.winner == 0 ? "P1" : "P2", w1, w2, (unsigned long long)hash);
+        return;
+    }
+    c.settled = true;
     c.same = m.have_result && m.complete && c.winner == m.winner && c.score[0] == m.score[0] && c.score[1] == m.score[1] &&
              (!m.have_hash || (have_hash && hash == m.hash));
     note("match %u over at playback frame %u after %u frames: winner %s, %u-%u, hash %016llx -- recorded: winner %s, %d-%d, hash %016llx: %s",
@@ -893,6 +1470,12 @@ void play_finish(const char* why)
     if (!p.on || p.finished) return;
     p.finished = true;
     if (why && *why) p.end_why = why;
+    if (p.live) {
+        live_poll(p);
+        for (uint32_t k = 0; k < p.mc.size(); k++) settle_match(p, k);
+        p.target = (uint32_t)std::min<size_t>(p.d.matches.size(), std::max<uint32_t>(p.begun, 1));
+        write_status(p, p.last_p, true);
+    }
     bool results_same = true, all_seen = true;
     std::string ms;
     char b[512];
@@ -919,7 +1502,15 @@ void play_finish(const char* why)
                           "\"sync_point_problems\": %u, \"setup_problems\": %u, \"identical\": %s, \"matches\": [",
              jstr(base ? base + 1 : p.path).c_str(), p.target, p.d.matches.size(), jstr(p.end_why).c_str(), p.last_p, p.compared,
              p.mismatched, fb.c_str(), p.bar_seen, p.d.bars.size(), p.bar_bad, p.model_bad, identical ? "true" : "false");
-    const std::string out = std::string(b) + ms + "]}";
+    std::string out = std::string(b) + ms + "]";
+    if (p.live) {
+        snprintf(b, sizeof b, ", \"live\": true, \"stream_end\": %s, \"stalls\": %u, \"stall_seconds\": %.2f, \"uncompared\": %zu, "
+                              "\"delay_avg\": %.2f, \"delay_max\": %.2f, \"received_frames\": %zu, \"received_bytes\": %llu",
+                 jstr(p.live_why).c_str(), p.stalls, p.stall_s, p.pend_hash.size(), p.delay_n ? p.delay_sum / p.delay_n : -1.0,
+                 p.delay_n ? p.delay_max : -1.0, p.d.in[0].size(), (unsigned long long)p.lbytes);
+        out += b;
+    }
+    out += "}";
     note("playback over (%s): %u hashes compared, %u different%s; results %s -- %s", p.end_why.c_str(), p.compared, p.mismatched,
          p.first_bad >= 0 ? (" (first at recorded frame " + fb + ")").c_str() : "", results_same ? "the same" : "DIFFERENT",
          identical ? "IDENTICAL to the live match" : "NOT identical");

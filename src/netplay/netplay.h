@@ -171,6 +171,7 @@ uint32_t sessions();                             /* sessions begun in this proce
 
 /* ---- replays (src/netplay/replay.h, docs/REPLAYS.md) ----------------------- */
 bool     replaying();                            /* T5_NET_MODE=replay: local mode fed by T5_REPLAY_FILE */
+void     replay_session_known();                 /* a live stream's SESSION came after configure() (replay.cpp) */
 uint32_t barriers();                             /* scene_barrier() calls so far in this session */
 void     rec_pump();                             /* recording: hand the frames whose inputs are final to the replay */
 

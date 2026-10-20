@@ -24,6 +24,18 @@ part is in the README's status table.
   changed: protocol 4). Replays show both costumes too. Tested in rollback and lockstep with different
   costumes on both sides and in mirror matches: both PCs show the same, 0 desyncs.
 
+### Spectating
+- **Watch a live match**: a friend in a match (Friends page: **Watch**, below the list) or any room's match
+  (Rooms: **Watch**). Your own game shows it a few seconds behind, exactly as it is played -- the replay's
+  data, sent while the players play, checked frame by frame while it plays. Whenever you join, it plays
+  the players' session from its start (a rematch depends on the matches before it). The Spectating card
+  on the Online tab says how far behind you are; **Stop watching** closes the game.
+- **Privacy**: Settings -> Spectators. "Friends and room visitors may watch my online matches" is on, "Also
+  my ranked matches" is off; a match can be watched only when both players allow it, and switching it off
+  stops the spectators at once. The players see how many watch. Their games never wait for spectators.
+- At most 8 spectators per match (server setting). Launchers before 1.1.3 never see any of it, and their
+  matches cannot be watched. Needs the lobby server updated. docs/SPECTATE.md.
+
 ### Servers
 - New settings `T5L_TOUR_*` (who may organize, the no-show time, limits, rated or not) and a read-only JSON of the
   brackets on the status port (`/tournaments`, `/tournaments/<id>`) for streamers' overlays (docs/TOURNAMENTS.md).

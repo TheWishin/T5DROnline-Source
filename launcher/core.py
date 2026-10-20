@@ -106,6 +106,8 @@ DEFAULTS = {
     "low_priority": False,     # build at below-normal priority: the PC stays responsive, the build is slower
     "replays": True,           # online matches are saved as replays in <out>/replays (T5_REPLAY_DIR, docs/REPLAYS.md)
     "replay_names": True,      # ... with the players' lobby names in them (off: T5_REPLAY_NAMES=0)
+    "spectators": True,        # online: friends and room visitors may watch this player's matches (docs/SPECTATE.md)
+    "spectators_ranked": False,  # ... the ranked ones too (both players must allow it)
     "power_saving": "auto",    # auto | on | off: PS3_LAPTOP (POWER_SAVING)
     "unlock_stages": False,    # offline: the Tekken 5 stages without clearing Arcade (T5_UNLOCK_STAGES, docs/DIRECTFIGHT.md "Unlocks")
     "unlock_items": False,     # offline: every customization item free in the item shop (T5_UNLOCK_ITEMS)

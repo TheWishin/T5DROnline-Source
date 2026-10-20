@@ -1,0 +1,409 @@
+"""Spectating live matches (docs/SPECTATE.md): who may watch (friends of a player, anybody for a room's match),
+the players' privacy setting (on by default, ranked only when both allow ranked), blocks, the limit per match;
+the live stream going from the streamer's file through the server to every spectator's file byte for byte, a
+spectator who joins late getting it from the session's start, a rematch in the running session keeping the
+stream; the server's bounds (piece size, order, rate, buffer); and older launchers that never see any of it."""
+import os
+import shutil
+import struct
+import tempfile
+import time
+import unittest
+
+import util
+from util import ServerThread, client, expect
+
+from t5lobby import spectate
+from t5lobby.proto import LobbyError
+
+SPEC_EVENTS = ("watching", "spec_ready", "spec_end", "spectators", "spec_want", "spec_stop", "spec_data")
+
+
+def rec(t, payload):
+    return struct.pack("<BI", t, len(payload)) + payload
+
+
+def s16(text):
+    b = text.encode()
+    return struct.pack("<H", len(b)) + b
+
+
+def session_rec(rollback=True):
+    return rec(spectate.R_SESSION, struct.pack("<8I", 1, 1 if rollback else 0, 0, 2, 1, 1234, 5678, 60)
+               + s16("build") + s16("2026-10-19T00:00:00Z"))
+
+
+def match_rec(k, p1=17, p2=6, stage=27, winner=-1):
+    flags = 0 if winner < 0 else 5
+    return rec(spectate.R_MATCH, struct.pack("<I6I", k, 0, 0, 0, 0, 0, flags)
+               + struct.pack("<12i", p1, p2, 0, 0, 1, 2, stage, 1, 0, winner, 1 if winner == 0 else 0,
+                             1 if winner == 1 else 0) + struct.pack("<Q", 0) + s16("Alice") + s16("Bob"))
+
+
+def inputs_rec(first, n, seed=0):
+    cols = bytes(((f * 7 + c + seed) % 5 == 0) * 0x10 for c in range(12) for f in range(n))
+    return rec(spectate.R_INPUTS, struct.pack("<2I", first, n) + cols)
+
+
+def end_rec(why="over"):
+    return rec(spectate.R_END, s16(why))
+
+
+class Base(unittest.TestCase):
+    server_cfg = {}
+
+    def setUp(self):
+        self.s = ServerThread(**self.server_cfg).start()
+        from t5lobby.server.ratelimit import KeyedBuckets
+        self.s.call(lambda: setattr(self.s.srv, "registrations", KeyedBuckets(rate=100.0, burst=100)))
+        self.tmp = tempfile.mkdtemp(prefix="t5spec")
+        self.clients = []
+
+    def tearDown(self):
+        for c in self.clients:
+            c.close()
+        self.s.stop()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def acc(self, name, allow=True, ranked=False, register=True, cap=True, **kw):
+        d = os.path.join(self.tmp, name)
+        kw.setdefault("auto_ready", True)
+        if cap:
+            kw.update(spectate=True, live_dir=os.path.join(d, "live"), watch_dir=os.path.join(d, "watch"))
+        c = client(self.s, name, password=name.lower() + "-pw1", register=register, **kw)
+        if cap and allow is not None:
+            c.set_spectate_prefs(allow, ranked)
+        self.clients.append(c)
+        return c
+
+    def befriend(self, a, b):
+        a.add_friend(b.me["name"])
+        expect(b, "friend_request")
+        b.answer_friend(a.me["name"], True)
+        t_end = time.monotonic() + 10
+        while time.monotonic() < t_end:
+            if any(f["name"] == b.me["name"] for f in (a.friend_list or {}).get("friends") or ()) and \
+                    any(f["name"] == a.me["name"] for f in (b.friend_list or {}).get("friends") or ()):
+                return
+            time.sleep(0.02)
+        raise AssertionError("not friends")
+
+    def play(self, a, b, ranked=False):
+        """A match between a and b (a challenge, accepted): both match_start events."""
+        if ranked:
+            a.ranked_match()
+            b.ranked_match()
+        else:
+            cid = a.challenge(self.s.call(lambda: self.s.srv.by_name[b.me["name"].lower()].id))
+            expect(b, "challenged")
+            b.answer_challenge(cid, True)
+        return expect(a, "match_start", 30), expect(b, "match_start", 30)
+
+    def watch_flag(self, viewer, name, want, timeout=10.0):
+        t_end = time.monotonic() + timeout
+        while time.monotonic() < t_end:
+            for f in (viewer.friend_list or {}).get("friends") or ():
+                if f["name"] == name and f.get("watch") == want:
+                    return
+            time.sleep(0.05)
+        raise AssertionError(f"{name}'s watch flag never became {want}: {viewer.friend_list}")
+
+    @staticmethod
+    def feed(path, data):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "ab") as f:
+            f.write(data)
+
+    @staticmethod
+    def wait_file(path, data, timeout=15.0):
+        t_end = time.monotonic() + timeout
+        got = b""
+        while time.monotonic() < t_end:
+            try:
+                with open(path, "rb") as f:
+                    got = f.read()
+            except OSError:
+                got = b""
+            if got == data:
+                return
+            time.sleep(0.05)
+        raise AssertionError(f"{path}: {len(got)} bytes, expected {len(data)}")
+
+
+class WatchTest(Base):
+    def test_friend_watches_and_a_late_one_gets_it_from_the_start(self):
+        a, b = self.acc("Alice"), self.acc("Bob")
+        v, w = self.acc("Vic"), self.acc("Wes")
+        self.befriend(v, a)
+        self.befriend(w, b)
+        self.assertTrue(v.has_spectate())
+        self.assertIn("spectate", v.welcome["features"])
+        sa, sb = self.play(a, b)
+        sid = sa["stream"]
+        self.assertEqual(sid, sa["match"])                    # a new session: its first match's id
+        self.assertEqual(sb["stream"], sid)
+        self.watch_flag(v, "Alice", True)
+        live = spectate.live_path(a.live_dir, sid)           # what the host's game would write
+        head = spectate.MAGIC + session_rec() + match_rec(0)
+        self.feed(live, head)
+        r = v.watch(name="Alice")
+        self.assertEqual((r["stream"], r["match"], r["spectators"]), (sid, sa["match"], 1))
+        self.assertEqual([p["name"] for p in r["players"]], ["Alice", "Bob"])
+        self.assertEqual(expect(a, "spectators")["count"], 1)
+        ready = expect(v, "spec_ready", 15)
+        self.assertEqual(len(ready["matches"]), 1)
+        self.assertEqual(ready["matches"][0]["stage"], 27)
+        body = b"".join(inputs_rec(f, 60, f) for f in range(0, 600, 60))
+        self.feed(live, body)
+        self.wait_file(ready["path"], head + body)
+        # Wes joins 600 frames late: everything from the session's start, then the rest as it comes
+        r2 = w.watch(name="Bob")
+        self.assertEqual(r2["spectators"], 2)
+        wready = expect(w, "spec_ready", 15)
+        self.wait_file(wready["path"], head + body)
+        more = inputs_rec(600, 60, 3) + match_rec(0, winner=1) + end_rec("session over")
+        self.feed(live, more)
+        for c, path in ((v, ready["path"]), (w, wready["path"])):
+            ev = expect(c, "spec_end", 15)
+            self.assertEqual(ev["reason"], "over")
+            self.wait_file(path, head + body + more)
+        self.assertTrue(self.s.wait_for(lambda: not self.s.srv.streams))
+        p = spectate.LiveParser()
+        with open(ready["path"], "rb") as f:
+            p.feed(f.read())
+        self.assertTrue(p.ended)
+        self.assertEqual((p.frames, p.matches[0]["winner"]), (660, 1))
+
+    def test_a_rematch_in_the_running_games_keeps_the_stream(self):
+        a, b = self.acc("Alice"), self.acc("Bob")
+        v = self.acc("Vic")
+        self.befriend(v, a)
+        sa, _sb = self.play(a, b)
+        sid = sa["stream"]
+        live = spectate.live_path(a.live_dir, sid)
+        head = spectate.MAGIC + session_rec() + match_rec(0)
+        self.feed(live, head)
+        v.watch(name="Alice")
+        ready = expect(v, "spec_ready", 15)
+        for c in (a, b):
+            c.report_result(0, [1, 0], match_id=sa["match"])
+        expect(a, "match_result", 15)
+        a.rematch(sa["match"], True, keep=True)
+        b.rematch(sa["match"], True, keep=True)
+        sa2 = expect(a, "match_start", 20)
+        self.assertNotEqual(sa2["match"], sa["match"])
+        self.assertTrue(sa2["continue"])
+        self.assertEqual(sa2["stream"], sid)                  # the same netplay session: the same stream
+        more = match_rec(0, winner=0) + match_rec(1) + inputs_rec(0, 120)
+        self.feed(live, more)
+        self.wait_file(ready["path"], head + more)
+        self.assertEqual(self.s.call(lambda: self.s.srv.streams[sid].match.id), sa2["match"])
+
+
+class RulesTest(Base):
+    def test_who_may_watch(self):
+        a, b = self.acc("Alice"), self.acc("Bob")
+        friend, stranger = self.acc("Fay"), self.acc("Sam")
+        self.befriend(friend, b)
+        sa, _ = self.play(a, b)
+        with self.assertRaises(LobbyError) as e:
+            stranger.watch(name="Alice")                       # not a friend, not a room
+        self.assertEqual(e.exception.code, "not_allowed")
+        with self.assertRaises(LobbyError) as e:
+            a.watch(name="Bob")                                # a player of that match
+        self.assertEqual(e.exception.code, "bad_state")
+        self.watch_flag(friend, "Bob", True)
+        friend.watch(name="Bob")                               # a friend of either player
+        # blocked: a player who blocked the viewer is never watched by it
+        friend.unwatch()
+        b.block("Fay")
+        with self.assertRaises(LobbyError):
+            friend.watch(name="Alice")
+
+    def test_privacy_switch_and_ranked_default(self):
+        a, b = self.acc("Alice"), self.acc("Bob", allow=False)
+        v = self.acc("Vic")
+        self.befriend(v, a)
+        sa, _ = self.play(a, b)
+        self.watch_flag(v, "Alice", False)
+        with self.assertRaises(LobbyError) as e:
+            v.watch(name="Alice")
+        self.assertIn("do not allow", e.exception.msg)
+        b.set_spectate_prefs(True, False)
+        self.watch_flag(v, "Alice", True)
+        live = spectate.live_path(a.live_dir, sa["stream"])
+        self.feed(live, spectate.MAGIC + session_rec() + match_rec(0))
+        v.watch(name="Alice")
+        expect(v, "spec_ready", 15)
+        b.set_spectate_prefs(False, False)                    # turned off mid-match: the spectators stop at once
+        self.assertEqual(expect(v, "spec_end", 10)["reason"], "not_allowed")
+        expect(a, "spec_stop", 10)
+
+    def test_ranked_needs_both_to_allow_ranked(self):
+        a, b = self.acc("Alice"), self.acc("Bob")             # the default: casual yes, ranked no
+        v = self.acc("Vic")
+        self.befriend(v, a)
+        sa, _ = self.play(a, b, ranked=True)
+        self.assertTrue(sa["ranked"])
+        with self.assertRaises(LobbyError):
+            v.watch(name="Alice")
+        a.set_spectate_prefs(True, True)
+        with self.assertRaises(LobbyError):
+            v.watch(name="Alice")                              # Bob still says no for ranked
+        b.set_spectate_prefs(True, True)
+        self.watch_flag(v, "Alice", True)
+        v.watch(name="Alice")
+
+    def test_rooms_are_public_and_the_limit(self):
+        self.s.call(lambda: setattr(self.s.srv.cfg, "max_spectators", 1))
+        a, b = self.acc("Alice"), self.acc("Bob")
+        x, y = self.acc("Xan"), self.acc("Yul")
+        room = a.create_room("Dojo")
+        b.join_room(room["id"])
+        expect(a, "match_start", 30)
+        t_end = time.monotonic() + 10
+        while time.monotonic() < t_end and not any(r.get("watch") for r in x.rooms if r["id"] == room["id"]):
+            time.sleep(0.05)
+        self.assertTrue(any(r.get("watch") for r in x.rooms if r["id"] == room["id"]))
+        r = x.watch(room=room["id"])                           # nobody's friend: a room's match is public
+        self.assertEqual(r["room"], "Dojo")
+        with self.assertRaises(LobbyError) as e:
+            y.watch(room=room["id"])                           # T5L_MAX_SPECTATORS
+        self.assertEqual(e.exception.code, "server_full")
+
+    def test_own_match_ends_the_watching(self):
+        a, b = self.acc("Alice"), self.acc("Bob")
+        v, o = self.acc("Vic"), self.acc("Oli")
+        self.befriend(v, a)
+        sa, _ = self.play(a, b)
+        self.feed(spectate.live_path(a.live_dir, sa["stream"]), spectate.MAGIC + session_rec() + match_rec(0))
+        v.watch(name="Alice")
+        expect(v, "spec_ready", 15)
+        cid = v.challenge(self.s.call(lambda: self.s.srv.by_name["oli"].id))
+        expect(o, "challenged")
+        o.answer_challenge(cid, True)
+        self.assertEqual(expect(v, "spec_end", 15)["reason"], "your_match")
+        self.assertIsNone(self.s.call(lambda: self.s.srv.by_name["vic"].watching))
+
+
+class BoundsTest(Base):
+    def test_the_streamer_is_bounded(self):
+        a, b = self.acc("Alice"), self.acc("Bob")
+        v = self.acc("Vic")
+        self.befriend(v, a)
+        sa, _ = self.play(a, b)
+        sid = sa["stream"]
+        a._uploads.clear()                                     # the test sends the pieces itself
+        self.s.call(lambda: setattr(self.s.srv.cfg, "spectate_buffer_kb", 8))
+        a.live_dir = None                                      # (no upload task of its own)
+        v.watch(name="Alice")
+        want = expect(a, "spec_want", 10)
+        self.assertEqual((want["stream"], want["from"]), (sid, 0))
+        import base64
+        a._fire({"t": "spec_data", "stream": sid, "off": 0, "data": base64.b64encode(b"x" * 5500).decode()})  # too big
+        self.assertEqual(expect(v, "spec_end", 10)["reason"], "stopped")
+        self.assertTrue(self.s.wait_for(lambda: not self.s.srv.streams))
+        v.watch(name="Alice")                                  # a new stream; this time over the buffer
+        expect(a, "spec_want", 10)
+        st = self.s.call(lambda: self.s.srv.streams[sid])
+        for k in range(3):
+            a._fire({"t": "spec_data", "stream": sid, "off": k * 4000, "data": base64.b64encode(b"y" * 4000).decode()})
+        self.assertTrue(self.s.wait_for(lambda: st.ended == "too_long"))
+        # (Vic's launcher found the pieces are no zlib stream before that: "damaged")
+        self.assertIn(expect(v, "spec_end", 10)["reason"], ("too_long", "damaged"))
+        self.assertLessEqual(self.s.call(lambda: len(st.buf)), 8 * 1024)
+
+    def test_a_piece_from_somebody_else_is_ignored(self):
+        a, b = self.acc("Alice"), self.acc("Bob")
+        v = self.acc("Vic")
+        self.befriend(v, a)
+        sa, _ = self.play(a, b)
+        a.live_dir = None
+        v.watch(name="Alice")
+        expect(a, "spec_want", 10)
+        import base64
+        b._fire({"t": "spec_data", "stream": sa["stream"], "off": 0, "data": base64.b64encode(b"z" * 10).decode()})
+        time.sleep(0.3)
+        self.assertEqual(self.s.call(lambda: len(self.s.srv.streams[sa["stream"]].buf)), 0)
+
+
+class OlderTest(Base):
+    def test_older_launchers_see_nothing_and_cannot_be_watched(self):
+        a = self.acc("Alice")
+        old = self.acc("Olaf", cap=False)
+        v = self.acc("Vic")
+        self.befriend(v, a)
+        sa, so = self.play(a, old)
+        self.assertNotIn("stream", so)                         # no stream id for a launcher without the cap
+        self.assertIn("stream", sa)
+        self.watch_flag(v, "Alice", False)                     # Olaf could not say yes: nobody watches
+        with self.assertRaises(LobbyError):
+            v.watch(name="Alice")
+        self.assertFalse(old.has_spectate())
+        t_end = time.monotonic() + 1.0
+        while time.monotonic() < t_end:
+            ev = old.next_event(0.1)
+            if ev is not None:
+                self.assertNotIn(ev.get("t"), SPEC_EVENTS)
+        for f in (old.friend_list or {}).get("friends") or ():
+            self.assertNotIn("watch", f)
+
+
+class ParserTest(unittest.TestCase):
+    def test_pieces_of_any_size_and_end(self):
+        data = spectate.MAGIC + session_rec() + match_rec(0) + inputs_rec(0, 100) + end_rec("x")
+        p = spectate.LiveParser()
+        out = b"".join(p.feed(data[i:i + 7]) for i in range(0, len(data), 7))
+        self.assertEqual(out, data)
+        self.assertTrue(p.ready and p.ended)
+        self.assertEqual((p.frames, p.end_why, p.session["rollback"]), (100, "x", True))
+
+    def test_bad_streams(self):
+        p = spectate.LiveParser()
+        p.feed(b"NOTLIVE!\n" + b"x" * 20)
+        self.assertIsNotNone(p.bad)
+        p = spectate.LiveParser()
+        p.feed(spectate.MAGIC + struct.pack("<BI", 2, 1 << 30))
+        self.assertIsNotNone(p.bad)
+        p = spectate.LiveParser()
+        p.feed(spectate.MAGIC + inputs_rec(5, 10))             # inputs that do not start where the last ended
+        self.assertIsNotNone(p.bad)
+
+    def test_uploader_to_receiver(self):
+        d = tempfile.mkdtemp(prefix="t5spec")
+        try:
+            src, dst = os.path.join(d, "a.t5live"), os.path.join(d, "b.t5live")
+            data = spectate.MAGIC + session_rec() + match_rec(0) + b"".join(inputs_rec(f, 60, f) for f in range(0, 6000, 60))
+            with open(src, "wb") as f:
+                f.write(data[:5000])
+            up, rx = spectate.Uploader(src), spectate.Receiver(dst)
+            for off, piece in up.take(100000):
+                self.assertTrue(rx.add(off, piece))
+            with open(src, "ab") as f:
+                f.write(data[5000:] + end_rec())
+            while not up.done:
+                for off, piece in up.take(spectate.CHUNK):
+                    self.assertLessEqual(len(piece), spectate.CHUNK)
+                    self.assertTrue(rx.add(off, piece))
+            rx.close()
+            with open(dst, "rb") as f:
+                self.assertEqual(f.read(), data + end_rec())
+            self.assertLess(up.sent, len(data) / 3)               # held inputs compress well
+            # a receiver whose stream stops early ends its file with an END record (the game ends there)
+            rx2 = spectate.Receiver(os.path.join(d, "c.t5live"))
+            up2 = spectate.Uploader(src)
+            pieces = up2.take(spectate.CHUNK)
+            rx2.add(*pieces[0])
+            self.assertFalse(rx2.add(pieces[0][0] + 99999, b"x"))  # out of order
+            rx2.close("stopped")
+            p = spectate.LiveParser()
+            with open(os.path.join(d, "c.t5live"), "rb") as f:
+                p.feed(f.read())
+            self.assertTrue(p.ended)
+            self.assertEqual(p.end_why, "stopped")
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+
+if __name__ == "__main__":
+    unittest.main()

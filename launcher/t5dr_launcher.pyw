@@ -639,6 +639,21 @@ class App(tk.Tk):
         ttk.Label(dc, style="Muted.TLabel", wraplength=300, justify="left", text=self._discord_hint()).pack(
             anchor="w", pady=(2, 0))
 
+        # Spectators (docs/SPECTATE.md): who may watch this player's online matches, live, a few seconds late
+        spc = ttk.LabelFrame(right, text="  " + t("Spectators") + "  ", padding=(12, 6))
+        spc.pack(fill="x", pady=(6, 0))
+        self.spectators_var = tk.BooleanVar(value=bool(self.settings.get("spectators", True)))
+        self.spectators_ranked_var = tk.BooleanVar(value=bool(self.settings.get("spectators_ranked", False)))
+        ttk.Checkbutton(spc, text=t("Friends and room visitors may watch my online matches"),
+                        variable=self.spectators_var, style=self.wrap_style("TCheckbutton", 440),
+                        command=self.save_settings).pack(anchor="w")
+        ttk.Checkbutton(spc, text=t("Also my ranked matches"), variable=self.spectators_ranked_var,
+                        style=self.wrap_style("TCheckbutton", 440), command=self.save_settings).pack(anchor="w",
+                                                                                                    pady=(4, 0))
+        ttk.Label(spc, style="Muted.TLabel", wraplength=300, justify="left", text=t(
+            "They see the match a few seconds late, in their own game. Only when both players allow it; a ranked "
+            "match only when both allow ranked too.")).pack(anchor="w", pady=(4, 0))
+
         # Unlocks (T5_UNLOCK_STAGES / T5_UNLOCK_ITEMS, docs/DIRECTFIGHT.md "Unlocks"): offline only; the game
         # never changes the save for them. An online game answers as a fresh save does, on both PCs.
         unl = ttk.LabelFrame(right, text="  " + t("Unlocks") + "  ", padding=(12, 6))
@@ -1097,6 +1112,9 @@ class App(tk.Tk):
             self.settings["router_ports"] = bool(self.router_ports_var.get())
         if hasattr(self, "discord_var"):
             self.settings["discord_presence"] = bool(self.discord_var.get())
+        if hasattr(self, "spectators_var"):
+            self.settings["spectators"] = bool(self.spectators_var.get())
+            self.settings["spectators_ranked"] = bool(self.spectators_ranked_var.get())
         self.settings["mute"] = bool(self.mute_var.get())
         self.settings["background"] = bool(self.bg_var.get())
         self.settings["extra_env"] = self.env_text.get("1.0", "end").strip()

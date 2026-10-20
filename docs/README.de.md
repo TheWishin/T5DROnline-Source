@@ -330,6 +330,18 @@ gezeigt (ein Rematch beginnt dort, wo das Match davor aufgehört hat). Im Reiter
 weglassen. Ein Replay läuft nur mit der Spielversion, die es aufgenommen hat.
 Mehr in [REPLAYS.md](REPLAYS.md) (auf Englisch).
 
+### Zuschauen
+
+Ein Freund im Match oder das Match eines Raums lässt sich live ansehen:
+**Zuschauen** auf der Freunde-Seite (unter der Liste) oder in der Raumliste.
+Dein Spiel zeigt das Match ein paar Sekunden später, genau so, wie es gespielt
+wird (dieselben Eingaben, beim Abspielen geprüft). Wann immer du dazukommst,
+läuft die Session der Spieler von ihrem Anfang an (ein Rematch hängt von den
+Matches davor ab). Settings -> Zuschauer: „Freunde und Raumbesucher dürfen meine
+Online-Matches ansehen“ (an) und „Auch meine Ranked-Matches“ (aus); ein Match
+wird nur angesehen, wenn beide Spieler es erlauben. Mehr in
+[SPECTATE.md](SPECTATE.md) (auf Englisch).
+
 Der Menüpunkt **Online** des Spiels braucht Sonys Server, die es nicht mehr
 gibt: nach dem Nutzungsbedingungs-Bildschirm meldet das Spiel "A network error
 occurred" und kehrt zum Titel zurück.

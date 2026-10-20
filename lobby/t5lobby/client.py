@@ -64,6 +64,7 @@ from .i18n import t
 from .nat import GameSocket, RelayBridge, local_ipv4s, server_rtt
 from .proto import LobbyError
 from .tour_client import TourCalls
+from .spectate import ClientMixin as SpectateClientMixin
 
 CLIENT_NAME = "t5lobby-client/0.1"
 
@@ -76,12 +77,12 @@ def _ip_literal(host):
         return False
 
 
-class LobbyClient(TourCalls):
+class LobbyClient(TourCalls, SpectateClientMixin):
     def __init__(self, server, build, on_event=None, tls=False, tls_fingerprint=None, game_port=0,
                  auto_ready=False, handover="port", block_direct=False, request_timeout=10.0,
                  reconnect=60.0, plain_passwords=False, blind_ready=False, ingame_pick=False, sets=False,
                  port_mapping=False, nat2=True, relay_bridge=True, relays=True, friends=True, old_stages=True,
-                 tournaments=False):
+                 tournaments=False, spectate=False, live_dir=None, watch_dir=None):
         """server: "host[:port]". build: BuildInfo. on_event: optional callable(event) run on the
         client thread (use the `events` queue from a UI). game_port: local UDP port for the game
         (0 = any free one; set it when the player forwarded a port on the router).
@@ -115,7 +116,11 @@ class LobbyClient(TourCalls):
         (data/fighters.json "t5"), so a server with T5L_OLD_STAGES may draw them for its matches; False behaves like a
         1.1.1 client (tests). tournaments: take part in the server's tournaments (docs/TOURNAMENTS.md; the calls
         are in tour_client.py): the server then sends tour_call ("Your tournament set is ready") and the other
-        tour_* events. Off by default (the launcher turns it on)."""
+        tour_* events. Off by default (the launcher turns it on).
+        spectate: watch live matches and let this player's be watched (docs/SPECTATE.md, spectate.ClientMixin);
+        live_dir: where this player's games write their live streams (the match driver sets it), watch_dir: where
+        a watched stream goes. Off by default: the server then sends none of its messages (the launcher turns
+        it on)."""
         self.host, self.port = proto.parse_hostport(server)
         self.build = build
         self.on_event = on_event
@@ -178,6 +183,7 @@ class LobbyClient(TourCalls):
         self.upgrades = []           # (match, path) every switch of a relay bridge, for tools and tests
         self.clock_offset = None     # server time - this PC's time (seconds), for the punch's common start
         self._closing = False
+        self._spec_init(spectate, live_dir, watch_dir)
 
     # ================================================================ thread plumbing
     def _ensure_loop(self):
@@ -270,7 +276,8 @@ class LobbyClient(TourCalls):
                                                 + (["nat2"] if self.nat2 else [])
                                                 + (["relays"] if self.relays else [])
                                                 + (["friends"] if self.friends else [])
-                                                + (["tournaments"] if self.tournaments else [])})
+                                                + (["tournaments"] if self.tournaments else [])
+                                                + (["spectate"] if self.spectate else [])})
         except LobbyError:
             # Refused (version) or no answer (e.g. TLS on one side only): leave nothing half open.
             closing, self._closing = self._closing, True
@@ -360,6 +367,7 @@ class LobbyClient(TourCalls):
                     continue
                 self.me = r["you"]
                 self._start_keepalive()
+                await self._spec_after_login()
                 self._emit({"t": "reconnected"})
                 return
         finally:
@@ -463,6 +471,8 @@ class LobbyClient(TourCalls):
         for f in (self.friend_list or {}).get("friends") or ():
             if f.get("name") == msg.get("name"):
                 f.update({k: msg.get(k) for k in ("status", "activity", "invite")})
+                if "watch" in msg:
+                    f["watch"] = bool(msg["watch"])     # (spectating: a server and client with the cap)
 
     async def _on_invited(self, msg):
         self.invites[msg.get("invite")] = msg
@@ -916,6 +926,7 @@ class LobbyClient(TourCalls):
         self._start_port_mapper()
         if self.nat2:
             self._tasks.append(asyncio.ensure_future(self._clock_sync()))
+        await self._spec_after_login()
         return self.me
 
     async def _clock_sync(self, n=3):
@@ -1208,6 +1219,7 @@ class LobbyClient(TourCalls):
                     pass
             await self._drop_game_socket()
             await self._drop_bridge()
+            await self._spec_shutdown()
             if self._mapper is not None:
                 await asyncio.get_running_loop().run_in_executor(None, self._mapper.unmap)
             for task in self._tasks:

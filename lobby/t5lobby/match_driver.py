@@ -65,7 +65,7 @@ import threading
 import time
 import urllib.parse
 
-from . import fighters, proto, ranks
+from . import fighters, proto, ranks, spectate
 from .handover import MatchTicket, read_result_file
 from .i18n import N_, t, translate_message
 
@@ -350,6 +350,13 @@ class MatchDriver:
         self.launch = launch
         self.workdir = os.path.abspath(workdir)
         os.makedirs(self.workdir, exist_ok=True)
+        if getattr(client, "spectate", False):
+            # the live streams of this player's sessions, and the ones this player watches (docs/SPECTATE.md)
+            if not client.live_dir:
+                client.live_dir = os.path.join(self.workdir, "live")
+            if not client.watch_dir:
+                client.watch_dir = os.path.join(self.workdir, "live")
+            spectate.prune(client.live_dir)
         self.table = table or fighters.table()
         if mode == "auto":
             mode = "persistent" if game_supports_control(game_files) else "process"
@@ -451,6 +458,12 @@ class MatchDriver:
             env["T5_RB_NET_DELAY"] = str(int(ticket.input_delay))
         elif self.input_delay:
             env["T5_RB_NET_DELAY"] = str(self.input_delay)
+        # Spectating (docs/SPECTATE.md): the session's live stream, which the client library sends when somebody
+        # watches (a rematch in the running session goes on writing the file its first match opened)
+        live_dir = getattr(self.client, "live_dir", None)
+        if live_dir and proto.valid_match_id(ev.get("stream")):
+            os.makedirs(live_dir, exist_ok=True)
+            env["T5_REPLAY_LIVE"] = spectate.live_path(live_dir, ev["stream"])
         return env
 
     def fight_line(self, ev):

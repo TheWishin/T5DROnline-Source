@@ -800,6 +800,13 @@ void connect_locked()
     s.last_rx_ms = GetTickCount64();
     note("connected (%s), delay %d, peer %s%s", s.mode == Mode::Host ? "host, P1" : "join, P2", s.delay,
          addr_str(s.peer).c_str(), s.keyed ? ", packets authenticated" : "");
+    if (rp::recording()) {
+        /* the live stream's SESSION (spectators): what frame 0 will record (t5_hooks rec_start) -- the host's
+         * seed and delay, rollback when both offer it (rb_net.cpp enabled(): offered, negotiated, from frame <= 1) */
+        uint32_t rb_start = 0;
+        if (const char* v = getenv("T5_RB_NET_START")) rb_start = (uint32_t)atoi(!strncmp(v, "frame:", 6) ? v + 6 : v);
+        rp::rec_session_known(s.seed ? s.seed : s.session, s.rb_offer && s.rb_peer && rb_start <= 1, s.delay);
+    }
     SetEvent(s.rx_event);
 }
 
@@ -1468,14 +1475,18 @@ uint32_t scene_barrier(uint32_t f)
     init();
     State& s = S();
     uint32_t k;
+    bool replay;
     {
         std::lock_guard<std::mutex> lk(s.mu);
         k = s.nbar++;
         s.local_bar[k % kBarriers] = f + 1;
-        if (s.replay) return rp::play_barrier(k, f);   /* where the recorded session went on */
-        if (s.mode == Mode::Local || s.mode == Mode::Off || s.peer_lost) return f;
-        send_inputs_locked();
+        replay = s.replay;
+        if (!replay) {
+            if (s.mode == Mode::Local || s.mode == Mode::Off || s.peer_lost) return f;
+            send_inputs_locked();
+        }
     }
+    if (replay) return rp::play_barrier(k, f);   /* where the recorded session went on (live: it may wait for it, unlocked) */
     ULONGLONG t0 = GetTickCount64(), last_note = t0;
     uint32_t peer_f = f;
     for (;;) {
@@ -2017,6 +2028,24 @@ bool session_begin()
 uint32_t sessions() { State& s = S(); std::lock_guard<std::mutex> lk(s.mu); return s.sessions; }
 
 bool replaying() { return S().replay; }
+
+/* Spectating (replay.cpp live_load): the game started before the players' handshake, so configure() set up
+ * the playback without the session; its parameters now, before the first fight's select screen. A
+ * lockstep session takes back the rollback offer the game made at its start (play_rollback() said
+ * rollback while it was unknown). */
+void replay_session_known()
+{
+    State& s = S();
+    std::lock_guard<std::mutex> lk(s.mu);
+    if (!s.replay) return;
+    s.slot = rp::play_slot();
+    s.delay = rp::play_delay();
+    s.seed = rp::play_session_seed();
+    s.session = rp::play_match_seed();
+    if (!rp::play_rollback()) s.rb_offer = false;
+    note("replay: the live session: playing back as P%d, delay %d, %s", s.slot + 1, s.delay,
+         rp::play_rollback() ? "rollback" : "lockstep");
+}
 uint32_t barriers() { State& s = S(); std::lock_guard<std::mutex> lk(s.mu); return s.nbar; }
 void rec_pump() { State& s = S(); std::lock_guard<std::mutex> lk(s.mu); rec_pump_locked(); }
 

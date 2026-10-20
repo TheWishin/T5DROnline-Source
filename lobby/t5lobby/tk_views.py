@@ -542,8 +542,9 @@ class OnlineView:
         self.tab.bar = self._build_bar(card)
         self.st_match = self._build_match(card)
         self.st_result = self._build_result(card)
+        self.st_watch = self.tab.spec.build_card(self, card)       # spectating (tk_spectate.py)
         self.stages = {"play": self.st_play, "search": self.st_search, "bar": self.tab.bar,
-                       "match": self.st_match, "result": self.st_result}
+                       "match": self.st_match, "result": self.st_result, "watch": self.st_watch}
 
     def _build_play(self, card):
         tab, px = self.tab, self.px
@@ -721,7 +722,8 @@ class OnlineView:
         head.grid(row=0, column=0, sticky="we", pady=(0, px(6)))
         for key, label, cmd in (("room", t("Create room"), lambda: tab.call(tab.client.create_room, None)),
                                 ("join", t("Join room"), tab.do_join),
-                                ("leave", t("Leave room"), lambda: tab.call(tab.client.leave_room))):
+                                ("leave", t("Leave room"), lambda: tab.call(tab.client.leave_room)),
+                                ("watch_room", t("Watch"), tab.spec.watch_room)):    # (spectating its match)
             b = ttk.Button(tools, text=label, style="Card.Small.TButton", state="disabled", command=cmd)
             b.pack(side="left", padx=(px(6), 0))
             tab.actions[key], tab.action_text[key] = b, label
@@ -729,6 +731,7 @@ class OnlineView:
         fr.grid(row=1, column=0, sticky="nsew")
         tab.tv_rooms.bind("<Double-1>", lambda _e: tab.do_join() if str(tab.actions["join"].cget("state")) ==
                           "normal" else None)
+        tab.tv_rooms.bind("<<TreeviewSelect>>", lambda _e: tab.spec.set_actions(), add="+")
 
         cc = self.card(page, pad=12)
         cc.grid(row=0, column=1, rowspan=2, sticky="nsew", padx=(px(10), 0))
@@ -824,9 +827,14 @@ class OnlineView:
         fr.grid(row=1, column=0, sticky="nsew")
         tab.tv_friends.bind("<<TreeviewSelect>>", lambda _e: tab._set_friend_actions())
         tab.tv_friends.bind("<Double-1>", lambda _e: tab._profile_of_friend())
-        self.wrap(ttk.Label(fc, style="Card.Faint.TLabel", justify="left", text=t(
+        # below the list, not in the tools above it: that row is as wide as the card already (150 %, de/fr/pt-BR)
+        row = self.body(fc)
+        row.grid(row=2, column=0, sticky="we", pady=(px(6), 0))
+        row.columnconfigure(1, weight=1)
+        tab.friend_actions["watch"] = tab.spec.friend_button(row, px)     # a friend in a match (tk_spectate.py)
+        self.wrap(ttk.Label(row, style="Card.Faint.TLabel", justify="left", text=t(
             "Invite a friend who is online: one click on their side starts a casual match, or brings them into "
-            "your room.")), fc, 30).grid(row=2, column=0, sticky="w", pady=(px(6), 0))
+            "your room.")), fc, 160).grid(row=0, column=1, sticky="w")
 
         side = ttk.Frame(page)
         side.grid(row=1, column=1, sticky="nsew", padx=(px(10), 0))
@@ -1098,6 +1106,8 @@ class OnlineView:
         drv = tab.driver
         if drv is not None and drv.ticket is not None:
             return "match"
+        if tab.spec.active:
+            return "watch"
         me = tab.client.me or {}
         if me.get("status") == "queue":
             return "search"
@@ -1137,6 +1147,8 @@ class OnlineView:
             self._update_search()
         elif stage == "result":
             self._render_result_card()
+        elif stage == "watch":
+            self.tab.spec.update_card()
         self._ensure_anim()
 
     def tick(self):

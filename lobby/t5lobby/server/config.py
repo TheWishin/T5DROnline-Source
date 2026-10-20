@@ -117,6 +117,12 @@ class Config:
     friend_request_days: float = 14.0  # T5L_FRIEND_REQUEST_DAYS: an unanswered request runs out after this
     friend_retry_days: float = 7.0  # T5L_FRIEND_RETRY_DAYS: after a decline, the same request again only after this
     invite_seconds: float = 60.0    # T5L_INVITE_SECONDS: an invite to a match or a room waits this long for an answer
+    # spectating live matches (docs/SPECTATE.md)
+    max_spectators: int = 8         # T5L_MAX_SPECTATORS: spectators per match
+    max_streams: int = 50           # T5L_MAX_STREAMS: matches being watched at the same time, the whole server
+    spectate_buffer_kb: int = 2048  # T5L_SPECTATE_BUFFER_KB: a session's stream kept from its start (compressed; ~3 h)
+    spectate_rate_kb: int = 16      # T5L_SPECTATE_RATE_KB: KB/s a streamer may upload (a match needs well under 1)
+    spectate_idle: float = 90.0     # T5L_SPECTATE_IDLE: a stream with no new data this long, its match over, ends
     invite_retry_seconds: float = 30.0  # T5L_INVITE_RETRY_SECONDS: after a declined (or taken back) invite or challenge,
                                     # the same player asks the same player again only after this (0 = off)
     lag_tolerance: float = 1.0      # T5L_LAG_TOLERANCE: extra frames of waiting before the lag check says "more than the ping explains"

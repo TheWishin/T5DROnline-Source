@@ -132,6 +132,17 @@ SERVER = (
     N_("your PC's UDP packets did not reach the lobby server; check the firewall"),
     N_("your opponent reported the result; please report yours"),
     N_("opponent runs a different build"),
+    # spectating (server/spectating.py)
+    N_("this launcher cannot watch matches; update it"),
+    N_("that match is not being played right now"),
+    N_("you are playing in that match"),
+    N_("you are in a match yourself"),
+    N_("only friends of a player can watch this match"),
+    N_("the players do not allow spectators"),
+    N_("neither player can send the match right now"),
+    N_("this match cannot be watched any more"),
+    N_("this match has {count} spectators already"),
+    N_("the server cannot show more matches right now"),
 )
 
 # lobby/t5lobby/server/tournaments.py: errors answering a tournament request (docs/TOURNAMENTS.md)

@@ -94,6 +94,19 @@ class GameStart(unittest.TestCase):
         self.assertTrue(core.online_saves_dir(self.out).replace("\\", "/").endswith(
             "gamedata-online/dev_hdd0/home/00000001/savedata"))
 
+    def test_a_long_game_folder_still_gets_the_online_save(self):
+        # (security review 2) the runtime (0044) ignores a PS3_SAVEDATA_DIR of 960 bytes or more: an online game in a
+        # deep folder used the player's offline save instead and went apart from a fresh one on every frame
+        deep = os.path.join(self.out, *(["x" * 60] * 16))
+        self.assertGreaterEqual(len(core.online_saves_dir(deep).encode("utf-8")), core.SAVEDATA_DIR_MAX)
+        self.assertEqual(core.online_saves_env(deep), "./gamedata-online/dev_hdd0/home/00000001/savedata")
+        self.assertEqual(core.online_saves_env(self.out), core.online_saves_dir(self.out))     # (the usual case)
+        with open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "patches", "ps3recomp",
+                               "0044-savedata-dir.patch"), encoding="utf-8") as f:
+            patch = f.read()
+        self.assertIn("s_save_root_buf[1024]", patch)              # (what SAVEDATA_DIR_MAX follows)
+        self.assertIn("sizeof(s_save_root_buf) - 64", patch)
+
     def test_the_save_is_backed_up_once_before_free_items(self):
         sd = core.saves_dir(self.out)
         os.makedirs(os.path.join(sd, "NPUB30009-SYSNET"))

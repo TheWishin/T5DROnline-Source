@@ -1,5 +1,5 @@
 diff --git a/libs/video/cellGcmSys.c b/libs/video/cellGcmSys.c
-index ad0fa13..45c53c5 100644
+index ad0fa13..b34bdc2 100644
 --- a/libs/video/cellGcmSys.c
 +++ b/libs/video/cellGcmSys.c
 @@ -680,8 +680,42 @@ void cellGcmSetWaitFlip(void)
@@ -45,14 +45,14 @@ index ad0fa13..45c53c5 100644
      rsx_pf_stamp(RSX_PF_RESETFLIP_QPC);
      { static int n = 0;
        if (getenv("FLIP_DBG") && __atomic_fetch_add(&n, 1, __ATOMIC_RELAXED) < 12)
-@@ -1970,6 +2004,7 @@ static void gcm_rsx_process_fifo_unlocked(void)
-                 /* Queued by _cellGcmSetFlipCommand, which already did the
-                  * guest-visible half of the request. */
-                 s_current_display_buffer_id = w & 7u;
-+                gcm_test_spin(1);   /* PS3_TEST_SLOW_XLAT_US */
-                 { const LONG sq = InterlockedIncrement(&s_lat_walk_seq); lat_log('X', "%ld", (long)sq); }
-                 if (s_flip_call_tail != __atomic_load_n(&s_flip_call_head, __ATOMIC_RELAXED))
-                     g_rsx_pf[RSX_PF_SHOWN_CALL_QPC] = s_flip_call_ring[s_flip_call_tail++ & 15u];
+@@ -1948,6 +1982,7 @@ static void gcm_rsx_process_fifo_unlocked(void)
+              * on would mix the next frame's head into the batch (wave: every
+              * frame split across 4 presents, layout flashing/zooming). */
+             extern s32 cellGcmSetFlipCommand(u32 bufferId);
++            gcm_test_spin(1);   /* PS3_TEST_SLOW_XLAT_US: before the walker counts the flip as reached */
+             s_fifo_getoff += 4;
+             { LARGE_INTEGER q; QueryPerformanceCounter(&q);
+               g_rsx_pf[RSX_PF_FLIP_QPC] = q.QuadPart;
 diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
 index 25ac5a9..0959079 100644
 --- a/libs/video/rsx_live_draw.c
@@ -204,10 +204,18 @@ index 5f134a1..31b7a69 100644
  }
  #endif
 diff --git a/runtime/ppu/tests/boot_main.cpp b/runtime/ppu/tests/boot_main.cpp
-index 97f1601..e132ec2 100644
+index 97f1601..e755453 100644
 --- a/runtime/ppu/tests/boot_main.cpp
 +++ b/runtime/ppu/tests/boot_main.cpp
-@@ -453,6 +453,7 @@ struct SlowFrames {
+@@ -446,6 +446,7 @@ extern "C" void rsx_live_draw_wait_totals(long long* gpu_wait_ticks, long long*
+ extern "C" volatile long long g_rsx_pf[];
+ extern "C" volatile long long g_rsx_next_tick_qpc;   /* rsx_live_draw.c: the present's waits end before it */
+ enum { PF_GUEST_FLIP_QPC = 16 };   /* rsx_live_draw.h RSX_PF_GUEST_FLIP_QPC */
++enum { PF_FLIP_QPC = 5 };          /* rsx_live_draw.h RSX_PF_FLIP_QPC: the walker reached the flip */
+ struct SlowFrames {
+     enum { CAP = 4096 };
+     int cfg = -1;
+@@ -453,6 +454,7 @@ struct SlowFrames {
      double t_release = 0, late_release = 0, t_prev = 0;
      long long gpu0 = 0, pres0 = 0;
      unsigned frames = 0, slow = 0, n_game = 0, n_xlat = 0, n_tick = 0, n_gpu = 0, n_pres = 0, ticks = 0;
@@ -215,7 +223,7 @@ index 97f1601..e132ec2 100644
      double worst = 0; const char* worst_why = "";
      float c_game[CAP], c_xlat[CAP], c_gpu[CAP], c_pres[CAP];
      double t_window = 0;
-@@ -460,8 +461,11 @@ struct SlowFrames {
+@@ -460,8 +462,11 @@ struct SlowFrames {
          qpf = f;
          const char* e = getenv("PS3_SLOW_FRAMES");
          cfg = !(e && *e == '0');
@@ -227,7 +235,7 @@ index 97f1601..e132ec2 100644
      void on_release(double t, double late) { t_release = t; late_release = late; }
      static double median(float* a, unsigned n) {
          if (!n) return 0.0;
-@@ -498,19 +502,25 @@ struct SlowFrames {
+@@ -498,19 +503,25 @@ struct SlowFrames {
              if (iv > worst) { worst = iv; worst_why = why; }
          }
          const double span = (t1 - t_window) / qpf;
@@ -259,7 +267,7 @@ index 97f1601..e132ec2 100644
          worst = 0; worst_why = ""; t_window = t1;
      }
  };
-@@ -797,6 +807,28 @@ static DWORD WINAPI vblank_ticker(LPVOID)
+@@ -797,6 +808,28 @@ static DWORD WINAPI vblank_ticker(LPVOID)
      s_slow.init((double)vb_freq.QuadPart);
      int present_at_xlat;
      { const char* e = getenv("PS3_PRESENT_AT_XLAT"); present_at_xlat = !(e && *e == '0'); }
@@ -288,7 +296,7 @@ index 97f1601..e132ec2 100644
      /* a flip the walker has reached is presented now (PS3_PRESENT_AT_XLAT) */
      auto early_present = [&](void) {
          if (!rsx_ok || !s_rsx_live || !present_at_xlat) return;
-@@ -827,15 +859,32 @@ static DWORD WINAPI vblank_ticker(LPVOID)
+@@ -827,15 +860,32 @@ static DWORD WINAPI vblank_ticker(LPVOID)
           * fence still paid the whole tick. Waiting on it keeps the same 4 ms
           * ceiling when nothing kicks, and drains on demand when something
           * does. */
@@ -324,7 +332,7 @@ index 97f1601..e132ec2 100644
              rsx_pf_max(PF_VBLANK_LATE_MAX, (long long)(now - next_tick));
          /* PS3_PRESENT_LATE (default on; "0" = present first): when a flip is
           * due on this vblank, complete it and deliver the guest's handlers
-@@ -845,7 +894,7 @@ static DWORD WINAPI vblank_ticker(LPVOID)
+@@ -845,7 +895,7 @@ static DWORD WINAPI vblank_ticker(LPVOID)
           * recorded in between: the present still runs before the next drain. */
          static int late_present = -1;
          if (late_present < 0) { const char* e = getenv("PS3_PRESENT_LATE"); late_present = !(e && *e == '0'); }
@@ -333,7 +341,7 @@ index 97f1601..e132ec2 100644
              g_rsx_next_tick_qpc = (long long)(next_tick + vb_period);   /* presents in here: the tick after this one */
              cellGcmTickVBlank();
              s_slow.on_tick();
-@@ -858,6 +907,7 @@ static DWORD WINAPI vblank_ticker(LPVOID)
+@@ -858,6 +908,7 @@ static DWORD WINAPI vblank_ticker(LPVOID)
               * writes and showed empty or mixed batches. */
              int present_due = 0;
              const int completes = cellGcm_flip_held();   /* this tick completes a flip: the next frame starts */
@@ -341,7 +349,23 @@ index 97f1601..e132ec2 100644
              {
                  if (rsx_ok && cellGcm_take_flip_pending()) {
                      if (late_present) present_due = 1;
-@@ -903,6 +953,12 @@ static DWORD WINAPI vblank_ticker(LPVOID)
+@@ -875,7 +926,14 @@ static DWORD WINAPI vblank_ticker(LPVOID)
+                              ppu_gcm_pump();
+                              QueryPerformanceCounter(&p1);
+                              rsx_pf_add(PF_PUMP_TICKS, p1.QuadPart - p0.QuadPart); } }
+-                if (completes) { lock.on_release(now); s_slow.on_release(now, now - next_tick); }
++                if (completes) {
++                    /* patch 0059: the vblank thread was late only if it was late after the frame was
++                     * translated -- the walk runs on this thread, so a tick that waited for the walk is
++                     * the translation's time, not "vblank thread late" */
++                    const double due = (double)g_rsx_pf[PF_FLIP_QPC] > next_tick ? (double)g_rsx_pf[PF_FLIP_QPC] : next_tick;
++                    lock.on_release(now);
++                    s_slow.on_release(now, now > due ? now - due : 0.0);
++                }
+                 if (present_due) present_guest_frame();
+             }
+             /* Drain the game's GCM FIFO every tick -- this writes the RSX sync-fence
+@@ -903,6 +961,12 @@ static DWORD WINAPI vblank_ticker(LPVOID)
              }
              cellGcm_rsx_process_fifo();
              early_present();

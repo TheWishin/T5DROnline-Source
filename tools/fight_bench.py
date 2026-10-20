@@ -269,6 +269,11 @@ def renderer_split(rows):
            "submit_ms": med(num("present_flush_us")) / 1000.0,
            "present_ms": med(num("present_call_us")) / 1000.0,
            "flush_wait_ms": med(num("flush_wait_us")) / 1000.0}
+    if rows[0].get("ph_desc_us") not in (None, ""):
+        # patch 0059 splits the recording after the texture binding: descriptor tables, RT binding and
+        # barriers; the vertex-constant copy; the root/PSO/viewport/IA calls and the draw itself
+        out["d3d_ms"] = med(lambda r: float(r["ph_desc_us"]) + float(r["ph_api_us"]) + float(r["ph_post_us"])) / 1000.0
+        out["cbcopy_ms"] = med(num("ph_cbcopy_us")) / 1000.0
     if rows[0].get("game_us") not in (None, ""):
         out["game_ms"] = med(num("game_us")) / 1000.0
     return out
@@ -427,10 +432,11 @@ def main():
     if split:
         res["renderer"] = split
         print("renderer per frame (median): %(draws).0f draws; walker CPU %(fifo_cpu_ms).2f ms, translation "
-              "%(xlat_ms).2f ms (draw recording %(draw_ms).2f: D3D12 calls + constant copies %(d3d_ms).2f, "
+              "%(xlat_ms).2f ms (draw recording %(draw_ms).2f: D3D12 calls%(cb)s %(d3d_ms).2f, "
               "texture/sampler binding %(texbind_ms).2f, PSO lookup %(pso_ms).2f, vertex %(vertex_ms).2f), "
               "submit %(submit_ms).2f, present call %(present_ms).2f%(game)s" % dict(
-                  split, game=", game (release -> flip) %.2f ms" % split["game_ms"] if "game_ms" in split else ""))
+                  split, game=", game (release -> flip) %.2f ms" % split["game_ms"] if "game_ms" in split else "",
+                  cb=" + constant copies" if "cbcopy_ms" not in split else ""))
     slow = [ln.strip() for ln in open(os.path.join(out, "game.log"), errors="replace") if ln.startswith("[slow-frames]")]
     if slow:
         res["slow_frames"] = slow

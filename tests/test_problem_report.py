@@ -302,7 +302,8 @@ def fake_native(d, user=FAKE_USER, logs=3, build_exit=None):
                 f"[netplay] joining {PUBLIC_V4}:5{i}000\n", f"[netplay] mode join marker-{i}\n",
                 "[sched] power saving on (this PC has a battery: laptop or handheld): fewer worker threads\n",
                 "[gpu] display: the window's screen is driven by Fake iGPU, the game renders on Fake GPU 9000\n",
-                f"[slow-frames] last 30 s: 1700 frames, {i} slow (over 20.9 ms): CPU {i} | on battery\n"]
+                f"[slow-frames] last 30 s: 1700 frames, {i} slow (over 20.9 ms): CPU {i} | on battery\n",
+                f"[netplay] speed: 47.1 fps, this PC 59.8 fps without the waits for the peer (marker-{i})\n"]
         p = put(os.path.join(out, "logs", f"game-20261018-1{i}0000.log"), "".join(body) * 40)
         t = time.time() - (logs - i) * 100
         os.utime(p, (t, t))
@@ -439,9 +440,12 @@ class Whole(unittest.TestCase):
                      # laptops (patch 0047): power and heat now, the game's power saving, the hybrid display, slow frames
                      "== Power and heat (now) ==", "Power: ", "Power plan: ", "Sensors: ", "[sched] power saving on",
                      "[gpu] display: the window's screen is driven by Fake iGPU", "== How the game ran",
-                     "[slow-frames] last 30 s: 1700 frames"):
+                     "[slow-frames] last 30 s: 1700 frames",
+                     # weak PCs (docs/WEAK_PC.md): Windows' Game Mode / GPU scheduling, the online match's speed
+                     "Windows graphics settings: ", "[netplay] speed: 47.1 fps, this PC 59.8 fps"):
             self.assertIn(want, t)
         self.assertLessEqual(t.count("[slow-frames]"), 4)        # the last few, not all 40 copies
+        self.assertLessEqual(t.count("[netplay] speed:"), 4)
 
     def test_contents_lists_everything_and_what_was_removed(self):
         self.build()

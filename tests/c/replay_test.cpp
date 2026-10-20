@@ -4,7 +4,8 @@
  * reads files back the way a playback does, and prints what it read, so Python's reader
  * (launcher/replays.py) and the game's can be checked against each other.
  *
- *   replay_test write <dir> <frames> <seed>   records a session of two matches into <dir>, prints
+ *   replay_test write <dir> <frames> <seed> [live]  records a session of two matches into <dir> (and
+ *                                             the live stream into [live]), prints
  *                                             "FILE <path>" and "DIGEST <hex>" (FNV-1a of every input)
  *   replay_test read <file>                    plays it the way the game does: "DIGEST", "MATCH", "LINE",
  *                                             "BARRIER" lines, or "ERROR <why>" (exit code 2)
@@ -28,7 +29,10 @@ void note(const char* fmt, ...)
     printf("\n");
     va_end(ap);
 }
+void replay_session_known() { printf("SESSIONKNOWN\n"); }   /* (a live stream's session after the start) */
 }
+/* the session environment (netplay_core.cpp): here the process's */
+extern "C" const char* t5_env(const char* key) { return getenv(key); }
 
 static uint64_t fnv(uint64_t h, uint32_t v)
 {
@@ -44,13 +48,15 @@ static uint64_t digest_in(uint64_t h, const np::PadInput& in)
 static uint32_t g_x = 1;
 static uint32_t rnd() { g_x ^= g_x << 13; g_x ^= g_x >> 17; g_x ^= g_x << 5; return g_x; }
 
-static int do_write(const char* dir, uint32_t frames, uint32_t seed)
+static int do_write(const char* dir, uint32_t frames, uint32_t seed, const char* live)
 {
     _putenv_s("T5_REPLAY_DIR", dir);
     _putenv_s("T5_REPLAY_HASH_EVERY", "30");
+    if (live) _putenv_s("T5_REPLAY_LIVE", live);   /* the live stream too (spectating) */
     g_x = seed | 1;
     rp::rec_session_begin(1, "test-build-id", 0x1234ABCD);
     if (!rp::recording()) { printf("ERROR not recording\n"); return 2; }
+    if (live) rp::rec_session_known(0x1234ABCD, true, 2);   /* (the handshake: the live SESSION) */
     rp::rec_start(0x1234ABCD, true, 2);
     rp::rec_rollback_delay(1);
     rp::Fight ft;
@@ -142,7 +148,8 @@ static int do_read(const char* file, int argc, char** argv, bool map)
 int main(int argc, char** argv)
 {
     setvbuf(stdout, nullptr, _IONBF, 0);
-    if (argc >= 5 && !strcmp(argv[1], "write")) return do_write(argv[2], (uint32_t)atoi(argv[3]), (uint32_t)strtoul(argv[4], nullptr, 0));
+    if (argc >= 5 && !strcmp(argv[1], "write"))
+        return do_write(argv[2], (uint32_t)atoi(argv[3]), (uint32_t)strtoul(argv[4], nullptr, 0), argc >= 6 ? argv[5] : nullptr);
     if (argc >= 3 && !strcmp(argv[1], "read")) return do_read(argv[2], 0, nullptr, false);
     if (argc >= 3 && !strcmp(argv[1], "map")) return do_read(argv[2], argc - 3, argv + 3, true);
     printf("usage: replay_test write <dir> <frames> <seed> | read <file> | map <file> k:f ...\n");

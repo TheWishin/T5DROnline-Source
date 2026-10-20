@@ -423,6 +423,44 @@ class GameCodeTest(unittest.TestCase):
         self.assertEqual(int(self.lines(out, "DIGESTPLUS")[0], 16), fnv_digest(frames))
         self.assertEqual(self.lines(out, "LINE")[0], "1 9,33,27,2 buttons=2|4 pick=30")
 
+    def test_live_stream_plays_like_the_file(self):
+        """Spectating (docs/SPECTATE.md): the live stream written next to the replay holds the same session --
+        Python's parser reads it whole, and the game's growing-file playback gives the same inputs, fight
+        lines and sync points as the replay file."""
+        sys.path.insert(0, os.path.join(ROOT, "lobby"))
+        from t5lobby import spectate
+        d = tempfile.mkdtemp(dir=self.tmp)
+        live = os.path.join(d, "live.t5live")
+        code, out = self.run_exe("write", d, "3000", "0x5eed", live)
+        self.assertEqual(code, 0, out)
+        path = self.lines(out, "FILE")[0]
+        p = spectate.LiveParser()
+        with open(live, "rb") as f:
+            data = f.read()
+        self.assertEqual(p.feed(data), data)                 # whole records only
+        self.assertTrue(p.ready and p.ended)
+        self.assertEqual((p.frames, len(p.matches), p.end_why), (3000, 2, "test end"))
+        self.assertEqual((p.session["slot"], p.session["rollback"], p.session["hash_every"]), (1, True, 30))
+        self.assertEqual((p.matches[0]["winner"], p.matches[1]["winner"], p.matches[1]["start"]), (1, 0, 1500))
+        code1, out1 = self.run_exe("read", path)
+        code2, out2 = self.run_exe("read", live)
+        self.assertEqual((code1, code2), (0, 0), out2)
+        for tag in ("DIGESTPLUS", "LINE", "BARRIER", "SLOT"):
+            self.assertEqual(self.lines(out2, tag), self.lines(out1, tag), tag)
+        self.assertIn("watching the live stream", out2)
+        # cut short (the stream stopped in the middle of a record, no END): what is whole still plays
+        cut = os.path.join(d, "cut.t5live")
+        with open(cut, "wb") as f:
+            f.write(data[:len(data) // 2] + spectate.end_record("stopped")[:3])
+        os.environ["T5_REPLAY_LIVE_TIMEOUT"] = "5"           # (nothing more comes: it ends after 5 s)
+        try:
+            code, out = self.run_exe("read", cut)
+        finally:
+            del os.environ["T5_REPLAY_LIVE_TIMEOUT"]
+        self.assertEqual(code, 0, out)
+        self.assertIn("SLOT 1 DELAY 2 ROLLBACK 1", out)
+        self.assertIn("nothing new for 5 s", out)
+
     def test_game_reads_a_python_file(self):
         ins = sample_inputs(777, seed=3)
         path = os.path.join(self.tmp, "py" + replays.EXT)

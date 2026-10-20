@@ -12,6 +12,7 @@
 #include "rb.h"
 #include "rb_state.h"
 #include "rb_net.h"
+#include "rb_detour.h"   /* shadowtrace_boundary (diagnostics) */
 #include "../netplay/replay.h"   /* a replay plays back with the loop it was recorded with */
 
 extern "C" uint8_t* vm_base;
@@ -773,6 +774,7 @@ static uint32_t boundary(uint32_t f, bool scene_flag, np::PadInput out[2])
      * not compared -- their state follows the loading, whose progress differs
      * between a game that has played and a fresh one (t5_hooks.cpp kIntroHash) */
     if (g_intro_rule && rd32(kPhaseWord) <= 12) g_hash[f % kHist] = 0x4F52544E49ull;
+    shadowtrace_boundary(f, g_resim);   /* T5_RB_SHADOW_TRACE=1 (diagnostics, rb_shadowtrace.cpp) */
     if (g_dump_ring) { g_dump_tag[f % kDumpFrames] = f + 1; g_dump_len[f % kDumpFrames] = state_game_bytes(g_dump_ring + (size_t)(f % kDumpFrames) * kDumpBytes, kDumpBytes); }
     for (uint32_t mf; g_dump && np::take_mismatch(&mf);) {
         if (g_dump_tag[mf % kDumpFrames] != mf + 1 || g_dumps >= 20) continue;

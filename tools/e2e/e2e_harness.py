@@ -88,10 +88,17 @@ def below_normal_priority():
     """This process and everything it starts (Windows children inherit BELOW_NORMAL) at below-normal. The runner's
     own threads (Tk, the lobby clients) get THREAD_PRIORITY_HIGHEST inside that class -- the level of a normal
     process's normal thread -- so that next to a dozen games (other agents' too) the launcher code still reads its
-    events on time; the games started from here stay below normal (a thread priority is not inherited)."""
+    events on time; the games started from here stay below normal (a thread priority is not inherited).
+    The 1 ms timer resolution: the shaper's proxies hold packets for a few ms in select() timeouts, which Windows
+    rounds up to its 15.6 ms tick in a process that did not ask for better -- the emulated network had up to 15 ms
+    of jitter of its own on every hop (two hops on a relayed path; relay-smooth, 1.1.4)."""
     if IS_WIN:
         k32 = ctypes.windll.kernel32
         k32.SetPriorityClass(k32.GetCurrentProcess(), BELOW_NORMAL)
+        try:
+            ctypes.WinDLL("winmm").timeBeginPeriod(1)
+        except (OSError, AttributeError):
+            pass
         _raise_this_thread()
         orig_run = threading.Thread.run
 
@@ -108,6 +115,33 @@ def _raise_this_thread():
             k32.SetThreadPriority(k32.GetCurrentThread(), 2)       # THREAD_PRIORITY_HIGHEST
         except Exception:      # noqa: BLE001
             pass
+
+
+def raise_typed():
+    """THREAD_PRIORITY_HIGHEST for the calling thread, for real: _raise_this_thread's windll.kernel32 call passes the
+    GetCurrentThread() pseudo-handle as a 32-bit int and Windows refuses it ("invalid handle"), so the runner's threads
+    stay at its below-normal class's normal level -- two below the games' own threads, the gap between a launcher and
+    its game on a player's PC, which the relay scenarios rely on. The shaper's proxies are the network, not the
+    launcher: they get the raise (relay-smooth, 1.1.4)."""
+    if IS_WIN:
+        try:
+            k32 = ctypes.WinDLL("kernel32")
+            k32.SetThreadPriority.argtypes = (ctypes.c_void_p, ctypes.c_int)
+            k32.SetThreadPriority(ctypes.c_void_p(-2), 2)
+        except (OSError, AttributeError):
+            pass
+
+
+def pin_process(cpus):
+    """This process (and what it starts from now on) on the last `cpus` processors; 0 = all again. -> the mask."""
+    if not IS_WIN:
+        return 0
+    n = os.cpu_count() or 1
+    mask = sum(1 << i for i in range(n - min(cpus, n), n)) if cpus else (1 << n) - 1
+    k32 = ctypes.WinDLL("kernel32")
+    k32.SetProcessAffinityMask.argtypes = (ctypes.c_void_p, ctypes.c_size_t)
+    k32.SetProcessAffinityMask(ctypes.c_void_p(-1), mask)
+    return mask
 
 
 def free_port(kind=socket.SOCK_STREAM):
@@ -295,6 +329,7 @@ class Proxy:
             self.stats["replayed"] += 1
 
     def _loop(self):
+        raise_typed()
         socks = [self.sa, self.sb, self.sr]
         while not self.stop:
             now = time.perf_counter()
@@ -362,9 +397,12 @@ class RelayNodes:
     RTT = {"main": (150, 150), "usw": (20, 140), "usc": (60, 60)}
     NAMES = {"usw": "Oregon (US West)", "usc": "Texas (US Central)"}
 
-    def __init__(self, ctx, rtt=None):
+    def __init__(self, ctx, rtt=None, shaped=None):
+        """shaped: {relay id: LegShaper} -- that relay's legs go through ShapedDelay proxies that follow the
+        LegShaper's current settings (round trip, jitter, loss; its rtt tuple is then unused)."""
         from t5lobby import relayctl
         self.ctx = ctx
+        self.shaped = dict(shaped or {})
         self.rtt = dict(rtt or self.RTT)
         self.dir = os.path.join(ctx.dir, "relays")
         os.makedirs(self.dir, exist_ok=True)
@@ -419,7 +457,10 @@ class RelayNodes:
                    **{rid: ("127.0.0.1", n["udp"]) for rid, n in self.nodes.items()}}
         out = {}
         for rid, target in targets.items():
-            px = relay_e2e.UdpDelay(target, self.rtt[rid][index], f"{rid}/{'ABCDEFGH'[index]}")
+            if rid in self.shaped:
+                px = ShapedDelay(target, self.shaped[rid], f"{rid}/{'ABCDEFGH'[index]}", seed=index * 7919 + 17)
+            else:
+                px = relay_e2e.UdpDelay(target, self.rtt[rid][index], f"{rid}/{'ABCDEFGH'[index]}")
             px.start()
             self.proxies.append(px)
             out[rid] = tuple(px.addr)
@@ -460,6 +501,98 @@ class RelayNodes:
                 pass
         for rid in list(self.procs):
             self.stop(rid)
+
+
+class LegShaper:
+    """The network of one leg of a relayed path (player <-> relay node), the same for every player and changed
+    between matches. set_total(): a relayed path shaped like the Shaper's direct one -- two legs in series, each
+    with half the round trip and half the jitter, and the loss that compounds to the total (relay-smooth, 1.1.4)."""
+
+    def __init__(self):
+        self.rtt = self.jitter = self.loss = 0.0
+        self.stats = {"up": 0, "down": 0, "dropped": 0}
+
+    def set_total(self, rtt=0.0, jitter=0.0, loss=0.0):
+        self.rtt, self.jitter = float(rtt) / 2.0, float(jitter) / 2.0
+        self.loss = 100.0 * (1.0 - (1.0 - float(loss) / 100.0) ** 0.5)
+
+    def describe(self):
+        return f"each leg rtt {self.rtt:g} ms, jitter +-{self.jitter:g} ms, loss {self.loss:.2f}%"
+
+
+class ShapedDelay(threading.Thread):
+    """relay_e2e.UdpDelay with jitter and loss: players send to `addr`, the proxy sends on to `target` from an
+    upstream socket of each player's own and back, each packet held for leg.rtt / 2 +- leg.jitter (uniform, so
+    packets may overtake each other, as in the Shaper's Proxy) or dropped with leg.loss %."""
+
+    def __init__(self, target, leg, name="", seed=1):
+        super().__init__(daemon=True, name=f"shaped-delay {name}")
+        self.target = tuple(target)
+        self.leg = leg
+        self.rnd = random.Random(seed)
+        self.front = Proxy._sock()
+        self.up = {}                    # player address -> upstream socket
+        self.back = {}                  # upstream socket -> player address
+        self.heap = []
+        self.seq = 0
+        self.stop_flag = False
+
+    @property
+    def addr(self):
+        return self.front.getsockname()
+
+    def _later(self, sock, data, dst, kind):
+        leg = self.leg
+        if leg.loss and self.rnd.random() * 100.0 < leg.loss:
+            leg.stats["dropped"] += 1
+            return
+        one_way = leg.rtt / 2000.0
+        if leg.jitter:
+            one_way += self.rnd.uniform(-leg.jitter, leg.jitter) / 1000.0
+        self.seq += 1
+        leg.stats[kind] += 1
+        heapq.heappush(self.heap, (time.perf_counter() + max(0.0, one_way), self.seq, sock, data, dst))
+
+    def run(self):
+        raise_typed()
+        while not self.stop_flag:
+            now = time.perf_counter()
+            while self.heap and self.heap[0][0] <= now:
+                _t, _s, sock, data, dst = heapq.heappop(self.heap)
+                try:
+                    sock.sendto(data, dst)
+                except OSError:
+                    pass
+            wait = min(0.002, max(0.0, self.heap[0][0] - now)) if self.heap else 0.002
+            try:
+                rd, _, _ = select.select([self.front, *self.up.values()], [], [], wait)
+            except OSError:
+                break
+            for sock in rd:
+                while True:
+                    try:
+                        data, src = sock.recvfrom(4096)
+                    except (BlockingIOError, InterruptedError, ConnectionResetError):
+                        break
+                    except OSError:
+                        break
+                    if sock is self.front:
+                        up = self.up.get(src)
+                        if up is None:
+                            up = self.up[src] = Proxy._sock()
+                            self.back[up] = src
+                        self._later(up, data, self.target, "up")
+                    else:
+                        self._later(self.front, data, self.back[sock], "down")
+
+    def close(self):
+        self.stop_flag = True
+        self.join(2)
+        for s in [self.front, *self.up.values()]:
+            try:
+                s.close()
+            except OSError:
+                pass
 
 
 class Shaper:

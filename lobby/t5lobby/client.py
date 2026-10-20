@@ -568,7 +568,9 @@ class LobbyClient(TourCalls, SpectateClientMixin):
         if left <= 0:
             self.invite_waits.pop(str(name).lower(), None)
             return 0
-        return math.ceil(left)
+        # (a millisecond off: "now + N - now" is N plus a rounding error when the clock has not moved, which ceil()
+        # made N + 1 -- test_friends saw 86401 for a day now and then)
+        return max(1, math.ceil(left - 0.001))
 
     async def _on_relays(self, msg):
         """The server's list of regional relays changed: measure the new list."""

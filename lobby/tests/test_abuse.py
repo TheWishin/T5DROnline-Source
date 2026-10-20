@@ -730,7 +730,7 @@ class RelayAbuseTest(Base):
         out = []
         for t in tickets:
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.bind(("0.0.0.0", t.local_port))
+            s.bind((util.GAME_IP, t.local_port))
             proto.disable_udp_connreset(s)
             s.settimeout(0.4)
             out.append(s)

@@ -71,6 +71,36 @@ class Pins(unittest.TestCase):
             self.assertNotEqual(bg.code_id(), a)
 
 
+class PackageCheck(unittest.TestCase):
+    """The launcher's line under the chosen .pkg (core.describe_pkg): both PSN content IDs of the supported
+    package are green; another Tekken 5 DR package is a warning."""
+
+    def setUp(self):
+        for sub in ("tools", "lobby", "launcher"):
+            d = os.path.join(ROOT, sub)
+            if d not in sys.path:
+                sys.path.insert(0, d)
+        import core
+        self.core = core
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def pkg(self, cid):
+        p = os.path.join(self.tmp.name, cid + ".pkg")
+        put(p, b"\x7fPKG" + bytes(0x2C) + cid.encode().ljust(0x24, b"\0") + bytes(0x40))
+        return p
+
+    def test_both_content_ids_are_supported(self):
+        for cid in ("UP0700-NPUB30009_00-UPDATE0000010000", "UP0700-NPUB30009_00-0000000000010000"):
+            ok, level, text = self.core.describe_pkg(self.pkg(cid))
+            self.assertEqual((ok, level), (True, "ok"), text)
+            self.assertIn(cid, text)
+
+    def test_another_version_warns(self):
+        ok, level, text = self.core.describe_pkg(self.pkg("UP0700-NPUB30009_00-UPDATE0000020000"))
+        self.assertEqual((ok, level), (True, "warn"), text)
+
+
 class Arguments(unittest.TestCase):
     """main() parses argv and calls step_<name>(args) in pipeline order."""
 

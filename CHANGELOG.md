@@ -3,145 +3,130 @@
 All notable changes, newest first. The project is a test release. Short commit hashes are in parentheses. The state of each
 part is in the README's status table.
 
-## v1.1.4 (not released yet)
+## v1.1.4 (2026-10-21)
 
-### Fixes
-- **Set up controllers works again: the Controls window sees your pads.** Since 1.1.0 the window (Settings -> Set up
-  controllers...) read controllers only while it was the window in front, but it asked Windows which window it was
-  before Windows had made it, so it never counted as in front and found no controller at all -- "not recognized",
-  Xbox pads included. It now asks once the window is on the screen. The controller navigation of the Online tab
-  uses the same check. Checked on a PC with an Xbox pad: with the window in front it lists the pad.
+**Jinpachi and Random in casual matches, Start skips the intros and replays online, a chime when a match is found, the game's own rank plates, and a faster game.** Both players need 1.1.4
+(the lobby pairs equal game builds, and 1.1.4 changes the game: the skips, Jinpachi and Random online, a stricter
+costume check, and ps3recomp patches 0066, 0067 and 0069). The launcher offers the update itself; after it, press
+**BUILD GAME** once (the first build takes about 25 s longer than before). Jinpachi in casual matches, the protection
+of password rooms, the spectator limits and Watch between a match and its rematch need the lobby server updated;
+older launchers keep working with it.
 
-### Security (hardening)
-- **Friends with the right password always get into a private room.** Somebody guessing a room's password from
-  many internet addresses (a home connection with IPv6 has 256 of them) could keep the room's guess budget used up,
-  and friends who typed the right password were told "try again in N s". Now every network has its own few tries
-  at a room, used before the room's shared budget; guessers elsewhere cannot use them up. Guessing stays as slow as
-  before: a few tries per network and 20 minutes, plus the room's shared budget. The host of a password room sees
-  how many wrong passwords came in the last 10 minutes (never who or from where) and **Room settings -> Turn away
-  the guessers** refuses those networks from then on. Texts in all languages.
-- **Spectator places go to friends and room members first.** About 50 guest connections from a handful of
-  addresses could take every match the server can show. Now one internet address watches at most 2 matches at once
-  (an IPv6 home network 4), guests hold at most half the places of a match and of the server, the last places are
-  kept for friends of the players and members of the match's room or tournament, and at a full match a friend takes
-  the place of the newest guest ("A friend of the players took your place"). Texts in all languages.
-- **Custom costumes are checked against the game's own item shop.** The check of the opponent's costume took any
-  colour number up to 31 and a part in any place. Now both PCs read the item shop's own tables from the game's data
-  (which parts go in HEAD, FACE, BODY up and BODY down for each costume, and how many colours it has) and refuse
-  anything else -- that character then fights in the default costume, on both PCs. Tested in rollback and lockstep
-  with real customizations on both sides, a forged block from one side (default on both PCs) and against a 1.1.3
-  build: both PCs showed the same costumes, 0 desyncs. Both players need 1.1.4 (the lobby pairs equal builds only).
+### Online
+- **Jinpachi and Random in casual matches.** In quick matches, rooms and friend invites the character select now has
+  Jinpachi (top row, right end) and the game's random cell (top row, left end), for both players -- no Arcade
+  clearing needed. Ranked matches and tournament sets stay without them, as before.
+- **Mokujin and the random cell draw anew in every match.** In a rematch Mokujin used to copy the same fighter as in
+  the match before (and every match of the session the same one). Now every match draws again, the same on both PCs
+  and in the replay. Replays from 1.1.3 play back as they were recorded.
+- **Skip the intros and the replay after a round: both players press Start.** Online they always played to the end:
+  the fighters' intros (about 7 s) and the replay after every round (about 9 s). Now the intros before round 1, and
+  after a round its slow motion, replay and the way to the next round, are skipped as soon as **both** players have
+  pressed Start during them (not at the same moment). One player alone skips nothing, and Start still never pauses
+  an online fight. Both games skip on the same frame; replays and spectators show the skips as they happened.
+  Offline nothing changes.
+- **A chime and a flashing taskbar button when the launcher has something for you:** a match found and waiting for
+  your Accept, someone joins your room, your turn in a room, a friend's invite, your tournament set ready, your
+  opponent asks for a rematch. A short chime (two soft bell tones, made by the launcher itself), and the taskbar
+  button flashes until you come back; only when you are not looking at the Online tab, once for each of these.
+  **Settings -> Sound and taskbar flash when a match is found or someone joins my room** switches it off.
+- **Smoother matches through a relay server.** When two PCs cannot connect directly, the launcher passes the game's
+  packets on to the relay. On a busy PC they waited for Windows to run the launcher (6 ms more round trip typically,
+  up to 26 ms in our test) and arrived late and in bunches: deeper rollbacks and more hitches than the ping explains.
+  Now the launcher forwards them the moment they arrive (0.2 ms typically, under 2 ms at worst). Tested at 60/120/200
+  ms ping with loss and jitter: relayed matches play like direct ones at the same ping, every match in sync.
+- **A room stays watchable between a match and its rematch.** The Rooms list used to take Watch away as soon as a
+  match ended, although the spectators already watching went on into the rematch. Now the room keeps Watch in that
+  pause: you join those spectators, from the session's start as always. Only when both players allow spectators;
+  switching it off in the pause stops the spectators at once.
+
+### Speed
+- **Faster game code, the same game.** The PS3's registers now stay in the PC's registers between calls instead of
+  going to memory and back. On 4 cores under load the main thread needs ~7 % less CPU per frame and the drawing
+  thread ~18 % less (pool stage and stage 20: +3 to +13 % fps on a busy PC). Old and new builds played each other
+  online frame for frame in sync.
+- **Cheaper memory writes in the game code.** The check whether a helper processor of the PS3 watches the spot a write
+  goes to is now one quick look instead of a detour: 5-7 % less CPU per frame on the main thread, 15-25 % less on the
+  drawing thread, a frame's critical path 5-8 % shorter. More room for a locked 60 fps on 4-core laptops.
+- **Weak PCs: the frame goes to the graphics card beside the game's next frame.** On a 4-core PC slowed to 40-50 fps a
+  late frame comes about 1 ms sooner (pool stage: median frame 24.6 -> 23.5 ms; stage 20: 20.1 -> 19.1 ms) and 3-26 %
+  fewer frames are slow; a PC that already runs at 60 only gains headroom. `RSX_XLAT_OVERLAP=0` (Extra settings)
+  turns it off. Details of all three: docs/RENDER_PERF.md.
+
+### Launcher
+- **The game's own rank plates.** Next to every name on the Online tab (players, leaderboard, friends, your card, the
+  found match, the result, profiles) the launcher shows the rank plate Tekken 5 DR itself uses: Beginner, 9th kyu ...
+  Shihan ... Lone Wolf ... Tekken Lord. The plates are not in the download: after BUILD GAME the launcher reads them
+  once from your own unpacked game (about a second, in the background) and keeps them in `native\cache\ranks`; until
+  then it shows a tag in the plate's colour with the rank's name. The two highest ranks are now called Tekken Lord
+  (Kouryu) and Tekken Lord (Kirin) (were Kouryu and Kirin). Ranks and ratings are unchanged.
+- **Smoother window.** Resizing redrew the Online tab in about 0.34 s per step (Build tab 0.12 s); now about 0.14 s
+  (Build 0.07 s). The Online tab opens the first time in 0.3 s instead of 0.7 s, the window is up in about 1 s
+  instead of 1.5 s from the second start on, and the first-start search for the game's files no longer freezes it.
+- **Lists that stay put.** The player, room, friend and leaderboard lists change only the rows that changed: no more
+  jumping back to the top while you scroll, no flickering selection on every lobby update.
+- **Clearer Online tab.** Empty lists say what to do (nobody online, no rooms, no ranked results yet); with the plates
+  the RANK column only says what the plate does not (a placement, a provisional rank); a long status line ends in
+  "..." instead of running under the output folder. All new texts are in the launcher's six other languages.
+
+### Settings
+- **Integrated graphics get Internal resolution Auto by default.** On a PC whose game runs on built-in graphics
+  (laptops, mini PCs, handhelds; the launcher knows from the last game's log) the default is now **Auto**: the step of
+  your screen, at most 1080p. A step you chose yourself stays; if it is larger than Auto's, Settings and the Play
+  offline tab say so in orange. A busy built-in GPU also slows the processor (one power budget): a player's 780M mini
+  PC at 4K had its GPU busy 61 % of the time and its processor at 81 % of its clock, with 6-10 % late frames.
+- **"Your processor ran at 2.26 GHz (81 % of its normal speed)".** When fights had late frames and the processor ran
+  well under its normal clock on AC power, the Play offline tab says so once and suggests Windows' power mode Best
+  performance. The launcher changes no Windows setting.
+- **Stage blur / glow is Off by default**: the misty swamp and three more stages are sharp, the scrapyard's sun has no
+  glow (on integrated graphics at 4K the scrapyard needs ~10 % less GPU time a frame). Players of older versions get
+  Off once too; whoever turns it back On keeps On. Online each player chooses for himself.
 
 ### Offline
 - **Random is random at every start.** Mokujin's copied fighter and the random cell could come out the same after
   every start of the game. Now the game draws them anew from the start.
 - **New setting: Unlock Jinpachi and Random select** (Settings -> Unlocks): Jinpachi and the random cell on the
-  character select without clearing Arcade. Off by default; your save is not changed. Texts in all languages.
+  character select without clearing Arcade. Off by default; your save is not changed.
 
-### Speed
-- **Faster game code, the same game.** The build now translates the game's code so that the PS3's registers stay
-  in the PC's registers between calls instead of being written to memory and read back after almost every step.
-  On 4 cores under load the game's main thread needs ~7 % less CPU per frame and its drawing thread ~18 % less
-  (pool stage and stage 20: +3 to +13 % fps in paired runs on a busy PC). The game computes exactly what it did:
-  every translated function was run old against new on millions of random inputs, and old and new builds played
-  each other online frame for frame in sync. The first build after updating translates the game code again (about
-  25 s longer than before). docs/RENDER_PERF.md "Lifted code: register promotion".
-- **Cheaper memory writes in the game code.** Every time the game's code writes to memory, the PC checks twice
-  whether one of the PS3's helper processors is watching that spot. That check went through a detour to the main
-  program each time; now the game code keeps the answer table at hand and needs one quick look instead of
-  several steps. In paired runs on 4 cores the main thread needs 5-7 % less CPU per frame, the drawing thread
-  15-25 % less, and a frame's critical path is 5-8 % shorter (pool stage and stage 20) -- more room for a locked
-  60 fps on 4-core laptops. The game computes exactly what it did: every translated function ran old check
-  against new on random inputs, the check was tested under threads, and the old and new builds played each
-  other online in sync. docs/RENDER_PERF.md "Lifted code: the guest store's reservation check".
-- **Weak PCs: the frame goes to the graphics card beside the game's next frame.** A frame used to be translated for
-  the graphics card, then sent and shown, and only then could the game start its next one. Now the sending and
-  showing -- and the graphics driver's work while a frame is translated -- run on a thread of their own, beside the
-  game. On a 4-core PC slowed to 40-50 fps a frame that misses 60 comes about 1 ms sooner (pool stage: median frame
-  24.6 -> 23.5 ms; stage 20: 20.1 -> 19.1 ms) and 3-26 % fewer frames are slow; a PC that already runs at 60 only
-  gains headroom. The picture and the game are exactly the same: builds with and without it play each other in sync.
-  `RSX_XLAT_OVERLAP=0` (Extra settings) turns it off. docs/RENDER_PERF.md "Overlap: the present and the D3D12 calls".
+### Fixes
+- **Set up controllers works again: the Controls window sees your pads.** Since 1.1.0 the window (Settings -> Set up
+  controllers...) found no controller at all -- "not recognized", Xbox pads included. It now looks once it is on the
+  screen; the Online tab's controller navigation had the same fault. Checked on a PC with an Xbox pad.
+- **A place where the game deliberately stops stays stopped.** In one function the compiler turned the way into such
+  an endless loop into a call through a pointer that may be empty. The game code is now compiled without that
+  assumption. The speed profile of 1.1.3 still fits, so it is used as it is.
 
-### Building the game
-- **Press BUILD GAME once after updating** (1.1.4 has a new code ID: 1.1.3 and 1.1.4 builds never meet online).
-  The game code is now compiled so that a place where the game deliberately stops for good stays that way: the
-  compiler was allowed to assume such an endless loop never happens and, in one function, turned the way into it
-  into a call through a pointer that may be empty. The speed profile of 1.1.3 still fits the new translation (0 of
-  its functions out of date), so it is used as it is.
+### Security
+- **Friends with the right password always get into a private room.** Somebody guessing a room's password from many
+  internet addresses (a home connection with IPv6 has 256 of them) could use up the room's guess budget, and friends
+  with the right password were told "try again in N s". Now every network has its own few tries at a room (3, then
+  one per 20 minutes), used before the room's shared budget, which guessers elsewhere cannot touch. Guessing stays as
+  slow as before. The host of a password room sees how many wrong passwords came in the last 10 minutes (never who
+  or from where), and **Room settings -> Turn away the guessers** refuses those networks from then on. The server
+  part also protects rooms of 1.1.3 launchers; the host's count and button need 1.1.4.
+- **Spectator places go to friends and room members first.** About 50 guest connections from a handful of addresses
+  could take every match the server can show. Now one internet address watches at most 2 matches at once (an IPv6
+  home network 4), guests hold at most half the places of a match and of the server, the last places are kept for
+  friends of the players and members of the match's room or tournament, and at a full match a friend takes the place
+  of the newest guest ("A friend of the players took your place").
+- **Custom costumes are checked against the game's own item shop.** The opponent's costume check took any colour number
+  up to 31 and a part in any place. Now both PCs read the item shop's own tables from the game's data and refuse
+  anything else: that character fights in the default costume, on both PCs. Tested in rollback and lockstep with real
+  customizations and a forged block from one side: both PCs showed the same costumes, 0 desyncs.
 
-### Settings
-- **Integrated graphics get Internal resolution Auto by default.** On a PC whose game runs on built-in graphics
-  (laptops, mini PCs, handhelds; the launcher knows from the last game's log), the default is now **Auto**: the
-  step of your screen, at most 1080p. A step you chose yourself stays. If it is larger than Auto's, Settings says
-  so in orange and the Play offline tab after every game: a busy built-in GPU also slows the processor, because
-  both share one power budget and one memory -- a player's 780M mini PC at 4K had its GPU busy 61 % of the time and
-  its processor at 81 % of its clock, with 6-10 % late frames, although the graphics themselves were fast enough.
-  Texts in all languages.
-- **"Your processor ran at 2.26 GHz (81 % of its normal speed)".** When fights had late frames and the processor
-  ran well under its normal clock on AC power, the Play offline tab says so once and suggests setting Windows'
-  power mode to Best performance. The launcher itself changes no Windows setting. Texts in all languages.
-- **Stage blur / glow is Off by default**: the misty swamp and three more stages are sharp, the scrapyard's sun has
-  no glow (on integrated graphics at 4K the scrapyard needs ~10 % less GPU time a frame). Players of older versions get Off once too; whoever turns it back On in Settings keeps On. Online each
-  player still chooses for himself.
-
-### Online
-- **Smoother matches through a relay server.** When two PCs cannot connect directly, every packet of the game
-  passes through the launcher on both PCs on its way to the relay. The launcher passed them on in between its other
-  work and at a lower priority than the game: on a PC the game keeps busy, packets now and then waited there for
-  Windows to let the launcher run (in our test 6 ms more round trip typically, up to 26 ms), and arrived late and
-  in bunches -- deeper rollbacks, more hitches than the ping explains. Now the launcher forwards the game's packets
-  the moment they arrive, on a thread of their own at the game's network priority (0.2 ms typically, under 2 ms at
-  worst in the same test). Tested in rollback and lockstep at 60/120/200 ms ping with loss and jitter: relayed
-  matches play like direct ones at the same ping, every match in sync. Only the launcher changed: it works with
-  every lobby and relay server. docs/NETPLAY.md "Relayed matches".
-- **Jinpachi and Random in casual matches.** In quick matches, rooms and friend invites the character select now has
-  Jinpachi (top row, right end) and the game's random cell (top row, left end), for both players -- no Arcade
-  clearing needed. Ranked matches and tournament sets stay without them, as before. Both players need 1.1.4.
-- **Mokujin and the random cell draw anew in every match.** In a rematch Mokujin used to copy the same fighter as in
-  the match before (and every match of the session the same one). Now every match draws again, still the same on
-  both PCs and in the replay. Replays from 1.1.3 play back as they were recorded.
-- **Skip the intros and the replay after a round online: both players press Start.** Online nobody could skip
-  anything: Start was taken out of both players' inputs so that nobody can pause the fight, and the replay after
-  every round (about 9 s) and the fighters' intros (about 7 s) always played to the end. Now the fighters' intros
-  before round 1, and after a round its slow motion, replay and the way to the next round are skipped as soon as
-  **both** players have pressed Start during them (not necessarily at the same time; the log names who pressed).
-  One player alone skips nothing, and Start still never pauses an online fight. Both games skip on the same frame,
-  in rollback and in lockstep; replays and spectators show the skips exactly as they happened. Offline nothing
-  changes. The launcher's Online page says it in all languages.
-- **A sound and a flashing taskbar button when the launcher has something for you.** Many of you wait for a match
-  in another window, so the launcher now plays a short chime and flashes its taskbar button (until you come back
-  to it) when a match is found and waits for your Accept, when someone joins your room, when it is your turn in a
-  room, when a friend invites you, when your tournament set is ready and when your opponent asks for a rematch.
-  Only when you are not looking at the Online tab, and once for each of these, not on every lobby update. The
-  chime is made by the launcher itself (two soft bell tones, no game audio, no file); **Settings -> Sound and
-  taskbar flash when a match is found or someone joins my room** switches it off. Texts in all languages.
-- **A room stays watchable between a match and its rematch.** The Rooms list took the Watch button away from a
-  room as soon as its match ended, so whoever came by while the players chose their rematch could not watch,
-  although the spectators already watching went on into the rematch. Now the room keeps Watch while its players'
-  session is being watched: you join those spectators, from the session's start as always, and see the rematch
-  with them. Only when both players allow spectators; switching it off in that pause stops the spectators at once,
-  as during a match. A server change: launchers from 1.1.3 on get it once the lobby server is updated.
-
-### Launcher
-- **The game's own rank plates.** Next to every name on the Online tab (players, leaderboard, friends, your card,
-  the found match, the result, profiles) the launcher now shows the rank plate Tekken 5 DR itself uses in its
-  online lobby: Beginner, 9th kyu ... Shihan ... Lone Wolf ... Tekken Lord. The plates are not in the download: after
-  BUILD GAME the launcher reads them once from your own unpacked game (about a second, in the background) and keeps
-  them in `native\cache\ranks`. Before that it shows a tag in the plate's colour with the rank's name, in the same
-  place. The rank names are the ones on the game's English plates; the two highest ranks, whose plates say "Tekken
-  Lord" too, are now called Tekken Lord (Kouryu) and Tekken Lord (Kirin) (were Kouryu and Kirin). Ranks, ratings
-  and the rating math are unchanged; older launchers and servers keep working with each other.
-- **Smoother window.** Resizing the launcher redrew the Online tab in about 0.34 s per step (the Build tab 0.12 s):
-  the rounded buttons and cards were drawn from small pictures copied dozens to hundreds of times per redraw. Now
-  about 0.14 s (Build 0.07 s), and the Online tab opens the first time in 0.3 s instead of 0.7 s. The launcher's
-  window is up in about 1 s instead of 1.5 s from the second start on (its drawn pictures are kept in
-  `%LOCALAPPDATA%\T5DROnline\cache`), and the first-start search for the game's files no longer freezes the
-  window.
-- **Lists that stay put.** The player, room, friend, leaderboard lists change only the rows that changed: the list no
-  longer jumps back to the top while you scroll it, and the selection does not flicker on every lobby update.
-- **Clearer Online tab.** Empty lists say what to do (nobody online, no rooms, no ranked results yet); with the
-  plates in the lists the RANK column only says what the plate does not (a placement, a provisional rank); a long
-  status line ends in "..." instead of running under the output folder. Texts in all languages.
+### Servers
+- **Password rooms:** `T5L_ROOM_LANE_GUESSES` (default 3) and `T5L_ROOM_LANE_SECONDS` (1200) give every network (an
+  IPv4 address, an IPv6 /48) its own lane at a room, spent before the room's shared budget; IPv6 guesses also count
+  per /56 and /48 (4 and 8 times a player's budget). The host's view shows the wrong passwords of the last 10 minutes;
+  the new message `room_bar` turns those networks away (docs/ONLINE.md "Rooms").
+- **Spectator limits:** `T5L_SPEC_PER_ADDRESS` (2), `T5L_SPEC_PER_NET` (4 per IPv6 /56, twice that per /48; 0 = no
+  limit), `T5L_SPEC_GUEST_SHARE` (0.5: the share of a match's places and of the streams guests may take) and
+  `T5L_SPEC_RESERVED_STREAMS` (10 slots for friends and room or tournament members); `T5L_MAX_SPECTATORS` (8) and
+  `T5L_MAX_STREAMS` (50) are unchanged (docs/SPECTATE.md "Limits and bounds").
+- **Jinpachi and Watch:** a casual match's result may name Jinpachi (capability `boss_chars`; ranked matches and
+  tournament sets still refuse him), and a room offers Watch between a match and its rematch.
+- **No database change and no relay change:** 1.1.4 opens the 1.1.3 database as it is, and the relay node may stay on
+  1.1.3.
 
 ## v1.1.3 (2026-10-20)
 

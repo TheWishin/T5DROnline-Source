@@ -334,8 +334,12 @@ Good to know:
 - Nobody can pause an online fight (from 1.1.2): **Start** does not open the
   pause menu there, for either player. It still skips the replay after a round.
   To quit a match, close the game (Esc twice): that counts as a loss, as before.
-- Ranked uses a Glicko-2 rating shown with Tekken 5's own rank names. Leaving or
-  disconnecting counts as a loss. A desync voids the match.
+- Ranked uses a Glicko-2 rating shown with Tekken 5's own rank names and, from
+  1.1.4, the game's own rank plates (Beginner, 9th kyu ... Tekken Lord) next to
+  every name. The launcher reads the plates from your unpacked game after BUILD
+  GAME (they are not in the download); before that it shows a text badge in the
+  plate's colour. Leaving or disconnecting counts as a loss. A desync voids the
+  match.
 - **Friends** (accounts, from 1.1.2): add a friend by account name on the Online
   tab's **Friends** page. Once they accept, you see when they are online,
   searching or in a match. **Invite to a match** (or to your room) asks them;

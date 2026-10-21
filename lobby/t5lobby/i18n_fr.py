@@ -1806,6 +1806,13 @@ MESSAGES = {
     "Dismiss": "Masquer",
     "Use a controller here": "Utiliser une manette ici",
     "none open": "aucun ouvert",
+    "Nobody else is online right now. Ranked match and Quick match keep looking until someone comes.":
+        "Personne d'autre n'est en ligne pour l'instant. Match Ranked et Quick Match "
+        "continuent de chercher jusqu'à ce que quelqu'un arrive.",
+    "No rooms open. Create one: friends can join it and play in turn.":
+        "Aucun salon ouvert. Crées-en un : tes amis peuvent le rejoindre et jouer à tour de rôle.",
+    "Nobody has a ranked result yet. Win a ranked set to be the first.":
+        "Personne n'a encore de résultat classé. Gagne un set classé pour être le premier.",
     "In your room “{name}”. Waiting for a second player...":
         "Dans ton salon « {name} ». En attente d'un deuxième joueur...",
     "In the room “{name}”. The match starts when you are both ready.":

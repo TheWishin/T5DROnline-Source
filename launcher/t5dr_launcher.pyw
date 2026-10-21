@@ -14,6 +14,7 @@ import sys
 import threading
 import time
 import tkinter as tk
+import tkinter.font as tkfont
 from tkinter import filedialog, messagebox, ttk
 from tkinter.scrolledtext import ScrolledText
 
@@ -204,6 +205,7 @@ class App(tk.Tk):
         self.after(200, self.refresh_inputs)
         self.after(300, self.refresh_prereqs)
         self.after(400, self.refresh_game_state)
+        self.after(600, self.refresh_rank_art)
 
     def report_callback_exception(self, exc, val, tb):
         """An error inside a button or timer: Tk would only print it (nowhere, under pythonw). It goes
@@ -331,9 +333,15 @@ class App(tk.Tk):
         self.status.trace_add("write", self._log_status)
         bar = ttk.Frame(self, padding=(16, 4))
         bar.pack(fill="x", side="bottom", before=self.nb)     # (stays visible when a tab is too tall)
-        ttk.Label(bar, textvariable=self.status, style="Muted.TLabel").pack(side="left")
         ttk.Label(bar, style="Muted.TLabel",
-                  text=t("Output: {folder}", folder=self.settings.out_dir)).pack(side="right")
+                  text=t("Output: {folder}", folder=self.settings.out_dir)).pack(side="right", padx=(12, 0))
+        # one line: a long status (a lag check's explanation) ends in "..." instead of running under the output
+        # folder and off the window; the whole text is in launcher.log
+        self.status_shown = tk.StringVar(value="")
+        self.status_label = ttk.Label(bar, textvariable=self.status_shown, style="Muted.TLabel")
+        self.status_label.pack(side="left", fill="x", expand=True)
+        self.status.trace_add("write", lambda *_: self._fit_status())
+        self.status_label.bind("<Configure>", lambda _e: self._fit_status(), add="+")
 
     def _build_tab(self, tab):
         tab.columnconfigure(0, weight=1)
@@ -799,14 +807,26 @@ class App(tk.Tk):
         if self.readonly:
             self.settings.save = lambda: None      # screenshots never write settings
         pkg, rap = self.pkg_var.get().strip().strip('"'), self.rap_var.get().strip().strip('"')
-        if not pkg and not rap and not self.settings["pkg"]:
-            fp, fr = core.find_candidates()
-            if fp:
-                self.pkg_var.set(fp)
-                pkg = fp
-            if fr:
-                self.rap_var.set(fr)
-                rap = fr
+        if not pkg and not rap and not self.settings["pkg"] and not getattr(self, "_searched", False):
+            # the first start: look for the game's files in Downloads, the Desktop ... -- in a thread (a large
+            # or cloud-synced folder took seconds, with the window frozen)
+            self._searched = True
+
+            def work():
+                found = core.find_candidates()
+
+                def show():
+                    fp, fr = found
+                    if not self.pkg_var.get().strip() and fp:
+                        self.pkg_var.set(fp)
+                    if not self.rap_var.get().strip() and fr:
+                        self.rap_var.set(fr)
+                    self.refresh_inputs()
+                try:
+                    self.after(0, show)
+                except (RuntimeError, tk.TclError):
+                    pass
+            threading.Thread(target=work, name="find-game-files", daemon=True).start()
         _ok, lvl, txt = core.describe_pkg(pkg)
         self.pkg_info.set(("✔ " if lvl == "ok" else "⚠ " if lvl == "warn" else "") + txt)
         self.pkg_lbl.configure(style=f"{lvl}.TLabel" if pkg else "Muted.TLabel")
@@ -1006,6 +1026,7 @@ class App(tk.Tk):
             self.progress["value"] = 1000
             self.detail.set(t("Done in {elapsed}. Open the Play tab.", elapsed=core.clock(el)))
             self.status.set(t("Build finished."))
+            self.refresh_rank_art()          # (the game is unpacked now: its rank plates for the Online tab)
         else:
             if self.cur_step and self.step_state.get(self.cur_step) == "running":
                 self.step_state[self.cur_step] = "failed"
@@ -1027,6 +1048,19 @@ class App(tk.Tk):
     # ------------------------------------------------------------------ play
     def game_state(self):
         return getattr(self, "_game_state", {"ok": False, "text": ""})
+
+    def refresh_rank_art(self):
+        """The game's rank plates for the Online tab (lobby/t5lobby/rank_art.py): read once from the unpacked game
+        into <output>\\cache\\ranks, made at this display's sizes; all in a thread. Nothing when the game is not
+        unpacked yet (the tab draws its own badges)."""
+        theme = getattr(self, "theme", None)
+        if theme is None:
+            return
+        from t5lobby import rank_art
+        out = self.settings.out_dir
+        rank_art.ART.set_folder(rank_art.folder_for(out))
+        rank_art.ART.prepare(theme.plate_heights(theme.apply(self)), out_dir=out, after=self.after,
+                             log=None if self.readonly else core.log)
 
     def game_exe(self):
         """The t5dr.exe start_game() runs (the Online tab's firewall hint checks the rules for exactly this path)."""
@@ -1209,6 +1243,29 @@ class App(tk.Tk):
 
     def set_status(self, text):
         self.status.set(text)
+
+    def _fit_status(self):
+        text = self.status.get()
+        try:
+            avail = self.status_label.winfo_width()
+            if avail <= 1:
+                self.status_shown.set(text)
+                return
+            name = ttk.Style(self).lookup("Muted.TLabel", "font") or "TkDefaultFont"
+            font = tkfont.Font(root=self, font=name)
+            if font.measure(text) <= avail:
+                self.status_shown.set(text)
+                return
+            lo, hi = 0, len(text)
+            while lo < hi:                         # the longest start that fits with the "..."
+                mid = (lo + hi + 1) // 2
+                if font.measure(text[:mid].rstrip() + "…") <= avail:
+                    lo = mid
+                else:
+                    hi = mid - 1
+            self.status_shown.set(text[:lo].rstrip() + "…")
+        except tk.TclError:
+            pass
 
     def _log_status(self, *_):
         t = self.status.get()

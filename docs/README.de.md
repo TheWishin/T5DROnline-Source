@@ -358,9 +358,12 @@ Gut zu wissen:
   für keinen der beiden Spieler das Pausenmenü. Das Replay nach einer Runde
   überspringt Start weiterhin. Wer ein Match abbrechen will, schließt das Spiel
   (zweimal Esc): Das zählt wie bisher als Niederlage.
-- Ranked nutzt eine Glicko-2-Wertung mit den Rang-Namen aus Tekken 5. Verlassen
-  oder Verbindungsabbruch zählt als Niederlage. Ein Desync macht das Match
-  ungültig.
+- Ranked nutzt eine Glicko-2-Wertung mit den Rang-Namen aus Tekken 5 und, ab
+  1.1.4, den Rang-Schildern des Spiels selbst (Beginner, 9th kyu ... Tekken
+  Lord) neben jedem Namen. Der Launcher liest die Schilder nach BUILD GAME aus
+  deinem entpackten Spiel (im Download sind sie nicht); bis dahin zeigt er ein
+  Text-Abzeichen in der Farbe des Schilds. Verlassen oder Verbindungsabbruch
+  zählt als Niederlage. Ein Desync macht das Match ungültig.
 - **Freunde** (mit Konto, ab 1.1.2): Füge auf der Seite **Freunde** im
   Online-Reiter einen Freund mit seinem Kontonamen hinzu. Hat er angenommen,
   siehst du, wann er online ist, sucht oder im Match ist. **Zu einem Match

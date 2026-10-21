@@ -121,7 +121,10 @@ PS3_SKIP = ["*/__pycache__/*", "*.pyc", "*.prx", "*.sprx", "*.elf", "*.self", "*
 
 FORBIDDEN_NAMES = ["*.pkg", "*.rap", "*.rif", "*.edat", "*.sdat", "*.self", "*.sprx", "*.prx", "*.elf",
                    "eboot.bin", "eboot.elf", "param.sfo", "t55data*", "*.keys", "ppu_recomp*", "spu_recomp*",
-                   "spu_workloads.c", "launcher.json", "*.log", "t5dr.map", "*.dmp", "t5dr_game.dll", "t5dr_game.lib"]
+                   "spu_workloads.c", "launcher.json", "*.log", "t5dr.map", "*.dmp", "t5dr_game.dll", "t5dr_game.lib",
+                   # the game's rank plates, read by the launcher from the player's own game (lobby/t5lobby/
+                   # rank_art.py) into native/cache/ranks: never in a release
+                   "rank_[0-9][0-9].png", "rank_[0-9][0-9]_h*.png"]
 # A player's own t5dr.exe holds the lifted code (~40 MB, a function table full of
 # func_XXXXXXXX names) and is caught by the content checks; the prebuilt runtime
 # t5dr.exe (--prebuilt-host, ~1.5 MB) holds none and may ship. Big binaries are

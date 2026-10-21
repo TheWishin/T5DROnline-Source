@@ -94,6 +94,32 @@ The tiers are **the game's own ranks**, in the game's order: Tekken 5 DR keeps
 one badge sprite per rank in a table in its program (`beginner_b`,
 `9th_kyu_b` ... `tekken_lord_b`, each followed by a Japanese variant). Index =
 `t5lobby.ranks.RANKS` index, so a tier can be handed to the game's HUD as is.
+The names are the ones on the game's English rank plates (checked against the
+plates themselves, below). The two plates after Dark Lord say "Tekken Lord"
+again (in Japanese: Tekken Lord Kouryu, Tekken Lord Kirin); the lobby calls them
+**Tekken Lord (Kouryu)** and **Tekken Lord (Kirin)** so that every tier has a
+name of its own. Servers before 1.1.4 send "Kouryu" and "Kirin": the launcher
+shows the name of the tier it gets with them, and `ranks.index()` still knows
+the old words. Only names changed: tiers, thresholds and the rating math are
+the same.
+
+**Rank plates in the launcher (1.1.4).** The Online tab shows the game's own
+rank plates next to the names (player list, leaderboard, friends, your card,
+the found match, the result, profiles). They are not in the download: the
+launcher reads them from the player's own unpacked game
+(`lobby/t5lobby/rank_art.py`) -- the English plates are textures 30-66 (192 x 96,
+DXT5) of the online lobby's layout `TK5OL_onlinebattle_i18n`, entry 2344 of the
+game's data table (EBOOT 0x10053FB0) in `T55DATA1.BIN`, XOR-coded and
+zlib-packed like every entry (the same decoding as the costume check). After
+BUILD GAME (or on the first start once the game is unpacked) a background
+thread writes them as PNGs to `<output folder>\cache\ranks` (`native\cache\ranks`
+in a release), and scaled copies for the display's size; about 1 s, once. Until
+then, and whenever the game's files cannot be read, the launcher draws its own
+badges: a plate-shaped tag in the plate's colour with the rank's name. Both take
+the same room, so nothing moves when the plates arrive. By hand:
+`python -m t5lobby.rank_art --out native` (from `lobby\`). `tools/package_release.py`
+refuses `rank_NN*.png` and anything under `native\`, and the repository guard
+refuses every picture.
 
 | Tier | Rank | From rating | | Tier | Rank | From rating |
 |---|---|---|---|---|---|---|
@@ -113,8 +139,8 @@ one badge sprite per rank in a table in its program (`beginner_b`,
 | 13 | 4th Dan | 1640 | | 32 | Dragon Lord | 2400 |
 | 14 | 5th Dan | 1680 | | 33 | Tekken Lord | 2450 |
 | 15 | 6th Dan | 1720 | | 34 | Dark Lord | 2500 |
-| 16 | 7th Dan | 1760 | | 35 | Kouryu | 2550 |
-| 17 | Shihan | 1800 | | 36 | Kirin | 2600 |
+| 16 | 7th Dan | 1760 | | 35 | Tekken Lord (Kouryu) | 2550 |
+| 17 | Shihan | 1800 | | 36 | Tekken Lord (Kirin) | 2600 |
 | 18 | Expert | 1840 | | | | |
 
 The rating is Glicko-2 (start 1500, RD 350; ONLINE.md). A new account starts

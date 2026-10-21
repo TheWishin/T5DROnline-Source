@@ -100,6 +100,27 @@ part is in the README's status table.
   with them. Only when both players allow spectators; switching it off in that pause stops the spectators at once,
   as during a match. A server change: launchers from 1.1.3 on get it once the lobby server is updated.
 
+### Launcher
+- **The game's own rank plates.** Next to every name on the Online tab (players, leaderboard, friends, your card,
+  the found match, the result, profiles) the launcher now shows the rank plate Tekken 5 DR itself uses in its
+  online lobby: Beginner, 9th kyu ... Shihan ... Lone Wolf ... Tekken Lord. The plates are not in the download: after
+  BUILD GAME the launcher reads them once from your own unpacked game (about a second, in the background) and keeps
+  them in `native\cache\ranks`. Before that it shows a tag in the plate's colour with the rank's name, in the same
+  place. The rank names are the ones on the game's English plates; the two highest ranks, whose plates say "Tekken
+  Lord" too, are now called Tekken Lord (Kouryu) and Tekken Lord (Kirin) (were Kouryu and Kirin). Ranks, ratings
+  and the rating math are unchanged; older launchers and servers keep working with each other.
+- **Smoother window.** Resizing the launcher redrew the Online tab in about 0.34 s per step (the Build tab 0.12 s):
+  the rounded buttons and cards were drawn from small pictures copied dozens to hundreds of times per redraw. Now
+  about 0.14 s (Build 0.07 s), and the Online tab opens the first time in 0.3 s instead of 0.7 s. The launcher's
+  window is up in about 1 s instead of 1.5 s from the second start on (its drawn pictures are kept in
+  `%LOCALAPPDATA%\T5DROnline\cache`), and the first-start search for the game's files no longer freezes the
+  window.
+- **Lists that stay put.** The player, room, friend, leaderboard lists change only the rows that changed: the list no
+  longer jumps back to the top while you scroll it, and the selection does not flicker on every lobby update.
+- **Clearer Online tab.** Empty lists say what to do (nobody online, no rooms, no ranked results yet); with the
+  plates in the lists the RANK column only says what the plate does not (a placement, a provisional rank); a long
+  status line ends in "..." instead of running under the output folder. Texts in all languages.
+
 ## v1.1.3 (2026-10-20)
 
 **Tournaments, private rooms, watching live matches, your custom costumes online, matches that connect through a blocking firewall, and more speed on slower PCs.** Both players need 1.1.3

@@ -1744,6 +1744,12 @@ MESSAGES = {
     "Dismiss": "숨기기",
     "Use a controller here": "여기서 컨트롤러 사용",
     "none open": "열린 방 없음",
+    "Nobody else is online right now. Ranked match and Quick match keep looking until someone comes.":
+        "지금은 다른 사람이 온라인에 없습니다. Ranked 매치와 Quick Match는 누군가 올 때까지 계속 찾습니다.",
+    "No rooms open. Create one: friends can join it and play in turn.":
+        "열린 방이 없습니다. 방을 만들면 친구가 들어와 번갈아 플레이할 수 있습니다.",
+    "Nobody has a ranked result yet. Win a ranked set to be the first.":
+        "아직 Ranked 결과가 있는 사람이 없습니다. Ranked 세트에서 이겨 첫 번째가 되세요.",
     "In your room “{name}”. Waiting for a second player...": "내 방 '{name}'. 두 번째 플레이어를 기다리는 중...",
     "In the room “{name}”. The match starts when you are both ready.": "방 '{name}'. 둘 다 준비되면 매치가 시작됩니다.",
     "Hosting. Friends type this as their Server:\n{share}":

@@ -206,8 +206,8 @@ with `llvm-profdata.exe` (6.4 MB, from the same LLVM 23.1.3 as clang-cl, now in
 `toolchain/llvm/bin`, 2.7 MB zipped; one more unsigned LLVM binary in the zip
 for the VirusTotal check). Without it, or when the check refuses the file, the
 build goes on without the profile -- the same game, a little slower. The
-profile is part of the code ID (`build_game.py`; `CODE_VERSION` 4 in 1.1.3, 5
-in 1.1.4 with register promotion), so a new one asks players to build again.
+profile is part of the code ID (`build_game.py`; `CODE_VERSION` 4 in 1.1.3, 6
+in 1.1.4), so a new one asks players to build again.
 
 **Build time and size** (the lifted code, 23 files, 4 jobs, same PC and load):
 plain 135 s (517 s summed over the files), with the profile 115 s (445 s) --

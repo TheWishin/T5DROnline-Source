@@ -64,6 +64,13 @@ message(STATUS "Lifted sources: ${RECOMP_SOURCE_COUNT} file(s) in ${RECOMP_DIR}"
 # The runtime library, built from source so its link requirements come along.
 add_subdirectory("${PS3RECOMP_DIR}" "${CMAKE_BINARY_DIR}/ps3recomp" EXCLUDE_FROM_ALL)
 
+# macOS (tools/build_game.py passes it): without glslang and spirv-cross the Metal backend has no
+# guest shaders and every draw is dropped, so stop here instead of building a black window.
+option(T5DR_REQUIRE_SHADERS "Fail the configure step when the guest shaders cannot be translated" OFF)
+if(T5DR_REQUIRE_SHADERS AND NOT TARGET ps3recomp_msl_translation)
+    message(FATAL_ERROR "T5DR_REQUIRE_SHADERS: glslang and spirv-cross were not found")
+endif()
+
 # Firmware NID -> HLE handler table, generated from the runtime's sources.
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
 set(HLE_NID_TABLE "${CMAKE_BINARY_DIR}/gen/ppu_hle_nids.cpp")
@@ -154,16 +161,25 @@ if(_lifted_arch STREQUAL "auto")
         endif()
     endif()
 endif()
+if(MSVC)
+    set(_clang_flag_prefix "/clang:")   # clang-cl forwards GCC-style flags with this prefix
+else()
+    set(_clang_flag_prefix "")
+endif()
 # -fno-caret-diagnostics: clang names file(line,col) and the message, without quoting the lifted source line (the
 # game's own code, translated) -- nothing of it in a build log or a problem report made from one. Diagnostics only:
 # the objects are the same (tools/build_game_dll.py does the same for the player's build).
-# /GS-: no stack cookies in the lifted code (as tools/build_game_dll.py builds it): it keeps the PPU's
-# registers in its context, not in local arrays, so a cookie guards nothing there.
 # -fno-finite-loops: a guest `b .` (a deliberate hang) stays a hang -- C++ lets the compiler assume every loop ends
 # and remove the way into it (tools/build_game_dll.py PPU_LOOPS).
-set(_lifted_opts /clang:-ffp-contract=off /clang:-fno-caret-diagnostics /GS- /clang:-fno-finite-loops)
+set(_lifted_opts "${_clang_flag_prefix}-ffp-contract=off" "${_clang_flag_prefix}-fno-caret-diagnostics"
+                 "${_clang_flag_prefix}-fno-finite-loops")
+if(MSVC)
+    # /GS-: no stack cookies in the lifted code (as tools/build_game_dll.py builds it): it keeps the PPU's
+    # registers in its context, not in local arrays, so a cookie guards nothing there.
+    list(APPEND _lifted_opts /GS-)
+endif()
 if(NOT _lifted_arch STREQUAL "none")
-    list(APPEND _lifted_opts "/clang:-march=${_lifted_arch}")
+    list(APPEND _lifted_opts "${_clang_flag_prefix}-march=${_lifted_arch}")
 endif()
 message(STATUS "Lifted PPU code: -march=${_lifted_arch}")
 # Extra compile options for the lifted code: T5DR_LIFTED_COPTS for the lifted PPU
@@ -244,6 +260,10 @@ if(T5DR_GAME_DLL)
     target_link_options(t5dr PRIVATE "/DEF:${CMAKE_CURRENT_SOURCE_DIR}/tools/gamedll/t5dr_host.def")
 endif()
 
+# TODO: rollback, netplay, direct fight and perf are written against Win32 (windows.h, Winsock,
+# the vectored exception handler) and are not ported to macOS yet: the macOS build is the game
+# alone, offline.
+if(WIN32)
 # Rollback (our own code, src/rollback/): off unless T5_RB_MODE is set. The
 # netplay layer calls its loop (T5_RB_MODE=net), so it is built in both modes;
 # rb_hooks.cpp reads the lifted table through ppu_game_table in DLL mode.
@@ -289,6 +309,7 @@ if(T5DR_PGO STREQUAL "gen")
     target_link_options(t5dr PRIVATE /FORCE:MULTIPLE)
     target_sources(t5dr PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/perf/pgo/pgo_crt_shim.c")
 endif()
+endif()   # WIN32: our own modules
 
 # The generated NID table includes every module's header.
 file(GLOB LIB_INC_DIRS LIST_DIRECTORIES true "${PS3RECOMP_DIR}/libs/*")

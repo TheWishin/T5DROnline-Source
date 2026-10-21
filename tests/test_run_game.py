@@ -8,6 +8,8 @@ from unittest import mock
 
 from helpers import load_tool
 
+EXE = "t5dr.exe" if os.name == "nt" else "t5dr"
+
 
 class GameCommand(unittest.TestCase):
     def test_defaults(self):
@@ -17,14 +19,17 @@ class GameCommand(unittest.TestCase):
                 os.environ.pop(k, None)
             argv, env, cwd = rg.game_command(out)
         vfs = os.path.join(out, "game", "vfs")
-        self.assertEqual(argv, [os.path.join(out, "build", "cmake", "t5dr.exe"),
+        self.assertEqual(argv, [os.path.join(out, "build", "cmake", EXE),
                                 os.path.join(vfs, "PS3_GAME", "USRDIR", "EBOOT.elf")])
         self.assertEqual(cwd, out)                       # saves and shader cache land under the output root
         self.assertEqual(env["PS3_VFS_ROOT"], vfs.replace("\\", "/"))
         self.assertEqual(env["PS3_HDD0_ROOT"], env["PS3_VFS_ROOT"] + "/dev_hdd0")
         self.assertNotIn("\\", env["PS3_HDD0_ROOT"])
         for k, v in {"PS3_GCM_TICKER_PUMP": "1", "RSX_LIVE_DRAW": "1", "PS3_VERBOSE": "0"}.items():
-            self.assertEqual(env[k], v, k)
+            if k == "RSX_LIVE_DRAW" and sys.platform == "darwin":
+                self.assertNotIn(k, env)                 # the D3D12 engine; macOS draws through Metal
+            else:
+                self.assertEqual(env[k], v, k)
 
     def test_overrides(self):
         rg = load_tool("run_game")
@@ -45,7 +50,7 @@ class Main(unittest.TestCase):
             seen.update(cmd=cmd, env=env, cwd=cwd)
             return mock.Mock(returncode=7)
         with tempfile.TemporaryDirectory() as out:
-            exe = os.path.join(out, "build", "cmake", "t5dr.exe")
+            exe = os.path.join(out, "build", "cmake", EXE)
             os.makedirs(os.path.dirname(exe))
             open(exe, "w").close()
             with mock.patch.object(rg.subprocess, "run", fake_run), \

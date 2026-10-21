@@ -1,0 +1,567 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 911a6a8..e06ee44 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -306,7 +306,7 @@ elseif(MSVC)
+     )
+ endif()
+ 
+-if(NOT MSVC AND NOT WIN32)
++if(NOT MSVC AND NOT WIN32 AND NOT APPLE)
+     # dladdr/Dl_info (runtime/platform/win32_backtrace.h) are GNU extensions
+     # that glibc hides unless _GNU_SOURCE is set. g++ defines it implicitly,
+     # so the C++ boot scaffold never noticed; a C file including the same
+diff --git a/libs/system/cellSaveData.c b/libs/system/cellSaveData.c
+index 1cf2d91..2d59e4c 100644
+--- a/libs/system/cellSaveData.c
++++ b/libs/system/cellSaveData.c
+@@ -1470,7 +1470,15 @@ static s32 savedata_delete_dialog(void)
+             HOST_STAT_T st;
+             char when[40] = "";
+             if (HOST_STAT(sfo, &st) == 0 || HOST_STAT(path, &st) == 0) {
+-                time_t t = (time_t)st.st_mtime;
++                s64 mt;
++#ifdef _WIN32
++                mt = (s64)st.st_mtime;
++#elif defined(__APPLE__)
++                mt = (s64)st.st_mtimespec.tv_sec;
++#else
++                mt = (s64)st.st_mtim.tv_sec;
++#endif
++                time_t t = (time_t)mt;
+                 struct tm lt;
+ #ifdef _WIN32
+                 localtime_s(&lt, &t);
+@@ -1478,7 +1486,7 @@ static s32 savedata_delete_dialog(void)
+                 localtime_r(&t, &lt);
+ #endif
+                 strftime(when, sizeof(when), "%Y/%m/%d %H:%M", &lt);
+-                mtimes[i] = (s64)st.st_mtime;
++                mtimes[i] = mt;
+             }
+             const double kb = (double)savedata_dir_bytes(path) / 1024.0;
+             if (kb >= 1024.0)
+diff --git a/libs/video/cellGcmSys.c b/libs/video/cellGcmSys.c
+index 604551b..fdb9649 100644
+--- a/libs/video/cellGcmSys.c
++++ b/libs/video/cellGcmSys.c
+@@ -903,6 +903,18 @@ void cellGcm_request_tick(void)
+     GCM_PENDING_SET(3);
+ }
+ 
++/* A drain stopped on a semaphore ACQUIRE (GCM_SEMA_ACQUIRE) waits for a label
++ * the guest writes with a plain store, which nothing signals. The label it
++ * waits for, or 0; the pump below wakes the drain once the label matches. */
++static volatile u32 s_sema_wait_ea = 0, s_sema_wait_val = 0;
++/* The label and value the current wait started on, and when: a wait that
++ * outlasts GCM_SEMA_ACQUIRE_MS is given up. Reset whenever a wait ends, or a
++ * title that waits for the same value every frame would inherit the first
++ * wait's start and skip every later acquire at once. */
++static u32 s_sema_b_off, s_sema_b_val;
++static unsigned long long s_sema_b_t0;
++void* cellGcm_fifo_kick_event(void);
++
+ /* Deliver pending handlers on the calling host thread. Serialize the entire
+  * claim-and-deliver sequence across threads: an HLE boundary and a host ticker
+  * may both pump, and newer causes must not overtake already claimed callbacks.
+@@ -910,6 +922,15 @@ void cellGcm_request_tick(void)
+  * pending notifications untouched when another pump is active. */
+ void ppu_gcm_pump(void)
+ {
++    /* The guest's next HLE call after the store that satisfies a waiting
++     * ACQUIRE lands here: wake the drain now instead of at the next tick.
++     * The drain runs on the vblank ticker, so it cannot wait inside a pass --
++     * that holds the vblank the guest's own frame loop waits for. */
++    { const u32 ea = __atomic_load_n(&s_sema_wait_ea, __ATOMIC_ACQUIRE);
++      if (ea && vm_read32(ea) == s_sema_wait_val) {
++          s_sema_wait_ea = 0;
++          SetEvent((HANDLE)cellGcm_fifo_kick_event());
++      } }
+     /* Every HLE call of every guest thread pumps (ppu_hle.cpp); almost always
+      * nothing is pending, and the claim below is three locked instructions on
+      * cache lines all those threads and the ticker share. Nothing pending =
+@@ -1048,14 +1069,13 @@ static u32 gcm_io2ea(u32 io)
+  * recycle path teleports these when it resets a ring without a JUMP command. */
+ unsigned long long ps3_ms_now(void)
+ {
+-#ifdef _WIN32
++    /* The compat GetTickCount64 is the monotonic clock off Windows; this
++     * returned 0 there, so every interval measured with it was 0. */
+     return (unsigned long long)GetTickCount64();
+-#else
+-    return 0;
+-#endif
+ }
+ 
+ static u32 s_sema_offset = 0;   /* NV406E semaphore offset (label window) */
++static int s_sema_blocked_pass = 0;   /* this drain stopped on a semaphore acquire */
+ /* Backlog past which the drain stops honouring one-flip-per-tick and
+  * catches up instead. Sized well above a frame's command list so a
+  * title that keeps up never sees this path. */
+@@ -1584,6 +1604,7 @@ static u32 gcm_spu_block_for_put(u32 put)
+  * is not, it deadlocks the title. Sweep the skipped range first. */
+ static void gcm_fifo_resync_why(const char* why, u32* getoff, u32 put)
+ {
++    s_sema_wait_ea = 0;   /* a parked acquire is stepped over with the rest */
+     static int n = 0;
+     if (__atomic_fetch_add(&n, 1, __ATOMIC_RELAXED) < 8)
+         fprintf(stderr, "[cellGcmSys] FIFO resync (%s) 0x%08X -> put 0x%08X\n",
+@@ -2185,17 +2206,54 @@ static void gcm_rsx_process_fifo_unlocked(void)
+                         fprintf(stderr, "[SEMA] m=0x%02X v=0x%08X off=0x%X\n", m, v, s_sema_offset); }
+                     if (m == 0x64u)      s_sema_offset = v;
+                     else if (m == 0x6Cu) vm_write32(la, v);
+-                    else if (m == 0x68u && vm_read32(la) != v) {
++                    else if (m == 0x68u && vm_read32(la) == v) { s_sema_wait_ea = 0; s_sema_b_t0 = 0; }
++                    else if (m == 0x68u) {
+             /* GCM_SEMA_ACQUIRE=1 makes ACQUIRE actually block, which is what
+-             * the hardware does. Off by default: a title whose label nothing
+-             * ever writes would wedge the drain permanently, and RELEASE on
+-             * its own is the half that unblocks a waiting guest. */
+-            static int blk = -1;
+-            if (blk < 0) { const char* e = getenv("GCM_SEMA_ACQUIRE"); blk = e ? atoi(e) : 0; }
+-            if (blk) { sem_blocked = 1; break; }
++             * the hardware does. Off by default except on macOS: a title whose
++             * label nothing ever writes would wedge the drain, and RELEASE on its own
++             * is the half that unblocks a waiting guest.
++             *
++             * The pass stops here and the next one re-reads the method; the
++             * pump wakes the drain once the guest's store lands (see
++             * s_sema_wait_ea). Tekken 5 DR sends one per frame, on a frame
++             * counter it bumps after the frame's skinned vertices are written;
++             * passing it early draws parts of a fighter in an older pose.
++             * GCM_SEMA_ACQUIRE_MS=<ms> (default 200, 0 = no bound) consumes an
++             * acquire that has waited that long on the same label and value,
++             * and says so. On by default on macOS, where it was measured: no
++             * stale reads and full hit effects at 60 fps.
++             * TODO: measure the Windows build and turn it on there too. */
++            static int blk = -1; static unsigned blk_ms;
++            if (blk < 0) { const char* e = getenv("GCM_SEMA_ACQUIRE");
++#ifdef __APPLE__
++                           blk = e ? atoi(e) : 1;
++#else
++                           blk = e ? atoi(e) : 0;
++#endif
++                           const char* t = getenv("GCM_SEMA_ACQUIRE_MS"); blk_ms = t ? (unsigned)atoi(t) : 200; }
++            if (blk) {
++                const unsigned long long now = ps3_ms_now();
++                if (!s_sema_b_t0 || s_sema_b_off != s_sema_offset || s_sema_b_val != v) {
++                    s_sema_b_off = s_sema_offset; s_sema_b_val = v; s_sema_b_t0 = now;
++                }
++                if (!blk_ms || now - s_sema_b_t0 < blk_ms) {
++                    /* Value first, address with release: the pump reads them
++                     * in the other order, so on arm64 it never pairs a new
++                     * address with the previous wait's value. */
++                    __atomic_store_n(&s_sema_wait_val, v, __ATOMIC_RELAXED);
++                    __atomic_store_n(&s_sema_wait_ea, la, __ATOMIC_RELEASE);
++                    sem_blocked = 1;
++                    break;
++                }
++                { static int tn; if (tn++ < 12)
++                    fprintf(stderr, "[SEMA] acquire off=0x%X == 0x%08X gave up after %u ms (label 0x%08X)\n",
++                            s_sema_offset, v, blk_ms, vm_read32(la)); }
++                s_sema_b_t0 = 0;
++                s_sema_wait_ea = 0;
++            }
+         }
+                 }
+-                if (sem_blocked) break;
++                if (sem_blocked) { s_sema_blocked_pass = 1; break; }
+                 s_fifo_getoff += 4 + count * 4;
+                 continue;
+             }
+@@ -2519,8 +2577,14 @@ static void gcm_rsx_process_fifo_unlocked(void)
+           }
+       } else burned = 0; }
+ 
++    /* A drain stopped on a semaphore acquire (GCM_SEMA_ACQUIRE) holds `get`
++     * on purpose: that is the wait, not a stuck walker, and the acquire's own
++     * bound (GCM_SEMA_ACQUIRE_MS) is what ends it. This counter counts drain
++     * passes, not time, so it fired a few milliseconds into the wait and
++     * resynced to put, dropping the frame's commands. */
+     { static u32 last = 0xFFFFFFFFu; static int stuck = 0;
+-      if (s_fifo_getoff == last && s_fifo_getoff != put) {
++      if (s_sema_blocked_pass) { stuck = 0; last = s_fifo_getoff; s_sema_blocked_pass = 0; }
++      else if (s_fifo_getoff == last && s_fifo_getoff != put) {
+           if (++stuck >= 8) { gcm_fifo_dump_around(s_fifo_getoff);
+                              gcm_fifo_resync_why("stuck-get", &s_fifo_getoff, put); stuck = 0; }
+       } else { stuck = 0; last = s_fifo_getoff; } }
+@@ -2700,8 +2764,19 @@ void cellGcm_fifo_recycle(u32 ctx_ea)
+ 
+     /* Wait (bounded ~2s) for the walker to consume the tail + take the jump so
+      * no commands are lost; a stalled ticker degrades to dropped commands. */
++    /* ...unless the drain is parked on a semaphore acquire (GCM_SEMA_ACQUIRE).
++     * Tekken 5 DR's ACQUIRE gates the very frame this thread is writing, and
++     * it stores the label only once the frame is complete, after this returns:
++     * waiting here for the walker to pass it is a deadlock the 2 s bound ends.
++     * The SDK's callback only waits for `get` to leave the head it is about to
++     * overwrite; a walker parked at the tail left it long ago. */
+     int spins = 0;
+-    while (g_gcm_fifo_drained_ea != begin && spins < 2000) { Sleep(1); spins++; }
++    while (g_gcm_fifo_drained_ea != begin && spins < 2000) {
++        if (s_sema_wait_ea && io_begin != 0xFFFFFFFFu &&
++            (s_fifo_getoff < io_begin || s_fifo_getoff >= io_begin + GCM_RECYCLE_MARGIN))
++            break;
++        Sleep(1); spins++;
++    }
+     if (spins >= 2000) {
+         static int warned = 0;
+         if (__atomic_fetch_add(&warned, 1, __ATOMIC_RELAXED) < 4)
+@@ -2740,8 +2815,11 @@ s32 cellGcmSetDisplayBuffer(u32 bufferId, u32 offset, u32 pitch,
+      * always in RSX local memory (location 0). */
+     if (rsx_live_draw_enabled())
+         rsx_live_draw_set_display_buffer(bufferId, 0, offset, pitch, width, height);
+-    if (rsx_draw_engine_enabled())
+-        rsx_draw_engine_set_display_buffer(bufferId, 0, offset, pitch, width, height);
++    /* The engine stores display buffers without needing its backend, and a harness whose
++     * backend comes up on the ticker thread (macOS: the window waits for the main queue)
++     * is not ready yet when the title registers them -- skipping the call left the engine
++     * with no scanout and presenting whichever surface was current. */
++    rsx_draw_engine_set_display_buffer(bufferId, 0, offset, pitch, width, height);
+ 
+     return CELL_OK;
+ }
+@@ -3384,6 +3462,14 @@ u32 cellGcmResolveLocated(int local, u32 offset)
+ {
+     if (local)
+         return s_config.localAddress + offset;
++#ifdef __APPLE__
++    /* MAIN is known here, so the IO table decides: cellGcmResolveOffset would send a page the
++     * guest once derived from a local EA to VRAM, and a vertex array in main memory on such a
++     * page (Tekken 5 DR's triple-buffered vertex rings) read garbage from VRAM.
++     * TODO: measure on the D3D12 build and drop the guard; its callers share this path. */
++    const u32 io = cellGcmResolveIO(offset);
++    if (io) return io;
++#endif
+     return cellGcmResolveOffset(offset);
+ }
+ 
+diff --git a/libs/video/rsx_draw_engine.c b/libs/video/rsx_draw_engine.c
+index 020292d..5ab5be6 100644
+--- a/libs/video/rsx_draw_engine.c
++++ b/libs/video/rsx_draw_engine.c
+@@ -853,6 +853,12 @@ static u32 eng_texture_slot(u32 location, u32 offset, u32 fmt, u32 w, u32 h,
+                             u32 levels, u32 pitch, int cube, u32 remap)
+ {
+     if (!w || !h || w > ENG_MAX_TEX_DIM || h > ENG_MAX_TEX_DIM) return 0;
++    /* A pitch-linear (LN) texture has no mip chain: the RSX samples only its base level and
++     * ignores the mipmap count, exactly as rsx_live_draw.c's texture_source_span does.
++     * Walking the count anyway reads the memory behind the base image as lower levels (Tekken 5
++     * DR's DXT textures carry the game's own chain there, spaced by the base pitch), and a
++     * minified draw samples that -- banded floors and fighters. */
++    if (fmt & 0x20u) levels = 1;
+     const u32 span = eng_texture_span(fmt, w, h, levels, pitch, cube);
+     if (!span) return 0;
+ 
+@@ -964,6 +970,32 @@ static u32 eng_cube_mask(void)
+     return mask;
+ }
+ 
++/* Depth-format units whose TEX_ADDRESS carries a compare function are shadow samplers: RSX returns
++ * `texel ZFUNC reference` (2x2 PCF when the unit filters linearly), not the depth. Without this a
++ * plain sample of the depth snapshot is (d, 0, 0): the lighting terms that multiply by (1 - sample)
++ * shadow only the red channel, so everything inside the light's frustum gets a cyan cast.
++ * Same selection as rsx_live_draw.c, whose pipeline identity also includes it. */
++static u32 eng_shadow_units(u32 func[16], u32* linear_out, u32 cube_mask)
++{
++    u32 mask = 0, linear = 0;
++    for (u32 u = 0; u < RSX_DSP_NUM_TEXTURES && u < 16; u++) {
++        func[u] = 0;
++        rsx_dsp_texture t;
++        rsx_dsp_get_texture(&g.rsx, u, &t);
++        if (!t.enabled || t.cubemap || ((cube_mask >> u) & 1u)) continue;
++        const u32 bf = t.format & RSX_TEX_FMT_BASE_MASK;
++        const u32 zf = (t.wrap >> 28) & 0xFu;
++        if (bf >= 0x90u && bf <= 0x93u && zf != 0u && zf < 7u && !(t.control0 & 0x4u)) {
++            mask |= 1u << u;
++            func[u] = zf | ((bf & 1u) ? 0u : 8u);   /* 0x90/0x92 are fixed point: the reference clamps */
++            const u32 minf = (t.filter >> 16) & 7u, magf = (t.filter >> 24) & 7u;
++            if (magf == 2u || minf == 2u || minf == 4u || minf == 6u) linear |= 1u << u;
++        }
++    }
++    *linear_out = linear;
++    return mask;
++}
++
+ /* Are both of the guest's own programs resident? One answer, used by the
+  * layout and by the pipeline, because they must not disagree: the built-in
+  * program declares all sixteen inputs, so narrowing the layout for it would
+@@ -1100,6 +1132,8 @@ static u32 eng_pipeline_get(const rsx_vertex_layout_plan* layout,
+      * a constant change must not be a new pipeline), the export-width bit of
+      * SHADER_CONTROL, the cube and vertex-texture masks, the input layout,
+      * and the structural render state. */
++    u32 shadow_func[16], shadow_linear = 0;
++    const u32 shadow_mask = fixed ? 0u : eng_shadow_units(shadow_func, &shadow_linear, cube_mask);
+     u64 key = 1469598103934665603ull;
+     if (fixed) {
+         static const u32 fixed_tag = 0x4E464958u;   /* "XIFN" */
+@@ -1112,6 +1146,11 @@ static u32 eng_pipeline_get(const rsx_vertex_layout_plan* layout,
+         key = eng_fnv1a(&fp_ctrl_key, sizeof fp_ctrl_key, key);
+         key = eng_fnv1a(&cube_mask, sizeof cube_mask, key);
+         key = eng_fnv1a(&vtex_mask, sizeof vtex_mask, key);
++        if (shadow_mask) {
++            key = eng_fnv1a(&shadow_mask, sizeof shadow_mask, key);
++            key = eng_fnv1a(&shadow_linear, sizeof shadow_linear, key);
++            key = eng_fnv1a(shadow_func, sizeof shadow_func, key);
++        }
+     }
+     key = eng_fnv1a(&layout->mask, sizeof layout->mask, key);
+     key = eng_fnv1a(&layout->stride, sizeof layout->stride, key);
+@@ -1145,6 +1184,9 @@ static u32 eng_pipeline_get(const rsx_vertex_layout_plan* layout,
+             rsx_fp_apply_alpha_test_buffered(s_ps_hlsl, sizeof s_ps_hlsl,
+                                              rs->alpha_func) < 0)
+             fi = -1;
++        if (fi > 0 && rsx_fp_apply_shadow_compare(s_ps_hlsl, sizeof s_ps_hlsl, shadow_mask,
++                                                  shadow_func, shadow_linear, cube_mask) < 0)
++            fi = -1;
+     }
+     if (vi > 0 && fi > 0)
+         handle = g.be->pipeline_create(g.be->user, s_vs_hlsl, s_ps_hlsl, rs,
+@@ -1799,11 +1841,22 @@ static u32 eng_present_surface(u32 buffer_id)
+     if (buffer_id < 8 && g.display_buffers[buffer_id].valid) {
+         const eng_display_buffer* d = &g.display_buffers[buffer_id];
+         u32 best = ENG_INVALID;
+-        for (u32 i = 0; i < g.n_surfaces; i++)
+-            if (g.surfaces[i].handle && g.surfaces[i].location == d->location &&
+-                g.surfaces[i].offset == d->offset &&
+-                (best == ENG_INVALID || g.surfaces[i].stamp > g.surfaces[best].stamp))
++        int best_fit = 0;
++        for (u32 i = 0; i < g.n_surfaces; i++) {
++            if (!g.surfaces[i].handle || g.surfaces[i].location != d->location ||
++                g.surfaces[i].offset != d->offset)
++                continue;
++            /* An offscreen target can sit at the same offset as a scanout buffer
++             * (Tekken 5 DR: a 512x512 pass at offset 0, the same as display
++             * buffer 0) and, being used later in the frame, carries the newer
++             * stamp: a size match comes first, the stamp only breaks ties. */
++            const int fit = g.surfaces[i].w == d->width && g.surfaces[i].h == d->height;
++            if (best == ENG_INVALID || fit > best_fit ||
++                (fit == best_fit && g.surfaces[i].stamp > g.surfaces[best].stamp)) {
+                 best = i;
++                best_fit = fit;
++            }
++        }
+         if (best != ENG_INVALID) return best;
+     }
+     return eng_current_surface();
+diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
+index e98e889..4cd92f6 100644
+--- a/libs/video/rsx_live_draw.c
++++ b/libs/video/rsx_live_draw.c
+@@ -91,6 +91,9 @@ void rsx_pf_guest_flip(void) {}
+ void rsx_live_draw_wait_totals(long long* g, long long* p) { *g = 0; *p = 0; }
+ double rsx_live_draw_gpu_ms(void) { return -1.0; }
+ int  rsx_live_draw_display_hybrid(void) { return -1; }
++/* The ticker (boot_main.cpp) publishes its next tick here for the D3D12 present; nothing reads it
++ * without that engine. */
++volatile long long g_rsx_next_tick_qpc = 0;
+ #endif
+ 
+ #if !defined(_WIN32)
+diff --git a/libs/video/rsx_metal_backend.h b/libs/video/rsx_metal_backend.h
+index aee795c..d0f59bb 100644
+--- a/libs/video/rsx_metal_backend.h
++++ b/libs/video/rsx_metal_backend.h
+@@ -35,6 +35,7 @@ int  rsx_metal_backend_pump_messages(void);
+ /* Present one frame: clear the drawable to the colour last received through the
+  * RSX clear method, then hand it to the compositor. */
+ void rsx_metal_backend_present(void);
++void rsx_metal_backend_present_buffer(u32 buffer_id);
+ 
+ /* --- test hooks ---------------------------------------------------------- */
+ 
+diff --git a/libs/video/rsx_metal_backend.m b/libs/video/rsx_metal_backend.m
+index 24c9776..4e20bc1 100644
+--- a/libs/video/rsx_metal_backend.m
++++ b/libs/video/rsx_metal_backend.m
+@@ -2482,13 +2482,30 @@ static u32 eng_depth_snapshot(void* user, u32 depth, u32 w, u32 h)
+             return 0;
+         }
+     }
+-    MTLTextureDescriptor* td =
+-        [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatR32Float
+-                                                           width:w height:h
+-                                                       mipmapped:NO];
+-    td.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+-    const u32 dst = eng_obj_add([s_dev newTextureWithDescriptor:td]);
+-    if (!dst) return 0;
++    /* One persistent copy per depth target: the engine asks again after every
++     * depth clear and never releases the previous copy, so a fresh texture per
++     * call exhausted the object table (a shadow map per frame) and every later
++     * texture came back as the black zero texture. Each resolve record
++     * re-renders the copy in stream order, so draws recorded before it still
++     * see the older contents. */
++    static struct { u32 depth, dst, w, h; } cache[32];   /* engine thread only */
++    static u32 ncache;
++    u32 dst = 0;
++    for (u32 i = 0; i < ncache; i++)
++        if (cache[i].depth == depth && cache[i].w == w && cache[i].h == h && eng_obj(cache[i].dst)) {
++            dst = cache[i].dst; break; }
++    if (!dst) {
++        MTLTextureDescriptor* td =
++            [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatR32Float
++                                                               width:w height:h
++                                                           mipmapped:NO];
++        td.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
++        dst = eng_obj_add([s_dev newTextureWithDescriptor:td]);
++        if (!dst) return 0;
++        u32 slot = ncache < 32 ? ncache++ : (depth % 32);
++        if (cache[slot].dst) eng_obj_release(NULL, cache[slot].dst);   /* the slot's old copy, retired */
++        cache[slot].depth = depth; cache[slot].dst = dst; cache[slot].w = w; cache[slot].h = h;
++    }
+ 
+     EngRecord* r = &s_eng_rec[s_eng_rec_count++];
+     memset(r, 0, sizeof *r);
+@@ -2566,7 +2583,7 @@ static u32 eng_depth_snapshot_rgba8(void* user, u32 depth, u32 w, u32 h)
+     }
+     /* One persistent decode target per depth target: each resolve record
+      * re-renders it in stream order, so nothing leaks per frame. */
+-    static struct { u32 depth, dst, w, h; } cache[32];
++    static struct { u32 depth, dst, w, h; } cache[32];   /* engine thread only */
+     static u32 ncache;
+     u32 dst = 0;
+     for (u32 i = 0; i < ncache; i++)
+@@ -2581,6 +2598,7 @@ static u32 eng_depth_snapshot_rgba8(void* user, u32 depth, u32 w, u32 h)
+         dst = eng_obj_add([s_dev newTextureWithDescriptor:td]);
+         if (!dst) return 0;
+         u32 slot = ncache < 32 ? ncache++ : (depth % 32);
++        if (cache[slot].dst) eng_obj_release(NULL, cache[slot].dst);   /* the slot's old copy, retired */
+         cache[slot].depth = depth; cache[slot].dst = dst; cache[slot].w = w; cache[slot].h = h;
+     }
+     EngRecord* r = &s_eng_rec[s_eng_rec_count++];
+@@ -3721,6 +3739,14 @@ int rsx_metal_backend_pump_messages(void)
+ #endif
+ }
+ 
++/* Present the display buffer a host driving the flips itself says was flipped to (the harness
++ * reads it from cellGcmGetCurrentDisplayBufferId); without the draw engine there is only one. */
++void rsx_metal_backend_present_buffer(u32 buffer_id)
++{
++    if (s_ready && s_eng_active) { rsx_draw_engine_present_buffer(buffer_id); return; }
++    rsx_metal_backend_present();
++}
++
+ void rsx_metal_backend_present(void)
+ {
+     if (!s_ready) return;
+diff --git a/runtime/platform/win32_compat.h b/runtime/platform/win32_compat.h
+index 30538f1..21d87f0 100644
+--- a/runtime/platform/win32_compat.h
++++ b/runtime/platform/win32_compat.h
+@@ -744,6 +744,16 @@ static inline DWORD GetCurrentThreadId(void)
+ static inline DWORD  GetCurrentProcessId(void) { return (DWORD)getpid(); }
+ static inline HANDLE GetCurrentProcess(void)   { return (HANDLE)(intptr_t)-1; }   /* pseudo-handle */
+ static inline HANDLE GetCurrentThread(void)    { return (HANDLE)(intptr_t)-2; }   /* pseudo-handle */
++/* CPU time of the calling thread in nanoseconds, standing in for the cycle count
++ * (only the pseudo-handle from GetCurrentThread is supported; perf statistics use it). */
++static inline BOOL QueryThreadCycleTime(HANDLE h, ULONG64* cycles)
++{
++    (void)h;
++    struct timespec ts;
++    if (clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts) != 0) return FALSE;
++    *cycles = (ULONG64)ts.tv_sec * 1000000000ull + (ULONG64)ts.tv_nsec;
++    return TRUE;
++}
+ 
+ /* ---------------------------------------------------------------------------
+  * Waitable handles: events, semaphores, threads, waitable timers
+diff --git a/runtime/ppu/tests/boot_main.cpp b/runtime/ppu/tests/boot_main.cpp
+index b555dea..bea013a 100644
+--- a/runtime/ppu/tests/boot_main.cpp
++++ b/runtime/ppu/tests/boot_main.cpp
+@@ -298,9 +298,11 @@ extern "C" int  rsx_d3d12_backend_pump_messages(void);
+ #elif defined(__APPLE__)
+ extern "C" int  rsx_metal_backend_init(uint32_t w, uint32_t h, const char* title);
+ extern "C" void rsx_metal_backend_present(void);
++extern "C" void rsx_metal_backend_present_buffer(uint32_t buffer_id);
+ extern "C" int  rsx_metal_backend_pump_messages(void);
+ #  define rsx_backend_init    rsx_metal_backend_init
+ #  define rsx_backend_present rsx_metal_backend_present
++#  define rsx_backend_present_buffer rsx_metal_backend_present_buffer
+ #  define rsx_backend_pump    rsx_metal_backend_pump_messages
+ #else
+ extern "C" int  rsx_null_backend_init(uint32_t w, uint32_t h, const char* title);
+@@ -386,7 +388,11 @@ static void rsx_present_frame(void)
+      * which the FIFO walker calls on this same thread before setting the
+      * pending flag we are responding to, so it is current here. */
+     if (s_rsx_live) rsx_live_draw_present(cellGcmGetCurrentDisplayBufferId());
++#ifdef rsx_backend_present_buffer
++    else            rsx_backend_present_buffer(cellGcmGetCurrentDisplayBufferId());
++#else
+     else            rsx_backend_present();   /* platform backend: D3D12 / Metal / null */
++#endif
+ }
+ static int rsx_pump_messages(void)
+ { return s_rsx_live ? rsx_null_backend_pump_messages() : rsx_backend_pump(); }
+@@ -1910,7 +1916,14 @@ static LONG WINAPI vm_commit_veh(EXCEPTION_POINTERS* ep)
+ }
+ #endif
+ 
++#ifdef __APPLE__
++/* AppKit and the Metal backend need the process's main thread (window creation and event
++ * pumping are dispatch_sync'd to the main queue), so the guest runs on a thread of its own
++ * and the real main() below only serves that queue. */
++static int boot_main(int argc, char** argv)
++#else
+ int main(int argc, char** argv)
++#endif
+ {
+     if (argc < 2) { printf("usage: %s <PPU ELF>\n", argv[0]); return 2; }
+ #ifdef PS3_GAME_DLL
+@@ -2080,3 +2093,57 @@ int main(int argc, char** argv)
+      * produce. */
+     return g_sys_process_exit_called ? (int)g_sys_process_exit_code : 0;
+ }
++
++#ifdef __APPLE__
++#include <pthread.h>
++#include <CoreFoundation/CoreFoundation.h>
++
++namespace {
++struct BootArgs { int argc; char** argv; };
++
++void* boot_thread(void* p)
++{
++    BootArgs* a = (BootArgs*)p;
++    int rc = boot_main(a->argc, a->argv);
++    fflush(NULL);
++    exit(rc);
++}
++}
++
++int main(int argc, char** argv)
++{
++    static BootArgs args;
++    args.argc = argc;
++    args.argv = argv;
++    /* Every guest call is a host call, so recompiled call chains nest deeply (the Windows
++     * build links with a 256 MB main stack). */
++    pthread_attr_t attr;
++    pthread_attr_init(&attr);
++    if (pthread_attr_setstacksize(&attr, 256u * 1024 * 1024) != 0) {   /* a smaller stack would crash much later */
++        fprintf(stderr, "[boot] could not size the guest thread's stack\n");
++        return 1;
++    }
++    pthread_t tid;
++    const int started = pthread_create(&tid, &attr, boot_thread, &args);
++    pthread_attr_destroy(&attr);
++    if (started != 0) {
++        fprintf(stderr, "[boot] could not start the guest thread\n");
++        return 1;
++    }
++    pthread_detach(tid);
++    /* CFRunLoopRun returns at once when the loop has no source or timer, so give it one that
++     * never fires. The main queue (dispatch_sync from the backend) is served by this loop,
++     * on the main thread, which dispatch_main does not guarantee. */
++    CFRunLoopTimerRef keep = CFRunLoopTimerCreate(NULL, CFAbsoluteTimeGetCurrent() + 1e9, 1e9, 0, 0,
++                                                  [](CFRunLoopTimerRef, void*) {}, NULL);
++    CFRunLoopAddTimer(CFRunLoopGetMain(), keep, kCFRunLoopCommonModes);
++    for (;;) {   /* the guest thread ends the process */
++        SInt32 why = CFRunLoopRunInMode(kCFRunLoopDefaultMode, 1e9, false);
++        if (why == kCFRunLoopRunFinished) {
++            fprintf(stderr, "[boot] main run loop has nothing to serve\n");
++            sleep(1);
++        }
++    }
++    return 0;
++}
++#endif

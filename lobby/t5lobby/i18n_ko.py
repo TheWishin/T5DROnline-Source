@@ -915,6 +915,15 @@ MESSAGES = {
     "CMake and Ninja were not found. Install the Visual Studio component 'C++ CMake "
     "tools for Windows'.":
         "CMake와 Ninja를 찾을 수 없습니다. Visual Studio 구성 요소 'C++ CMake tools for Windows'를 설치하세요.",
+    "CMake and Ninja were not found. On macOS: brew install cmake ninja sdl2 glslang spirv-cross":
+        "CMake와 Ninja를 찾을 수 없습니다. macOS에서는 다음을 실행하세요: brew install cmake ninja sdl2 glslang spirv-cross",
+    "glslang and spirv-cross were not found; the game's shaders need them. "
+    "On macOS: brew install glslang spirv-cross":
+        "glslang과 spirv-cross를 찾을 수 없습니다. 게임의 셰이더에 필요합니다. macOS에서는 다음을 실행하세요: brew install glslang spirv-cross",
+    "Building the game is supported on Windows and macOS only.":
+        "게임 빌드는 Windows와 macOS에서만 지원됩니다.",
+    "This Python refuses pip install (PEP 668; Homebrew's does). Use a virtual environment: python3 -m venv .venv && .venv/bin/pip install pycryptodome, then run the tools with .venv/bin/python.":
+        "이 Python은 pip install을 거부합니다(PEP 668, Homebrew의 Python이 그렇습니다). 가상 환경을 사용하세요: python3 -m venv .venv && .venv/bin/pip install pycryptodome 를 실행한 뒤 도구를 .venv/bin/python 으로 실행하세요.",
     "expected 1 SPU image, found {count}": "SPU 이미지 1개를 기대했지만 {count}개를 찾았습니다",
     "step '{step}' failed: a tool exited with code {code} -- the lines above say why.":
         "'{step}' 단계 실패: 도구가 코드 {code}로 종료했습니다 -- 위 줄에 이유가 있습니다.",

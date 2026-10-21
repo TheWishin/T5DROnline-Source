@@ -542,8 +542,28 @@ tally adds "skipped on N (both players pressed)".
 
 Test hook `T5_TEST_SKIP_PRESS=N[:M]`: this PC's player presses START (3 frames, like a script, not
 filtered) N frames into every intro and M frames into every part after a round (-1 = never).
+`tests/c/no_pause_test.cpp` (tests/test_no_pause.py) models it: intros, KO slow motion, replay and
+the way to the next round with their START reactions; P1 alone, P2 alone and both mashing START
+(also as a modified client), lockstep, rollback (inputs 0-9 frames late, ~8,000-9,000 rollbacks per
+PC) and replay: identical on both PCs at every frame, never paused, one player never skips a thing,
+both skip every intro, replay and way to the next round.
 
-PROOF_TABLE
+**Proof** (build/skip114/runs; `tools/fight_flow_test.py --flow persistent --pattern NR --matches 2
+--rounds 2 --mash --polite`: a new session and a rematch, first to 2 rounds, two games on this PC, both
+recording replays; round-state durations from `T5_DF_WATCH=1009322C` in frames, natural lengths: P1
+intro 171-200, P2 intro 176-240, replay 524, on to the next round 149):
+
+| run | who presses START | intros (P1 / P2) | replay, next round | result |
+|---|---|---|---|---|
+| rb_one / ls_one (rollback / lockstep) | P1 only (20 frames into each intro, 150 after each round) | 171, 200 / 240, 176: full | 524, 149: full | same results and final hashes on both PCs (2461a6ef.., ed2d272b.. / 34361a19.., ef73a330..), 0 mismatching frames; P1's START taken out (9-10 frames per match) |
+| rb_both / ls_both | P1 as above, P2 50 / 200 frames in | 52-53 / 20 | 85-86, 19 | same results and hashes (83066c2c.., 746ac84b.. / 82330c53.., 752a87e8..), 0 mismatching frames; both PCs' round states identical frame for frame |
+| rb_mash / ls_mash | both mash START (`--mash-start 4`: every ~4th input, alone or with an attack) | 34-68 / 20 | 4-20, 19 | same results and hashes, 0 mismatching frames; pause menu opened 0 times; START taken out on ~385 + 382 frames |
+| rb_stress / ls_stress | both press as in rb_both and mash START; joiner stalled 60 ms every 0.2-0.6 s (`--stutter 60`), 5 % of packets dropped | 20-53 / 20 | 4-16, 19 | same results and hashes, 0 mismatching frames, pause menu 0; 1,267 rollbacks (rollback) |
+| replays | the 16 recordings of these 8 pairs (both sides) played back (`tools/replay_play.py`) | | | 16 of 16 IDENTICAL (2,914 hashes compared, 0 different, every result and sync point equal); the playbacks skip on the recorded frames (60 "pressed by both players" lines, round-state durations as live) |
+
+The post-match part (the last KO replay, the win pose) was skipped by the driver / the rollback rule as
+before in every match (2-3 frames of replay). Offline (smoke quick: arcade, VS with two pads,
+practice) PASS.
 
 ## Connection problems
 

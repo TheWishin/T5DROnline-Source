@@ -1674,7 +1674,7 @@ class OnlineView:
                 bd = theme.Badge(rr, size=22)
                 bd.set(_tier_of(rank_after), rank_after.get("provisional"))
                 bd.pack(side="left", padx=(0, px(6)))
-                ttk.Label(rr, text=rank_after.get("rank", ""), style="Card.Bold.TLabel").pack(side="left")
+                ttk.Label(rr, text=ranks.display_name(rank_after), style="Card.Bold.TLabel").pack(side="left")
             elif rank_after.get("placement"):
                 n, k = rank_after["placement"]
                 ttk.Label(rr, text="   " + t("Placement match {done} of {total}", done=n, total=k),

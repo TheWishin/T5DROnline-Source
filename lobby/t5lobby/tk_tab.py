@@ -1433,7 +1433,8 @@ class OnlineTab:
             if p.get("account"):
                 parts.append(t("ranked matches {count}", count=p["ranked_games"]))
             if p.get("peak_rank"):
-                parts.append(t("highest rank {rank}", rank=p["peak_rank"]))
+                peak = ranks.display_name({"tier": p.get("peak"), "rank": p["peak_rank"]})
+                parts.append(t("highest rank {rank}", rank=peak))
             lines.append(", ".join(parts))
             if p.get("chars"):
                 lines.append(t("Characters: {list}", list=", ".join(

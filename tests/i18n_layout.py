@@ -33,6 +33,7 @@ for sub in ("tools", "lobby", "launcher", "tests"):
     if p not in sys.path:
         sys.path.insert(0, p)
 os.environ.setdefault("T5_PAD_NAV", "0")        # no controller thread in the Online tab
+os.environ["T5_NOTIFY"] = "0"                   # no chime, no taskbar flash on this PC
 os.environ.setdefault("T5_FW_CHECK", "0")       # the Online tab's firewall hint never reads this PC's firewall
 
 import tkinter as tk  # noqa: E402
@@ -570,6 +571,12 @@ class Walk:
         tab.client.my_room = dict(MY_ROOM, playing=[], next={"at": time.time() + 8, "players": ["x0", "x1"]})
         tab.on_event({"t": "room", "room": tab.client.my_room})
         self.screen("online my room, next match")
+        # the host of a password room: the wrong passwords line (and, below, the Room settings window with Turn away
+        # the guessers)
+        tab.client.my_room = dict(MY_ROOM, lock="password", guesses={"wrong": 1999, "networks": 1999, "barred": 99,
+                                                                     "busy": True})
+        tab.on_event({"t": "room", "room": tab.client.my_room})
+        self.screen("online my room, wrong passwords")
         saved = tab.new_window
 
         def hidden(parent):

@@ -16,18 +16,24 @@
  * cells (0x112F04, 0x58F64) and the select mode's set-up (0x248768).
  *
  * T5_UNLOCK_STAGES=1 (launcher Settings -> "Unlock all stages") answers yes for
- * 0x10 through an entry detour of 0x2A732C. Nothing is written to guest memory:
- * the save keeps the player's own byte, and the setting turned off is the old
+ * 0x10 through an entry detour of 0x2A732C, T5_UNLOCK_JINPACHI=1 ("Unlock
+ * Jinpachi and Random select") for 0x20. Nothing is written to guest memory:
+ * the save keeps the player's own byte, and the settings turned off are the old
  * game again.
  *
- * Online the answer is fixed: in a game started for online play (T5_NET_MODE,
- * T5_CTL_DIR, T5_FIGHT, T5_FIGHT_FILE) every call answers as a fresh save does
- * (nothing unlocked), whatever the setting and the save. The two PCs then build
- * the same select grid (no Jinpachi or random cell), the same stage lists and
- * the same random stage picks; the stage of an online match is the lobby's and
- * is written by the direct-fight driver, which works for every stage id with
- * or without the unlock. T5_UNLOCK_ONLINE=save (tests only) lets the save and
- * the setting count online too, the old behaviour.
+ * Online the answer is the match's, never a PC's: in a game started for online
+ * play (T5_NET_MODE, T5_CTL_DIR, T5_FIGHT, T5_FIGHT_FILE) every call answers as
+ * a fresh save does, whatever the settings and the save, except that a match of
+ * the kind T5_NET_UNLOCKS=open (the launcher sets it on both PCs from the lobby's
+ * match event: casual quick matches, rooms, friend invites) answers yes for 0x20
+ * -- Jinpachi's and the random cell on both select grids. T5_NET_UNLOCKS=closed,
+ * unset or anything else (ranked, tournament sets, older launchers): nothing, as
+ * before. The stages (0x10) stay off either way: the lobby picks the stage and
+ * the direct-fight driver writes it. A persistent game takes the value of each
+ * new session from its "fight" command (t5_unlock_set_open, df_fight.cpp), a
+ * replay from its file. The two PCs then build the same select grid, the same
+ * stage lists and the same random stage picks. T5_UNLOCK_ONLINE=save (tests
+ * only) lets the save and the settings count online too, the old behaviour.
  *
  * T5_UNLOCK_ITEMS=1 (launcher Settings -> "Unlock all customization items")
  * makes every item in the item shop cost 0 Fight Money (detours of the two
@@ -36,8 +42,8 @@
  * (docs/DIRECTFIGHT.md "Unlocks", and the plan for costumes online there).
  *
  * T5_UNLOCK_TRACE=1 logs every distinct (caller, mask, game's answer, answer)
- * once, with the mode manager's mode, and the shop's item checks and prices
- * offline; =2 offline also installs the call tracer
+ * once, with the mode manager's mode, the 1st, 10th, 100th, ... call of each
+ * caller, and the shop's item checks and prices offline; =2 offline also installs the call tracer
  * (T5_RB_CALLTRACE=addr,..., rb_calls.log), which otherwise runs only with the
  * rollback loop.
  */
@@ -47,6 +53,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <atomic>
+#include <map>
 #include <mutex>
 #include <set>
 #include <tuple>
@@ -56,6 +64,7 @@
 #include "df.h"
 
 namespace rb { void calltrace_install(); }   /* rb_detour.cpp: T5_RB_CALLTRACE (diagnostics) */
+extern "C" int t5_replay_unlocks_open(void);  /* src/netplay/replay.cpp: a playback's recorded answer, -1 = no playback */
 
 namespace unlock {
 namespace {
@@ -83,6 +92,8 @@ constexpr uint32_t kFnPriceColor = 0x001522C8;
 enum class Mode { Save, Fixed };
 Mode g_mode = Mode::Save;
 bool g_stages = false;
+bool g_jinpachi = false;            /* T5_UNLOCK_JINPACHI=1 (offline) */
+std::atomic<int> g_open{ 0 };       /* online: the match kind is "open" (T5_NET_UNLOCKS=open) -> 0x20 offered */
 bool g_items = false;
 bool g_trace = false;
 bool g_installed = false;
@@ -93,6 +104,14 @@ rb::GuestFn o_price_part = nullptr;
 rb::GuestFn o_price_color = nullptr;
 std::mutex g_mu;
 std::set<std::tuple<uint32_t, uint32_t, uint32_t, uint32_t>> g_seen;
+std::map<uint32_t, uint32_t> g_calls;   /* T5_UNLOCK_TRACE: calls per caller */
+
+/* Online: Jinpachi and the random cell offered (the match kind, or the replay's) */
+bool online_open()
+{
+    const int rp = t5_replay_unlocks_open();
+    return rp >= 0 ? rp != 0 : g_open.load() != 0;
+}
 
 bool env_on(const char* name)
 {
@@ -113,11 +132,17 @@ void h_check(ppu_context* ctx)
     o_check(ctx);
     const uint32_t game = (uint32_t)ctx->gpr[3];
     uint32_t r = game;
-    if (g_mode == Mode::Fixed) r = 0;                       /* a fresh save: nothing unlocked */
-    else if (g_stages && (mask & kFlagStages)) r = 1;
+    if (g_mode == Mode::Fixed) r = (mask & kFlagJinpachi) && online_open() ? 1 : 0;   /* a fresh save, or the match's */
+    else {
+        if (g_stages && (mask & kFlagStages)) r = 1;
+        if (g_jinpachi && (mask & kFlagJinpachi)) r = 1;
+    }
     ctx->gpr[3] = r;
     if (g_trace) {
         std::lock_guard<std::mutex> lk(g_mu);
+        const uint32_t n = ++g_calls[lr];
+        if (n == 1 || n == 10 || n == 100 || n == 1000 || n == 10000)
+            df::note("unlock: check(0x%02X) from 0x%06X: call %u (answer %u, mode %d)", mask, lr, n, r, (int)df::mode_cur());
         if (g_seen.insert({ lr, mask, game, r }).second)
             df::note("unlock: check(0x%02X) from 0x%06X: game %u -> %u (mode %d, byte 0x%02X)", mask, lr, game, r,
                      (int)df::mode_cur(), vm_base ? df::rd8(kUnlockByte) : 0);
@@ -186,21 +211,25 @@ void t5_unlock_install(void)
     const char* keep = getenv("T5_UNLOCK_ONLINE");
     const bool save_online = keep && !strcmp(keep, "save");
     g_stages = env_on("T5_UNLOCK_STAGES");
+    g_jinpachi = env_on("T5_UNLOCK_JINPACHI");
     g_items = env_on("T5_UNLOCK_ITEMS");
     g_trace = env_on("T5_UNLOCK_TRACE");
     g_mode = online && !save_online ? Mode::Fixed : Mode::Save;
     if (g_trace && g_mode == Mode::Save && getenv("T5_UNLOCK_TRACE")[0] == '2') rb::calltrace_install();   /* T5_RB_CALLTRACE too */
-    if (g_mode == Mode::Save && !g_stages && !g_items && !g_trace) return;   /* nothing to change: no detour */
-    if (g_mode == Mode::Fixed || g_stages || g_trace) {
+    if (g_mode == Mode::Save && !g_stages && !g_jinpachi && !g_items && !g_trace) return;   /* nothing to change: no detour */
+    if (g_mode == Mode::Fixed || g_stages || g_jinpachi || g_trace) {
         g_installed = rb::detour(kFnCheck, h_check, &o_check);
         if (!g_installed)
             df::note("unlock: 0x%06X not detourable -- unlocks as the save has them%s", kFnCheck,
                      g_mode == Mode::Fixed ? " (online: the two PCs may differ)" : "");
         else if (g_mode == Mode::Fixed)
-            df::note("unlock: online game -- unlocks as on a fresh save (Tekken 5 stages and Jinpachi off), whatever the save%s",
-                     g_stages || g_items ? " and the unlock settings" : "");
+            df::note("unlock: online game -- unlocks as on a fresh save (Tekken 5 stages off), whatever the save%s; Jinpachi and the "
+                     "random cell %s", g_stages || g_jinpachi || g_items ? " and the unlock settings" : "",
+                     g_open ? "offered (T5_NET_UNLOCKS=open: a casual match, a room, an invite)" : "by the match (T5_NET_UNLOCKS; now off)");
         else
-            df::note("unlock: Tekken 5 stages %s", g_stages ? "unlocked (T5_UNLOCK_STAGES=1; the save is not changed)" : "as the save has them");
+            df::note("unlock: Tekken 5 stages %s; Jinpachi and the random cell %s",
+                     g_stages ? "unlocked (T5_UNLOCK_STAGES=1; the save is not changed)" : "as the save has them",
+                     g_jinpachi ? "unlocked (T5_UNLOCK_JINPACHI=1; the save is not changed)" : "as the save has them");
     }
     /* Items: offline only. Online the VS custom data stays the game's own (no customization in a direct fight). */
     if (g_mode == Mode::Save && (g_items || g_trace)) {
@@ -213,8 +242,77 @@ void t5_unlock_install(void)
 
 int t5_unlock_fixed(void) { return unlock::g_installed && unlock::g_mode == unlock::Mode::Fixed; }
 
+/* Online: Jinpachi's and the random cell are on the select grid (the match kind's
+ * answer, or a playback's); offline the setting or the save's byte. */
+int t5_unlock_grid_open(void)
+{
+    using namespace unlock;
+    if (g_mode == Mode::Fixed) return g_installed && online_open() ? 1 : 0;
+    return g_jinpachi || (vm_base && (df::rd8(kUnlockByte) & kFlagJinpachi)) ? 1 : 0;
+}
+
+/* T5_SELECT_TRACE=1 (diagnostics, offline and online; main thread, every frame
+ * boundary): the select records -- cursor cell, state, picked model of each side
+ * -- the select mode's state word, and the fighters' character words (+0x4C of the
+ * fighter blocks 0x10090030 / 0x10090900: the fighter a block plays, Mokujin's
+ * copy for him; bit 16 on P2's) whenever one changes. T5_SELECT_SCAN=1 also lists
+ * the words of the fight-state block that become 0x0001xxxx (how +0x4C was found). */
+void t5_select_trace(void)
+{
+    static int on = -1;
+    if (on < 0) { const char* e = getenv("T5_SELECT_TRACE"); on = e && *e == '1'; }
+    if (!on || !vm_base) return;
+    static uint32_t frame = 0, last[9] = { ~0u, ~0u, ~0u, ~0u, ~0u, ~0u, ~0u, ~0u, ~0u };
+    frame++;
+    for (int p = 0; p < 2; p++) {
+        const uint32_t r = 0x10093F58u + (uint32_t)p * 0x78u;
+        const uint32_t v[3] = { df::rd32(r), df::rd8(r + 0x20), df::rd32(r + 0x0C) };
+        if (v[0] != last[p * 3] || v[1] != last[p * 3 + 1] || v[2] != last[p * 3 + 2])
+            df::note("select trace %u: P%d cell %u state %02X model 0x%X", frame, p + 1, v[0], v[1], v[2]);
+        for (int i = 0; i < 3; i++) last[p * 3 + i] = v[i];
+    }
+    for (int p = 0; p < 2; p++) {
+        const uint32_t w = df::rd32(0x1009007Cu + (uint32_t)p * 0x8D0u);
+        if (w != last[6 + p]) df::note("select trace %u: P%d fighter word 0x%08X", frame, p + 1, w);
+        last[6 + p] = w;
+    }
+    const uint32_t ss = df::rd32(0x1008F070u);
+    if (ss != last[8]) df::note("select trace %u: state word %u", frame, ss);
+    last[8] = ss;
+    if (getenv("T5_SELECT_SCAN")) {   /* (diagnostics) words of the fight block that become 0x0001xxxx */
+        static std::vector<uint32_t> prev;
+        const uint32_t a0 = 0x1008E000u, n = 0x17000u / 4;
+        if (prev.size() != n) prev.assign(n, 0);
+        for (uint32_t i = 0; i < n; i++) {
+            const uint32_t v = df::rd32(a0 + i * 4);
+            if (v != prev[i] && (v & 0xFFFFFF00u) == 0x00010000u && (v & 0xFF) < 0x24)
+                df::note("select scan %u: [0x%08X] 0x%08X -> 0x%08X", frame, a0 + i * 4, prev[i], v);
+            prev[i] = v;
+        }
+    }
+}
+
+/* The match kind's answer online (what a recording keeps): 1 open, 0 closed. */
+int t5_unlock_online_open(void) { return unlock::g_open.load(); }
+
+/* A persistent game's new session (its "fight" command): T5_NET_UNLOCKS of that
+ * session. Returns 1 when the answer changed (a select screen built before has the
+ * other grid and must be built again). */
+int t5_unlock_set_open(int open)
+{
+    using namespace unlock;
+    const int was = g_open.exchange(open ? 1 : 0);
+    if (was == (open ? 1 : 0)) return 0;
+    df::note("unlock: Jinpachi and the random cell %s for this session (T5_NET_UNLOCKS=%s)", open ? "offered" : "off",
+             open ? "open" : "closed");
+    return 1;
+}
+
 } // extern "C"
 
 namespace {
+/* T5_NET_UNLOCKS of the process (process mode; a persistent game sets each session's from its command) --
+ * read at static init in both builds, before netplay configures a session (a recording keeps it) */
+struct OpenInit { OpenInit() { const char* u = getenv("T5_NET_UNLOCKS"); unlock::g_open = u && !_stricmp(u, "open") ? 1 : 0; } } g_open_init;
 struct AutoInstall { AutoInstall() { t5_unlock_install(); } } g_auto;   /* the exe build: the lifted table is there at static init */
 }

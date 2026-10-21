@@ -14,6 +14,7 @@ import sys
 import threading
 import time
 import tkinter as tk
+import tkinter.font as tkfont
 from tkinter import filedialog, messagebox, ttk
 from tkinter.scrolledtext import ScrolledText
 
@@ -204,6 +205,7 @@ class App(tk.Tk):
         self.after(200, self.refresh_inputs)
         self.after(300, self.refresh_prereqs)
         self.after(400, self.refresh_game_state)
+        self.after(600, self.refresh_rank_art)
 
     def report_callback_exception(self, exc, val, tb):
         """An error inside a button or timer: Tk would only print it (nowhere, under pythonw). It goes
@@ -331,9 +333,15 @@ class App(tk.Tk):
         self.status.trace_add("write", self._log_status)
         bar = ttk.Frame(self, padding=(16, 4))
         bar.pack(fill="x", side="bottom", before=self.nb)     # (stays visible when a tab is too tall)
-        ttk.Label(bar, textvariable=self.status, style="Muted.TLabel").pack(side="left")
         ttk.Label(bar, style="Muted.TLabel",
-                  text=t("Output: {folder}", folder=self.settings.out_dir)).pack(side="right")
+                  text=t("Output: {folder}", folder=self.settings.out_dir)).pack(side="right", padx=(12, 0))
+        # one line: a long status (a lag check's explanation) ends in "..." instead of running under the output
+        # folder and off the window; the whole text is in launcher.log
+        self.status_shown = tk.StringVar(value="")
+        self.status_label = ttk.Label(bar, textvariable=self.status_shown, style="Muted.TLabel")
+        self.status_label.pack(side="left", fill="x", expand=True)
+        self.status.trace_add("write", lambda *_: self._fit_status())
+        self.status_label.bind("<Configure>", lambda _e: self._fit_status(), add="+")
 
     def _build_tab(self, tab):
         tab.columnconfigure(0, weight=1)
@@ -528,7 +536,7 @@ class App(tk.Tk):
         sb = ttk.LabelFrame(left, text="  " + t("Stage blur / glow") + "  ", padding=(12, 6))
         sb.pack(fill="x", pady=(6, 0))
         self.stage_blur_var = tk.StringVar(value=self.settings["stage_blur"]
-                                           if self.settings["stage_blur"] in core.STAGE_BLUR_MODES else "on")
+                                           if self.settings["stage_blur"] in core.STAGE_BLUR_MODES else "off")
         row = ttk.Frame(sb)
         row.pack(anchor="w")
         for key, label in core.STAGE_BLUR_MODES.items():
@@ -581,6 +589,11 @@ class App(tk.Tk):
         self.mute_var = tk.BooleanVar(value=self.settings["mute"])
         self.bg_var = tk.BooleanVar(value=self.settings["background"])
         ttk.Checkbutton(other, text=t("Mute sound"), variable=self.mute_var, command=self.save_settings).pack(anchor="w")
+        # The Online tab's chime and flashing taskbar button (lobby/t5lobby/notify.py): a match to accept, someone in the room
+        self.notify_var = tk.BooleanVar(value=bool(self.settings.get("notify", True)))
+        ttk.Checkbutton(other, text=t("Sound and taskbar flash when a match is found or someone joins my room"),
+                        variable=self.notify_var, style=self.wrap_style("TCheckbutton", 440),
+                        command=self.save_settings).pack(anchor="w", pady=(4, 0))
         ttk.Checkbutton(other, text=t("Start minimized, without taking focus (for testing)"), variable=self.bg_var,
                         style=self.wrap_style("TCheckbutton", 440), command=self.save_settings).pack(anchor="w",
                                                                                                     pady=(4, 0))
@@ -595,8 +608,8 @@ class App(tk.Tk):
         # "Internal resolution"): below Native for weak graphics cards, above for big screens.
         gfx = ttk.LabelFrame(right, text="  " + t("Internal resolution") + "  ", padding=(12, 6))
         gfx.pack(fill="x", pady=(6, 0))
-        self.internal_res_var = tk.StringVar(value=self.settings["internal_res"]
-                                             if self.settings["internal_res"] in core.INTERNAL_RES else "native")
+        # (Auto on integrated graphics until the player picks a step: core.Settings.internal_res_choice)
+        self.internal_res_var = tk.StringVar(value=self.settings.internal_res_choice())
         keys = list(core.INTERNAL_RES)
         for part in (keys[:3], keys[3:6], keys[6:]):      # Lowest..Native / 1080p..4K / Auto
             row = ttk.Frame(gfx)
@@ -606,6 +619,8 @@ class App(tk.Tk):
                                 command=self._internal_res_changed).pack(side="left", padx=(0, 14))
         self.internal_res_hint = ttk.Label(gfx, style="Muted.TLabel", wraplength=390, justify="left")
         self.internal_res_hint.pack(anchor="w", pady=(4, 0))
+        # above Auto's step on integrated graphics: in the warning colour, not in the muted hint (core.igpu_res_text)
+        self.internal_res_warn = ttk.Label(gfx, style="warn.TLabel", wraplength=390, justify="left")
         self._internal_res_changed(save=False)
 
         # Like Tekken 6 Native Online's input delay option (T5_RB_NET_DELAY, docs/NETPLAY.md
@@ -658,22 +673,28 @@ class App(tk.Tk):
             "They see the match a few seconds late, in their own game. Only when both players allow it; a ranked "
             "match only when both allow ranked too.")).pack(anchor="w", pady=(4, 0))
 
-        # Unlocks (T5_UNLOCK_STAGES / T5_UNLOCK_ITEMS, docs/DIRECTFIGHT.md "Unlocks"): offline only; the game
-        # never changes the save for them. An online game answers as a fresh save does, on both PCs.
+        # Unlocks (T5_UNLOCK_STAGES / T5_UNLOCK_ITEMS / T5_UNLOCK_JINPACHI, docs/DIRECTFIGHT.md "Unlocks"): offline
+        # only; the game never changes the save for them. An online game answers as a fresh save does, on both PCs
+        # (Jinpachi and Random: by the match kind, casual yes, ranked no -- T5_NET_UNLOCKS from the lobby).
         unl = ttk.LabelFrame(right, text="  " + t("Unlocks") + "  ", padding=(12, 6))
         unl.pack(fill="x", pady=(6, 0))
         self.unlock_stages_var = tk.BooleanVar(value=bool(self.settings.get("unlock_stages")))
         self.unlock_items_var = tk.BooleanVar(value=bool(self.settings.get("unlock_items")))
+        self.unlock_jinpachi_var = tk.BooleanVar(value=bool(self.settings.get("unlock_jinpachi")))
         ttk.Checkbutton(unl, text=t("Unlock all stages (the Tekken 5 stages, without clearing Arcade)"),
                         variable=self.unlock_stages_var, style=self.wrap_style("TCheckbutton", 440),
                         command=self.save_settings).pack(anchor="w")
+        ttk.Checkbutton(unl, text=t("Unlock Jinpachi and Random select (without clearing Arcade)"),
+                        variable=self.unlock_jinpachi_var, style=self.wrap_style("TCheckbutton", 440),
+                        command=self.save_settings).pack(anchor="w", pady=(4, 0))
         ttk.Checkbutton(unl, text=t("Unlock all customization items (free in the item shop)"),
                         variable=self.unlock_items_var, style=self.wrap_style("TCheckbutton", 440),
                         command=self.save_settings).pack(anchor="w", pady=(4, 0))
         ttk.Label(unl, style="Muted.TLabel", wraplength=300, justify="left", text=t(
             "Offline only (Arcade, VS, Practice and the rest). Your save is not changed; items you take for free "
             "stay yours (the save is backed up first, in save-backups). Online, both players always get the "
-            "same stages and the default costumes.")).pack(anchor="w", pady=(4, 0))
+            "same stages; Jinpachi and Random are there in casual matches and rooms, not in ranked.")).pack(
+            anchor="w", pady=(4, 0))
 
         ctl = ttk.LabelFrame(box, text="  " + t("Controls") + "  ", padding=(12, 6))
         ctl.grid(row=1, column=0, columnspan=2, sticky="nwe", pady=(14, 0))
@@ -791,14 +812,26 @@ class App(tk.Tk):
         if self.readonly:
             self.settings.save = lambda: None      # screenshots never write settings
         pkg, rap = self.pkg_var.get().strip().strip('"'), self.rap_var.get().strip().strip('"')
-        if not pkg and not rap and not self.settings["pkg"]:
-            fp, fr = core.find_candidates()
-            if fp:
-                self.pkg_var.set(fp)
-                pkg = fp
-            if fr:
-                self.rap_var.set(fr)
-                rap = fr
+        if not pkg and not rap and not self.settings["pkg"] and not getattr(self, "_searched", False):
+            # the first start: look for the game's files in Downloads, the Desktop ... -- in a thread (a large
+            # or cloud-synced folder took seconds, with the window frozen)
+            self._searched = True
+
+            def work():
+                found = core.find_candidates()
+
+                def show():
+                    fp, fr = found
+                    if not self.pkg_var.get().strip() and fp:
+                        self.pkg_var.set(fp)
+                    if not self.rap_var.get().strip() and fr:
+                        self.rap_var.set(fr)
+                    self.refresh_inputs()
+                try:
+                    self.after(0, show)
+                except (RuntimeError, tk.TclError):
+                    pass
+            threading.Thread(target=work, name="find-game-files", daemon=True).start()
         _ok, lvl, txt = core.describe_pkg(pkg)
         self.pkg_info.set(("✔ " if lvl == "ok" else "⚠ " if lvl == "warn" else "") + txt)
         self.pkg_lbl.configure(style=f"{lvl}.TLabel" if pkg else "Muted.TLabel")
@@ -998,6 +1031,7 @@ class App(tk.Tk):
             self.progress["value"] = 1000
             self.detail.set(t("Done in {elapsed}. Open the Play tab.", elapsed=core.clock(el)))
             self.status.set(t("Build finished."))
+            self.refresh_rank_art()          # (the game is unpacked now: its rank plates for the Online tab)
         else:
             if self.cur_step and self.step_state.get(self.cur_step) == "running":
                 self.step_state[self.cur_step] = "failed"
@@ -1019,6 +1053,19 @@ class App(tk.Tk):
     # ------------------------------------------------------------------ play
     def game_state(self):
         return getattr(self, "_game_state", {"ok": False, "text": ""})
+
+    def refresh_rank_art(self):
+        """The game's rank plates for the Online tab (lobby/t5lobby/rank_art.py): read once from the unpacked game
+        into <output>\\cache\\ranks, made at this display's sizes; all in a thread. Nothing when the game is not
+        unpacked yet (the tab draws its own badges)."""
+        theme = getattr(self, "theme", None)
+        if theme is None:
+            return
+        from t5lobby import rank_art
+        out = self.settings.out_dir
+        rank_art.ART.set_folder(rank_art.folder_for(out))
+        rank_art.ART.prepare(theme.plate_heights(theme.apply(self)), out_dir=out, after=self.after,
+                             log=None if self.readonly else core.log)
 
     def game_exe(self):
         """The t5dr.exe start_game() runs (the Online tab's firewall hint checks the rules for exactly this path)."""
@@ -1058,9 +1105,13 @@ class App(tk.Tk):
 
     def _internal_res_changed(self, save=True):
         key = self.internal_res_var.get()
+        if save:                                        # (a click: the player's own step from now on)
+            self.settings["internal_res_set"] = True
         text = t(core.INTERNAL_RES_HINTS.get(key, ""))
         size = core.screen_size(core.window_center(self._hwnd()))
         gpu = core.last_gpu(self.settings.out_dir)      # (name, integrated) from the last game log, or None
+        if key == "auto" and gpu and gpu[1] and not self.settings["internal_res_set"]:
+            text += "\n" + t("Auto is the default on integrated graphics.")
         if size:
             match = core.internal_res_for_screen(*size)
             text += "\n" + t("Your screen: {width} x {height}. In fullscreen, {step} matches it.",
@@ -1068,11 +1119,14 @@ class App(tk.Tk):
             if key == "auto" and gpu:
                 text += "\n" + t("On this PC: {step}.", step=t(core.INTERNAL_RES[core.internal_res_auto(
                     size[0], size[1], gpu[1])][0]))
-            better = core.igpu_res_better(key, size, bool(gpu and gpu[1]))
-            if better:
-                text += "\n" + t("{step} on integrated graphics: try {better} for 60 fps.",
-                                 step=t(core.INTERNAL_RES[key][0]), better=t(core.INTERNAL_RES[better][0]))
         self.internal_res_hint.configure(text=text)
+        better = core.igpu_res_better(key, size, bool(gpu and gpu[1]))
+        self.internal_res_warn.configure(text=core.igpu_res_text(t(core.INTERNAL_RES[key][0]),
+                                                                 t(core.INTERNAL_RES[better][0])) if better else "")
+        if better:
+            self.internal_res_warn.pack(anchor="w", pady=(4, 0))
+        else:
+            self.internal_res_warn.pack_forget()
         if save:
             self.save_settings()
 
@@ -1132,6 +1186,8 @@ class App(tk.Tk):
             self.settings["spectators"] = bool(self.spectators_var.get())
             self.settings["spectators_ranked"] = bool(self.spectators_ranked_var.get())
         self.settings["mute"] = bool(self.mute_var.get())
+        if hasattr(self, "notify_var"):
+            self.settings["notify"] = bool(self.notify_var.get())
         self.settings["background"] = bool(self.bg_var.get())
         self.settings["extra_env"] = self.env_text.get("1.0", "end").strip()
         self.settings["nickname"] = self.nick_var.get().strip()
@@ -1139,6 +1195,7 @@ class App(tk.Tk):
         if hasattr(self, "unlock_stages_var"):
             self.settings["unlock_stages"] = bool(self.unlock_stages_var.get())
             self.settings["unlock_items"] = bool(self.unlock_items_var.get())
+            self.settings["unlock_jinpachi"] = bool(self.unlock_jinpachi_var.get())
         if hasattr(self, "language_var"):
             self.settings["language"] = self.language_var.get()
         self.settings.save()
@@ -1194,6 +1251,29 @@ class App(tk.Tk):
     def set_status(self, text):
         self.status.set(text)
 
+    def _fit_status(self):
+        text = self.status.get()
+        try:
+            avail = self.status_label.winfo_width()
+            if avail <= 1:
+                self.status_shown.set(text)
+                return
+            name = ttk.Style(self).lookup("Muted.TLabel", "font") or "TkDefaultFont"
+            font = tkfont.Font(root=self, font=name)
+            if font.measure(text) <= avail:
+                self.status_shown.set(text)
+                return
+            lo, hi = 0, len(text)
+            while lo < hi:                         # the longest start that fits with the "..."
+                mid = (lo + hi + 1) // 2
+                if font.measure(text[:mid].rstrip() + "…") <= avail:
+                    lo = mid
+                else:
+                    hi = mid - 1
+            self.status_shown.set(text[:lo].rstrip() + "…")
+        except tk.TclError:
+            pass
+
     def _log_status(self, *_):
         t = self.status.get()
         if t and t != self._last_status and not self.readonly:
@@ -1236,6 +1316,33 @@ class App(tk.Tk):
                                                   issues_url=core.ISSUES_URL, log=core.log)
         return self._report_dlg
 
+    def _speed_notes(self):
+        """The Play tab's speed sentences after a game, from its log, or None: on integrated graphics a step above
+        Auto's after every game (a busy built-in GPU slows the processor too, GPU-bound or not), else the
+        [slow-frames] verdicts (patch 0063); then, once, a processor well under its normal clock on AC power."""
+        path = self.game.log_path
+        if not path:
+            return None
+        lines = core.slow_frame_lines(path)
+        gpu = core.last_gpu(None, logs=[path])          # the adapter this game rendered on
+        notes = []
+        if gpu and gpu[1]:
+            key = self.settings.internal_res_choice(True)
+            better = core.igpu_res_better(key, core.screen_size(core.window_center(self._hwnd())), True)
+            if better:
+                notes.append(core.igpu_res_text(t(core.INTERNAL_RES[key][0]), t(core.INTERNAL_RES[better][0])))
+        if not notes:
+            speed = core.speed_hint(lines)
+            if speed:
+                notes.append(speed)
+        if not self.settings["clock_hint_shown"]:
+            clock = core.clock_hint(lines)
+            if clock:
+                notes.append(clock)
+                self.settings["clock_hint_shown"] = True
+                self.save_settings()
+        return " ".join(notes) or None
+
     # ------------------------------------------------------------------ loop
     def _tick(self):
         if self.build:
@@ -1250,7 +1357,7 @@ class App(tk.Tk):
                 self._run_shown = False
                 why = core.explain_exit(self.game.proc.returncode, self.game.last_lines)
                 # patch 0063: the game log's [slow-frames] verdicts -- the graphics were the limit
-                speed = core.speed_hint(core.slow_frame_lines(self.game.log_path)) if self.game.log_path else None
+                speed = self._speed_notes()
                 core.log(f"game ended: exit code {self.game.proc.returncode}" + (", explained to the player"
                                                                                if why else "")
                          + (", speed hint shown" if speed else ""))

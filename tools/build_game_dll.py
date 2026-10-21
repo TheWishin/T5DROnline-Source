@@ -65,6 +65,11 @@ COMPILE_TIMEOUT_S = 1800        # one file; the slowest chunk takes ~1-2 minutes
 # The lifted PPU code only: the lifter's 128-bit multiply helper (`_mul128(a, b, &hi);`, the return value
 # unused) and its counter loops (`if ((--ctx->ctr == 0))`) warn in every chunk.
 PPU_QUIET = ["-Wno-unused-value", "-Wno-parentheses-equality"]
+# -fno-finite-loops (1.1.4): a guest `b .` -- a deliberate hang, a label that jumps to itself in the lifted C++ -- is
+# undefined behaviour in C++ (a loop without side effects may be assumed to end), and clang removed the way into
+# such a hang: in one lifted function (guest 0x1084C) the path before it became a call through a pointer that may be
+# null. With the option no loop is assumed to end: the hang stays a hang. Lifted PPU code only (CMakeLists.txt too).
+PPU_LOOPS = ["/clang:-fno-finite-loops"]
 TAIL_LINES = 40                 # of a failed compile's output, after its error lines
 
 
@@ -602,7 +607,7 @@ def main():
             if "lifted" in src:
                 cmd += ["/DSPU_LS_NO_HOOKS"]    # no local-store debug hooks in lifted images (CMakeLists.txt)
         else:
-            cmd += ["-std:c++20", "-TP", "/EHs-c-", "/Zc:tlsGuards-"] + ppu_opts + PPU_QUIET
+            cmd += ["-std:c++20", "-TP", "/EHs-c-", "/Zc:tlsGuards-"] + ppu_opts + PPU_LOOPS + PPU_QUIET
         if os.path.basename(src) == "t5dr_game_dll.c":
             cmd += [f'/DT5DR_GAME_MARCH="{march}"']   # t5dr_game_march: checked by the runtime at load
         elif os.path.basename(src) != "pgo_train.c":

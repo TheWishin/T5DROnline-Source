@@ -51,15 +51,27 @@ T5REPLAY 1                       first line
 <zlib stream>                     the binary below (Python's zlib reads it)
 ```
 
-The binary (little-endian): `T5RP`, version 3, flags (rollback), side, delay, rollback delay,
+The binary (little-endian): `T5RP`, version 4, flags (bit 0 rollback; format 4: bit 1 the select
+screen's random generator is pinned to the session seed mixed with the match number, bit 2 the match
+kind offered Jinpachi and the random cell -- `T5_NET_UNLOCKS=open`), side, delay, rollback delay,
 session seed, match seed, frames, hash interval, the last frame the recording game ran (its inputs
 reach the input delay further: decided ahead, never run -- the playback ends at the last frame; a
 format-1 file from development has no such field and plays to frames minus the delay); the matches
 (setup, result, names; format 3: a flag and the two costume blocks); the sync
 points; the hashes (frame, 64-bit hash); then the inputs as 12 columns (P1 buttons low, high, lx,
 ly, rx, ry, then P2) of one byte per frame, each XORed with the frame before, so a held input is a
-run of zeros. The JSON line is a view of the binary; the game reads only the binary.
-`launcher/replays.py` reads both (`read_header`, `read_payload`).
+run of zeros. The JSON line is a view of the binary (format 4 adds `"unlocks": "open"|"closed"`); the
+game reads only the binary. `launcher/replays.py` reads both (`read_header`, `read_payload`).
+
+**Format 4 (1.1.4).** Two things a playback must do as its live session did, so the file says them:
+the select screen's generator seed changes with every match of a session since 1.1.4 (Mokujin's copy
+and the random cell draw anew in a rematch, docs/NETPLAY.md "Desync hunt": the select pin), and a
+casual session's select grid has Jinpachi and the random cell (docs/DIRECTFIGHT.md "Unlocks"). A
+format 3 or older file has neither bit: it plays back with one select seed for the whole session and
+the closed grid -- exactly as 1.1.3 recorded it (tests/test_replays.py: a format-3 file reads with
+select mix 0, unlocks 0 and the same inputs; a real one: the base build's format-3 recording of a
+session with a Mokujin rematch chain, run pair_base, plays back identical on 1.1.4 -- 3 of 3 matches,
+every hash and result). The live stream's SESSION record carries the same bits in its flags word.
 
 Size: 2.5-5.5 KB for a match of 1-2 minutes with both players mashing buttons and motion inputs
 the whole time (the tests' worst case; see Tested), a few hundred bytes of it the hashes.
@@ -80,6 +92,12 @@ The local pad (keyboard or controller, not a player in a replay) steers it:
 |---|---|---|
 | START | Enter | pause; again: go on |
 | SELECT | Tab | end the replay (the game closes) |
+
+The players' own skips are part of the recording: an intro or a round's replay that both players
+skipped with START online (1.1.4, NETPLAY.md "Skipping intros and replays online") is skipped on the
+same frame in the playback -- the recorded inputs go through the same rule, so the playback stays
+identical. The viewer's START only pauses the playback; it cannot skip anything there (that would
+make the playback differ from the live match).
 
 The game closes by itself a few seconds after the watched match's KO, and the tab shows the verdict
 ("identical to the live match (N checks, same result)", or the frame from which it went another way).

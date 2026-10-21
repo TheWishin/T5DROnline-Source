@@ -506,16 +506,20 @@ MESSAGES = {
     "Unlocks": "Desbloqueos",
     "Unlock all stages (the Tekken 5 stages, without clearing Arcade)":
         "Desbloquear todos los escenarios (los de Tekken 5, sin completar Arcade)",
+    "Unlock Jinpachi and Random select (without clearing Arcade)":
+        "Desbloquear a Jinpachi y la selección Random (sin completar Arcade)",
     "Unlock all customization items (free in the item shop)":
         "Desbloquear todos los ítems de personalización (gratis en la ITEM SHOP)",
     "Offline only (Arcade, VS, Practice and the rest). Your save is not changed; items you take for free "
     "stay yours (the save is backed up first, in save-backups). Online, both players always get the "
-    "same stages and the default costumes.":
-        "Solo offline (Arcade, VS, Practice y los demás). Tu partida guardada no cambia; los ítems que "
-        "tomes gratis se quedan contigo (antes se hace una copia de la partida guardada, en save-backups). "
-        "Online, ambos jugadores siempre tienen los mismos escenarios y los trajes predeterminados.",
+    "same stages; Jinpachi and Random are there in casual matches and rooms, not in ranked.":
+        "Solo offline (Arcade, VS, Practice y los demás). Tu partida guardada no cambia; los ítems que tomes "
+        "gratis se quedan contigo (antes se hace una copia de la partida guardada, en save-backups). Online, "
+        "ambos jugadores siempre tienen los mismos escenarios; Jinpachi y Random están en las partidas "
+        "casuales y en las salas, no en Ranked.",
     "Sound and start": "Sonido e inicio",
     "Mute sound": "Silenciar sonido",
+    "Sound and taskbar flash when a match is found or someone joins my room": "Sonido y parpadeo en la barra de tareas cuando se encuentra una partida o alguien entra en mi sala",
     "Start minimized, without taking focus (for testing)": "Iniciar minimizado, sin tomar el foco (para pruebas)",
     "Advanced: extra settings, one NAME=VALUE per line": "Avanzado: ajustes extra, uno NOMBRE=VALOR por línea",
     "Internal resolution": "Resolución interna",
@@ -524,7 +528,7 @@ MESSAGES = {
     "Off (lowest latency, may tear)": "Desactivado (menor latencia, puede haber tearing)",
     "The game always runs at 60 fps, like on the PS3.": "El juego siempre corre a 60 fps, como en la PS3.",
     "Stage blur / glow": "Desenfoque / brillo de escenarios",
-    "On (default)": "Activado (predeterminado)",
+    "Off (default)": "Desactivado (predeterminado)",
     "Off": "Desactivado",
     "Some stages blur the picture (the misty swamp) or let the sun glow. Off shows them sharp, "
     "without the glow. Only your picture changes: online, both players can choose differently.":
@@ -1745,6 +1749,8 @@ MESSAGES = {
     "With a controller: A accepts, B declines.": "Con control: A acepta, B rechaza.",
     "Online nobody can pause the fight: Start does not open the pause menu.":
         "En línea nadie puede pausar el combate: Start no abre el menú de pausa.",
+    "Intros and the replay after a round are skipped once both players have pressed Start.":
+        "Las presentaciones y la repetición tras una ronda se saltan cuando los dos jugadores han pulsado Start.",
     "Lobby": "Lobby",
     "Leaderboard": "Clasificación",
     "Profile": "Perfil",
@@ -1784,6 +1790,13 @@ MESSAGES = {
     "Dismiss": "Ocultar",
     "Use a controller here": "Usar un control aquí",
     "none open": "ninguna abierta",
+    "Nobody else is online right now. Ranked match and Quick match keep looking until someone comes.":
+        "Ahora mismo no hay nadie más en línea. Partida Ranked y Quick Match "
+        "siguen buscando hasta que llegue alguien.",
+    "No rooms open. Create one: friends can join it and play in turn.":
+        "No hay salas abiertas. Crea una: tus amigos pueden entrar y jugar por turnos.",
+    "Nobody has a ranked result yet. Win a ranked set to be the first.":
+        "Nadie tiene aún un resultado ranked. Gana un set ranked y sé el primero.",
     "In your room “{name}”. Waiting for a second player...": "En tu sala “{name}”. Esperando a un segundo jugador...",
     "In the room “{name}”. The match starts when you are both ready.":
         "En la sala “{name}”. La partida empieza cuando ambos estén listos.",
@@ -2032,6 +2045,8 @@ MESSAGES = {
         "Los datos de la partida estaban dañados.",
     "You stopped watching.":
         "Dejaste de ver la partida.",
+    "A friend of the players took your place: the match has as many spectators as it can take.":
+        "Un amigo de los jugadores ocupó tu lugar: la partida ya tiene todos los espectadores que admite.",
     "this launcher cannot watch matches; update it":
         "este launcher no puede ver partidas; actualízalo",
     "that match is not being played right now":
@@ -2052,6 +2067,12 @@ MESSAGES = {
         "esta partida ya tiene {count} espectadores",
     "the server cannot show more matches right now":
         "el servidor no puede mostrar más partidas ahora",
+    "too many matches are watched from your network; stop watching one first":
+        "desde tu red ya se ven demasiadas partidas; deja de ver una primero",
+    "the places for guests at this match are taken; log in with an account to watch":
+        "los lugares para invitados de esta partida están ocupados; inicia sesión con una cuenta para verla",
+    "the server cannot show guests more matches right now; log in with an account to watch":
+        "el servidor no puede mostrar más partidas a invitados ahora; inicia sesión con una cuenta para verlas",
     # firewall hint on the Online tab (t5lobby.fwcheck, tk_tab.fw_hint_text)
     "Firewall":
         "Firewall",
@@ -2070,8 +2091,12 @@ MESSAGES = {
         "El juego elige al arrancar el nivel que corresponde a tu pantalla, como mucho 1080p con gráficos integrados (comparten la memoria y la energía del procesador).",
     "On this PC: {step}.":
         "En este PC: {step}.",
-    "{step} on integrated graphics: try {better} for 60 fps.":
-        "{step} con gráficos integrados: prueba {better} para 60 fps.",
+    "{step} on integrated graphics: a busy built-in GPU slows the processor too (they share its power and memory). For 60 fps choose Auto in Settings -> Internal resolution: {better} here.":
+        "{step} con gráficos integrados: una GPU integrada ocupada también frena el procesador (comparten su energía y su memoria). Para 60 fps elige Auto en Ajustes -> Resolución interna: aquí {better}.",
+    "Auto is the default on integrated graphics.":
+        "Con gráficos integrados, Auto es el valor predeterminado.",
+    "Your processor ran at {ghz} GHz ({percent} % of its normal speed): set Windows power mode to Best performance.":
+        "Tu procesador funcionó a {ghz} GHz ({percent} % de su velocidad normal): pon el modo de energía de Windows en Mejor rendimiento.",
     "Extra settings below set {setting}: that wins over this choice.":
         "Los ajustes extra de abajo ponen {setting}: eso manda sobre esta opción.",
     "Fights were slower than 60 fps because of the graphics (GPU-bound): choose a lower Internal resolution in Settings.":
@@ -2092,6 +2117,9 @@ MESSAGES = {
     "private and community rooms are casual (unranked)": "las salas privadas y de comunidad son casual (sin Ranked)",
     "you are in that room": "ya estás en esa sala",
     "the room's host removed you from this room": "el anfitrión te sacó de esta sala",
+    "the room's host turned away password guesses from your network; ask the host for an invite":
+        "el anfitrión de la sala rechazó los intentos de contraseña desde tu red; pídele una invitación",
+    "only a room with a password counts wrong guesses": "solo una sala con contraseña cuenta los intentos fallidos",
     "that player is not in your room": "ese jugador no está en tu sala",
     "you cannot remove yourself; leave the room instead": "no puedes sacarte a ti mismo; mejor sal de la sala",
     "you can remove that player after their match": "puedes sacar a ese jugador después de su partida",
@@ -2126,6 +2154,11 @@ MESSAGES = {
     "Remove {name} from the room? They cannot come back into it.":
         "¿Sacar a {name} de la sala? No podrá volver a entrar.",
     "Removed {name} from the room.": "{name} fue sacado de la sala.",
+    "Wrong passwords in the last 10 minutes: {count} (networks: {networks})":
+        "Contraseñas incorrectas en los últimos 10 minutos: {count} (redes: {networks})",
+    "Turn away the guessers": "Rechazar a quienes adivinan",
+    "Networks turned away: {count}. They cannot try passwords on this room any more.":
+        "Redes rechazadas: {count}. Ya no pueden probar contraseñas en esta sala.",
     "Room created.": "Sala creada.",
     "Room created. Press Copy invite code to see the code you can share.":
         "Sala creada. Pulsa Copiar código de invitación para ver el código que puedes compartir.",

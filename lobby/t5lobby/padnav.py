@@ -996,28 +996,80 @@ def default_sources(env=None, keyboard=False):
 
 # ---------------------------------------------------------------------- the foreground rule
 
+_GET_FOREGROUND = []
+
+
+def foreground_window():
+    """The foreground window's handle (0 when there is none, or not on Windows). Any thread."""
+    if os.name != "nt":
+        return 0
+    if not _GET_FOREGROUND:
+        user32 = ctypes.WinDLL("user32")
+        user32.GetForegroundWindow.restype = ctypes.c_void_p
+        _GET_FOREGROUND.append(user32.GetForegroundWindow)
+    return _GET_FOREGROUND[0]() or 0
+
+
 def window_foreground_check(hwnd):
     """True while `hwnd` (a top-level window) is the foreground window. A dialog of the same program is
     another window, so while one is open the launcher's window is not 'in front' either. Safe to call from
-    any thread: it holds only the number."""
-    if os.name != "nt" or not hwnd:
+    any thread: it holds only the number. For a window that may not be shown yet use ForegroundCheck."""
+    if not hwnd:
         return lambda: False
-    user32 = ctypes.WinDLL("user32")
-    user32.GetForegroundWindow.restype = ctypes.c_void_p
-    return lambda: user32.GetForegroundWindow() == hwnd
+    return lambda: foreground_window() == hwnd
 
 
 def toplevel_hwnd(widget):
-    """The top-level window handle of a Tk widget (call on the Tk thread); 0 when unknown."""
+    """The top-level window handle of a Tk widget (call on the Tk thread); 0 when unknown.
+
+    Tk on Windows makes a toplevel's real top-level window (its "wrapper", `wm frame`) only when it maps the
+    toplevel for the first time; before that there is only Tk's inner window, which is never the foreground
+    window. So this is 0 until the window has been shown -- never that inner window (1.1.0-1.1.3: the
+    Controls window took the inner one while it was being made and then read no controller at all)."""
     if os.name != "nt":
         return 0
     try:
+        top = widget.winfo_toplevel()
+        frame = int(top.wm_frame(), 16)
+        if not frame or frame == top.winfo_id():        # no wrapper yet (wm frame = the window itself)
+            return 0
         user32 = ctypes.WinDLL("user32")
         user32.GetAncestor.restype = ctypes.c_void_p
         user32.GetAncestor.argtypes = [ctypes.c_void_p, ctypes.c_uint]
-        return user32.GetAncestor(widget.winfo_id(), 2) or 0           # GA_ROOT
+        return user32.GetAncestor(frame, 2) or frame                     # GA_ROOT (the wrapper itself)
     except Exception:                   # noqa: BLE001 -- no window handle: the foreground rule then says no
         return 0
+
+
+class ForegroundCheck:
+    """foreground() for the pad reader of a Tk window: True while that window's top-level window is the
+    foreground window. Made on the Tk thread, also before the window is shown: the handle is looked up there
+    now and again each time the toplevel maps (<Map>), and a call from any thread compares the foreground
+    window with the latest handle -- one number, nothing of Tk. No handle yet = not in front."""
+
+    def __init__(self, widget):
+        self.top = widget.winfo_toplevel()
+        self.hwnd = 0
+        self.refresh()
+        self.top.bind("<Map>", self._on_map, add="+")
+
+    def _on_map(self, e):
+        if e.widget is self.top:
+            self.refresh()
+
+    def refresh(self):
+        """Look the handle up again (Tk thread). Keeps the last one when the lookup finds none."""
+        try:
+            hwnd = toplevel_hwnd(self.top)
+        except Exception:               # noqa: BLE001 -- (a window being destroyed)
+            hwnd = 0
+        if hwnd:
+            self.hwnd = hwnd
+        return self.hwnd
+
+    def __call__(self):
+        hwnd = self.hwnd
+        return bool(hwnd) and foreground_window() == hwnd
 
 
 # ---------------------------------------------------------------------- the navigator

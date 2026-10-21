@@ -164,10 +164,35 @@ int model_char(int model)
     static const int kFirst[35] = {
         0, 2, 5, 7, 9, 12, 14, 16, 21, 25, 28, 30, 31, 32, 34, 36, 38, 41, 43, 45,   /* Paul .. Mokujin */
         23, 47, 49, 51, 54, 56, 59, 63, 66, 68, 70, 73, 75, 77, 79 };                /* Eddy .. Dragunov */
+    if (model == 0x52 || model == 0x53) return 35;   /* Jinpachi (the open grid's cell 35; runs off3, pair_rb) */
     int best = -1, best_first = -1;
     for (int c = 0; c < 35; c++)
         if (kFirst[c] <= model && kFirst[c] > best_first) { best = c; best_first = kFirst[c]; }
     return model >= 0 && model <= 80 ? best : -1;
+}
+
+/* The confirm button (1 LP, 2 RP, 3 LK, 4 RK) that gives `model` when chr's cell
+ * is confirmed with it alone (docs/DIRECTFIGHT.md "Mirror matches": the model
+ * table) -- for a pick made on the random cell, which the peer's driver confirms
+ * on the fighter's own cell. 0 = not known (the pressed button is sent). */
+int pick_button_for(int chr, int model)
+{
+    if (chr == 11) return 1;                 /* Kuma: a punch button */
+    if (chr == 12) return 3;                 /* Panda: a kick button */
+    if (chr == 35) return model == 0x52 ? 3 : model == 0x53 ? 2 : 0;   /* Jinpachi: Cross 0x52, Triangle 0x53 (pair_rb) */
+    if (chr < 0 || chr > 34 || model_char(model) != chr) return 0;
+    static const int kFirst[35] = {
+        0, 2, 5, 7, 9, 12, 14, 16, 21, 25, 28, 30, 31, 32, 34, 36, 38, 41, 43, 45,
+        23, 47, 49, 51, 54, 56, 59, 63, 66, 68, 70, 73, 75, 77, 79 };
+    const int o = model - kFirst[chr];
+    if (chr == 7) return o == 0 ? 1 : o == 1 ? 3 : o == 3 ? 2 : o == 4 ? 4 : 0;    /* Xiaoyu: 0x10 0x11 0x13 0x14 */
+    if (chr == 26) return o == 0 ? 1 : o == 1 ? 3 : o == 2 ? 2 : o == 3 ? 4 : 0;   /* Asuka: 0x3B..0x3E */
+    switch (chr) {
+    case 1: case 4: case 9: case 16: case 23: case 25: case 27: case 30:     /* a third costume on Triangle */
+        return o == 0 ? 1 : o == 1 ? 3 : o == 2 ? 2 : 0;
+    default:
+        return o == 0 ? 1 : o == 1 ? 3 : 0;
+    }
 }
 
 } // namespace df

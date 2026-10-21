@@ -6,8 +6,8 @@ launcher's own lobby, like Tekken 6 Native Online.
 
 <!-- RELEASE LINE: the version and date in the next two lines change with every release, when it is tagged
 (docs/RELEASING.md "Cutting a release", step 2); the same lines are in docs/README.de.md. -->
-**Release 1.1.3 (2026-10-20).** Download
-`T5DR-Online-1.1.3.zip` from https://github.com/TheWishin/T5DROnline/releases
+**Release 1.1.4 (2026-10-21).** Download
+`T5DR-Online-1.1.4.zip` from https://github.com/TheWishin/T5DROnline/releases
 
 **Offline play is ready:** all modes, 60 fps, Xbox pad and arcade stick tested.
 **Online works:** tested between two players' PCs over the internet (direct
@@ -35,7 +35,7 @@ and Français (**Settings** -> **Language**).
   play as a guest) in the launcher's Online tab, find an opponent, and the game
   starts directly in the fight. See "Online".
 
-## Status (2026-10-20)
+## Status (2026-10-21)
 
 Tested on one development PC (Windows 11, 16-core Ryzen 9, RTX 3090). Online play was
 tested between two real PCs over the internet (AMD/60 Hz vs Intel/240 Hz).
@@ -43,25 +43,28 @@ tested between two real PCs over the internet (AMD/60 Hz vs Intel/240 Hz).
 | Area | State |
 |---|---|
 | Start-up | Works. Boots, opens the window, reaches the title, menus, character select and fights. |
-| Menus, fights | 60 fps, also with other programs busy on the PC. The game no longer busy-waits around its frames: about 30 % less CPU on 8 cores / 16 threads. Since 1.1.3 the game's own work and the translation of its drawing take about a quarter less processor time per fight frame, and a PC a little too slow for 60 fps runs fights at 45-55 fps instead of 30-45 (measured with slowed test games; real weak PCs are not measured yet). |
-| Laptops, handhelds | **Power saving** (launcher Settings; Auto turns it on with a battery, a power-saving plan, a mobile processor or integrated graphics): fewer helper threads, no busy waiting, the same game online. Not tried on a real laptop or handheld yet. |
+| Menus, fights | 60 fps, also with other programs busy on the PC. The game no longer busy-waits around its frames: about 30 % less CPU on 8 cores / 16 threads. Since 1.1.3 the game's own work and the translation of its drawing take about a quarter less processor time per fight frame, and a PC a little too slow for 60 fps runs fights at 45-55 fps instead of 30-45 (measured with slowed test games; real weak PCs are not measured yet). Since 1.1.4 two changes in the game's code save more processor time per frame on 4 cores under load (registers kept between calls: ~7 % on the main thread, ~18 % on the drawing thread; cheaper memory writes: 5-7 % and 15-25 %), and a frame goes to the graphics card beside the game's next one, so on a slowed 4-core test PC a late frame comes about 1 ms sooner. |
+| Laptops, handhelds | **Power saving** (launcher Settings; Auto turns it on with a battery, a power-saving plan, a mobile processor or integrated graphics): fewer helper threads, no busy waiting, the same game online. Not tried on a real laptop or handheld yet. Since 1.1.4 integrated graphics also start with Internal resolution Auto, and the Play offline tab says when the processor ran well under its normal clock (it suggests Windows' power mode Best performance). |
 | Game modes | Arcade, Ghost, Versus (two players on one PC), Survival and Practice work. Gallery and the game's own Online menu need Namco's and Sony's servers (gone) and say so. |
-| Fighters, stages | All fighters and stages render correctly, including faces, floor shadows and background figures. Stage blur and the sun's glow look as on the PS3 at every internal resolution (Settings -> Stage blur / glow switches them off). |
-| Unlocks, costumes | Offline, in launcher Settings -> Unlocks (both off by default): all stages without the fights they normally take, and every customization item for 0 Fight Money (your save is backed up first). Online games use a fresh save of their own, the same on both PCs; only your custom costume comes from your own save, and both players see both costumes (1.1.3). |
-| Display | Resizable window, borderless fullscreen (Alt+Enter or F11). **Internal resolution** from Lowest (0.5x) over Native (720p) to 1080p, 1440p and 4K, or Auto (the screen's step, at most 1080p on integrated graphics) (launcher Settings, `PS3_INTERNAL_RES`); every step checked in fights, menus, movies and character select. Less GPU work at 1080p and above (1.1.3). |
+| Fighters, stages | All fighters and stages render correctly, including faces, floor shadows and background figures. Stage blur and the sun's glow look as on the PS3 at every internal resolution when Settings -> Stage blur / glow is On (Off, sharp and without the glow, is the default since 1.1.4). |
+| Unlocks, costumes | Offline, in launcher Settings -> Unlocks (all off by default): all stages without the fights they normally take, Jinpachi and the random cell on the character select without clearing Arcade, and every customization item for 0 Fight Money (your save is backed up first). Online games use a fresh save of their own, the same on both PCs; only your custom costume comes from your own save, and both players see both costumes (1.1.3). Both PCs check the costume against the game's own item shop tables and fall back to the default one (1.1.4). |
+| Display | Resizable window, borderless fullscreen (Alt+Enter or F11). **Internal resolution** from Lowest (0.5x) over Native (720p) to 1080p, 1440p and 4K, or Auto (the screen's step, at most 1080p on integrated graphics) (launcher Settings, `PS3_INTERNAL_RES`); every step checked in fights, menus, movies and character select. Less GPU work at 1080p and above (1.1.3). On integrated graphics Auto is the default (1.1.4). |
 | Music, sound effects, movies | Work. |
-| Controls | Keyboard, Xbox pads (XInput), DualShock 4 and DualSense over USB and Bluetooth (read directly, no Steam needed), arcade sticks and hitboxes (DirectInput), two local players, buttons set in the launcher (Settings -> Set up controllers) or in `controls.ini`. Short taps are never lost. Tried by a person: an Xbox pad and an arcade stick, every input came through, smooth. |
+| Controls | Keyboard, Xbox pads (XInput), DualShock 4 and DualSense over USB and Bluetooth (read directly, no Steam needed), arcade sticks and hitboxes (DirectInput), two local players, buttons set in the launcher (Settings -> Set up controllers) or in `controls.ini`. Short taps are never lost. Tried by a person: an Xbox pad and an arcade stick, every input came through, smooth. **Set up controllers** found no controller at all from 1.1.0 to 1.1.3; it works again (1.1.4). |
 | Training tools | In Practice: an input display (each player's last inputs with how many frames each was held) and frame data after each exchange (startup, and who can act first: `+3`, `-12`), drawn sharp over the picture at any resolution. Launcher Settings -> Training overlay (Off / Inputs / Inputs + frame data, also in the other offline modes, online only your own inputs), F2 switches it in the game. See [docs/TRAINING.md](docs/TRAINING.md). |
 | Input lag | A jab shows on screen about 35-40 ms after the press in fullscreen (the PS3 on a TV: ~42 ms plus the TV), a frame less than before. In a window add one frame (Windows draws the window). |
 | Saving | Works. The in-game clock shows the real date. |
 | Long sessions | The old memory bug (white screen after a few trips through the title) is fixed. |
-| Online play | Works on one PC and through the public lobby server. Rollback netcode: 1 frame of input delay up to ~60 ms ping, 2 above (Settings -> Online input delay; ranked: always 2), about 60 fps at 150 ms ping on an 8-thread PC (now and then a picture is shown twice), tested at 0/50/150 ms ping with packet loss. Played between two real PCs over the internet (2026-10-18). Quick and ranked search prefer opponents with a low ping (estimated through the nearest relay server) and widen the search while you wait. Many cancelled matches in a row no longer break the open game. Nobody can pause an online fight. Matches connect even when a firewall blocks the game: through the relay when nothing else gets through (1.1.3). |
+| Online play | Works on one PC and through the public lobby server. Rollback netcode: 1 frame of input delay up to ~60 ms ping, 2 above (Settings -> Online input delay; ranked: always 2), about 60 fps at 150 ms ping on an 8-thread PC (now and then a picture is shown twice), tested at 0/50/150 ms ping with packet loss. Played between two real PCs over the internet (2026-10-18). Quick and ranked search prefer opponents with a low ping (estimated through the nearest relay server) and widen the search while you wait. Many cancelled matches in a row no longer break the open game. Nobody can pause an online fight. Matches connect even when a firewall blocks the game: through the relay when nothing else gets through (1.1.3), and there the game plays like a direct match at the same ping: the launcher forwards the game's packets the moment they arrive (1.1.4). |
+| Online character select | Quick matches, rooms and friend invites also offer Jinpachi (top row, right end) and the game's random cell (top row, left end), for both players; ranked matches and tournament sets do not. Mokujin and the random cell draw anew in every match (1.1.4). |
+| Intros, replays | Online, the fighters' intros (about 7 s) and the replay after a round (about 9 s) are skipped as soon as both players have pressed Start; one player alone skips nothing, and Start still never pauses an online fight (1.1.4). |
 | Friends, invites | Accounts add friends by name on the Online tab's **Friends** page and see who is online, searching or in a match. **Invite** a friend to a casual match or your room: one click on Accept starts it. |
-| Rooms | Lobby rooms for 2, or community rooms for up to 8 who take turns (winner stays, or everyone in turn); open, with a password or an invite code, or hidden (1.1.3). |
+| Rooms | Lobby rooms for 2, or community rooms for up to 8 who take turns (winner stays, or everyone in turn); open, with a password or an invite code, or hidden (1.1.3). Friends who know a room's password always get in, even while strangers guess at it; the host sees how many wrong passwords came and can turn those networks away (1.1.4). |
 | Tournaments | Accounts join tournaments on the Online tab (tournament hosts create them; for one of the 20 host slots, DM wishin): single or double elimination, sets of best of 3 or 5, up to 64 players; the server calls each set and the game starts by itself (1.1.3). |
+| Alerts | In another window while you wait? When a match is found, someone joins your room, it is your turn in a room, a friend invites you, a tournament set is ready or your opponent asks for a rematch, the launcher plays a short chime and its taskbar button flashes until you are back (Settings -> Sound and taskbar flash; on by default; 1.1.4). |
 | Replays | Every online match is saved (a few KB). The **Replays** tab plays it again in the game and checks that it is identical to the live match. |
-| Spectating | **Watch** a friend's match, a room's match or a tournament set live in your own game, a few seconds behind and checked frame by frame; only when both players allow it (Settings -> Spectators) (1.1.3). |
-| Launcher | English plus six translations: Deutsch, Español, 한국어, 日本語, Português (Brasil), Français, with nothing cut off at 100 % and 150 % display scaling. The Settings tab scrolls. Updates itself. |
+| Spectating | **Watch** a friend's match, a room's match or a tournament set live in your own game, a few seconds behind and checked frame by frame; only when both players allow it (Settings -> Spectators) (1.1.3). A room's Watch also works between a match and its rematch, and friends and room members come first at a full match (1.1.4). |
+| Launcher | English plus six translations: Deutsch, Español, 한국어, 日本語, Português (Brasil), Français, with nothing cut off at 100 % and 150 % display scaling. The Settings tab scrolls. Next to every name on the Online tab stands the game's own rank plate, read from your own game after BUILD GAME, and the window redraws more than twice as fast (1.1.4). Updates itself. |
 | Build from your copy | Works on the development PC. A stopped helper process no longer hangs the build at "Translate code"; a file that fails to compile gets a second try (1.1.3). |
 
 ## Requirements
@@ -156,17 +159,21 @@ It is game data. Do not share it. To uninstall, delete the whole folder.
   3D scene smaller for weak graphics cards (laptops, integrated graphics), the
   HUD stays sharp. **Auto** picks the step that matches your screen, at most
   1080p on integrated graphics (they share the processor's memory and power,
-  so a larger picture slows the whole game there). It only changes the
-  picture, so the other player online does not need the same setting. If
-  fights drop below 60 fps, go one step down. More in
+  so a larger picture slows the whole game there). Since 1.1.4 Auto is the
+  default on integrated graphics (from the second game on: the launcher reads
+  the first game's log to know); a step you choose stays, and above Auto's step
+  Settings and the Play offline tab say that it slows the processor too. It only
+  changes the picture, so the other player online does not need the same
+  setting. If fights drop below 60 fps, go one step down. More in
   [Troubleshooting](docs/TROUBLESHOOTING.md#low-frame-rate).
 - **Settings** -> **VSync**: On (smooth, default) or Off (lowest latency, the
   picture may tear). The game always runs at 60 fps, like on the PS3, so there
   is no frame rate setting. Online, each player can choose their own.
 - **Settings** -> **Stage blur / glow**: some stages soften the whole picture
-  (the misty swamp, and three more) or let the sun glow (the scrapyard). On
-  (default) looks as on the PS3, at every internal resolution; Off shows those
-  stages sharp, without the glow. Online, each player can choose their own.
+  (the misty swamp, and three more) or let the sun glow (the scrapyard). Off
+  (the default since 1.1.4, also for players of older versions once) shows
+  those stages sharp, without the glow; On looks as on the PS3, at every
+  internal resolution. Online, each player can choose their own.
 - **Settings** -> **Power saving (laptops, handhelds)**: Auto (default) turns
   it on with a battery, battery saver or the Power saver plan, a mobile
   processor or integrated graphics; On and Off decide yourself. The game then
@@ -182,11 +189,15 @@ It is game data. Do not share it. To uninstall, delete the whole folder.
   it can also be on in the other offline modes, and online (only your own
   inputs). **F2** in the game switches it. It only reads the game, so it never
   changes a match. More in [docs/TRAINING.md](docs/TRAINING.md).
-- **Settings** -> **Unlocks** (offline play; both Off by default):
+- **Settings** -> **Unlocks** (offline play; all Off by default):
   - **Unlock all stages**: the Tekken 5 stages (the old ones, normally earned
     after about 50 fights, a few Arcade runs) are there in Arcade, VS, Practice
     and the rest, without clearing Arcade. Your save is not changed: switched off, the
     game is as before.
+  - **Unlock Jinpachi and Random select**: the character select has Jinpachi
+    (top row, right end) and the random cell (top row, left end) without
+    clearing Arcade. Your save is not changed. Online you do not need it: casual
+    matches and rooms always have both, ranked never.
   - **Unlock all customization items**: everything in **ITEM SHOP & EQUIP**
     (after picking a fighter in Arcade, Ghost or Survival) costs 0 Fight Money.
     What you take stays in your save like a bought item, also after switching
@@ -284,7 +295,11 @@ Keyboard (default) and Xbox controller:
 4. The game shows its own character select. Pick your fighter with the pad,
    stick or keyboard within 30 seconds: the button you confirm with picks the
    costume, **Select** (Tab on the keyboard, Back on an Xbox pad) picks at
-   random. If you pick nothing, you get the character set in the launcher.
+   random. In quick matches, rooms and friend invites the top row also has
+   **Jinpachi** (right end) and the game's **random cell** (left end) for both
+   players; ranked matches and tournaments have neither. Mokujin's copied
+   fighter and the random cell draw anew in every match (the same on both
+   PCs). If you pick nothing, you get the character set in the launcher.
    When both of you have picked, the fight starts: first to 3 rounds. The name
    under your fighter counts the seconds down; "PICKING..." under the opponent
    means you wait for their pick.
@@ -320,10 +335,16 @@ Good to know:
   save is never touched by online play. Only your custom costume is read from
   it (see below).
 - Nobody can pause an online fight (from 1.1.2): **Start** does not open the
-  pause menu there, for either player. It still skips the replay after a round.
+  pause menu there, for either player. From 1.1.4 the fighters' intros and the
+  replay after a round are skipped once **both** players have pressed **Start**
+  during them (one player alone skips nothing).
   To quit a match, close the game (Esc twice): that counts as a loss, as before.
-- Ranked uses a Glicko-2 rating shown with Tekken 5's own rank names. Leaving or
-  disconnecting counts as a loss. A desync voids the match.
+- Ranked uses a Glicko-2 rating shown with Tekken 5's own rank names and, from
+  1.1.4, the game's own rank plates (Beginner, 9th kyu ... Tekken Lord) next to
+  every name. The launcher reads the plates from your unpacked game after BUILD
+  GAME (they are not in the download); before that it shows a text badge in the
+  plate's colour. Leaving or disconnecting counts as a loss. A desync voids the
+  match.
 - **Friends** (accounts, from 1.1.2): add a friend by account name on the Online
   tab's **Friends** page. Once they accept, you see when they are online,
   searching or in a match. **Invite to a match** (or to your room) asks them;

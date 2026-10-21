@@ -4,8 +4,10 @@
     th = theme.apply(root)          # once per Tk interpreter (later calls return the same Theme)
     ttk.Button(card, text="Accept", style="Card.Accent.TButton")
 
-Plain Tk 8.6, no image files and no game assets: rounded buttons, cards, check boxes, rank badges,
-icons are drawn here (anti-aliased PNGs made in memory, Tk's own canvas for the rest). Fonts are
+Plain Tk 8.6, no image files and no game assets shipped: rounded buttons, cards, check boxes, icons are drawn
+here (anti-aliased PNGs made in memory, kept in a cache folder between starts, Tk's own canvas for the rest). Rank
+badges are the game's own rank plates once the launcher has read them from the player's unpacked game
+(rank_art.py), else a text badge drawn here in the plate's colour. Fonts are
 Windows' Segoe UI and Bahnschrift (Segoe UI when Bahnschrift is missing); in Korean and Japanese a Windows
 font that has their glyphs (Malgun Gothic, Yu Gothic UI; i18n.FONTS) takes the place of both.
 
@@ -24,15 +26,21 @@ follows Tk's scaling (the launcher makes the process DPI-aware before the first 
 """
 import base64
 import ctypes
+import hashlib
+import marshal
 import math
+import os
 import struct
 import zlib
+import weakref
 import tkinter as tk
 import tkinter.font as tkfont
 from tkinter import ttk
 
 from . import i18n
+from . import ranks
 from .i18n import t
+from .rank_art import ART
 
 THEME = "t5dark"
 
@@ -66,16 +74,15 @@ C = {
     "bad_bg": "#2b1517",
 }
 
-# Rank tiers (ranks.RANKS index) -> badge colour, by group.
+# Rank tiers (ranks.RANKS index) -> badge colour, by group: the colours of the game's own rank plates.
 TIER_GROUPS = [
-    (0, 0, "#8a93a3"),        # Beginner (placement)
-    (1, 9, "#3fae6a"),        # 9th .. 1st Kyu
-    (10, 16, "#3b82f6"),      # 1st .. 7th Dan
-    (17, 21, "#8b5cf6"),      # Shihan .. Virtuoso
-    (22, 26, "#f59e0b"),      # Champion .. Sage
-    (27, 31, "#ef4444"),      # Legend .. Lord of War
-    (32, 34, "#f5c542"),      # Dragon Lord, Tekken Lord, Dark Lord
-    (35, 36, "#2dd4bf"),      # Kouryu, Kirin
+    (0, 0, "#a18a5b"),        # Beginner (placement): stone
+    (1, 9, "#c8372d"),        # 9th .. 1st kyu: red
+    (10, 16, "#98a2ae"),      # 1st .. 7th dan: steel
+    (17, 22, "#d5d9e0"),      # Shihan .. Champion: silver frame
+    (23, 27, "#57b947"),      # Lone Wolf .. Legend: green
+    (28, 31, "#2fa6d0"),      # Fujin .. Lord of War: blue
+    (32, 36, "#f28a1c"),      # Dragon Lord .. Tekken Lord: fire
 ]
 GUEST_COLOR = "#5d6676"
 TIER_ABBR = {0: "B", 17: "SH", 18: "EX", 19: "WA", 20: "MA", 21: "VI", 22: "CH", 23: "LW", 24: "DS", 25: "BK",
@@ -84,6 +91,73 @@ TIER_ABBR = {0: "B", 17: "SH", 18: "EX", 19: "WA", 20: "MA", 21: "VI", 22: "CH",
 
 PING_GOOD, PING_OK = 60, 120      # ms: green up to 60, yellow up to 120, red above
 _PNG_CACHE = {}                    # (image key, size, scale) -> PNG data: a second window reuses the drawing
+_DISK = {"loaded": None, "dirty": False}
+
+
+def cache_dir():
+    """Where the drawn images are kept between starts (drawing them takes ~0.7 s of the launcher's start):
+    T5_UI_CACHE (a folder; "0" turns the cache off), else <T5_ONLINE_DIR>\\cache, else
+    %LOCALAPPDATA%\\T5DROnline\\cache. Never the program folder."""
+    d = os.environ.get("T5_UI_CACHE")
+    if d is not None:
+        return None if d.strip() in ("", "0", "off") else d
+    base = os.environ.get("T5_ONLINE_DIR")
+    if base:
+        return os.path.join(base, "cache")
+    base = os.environ.get("LOCALAPPDATA") or os.path.join(os.path.expanduser("~"), ".cache")
+    return os.path.join(base, "T5DROnline", "cache")
+
+
+def _disk_file():
+    d = cache_dir()
+    if not d:
+        return None
+    try:
+        with open(__file__, "rb") as f:             # a change to the drawing code makes a new file
+            tag = hashlib.sha1(f.read()).hexdigest()[:12]
+    except OSError:
+        return None
+    return os.path.join(d, f"theme-{tag}.bin")
+
+
+def _disk_load():
+    """The PNGs drawn by an earlier start (same theme code) into _PNG_CACHE; a bad file is ignored."""
+    if _DISK["loaded"] is not None:
+        return
+    _DISK["loaded"] = path = _disk_file()
+    if not path:
+        return
+    try:
+        with open(path, "rb") as f:
+            data = marshal.loads(f.read())
+    except (OSError, ValueError, EOFError, TypeError):
+        return
+    if isinstance(data, dict):
+        for k, v in data.items():
+            if isinstance(k, tuple) and len(k) == 4 and isinstance(v, str):
+                _PNG_CACHE.setdefault(k, v)
+
+
+def _disk_save():
+    path = _DISK["loaded"]
+    if not path or not _DISK["dirty"]:
+        return
+    _DISK["dirty"] = False
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + f".{os.getpid()}.tmp"
+        with open(tmp, "wb") as f:
+            f.write(marshal.dumps({k: v for k, v in _PNG_CACHE.items()
+                                   if all(isinstance(x, (str, int, float)) for x in k)}))
+        os.replace(tmp, path)
+        for name in os.listdir(os.path.dirname(path)):      # files of older theme code
+            if name.startswith("theme-") and name.endswith(".bin") and name != os.path.basename(path):
+                try:
+                    os.remove(os.path.join(os.path.dirname(path), name))
+                except OSError:
+                    pass
+    except OSError:
+        pass
 
 
 def tier_color(tier):
@@ -317,10 +391,13 @@ class Theme:
         self.s = scale_of(root)
         self.images = {}            # every PhotoImage made here (Tk drops an image nobody holds)
         self.fonts = {}
+        self._measure_fonts = {}
         self._element_names = None
         self.style = ttk.Style(root)
         self._fonts()
+        _disk_load()
         self._build()
+        _disk_save()
 
     def px(self, v):
         return int(round(v * self.s))
@@ -334,6 +411,7 @@ class Theme:
             if data is None:
                 ss = 4 if self.s < 1.4 else 3          # (edges are already finer at high DPI)
                 data = _PNG_CACHE[ck] = _png(w, h, raster(w, h, layers, ss=ss, bg=bg, band=band))
+                _DISK["dirty"] = True
             img = tk.PhotoImage(master=self.root, data=data)
             self.images[key] = img
         return img
@@ -381,6 +459,14 @@ class Theme:
     def font(self, key):
         return self.fonts[key]
 
+    def measure(self, family, size, text, weight="bold"):
+        """Width of `text` in pixels (fonts made once per family / size)."""
+        f = self._measure_fonts.get((family, size, weight))
+        if f is None:
+            f = self._measure_fonts[(family, size, weight)] = tkfont.Font(root=self.root, family=family, size=size,
+                                                                          weight=weight)
+        return f.measure(text)
+
     # --- images (opaque: every corner is blended into the colour it sits on, so Tk copies them as plain
     # bitmaps; partly transparent images are blended by Tk in software, tile by tile, which is very slow)
     def _rounded(self, key, w, h, r, fill, bg, line=None, line_w=1, ring_col=None, ring_w=2):
@@ -410,6 +496,18 @@ class Theme:
             self.style.element_create(name, "image", *args, **kw)
             self._element_names.add(name)
 
+    # ttk draws the middle and the edges of an image element by tiling (one image copy per tile), so a 32 px
+    # button image on a 200 px button, or a 72 px card image on a 1000 x 400 card, costs dozens to hundreds of
+    # copies every time the window is redrawn (each resize step redrew the Online tab in ~0.8 s). The images are
+    # drawn with a large middle instead (one or a few tiles); -width / -height keep each element's least size
+    # what the small image gave.
+    SLICE = {"frame": (320, 160), "button": (96, 30), "field": (240, 24), "pill": (64, 6), "tab": (160, 0)}
+
+    def _sliced(self, kind, size):
+        """(w, h) of a 9-slice image of least size `size` (a square) with the large middle of `kind`."""
+        sw, sh = self.SLICE[kind]
+        return size + self.px(sw), size + self.px(sh)
+
     # --- ttk
     def _build(self):
         st, px = self.style, self.px
@@ -438,8 +536,8 @@ class Theme:
                 ("Even", C["raised"], C["line_hi"], C["surface"], 8, 32, (px(12), px(8)))):
             rr = px(r)
             size = 2 * rr + px(center)
-            img = self._rounded("frame_" + name, size, size, rr, fill, on, line=line)
-            self._element(f"{name}.bg", img, border=rr + 1, sticky="nsew")
+            img = self._rounded("frame_" + name, *self._sliced("frame", size), rr, fill, on, line=line)
+            self._element(f"{name}.bg", img, border=rr + 1, sticky="nsew", width=size, height=size)
             st.layout(f"{name}.TFrame", [(f"{name}.bg", {"sticky": "nsew"})])
             st.configure(f"{name}.TFrame", background=on, padding=pad)
         # plain frames inside a card / tile / banner (rows of widgets)
@@ -480,8 +578,8 @@ class Theme:
                                ("PillBad", mix(C["bad"], C["surface"], 0.15), "#1a0707"),
                                ("PillGold", C["gold"], "#1d1704"), ("PillWarn", C["warn"], "#1d1404")):
             for pre, bg in (("", C["bg"]), ("Card.", C["surface"]), ("Tile.", C["raised"])):
-                img = self._rounded(f"pill_{name}_{pre}", psize, psize, rp, fill, bg)
-                self._element(f"{pre}{name}.bg", img, border=rp + 1, sticky="nsew")
+                img = self._rounded(f"pill_{name}_{pre}", *self._sliced("pill", psize), rp, fill, bg)
+                self._element(f"{pre}{name}.bg", img, border=rp + 1, sticky="nsew", width=psize, height=psize)
                 st.layout(f"{pre}{name}.TLabel", [(f"{pre}{name}.bg", {"sticky": "nsew", "children": [
                     ("Label.padding", {"sticky": "nsew", "children": [("Label.label", {"sticky": "nsew"})]})]})])
                 st.configure(f"{pre}{name}.TLabel", background=bg, foreground=fg, font=f["caps"],
@@ -519,6 +617,7 @@ class Theme:
         st, px = self.style, self.px
         r = px(7)
         size = 2 * r + px(18)
+        w, h = self._sliced("button", size)
         rw = max(2, px(2))
         for pre, key in self.BUTTON_GROUNDS:
             bg = C[key]
@@ -526,20 +625,20 @@ class Theme:
             for state, col in (("normal", fill), ("hover", hover), ("pressed", pressed), ("disabled", disabled)):
                 k = f"btn_{name}_{state}_{pre}"
                 if col is None:
-                    imgs[state] = self._blank(k, size, size, bg)
+                    imgs[state] = self._blank(k, w, h, bg)
                 else:
-                    imgs[state] = self._rounded(k, size, size, r, col, bg, line=line if state != "disabled" else None)
+                    imgs[state] = self._rounded(k, w, h, r, col, bg, line=line if state != "disabled" else None)
             if fill is None:
-                imgs["focus"] = self._ring_only(f"btn_{name}_focus_{pre}", size, size, r, ring_col, rw, bg)
+                imgs["focus"] = self._ring_only(f"btn_{name}_focus_{pre}", w, h, r, ring_col, rw, bg)
             else:
-                imgs["focus"] = self._rounded(f"btn_{name}_focus_{pre}", size, size, r, fill, bg, ring_col=ring_col,
+                imgs["focus"] = self._rounded(f"btn_{name}_focus_{pre}", w, h, r, fill, bg, ring_col=ring_col,
                                               ring_w=rw)
-            imgs["focus_hover"] = self._rounded(f"btn_{name}_fh_{pre}", size, size, r, hover or C["hover"], bg,
+            imgs["focus_hover"] = self._rounded(f"btn_{name}_fh_{pre}", w, h, r, hover or C["hover"], bg,
                                                 ring_col=ring_col, ring_w=rw)
             el = f"{pre}{name}.bg"
             self._element(el, imgs["normal"], ("disabled", imgs["disabled"]), ("pressed", imgs["pressed"]),
                           ("focus", "active", imgs["focus_hover"]), ("focus", imgs["focus"]),
-                          ("active", imgs["hover"]), border=r + 2, sticky="nsew")
+                          ("active", imgs["hover"]), border=r + 2, sticky="nsew", width=size, height=size)
             style = (pre + "TButton") if name == "Base" else f"{pre}{name}.TButton"
             st.layout(style, [(el, {"sticky": "nsew", "children": [
                 ("Button.padding", {"sticky": "nsew", "children": [("Button.label", {"sticky": "nsew"})]})]})])
@@ -622,15 +721,16 @@ class Theme:
         # a segmented choice: radiobuttons drawn as a tab strip on a raised track
         rs = px(7)
         ssize = 2 * rs + px(18)
+        sw, sh = self._sliced("button", ssize)
         track = C["raised"]
         fw = max(2, px(2))
-        self._element("Seg.bg", self._blank("seg_off", ssize, ssize, track),
-                      ("selected", "focus", self._rounded("seg_on_f", ssize, ssize, rs, C["hover"], track,
+        self._element("Seg.bg", self._blank("seg_off", sw, sh, track),
+                      ("selected", "focus", self._rounded("seg_on_f", sw, sh, rs, C["hover"], track,
                                                           ring_col=C["accent"], ring_w=fw)),
-                      ("selected", self._rounded("seg_on", ssize, ssize, rs, C["hover"], track)),
-                      ("focus", self._ring_only("seg_f", ssize, ssize, rs, C["accent"], fw, track)),
-                      ("active", self._rounded("seg_h", ssize, ssize, rs, mix(C["raised"], C["hover"], 0.5), track)),
-                      border=rs + 2, sticky="nsew")
+                      ("selected", self._rounded("seg_on", sw, sh, rs, C["hover"], track)),
+                      ("focus", self._ring_only("seg_f", sw, sh, rs, C["accent"], fw, track)),
+                      ("active", self._rounded("seg_h", sw, sh, rs, mix(C["raised"], C["hover"], 0.5), track)),
+                      border=rs + 2, sticky="nsew", width=ssize, height=ssize)
         st.layout("Seg.TRadiobutton", [("Seg.bg", {"sticky": "nsew", "children": [
             ("Radiobutton.padding", {"sticky": "nsew", "children": [("Radiobutton.label", {"sticky": "nsew"})]})]})])
         st.configure("Seg.TRadiobutton", background=track, foreground=C["muted"], font=self.fonts["button"],
@@ -638,8 +738,9 @@ class Theme:
         st.map("Seg.TRadiobutton", foreground=[("selected", C["text"]), ("active", C["text"])],
                background=[("active", track)])
         tsize = 2 * (rs + 1) + px(18)
-        self._element("SegTrack.bg", self._rounded("seg_track", tsize, tsize, rs + 1, track, C["surface"]),
-                      border=rs + 3, sticky="nsew")
+        self._element("SegTrack.bg", self._rounded("seg_track", *self._sliced("field", tsize), rs + 1, track,
+                                                   C["surface"]),
+                      border=rs + 3, sticky="nsew", width=tsize, height=tsize)
         st.layout("SegTrack.TFrame", [("SegTrack.bg", {"sticky": "nsew"})])
         st.configure("SegTrack.TFrame", background=C["surface"], padding=px(3))
 
@@ -659,16 +760,17 @@ class Theme:
                       ("active", self.photo("chev_h", aw, ah, [(stroke(chev, sw), C["text"], False)], C["raised"])),
                       ("pressed", self.photo("chev_p", aw, ah, [(stroke(chev, sw), C["text"], False)], C["raised"])),
                       sticky="")
+        fw, fh = self._sliced("field", size)
         for pre, bg in (("", C["bg"]), ("Card.", C["surface"]), ("Tile.", C["raised"])):
             el = f"{pre}Field.bg"
-            self._element(el, self._rounded("field" + pre, size, size, r, C["raised"], bg, line=C["line_hi"], line_w=lw),
-                          ("disabled", self._rounded("field_d" + pre, size, size, r, C["surface"], bg, line=C["line"],
+            self._element(el, self._rounded("field" + pre, fw, fh, r, C["raised"], bg, line=C["line_hi"], line_w=lw),
+                          ("disabled", self._rounded("field_d" + pre, fw, fh, r, C["surface"], bg, line=C["line"],
                                                      line_w=lw)),
-                          ("focus", self._rounded("field_f" + pre, size, size, r, C["raised"], bg, line=C["accent"],
+                          ("focus", self._rounded("field_f" + pre, fw, fh, r, C["raised"], bg, line=C["accent"],
                                                   line_w=max(2, px(2)))),
-                          ("active", self._rounded("field_h" + pre, size, size, r, C["raised"], bg, line=C["muted"],
+                          ("active", self._rounded("field_h" + pre, fw, fh, r, C["raised"], bg, line=C["muted"],
                                                    line_w=lw)),
-                          border=r + 2, sticky="nsew")
+                          border=r + 2, sticky="nsew", width=size, height=size)
             st.layout(pre + "TEntry", [(el, {"sticky": "nswe", "children": [
                 ("Entry.padding", {"sticky": "nswe", "children": [("Entry.textarea", {"sticky": "nswe"})]})]})])
             st.configure(pre + "TEntry", background=bg, foreground=C["text"], fieldbackground=C["raised"],
@@ -718,13 +820,14 @@ class Theme:
     def _notebook(self):
         st, px, f = self.style, self.px, self.fonts
         bar = max(2, px(3))
-        w, h = px(32), px(8) + bar
+        w0, h = px(32), px(8) + bar
+        w = self._sliced("tab", w0)[0]
         bg = C["bg"]
         self._element("Tab.line", self._blank("tab_n", w, h, bg),
                       ("selected", self.photo("tab_s", w, h, [(lambda x, y: y >= h - bar, C["accent"], True)], bg)),
                       ("active", self.photo("tab_h", w, h, [(lambda x, y: y >= h - max(1, px(1)), C["line_hi"], True)],
                                             bg)),
-                      border=(px(3), px(3), px(3), bar), sticky="nsew")
+                      border=(px(3), px(3), px(3), bar), sticky="nsew", width=w0, height=h)
         st.layout("TNotebook.Tab", [("Tab.line", {"sticky": "nswe", "children": [
             ("Notebook.padding", {"side": "top", "sticky": "nswe", "children": [
                 ("Notebook.focus", {"side": "top", "sticky": "nswe", "children": [
@@ -795,6 +898,46 @@ class Theme:
     def tier_icon(self, tier):
         """A small hexagon for list rows."""
         return self.badge_image(tier, self.px(14))
+
+    def plate_image(self, col, w, h, bg=None):
+        """The text badge's plate: a rounded bar in the tier colour with a lighter rim and a darker lower half
+        (opaque on `bg`: fast to draw)."""
+        key = f"plate_{col}_{w}_{h}_{bg}"
+        if key in self.images:
+            return self.images[key]
+        r = h * 0.28
+        d = max(1.5, h * 0.06)
+        inner = rrect(d, d, w - d, h - d, r - d)
+        layers = [(rrect(0, 0, w, h, r), mix(col, "#ffffff", 0.35), True), (inner, col, True),
+                  (lambda x, y: y > h * 0.55 and inner(x, y), mix(col, "#000000", 0.18), True)]
+        return self.photo(key, w, h, layers, bg)
+
+    def list_plate(self):
+        """Height of the plates in list rows (pixels)."""
+        return self.px(22)
+
+    def row_image(self, icon, tier):
+        """A list row's picture: `icon` (ping bars, a friend's dot; may be None) and the game's rank plate next to
+        it (none for a guest). Plain `icon` while the plates are not there."""
+        h = self.list_plate()
+        plate = ART.image(self.root, tier, h) if tier is not None else None
+        if plate is None:
+            return icon if icon is not None else self.empty_icon()
+        key = ("row", str(icon) if icon is not None else "", tier, h)
+        img = self.images.get(key)
+        if img is None:
+            gap = self.px(6)
+            iw = icon.width() if icon is not None else 0
+            slot = max(iw, self.px(20))
+            w = slot + gap + plate.width() if icon is not None else plate.width()
+            hh = max(h, icon.height() if icon is not None else 0)
+            img = tk.PhotoImage(master=self.root, width=w, height=hh)
+            img.blank()
+            if icon is not None:
+                img.tk.call(img, "copy", icon, "-to", (slot - iw) // 2, (hh - icon.height()) // 2)
+            img.tk.call(img, "copy", plate, "-to", w - plate.width(), (hh - plate.height()) // 2)
+            self.images[key] = img
+        return img
 
     def ping_icon(self, ms):
         """Four signal bars (lit by ping, coloured by quality) for list rows."""
@@ -892,38 +1035,87 @@ def get(widget):
 
 
 # ---------------------------------------------------------------------- canvas widgets
+_BADGES = weakref.WeakSet()
+
+
+def _art_changed():
+    for b in list(_BADGES):
+        try:
+            b.redraw()
+        except tk.TclError:
+            pass
+
+
+ART.listeners.append(_art_changed)
+
+
+BADGE_SIZES = (22, 34, 36, 40)      # the badges' heights at 100 % (list rows: 22)
+
+
+def plate_heights(th):
+    """The plate heights in pixels this display needs (rank_art.Art.prepare makes them)."""
+    return sorted({th.px(v) for v in BADGE_SIZES})
+
+
+def plate_size(th, size):
+    """(w, h) of a rank badge of `size` (its height at 100 %): the game's plates are twice as wide as high."""
+    h = th.px(size)
+    return 2 * h, h
+
+
 class Badge(tk.Canvas):
-    """Rank badge: hexagon in the tier colour with the rank's short form (9K, 2D, SH ...)."""
+    """A player's rank: the game's own rank plate when the launcher has it (rank_art.py), else a text badge in the
+    plate's colour (the rank's name, or its short form when the name does not fit). Both take the same room
+    (twice as wide as `size`), so a layout does not move when the plates arrive. A "?" marks a provisional rank."""
 
     def __init__(self, parent, size=44, bg=None, **kw):
         self.th = apply(parent)
-        self.size = self.th.px(size)
-        h = int(round(self.size * 1.12))
-        super().__init__(parent, width=self.size, height=h, bg=bg or C["surface"], highlightthickness=0,
-                         takefocus=0, **kw)
+        self.size = size
+        self.w, self.h = plate_size(self.th, size)
+        self.bgc = bg or C["surface"]
+        super().__init__(parent, width=self.w, height=self.h, bg=self.bgc, highlightthickness=0, takefocus=0, **kw)
         self._key = None
+        self._state = (None, False)
+        _BADGES.add(self)
         self.set(None)
 
     def set(self, tier, provisional=False):
-        key = (tier, bool(provisional))
+        self._state = (tier, bool(provisional))
+        self.redraw()
+
+    def redraw(self):
+        tier, provisional = self._state
+        img = ART.image(self, tier, self.h) if tier is not None else None
+        key = (tier, provisional, img is not None)
         if key == self._key:
             return
         self._key = key
         self.delete("all")
-        img = self.th.badge_image(tier, self.size)
-        self.create_image(0, 0, image=img, anchor="nw")
-        col = tier_color(tier)
-        txt = tier_abbr(tier)
-        size = max(7, int(round(self.size / self.th.s * (0.30 if len(txt) <= 2 else 0.24))))
-        h = int(round(self.size * 1.12))
-        self.create_text(self.size / 2.0, h / 2.0, text=txt, fill=text_on(col),
-                         font=(self.th.fonts["h3"].actual("family"), size, "bold"))
+        if img is not None:
+            self.create_image(self.w / 2.0, self.h / 2.0, image=img, anchor="center")
+        else:
+            self._text_badge(tier)
         if provisional:
-            r = self.size * 0.17
-            x, y = self.size - r - 1, h - r - 1
+            r = self.h * 0.2
+            x, y = self.w - r - 1, self.h - r - 1
             self.create_oval(x - r, y - r, x + r, y + r, fill=C["raised"], outline=C["line_hi"])
             self.create_text(x, y, text="?", fill=C["text"],
-                             font=(self.th.fonts["caps"].actual("family"), max(6, int(size * 0.55)), "bold"))
+                             font=(self.th.fonts["caps"].actual("family"), max(6, int(self.size * 0.2)), "bold"))
+
+    def _text_badge(self, tier):
+        col = tier_color(tier)
+        pad = max(2, int(self.h * 0.08))
+        self.create_image(0, 0, image=self.th.plate_image(col, self.w, self.h, self.bgc), anchor="nw")
+        fam = self.th.fonts["h3"].actual("family")
+        avail = self.w - 2 * pad - self.h * 0.2
+        name = t("Guest") if tier is None else ranks.name(tier)
+        for txt in (name, tier_abbr(tier)):
+            pt = max(7, int(round(self.size * (0.27 if len(txt) <= 3 else 0.22))))
+            while pt > 6 and self.th.measure(fam, pt, txt) > avail:
+                pt -= 1
+            if self.th.measure(fam, pt, txt) <= avail:
+                break
+        self.create_text(self.w / 2.0, self.h / 2.0, text=txt, fill=text_on(col), font=(fam, pt, "bold"))
 
 
 class PingBars(tk.Canvas):

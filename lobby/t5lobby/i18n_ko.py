@@ -493,16 +493,18 @@ MESSAGES = {
     "Unlocks": "잠금 해제",
     "Unlock all stages (the Tekken 5 stages, without clearing Arcade)":
         "모든 스테이지 잠금 해제 (Tekken 5 스테이지, Arcade를 클리어하지 않아도)",
+    "Unlock Jinpachi and Random select (without clearing Arcade)":
+        "Jinpachi와 Random 선택 잠금 해제 (Arcade를 클리어하지 않아도)",
     "Unlock all customization items (free in the item shop)":
         "모든 커스터마이즈 아이템 잠금 해제 (ITEM SHOP에서 무료)",
     "Offline only (Arcade, VS, Practice and the rest). Your save is not changed; items you take for free "
     "stay yours (the save is backed up first, in save-backups). Online, both players always get the "
-    "same stages and the default costumes.":
-        "오프라인 전용입니다 (Arcade, VS, Practice 등). 세이브는 바뀌지 않습니다. 무료로 받은 아이템은 계속 "
-        "내 것이 됩니다 (세이브를 먼저 save-backups에 백업합니다). 온라인에서는 두 플레이어가 항상 같은 "
-        "스테이지와 기본 코스튬을 씁니다.",
+    "same stages; Jinpachi and Random are there in casual matches and rooms, not in ranked.":
+        "오프라인 전용입니다 (Arcade, VS, Practice 등). 세이브는 바뀌지 않습니다. 무료로 받은 아이템은 계속 내 것이 됩니다 (세이브를 먼저 save-backups에 "
+        "백업합니다). 온라인에서는 두 플레이어가 항상 같은 스테이지를 씁니다. Jinpachi와 Random은 캐주얼 매치와 방에서 쓸 수 있고, Ranked에서는 쓸 수 없습니다.",
     "Sound and start": "소리 및 시작",
     "Mute sound": "소리 끄기",
+    "Sound and taskbar flash when a match is found or someone joins my room": "매치가 잡히거나 누군가 내 방에 들어오면 소리와 작업 표시줄 깜박임",
     "Start minimized, without taking focus (for testing)": "최소화 상태로 포커스 없이 시작 (테스트용)",
     "Advanced: extra settings, one NAME=VALUE per line": "고급: 추가 설정, 한 줄에 하나씩 NAME=VALUE",
     "Internal resolution": "내부 해상도",
@@ -511,7 +513,7 @@ MESSAGES = {
     "Off (lowest latency, may tear)": "끄기 (최소 지연, 화면 찢김 가능)",
     "The game always runs at 60 fps, like on the PS3.": "게임은 PS3처럼 항상 60fps로 동작합니다.",
     "Stage blur / glow": "스테이지 블러 / 빛 번짐",
-    "On (default)": "켜기 (기본)",
+    "Off (default)": "끄기 (기본)",
     "Off": "끄기",
     "Some stages blur the picture (the misty swamp) or let the sun glow. Off shows them sharp, "
     "without the glow. Only your picture changes: online, both players can choose differently.":
@@ -1705,6 +1707,8 @@ MESSAGES = {
     "With a controller: A accepts, B declines.": "컨트롤러: A 수락, B 거절.",
     "Online nobody can pause the fight: Start does not open the pause menu.":
         "온라인에서는 누구도 대전을 일시정지할 수 없습니다. Start로 일시정지 메뉴가 열리지 않습니다.",
+    "Intros and the replay after a round are skipped once both players have pressed Start.":
+        "인트로와 라운드 후 리플레이는 두 플레이어가 모두 Start를 누르면 건너뜁니다.",
     "Lobby": "로비",
     "Leaderboard": "순위표",
     "Profile": "프로필",
@@ -1743,6 +1747,12 @@ MESSAGES = {
     "Dismiss": "숨기기",
     "Use a controller here": "여기서 컨트롤러 사용",
     "none open": "열린 방 없음",
+    "Nobody else is online right now. Ranked match and Quick match keep looking until someone comes.":
+        "지금은 다른 사람이 온라인에 없습니다. Ranked 매치와 Quick Match는 누군가 올 때까지 계속 찾습니다.",
+    "No rooms open. Create one: friends can join it and play in turn.":
+        "열린 방이 없습니다. 방을 만들면 친구가 들어와 번갈아 플레이할 수 있습니다.",
+    "Nobody has a ranked result yet. Win a ranked set to be the first.":
+        "아직 Ranked 결과가 있는 사람이 없습니다. Ranked 세트에서 이겨 첫 번째가 되세요.",
     "In your room “{name}”. Waiting for a second player...": "내 방 '{name}'. 두 번째 플레이어를 기다리는 중...",
     "In the room “{name}”. The match starts when you are both ready.": "방 '{name}'. 둘 다 준비되면 매치가 시작됩니다.",
     "Hosting. Friends type this as their Server:\n{share}":
@@ -1987,6 +1997,8 @@ MESSAGES = {
         "매치 데이터가 손상되었습니다.",
     "You stopped watching.":
         "관전을 그만두었습니다.",
+    "A friend of the players took your place: the match has as many spectators as it can take.":
+        "플레이어의 친구가 당신의 자리를 차지했습니다. 이 매치는 관전자 수가 가득 찼습니다.",
     "this launcher cannot watch matches; update it":
         "이 런처는 매치를 관전할 수 없습니다. 업데이트하세요",
     "that match is not being played right now":
@@ -2007,6 +2019,12 @@ MESSAGES = {
         "이 매치에는 이미 관전자가 {count}명 있습니다",
     "the server cannot show more matches right now":
         "서버가 지금은 더 많은 매치를 보여줄 수 없습니다",
+    "too many matches are watched from your network; stop watching one first":
+        "당신의 네트워크에서 관전 중인 매치가 너무 많습니다. 먼저 하나를 그만 보세요",
+    "the places for guests at this match are taken; log in with an account to watch":
+        "이 매치의 게스트 관전 자리가 찼습니다. 관전하려면 계정으로 로그인하세요",
+    "the server cannot show guests more matches right now; log in with an account to watch":
+        "서버가 지금은 게스트에게 더 많은 매치를 보여줄 수 없습니다. 관전하려면 계정으로 로그인하세요",
     # firewall hint on the Online tab (t5lobby.fwcheck, tk_tab.fw_hint_text)
     "Firewall":
         "방화벽",
@@ -2024,8 +2042,12 @@ MESSAGES = {
         "게임이 시작할 때 화면에 맞는 단계를 고릅니다. 내장 그래픽에서는 최대 1080p (프로세서와 메모리, 전력을 함께 쓰기 때문).",
     "On this PC: {step}.":
         "이 PC에서: {step}.",
-    "{step} on integrated graphics: try {better} for 60 fps.":
-        "내장 그래픽에서 {step}: 60 fps를 위해 {better}를 써 보세요.",
+    "{step} on integrated graphics: a busy built-in GPU slows the processor too (they share its power and memory). For 60 fps choose Auto in Settings -> Internal resolution: {better} here.":
+        "내장 그래픽에서 {step}: 내장 GPU가 바쁘면 프로세서도 느려집니다 (전력과 메모리를 함께 씁니다). 60 fps를 위해 설정 -> 내부 해상도에서 자동을 고르세요: 여기서는 {better}.",
+    "Auto is the default on integrated graphics.":
+        "내장 그래픽에서는 자동이 기본입니다.",
+    "Your processor ran at {ghz} GHz ({percent} % of its normal speed): set Windows power mode to Best performance.":
+        "프로세서가 {ghz} GHz (정상 속도의 {percent} %)로 동작했습니다: Windows 전원 모드를 최고 성능으로 설정하세요.",
     "Extra settings below set {setting}: that wins over this choice.":
         "아래 추가 설정이 {setting}을(를) 정합니다: 이 선택보다 우선합니다.",
     "Fights were slower than 60 fps because of the graphics (GPU-bound): choose a lower Internal resolution in Settings.":
@@ -2044,6 +2066,9 @@ MESSAGES = {
     "private and community rooms are casual (unranked)": "비공개 방과 커뮤니티 방은 일반 매치입니다 (Ranked 아님)",
     "you are in that room": "이미 그 방에 있습니다",
     "the room's host removed you from this room": "방장이 당신을 이 방에서 내보냈습니다",
+    "the room's host turned away password guesses from your network; ask the host for an invite":
+        "방장이 당신의 네트워크에서 오는 비밀번호 시도를 차단했습니다. 방장에게 초대를 요청하세요",
+    "only a room with a password counts wrong guesses": "틀린 시도는 비밀번호가 있는 방에서만 집계됩니다",
     "that player is not in your room": "그 플레이어는 내 방에 없습니다",
     "you cannot remove yourself; leave the room instead": "자기 자신은 내보낼 수 없습니다. 대신 방을 나가세요",
     "you can remove that player after their match": "그 플레이어는 매치가 끝난 뒤에 내보낼 수 있습니다",
@@ -2075,6 +2100,11 @@ MESSAGES = {
     "Remove player": "플레이어 내보내기",
     "Remove {name} from the room? They cannot come back into it.": "{name}님을 방에서 내보낼까요? 다시 들어올 수 없습니다.",
     "Removed {name} from the room.": "{name}님을 방에서 내보냈습니다.",
+    "Wrong passwords in the last 10 minutes: {count} (networks: {networks})":
+        "최근 10분간 틀린 비밀번호: {count}번 (네트워크: {networks})",
+    "Turn away the guessers": "추측하는 사람 차단",
+    "Networks turned away: {count}. They cannot try passwords on this room any more.":
+        "차단한 네트워크: {count}. 그곳에서는 이 방의 비밀번호를 더 이상 시도할 수 없습니다.",
     "Room created.": "방을 만들었습니다.",
     "Room created. Press Copy invite code to see the code you can share.": "방을 만들었습니다. 공유할 코드를 보려면 초대 코드 복사를 누르세요.",
     "Room name (optional):": "방 이름 (선택):",

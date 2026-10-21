@@ -312,8 +312,8 @@ class ControlsDialog:
         if sources is None:
             sources = padnav.default_sources(keyboard=True)
         self.no_pads = not sources
-        if foreground is None:
-            foreground = padnav.window_foreground_check(padnav.toplevel_hwnd(self.top))
+        if foreground is None:          # (the window's handle exists only once Tk has shown it: looked up then)
+            foreground = padnav.ForegroundCheck(self.top)
         self._poll_controls = self.editor.controls()     # (set on the Tk thread; the poller only reads it)
         self.poller = DevicePoller(sources, foreground=foreground, controls=lambda: self._poll_controls,
                                    **({"clock": clock} if clock else {}))

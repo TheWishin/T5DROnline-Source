@@ -1,0 +1,863 @@
+diff --git a/runtime/ppu/ppu_loader.cpp b/runtime/ppu/ppu_loader.cpp
+index c1c45cd..4fe1941 100644
+--- a/runtime/ppu/ppu_loader.cpp
++++ b/runtime/ppu/ppu_loader.cpp
+@@ -1546,6 +1546,15 @@ static inline int vm_diag(void)
+  * of line for the whole run. */
+ extern "C" uint8_t* vm_base_k = nullptr;
+ extern "C" uint32_t vm_ld_lim_k = 0, vm_st_lim_k = 0, vm_refpoll_k = 0xFFFFFFFFu;
++/* The reserved-line bitmap for the generated stores' check (ppu_recomp.h
++ * PPU_COH_LOCAL): its address -- fixed, and all zero until the first line is
++ * marked -- handed out once with the windows, so a lifted store reads one
++ * bitmap byte instead of an import slot, the vm_coh_bitmap pointer behind it
++ * and its NULL test, twice. PS3_COH_LOCAL=0 hands out nothing and closes the
++ * store window: every generated store then goes out of line (vm_write*), the
++ * runtime's own exact check -- slower, the same results. */
++extern "C" const unsigned char* vm_coh_bm_k = nullptr;
++extern "C" const unsigned char* spu_coh_bitmap_base(void);   /* spu_coherency.c */
+ extern "C" void vm_gates_publish(void)
+ {
+     const int d = vm_diag();
+@@ -1555,11 +1564,19 @@ extern "C" void vm_gates_publish(void)
+     vm_refpoll_k = ppu_hle_inject_base + 0x2008u;
+     vm_ld_lim_k = d ? 0u : lim;
+     vm_st_lim_k = (d || getenv("PS3_NULL_SWEEP") || getenv("SPU_ATOM_EA")) ? 0u : lim;
++    {
++        const char* e = getenv("PS3_COH_LOCAL");
++        vm_coh_bm_k = (e && e[0] == '0') ? nullptr : spu_coh_bitmap_base();
++        if (!vm_coh_bm_k) vm_st_lim_k = 0u;
++    }
+ #if defined(PS3_GAME_DLL) && defined(PS3_GAME_DLL_NAME)
+     /* The game DLL keeps its own copies -- its lifted code must not reach them
+-     * through an import slot. Optional export: a DLL without it keeps its
+-     * windows at 0, every access out of line. */
++     * through an import slot. Optional exports: a DLL without them keeps its
++     * windows at 0, every access out of line; a DLL with ppu_game_set_coh opens
++     * its store window only once it has the bitmap (set first). */
+     if (HMODULE m = GetModuleHandleA(PS3_GAME_DLL_NAME)) {
++        auto coh = (void (*)(const unsigned char*))GetProcAddress(m, "ppu_game_set_coh");
++        if (coh) coh(vm_coh_bm_k);
+         auto set = (void (*)(uint8_t*, uint32_t, uint32_t, uint32_t))GetProcAddress(m, "ppu_game_set_gates");
+         if (set) set(vm_base_k, vm_ld_lim_k, vm_st_lim_k, vm_refpoll_k);
+     }
+diff --git a/runtime/ppu/tests/test_storepath_race.c b/runtime/ppu/tests/test_storepath_race.c
+new file mode 100644
+index 0000000..553ccd5
+--- /dev/null
++++ b/runtime/ppu/tests/test_storepath_race.c
+@@ -0,0 +1,336 @@
++/*
++ * The lifted code's inline guest store (ppu_recomp.h VM_ST_INL) against the SPU
++ * lock-line reservation protocol, with threads (patch 0069).
++ *
++ * Built and run by tools/test_ppu_storepath.py, which writes the generated
++ * ppu_recomp.h next to this file's copy -- with HARN_DELAY() between the
++ * store's pre-check and the store, a random spin that widens the one window
++ * the protocol has to get right -- and compiles it once per variant:
++ *
++ *   new  : PPU_COH_LOCAL, the 1 KB block byte through vm_coh_bm_k (0069)
++ *   old  : PPU_NO_COH_LOCAL, the 1.1.4 check (vm_coh_bitmap, NULL test, bit)
++ *   break_post : new without the re-check after the store   (must FAIL B)
++ *   break_pre  : new without the check before the store     (must FAIL A)
++ *
++ * Under test with them: the real runtime/spu/spu_coherency.c (included below),
++ * an SPU played by a thread that does what spu_channels.c's GETLLAR / PUTLLC do,
++ * and an out-of-line vm_write* with the runtime's exact protocol
++ * (ppu_loader.cpp VM_WRITE_COH_FAST) for the stores the inline check sends
++ * there.
++ *
++ * A  steady state: lines already reserved, the SPU looping GETLLAR .. PUTLLC
++ *    on them, two PPU threads storing rising values into the same lines (and
++ *    their neighbours). A PPU store must never be undone by a PUTLLC commit
++ *    (each thread checks its words never go back), and a PUTLLC must never
++ *    find its line changed while it still holds the reservation.
++ * B  first reservations, in lockstep: per turn the SPU reserves a line no one
++ *    reserved before (the bitmap's first mark and the process-wide barrier)
++ *    while one PPU thread stores into it. After the turn, either the SPU's
++ *    snapshot holds the store or the SPU lost its reservation (the store's
++ *    re-check found the mark and notified). Turns alternate a fresh 1 KB block
++ *    and the next line of the block marked a turn before.
++ * C  neighbours: stores to the seven other lines of a reserved line's block
++ *    leave the SPU's reservation, its events and a PPU lwarx reservation alone;
++ *    one store into the line itself takes both.
++ *
++ * Windows only (FlushProcessWriteBuffers, the barrier the runtime uses there).
++ * Exit 0 = every invariant held; the summary line counts the paths taken.
++ */
++#include <intrin.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++
++/* ---- the window between the store's check and the store, widened at random */
++static volatile int g_delay_max = 0;
++static __declspec(thread) uint32_t t_rng = 0x9E3779B9u;
++static uint32_t rnd32(void) { uint32_t x = t_rng; x ^= x << 13; x ^= x >> 17; x ^= x << 5; return t_rng = x; }
++static void harn_delay(void)
++{
++    const int m = g_delay_max;
++    if (m > 0) { uint32_t n = rnd32() % (uint32_t)m; while (n--) _mm_pause(); }
++}
++#define HARN_DELAY() harn_delay()
++
++#define PPU_INLINE_STORES 1
++#include "ppu_recomp.h"
++#undef vm_write8
++#undef vm_write16
++#undef vm_write32
++#undef vm_write64
++#undef vm_read8
++#undef vm_read16
++#undef vm_read32
++#undef vm_read64
++
++#include "spu_coherency.c"
++#include <windows.h>
++
++void spu_ch_wake(spu_context* ctx) { (void)ctx; }
++
++/* ---- guest memory and the gates (the runtime publishes these, vm_gates_publish) */
++#define GMEM (16u << 20)
++static __declspec(align(64)) uint8_t g_mem[GMEM + 256];
++uint8_t* vm_base = g_mem;
++uint8_t* const vm_base_k = g_mem;
++const uint32_t vm_ld_lim_k = GMEM - 0x10000u - 8u, vm_st_lim_k = GMEM - 0x10000u - 8u, vm_refpoll_k = 0xFFFFFFFFu;
++const unsigned char* const vm_coh_bm_k = s_coh_bitmap;
++int vm_inline_ok = 1, vm_store_inline_ok = 1;
++uint32_t ppu_vm_size = 0, ppu_hle_inject_base = 0;
++
++/* ---- the runtime's out-of-line store: the exact protocol (ppu_loader.cpp VM_WRITE_COH_FAST) */
++static __declspec(thread) long t_n_slow, t_n_post;
++static int exact_reserved(uint32_t a)
++{
++    const unsigned char* bm = __atomic_load_n(&vm_coh_bitmap, __ATOMIC_ACQUIRE);
++    if (!bm) return 0;
++    const uint32_t line = a >> 7;
++    return (__atomic_load_n(&bm[line >> 3], __ATOMIC_RELAXED) >> (line & 7)) & 1u;
++}
++static void st_raw(uint32_t a, const void* p, int n)
++{
++    if (n == 4 && !(a & 3)) __atomic_store_n((uint32_t*)(vm_base + a), *(const uint32_t*)p, __ATOMIC_RELAXED);
++    else if (n == 8 && !(a & 7)) __atomic_store_n((uint64_t*)(vm_base + a), *(const uint64_t*)p, __ATOMIC_RELAXED);
++    else memcpy(g_mem + a, p, (size_t)n);
++}
++static void ool_store(uint32_t a, const void* p, int n)
++{
++    t_n_slow++;
++    if (exact_reserved(a)) {
++        spu_lockline_lock();
++        st_raw(a, p, n);
++        spu_coh_notify_write_from_ppu(a);
++        spu_lockline_unlock();
++    } else {
++        st_raw(a, p, n);
++        __atomic_signal_fence(__ATOMIC_SEQ_CST);
++        if (exact_reserved(a)) {
++            spu_lockline_lock();
++            spu_coh_notify_write_from_ppu(a);
++            spu_lockline_unlock();
++        }
++    }
++}
++void vm_write8(uint64_t a, uint8_t v)   { ool_store((uint32_t)a, &v, 1); }
++void vm_write16(uint64_t a, uint16_t v) { v = __builtin_bswap16(v); ool_store((uint32_t)a, &v, 2); }
++void vm_write32(uint64_t a, uint32_t v) { v = __builtin_bswap32(v); ool_store((uint32_t)a, &v, 4); }
++void vm_write64(uint64_t a, uint64_t v) { v = __builtin_bswap64(v); ool_store((uint32_t)a, &v, 8); }
++uint8_t vm_read8(uint64_t a)   { return g_mem[(uint32_t)a]; }
++uint16_t vm_read16(uint64_t a) { uint16_t v; memcpy(&v, g_mem + (uint32_t)a, 2); return __builtin_bswap16(v); }
++uint32_t vm_read32(uint64_t a) { uint32_t v; memcpy(&v, g_mem + (uint32_t)a, 4); return __builtin_bswap32(v); }
++uint64_t vm_read64(uint64_t a) { uint64_t v; memcpy(&v, g_mem + (uint32_t)a, 8); return __builtin_bswap64(v); }
++void vm_store_coh_notify(uint32_t ea)
++{
++    t_n_post++;
++    spu_lockline_lock();
++    spu_coh_notify_write_from_ppu(ea);
++    spu_lockline_unlock();
++}
++static uint32_t ld32(uint32_t a) { return __builtin_bswap32(__atomic_load_n((uint32_t*)(vm_base + a), __ATOMIC_RELAXED)); }
++
++/* ---- the SPU: GETLLAR and PUTLLC as spu_channels.c does them */
++static spu_context* g_spu;
++static uint8_t g_ls[128];
++static void getllar(uint32_t ea)
++{
++    spu_lockline_lock();
++    spu_coh_reserve(g_spu, ea);                      /* mark the line (first time: the process-wide barrier) */
++    memcpy(g_ls, g_mem + ea, 128);                   /* one read of the line ... */
++    memcpy(g_spu->resv_line, g_ls, 128);             /* ... and the snapshot from that copy */
++    g_spu->resv_ea = ea;
++    g_spu->resv_valid = 1;
++    spu_lockline_unlock();
++}
++static long g_missed;                                /* a line changed under a live reservation */
++static int putllc(uint32_t ea)
++{
++    int ok;
++    spu_lockline_lock();
++    const int same = memcmp(g_mem + ea, g_spu->resv_line, 128) == 0;
++    if (g_spu->resv_valid && g_spu->resv_ea == ea && !same) g_missed++;
++    if (g_spu->resv_valid && g_spu->resv_ea == ea && same) {
++        memcpy(g_mem + ea, g_ls, 128);
++        g_spu->resv_valid = 0;
++        spu_coh_notify_write(ea);
++        ok = 1;
++    } else {
++        ok = 0;
++    }
++    spu_lockline_unlock();
++    return ok;
++}
++
++static int g_fail;
++#define CHECK(c, ...) do { if (!(c)) { g_fail++; printf("FAIL: " __VA_ARGS__); printf("\n"); } } while (0)
++
++/* ---- A: steady state */
++#define A_LINES 4
++static const uint32_t A_BASE = 0x00200000u;        /* line k at A_BASE + k * 1024 + 256: its own block */
++static uint32_t a_line(int k) { return A_BASE + (uint32_t)k * 1024u + 256u; }
++static volatile LONG g_a_stop;
++static long g_a_lost[2], g_a_stores[2], g_a_slow[2], g_a_post[2];
++static uint32_t g_a_last[2][A_LINES][32];
++static DWORD WINAPI a_ppu(LPVOID arg)
++{
++    const int t = (int)(intptr_t)arg;
++    t_rng = 0x1234567u + 77u * (uint32_t)t;
++    uint32_t v = 0;
++    while (!g_a_stop) {
++        const int k = (int)(rnd32() % A_LINES);
++        const int w = 1 + t + 2 * (int)(rnd32() % 15);          /* words 1..30: thread 0 odd, thread 1 even */
++        const uint32_t ea = a_line(k) + 4u * (uint32_t)w;
++        const uint32_t cur = ld32(ea);
++        if (cur < g_a_last[t][k][w]) g_a_lost[t]++;            /* a store of ours was undone */
++        vm_write32_inl(ea, ++v);
++        g_a_last[t][k][w] = v;
++        g_a_stores[t]++;
++        if ((v & 3) == 0)                                       /* traffic on the neighbours too */
++            vm_write32_inl(a_line(k) - 256u + 128u * (rnd32() % 8) + 124u, v);
++    }
++    g_a_slow[t] = t_n_slow; g_a_post[t] = t_n_post;
++    return 0;
++}
++static void phase_a(DWORD ms, long* commits, long* fails)
++{
++    for (int k = 0; k < A_LINES; k++) { getllar(a_line(k)); g_spu->resv_valid = 0; }   /* reserved before */
++    g_a_stop = 0;
++    HANDLE th[2];
++    for (int t = 0; t < 2; t++) th[t] = CreateThread(0, 0, a_ppu, (LPVOID)(intptr_t)t, 0, 0);
++    const DWORD t0 = GetTickCount();
++    uint32_t i = 0;
++    while (GetTickCount() - t0 < ms) {
++        const uint32_t ea = a_line((int)(i++ % A_LINES));
++        getllar(ea);
++        uint32_t c; memcpy(&c, g_ls, 4); c = __builtin_bswap32(__builtin_bswap32(c) + 1); memcpy(g_ls, &c, 4);
++        for (uint32_t n = rnd32() % 64; n; n--) _mm_pause();
++        if (putllc(ea)) (*commits)++; else (*fails)++;
++    }
++    g_a_stop = 1;
++    WaitForMultipleObjects(2, th, TRUE, INFINITE);
++    for (int t = 0; t < 2; t++) {
++        CloseHandle(th[t]);
++        for (int k = 0; k < A_LINES; k++)
++            for (int w = 1 + t; w < 31; w += 2)
++                if (g_a_last[t][k][w] && ld32(a_line(k) + 4u * (uint32_t)w) != g_a_last[t][k][w]) g_a_lost[t]++;
++    }
++}
++
++/* ---- B: first reservations, in lockstep */
++static const uint32_t B_BASE = 0x00400000u;        /* 2 turns per 1 KB block: its line 0, then its line 1 */
++static volatile LONG g_b_turn = -1, g_b_done = -1, g_b_stop;
++static long g_b_slow, g_b_post;
++static uint32_t b_line(long j) { return B_BASE + (uint32_t)(j / 2) * 1024u + (uint32_t)(j % 2) * 128u; }
++static DWORD WINAPI b_ppu(LPVOID arg)
++{
++    (void)arg;
++    t_rng = 0xBADC0DEu;
++    for (long j = 0;; j++) {
++        while (g_b_turn < j) { if (g_b_stop) goto out; _mm_pause(); }
++        vm_write32_inl(b_line(j) + 4u, (uint32_t)j + 1u);
++        InterlockedExchange(&g_b_done, j);
++    }
++out:
++    g_b_slow = t_n_slow; g_b_post = t_n_post;
++    return 0;
++}
++static void phase_b(long turns, long* in_snapshot, long* notified, long* violations)
++{
++    HANDLE th = CreateThread(0, 0, b_ppu, 0, 0, 0);
++    for (long j = 0; j < turns; j++) {
++        const uint32_t ea = b_line(j);
++        InterlockedExchange(&g_b_turn, j);
++        for (uint32_t n = rnd32() % (uint32_t)(g_delay_max + 1); n; n--) _mm_pause();
++        getllar(ea);
++        while (g_b_done < j) _mm_pause();
++        spu_lockline_lock();
++        uint32_t snap; memcpy(&snap, g_spu->resv_line + 4, 4); snap = __builtin_bswap32(snap);
++        const int seen = snap == (uint32_t)j + 1u;
++        const int lost = !g_spu->resv_valid;
++        if (seen) (*in_snapshot)++;
++        else if (lost) (*notified)++;
++        else (*violations)++;
++        if (ld32(ea + 4u) != (uint32_t)j + 1u) (*violations)++;
++        g_spu->resv_valid = 0;
++        spu_lockline_unlock();
++    }
++    g_b_stop = 1;
++    WaitForSingleObject(th, INFINITE);
++    CloseHandle(th);
++}
++
++/* ---- C: the neighbours of a reserved line */
++static const uint32_t C_LINE = 0x00800000u + 3u * 128u;   /* line 3 of its block */
++static volatile LONG g_c_go, g_c_done;
++static DWORD WINAPI c_ppu(LPVOID arg)
++{
++    (void)arg;
++    while (!g_c_go) _mm_pause();
++    for (int r = 0; r < 20000; r++) {
++        const uint32_t blk = C_LINE & ~1023u;
++        uint32_t l = rnd32() % 8; if (blk + 128u * l == C_LINE) l = (l + 1) % 8;
++        const uint32_t ea = blk + 128u * l + 4u * (rnd32() % 32);
++        switch (r % 4) {
++        case 0: vm_write8_inl(ea, (uint8_t)r); break;
++        case 1: vm_write16_inl(ea & ~1u, (uint16_t)r); break;
++        case 2: vm_write32_inl(ea & ~3u, (uint32_t)r); break;
++        default: vm_write64_inl(ea & ~7u, (uint64_t)r * 0x10001ull); break;
++        }
++    }
++    InterlockedExchange(&g_c_done, 1);
++    return 0;
++}
++static void phase_c(void)
++{
++    getllar(C_LINE);
++    spu_lockline_lock(); spu_coh_ppu_reserve(C_LINE); spu_lockline_unlock();    /* this thread's lwarx too */
++    __atomic_store_n(&g_spu->event_status, 0, __ATOMIC_SEQ_CST);
++    HANDLE th = CreateThread(0, 0, c_ppu, 0, 0, 0);
++    InterlockedExchange(&g_c_go, 1);
++    WaitForSingleObject(th, INFINITE);
++    CloseHandle(th);
++    spu_lockline_lock();
++    const int held = g_spu->resv_valid, ppu_held = spu_coh_ppu_holds(C_LINE);
++    spu_lockline_unlock();
++    CHECK(held, "C: a store to a neighbour line took the SPU's reservation");
++    CHECK(!(g_spu->event_status & SPU_EVENT_LR), "C: a store to a neighbour line raised SPU_EVENT_LR");
++    CHECK(ppu_held, "C: a store to a neighbour line took the PPU's lwarx reservation");
++    CHECK(memcmp(g_mem + C_LINE, g_spu->resv_line, 128) == 0, "C: the reserved line changed");
++    vm_write32_inl(C_LINE + 8u, 0x12345678u);       /* into the line itself (this thread holds the lwarx: */
++    spu_lockline_lock();                            /* its own store keeps that one, as on the PPU) */
++    const int held2 = g_spu->resv_valid;
++    spu_lockline_unlock();
++    CHECK(!held2, "C: a store into the reserved line left the SPU's reservation");
++    CHECK(g_spu->event_status & SPU_EVENT_LR, "C: a store into the reserved line raised no SPU_EVENT_LR");
++    CHECK(ld32(C_LINE + 8u) == 0x12345678u, "C: the store into the reserved line did not land");
++    spu_coh_ppu_thread_exit();
++}
++
++int main(int argc, char** argv)
++{
++    const long turns = argc > 1 ? atol(argv[1]) : 20000;
++    const DWORD a_ms = argc > 2 ? (DWORD)atol(argv[2]) : 2000;
++    g_delay_max = argc > 3 ? atoi(argv[3]) : 256;
++    g_spu = (spu_context*)calloc(1, sizeof(spu_context));
++    if (!g_spu) return 2;
++    g_spu->spu_id = 1;
++
++    long b_snap = 0, b_notified = 0, b_viol = 0;
++    phase_b(turns, &b_snap, &b_notified, &b_viol);
++    CHECK(b_viol == 0, "B: %ld turns where the store was neither in the SPU's snapshot nor took its reservation", b_viol);
++
++    long commits = 0, fails = 0;
++    phase_a(a_ms, &commits, &fails);
++    CHECK(g_a_lost[0] + g_a_lost[1] == 0, "A: %ld PPU stores undone by a PUTLLC", g_a_lost[0] + g_a_lost[1]);
++    CHECK(g_missed == 0, "A: %ld PUTLLCs found their line changed under a live reservation", g_missed);
++    CHECK(commits > 0, "A: no PUTLLC ever succeeded");
++
++    phase_c();
++
++    printf("B: %ld turns: store in the snapshot %ld, reservation taken by the store %ld (re-checks after the store "
++           "that notified: %ld; stores sent out of line %ld)\n", turns, b_snap, b_notified, g_b_post, g_b_slow);
++    printf("A: %ld PPU stores (%ld out of line, %ld re-check notifies), %ld PUTLLC commits, %ld failed\n",
++           g_a_stores[0] + g_a_stores[1], g_a_slow[0] + g_a_slow[1], g_a_post[0] + g_a_post[1], commits, fails);
++    printf("%s (%d failed checks)\n", g_fail ? "FAILED" : "PASSED", g_fail);
++    return g_fail ? 1 : 0;
++}
+diff --git a/runtime/spu/spu_coherency.c b/runtime/spu/spu_coherency.c
+index 708b24d..43a7c5a 100644
+--- a/runtime/spu/spu_coherency.c
++++ b/runtime/spu/spu_coherency.c
+@@ -321,6 +321,8 @@ void spu_coh_forget_range(uintptr_t lo, uintptr_t hi)
+     spu_lockline_unlock();
+ }
+ 
++const unsigned char* spu_coh_bitmap_base(void) { return s_coh_bitmap; }
++
+ int spu_coh_is_reserved(uint32_t addr)
+ {
+     if (!__atomic_load_n(&s_coh_armed, __ATOMIC_ACQUIRE)) return 0;
+diff --git a/runtime/spu/spu_coherency.h b/runtime/spu/spu_coherency.h
+index 208867f..3b3fc69 100644
+--- a/runtime/spu/spu_coherency.h
++++ b/runtime/spu/spu_coherency.h
+@@ -55,6 +55,12 @@ void spu_coh_reserve(spu_context* ctx, uint32_t ea);
+  * lookup guarded by a global that is zero until the first GETLLAR. */
+ int spu_coh_is_reserved(uint32_t addr);
+ 
++/* The bitmap itself, for the lifted code's inline store check (ppu_recomp.h,
++ * PPU_COH_LOCAL; handed to it once with the other gates, vm_gates_publish).
++ * A fixed address, all zero until the first line is marked: bit (line & 7) of
++ * byte line >> 3, line = ea >> 7. Read-only for everyone but this file. */
++const unsigned char* spu_coh_bitmap_base(void);
++
+ /* A store by the PPU landed on `ea`'s line. Raise SPU_EVENT_LR on every SPU
+  * whose live reservation covers it, drop that reservation, and wake the host
+  * thread in case it is parked in `rdch SPU_RdEventStat`.
+diff --git a/tools/ppu_lifter.py b/tools/ppu_lifter.py
+index 0ced5b0..c97ada4 100644
+--- a/tools/ppu_lifter.py
++++ b/tools/ppu_lifter.py
+@@ -262,14 +262,28 @@ static inline uint64_t vm_read64_inl(uint64_t a)
+  * reserves a line. A store to a reserved line, or any address the
+  * out-of-line path treats specially, goes there -- same result, no call.
+  * Only for the generated sources (they define PPU_INLINE_STORES): runtime
+- * files that include this header keep declaring the out-of-line vm_write*. */
++ * files that include this header keep declaring the out-of-line vm_write*.
++ *
++ * PPU_COH_LOCAL (with PPU_CONST_GATES, unless PPU_NO_COH_LOCAL): the reserved-
++ * line check reads the runtime's bitmap through vm_coh_bm_k, a const view of its
++ * address published with the windows (all zero until a line is marked, so no
++ * NULL test), and tests the bitmap BYTE that holds the line's bit as a whole:
++ * "some line of this 1 KB block is reserved". A block hit goes out of line,
++ * where the runtime checks the line's own bit -- a store to the line's seven
++ * neighbours takes the call and nothing else changes (spu_coherency.c). */
+ #if defined(PPU_INLINE_STORES) && !defined(PPU_NO_INLINE_LOADS)
++#if defined(PPU_CONST_GATES) && !defined(PPU_NO_COH_LOCAL)
++#define PPU_COH_LOCAL 1
++#endif
+ #ifdef __cplusplus
+ extern "C" {
+ #endif
+ extern int vm_store_inline_ok;
+ extern unsigned char* vm_coh_bitmap;
+ void vm_store_coh_notify(uint32_t ea);
++#ifdef PPU_COH_LOCAL
++extern const unsigned char* const vm_coh_bm_k;   /* the bitmap; set before any lifted code runs */
++#endif
+ #ifdef __cplusplus
+ }
+ #endif
+@@ -285,10 +299,14 @@ static inline int vm_st_ok(uint32_t ea, uint32_t n)
+ }
+ static inline int vm_st_reserved(uint32_t ea)
+ {
++#ifdef PPU_COH_LOCAL
++    return __atomic_load_n(&vm_coh_bm_k[ea >> 10], __ATOMIC_RELAXED) != 0;
++#else
+     const unsigned char* bm = __atomic_load_n(&vm_coh_bitmap, __ATOMIC_ACQUIRE);
+     if (!bm) return 0;
+     const uint32_t line = ea >> 7;
+     return (__atomic_load_n(&bm[line >> 3], __ATOMIC_RELAXED) >> (line & 7)) & 1u;
++#endif
+ }
+ /* Store, then re-check the reservation: the order VM_WRITE_COH uses. */
+ #define VM_ST_INL(T, BSWAP, a, v, slow) do { \\
+diff --git a/tools/storepath_diff.py b/tools/storepath_diff.py
+new file mode 100644
+index 0000000..cfb1661
+--- /dev/null
++++ b/tools/storepath_diff.py
+@@ -0,0 +1,296 @@
++#!/usr/bin/env python3
++"""Differential test of the lifted stores' reservation check (ppu_recomp.h PPU_COH_LOCAL, patch 0069).
++
++    python tools/storepath_diff.py --lift LIFT_DIR (--funcs FILE | --addr A,B,... | --sample N | --all)
++                                   [--iters N] [--unarmed] [--march x86-64-v3|none] [--work DIR]
++
++Takes functions of one lift and compiles every one of them twice into one
++harness, from the same text: once with the store check of 1.1.4 (the bitmap
++pointer vm_coh_bitmap, its NULL test, the line's own bit) and once with
++PPU_COH_LOCAL (vm_coh_bm_k, the line's 1 KB block byte, a block hit out of
++line). Unlike regpromo_diff.py the inline guest loads and stores stay ON
++(folded into the 64 KB sandbox like every other access; the windows cover
++0x10000..0xE0000000, so the low and high addresses still go out of line), and
++the trace records
++
++  * every guest store, inline or out of line, with its address, width and value;
++  * every store that reached the runtime's exact protocol on a reserved line
++    (the out-of-line vm_write* of a line whose own bit is set: a locked store
++    and a notify in the runtime);
++  * every post-store notify (vm_store_coh_notify; none is expected here: one
++    thread, the bitmap does not change during a run);
++
++besides everything regpromo_diff.py compares (the context after the run,
++guest memory, every load, call, store-conditional, with the context hash at
++each call). The reserved-line bitmap is the runtime's layout (a bit per
++128-byte line), a quarter of the 1 KB blocks with one reserved line and some
++with all eight; --unarmed runs with no line reserved (the 1.1.4 check's NULL
++pointer against an all-zero bitmap).
++
++So the two builds must agree on what each store does to memory and on which
++stores are coherent (go through the lock and the notify), while they differ in
++which stores take the call: the neighbours of a reserved line. Exit status 0 =
++no difference. Game-derived code stays in --work (never commit it).
++"""
++import argparse
++import os
++import random
++import re
++import sys
++import time
++
++TOOLS = os.path.dirname(os.path.abspath(__file__))
++ROOT = os.path.dirname(TOOLS)
++sys.path.insert(0, TOOLS)
++
++import regpromo_diff as rd  # noqa: E402
++
++STORE_BEGIN = "static inline int vm_st_reserved(uint32_t ea)"
++STORE_END = "#define vm_write64(a, v) vm_write64_inl((a), (v))"
++
++
++def harness_header(text):
++    """The generated header for this harness: rd.harness_header (no function declarations, raw accesses folded),
++    inline loads and stores folded into the sandbox too, and the store block twice: _o (1.1.4) and _n (0069)."""
++    h = rd.harness_header(text)
++    n_ld = h.count("VM_BASE + ea")
++    n_st = h.count("VM_BASE + _ea")
++    if n_ld < 7 or n_st != 2 or STORE_BEGIN not in h or STORE_END not in h or "PPU_COH_LOCAL" not in h:
++        sys.exit("ppu_recomp.h: the inline access code is not where this tool expects it (a lift with patch 0069?)")
++    h = h.replace("VM_BASE + ea", "VM_BASE + HARN_EA(ea)").replace("VM_BASE + _ea", "VM_BASE + HARN_EA(_ea)")
++    i = h.index(STORE_BEGIN)
++    j = h.index(STORE_END) + len(STORE_END)
++    block = h[i:j]
++    block = "\n".join(ln for ln in block.split("\n") if not re.match(r"#define vm_write(8|16|32|64)\(a, v\)", ln))
++    # the event before the store, as the out-of-line vm_write* record theirs: a run stopped at its event limit
++    # (longjmp from ev) then has the same memory whichever path the stopping store took
++    st = "const T _bv = BSWAP((T)(v)); \\"
++    if block.count(st) != 1:
++        sys.exit("ppu_recomp.h: VM_ST_INL has another shape")
++    block = block.replace(st, st + "\n        harn_st_ev(_ea, (uint64_t)(v), (unsigned)sizeof(T)); \\")
++
++    def variant(sfx):
++        b = block
++        for name in ("vm_st_reserved", "VM_ST_INL", "vm_write8_inl", "vm_write16_inl", "vm_write32_inl", "vm_write64_inl"):
++            b = re.sub(r"\b%s\b" % name, name + "_" + sfx, b)
++        return b
++    pair = ("/* ---- the 1.1.4 store check ---- */\n#undef PPU_COH_LOCAL\n" + variant("o") +
++            "\n/* ---- patch 0069: the block byte through vm_coh_bm_k ---- */\n#define PPU_COH_LOCAL 1\n" + variant("n") + "\n")
++    return h[:i] + pair + h[j:]
++
++
++RUNTIME_EXTRA = r"""
++/* ---- storepath_diff: the gates, the bitmap, the store and coherence events ---- */
++static unsigned char g_coh[1u << 22];                /* a bit per 128-byte line of the 4 GB guest space */
++extern "C" {
++uint8_t* const vm_base_k = g_mem;
++const uint32_t vm_ld_lim_k = 0xDFFF0000u, vm_st_lim_k = 0xDFFF0000u, vm_refpoll_k = 0x0001A008u;
++const unsigned char* const vm_coh_bm_k = g_coh;
++}
++static int harn_xbit(uint32_t ea) { return (g_coh[ea >> 10] >> ((ea >> 7) & 7)) & 1; }
++/* per variant (0 = 1.1.4, 1 = 0069): stores inline, out of line, coherent (own line reserved), out of line on a
++ * block hit whose own line is free (0069's extra calls), post-store notifies */
++static int g_var;
++static unsigned long long g_n[2][5];
++static void harn_st_ev(uint32_t ea, uint64_t v, unsigned n) {
++    g_n[g_var][0]++;
++    ev((n == 1 ? 0x200000000ull : n == 2 ? 0x210000000ull : n == 4 ? 0x220000000ull : 0x230000000ull) | ea, v); }
++static struct HarnStats { ~HarnStats() {
++    for (int k = 0; k < 2; k++)
++        printf("STATS %s inline %llu out_of_line %llu coherent %llu block_only %llu notify %llu\n", k ? "new" : "old",
++               g_n[k][0], g_n[k][1], g_n[k][2], g_n[k][3], g_n[k][4]);
++    fflush(stdout); } } g_harn_stats;
++static struct HarnCohInit { HarnCohInit() {
++#ifndef HARN_UNARMED
++    for (uint32_t b = 0; b < (1u << 22); b++) {
++        uint64_t h = mix(0xC0FFEEull, b);
++        if (h % 4 == 0) g_coh[b] = (unsigned char)(1u << ((h >> 8) & 7));
++        else if (h % 61 == 1) g_coh[b] = 0xFF;
++    }
++#endif
++} } g_harn_coh_init;
++"""
++
++
++def runtime_text():
++    r = rd.RUNTIME
++    old_decl = "unsigned char* vm_coh_bitmap = 0;"
++    old_note = "void vm_store_coh_notify(uint32_t ea) { (void)ea; } }"
++    if old_decl not in r or old_note not in r:
++        sys.exit("regpromo_diff.RUNTIME has another shape")
++    r = r.replace(old_decl, "unsigned char* vm_coh_bitmap;")
++    r = r.replace(old_note, "void vm_store_coh_notify(uint32_t ea); }")
++    # the out-of-line stores: the runtime's exact protocol on a reserved line is a coherent store (locked + notify)
++    for w, t in ((8, "uint8_t"), (16, "uint16_t"), (32, "uint32_t"), (64, "uint64_t")):
++        head = 'extern "C" void vm_write%d(uint64_t a, %s v) { ' % (w, t)
++        if head not in r:
++            sys.exit("regpromo_diff.RUNTIME: vm_write%d has another shape" % w)
++        r = r.replace(head, head + "harn_coh_ev((uint32_t)a, %d); " % w)
++    stub = "if ((h >> 40) % 4 == 0) vm_write64(h2 & ~7ull, qs64(h));"   # a callee's own store: not counted
++    if stub not in r:
++        sys.exit("regpromo_diff.RUNTIME: harn_effect has another shape")
++    r = r.replace(stub, "if ((h >> 40) % 4 == 0) { g_stub = 1; vm_write64(h2 & ~7ull, qs64(h)); g_stub = 0; }")
++    pre = r"""
++static void ev(uint64_t a, uint64_t b);
++static int harn_xbit(uint32_t ea);
++static void harn_coh_ev(uint32_t ea, int w);
++static int g_stub;
++"""
++    post = RUNTIME_EXTRA + r"""
++static void harn_coh_ev(uint32_t ea, int w) {
++    /* an out-of-line store inside the window is one the inline check sent here; below 0x10000 or from
++     * 0xE0000000 both builds call anyway */
++    const int in_window = (uint32_t)(ea - 0x10000u) < vm_st_lim_k;
++    if (in_window && !g_stub) { g_n[g_var][1]++; if (!harn_xbit(ea)) g_n[g_var][3]++; }
++    if (harn_xbit(ea)) { if (!g_stub) g_n[g_var][2]++; ev(0x600000000ull | ea, 1); }
++    (void)w; }
++extern "C" void vm_store_coh_notify(uint32_t ea) { g_n[g_var][4]++; ev(0x610000000ull | ea, 0); }
++static struct HarnArm { HarnArm() {
++#ifndef HARN_UNARMED
++    vm_coh_bitmap = g_coh;
++#else
++    vm_coh_bitmap = 0;
++#endif
++} } g_harn_arm;
++"""
++    # ev() is defined inside RUNTIME; harn_xbit/harn_st_ev need g_coh from RUNTIME_EXTRA: put the forward
++    # declarations first, the extras right after RUNTIME's own definitions
++    return pre + r + post
++
++
++def harness_source(header, preamble, funcs):
++    """C++ for one harness: funcs = [(addr, text)], each compiled as harn_old_X (1.1.4 check) and harn_new_X (0069)."""
++    pre = preamble.replace("#define PPU_INLINE_STORES 1", "/* (PPU_INLINE_STORES: above the header) */")
++    if '#include "ppu_recomp.h"' not in pre:
++        sys.exit("chunk preamble: no #include \"ppu_recomp.h\"")
++    pre = pre.replace('#include "ppu_recomp.h"', "/* ppu_recomp.h (harness copy) above */")
++    out = ["/* storepath_diff harness -- generated; holds lifted game code: do not commit */",
++           "#define PPU_INLINE_STORES 1", "#define HARN_EA(ea) ((uint32_t)(ea) & 0xFFFFu)", "#include <stddef.h>",
++           "#include <stdint.h>", "static void harn_st_ev(uint32_t ea, uint64_t v, unsigned n);",
++           header,
++           "\n".join("#undef vm_read%d" % w for w in (8, 16, 32, 64)) + "   /* the runtime's out-of-line ones below */",
++           pre, runtime_text(),
++           "\n".join("#define vm_read%d(a) vm_read%d_inl(a)" % (w, w) for w in (8, 16, 32, 64)) +
++           "   /* the lifted code's inline loads */"]
++    callees = set()
++    for addr, txt in funcs:
++        callees |= set(re.findall(r"\b((?:[A-Za-z_]\w*?)?func_[0-9A-F]{8})\b", txt))
++    for c in sorted(callees):
++        a = re.search(r"func_([0-9A-F]{8})$", c).group(1)
++        out.append(f"static __attribute__((noinline)) void {c}(ppu_context* ctx) {{ harn_call(ctx, 0x{a}u); }}")
++    tbl = []
++    for addr, txt in funcs:
++        first, rest = txt.split("\n", 1)
++        rest = rest.replace("vm_base + (uint32_t)ea", "vm_base + HARN_EA(ea)")     # dcbz, as regpromo_diff
++        body = "\n".join(ln + (" harn_tick();" if rd.LABEL_RE.match(ln) else "") for ln in rest.split("\n"))
++        for tag, sfx in (("old", "o"), ("new", "n")):
++            for w in (8, 16, 32, 64):
++                out.append(f"#undef vm_write{w}\n#define vm_write{w}(a, v) vm_write{w}_inl_{sfx}((a), (v))")
++            out.append(f"__attribute__((noinline)) void harn_{tag}_{addr:08X}(ppu_context* ctx) {{")
++            out.append(body)
++        tbl.append(f"    {{ 0x{addr:08X}u, harn_old_{addr:08X}, harn_new_{addr:08X} }},")
++    out.append("struct HarnFn { uint32_t addr; void (*o)(ppu_context*); void (*n)(ppu_context*); };")
++    out.append("static const HarnFn g_fns[] = {")
++    out += tbl
++    out.append("};")
++    out.append(f"#define NFN {len(funcs)}")
++    drv = rd.DRIVER
++    for old, new in (("if (setjmp(g_jb) == 0) g_fns[fi].o(&g_a); else ab_a = 1;",
++                      "g_var = 0; g_stub = 0; if (setjmp(g_jb) == 0) g_fns[fi].o(&g_a); else ab_a = 1;"),
++                     ("if (setjmp(g_jb) == 0) g_fns[fi].n(&g_b); else ab_b = 1;",
++                      "g_var = 1; g_stub = 0; if (setjmp(g_jb) == 0) g_fns[fi].n(&g_b); else ab_b = 1;")):
++        if old not in drv:
++            sys.exit("regpromo_diff.DRIVER has another shape")
++        drv = drv.replace(old, new)
++    out.append(drv)
++    return "\n".join(out)
++
++
++def broken(header):
++    """--self-check: the new check made blind (never reserved), which the harness must catch."""
++    probe = "return __atomic_load_n(&vm_coh_bm_k[ea >> 10], __ATOMIC_RELAXED) != 0;"
++    if header.count(probe) != 2:
++        sys.exit("--self-check: the new check is not where expected")
++    i = header.index("/* ---- patch 0069: the block byte through vm_coh_bm_k ---- */")   # the _n copy only
++    return header[:i] + header[i:].replace(probe, "return 0 && vm_coh_bm_k;", 1)
++
++
++def main():
++    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
++    ap.add_argument("--lift", required=True, help="a lift made with patch 0069's lifter (its ppu_recomp.h has both checks)")
++    sel = ap.add_mutually_exclusive_group(required=True)
++    sel.add_argument("--funcs", help="file of guest addresses (hex, first token per line, # comments)")
++    sel.add_argument("--addr", help="comma-separated guest addresses")
++    sel.add_argument("--sample", type=int, help="this many functions at random (--seed)")
++    sel.add_argument("--all", action="store_true", help="every function of the lift")
++    ap.add_argument("--seed", type=int, default=1)
++    ap.add_argument("--iters", type=int, default=10000, help="random inputs per function")
++    ap.add_argument("--events", type=int, default=20000, help="events before a run is stopped")
++    ap.add_argument("--batch", type=int, default=400, help="functions per harness executable")
++    ap.add_argument("--march", default="x86-64-v3", help="x86-64-v3 (as most players) or none (baseline)")
++    ap.add_argument("--unarmed", action="store_true", help="no line reserved (before the first GETLLAR)")
++    ap.add_argument("--self-check", action="store_true",
++                    help="make the new check blind on purpose: the run must FAIL (shows the harness sees it)")
++    ap.add_argument("--work", default=os.path.join(ROOT, "scratch", "storepath_diff"))
++    a = ap.parse_args()
++
++    funcs, pre = rd.read_lift(a.lift)
++    allf = sorted(funcs)
++    if a.funcs:
++        with open(a.funcs) as f:
++            want = [int(t.split()[0], 16) for t in (ln.split("#", 1)[0].strip() for ln in f) if t]
++    elif a.addr:
++        want = [int(t, 16) for t in a.addr.split(",") if t.strip()]
++    elif a.sample:
++        want = random.Random(a.seed).sample(allf, min(a.sample, len(allf)))
++    else:
++        want = allf
++    missing = [w for w in want if w not in funcs]
++    if missing:
++        print(f"not in the lift (skipped): {', '.join(f'{m:08X}' for m in missing[:20])}")
++    sel_f = [(w, funcs[w][1]) for w in want if w in funcs]
++    with open(os.path.join(a.lift, "ppu_recomp.h"), encoding="latin-1") as f:
++        header = harness_header(f.read())
++    if a.self_check:
++        header = broken(header)
++    print(f"{len(sel_f)} functions, {a.iters} inputs each, -march={a.march}, "
++          f"bitmap {'empty (unarmed)' if a.unarmed else 'armed'}{', SELF-CHECK (new check blind)' if a.self_check else ''}",
++          flush=True)
++    os.makedirs(a.work, exist_ok=True)
++    log = os.path.join(a.work, "storepath_diff.log")
++    t0 = time.time()
++    n_done = n_diff = 0
++    stuck_all = []
++    stats = {"old": [0] * 5, "new": [0] * 5}
++    for b in range(0, len(sel_f), a.batch):
++        chunk = sel_f[b:b + a.batch]
++        tag = f"{b // a.batch:03d}{'u' if a.unarmed else ''}{'x' if a.self_check else ''}"
++        src = os.path.join(a.work, f"harness_{tag}.cpp")
++        exe = os.path.join(a.work, f"harness_{tag}.exe")
++        with open(src, "w", encoding="latin-1") as f:
++            f.write(("#define HARN_UNARMED 1\n" if a.unarmed else "") + harness_source(header, pre, chunk))
++        ct = rd.compile_harness(src, exe, a.march)
++        at = os.path.getsize(log) if os.path.exists(log) else 0
++        d, x, st = rd.run_harness(exe, len(chunk), a.iters, a.events, log)
++        with open(log, encoding="utf-8", errors="replace") as lf:
++            lf.seek(at)
++            for ln in lf:
++                if ln.startswith("STATS "):
++                    p = ln.split()
++                    stats[p[1]] = [s + int(v) for s, v in zip(stats[p[1]], p[3::2])]
++        n_done += d
++        n_diff += x
++        stuck_all += [chunk[s][0] for s in st]
++        print(f"  batch {b // a.batch}: {d} functions, {x} differing runs (compile {ct:.0f} s, "
++              f"{time.time() - t0:.0f} s so far)", flush=True)
++    for k in ("old", "new"):
++        s = stats[k]
++        print(f"  {k}: guest stores inline {s[0]}, out of line inside the window {s[1]} (of which on a free line of a "
++              f"reserved block {s[3]}), coherent (own line reserved) {s[2]}, post-store notifies {s[4]}")
++    print(f"RESULT: {n_done} functions x {a.iters} inputs = {n_done * a.iters} runs, {n_diff} differing; "
++          f"stuck/crashed: {', '.join(f'{s:08X}' for s in stuck_all) or 'none'}")
++    sys.exit(1 if n_diff or stuck_all else 0)
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/tools/test_ppu_storepath.py b/tools/test_ppu_storepath.py
+new file mode 100644
+index 0000000..d85c9a6
+--- /dev/null
++++ b/tools/test_ppu_storepath.py
+@@ -0,0 +1,92 @@
++#!/usr/bin/env python3
++"""Thread test of the lifted code's inline guest store against the SPU reservation protocol (patch 0069).
++
++    python tools/test_ppu_storepath.py [--turns N] [--ms N] [--delay N] [--work DIR]
++
++Writes the lifter's generated header (ppu_lifter.HEADER_PREAMBLE) with a random
++spin between the store's check and the store (HARN_DELAY: the window the
++protocol has to get right, widened), and builds runtime/ppu/tests/
++test_storepath_race.c against it and the real runtime/spu/spu_coherency.c in
++four variants:
++
++  new         PPU_COH_LOCAL (0069): the 1 KB block byte through vm_coh_bm_k   -> must PASS
++  old         PPU_NO_COH_LOCAL: the 1.1.4 check (vm_coh_bitmap, NULL test, bit) -> must PASS
++  break_post  new without the re-check after the store                        -> must FAIL (phase B)
++  break_pre   new without the check before the store                          -> must FAIL (phase A)
++
++The two broken variants show the test sees the two races the protocol closes.
++Windows only (clang-cl, FlushProcessWriteBuffers); exit status 0 = as expected.
++"""
++import argparse
++import os
++import subprocess
++import sys
++
++TOOLS = os.path.dirname(os.path.abspath(__file__))
++ROOT = os.path.dirname(TOOLS)
++sys.path.insert(0, TOOLS)
++
++from ppu_lifter import HEADER_PREAMBLE  # noqa: E402
++
++PRE = "if (vm_st_ok(_ea, sizeof(T)) && !vm_st_reserved(_ea)) { \\"
++POST = "if (__builtin_expect(vm_st_reserved(_ea), 0)) vm_store_coh_notify(_ea); \\"
++
++
++def header(variant):
++    h = HEADER_PREAMBLE
++    if h.count(PRE) != 1 or h.count(POST) != 1:
++        sys.exit("ppu_lifter.HEADER_PREAMBLE: VM_ST_INL has another shape")
++    pre = PRE.replace(" && !vm_st_reserved(_ea)", "") if variant == "break_pre" else PRE
++    h = h.replace(PRE, pre + "\n        HARN_DELAY(); \\")
++    if variant == "break_post":
++        h = h.replace(POST, "/* (break_post: no re-check) */ \\")
++    return h
++
++
++def find_clang():
++    for d in (os.environ.get("T5DR_LLVM_BIN"), r"C:\Program Files\LLVM\bin"):
++        if d and os.path.exists(os.path.join(d, "clang-cl.exe")):
++            return os.path.join(d, "clang-cl.exe")
++    return "clang-cl"
++
++
++def main():
++    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
++    ap.add_argument("--turns", type=int, default=20000, help="phase B: first reservations raced")
++    ap.add_argument("--ms", type=int, default=3000, help="phase A: milliseconds of GETLLAR/PUTLLC against stores")
++    ap.add_argument("--delay", type=int, default=256, help="most pause instructions between the check and the store")
++    ap.add_argument("--work", default=os.path.join(ROOT, "scratch", "test_ppu_storepath"))
++    a = ap.parse_args()
++    if os.name != "nt":
++        print("skipped: Windows only")
++        return 0
++    from msvc_env import environ
++    want = {"new": True, "old": True, "break_post": False, "break_pre": False}
++    bad = []
++    for v, should_pass in want.items():
++        d = os.path.join(a.work, v)
++        os.makedirs(d, exist_ok=True)
++        with open(os.path.join(d, "ppu_recomp.h"), "w", newline="\n") as f:
++            f.write(header(v))
++        exe = os.path.join(d, "test_storepath_race.exe")
++        cmd = [find_clang(), "/nologo", "/O2", "-TC", "/std:c17", "/clang:-march=x86-64-v3", "-Wno-unused-function",
++               "-Wno-deprecated-declarations", "-I" + d, "-I" + os.path.join(ROOT, "runtime", "spu"),
++               "-I" + os.path.join(ROOT, "include"), os.path.join(ROOT, "runtime", "ppu", "tests", "test_storepath_race.c"),
++               "/Fe:" + exe, "/Fo:" + os.path.join(d, "t.obj")] + (["/DPPU_NO_COH_LOCAL"] if v == "old" else [])
++        r = subprocess.run(cmd, env=environ(), capture_output=True, text=True, errors="replace")
++        if r.returncode:
++            print(r.stdout[-4000:], r.stderr[-2000:])
++            sys.exit(f"{v}: compile failed")
++        r = subprocess.run([exe, str(a.turns), str(a.ms), str(a.delay)], capture_output=True, text=True, errors="replace",
++                           timeout=600)
++        passed = r.returncode == 0
++        print(f"== {v} (must {'PASS' if should_pass else 'FAIL'}): {'PASS' if passed else 'FAIL'}")
++        print("   " + r.stdout.strip().replace("\n", "\n   "))
++        if passed != should_pass:
++            bad.append(v)
++    print("RESULT:", "as expected" if not bad else "UNEXPECTED: " + ", ".join(bad))
++    return 1 if bad else 0
++
++
++if __name__ == "__main__":
++    sys.exit(main())

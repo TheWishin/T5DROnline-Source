@@ -726,6 +726,16 @@ agents' games): stage 34 at 4K 1.80 ms before, 1.43 after, 2.47 Off; stage 20
 at 4K 2.11 / 1.71 / 1.83; stage 34 at Native 0.67 / 0.43 -- within the spread
 of these runs, nothing measurable.
 
+**Off by default (1.1.4, the owner's call).** The launcher's default is Off
+(`PS3_STAGE_BLUR=0`); a launcher.json of 1.1.3 or older, which stores every
+default and so says "on", is set to Off once (`settings_version` 1), and On
+chosen in Settings stays from then on. The runtime without the variable still
+draws On. Cost on this PC's integrated Radeon (stage 20, the glow's blur passes;
+two rounds each, the same runs as [1.1.4: Auto by default on integrated
+graphics](#114-auto-by-default-on-integrated-graphics-and-the-processors-clock-branch-igpu-114)):
+4K 23.3 / 23.6 ms of GPU a frame On, 20.6 / 21.6 Off, 37.4 / 35.5 fps against
+40.6 / 38.5; Auto (1080p) 6.7 / 6.5 against 5.7 / 5.5 ms, ~60 fps either way.
+
 **Online:** host pixels only -- the patch reads no guest memory and changes no
 command, so the two players may choose differently. Rollback pairs (the online
 default, `tools/rollback_net_test.py --mode1 default --mode2 default`) with one
@@ -1193,7 +1203,7 @@ PC's screen hangs off the RTX 3090, and test windows stay minimised).
 | `RSX_FRAMES_IN_FLIGHT=2` (above) | off by default | `RSX_FRAMES_IN_FLIGHT` |
 | `power saving off (PS3_LAPTOP=0: launcher Settings -> Power saving Off, or a PS3_LAPTOP line in its extra settings or in Windows' environment)` | the player's four logs all said `PS3_LAPTOP=0` although Auto was tried | -- |
 | Launcher: Power saving **Auto** is sent as `PS3_LAPTOP=auto` (was: nothing), so a variable left in Windows' environment cannot overrule it; Settings names an Extra-settings line that does (`Extra settings below set PS3_LAPTOP=0: that wins over this choice.`) | the launcher itself was right (Auto = unset); the game got `=0` from Off, the Extra settings box or the environment | -- |
-| Launcher: Internal resolution **Auto (matches the screen)** -- a seventh choice, Native stays the default; with Auto the Settings hint says what it picks on this PC | the owner decides whether it becomes the default | -- |
+| Launcher: Internal resolution **Auto (matches the screen)** -- a seventh choice, Native stays the default; with Auto the Settings hint says what it picks on this PC | the owner decides whether it becomes the default (1.1.4: the default on integrated graphics, below) | -- |
 | Launcher: on integrated graphics (from the last game log's `[gpu] adapter`), a step larger than the screen gets `4K (3x) on integrated graphics: try 1080p (1.5x) for 60 fps.`; after a game whose log says GPU-bound / integrated graphics busy, the Play tab says so | the 780M player's case | -- |
 | Problem report: `system.txt` gets "What the log says about speed" (GPU-bound windows, integrated graphics busy, Internal resolution above the screen on integrated graphics); `[slow-frames]` lines are kept whole (1,800 characters) | -- | -- |
 
@@ -1249,6 +1259,73 @@ control pair with the same settings on both sides differs there as well (those e
 not part of the state a pair keeps equal). The default, one frame in flight, records the same
 commands as before; patch 0063 adds two timestamps to each command list. Smoke quick: PASS
 (80 checks; 3 fps WARN from the other games on the PC).
+### 1.1.4: Auto by default on integrated graphics, and the processor's clock (branch `igpu-114`)
+
+Player report on 1.1.3, the same 780M mini PC (8 cores / 16 threads, on AC),
+online fights, Internal resolution **4K** set by the player: `[slow-frames]`
+GPU busy 61 % of the time, GPU wait 0.0 (the graphics were not the limit),
+game part 12.0 ms + translation 3.6 ms a frame, 6-10 % of the frames late
+(55-59 fps), `processors at 2.26 GHz on average (81 % of their 2.79)`, power
+plan "Balanced". Neither 0063 verdict fired (GPU-bound needs 85 % busy, the
+integrated-graphics one 10 % slow frames), so 1.1.3's Play tab said nothing.
+What the line does show: on an APU the busy GPU takes its share of the one
+power budget, the cores clock down, and the game's one-core critical path
+(game part + translation, ~15.6 ms) misses 16.7 ms now and then.
+
+What changed (launcher only; the runtime is the same):
+
+| change | how |
+|---|---|
+| **Auto is the default on integrated graphics** | `Settings.internal_res_choice`: the step the player picked, else Auto when the newest game log's `[gpu] adapter` says integrated (`last_gpu`), else Native (a discrete card, or the first game, before there is a log). A click in Settings sets `internal_res_set` in launcher.json. A launcher.json of 1.1.3 or older stores every default, so there only a step other than Native counts as chosen (`settings_version` 1, migrated once) |
+| **Above Auto's step on integrated graphics: a warning, after every game** | `igpu_res_better` now compares with Auto's step (the screen's, at most 1080p; was: the screen), so 1440p on a 1440p screen counts too. Settings shows it in the warning colour (was a muted line), and the Play offline tab after every game on integrated graphics, GPU-bound or not: "4K (3x) on integrated graphics: a busy built-in GPU slows the processor too (they share its power and memory). For 60 fps choose Auto in Settings -> Internal resolution: 1080p (1.5x) here." (the GPU-bound / busy notes of 0063 otherwise) |
+| **The processor's clock, once** | `clock_hint`: the `[slow-frames]` windows with 10 or more and 5 % or more late frames, on AC power (the power text of the line, as in `[power]`), averaging under 90 % of the normal clock -> once (`clock_hint_shown`): "Your processor ran at 2.26 GHz (81 % of its normal speed): set Windows power mode to Best performance." The launcher changes no Windows setting itself |
+| Stage blur / glow **Off** by default | the owner's call; [Stage blur and glow](#stage-blur-and-glow-patch-0043-branch-stage-blur) |
+
+Measured on this PC's integrated Radeon (the 7950X's 2 CUs, `RSX_ADAPTER=radeon`),
+integration-114's build with patch 0066 (the runtime of 1302912), `tools/fight_bench.py --polite
+--fight lil,ask,<stage>,3 --secs 70 --skip 10`, P1 pressing buttons, the swap
+chain as for a 1920 x 1080 window, `PS3_LAPTOP=auto` as the launcher sends it
+(power saving on by itself on integrated graphics), two interleaved rounds;
+other agents' games and builds kept 12-25 of the 32 processors busy. "late" =
+frames over 20.9 ms in the window (fight start +10 s .. +70 s); GPU ms =
+median per frame (timestamps); GPU busy and the clock from the fight's
+`[slow-frames]` line (printed every 30 s only with 1 % late frames or more):
+
+| stage | Internal resolution | fps (round 1 / 2) | late frames | GPU ms a frame | GPU busy | game part ms | processors' clock | other load |
+|---|---|---|---|---|---|---|---|---|
+| pool (30) | 4K | 55.4 / 46.5 | 6.4 / 61 % | 15.1 / 16.4 | 80 / 69 % | 4.7 / 10.2 | 108 / 101 % | 13 / 29 |
+| pool (30) | **Auto** (1080p) | **59.6 / 59.6** | 2.5 / 3.5 % | 4.5 / 4.8 | 26 / 28 % | 5.9 / 7.4 | 105 / 100 % | 20 / 27 |
+| 20 | 4K | 37.4 / 35.5 | 100 / 100 % | 23.3 / 23.6 | 88 / 85 % | 6.7 / 8.2 | 105 / 102 % | 22 / 26 |
+| 20 | **Auto** (1080p) | **59.9 / 57.9** | 0.4 / 0.6 % | 6.7 / 6.5 | ~40 % (no line: under 1 % late) | 5.6 / 6.7 | -- | 20 / 24 |
+| 20, stage blur Off | 4K | 40.6 / 38.5 | 99 / 99 % | 20.6 / 21.6 | 85 / 85 % | 7.7 / 8.4 | 103 / 102 % | 25 / 26 |
+| 20, stage blur Off | Auto (1080p) | 59.7 / 59.8 | 1.8 / 1.5 % | 5.7 / 5.5 | 36 / 36 % | 7.4 / 6.7 | 100 / 101 % | 27 / 25 |
+
+- **The pool stage at 4K is the player's case**: 55 fps with 6.4 % late
+  frames and the GPU 80 % busy at a quiet moment (the 780M: 55-59 fps, 6-10 %
+  late, 61 % busy), and under more load from other programs (29 of 32 busy)
+  46.5 fps, 61 % late, the game part up from 4.7 to 10.2 ms -- the line then
+  ends `integrated graphics busy 69 % of the time`, as 0063 meant it to.
+  Auto (1080p) holds 59.6 fps with the GPU a quarter busy.
+- Stage 20 at 4K is GPU-bound on this 2-CU Radeon (`GPU-bound: the graphics
+  need 24.1 ms a frame`); Auto: 58-60 fps on 6.5 ms of GPU.
+- **The clock does not move here**: the 7950X's cores stayed at 100-108 % of
+  their 4.50 GHz with the integrated GPU busy, because a 170 W desktop chip
+  has power to spare for 2 CUs; the 780M's 65 W are shared with a GPU of 12
+  CUs. So the clock note was checked with the player's own line (tests) and
+  never fires on this PC (it needs under 90 %); the clock column is there to
+  show what a desktop APU reports.
+- Stage blur Off at 4K: 2.3-2.7 ms less GPU a frame on stage 20 (-10 %, the
+  glow's blur passes), +8 % fps while GPU-bound; at 1080p 0.9-1.0 ms (-15 %).
+  The other stages without a filter: no difference.
+- The first two runs of this build (stage 30 and 20, Auto, fresh run
+  folders) ended at the fight's start in `DXGI_ERROR_DEVICE_HUNG` on the
+  integrated Radeon, each right after the audio device had stopped consuming
+  for 200 ms twice (`audio device lost ... 0x800705B4`): a stall of the whole
+  PC, it seems. The same build then ran 14 times on it without a hang (the 12
+  above, Native and Auto on stage 20), four other builds (1.1.3's, two other
+  1.1.4 builds, igpu4k's) once each; not reproduced, noted here in case a
+  player reports it.
+
 ## Translation CPU (patch 0062, branch `xlat-cpu`)
 
 The weak-PC study ([WEAK_PC.md](WEAK_PC.md)) left the render translation at
@@ -2218,3 +2295,551 @@ The next steps, by size:
 Local evidence: `build/perfcomb/` (git-ignored: `runs/`, `scripts/bench.py`
 for the rounds, `scripts/estimate.py` for the replay model,
 `scripts/summ.py` / `mdtable.py` for the tables).
+
+## Lifted code: register promotion (patch 0066, branch `lifter-regpromo`)
+
+The game's main thread is ~83 % lifted code ("The game thread's own time"
+above) and its profile is flat: no single function to fix, so the lever is
+the quality of everything the lifter emits. The lifted code kept every guest
+register in the context struct -- `ctx->gpr[n]`, `ctx->fpr[n]`, `ctx->cr`,
+`ctx->xer`, `ctx->ctr` -- and `ctx` is memory the compiler must assume any
+guest store, fence or call can change: the inline guest store ends in a
+compiler fence, the inline load is an atomic access. So every register a
+function wrote was stored, and every register it read after a guest memory
+access was loaded again. The hottest function of a fight (the 16-byte packet
+copy: a byte loop) loaded its two pointers and its counter from the context
+and stored them back on every byte it moved.
+
+### What changed (ps3recomp patch 0066)
+
+`ppu_lifter.py --regpromo on|off` (on by default; `tools/build_game.py` lifts
+with it, `T5DR_LIFT_REGPROMO=0` without -- the lift's stamp records it, so a
+switch lifts again). A post-pass over each function's final C body:
+
+- The GPRs, FPRs, CR, XER and CTR the function uses become C locals of the
+  field's own type (`uint64_t`, `double`, `uint32_t`), loaded from the
+  context at entry. The compiler keeps them in host registers; nothing can
+  change a local behind its back.
+- They go back into the context only where something outside the function
+  can look: before every **escape** -- a line that hands `ctx` to a function
+  (a direct or indirect call, `ps3_hle_call`, `lv2_syscall`, the trampoline
+  drain, `ppu_mtfsf`; kept verbatim), every `return`, every trampoline hand-off,
+  the jump-table dispatch and the end of the body. Only what may differ from
+  the context is written back: a may-"dirty" dataflow over the body's labels
+  and gotos (a register written on any path since the context was last up to
+  date). After a call every local is loaded again (the callee may have changed
+  anything); the compiler drops the loads nobody uses.
+- LR, the vector registers, VSCR, FPSCR and the reservation stay in the
+  context everywhere. Other threads write a thread's `reserve_addr` (a
+  store-conditional breaks the others' reservations) and `ppu_stwcx32` reads
+  it through `g_active_ctx`; nothing else reads or writes the promoted fields
+  of a running thread's context except at those escapes (crash dumps and
+  stuck-thread diagnostics may now show a register a few instructions old).
+- The pass is a strict recognizer of the lifter's own line shapes: a function
+  with any line it does not understand (an unknown context field or callee,
+  control flow it does not model) keeps its unpromoted body. In Tekken 5 DR
+  21,942 of 23,059 functions are promoted; the other 1,117 touch no guest
+  register (import stubs, bare trampolines). `--regpromo-skip FILE` keeps listed functions unpromoted (not
+  needed: every function the runtime's entry detours patch -- rollback sound,
+  heap, random, the direct-call cut, unlocks -- still has a prologue
+  `rb_detour.cpp` accepts, and the detours install on both builds).
+- Not done: `__restrict` on `ctx`. It is not provably valid -- the HLE
+  handlers and `ppu_stwcx32` reach the same context through `g_active_ctx`,
+  other threads write `reserve_addr` -- and after promotion the hot code
+  hardly touches `ctx` anyway. CR stays one 32-bit local: splitting it into
+  fields saves little, since a written field goes back to the context at the
+  next exit anyway.
+
+Guest memory accesses, their order and their values are unchanged: the pass
+only moves where register values live between two escapes. Build cost
+(`build_game.py`'s player-side steps, this PC under load): the lift 18 ->
+~45 s (the pass runs while the lifter writes the source, in one process);
+the DLL compile (`build_game_dll.py --jobs 8`, interleaved runs) 63.7 / 66.0 s
+before, 66.2 / 62.2 s after -- the same wall time, 17 chunks instead of 15,
+compiler CPU +7 % (436-456 -> 468-497 s summed); `t5dr_game.dll` 44.3 ->
+47.7 MB.
+
+### Results
+
+Paired runs (`fight_bench.py --polite`, Lili vs Asuka, window fight start
++24..42 s; old and new build started together on two halves of the second
+CCD, 4 cores without SMT each -- `0x55000000` / `0x00550000` -- swapped every
+round; 6 rounds per row). Other agents kept 27-31 of the 32 processors busy
+the whole time, so the fps are those of a much weaker, loaded PC and move a
+lot between rounds; the CPU time per frame of the game thread (its thread
+cycles between two flip requests, `PS3_GAME_THREAD_LOG`) is the steady
+number. "slow core" = `tools/slow_core.py --cpus 0x55550000 --busy 50` from
+the sched-perf branch: TIME_CRITICAL busy loops took ~40 % of every one of
+those processors (the game had them ~60 % of the time: a slower CPU).
+Medians of the rounds:
+
+| | build | fps | game thread CPU ms/frame p50 / p99 | main thread ms/frame | draw thread ms/frame | game part p50 |
+|---|---|---|---|---|---|---|
+| pool stage (30), 4 cores | before | 39.9 | 6.23 / 7.95 | 6.27 | 3.08 | 14.7 |
+| | after | **41.8** | **5.83 / 7.69** | **5.96** | **2.57** | 14.2 |
+| stage 20, 4 cores | before | 39.8 | 6.70 / 8.08 | 6.56 | 3.21 | 15.6 |
+| | after | **44.0** | **6.29 / 7.54** | **6.34** | **2.71** | 14.8 |
+| pool stage, 4 cores, slow core | before | 29.4 | 6.15 / 7.68 | 6.27 | 3.08 | 19.7 |
+| | after | **32.5** | **5.77 / 7.18** | **5.92** | **2.45** | 18.4 |
+| stage 20, 4 cores, slow core | before | 49.4 | 5.74 / 7.29 | 5.85 | 2.97 | 14.6 |
+| | after | 48.5 | **5.36 / 6.83** | **5.34** | **2.45** | 14.9 |
+
+- Game thread CPU per frame: -6 to -7 % (paired median ratio 0.928-0.935),
+  lower in 23 of 24 rounds.
+- The draw thread (`NU::Draw::RequestManager`, lifted code too, the main
+  thread's next wait): -16 to -20 % CPU per frame.
+- fps: paired median ratio +3 to +13 %, higher in 20 of 24 rounds. Under this
+  load the processor half a game got moved its fps more than the build did
+  (two rounds of the stage-20 slow-core row: the new build on the half that
+  was busier then, -20 and -15 fps).
+
+Profile of the main thread on the pool stage (`thread_sampler.py` on the
+DLL, RVAs resolved with an lld-link map; one run per build): still flat; the
+packet copy went from 9.3 % to 8.0 % of the lifted samples and runs in host
+registers. What is
+left per guest access is the memory model, not the registers: every inline
+store checks the SPU coherence bitmap twice (pointer through the DLL's import,
+line bit), every load two gates; the VMX float helpers are out-of-line calls.
+
+### The same results, bit for bit
+
+- **Function by function, old lift against new lift** (`tools/regpromo_diff.py`,
+  new): both lifts' versions of the same function compiled into one harness
+  with the lifted code's options (`/O2 /Ob2`, `-ffp-contract=off`,
+  `-march=x86-64-v3`), run on the same random inputs -- registers drawn from
+  zero, -1, small, 32-bit sign/zero-extended, sandbox pointers and random
+  64-bit values; FPRs normal, denormal, +-0, +-Inf and NaNs; random CR, XER,
+  CTR, vector registers and guest memory (a 64 KB sandbox every guest address
+  folds into). Compared after every run: the whole context, guest memory, and
+  a trace of every guest load and store (address and value), every
+  store-conditional and every call out of the function together with a hash
+  of the **whole context at that call** -- a register not written back before
+  a call, or not reloaded after it, shows up at that call. The callee stubs
+  change volatile and non-volatile registers, CR/XER/CTR/LR, a vector
+  register and a memory word as a function of everything seen so far, and
+  sometimes leave a trampoline to drain. A run that passes 20,000 events (a
+  loop on a random counter) is stopped and compared by trace and memory.
+  - the **100 hottest functions** of a pool-stage fight (main-thread profile):
+    100,000 inputs each, **10 M runs, 0 differences**; again built for the
+    x86-64 baseline: 10,000 inputs each, 1 M runs, 0 differences;
+  - **every function of the game** (23,059): 300 inputs each, 6.9 M runs,
+    **0 differences**; 42 functions first could not be judged -- a loop that
+    touches no guest memory (the title's own `b .` hang among them) never
+    ends; again with an event counted at every label: 5,000 inputs each,
+    210,000 runs, **0 differences**.
+- **Random lifted-style functions** (`tools/test_ppu_regpromo.py`, new; its
+  default run is 150 functions x 1,500 inputs, the final one 400 x 2,000):
+  random functions built from every line shape the lifter emits for this
+  game (loops forward and back, calls direct/indirect/syscall/conditional,
+  conditional returns and trampolines, jump-table switches, callee-save
+  snapshots, carry, record forms, FP and vector lines, store-conditional)
+  x86-64-v3 and baseline: **0 differences** (1.6 M runs); plus 28
+  checks of what is written back where. (It found a bug in the pass on the
+  way: `a & ctx->gpr[n]`, a binary AND, was taken for an address-of -- only
+  an extra store, but now exact.)
+- **Instruction by instruction** (`tools/test_ppu_lift.py --regpromo`): every
+  conformance case runs as a promoted function of its own (1,174 of 1,202
+  cases; 28 vector-only cases touch no promoted register): 1,533 checks, 0
+  failed, as without. The suite runs again: it compiles with clang-cl and
+  gets the raw access macros it was missing (plain `cl` cannot compile the
+  lifter's FP helpers since patch 0032, so it had been compiling nothing),
+  and its 5 FPSCR/VRSAVE decode checks expect the lowering the lifter has
+  emitted since it models those registers (they expected no-ops).
+- **Online, old build against new build** (`tools/cross_build_test.py`, RTT
+  100 +-5 ms, 3 % loss, three matches per mode, the pool stage first; final
+  state hash of every frame compared, built-in sync check, result files):
+
+  | pair (host / joiner) | mode | frames compared | rollbacks per side | result |
+  |---|---|---|---|---|
+  | old / new: Asuka vs Lili stage 30, Lili vs Dragunov stage 20 + rematch | rollback | 16,197 | 1,464 / 1,789 | 0 differ, same 3 result hashes |
+  | | lockstep | 13,681 | -- | 0 differ, same 3 result hashes |
+  | new / old: Lili vs Asuka stage 30, Dragunov vs Lili stage 24 + rematch | rollback | 17,865 | 2,137 / 2,047 | 0 differ, same 3 result hashes |
+  | | lockstep | 17,841 | -- | 0 differ, same 3 result hashes |
+  | new x86-64-v3 / new baseline with the software fma (`PS3_FP_SOFT_FMA=1`: a PC without AVX2/FMA3): Dragunov vs Asuka stage 30, Asuka vs Dragunov stage 20 + rematch | rollback | 13,197 | 1,545 / 1,462 | 0 differ, same 3 result hashes |
+  | | lockstep | 13,222 | -- | 0 differ, same 3 result hashes |
+
+  The detours the runtime installs on lifted functions (direct-call cut, sound
+  hooks, sound heap, random generators) went in on both builds; their
+  prologues are push/sub sequences `rb_detour.cpp` accepts in both lifts
+  (checked statically for all 55 targets, the diagnostics' too).
+  `tools/fp_audit.py --strict` (`--audit`): no estimate instructions, no
+  x87, no MXCSR writes, no C runtime math in either DLL.
+- **One known difference class, never seen in the game**: a single-precision
+  *signalling* NaN loaded by `lfs` and stored again by `stfs`. The lifter
+  lowers them as C float/double conversions, and LLVM may fold
+  `fptrunc(fpext(x))` to `x` (keeping the NaN signalling, as the PPU does)
+  or not (quieting it): which, depends on what the optimizer can see, so it
+  already differed from site to site in the old lift (an `lfs`/`stfs` pair
+  with no guest access between them folded) and can differ between the two
+  lifts. The harness quiets such values in its data for that reason (it
+  found only this class before). A probe build (every `lfs` checked) loaded
+  **0** signalling NaNs through boot and four fights (stages 30, 20, 24, 34).
+- FP code is unchanged (`ppu_fp_det.h`): `test_fp_det` PASS.
+- Smoke quick on the new build: exit 0 (boot_menu, arcade_fight, title_twice PASS; vs_two_pads and practice
+  fps WARN at 54.6/55.4 with 8-9 other games and 8-10 compilers running). `tests/` 780 OK.
+
+Found on the way, not from this patch: the guest's deliberate hang (`b .`,
+an empty infinite loop) is undefined behaviour in C++ (forward progress), and
+clang compiles what leads to it as unreachable -- in the old lift too, e.g.
+func_0001084C's trampoline drain before its `b .` became an unconditional
+call through a possibly-null pointer. Harmless while the title never takes
+that path; compiling the lifted code with `-fno-finite-loops` would keep it a
+hang.
+
+### What is left
+
+- The guest memory path is now most of what the lifted code spends on its
+  own: every inline store checks the SPU coherence bitmap before and after
+  the store (the bitmap pointer through the DLL's import, then the line's
+  bit), every load two gates. Making that cheaper needs proof work on the
+  SPU reservation protocol, not register work.
+- Vector registers stay in the context: the VMX helpers take them by pointer
+  and are out-of-line calls (forcing them inline was slower, 0061).
+- The lift takes ~25 s longer: the pass runs while the lifter writes the
+  source, in one process.
+- Not tried on a real 4-core laptop; the fps here are of this PC with 27-31
+  of its 32 processors busy elsewhere.
+
+## Lifted code: the guest store's reservation check (patch 0069, branch `store-path-114`)
+
+After register promotion (0066) the guest memory path was most of what the
+lifted code spends on its own. Every inline guest store (`ppu_recomp.h`
+`VM_ST_INL`) checks the SPU/PPU reserved-line bitmap twice: before the store
+(a reserved line takes the runtime's locked store and notify) and after it
+(the half of `spu_coh_reserve`'s barrier handshake that catches a line being
+reserved for the first time while the store is under way). In the game DLL
+each check was: load the import slot of `vm_coh_bitmap`, load the pointer,
+test it for NULL, compute the line and byte index, load the byte, `and 7`,
+`bt`, branch -- 13.2 instructions on average, 132,898 such sequences in
+`t5dr_game.dll`, 26 of a byte store's ~33 instructions.
+
+### How much, how often
+
+- **How often** (a counting build of the same code, pool stage, fight
+  window): the main thread runs **538 k inline stores and 626 k inline loads
+  per frame**, the draw thread (`NU::Draw::RequestManager`) 441 k and 389 k.
+  Of the main thread's stores 45 per frame (0.008 %) go to a reserved line,
+  57 to a 1 KB block that holds one; the check after the store never found a
+  line reserved that the check before it had not; no store or load fell
+  outside the inline window.
+- **What it costs** (`build/storepath/micro`: the check variants compiled
+  like the lifted code, four store shapes, TSC cycles per store on one core):
+
+  | check | struct fill | byte copy | scattered read-modify-write | float stores |
+  |---|---|---|---|---|
+  | 1.1.4: import slot, pointer, NULL test, bit | 5.2 | 7.3 | 14.6 | 5.8 |
+  | DLL-local pointer, bit | 3.9 | 6.4 | 13.8 | 4.6 |
+  | DLL-local pointer, 32-bit word + `bt` | 3.3 | 5.7 | 12.8 | 3.7 |
+  | **0069: DLL-local pointer, the 1 KB block's byte** | **2.4** | **4.8** | **11.6** | **3.0** |
+  | (a byte per line, 32 MB map) | 2.4 | 4.8 | 11.5 | 3.0 |
+  | (no check at all: the floor, not correct) | 1.5 | 2.7 | 10.9 | 3.0 |
+
+- **Where the threads spend it** (`thread_sampler.py`, raw RVAs of the DLL
+  against its disassembly, one fight per build): the check instructions held
+  **21 % of the main thread's and 48 % of the draw thread's samples** in the
+  lifted code; with 0069 9 % and 24 %.
+- A "no reservation active" fast path would not help this game: SPURS
+  reserves lines from boot on, so the bitmap is armed in every frame, and
+  with 0069 the check is a single load already.
+
+### What changed (ps3recomp patch 0069)
+
+- The runtime hands the game DLL the bitmap's address once, with the other
+  gates, before any lifted code runs (`vm_gates_publish` ->
+  `ppu_game_set_coh`; `vm_coh_bm_k`, DLL-local and treated as a constant like
+  `vm_base_k`). The bitmap is a fixed array, all zero until a line is
+  reserved, so there is no NULL test and no import slot.
+- The check tests the bitmap **byte** that holds the line's bit as a whole:
+  `bm[ea >> 10] != 0`, "some line of this 1 KB block is reserved" -- one
+  shift, one load, one compare (4.9 instructions with the address; the
+  re-check reuses the index). A store that finds its block non-zero goes out
+  of line, to the runtime's `vm_write*`, which checks the line's own bit
+  exactly as before (locked store and notify, or plain store and re-check).
+  So a store to one of the seven other lines of a reserved line's block pays
+  a call -- 12 a frame on the main thread -- and nothing else changes.
+- Both checks stay, in the same order (check, store, compiler fence,
+  re-check). `t5dr_game.dll`: 9.00 M -> 7.86 M instructions, 39.2 -> 35.2 MB.
+- Switches: `PS3_COH_LOCAL=0` hands the DLL no bitmap; the DLL then keeps its
+  store window shut and every lifted store goes out of line through the
+  runtime's exact path (correct, slower: a diagnostic fallback). A DLL built
+  with `build_game_dll.py --copt /DPPU_NO_COH_LOCAL` has exactly the 1.1.4
+  inline code. An older runtime (no `ppu_game_set_coh` call) with a new DLL
+  also gets every store out of line; a new runtime runs an older DLL as before.
+- The PGO profile still fits: 15 of 22,796 profiled functions are out of
+  date -- the check helper, one copy per chunk, which has no branch left.
+
+### Why it stays correct
+
+- **The same memory.** The byte the new check loads is the byte the old one
+  loaded (bit `line & 7` of byte `line >> 3`, line = ea >> 7, so the byte is
+  ea >> 10); bits are set under the lock-line lock and never cleared. "Byte
+  non-zero" holds whenever "the line's bit is set" holds.
+- **Before the store.** The new check stores inline only when the byte is
+  zero, which implies the line's bit was zero: exactly when the old check
+  stored inline. Otherwise the runtime's exact protocol runs, a few
+  instructions later -- the old protocol at a slightly later moment, at which
+  it is correct too. A line reserved before the store is therefore always
+  written under the lock-line lock and cannot land inside a PUTLLC's compare
+  and commit.
+- **After the store.** `coh_mark_line` sets the bit (seq_cst), publishes the
+  pointer, then runs `FlushProcessWriteBuffers`; every PPU thread then either
+  has its store visible to the SPU's snapshot or loads the byte after the
+  barrier -- the same byte, so the new re-check sees the mark whenever the
+  old one did (and no longer depends on the pointer being published). An
+  extra notify (the block is marked, the line is not) acts only on
+  reservations of the store's own line -- SPU contexts whose `resv_ea` is in
+  it and PPU lwarx records of it -- and there are none, since a reservation
+  marks its line first, under the same lock. No SPU is woken and no
+  reservation is taken by a store to a neighbouring line (the "a notify that
+  fires too eagerly is a livelock" rule of `test_spu_coherency.c`).
+- **Untouched:** the store-conditionals (`ppu_stwcx32`, other threads writing
+  `reserve_addr`), the SPU side (GETLLAR, PUTLLC, DMA through
+  `spu_coh_is_reserved`), the HLE stores (`ppu_memory.h`), the loads.
+- **Not changed, not widened:** the protocol's one known window -- a PPU
+  thread stalled between its check and its store for a whole GETLLAR ..
+  PUTLLC of a line reserved for the first time ever -- is the same in both
+  (the inline path has the old window, the out-of-line path the runtime's).
+
+### Proof
+
+- **Function by function** (`tools/storepath_diff.py`, new): every lifted
+  function compiled twice into one harness from the same text, with the
+  1.1.4 check and with 0069's, inline loads and stores on (folded into a
+  64 KB sandbox), a bitmap with a reserved line in a quarter of the 1 KB
+  blocks and all eight in some; compared after every run: the context,
+  memory, and the trace of every guest store (inline or not: address, width,
+  value), every store that reached the runtime's exact path on a reserved
+  line and every post-store notify, besides every load, call and
+  store-conditional with the context hash at each call. Every
+  function of the game (23,059), 300 inputs each: **6.9 M runs, 0
+  differences**; again with no line reserved (the 1.1.4 check's NULL pointer
+  against an all-zero bitmap), 100 each: 2.3 M runs, 0; the 167 hottest
+  functions of the main and draw threads, 5,000 inputs each: 835,000 runs,
+  0; built for the x86-64 baseline, 1,000 each: 167,000 runs, 0. In the
+  armed runs 0069 sent 117 M of 640 M guest stores out of line (the
+  harness reserves far more than the game: 25 % of the blocks), 36 M of them
+  coherent -- the same stores in both builds. With the new check made blind
+  on purpose (`--self-check`) 1,438 of 25,200 runs differ.
+- **Under threads** (`tools/test_ppu_storepath.py` with `runtime/ppu/tests/
+  test_storepath_race.c`, new): the generated header with a random spin
+  between the check and the store (up to 256 pauses, widening the window the
+  protocol has to get right), the real `spu_coherency.c`, an SPU thread doing
+  GETLLAR/PUTLLC like `spu_channels.c`, PPU threads storing. Must pass and passes for 0069 and for the
+  1.1.4 check; two deliberately broken variants must fail and do, which shows
+  the test sees both races: without the re-check after the store 3,750 of
+  20,000 first reservations ended with the store neither in the SPU's
+  snapshot nor taking its reservation; without the check before it 23,304
+  stores were undone by a PUTLLC commit. 0069: 20,000 first reservations
+  (15,657 stores in the snapshot, 4,343 took the reservation, 5,605
+  re-check notifies), 32.9 M stores against 0.68 M PUTLLC commits on
+  reserved lines and their neighbours with no store undone and no line
+  changed under a live reservation; stores to the seven neighbours of a
+  reserved line left the SPU's reservation, its events and a PPU lwarx
+  reservation alone, one store into the line took them.
+- **Online, the integration-114 build against this one:** `tools/cross_build_test.py`, integration-114 host against
+  this joiner, RTT 100 +-5 ms, 3 % loss, Asuka vs Lili on the pool stage, then
+  stage 20: rollback 9,036 frames compared, **0 differ**; lockstep 9,023
+  frames, **0 differ**; the built-in sync check 0 mismatching, the same
+  result hashes. The e2e runner's `cross_build_pair` (this build against
+  the integration-114 build, one code ID, lobby, rollback, a match and two
+  rematches): 2,897 + 2,380 + 2,411 frames, 0 mismatching, PASS (72 checks).
+  `fight_flow_test.py` pairs on this build (a new session and a rematch,
+  mashing, custom costumes): rollback ALL OK, lockstep ALL OK, desync 0.
+  `PS3_COH_LOCAL=0`: a whole fight, every lifted store out of line (main
+  thread 6.2 ms per frame instead of 2.7).
+- Smoke quick: exit 0 -- boot_menu, arcade_fight, vs_two_pads, title_twice PASS;
+  practice WARN (fps 55.4 with 8 other games and 10 compilers running).
+
+### Results
+
+Paired runs as in "Combined 1.1.3 vs 1.1.2" (`fight_bench.py --polite`,
+Lili vs Asuka, window fight start +24..42 s, warm shader cache per build):
+integration-114 (A) and this branch (B), the same lift, built the BUILD GAME
+way with the shipped profile, started together on two halves of the second
+CCD -- 4 cores without SMT each, `0x550000` / `0x55000000` -- swapped every
+round; the four conditions took turns round by round. Other programs used
+4-9 processors. "Slowed" = `slow_core.py --busy 50` on both groups (it took
+44 % of their time). Medians of the rounds; in brackets the geometric mean of
+the per-round ratios B/A and the rounds in which B was better:
+
+| | rounds | fps A / B | game thread CPU p50 ms | game part p50 ms | critical path p50 ms | draw thread ms | game CPU ms |
+|---|---|---|---|---|---|---|---|
+| pool stage (30) | 5 | 59.8 / 59.8 | 2.83 -> **2.67** (0.954, 4/5) | 3.32 -> **3.03** (0.912, 4/5) | 5.01 -> **4.67** (0.945, 4/5) | 1.35 -> **1.03** (0.752, 5/5) | 14.8 -> 14.3 (0.987) |
+| pool stage, slowed | 5 | 59.8 / 59.8 | 2.94 -> **2.69** (0.929, 4/5) | 5.28 -> **4.85** (0.883, 5/5) | 8.62 -> **8.21** (0.921, 5/5) | 1.38 -> **0.94** (0.766, 5/5) | 14.3 -> 13.4 (0.963) |
+| stage 20 | 6 | 59.9 / 60.0 | 2.92 -> **2.77** (0.940, 6/6) | 3.28 -> **3.01** (0.914, 6/6) | 5.01 -> **4.72** (0.943, 6/6) | 1.43 -> **1.13** (0.778, 6/6) | 15.2 -> 14.6 (0.959) |
+| stage 20, slowed | 6 | 60.0 / 60.0 | 3.23 -> **2.90** (0.931, 5/6) | 5.60 -> **5.31** (0.903, 6/6) | 9.06 -> **8.68** (0.935, 6/6) | 1.43 -> **1.27** (0.847, 5/6) | 14.7 -> 14.2 (0.966) |
+
+- The main thread needs **5-7 % less CPU per frame**, the draw thread
+  **15-25 % less** (it is mostly stores: command copies), the game part --
+  the main thread's work plus its waits for the draw thread -- **9-12 %
+  less**, the frame's critical path (game part + translation) **5-8 %
+  shorter**.
+- fps: 60 for both on this PC (quieter than in the sections above); in the
+  slowed pool-stage runs the p99 frame 22.6 -> 21.2 ms.
+- **The i5-7300HQ** (`estimate.py`, the replay model of "The i5-7300HQ"; these
+  test cores had idle SMT siblings, so e = 0.9-1.0, s = 0.55-0.60): both
+  builds 59.9 fps on both stages without late frames; on the pool stage the
+  laptop's critical path is 9.1 -> 8.5 ms median (e = 1.0, s = 0.55) -- 0069
+  adds ~0.6 ms to the margin a locked 60 needs; its 4 cores 40 -> 39 % busy.
+
+### What is left
+
+- Loads: every inline load still has two gates (`ea - 0x10000 < lim` and
+  `ea != vm_refpoll_k`). Only `vm_read32` polls the GCM ref word, so the
+  second compare could go for 8-, 16- and 64-bit loads without any change.
+- Vector and byte-reversed stores go through `VM_RAW_ST` without a
+  reservation check (unchanged; they never had one).
+
+Local evidence: `build/storepath/` (git-ignored: `micro/`, `ana/` for the
+disassembly and sampler attribution, `bench/` + `runs/` for the rounds).
+
+## Overlap: the present and the D3D12 calls off the critical path (patch 0067, branch `xlat-overlap`)
+
+The goal is 60 fps on weak 4-core / 4-thread PCs (the i5-7300HQ report), the pool stage (id 30) included. A fight
+frame there is three things in a row: the game's own part (its release -> its flip request), the translation of
+its commands (the walker, on the ticker thread) and the walk from the translated flip to the next release. This
+branch looked for every part of the translation and the present that can run beside the game's next frame
+without changing anything the game sees.
+
+### Where the game and the translation serialize
+
+`PS3_LATENCY_LOG` stamps every frame: F (the game asked for its flip), X (the walker reached it), P (Present
+returned), K (the next frame released). `build/xlatov/scripts/latsplit.py` turns them into a per-frame split.
+Four processors (0x55 / 0x5500: four cores of CCD0, one thread each), `tools/slow_core.py --busy 40` on them,
+Lili vs Asuka on the pool stage, the series to 0065 (medians, p99 in brackets; the PC was busy with other agents'
+games, 14-30 of 32 processors):
+
+| | game part | translation (F -> X) | X -> release | frame |
+|---|---|---|---|---|
+| all frames | 12.0 (37.7) | 4.5 (8.8) | 0.6 (7.7) | 17.8 (51.1) |
+| frames that missed their vblank | 20.6 | 4.9 | 2.5 | |
+
+- **The game flushes once.** A `PS3_SCHED_TRACE` of the pool stage (three frames alike): release -> the
+  skinning kick at +5.7-6.4 ms -> `cellGcmSetUserCommand` at +9.4-12.2 ms and the flip request 5 us later (the
+  only two moves of `put` in the frame) -> the walk +9.4 -> +13.6 ms -> the present -> the user handler -> the
+  release at the vblank, +16.0 ms. The walker cannot start before; walking past `put` -- the "translate while the
+  game builds" idea -- would read words the RSX never sees, and the game rewrites and rewinds them before its
+  flush (above, "Is the handover wait necessary?").
+- **The game waits for the RSX itself.** After its flip request it polls the flip status, and its next frame
+  starts with the semaphores the flip and user handlers post; the user command is the last command of the frame,
+  so on a PS3 its handler runs when the RSX has executed every draw. Releasing the game into its next frame while
+  the translation still reads the frame's vertex buffers (the skinning rewrites them in the next frame),
+  textures, fragment programs and index buffers would need a guard on the game's stores. The lifted code stores
+  straight into guest memory, so the only guard is page protection -- and with it a file read into a protected
+  page fails in the kernel, and a game thread stopped on a page while it holds an lwmutex a GCM handler needs
+  (the handlers run on the walker's thread) would wait for ever. Not done: the flip still completes only after
+  the translation has read and written everything of the frame.
+- **What can move** is everything after the frame's last read of guest memory. That is the queued vertex
+  fetches (drained when the walker reaches the flip) -- after them come the present (present copy, overlay,
+  command list Close + ExecuteCommandLists, DXGI Present: 0.5 ms at the median, 1.4-1.9 ms at p90-p99, and for a
+  late frame it sat between the translation and the release: X -> release 2.5 ms on average) and, during the
+  walk, the D3D12 calls themselves (only host values).
+
+### What changed
+
+| change | switch | effect |
+|---|---|---|
+| **The present on the renderer thread.** When the walker reaches a flip it drains the frame's vertex jobs (the last guest-memory reads), follows a window resize or fullscreen switch (DXGI wants the window's own thread for those) and hands the frame to the new `rsx-render` thread: present copy, overlay, submit, Present, frame log run there while the flip completes and the game starts its next frame. Exclusive fullscreen presents on the walker as before | `RSX_XLAT_OVERLAP=1` (0 = off) | a late frame's X -> release from ~2 ms to ~0.2 ms |
+| **The command-list calls on the renderer thread.** The walker records into an object with the command list's own interface (`libs/video/rsx_record_ring.h`): each call of the 30 methods the translation uses is copied with its arrays into a 4 MB ring, the renderer thread makes the real call while the walker goes on. Close, ExecuteCommandLists, fence waits and Reset (`ld_flush`, `ld_begin_recording`) and a present made on the walker take the real list over first (`ld_own_enter`: the ring is empty, every call made). The renderer thread sleeps whenever the ring is empty; the walker wakes it every 256 calls (~10 times a fight frame), at a present and before it waits for it | `RSX_XLAT_OVERLAP=2`, the default (1: the present only) | translation and walker CPU -0.1..0.5 ms; the renderer thread ~0.5 ms of processor time a frame |
+| The next walk waits for the present (`rsx_live_draw_sync` in `cellGcm_rsx_process_fifo`); a display-buffer registration, a mid-frame flush, shutdown wait for the renderer thread themselves | -- | in fights the walk never waited (1-2 waits per 600 frames) |
+| `[slow-frames]`: the present column is the walker's hand-off plus its waits for the renderer thread; the display lock pairs a handed-off present with the release of its own frame | -- | |
+| `RSX_XLAT_OVERLAP_AB=N`: frames alternate every N between the mode and "everything on the walker"; every 1,000 frames of each kind a line compares the walker's processor time, the translation, the frame time and the frames over 17.5 ms -- the same game under the same load. `RSX_HITCH_LOG=1`: an `[xlat-overlap]` line every 600 presents | measurements only | |
+
+The guest sees nothing new: the walker still writes every label, report, reference and `get` of the frame when it
+walks them, before the flip; the flip completes when the walker reached it and the frame's guest reads are done,
+as before; the command list gets the same calls in the same order.
+
+### Results
+
+**Interleaved A/B (the cleanest measure on a busy PC).** One game, `RSX_XLAT_OVERLAP_AB=8`: the frames switch
+every 8 between the patch and "everything on the walker" (exactly the old path), so both kinds share the game, the
+stage, the load and the processors; each line compares 1,000 fight frames of each kind. Four processors (four
+cores, one thread each), Lili vs Asuka. "slow_core 72" (`tools/slow_core.py --busy 72`) is the weak-PC stand-in:
+every thread of the game slowed alike to 37-52 fps, the 4 processors saturated (every thread competes, like the
+i5-7300HQ's, whose cores are ~2.2-2.5 times slower than this 7950X's). Medians of the windows, before -> after, ms:
+
+| build, run | windows | walker CPU per frame | translation | frame time, median | frames over 17.5 ms |
+|---|---|---|---|---|---|
+| **1.1.4 (with 0066)**, pool stage, slow_core 72 (39 fps) | 2 | 2.73 -> 2.43, 2.48 -> 2.25 | 7.94 -> 7.60, 7.63 -> 7.35 | 24.56 -> **23.53**, 24.32 -> **23.41** | 978 -> 950, 924 -> 878 |
+| **1.1.4**, stage 20, slow_core 72 (51 fps) | 3 | -0.32..-0.36 | -0.32..-0.36 | 20.06 -> **19.09**, 19.02 -> **16.91**, 20.31 -> **19.64** | 766 -> 604, 585 -> 434, 779 -> 686 |
+| 1.1.3 base, pool stage, slow_core 72 (46 fps), two masks | 4 | -0.19..-0.26 | -0.2..-2.3 | 23.85 -> 23.01, 20.55 -> 19.97, 24.08 -> 23.27, 19.96 -> 19.37 | -2..-21 % |
+| 1.1.3 base, stage 20, slow_core 72 (46 fps), two masks | 4 | -0.21..-0.30 | -0.5..-2.3 | 23.88 -> 23.05, 20.96 -> 20.10, 24.17 -> 23.43, 20.08 -> 19.36 | -1..-23 % |
+| 1.1.3 base, pool / stage 20 without slow_core (60 fps) | 6 | -0.14..-0.21 | -0.14..-0.21 | 16.68 = 16.68 (every frame on time either way) | 0-9 -> 0-8 |
+
+- The frame median is 0.6-1.0 ms shorter (up to 2.1) wherever frames miss their vblank, 3-26 % fewer frames over
+  17.5 ms; at 60 fps nothing changes but the headroom (translation -0.15-0.2 ms).
+- Two parts: the present on the renderer thread (mode 1) leaves the translation as it was and releases a late
+  frame ~0.2 ms after it was translated instead of ~2 ms (A/B mode 1 against 0, pool stage slowed: frame median
+  24.40 -> 23.62 and 21.60 -> 20.58, frames over 17.5 ms 983 -> 960 and 927 -> 887); recording the calls through the
+  renderer thread (mode 2) takes 0.2-0.4 ms more off the walker -- the display driver's time for ~2,000-2,700 calls
+  a frame, less the packets' (A/B mode 2 against 1: translation 4.30 -> 4.10, 4.26 -> 4.06, 6.03 -> 5.61 ms).
+- The renderer thread's processor time: ~0.3 ms a frame with mode 1, ~0.5 ms with mode 2 (~150 context switches a
+  second). The first version of mode 2 woke the thread every 16 calls and let it spin 300 pauses between them:
+  ~2 ms a frame and 700-1,400 switches a second, and on saturated 4 processors (slow_core 60) paired runs lost what
+  the walk gained (pool stage 53.9 -> 52.4 fps); woken every 256 calls with no spin it gains there (rows above).
+
+**Paired runs against integration-114** (the same `t5dr_game.dll` with 0066 for both runtimes; `tools/fight_bench.py`
+on 0x55 / 0x5500, masks swapped every round, slow_core 72 on each; the PC was busy with other agents' games -- up to
+5 others and 2 compilers -- so the stand-in ran at 17-48 fps and the mask moved fps by up to 30 %; fps geometric mean
+over the rounds, p99 median of the rounds):
+
+| stage | rounds | integration-114 | + 0067 | faster in | frames over 17.5 ms |
+|---|---|---|---|---|---|
+| pool (30), slow_core 72 | 4 | 27.2 fps, p99 101.9 ms | **27.4 fps, p99 81.7 ms** | 3 of 4 | 1,903 -> 1,965 |
+| 20, slow_core 72 | 4 | 36.0 fps, p99 42.8 ms | **37.5 fps (+4.4 %), p99 35.4 ms** | 2 of 4 | 2,306 -> 2,522 |
+| pool, no slow_core | 2 | 59.85 fps, p99 22.8 ms | 59.91 fps, p99 22.4 ms | 2 of 2 | 588 -> 564 |
+
+Earlier paired sets on the 1.1.3 base (quieter PC): pool stage slow_core 40 56.1 -> 57.6 fps (+2.8 %, 3 of 4), slow_core
+72 42.5 -> 45.4 (+6.8 %, 3 of 4, p99 32.1 -> 27.9 ms); stage 20 slow_core 72 40.2 -> 42.5 (+5.6 %, p99 31.2 -> 28.2).
+Paired runs on this PC cannot resolve a 3 % change against the other programs' load; the A/B above can.
+
+### Same picture, same game
+
+**Pictures.** Lockstep pairs (`tools/rollback_net_test.py --mode1 off --mode2 off`, Jack-5 vs Bryan, Native): the
+old runtime as host and this branch as joiner run the same game frames, and at lockstep frames 300, 900 and 1500
+both dump every live surface and the backbuffer (`T5_NET_SHOT` + `LD_SURF_DUMP`), compared byte for byte
+(`build/xlatov/scripts/paircmp.py`). As in 0062's check, the stages' animated parts follow the frames each game ran
+since it started, so only pairs whose two renderer frame counters matched can be identical; a pair whose counters
+differed was run again:
+
+| base | stage | pair (host / joiner) | counters | result |
+|---|---|---|---|---|
+| **1.1.4** (integration-114, same game DLL) | 30 (pool) | old / new | equal | **15 of 15 identical** (3 shots x 4 surfaces + backbuffer) |
+| **1.1.4** | 20 (glow) | old / new | equal on the 7th try | **21 of 21 identical** (6 surfaces + backbuffer x 3) |
+| 1.1.4 | 20 | old / new, 6 tries | 1-6 apart | 9 of 21: shadow map and glow buffers identical, the animated puddles apart |
+| 1.1.3 | 30 | old / new, old / old | equal | 15 of 15 identical, both |
+| 1.1.3 | 34 (stage blur, depth snapshot, compute) | old / new, old / old | equal | 15 of 15 identical, both |
+| 1.1.3 | 20 | old / old | equal | 21 of 21 identical |
+| 1.1.3 | 30 | new / new | 1 apart | 3 of 15: shadow maps identical, the pool's water apart -- as any two games a frame apart |
+
+**Same game.** Rollback pairs (RTT 150 +-5 ms, 3 % loss, delay 6, two matches: Asuka vs Lili on stage 20, then
+on the pool stage; host on 0x00FF0000, joiner on 0x55000000) and lockstep pairs (RTT 30, 1 % loss); "old" = the
+integration-114 runtime with the same `t5dr_game.dll` (the same code ID):
+
+| base | pair (host / joiner) | mode | frames compared per side | rollbacks per side | result |
+|---|---|---|---|---|---|
+| **1.1.4** | new / new | rollback | 10,800 | 1,277-1,370 | 0 mismatching, the same two result hashes on both PCs |
+| **1.1.4** | old / new | rollback | 10,800 | 1,306-1,375 | the same |
+| **1.1.4** | new / new, new / old | lockstep | 10,800-11,400 | -- | 0 mismatching, the same hashes |
+| **1.1.4** | e2e `cross_build_pair` (lobby, a match + 2 rematches, this build / integration-114) | rollback, lockstep | -- | -- | PASS, 72 checks each, the same hashes |
+| 1.1.3 | new / new, old / new, new / old | rollback | 10,800 | 1,316-1,378 | 0 mismatching, the same hashes |
+| 1.1.3 | new / new, old / new, new / old | lockstep | 10,800-11,400 | -- | the same |
+
+Nothing the patch adds writes guest memory (`tests/test_xlat_overlap.py` checks the patch): what the game computes
+cannot change, so the code ID stays (no CODE_VERSION bump) and two players may run either build.
+`tests/c/xlat_ring_test.c` (built against the patched source by the test): 300,000 random calls of all 30 recorded
+methods with every array size the translation passes, NULL pointers, render-target ranges, clears with and without
+rects, plus presents and both syncs, through a 16 KB ring (it wraps thousands of times and fills); every call
+reaches the replaying thread once, in order, with its arguments (the two logs byte-identical); copies of the ring
+with a lost root constant, a render-target list recorded as one handle and a lost copy box fail it, one that never
+publishes hangs (the test's timeout reports it). Smoke quick on the final build: exit 0 (81 PASS, two fps WARNs with
+7 other games running). `tests/` 809 OK; `tools/prepare_ps3recomp.py` applies all 50 patches.
+
+### Not done
+
+- Overlapping the translation with the game's own frame: see above -- the game's single flush and its wait for
+  the user command leave no room without lying to it about the RSX's progress.
+- A second translation thread: the walk, the dispatch and each draw's translation share the register file and the
+  renderer's caches; the D3D12 calls were the separable part, and they are cheap after 0062 (recording them
+  through the ring saves only 0.15-0.4 ms of a 3-4.5 ms translation).
+- Not tried on a real 4-core laptop.

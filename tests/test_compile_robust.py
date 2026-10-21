@@ -493,6 +493,17 @@ class EndToEnd(unittest.TestCase):
         for text in (out, err, log):
             self.assertNotIn("SECRET_LIFTED_CODE", text)
 
+    def test_lifted_ppu_code_keeps_its_hangs(self):
+        # (1.1.4) a guest `b .` is a loop without side effects: -fno-finite-loops keeps clang from assuming it ends
+        # (and from removing the way into it); the lifted PPU C++ only
+        rc, out, err = self.run_tool(["--jobs", "2"])
+        self.assertEqual(rc, 0, out + err)
+        compiles = [c for c in self.calls() if c.get("role") == "clang-cl" and "args" in c and c.get("name")]
+        ppu = [c for c in compiles if c["name"].endswith(".cpp")]
+        self.assertTrue(ppu)
+        for c in compiles:
+            self.assertEqual("/clang:-fno-finite-loops" in c["args"], c["name"].endswith(".cpp"), c["name"])
+
     def test_a_compile_that_hangs_is_stopped_and_compiled_again(self):
         rc, out, err = self.run_tool(["--jobs", "2"], FAKE_CC_HANG_ONCE="ppu_recomp_003.cpp",
                                      T5DR_COMPILE_TIMEOUT_S=4)

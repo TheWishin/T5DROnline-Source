@@ -1,7 +1,7 @@
 """Stage blur / glow (ps3recomp patch 0043, docs/RENDER_PERF.md "Stage blur and glow"). No game needed.
 
-* Launcher Settings -> Stage blur / glow: On (default, nothing set) or Off (PS3_STAGE_BLUR=0 for the game),
-  saved, in the problem report, with German texts.
+* Launcher Settings -> Stage blur / glow: On (nothing set) or Off (PS3_STAGE_BLUR=0 for the game; the default
+  since 1.1.4, and once for a launcher.json of 1.1.3 or older), saved, in the problem report, with German texts.
 * The runtime's switch and its filter handling are in patch 0043, which applies after 0038 (internal
   resolution); the patch reads only the environment and changes only host pixels (no guest memory, no
   command stream: the two players of a match may choose differently).
@@ -43,14 +43,32 @@ class Setting(unittest.TestCase):
                 json.dump(saved, f)
         return p
 
-    def test_on_by_default_sets_nothing(self):
+    def test_off_by_default(self):
         s = core.Settings(self.path())
-        self.assertEqual(s["stage_blur"], "on")
-        self.assertNotIn("PS3_STAGE_BLUR", s.env_overrides())
-        # a launcher.json of an older version (no "stage_blur" in it): as before
+        self.assertEqual(s["stage_blur"], "off")
+        self.assertEqual(s.env_overrides()["PS3_STAGE_BLUR"], "0")
+        # a launcher.json of an older version (no "stage_blur" in it): Off too
         old = core.Settings(self.path({"display": "window1080", "internal_res": "4k", "vsync": "off"}))
-        self.assertEqual(old["stage_blur"], "on")
-        self.assertNotIn("PS3_STAGE_BLUR", old.env_overrides())
+        self.assertEqual(old["stage_blur"], "off")
+        self.assertEqual(old.env_overrides()["PS3_STAGE_BLUR"], "0")
+
+    def test_older_settings_go_off_once(self):
+        """1.1.3 and older saved every default ("on"): Off once (settings_version 1); On chosen later stays."""
+        p = self.path({"stage_blur": "on", "vsync": "off"})
+        s = core.Settings(p)
+        self.assertEqual(s["stage_blur"], "off")
+        self.assertEqual(s["vsync"], "off")
+        s.save()
+        with open(p, encoding="utf-8") as f:
+            self.assertEqual(json.load(f)["settings_version"], core.SETTINGS_VERSION)
+        s["stage_blur"] = "on"          # the player turns it back on in Settings
+        s.save()
+        self.assertEqual(core.Settings(p)["stage_blur"], "on")
+        self.assertNotIn("PS3_STAGE_BLUR", core.Settings(p).env_overrides())
+        self.assertEqual(core.Settings(self.path({"stage_blur": "on", "settings_version": 1}))["stage_blur"], "on")
+        for bad in ("1", None, 0, [1]):            # a settings_version that is no version: migrated
+            self.assertEqual(core.Settings(self.path({"stage_blur": "on", "settings_version": bad}))["stage_blur"],
+                             "off", bad)
 
     def test_saved_and_loaded(self):
         p = self.path()
@@ -65,20 +83,20 @@ class Setting(unittest.TestCase):
         self.assertEqual(core.Settings(p)["stage_blur"], "on")
 
     def test_off_goes_to_the_game(self):
-        env = core.Settings(self.path({"stage_blur": "off"})).env_overrides()
+        env = core.Settings(self.path({"stage_blur": "off", "settings_version": 1})).env_overrides()
         self.assertEqual(env["PS3_STAGE_BLUR"], "0")
         # the game gets it through GameRun.start: Play offline and every online match alike
         _cmd, game_env, _cwd = core.run_game.game_command(tempfile.mkdtemp(), env)
         self.assertEqual(game_env["PS3_STAGE_BLUR"], "0")
 
-    def test_unknown_value_is_on(self):
-        for bad in ("maybe", "", None, True, 0, "OFF", [], {"off": 1}):
-            s = core.Settings(self.path({"stage_blur": bad}))
-            self.assertEqual(s["stage_blur"], "on", bad)
-            self.assertNotIn("PS3_STAGE_BLUR", s.env_overrides())
+    def test_unknown_value_is_the_default(self):
+        for bad in ("maybe", "", None, True, 0, "ON", [], {"on": 1}):
+            s = core.Settings(self.path({"stage_blur": bad, "settings_version": 1}))
+            self.assertEqual(s["stage_blur"], "off", bad)
+            self.assertEqual(s.env_overrides()["PS3_STAGE_BLUR"], "0")
 
     def test_extra_settings_still_win(self):
-        s = core.Settings(self.path({"stage_blur": "off", "extra_env": "PS3_STAGE_BLUR=1"}))
+        s = core.Settings(self.path({"stage_blur": "off", "extra_env": "PS3_STAGE_BLUR=1", "settings_version": 1}))
         self.assertEqual(s.env_overrides()["PS3_STAGE_BLUR"], "1")
 
     def test_independent_of_the_other_picture_settings(self):
@@ -89,9 +107,9 @@ class Setting(unittest.TestCase):
 
     def test_two_choices(self):
         self.assertEqual(list(core.STAGE_BLUR_MODES), ["on", "off"])
-        self.assertEqual(core.STAGE_BLUR_MODES["on"], "On (default)")
-        self.assertEqual(core.STAGE_BLUR_MODES["off"], "Off")
-        self.assertEqual(core.DEFAULTS["stage_blur"], "on")
+        self.assertEqual(core.STAGE_BLUR_MODES["on"], "On")
+        self.assertEqual(core.STAGE_BLUR_MODES["off"], "Off (default)")
+        self.assertEqual(core.DEFAULTS["stage_blur"], "off")
 
     def test_launcher_shows_it(self):
         src = text("launcher", "t5dr_launcher.pyw")
@@ -103,8 +121,8 @@ class Setting(unittest.TestCase):
         spec = importlib.util.spec_from_file_location("i18n_de_blur", os.path.join(ROOT, "lobby", "t5lobby", "i18n_de.py"))
         i18n_de = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(i18n_de)
-        for en, de in (("Stage blur / glow", "Stage-Unschärfe / Leuchten"), ("On (default)", "An (Standard)"),
-                       ("Off", "Aus")):
+        for en, de in (("Stage blur / glow", "Stage-Unschärfe / Leuchten"), ("On", "An"),
+                       ("Off (default)", "Aus (Standard)"), ("Off", "Aus")):
             self.assertEqual(i18n_de.MESSAGES[en], de)
         hint = [k for k in i18n_de.MESSAGES if k.startswith("Some stages blur the picture")]
         self.assertEqual(len(hint), 1)
@@ -114,11 +132,11 @@ class Setting(unittest.TestCase):
         labels = {"display": dict(core.DISPLAY_MODES), "internal_res": core.INTERNAL_RES_LABELS,
                   "vsync": core.VSYNC_MODES, "stage_blur": core.STAGE_BLUR_MODES, "input_delay": core.INPUT_DELAYS}
         self.assertIn("stage_blur", report.SETTING_KEYS)
-        on = report.settings_lines(dict(core.DEFAULTS), labels, {}, None)
-        self.assertIn("Stage blur / glow: On (default) [on]", on)
-        off = report.settings_lines(dict(core.DEFAULTS, stage_blur="off"), labels, {"PS3_STAGE_BLUR": "0"}, None)
-        self.assertIn("Stage blur / glow: Off [off]", off)
-        self.assertEqual(off.index("Stage blur / glow: Off [off]"),
+        on = report.settings_lines(dict(core.DEFAULTS, stage_blur="on"), labels, {}, None)
+        self.assertIn("Stage blur / glow: On [on]", on)
+        off = report.settings_lines(dict(core.DEFAULTS), labels, {"PS3_STAGE_BLUR": "0"}, None)
+        self.assertIn("Stage blur / glow: Off (default) [off]", off)
+        self.assertEqual(off.index("Stage blur / glow: Off (default) [off]"),
                          [i for i, ln in enumerate(off) if ln.startswith("VSync:")][0] + 1)
         self.assertIn("PS3_STAGE_BLUR=0", off[-1])
         # the game log's own line about it is one of the facts a report quotes

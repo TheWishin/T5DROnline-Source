@@ -335,6 +335,75 @@ class RelayBridgeTest(E2E):
             g.close()
             x.close()
 
+    def _on_loop(self, c, coro, timeout=10):
+        return asyncio.run_coroutine_threadsafe(coro, c._loop).result(timeout)
+
+    def test_pump_forwards_the_games_packets(self):
+        # relay-smooth (1.1.4): a thread of the bridge's own carries the game's packets (nat.RelayBridge "The pump"),
+        # raised to THREAD_PRIORITY_HIGHEST on Windows; the interpreter switches threads every 1 ms meanwhile
+        before = sys.getswitchinterval()
+        ca, cb, ta, tb = self.pair(a={"relay_bridge": True}, b={"relay_bridge": True})
+        for c in (ca, cb):
+            self.assertIsNotNone(c._bridge.pump)
+            self.assertTrue(c._bridge.pump.is_alive())
+            if os.name == "nt":
+                self.assertTrue(c._bridge.pump.raised)
+        self.assertLessEqual(sys.getswitchinterval(), 0.001)
+        from test_lobby import game_link
+        host, join = (ta, tb) if ta.role == "host" else (tb, ta)
+        heard, answered = game_link(host, join)
+        self.assertEqual(heard[0], "127.0.0.1")
+        for c in (ca, cb):
+            st = c._bridge.stats
+            self.assertGreaterEqual(st["from_game"], 1)
+            self.assertGreaterEqual(st["to_game"], 1)
+            self.assertGreaterEqual(st["relay_in"], 1)
+        # the lobby's own packets on the game socket still go to the event loop: a peer ping through the relay
+        m = self._on_loop(ca, ca._bridge.gs.measure(ca._bridge.relay, n=4, timeout=2.0, need=2))
+        self.assertIsNotNone(m)
+        pumps = [ca._bridge.pump, cb._bridge.pump]
+        for c in (ca, cb):
+            self._on_loop(c, c._drop_bridge())
+        self.assertFalse(any(p.is_alive() for p in pumps))
+        self.assertEqual(sys.getswitchinterval(), before)
+
+    def test_pump_and_low_ttl_punches_share_the_socket(self):
+        # a low-TTL punch sets the socket's TTL around its send; a game packet sent by the pump in between would
+        # leave with that TTL and die a few hops out -- both take the socket's ttl_lock
+        ca, cb, ta, tb = self.pair(a={"relay_bridge": True}, b={"relay_bridge": True})
+        gs = ca._bridge.gs
+
+        class Counting:
+            def __init__(self):
+                self.lock, self.n = threading.Lock(), 0
+
+            def __enter__(self):
+                self.lock.acquire()
+                self.n += 1
+
+            def __exit__(self, *exc):
+                self.lock.release()
+
+        gs.ttl_lock = Counting()
+
+        async def punch():
+            gs.send(b"x", ("127.0.0.1", 9), ttl=2)
+        self._on_loop(ca, punch())
+        self.assertEqual(gs.ttl_lock.n, 1)
+        from test_lobby import game_link
+        game_link(*((ta, tb) if ta.role == "host" else (tb, ta)))
+        self.assertGreater(gs.ttl_lock.n, 1)            # the game's packets out of this launcher
+
+    def test_pump_off(self):
+        # T5_RELAY_PUMP=0: the event loop forwards, as in 1.1.3
+        with mock.patch.dict(os.environ, {"T5_RELAY_PUMP": "0"}):
+            ca, cb, ta, tb = self.pair(a={"relay_bridge": True}, b={"relay_bridge": True})
+        self.assertIsNone(ca._bridge.pump)
+        from test_lobby import game_link
+        heard, answered = game_link(*((ta, tb) if ta.role == "host" else (tb, ta)))
+        self.assertEqual(heard[0], "127.0.0.1")
+        self.assertGreaterEqual(ca._bridge.stats["from_game"] + cb._bridge.stats["from_game"], 2)
+
     def test_old_peer_gets_no_bridge(self):
         ca, cb, ta, tb = self.pair(a={"relay_bridge": True}, b={"relay_bridge": True, "nat2": False})
         self.assertEqual(ta.peer, ("127.0.0.1", self.s.srv.udp.port))

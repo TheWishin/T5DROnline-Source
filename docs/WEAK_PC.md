@@ -85,7 +85,7 @@ waited for the walk now counts as translation, not "vblank thread late".
 | **SPU / SPURS job threads competing** | no | spurs-job / spu threads in fight_bench | skinning wait 0.7 ms at 4 processors (patch 0027); job threads 0.5 of a core at 32 | fixed in 0027 |
 | **Background programs** (browser, recorder, virus scan, update) | sometimes | 0059: "other programs X of Y logical processors busy" next to the slow frames | 4 busy programs on the game's 2c/4t at the same priority: 60 fps, game part 8.1 -> 9.3-9.7 ms; game *below* 3 busy programs (idle priority): 60, game part 10.1 ms | the game's own threads run above normal priority, so equal programs mostly cost the shared core and cache; close them anyway |
 | **Lower process priority** (game started at low priority, "efficiency mode") | rarely | the same as above | idle-priority game under 3 busy programs: 59.96 fps at this core speed | do not start the game below normal / in efficiency mode |
-| **Power plan, laptop heat, battery** | yes on laptops/handhelds | `[power]`, `[slow-frames]` "processor clock limit X of Y MHz (held back ...)", "on battery" | EcoQoS on the whole game (Windows' efficiency mode): game part +5-15 %, translation +5-25 % | charger, "Best performance", power saving Auto (0047) |
+| **Power plan, laptop heat, battery** | yes on laptops/handhelds; on APUs on AC too | `[power]`, `[slow-frames]` "processor clock limit X of Y MHz (held back ...)", "on battery"; since 0063 "processors at X GHz on average (Y % of their Z)" -- the 780M mini PC on AC, Balanced plan, 4K: 2.26 GHz, 81 % of 2.79 (1.1.4's launcher says it once on the Play offline tab: RENDER_PERF.md "1.1.4: Auto by default on integrated graphics") | EcoQoS on the whole game (Windows' efficiency mode): game part +5-15 %, translation +5-25 % | charger, "Best performance", power saving Auto (0047) |
 | **Display not 60 Hz** (50 Hz TV, 75/144 Hz with VSync) | no | `[pacing] display 50 Hz: slower than the game's 59.94 Hz ...` / `display 144 Hz: vsync on` | simulated 50, 75, 144 Hz: 59.94 fps each; 75 Hz shows frames unevenly (present p95 20.9 ms) but the game keeps its speed | 120 Hz or 60 Hz for the smoothest picture; VRR |
 | **Overlay fps counter on a 144 Hz screen** | a reading, not a cause | -- | -- | the game's own `[fps]` line / the launcher's fps is the game's speed |
 | **iGPU at high Internal resolution** | yes at 1440p/4K | `[slow-frames]` "GPU N", GPU wait ms; `[gpu] adapter: ... integrated`; since 0063 "GPU busy N %" and "GPU-bound" / "integrated graphics busy" at the end of the line. A stronger APU (780M) shows a long **game** part instead: the busy GPU slows the CPU work through the shared memory and power (RENDER_PERF.md "4K on integrated graphics") | this PC's 2-CU Radeon: Native 2.5 ms GPU, 60 fps; 1080p 6.3 ms, 60 fps; 4K 24-32 ms, **28-35 fps**; Auto (1080p) 59.7 fps | Internal resolution 1080p or Auto (at most 1080p on integrated graphics), Native/Lower on weak ones |
@@ -172,6 +172,13 @@ Vega 3 class, a sixth of a 780M), all processors, power saving on by itself:
 | 4K | 27.7-28.6 | 32.2-33.4 | 2.36-2.39 | "GPU 853" of 854 slow, GPU wait 26.5 ms |
 
 0059 changes nothing for a GPU-bound frame (4K: 27.7-28.4 fps without, 28.5-28.6 with).
+
+1.1.4 (integration build with 0066, `PS3_LAPTOP=auto`): the pool stage at 4K
+is the 780M player's picture -- 55.4 fps, 6.4 % late frames, GPU 80 % busy,
+and 46.5 fps / 61 % late with more programs busy -- against **59.6 fps** with
+Auto (1080p); stage 20 at 4K 35.5-37.4 fps, Auto 57.9-59.9. So the launcher
+now makes Auto the default on integrated graphics and warns above it
+(RENDER_PERF.md "1.1.4: Auto by default on integrated graphics").
 
 ### Displays
 
@@ -281,8 +288,9 @@ Paste this to a player who reports 40-50 fps:
 >    Discord video/streaming, recorders and overlays, downloads, updates.
 >    The game needs one fast processor core for itself.
 > 4. **Internal resolution:** on integrated graphics (laptops, mini PCs,
->    handhelds) use **Auto**, **1080p** or lower -- never more than your
->    screen. 1440p and 4K need a real graphics card.
+>    handhelds) use **Auto** (the default there since 1.1.4), **1080p** or
+>    lower -- never more than your screen. 1440p and 4K need a real graphics
+>    card: a busy built-in GPU also slows the processor.
 > 5. **Online:** both games always run at the speed of the slower PC. If
 >    you only see 40-50 fps against one opponent, the slow PC may be theirs.
 > 6. **Do not start the game in "efficiency mode"** or at low priority
@@ -306,6 +314,10 @@ For us, in that report (`system.txt`, "How the game ran"):
   one line.
 - `processor clock limit A of B MHz (held back ...)`: heat or the power
   plan.
+- `processors at X GHz on average (Y % of their Z)` well under 100 % on AC
+  power with late frames: the power mode (Balanced holds an APU back), or the
+  built-in GPU taking the shared power budget -- Best performance and a lower
+  Internal resolution both help. 1.1.4's launcher says it once after a game.
 - `[netplay] speed: 45 fps, this PC 59 fps without the waits for the peer`:
   the opponent's PC.
 - `vblank clock` below 59.9 Hz with late frames: the game ran slower than

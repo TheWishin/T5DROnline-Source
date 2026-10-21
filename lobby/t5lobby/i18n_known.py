@@ -144,6 +144,9 @@ SERVER = (
     N_("this match cannot be watched any more"),
     N_("this match has {count} spectators already"),
     N_("the server cannot show more matches right now"),
+    N_("too many matches are watched from your network; stop watching one first"),
+    N_("the places for guests at this match are taken; log in with an account to watch"),
+    N_("the server cannot show guests more matches right now; log in with an account to watch"),
     # private and community rooms (server/rooms.py, 1.1.3: docs/ONLINE.md "Rooms")
     N_("private rooms need a newer launcher; update it"),
     N_("only the room's host can do that"),
@@ -156,6 +159,8 @@ SERVER = (
     N_("private and community rooms are casual (unranked)"),
     N_("you are in that room"),
     N_("the room's host removed you from this room"),
+    N_("the room's host turned away password guesses from your network; ask the host for an invite"),
+    N_("only a room with a password counts wrong guesses"),
     N_("that player is not in your room"),
     N_("you cannot remove yourself; leave the room instead"),
     N_("you can remove that player after their match"),

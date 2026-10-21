@@ -3,7 +3,9 @@ code, listed as locked or hidden; joining with the right and a wrong password; t
 address and per room (with the seconds to wait); the host's kick and lock changes; a friend's invite as the key; the
 older launcher that never sees a locked room and is refused one; who may watch a private room's match; a community
 room whose members take turns (winner stays / everyone in turn, sitting out after a missed ready check); and that
-the password never shows up in a list, a message, the status JSON or the log."""
+the password never shows up in a list, a message, the status JSON or the log. Hardening 1.1.4: guessers from many
+addresses (IPv4 or the /64s of an IPv6 /56) cannot lock the members out -- each network's own lane comes before the
+room's shared budget, IPv6 counts per /56 and /48 as well; the host sees the wrong passwords and turns them away."""
 import asyncio
 import logging
 import time
@@ -12,11 +14,23 @@ import unittest
 import util  # noqa: F401 -- (sets up the paths and the test environment)
 from util import ServerThread, client, expect
 
+from t5lobby import proto
+
 from t5lobby.proto import LobbyError
 from t5lobby.server import rooms as rooms_mod
 from t5lobby.server.ratelimit import KeyedBuckets
 
 PW = "Zebra Quokka 77"
+
+
+class FakeConn:
+    """A connection from another address for the guess limits (the server's own code reads ip / akey from it)."""
+    closed = False
+    caps = frozenset(("private_rooms",))
+
+    def __init__(self, ip, srv):
+        self.ip = ip
+        self.akey = proto.address_key(ip, srv.cfg.ipv6_prefix)
 PW_UNICODE = "철권의밤 パスワード"
 
 
@@ -230,40 +244,138 @@ class GuessLimitTest(Base):
         self.assertEqual(e.exception.code, "rate_limited")
         self.assertEqual(wrong, 10)
 
-    def test_per_room(self):
-        """Many players from many addresses together: the room's own limit (4 x T5L_ROOM_GUESSES), and the right
-        password is refused too until the wait is over; another room is not affected."""
+    def guess(self, r, p, ip, pw="wrong-one"):
+        """One password guess at room r by player p from address ip (a stand-in connection: the server's own code
+        decides, as for a real one). -> the error code, or "in"."""
+        srv = self.srv()
+        conn = FakeConn(ip, srv)
+        try:
+            self.run_coro(srv._room_check_password(r, p, conn, pw))
+            return "in"
+        except LobbyError as e:
+            if e.code == "rate_limited":
+                self.assertGreater(e.extra["retry"], 0)
+            return e.code
+
+    def until_refused(self, r, p, ip, most=60):
+        """Wrong guesses from ip until one is refused: (how many were checked, the refusal's code)."""
+        n = 0
+        while True:
+            code = self.guess(r, p, ip)
+            if code != "auth_failed":
+                return n, code
+            n += 1
+            self.assertLess(n, most, "never refused")
+
+    def test_many_addresses_cannot_lock_out_the_members(self):
+        """The finding (security review 3): guessers from many addresses used up the room's budget and a member with
+        the right password got "try again in N s". Now each network's own lane comes first; the shared budget is
+        only what the guessers can use up. Brute force stays bounded: the shared 20 plus 3 per network."""
         a, g = self.c("Alice"), self.c("Gus")
-        room = a.create_room("r", private="password", password=PW)
+        room = a.create_room("r", private="password", password=PW, size=8)
+        a.room_line(False)
         srv = self.srv()
         r = self.s.call(lambda: srv.rooms[room["id"]])
         p = self.s.call(lambda: srv.by_name["gus"])
         self.s.call(lambda: setattr(srv, "room_guess", KeyedBuckets(rate=100.0, burst=1000)))    # (not per player)
-
-        class FakeConn:
-            closed = False
-            caps = frozenset(("private_rooms",))
-
-            def __init__(self, akey):
-                self.akey = akey
-
-        n = 0
-        while True:
-            try:
-                self.run_coro(srv._room_check_password(r, p, FakeConn(f"10.1.{n}.1"), "wrong-one"))
-            except LobbyError as e:
-                if e.code == "rate_limited":
-                    self.assertGreater(e.extra["retry"], 0)
-                    break
-                self.assertEqual(e.code, "auth_failed")
-            n += 1
-            self.assertLess(n, 40, "the room's own limit never came")
-        self.assertTrue(20 <= n <= 21, n)                             # (one may have come back meanwhile)
-        with self.assertRaises(LobbyError) as e:
-            g.join_room(room["id"], password=PW)
-        self.assertEqual(e.exception.code, "rate_limited")
+        # the room's shared budget as the default (4 x T5L_ROOM_GUESSES), but nothing comes back during the test:
+        # an attack that keeps it empty
+        self.s.call(lambda: setattr(srv, "room_guess_room", KeyedBuckets(rate=1e-9, burst=20)))
+        counts = []
+        for n in range(8):                                            # eight IPv4 addresses, each until refused
+            k, code = self.until_refused(r, p, f"10.1.{n}.1")
+            self.assertEqual(code, "rate_limited")
+            counts.append(k)
+        # address 1 and 2: their lane (3) + the shared budget up to their own address budget (10); then the shared
+        # 20 are gone (one may have come back meanwhile) and every other address gets its lane's 3 only
+        self.assertEqual(counts, [10, 10, 9, 3, 3, 3, 3, 3])
+        self.assertFalse(self.s.call(lambda: srv.room_guess_room.peek_ok(r.id)), "the shared budget is used up")
+        # a member from another network still gets in with the right password (the real client, 127.0.0.1)
+        joined = g.join_room(room["id"], password=PW)
+        self.assertEqual(joined["id"], room["id"])
+        # ... and so would one who mistyped twice first; the third wrong one uses the lane's last try
+        q = self.s.call(lambda: srv.by_name["alice"])
+        self.assertEqual([self.guess(r, q, "10.9.0.1") for _ in range(3)], ["auth_failed"] * 3)
+        self.assertEqual(self.guess(r, q, "10.9.0.1", PW), "rate_limited")     # lane and shared both empty
+        self.assertEqual(self.guess(r, q, "10.9.0.2", PW), "in")               # a network next door: its own lane
+        # another room is not affected
         other = self.c("Ann").create_room("other", private="password", password=PW)
-        g.join_room(other["id"], password=PW)
+        self.c("Hal").join_room(other["id"], password=PW)
+        # the right password does not spend a lane (given back): many members from one network get in
+        for i in range(6):
+            self.assertEqual(self.guess(r, self.s.call(lambda: srv.by_name["gus"]), "10.8.0.1", PW), "in")
+
+    def test_ipv6_counts_per_56_and_48(self):
+        """256 /64s of one /56 are not 256 budgets: the /56 has 4x a player's, the /48 8x; the room's lane is per /48."""
+        a = self.c("Alice")
+        room = a.create_room("r", private="password", password=PW)
+        srv = self.srv()
+        r = self.s.call(lambda: srv.rooms[room["id"]])
+        p = self.s.call(lambda: srv.by_name["alice"])
+        self.s.call(lambda: setattr(srv, "room_guess", KeyedBuckets(rate=100.0, burst=1000)))
+        self.s.call(lambda: setattr(srv, "room_guess_room", KeyedBuckets(rate=100.0, burst=1000)))   # (not the room)
+        checked = 0
+        for i in range(40):                                           # 40 different /64s inside 2001:db8:aa:bb00::/56
+            code = self.guess(r, p, f"2001:db8:aa:bb{i:02x}::1")
+            if code == "auth_failed":
+                checked += 1
+            else:
+                self.assertEqual(code, "rate_limited")
+        self.assertIn(checked, (20, 21), "the /56's budget: 4 x T5L_ROOM_GUESSES")
+        for i in range(40):                                           # other /56s of the same /48
+            code = self.guess(r, p, f"2001:db8:aa:{i + 1:02x}00::1")
+            if code == "auth_failed":
+                checked += 1
+        self.assertTrue(40 <= checked <= 43, f"the /48's budget: 8 x T5L_ROOM_GUESSES ({checked})")
+        self.assertEqual(self.guess(r, p, "2001:db8:ab::1"), "auth_failed")      # another /48
+        # the room's lane is the /48's: two /56s of one /48 share it
+        self.s.call(lambda: setattr(srv, "room_guess_room", KeyedBuckets(rate=1e-9, burst=1)))
+        self.s.call(lambda: srv.room_guess_room.take(r.id))
+        self.s.call(lambda: setattr(srv, "room_guess_n56", KeyedBuckets(rate=100.0, burst=1000)))
+        self.s.call(lambda: setattr(srv, "room_guess_n48", KeyedBuckets(rate=100.0, burst=1000)))
+        self.s.call(lambda: setattr(srv, "room_guess_addr", KeyedBuckets(rate=100.0, burst=1000)))
+        got = [self.guess(r, p, "2001:db8:cc:100::1"), self.guess(r, p, "2001:db8:cc:200::1"),
+               self.guess(r, p, "2001:db8:cc:300::1"), self.guess(r, p, "2001:db8:cc:400::1")]
+        self.assertEqual(got, ["auth_failed"] * 3 + ["rate_limited"])
+        self.assertEqual(self.guess(r, p, "2001:db8:cd::1", PW), "in")          # the next /48: its own lane
+
+    def test_the_host_sees_the_guesses_and_turns_them_away(self):
+        a, b, m = self.c("Alice"), self.c("Bob"), self.c("Mia")
+        room = a.create_room("r", private="password", password=PW, size=8)
+        a.room_line(False)
+        m.join_room(room["id"], password=PW)
+        srv = self.srv()
+        r = self.s.call(lambda: srv.rooms[room["id"]])
+        p = self.s.call(lambda: srv.by_name["bob"])
+        self.s.call(lambda: setattr(srv, "room_guess", KeyedBuckets(rate=100.0, burst=1000)))
+        for ip in ("10.2.0.1", "10.2.0.2", "2001:db8:1:2::5", "2001:db8:1:3::5"):   # (the last two: one /48)
+            for _ in range(2):
+                self.assertEqual(self.guess(r, p, ip), "auth_failed")
+        g = self.s.call(lambda: srv._room_view(r, srv.by_name["alice"]))["guesses"]
+        self.assertEqual((g["wrong"], g["networks"], g["barred"], g["busy"]), (8, 3, 0, False))
+        self.assertNotIn("guesses", self.s.call(lambda: srv._room_view(r, srv.by_name["mia"])), "the host only")
+        self.wait(lambda: ((a.my_room or {}).get("guesses") or {}).get("wrong") == 8, what="the host's view")
+        view = repr(a.my_room)
+        for secret in ("10.2.0", "2001:db8", "Bob"):
+            self.assertNotIn(secret, view, "never who or from where")
+        with self.assertRaises(LobbyError) as e:
+            m.room_bar()                                              # only the host
+        self.assertEqual(e.exception.code, "not_allowed")
+        room2, n = a.room_bar()
+        self.assertEqual(n, 3)
+        self.assertEqual((room2["guesses"]["wrong"], room2["guesses"]["barred"]), (0, 3))
+        before = self.s.call(lambda: srv.room_guess_lane.b[f"{r.id}|10.2.0.1"].tokens)
+        for ip in ("10.2.0.1", "2001:db8:1:99::1"):                   # turned away (the whole /48), at no cost
+            self.assertEqual(self.guess(r, p, ip, PW), "not_allowed")
+        self.assertEqual(self.s.call(lambda: srv.room_guess_lane.b[f"{r.id}|10.2.0.1"].tokens), before)
+        self.assertEqual(self.guess(r, p, "10.3.0.1", PW), "in")                # everybody else as before
+        # members stay, a friend's invite still works; a room with an invite code has no password to guess
+        self.assertIn(self.s.call(lambda: srv.by_name["mia"]), r.members)
+        a.room_lock("code")
+        with self.assertRaises(LobbyError) as e:
+            a.room_bar()
+        self.assertEqual(e.exception.code, "bad_state")
+        self.assert_no_secret(PW)
 
     def test_a_right_password_is_given_back(self):
         a = self.c("Alice")

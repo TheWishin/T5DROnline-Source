@@ -190,8 +190,12 @@ def patch_digest():
 
 # Bump when a change to the steps below changes what ends up in t5dr.exe (lifter
 # arguments, SPU handling, compile flags); messages and the like do not count.
-CODE_VERSION = 4   # 2: sound core lifted with SPU_CORE_EXTRA_FUNCS; 3: sound core with SPU_NEAR_FLOAT;
-                   # 4: lifted code compiled with the PGO profile (tools/gamedll/t5dr_lifted.proftext)
+CODE_VERSION = 6   # 2: sound core lifted with SPU_CORE_EXTRA_FUNCS; 3: sound core with SPU_NEAR_FLOAT;
+                   # 4 (1.1.3): lifted code compiled with the PGO profile (tools/gamedll/t5dr_lifted.proftext);
+                   # 5 (1.1.4 work): lifted PPU code with register promotion (ps3recomp patch 0066), compiled with
+                   # -fno-finite-loops (build_game_dll.py);
+                   # 6 (1.1.4): + the guest store's coherence check through a bitmap pointer (0069); the game
+                   # computes differently with random-unlock-114 (seeds, unlocks) and skip-114 (START gate)
 
 # The lifted code's profile for profile-guided optimisation (docs/BUILD_PERF.md): text, split into
 # four parts and turned into clang's format at compile time (build_game_dll.prepare_profiles).
@@ -413,7 +417,11 @@ def step_lift(a):
     # and is redone once (~1 minute).
     lifter = os.path.join(P.tools, "ppu_lifter.py")
     stamp = os.path.join(P.recomp, ".lifter.sha1")
-    lifter_id = sha1(lifter) if os.path.exists(lifter) else ""
+    # Register promotion (ps3recomp patch 0066, the lifter's default): the guest registers a function
+    # uses live in C locals between calls. T5DR_LIFT_REGPROMO=0 lifts without it -- the same results,
+    # only slower; for comparisons. The stamp records it, so switching lifts again.
+    regpromo = os.environ.get("T5DR_LIFT_REGPROMO", "1") != "0"
+    lifter_id = (sha1(lifter) if os.path.exists(lifter) else "") + ("" if regpromo else ":regpromo=off")
     if os.path.exists(os.path.join(P.recomp, "ppu_recomp.h")) and not a.force:
         made_by = open(stamp).read().strip() if os.path.exists(stamp) else None
         if made_by == lifter_id:
@@ -432,7 +440,7 @@ def step_lift(a):
          "--functions", os.path.join(P.analysis, "functions.json"),
          "--hle-stubs", os.path.join(P.analysis, "EBOOT.imports.json"),
          "--code-end", CODE_END, "--max-chunk-lines", "80000",
-         "-o", P.recomp])
+         "-o", P.recomp] + ([] if regpromo else ["--regpromo", "off"]))
     with open(stamp, "w") as f:
         f.write(lifter_id + "\n")
 

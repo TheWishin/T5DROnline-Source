@@ -241,12 +241,46 @@ def match_row(ctx, mid, players, expect="confirmed", label="", same_result=True,
         if ma.get("winner") is not None:
             ctx.check(f"{label or mid}: lobby winner = game winner", ma.get("winner") == ra.get("winner"),
                       f"lobby {ma.get('winner')}, game {ra.get('winner')}")
+        _score_checks(ctx, mid, a, ma, ra, rb, label)
     ctx.matches.append(row)
     fa, fb = (row[p.name]["result_file"].get("fps") for p in players)
     ctx.note(f"{label or mid}: {row['status']} {row['reason'] or ''} path {row['path']} "
              f"({ctx.shaper.describe()}), {'rematch in session' if row['cont'] else 'new session'}; "
              f"{a.name}: {_brief(row[a.name])}; {b.name}: {_brief(row[b.name])}; fps {fa}/{fb}")
     return row
+
+
+RE_OVER = re.compile(r"MATCH OVER match \d+ after (\d+) frames: P1 (\d+) - P2 (\d+)")
+
+
+def _score_checks(ctx, mid, a, ma, ra, rb, label):
+    """A confirmed match's score (1.1.3: the fighters' own round counts, match_score.h): the same on both PCs, a
+    finished match -- the winner at the rounds to win, the loser below; a draw at the rounds to win each --, the
+    lobby's the same, and the game's own MATCH OVER line says it too."""
+    lab = label or mid
+    sa, sb = ra.get("score"), rb.get("score")
+    if ma.get("status") != "confirmed" or ma.get("reason") or not isinstance(sa, list):
+        return
+    ctx.check(f"{lab}: the same score on both PCs", sa == sb, f"{sa} / {sb}")
+    rtw = (ma.get("fight") or {}).get("rounds")
+    w = ra.get("winner")
+    if rtw and len(sa) == 2:
+        if w in (0, 1):
+            ctx.check(f"{lab}: the score is a finished match (winner at {rtw}, loser below)",
+                      sa[w] == rtw and sa[1 - w] < rtw, f"{sa}, winner P{w + 1}")
+        else:
+            ctx.check(f"{lab}: a draw's score is the rounds to win each", sa == [rtw, rtw], sa)
+    if ma.get("score") is not None:
+        ctx.check(f"{lab}: lobby score = game score", list(ma["score"]) == list(sa), f"lobby {ma['score']}, game {sa}")
+    seg = a.log_segment(mid)
+    start = next((i for i, ln in enumerate(seg) if "FIGHT START" in ln and mid in ln), None)
+    over = next((RE_OVER.search(ln) for ln in seg[start or 0:] if RE_OVER.search(ln)), None) if start is not None else None
+    if over:
+        ctx.check(f"{lab}: the game's MATCH OVER line has the same score",
+                  [int(over.group(2)), int(over.group(3))] == list(sa), f"{over.group(0)}; result file {sa}")
+    ctx.check(f"{lab}: the score is the fighters' round counts (no 'do not fit' fallback)",
+              not any("round counts" in ln and "do not fit" in ln for ln in seg[start or 0:]),
+              "the game fell back to the decided byte")
 
 
 def fighters_of(seg, mid):

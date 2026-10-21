@@ -8,8 +8,8 @@ English: [../README.md](../README.md)
 
 <!-- RELEASE LINE: the version and date in the next two lines change with every release, when it is tagged
 (docs/RELEASING.md "Cutting a release", step 2); the same lines are in README.md. -->
-**Release 1.1.3 (2026-10-20).** Lade
-`T5DR-Online-1.1.3.zip` von https://github.com/TheWishin/T5DROnline/releases
+**Release 1.1.4 (2026-10-21).** Lade
+`T5DR-Online-1.1.4.zip` von https://github.com/TheWishin/T5DROnline/releases
 
 **Offline ist spielbereit:** alle Modi, 60 fps, Xbox-Pad und Arcade-Stick getestet.
 **Online funktioniert:** getestet zwischen den PCs von zwei Spielern über das
@@ -33,7 +33,7 @@ nicht mit Alt+F4.
   Online-Reiter des Launchers anmelden (oder als Gast spielen), Gegner finden,
   und das Spiel startet direkt im Kampf. Siehe "Online".
 
-## Stand (2026-10-20)
+## Stand (2026-10-21)
 
 Getestet auf einem Entwicklungs-PC (Windows 11, Ryzen 9 mit 16 Kernen, RTX 3090).
 Online wurde zwischen zwei echten PCs über das Internet getestet
@@ -42,24 +42,27 @@ Online wurde zwischen zwei echten PCs über das Internet getestet
 | Bereich | Stand |
 |---|---|
 | Start | Funktioniert. Startet, öffnet das Fenster, erreicht Titel, Menüs, Charakterwahl und Kämpfe. |
-| Menüs, Kämpfe | 60 fps, auch wenn andere Programme den PC auslasten. Das Spiel wartet nicht mehr aktiv auf seine Frames: etwa 30 % weniger CPU bei 8 Kernen / 16 Threads. Seit 1.1.3 brauchen die eigene Arbeit des Spiels und das Übersetzen seiner Zeichenbefehle etwa ein Viertel weniger Prozessorzeit pro Kampf-Frame, und ein PC, der knapp zu langsam für 60 fps ist, schafft in Kämpfen 45-55 statt 30-45 fps (gemessen mit gebremsten Test-Spielen; echte schwache PCs sind noch nicht gemessen). |
-| Laptops, Handhelds | **Stromsparen** (Launcher-Einstellungen; Auto schaltet es ein bei Akku, Energiesparplan, mobilem Prozessor oder integrierter Grafik): weniger Hilfs-Threads, kein aktives Warten, online dasselbe Spiel. Noch nicht auf einem echten Laptop oder Handheld ausprobiert. |
+| Menüs, Kämpfe | 60 fps, auch wenn andere Programme den PC auslasten. Das Spiel wartet nicht mehr aktiv auf seine Frames: etwa 30 % weniger CPU bei 8 Kernen / 16 Threads. Seit 1.1.3 brauchen die eigene Arbeit des Spiels und das Übersetzen seiner Zeichenbefehle etwa ein Viertel weniger Prozessorzeit pro Kampf-Frame, und ein PC, der knapp zu langsam für 60 fps ist, schafft in Kämpfen 45-55 statt 30-45 fps (gemessen mit gebremsten Test-Spielen; echte schwache PCs sind noch nicht gemessen). Seit 1.1.4 sparen zwei Änderungen am Code des Spiels weiter Prozessorzeit pro Frame (4 Kerne unter Last): Register bleiben zwischen Aufrufen im Prozessor (Haupt-Thread ~7 %, Zeichen-Thread ~18 % weniger), und Schreibzugriffe auf den Speicher sind billiger (5-7 % und 15-25 % weniger). Außerdem geht ein fertiges Bild an die Grafikkarte, während das Spiel schon sein nächstes rechnet: auf einem gebremsten 4-Kern-Test-PC kommt ein verspätetes Bild etwa 1 ms früher. |
+| Laptops, Handhelds | **Stromsparen** (Launcher-Einstellungen; Auto schaltet es ein bei Akku, Energiesparplan, mobilem Prozessor oder integrierter Grafik): weniger Hilfs-Threads, kein aktives Warten, online dasselbe Spiel. Noch nicht auf einem echten Laptop oder Handheld ausprobiert. Seit 1.1.4 starten Geräte mit integrierter Grafik außerdem mit der Internen Auflösung Auto, und der Reiter Offline spielen sagt, wenn der Prozessor deutlich unter seinem normalen Takt lief (und schlägt den Windows-Energiemodus Beste Leistung vor). |
 | Spielmodi | Arcade, Ghost, Versus (zwei Spieler an einem PC), Survival und Practice laufen. Gallery und das Online-Menü des Spiels brauchen die Server von Namco und Sony (abgeschaltet) und sagen das. |
-| Kämpfer, Stages | Alle Kämpfer und Stages werden richtig dargestellt, auch Gesichter, Bodenschatten und Figuren im Hintergrund. Stage-Unschärfe und das Leuchten der Sonne sehen bei jeder internen Auflösung aus wie auf der PS3 (Settings -> Stage blur / glow schaltet sie aus). |
-| Freischaltungen, Kostüme | Offline, in den Launcher-Einstellungen -> Unlocks (beides anfangs aus): alle Stages ohne die Kämpfe, die sie sonst kosten, und alle Customize-Items für 0 Fight Money (dein Spielstand wird vorher gesichert). Online-Spiele haben einen eigenen frischen Spielstand, auf beiden PCs derselbe; nur dein eigenes Kostüm kommt aus deinem Spielstand, und beide Spieler sehen beide Kostüme (1.1.3). |
-| Anzeige | Fenster in jeder Größe, randloses Vollbild (Alt+Enter oder F11). **Interne Auflösung** von Lowest (0,5x) über Native (720p) bis 1080p, 1440p und 4K, oder Auto (die Stufe des Bildschirms, mit integrierter Grafik höchstens 1080p) (Launcher-Einstellungen, `PS3_INTERNAL_RES`); jede Stufe in Kämpfen, Menüs, Videos und Charakterwahl geprüft. Weniger Arbeit für die Grafikkarte ab 1080p (1.1.3). |
+| Kämpfer, Stages | Alle Kämpfer und Stages werden richtig dargestellt, auch Gesichter, Bodenschatten und Figuren im Hintergrund. Stage-Unschärfe und das Leuchten der Sonne sehen bei jeder internen Auflösung aus wie auf der PS3, wenn Settings -> Stage blur / glow auf An steht (Aus, scharf und ohne Leuchten, ist seit 1.1.4 der Standard). |
+| Freischaltungen, Kostüme | Offline, in den Launcher-Einstellungen -> Unlocks (alles anfangs aus): alle Stages ohne die Kämpfe, die sie sonst kosten, Jinpachi und das Zufallsfeld in der Charakterwahl ohne Arcade-Durchspielen und alle Customize-Items für 0 Fight Money (dein Spielstand wird vorher gesichert). Online-Spiele haben einen eigenen frischen Spielstand, auf beiden PCs derselbe; nur dein eigenes Kostüm kommt aus deinem Spielstand, und beide Spieler sehen beide Kostüme (1.1.3). Beide PCs prüfen das Kostüm gegen die Tabellen des Item-Shops im Spiel und nehmen sonst das Standard-Kostüm (1.1.4). |
+| Anzeige | Fenster in jeder Größe, randloses Vollbild (Alt+Enter oder F11). **Interne Auflösung** von Lowest (0,5x) über Native (720p) bis 1080p, 1440p und 4K, oder Auto (die Stufe des Bildschirms, mit integrierter Grafik höchstens 1080p) (Launcher-Einstellungen, `PS3_INTERNAL_RES`); jede Stufe in Kämpfen, Menüs, Videos und Charakterwahl geprüft. Weniger Arbeit für die Grafikkarte ab 1080p (1.1.3). Mit integrierter Grafik ist Auto der Standard (1.1.4). |
 | Musik, Soundeffekte, Videos | Funktionieren. |
-| Steuerung | Tastatur, Xbox-Controller (XInput), DualShock 4 und DualSense über USB und Bluetooth (direkt gelesen, ohne Steam), Arcade-Sticks und Hitboxen (DirectInput), zwei Spieler an einem PC, Knöpfe im Launcher einstellbar (Settings -> Set up controllers) oder in der `controls.ini`. Kurze Taps gehen nie verloren. Von einem Menschen ausprobiert: Xbox-Pad und Arcade-Stick, alle Eingaben kamen an, flüssig. |
+| Steuerung | Tastatur, Xbox-Controller (XInput), DualShock 4 und DualSense über USB und Bluetooth (direkt gelesen, ohne Steam), Arcade-Sticks und Hitboxen (DirectInput), zwei Spieler an einem PC, Knöpfe im Launcher einstellbar (Settings -> Set up controllers) oder in der `controls.ini`. Kurze Taps gehen nie verloren. Von einem Menschen ausprobiert: Xbox-Pad und Arcade-Stick, alle Eingaben kamen an, flüssig. **Set up controllers** fand von 1.1.0 bis 1.1.3 gar keinen Controller; es funktioniert wieder (1.1.4). |
 | Trainings-Werkzeuge | Im Practice-Modus: eine Eingabe-Anzeige (die letzten Eingaben jedes Spielers, jede mit der Zahl der Frames, die sie gehalten wurde) und Framedaten nach jedem Schlagabtausch (Startup und wer zuerst wieder handeln kann: `+3`, `-12`), scharf über das Bild gezeichnet, bei jeder Auflösung. Launcher: Settings -> Trainings-Anzeige (Aus / Eingaben / Eingaben + Framedaten, auch in den anderen Offline-Modi, online nur die eigenen Eingaben), F2 schaltet sie im Spiel um. Siehe [TRAINING.md](TRAINING.md) (englisch). |
 | Speichern | Funktioniert. Die Uhr im Spiel zeigt das echte Datum. |
 | Lange Sitzungen | Der alte Speicherfehler (weißes Bild nach ein paar Besuchen des Titels) ist behoben. |
-| Online-Spiel | Funktioniert auf einem PC und über den öffentlichen Lobby-Server. Rollback-Netcode: 1 Frame Input-Delay bis ~60 ms Ping, darüber 2 (Settings -> Online input delay; Ranked: immer 2), getestet bei 0/50/150 ms Ping mit Paketverlust. Zwischen zwei echten PCs über das Internet gespielt (18.10.2026). Quick- und Ranked-Suche nehmen zuerst Gegner mit niedrigem Ping (geschätzt über den nächsten Relay-Server) und erweitern die Suche, während du wartest. Viele abgebrochene Matches hintereinander machen das offene Spiel nicht mehr kaputt. Einen Online-Kampf kann niemand pausieren. Matches kommen auch zustande, wenn eine Firewall das Spiel blockiert: über das Relay, wenn sonst nichts durchkommt (1.1.3). |
+| Online-Spiel | Funktioniert auf einem PC und über den öffentlichen Lobby-Server. Rollback-Netcode: 1 Frame Input-Delay bis ~60 ms Ping, darüber 2 (Settings -> Online input delay; Ranked: immer 2), getestet bei 0/50/150 ms Ping mit Paketverlust. Zwischen zwei echten PCs über das Internet gespielt (18.10.2026). Quick- und Ranked-Suche nehmen zuerst Gegner mit niedrigem Ping (geschätzt über den nächsten Relay-Server) und erweitern die Suche, während du wartest. Viele abgebrochene Matches hintereinander machen das offene Spiel nicht mehr kaputt. Einen Online-Kampf kann niemand pausieren. Matches kommen auch zustande, wenn eine Firewall das Spiel blockiert: über das Relay, wenn sonst nichts durchkommt (1.1.3); dort spielt das Spiel wie ein direktes Match bei gleichem Ping, weil der Launcher die Pakete des Spiels sofort weitergibt (1.1.4). |
+| Charakterwahl online | Quick-Matches, Räume und Einladungen von Freunden bieten für beide Spieler auch Jinpachi (obere Reihe, rechts außen) und das Zufallsfeld des Spiels (obere Reihe, links außen); Ranked-Matches und Turnier-Sets nicht. Mokujin und das Zufallsfeld würfeln in jedem Match neu (1.1.4). |
+| Intros, Wiederholung | Online werden die Intros der Kämpfer (etwa 7 s) und die Wiederholung nach einer Runde (etwa 9 s) übersprungen, sobald beide Spieler Start gedrückt haben; ein Spieler allein überspringt nichts, und Start pausiert einen Online-Kampf weiterhin nie (1.1.4). |
 | Freunde, Einladungen | Mit Konto fügst du auf der Seite **Freunde** im Online-Reiter Freunde mit ihrem Namen hinzu und siehst, wer online ist, sucht oder im Match ist. **Einladen** zu einem lockeren Match oder in deinen Raum: ein Klick auf Annehmen startet es. |
-| Räume | Lobby-Räume für 2 oder Community-Räume für bis zu 8, die sich abwechseln (der Sieger bleibt, oder jeder der Reihe nach); offen, mit Passwort oder Einladungscode, oder versteckt (1.1.3). |
+| Räume | Lobby-Räume für 2 oder Community-Räume für bis zu 8, die sich abwechseln (der Sieger bleibt, oder jeder der Reihe nach); offen, mit Passwort oder Einladungscode, oder versteckt (1.1.3). Freunde, die das Passwort eines Raums kennen, kommen immer hinein, auch wenn Fremde es gerade zu erraten versuchen; der Host sieht, wie viele falsche Passwörter kamen, und kann diese Netzwerke abweisen (1.1.4). |
 | Turniere | Mit Konto im Online-Reiter bei Turnieren mitspielen (Turnier-Hosts legen sie an; für einen der 20 Host-Plätze eine DM an wishin): Single oder Double Elimination, Sets bis 2 oder 3 Siege, bis zu 64 Spieler; der Server ruft jedes Set auf, und das Spiel startet von selbst (1.1.3). |
+| Hinweise | Wartest du in einem anderen Fenster? Wenn ein Match gefunden wird, jemand deinem Raum beitritt, du in einem Raum dran bist, ein Freund dich einlädt, ein Turnier-Set bereit ist oder dein Gegner ein Rematch will, spielt der Launcher einen kurzen Ton und seine Taskleisten-Schaltfläche blinkt, bis du zurück bist (Settings -> Ton und Taskleistenblinken; anfangs an; 1.1.4). |
 | Replays | Jedes Online-Match wird gespeichert (ein paar KB). Der Reiter **Replays** spielt es im Spiel noch einmal ab und prüft, dass es mit dem Live-Match identisch ist. |
-| Zuschauen | **Zuschauen** beim Match eines Freundes, eines Raums oder einem Turnier-Set, live im eigenen Spiel, ein paar Sekunden dahinter und Bild für Bild geprüft; nur wenn beide Spieler es erlauben (Settings -> Spectators) (1.1.3). |
-| Launcher | Englisch und sechs Übersetzungen: Deutsch, Español, 한국어, 日本語, Português (Brasil), Français, ohne abgeschnittene Texte bei 100 % und 150 % Anzeige-Skalierung. Der Einstellungen-Reiter scrollt. Aktualisiert sich selbst. |
+| Zuschauen | **Zuschauen** beim Match eines Freundes, eines Raums oder einem Turnier-Set, live im eigenen Spiel, ein paar Sekunden dahinter und Bild für Bild geprüft; nur wenn beide Spieler es erlauben (Settings -> Spectators) (1.1.3). Das Zuschauen bei einem Raum geht auch zwischen einem Match und seinem Rematch, und bei einem vollen Match haben Freunde und Raummitglieder Vorrang (1.1.4). |
+| Launcher | Englisch und sechs Übersetzungen: Deutsch, Español, 한국어, 日本語, Português (Brasil), Français, ohne abgeschnittene Texte bei 100 % und 150 % Anzeige-Skalierung. Der Einstellungen-Reiter scrollt. Neben jedem Namen im Online-Reiter steht das Rang-Schild des Spiels selbst, nach BUILD GAME aus deiner eigenen Kopie gelesen, und das Fenster wird mehr als doppelt so schnell neu gezeichnet (1.1.4). Aktualisiert sich selbst. |
 | Bauen aus deiner Kopie | Funktioniert auf dem Entwicklungs-PC. Ein stehengebliebener Hilfsprozess hält das Bauen nicht mehr bei "Translate code" an; eine Datei, die beim Kompilieren scheitert, bekommt einen zweiten Versuch (1.1.3). |
 
 ## Voraussetzungen
@@ -146,7 +149,7 @@ heißen. Im deutschen Launcher heißen sie:
 | Mute sound | Ton aus |
 | Stage blur / glow | Stage-Unschärfe / Leuchten |
 | Power saving (laptops, handhelds) | Stromsparen (Laptops, Handhelds) |
-| Unlocks, Unlock all stages, Unlock all customization items | Freischaltungen, Alle Stages freischalten, Alle Customize-Items freischalten |
+| Unlocks, Unlock all stages, Unlock Jinpachi and Random select, Unlock all customization items | Freischaltungen, Alle Stages freischalten, Jinpachi und die Random-Auswahl freischalten, Alle Customize-Items freischalten |
 
 **BUILD GAME**, **Quick Match** und **Ranked-Match** heißen in beiden
 Sprachen gleich.
@@ -165,8 +168,12 @@ Sprachen gleich.
   kleiner für schwache Grafikkarten (Laptops, integrierte Grafik), das HUD
   bleibt scharf. **Auto** nimmt die Stufe, die zu deinem Bildschirm passt,
   mit integrierter Grafik höchstens 1080p (sie teilt sich Speicher und Strom
-  mit dem Prozessor, ein größeres Bild bremst dort das ganze Spiel). Es
-  ändert nur das Bild, der andere Spieler online braucht also nicht dieselbe
+  mit dem Prozessor, ein größeres Bild bremst dort das ganze Spiel). Seit
+  1.1.4 ist Auto mit integrierter Grafik der Standard (ab dem zweiten Spiel:
+  der Launcher liest es aus dem Log des ersten); eine Stufe, die du wählst,
+  bleibt, und über der Stufe von Auto sagen die Einstellungen und der
+  Reiter Offline spielen, dass sie auch den Prozessor bremst. Es ändert nur
+  das Bild, der andere Spieler online braucht also nicht dieselbe
   Einstellung. Fallen Kämpfe unter 60 fps, geh eine Stufe
   herunter. Mehr in [TROUBLESHOOTING.md](TROUBLESHOOTING.md#low-frame-rate)
   (englisch).
@@ -176,9 +183,9 @@ Sprachen gleich.
   jeder Spieler selbst wählen.
 - **Settings** -> **Stage blur / glow** (Stage-Unschärfe / Leuchten): Manche
   Stages machen das ganze Bild weich (der neblige Sumpf und drei weitere) oder
-  lassen die Sonne leuchten (der Schrottplatz). An (Standard) sieht aus wie auf
-  der PS3, bei jeder internen Auflösung; Aus zeigt diese Stages scharf, ohne
-  das Leuchten. Online kann jeder Spieler selbst wählen.
+  lassen die Sonne leuchten (der Schrottplatz). Aus (seit 1.1.4 der Standard,
+  einmalig auch für Spieler älterer Versionen) zeigt diese Stages scharf, ohne
+  das Leuchten; An sieht aus wie auf der PS3, bei jeder internen Auflösung. Online kann jeder Spieler selbst wählen.
 - **Settings** -> **Power saving (laptops, handhelds)** (Stromsparen): Auto
   (Standard) schaltet es ein bei Akkubetrieb, Stromsparmodus oder dem
   Energiesparplan, einem mobilen Prozessor oder integrierter Grafik; mit An und
@@ -197,12 +204,17 @@ Sprachen gleich.
   den anderen Offline-Modi und online (dort nur deine eigenen Eingaben). **F2**
   im Spiel schaltet sie um. Sie liest das Spiel nur und ändert nie ein Match.
   Mehr in [TRAINING.md](TRAINING.md) (englisch).
-- **Settings** -> **Unlocks** (Freischaltungen, für das Spiel offline; beides
+- **Settings** -> **Unlocks** (Freischaltungen, für das Spiel offline; alles
   ist anfangs aus):
   - **Alle Stages freischalten**: Die Tekken-5-Stages (die alten, sonst nach
     etwa 50 Kämpfen verdient, ein paar Arcade-Durchgängen) gibt es in Arcade,
     VS, Practice und den anderen Modi, ohne den Arcade-Modus durchzuspielen. Dein Spielstand wird
     nicht verändert: Ausgeschaltet ist das Spiel wie vorher.
+  - **Jinpachi und die Random-Auswahl freischalten**: Die Charakterauswahl hat
+    Jinpachi (obere Reihe, rechts außen) und das Zufallsfeld (obere Reihe, links
+    außen), ohne den Arcade-Modus durchzuspielen. Dein Spielstand wird nicht
+    verändert. Online brauchst du es nicht: Casual-Matches und Räume haben
+    immer beide, Ranked nie.
   - **Alle Customize-Items freischalten**: Alles im **ITEM SHOP & EQUIP** (nach
     der Kämpferwahl in Arcade, Ghost oder Survival) kostet 0 Fight Money. Was du
     dir nimmst, bleibt in deinem Spielstand wie ein gekauftes Item, auch nach
@@ -304,8 +316,12 @@ Tastatur (Standard) und Xbox-Controller:
 4. Das Spiel zeigt seine eigene Charakterauswahl. Wähle deinen Kämpfer mit
    Pad, Stick oder Tastatur innerhalb von 30 Sekunden: Die Taste, mit der du
    bestätigst, wählt das Kostüm, **Select** (Tab auf der Tastatur, Back am
-   Xbox-Pad) wählt zufällig. Wählst du nichts, bekommst du den Charakter aus
-   dem Launcher. Haben beide gewählt, startet der Kampf: wer zuerst 3 Runden
+   Xbox-Pad) wählt zufällig. In Quick-Matches, Räumen und Einladungen hat die
+   obere Reihe für beide auch **Jinpachi** (rechts außen) und das
+   **Zufallsfeld** des Spiels (links außen); Ranked-Matches und Turniere haben
+   beides nicht. Mokujins kopierter Kämpfer und das Zufallsfeld werden in
+   jedem Match neu gezogen (auf beiden PCs gleich). Wählst du nichts,
+   bekommst du den Charakter aus dem Launcher. Haben beide gewählt, startet der Kampf: wer zuerst 3 Runden
    gewinnt. Der Name unter deinem Kämpfer zählt die Sekunden herunter;
    "PICKING..." beim Gegner heißt, du wartest auf seine Wahl.
 5. Danach **Rematch** oder **Next game**. Ein Rematch führt wieder zur
@@ -345,9 +361,12 @@ Gut zu wissen:
   für keinen der beiden Spieler das Pausenmenü. Das Replay nach einer Runde
   überspringt Start weiterhin. Wer ein Match abbrechen will, schließt das Spiel
   (zweimal Esc): Das zählt wie bisher als Niederlage.
-- Ranked nutzt eine Glicko-2-Wertung mit den Rang-Namen aus Tekken 5. Verlassen
-  oder Verbindungsabbruch zählt als Niederlage. Ein Desync macht das Match
-  ungültig.
+- Ranked nutzt eine Glicko-2-Wertung mit den Rang-Namen aus Tekken 5 und, ab
+  1.1.4, den Rang-Schildern des Spiels selbst (Beginner, 9th kyu ... Tekken
+  Lord) neben jedem Namen. Der Launcher liest die Schilder nach BUILD GAME aus
+  deinem entpackten Spiel (im Download sind sie nicht); bis dahin zeigt er ein
+  Text-Abzeichen in der Farbe des Schilds. Verlassen oder Verbindungsabbruch
+  zählt als Niederlage. Ein Desync macht das Match ungültig.
 - **Freunde** (mit Konto, ab 1.1.2): Füge auf der Seite **Freunde** im
   Online-Reiter einen Freund mit seinem Kontonamen hinzu. Hat er angenommen,
   siehst du, wann er online ist, sucht oder im Match ist. **Zu einem Match

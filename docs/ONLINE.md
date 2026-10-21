@@ -23,6 +23,7 @@ install for players or for whoever runs the server.
 - [Rooms](#rooms) (classic, community rooms that take turns, private rooms with a password or an invite code)
 - [Friends and invites](#friends-and-invites)
 - [Discord Rich Presence](#discord-rich-presence)
+- [Chime and taskbar flash](#chime-and-taskbar-flash)
 - Tournaments: their own page, [TOURNAMENTS.md](TOURNAMENTS.md)
 - [Protocol reference](#protocol-reference)
 - [Security and abuse protection](#security-and-abuse-protection)
@@ -49,6 +50,7 @@ lobby/
     fighters.py   character / stage keys <-> the game's ids (data/fighters.json) for T5_FIGHT
     match_driver.py  the glue: match_start -> game -> result file -> report -> rematch
     discord_rpc.py   optional Discord Rich Presence over the Discord app's local IPC pipe (no SDK)
+    notify.py     the chime (made in code) and the taskbar flash for a player who is elsewhere, and their rules
     tk_tab.py     the launcher's Online tab (tkinter): its logic and state; launcher/online.py imports it
     tk_views.py   the Online tab's screens: login, lobby, searching, match found, in match, result, errors
     tk_tour.py    the Online tab's Tournaments page, bracket canvas, Create window, "Your tournament set is ready"
@@ -315,6 +317,12 @@ bridge): the game talks to it on 127.0.0.1, the launcher carries its packets
 to the relay and tries the direct path in 3-second bursts every 40 s (both at
 the same server time); once it works both ways the match leaves the relay
 (`nat_upgrade`), and goes back to it if the direct path goes quiet.
+The game's packets cross the bridge on a thread of its own (1.1.4, "the pump": `nat.RelayBridge`), raised to
+the priority of the game's own network thread, not on the lobby client's event loop at normal priority: on a
+PC whose processors the game keeps busy the old way held a packet for a whole time slice now and then (two
+passes per round trip: p50 5.7 ms, p95 13 ms, max 26 ms added; with the pump 0.2 / 0.3 / 1.9 ms --
+`lobby/tools/bridge_latency.py --hog 4 --cpus 2`), on both PCs of every relayed match. Launcher only: the
+relay server sees the same packets as before (docs/NETPLAY.md "Relayed matches").
 
 If a NAT re-maps the game's port between the launcher's bind and the game's
 first packet, game traffic (`T5NP` magic) from the same IP is accepted for the
@@ -467,9 +475,22 @@ launcher (the one that made it) and launchers that joined with it know it.
   (`hmac.compare_digest`). An invite code is kept only as its HMAC-SHA256 under a key made when the server starts
   (the index that finds a room by its code); a server restart ends all rooms anyway.
 - **Wrong guesses** (a wrong password, a wrong code, a malformed one) are limited per player (5, then one per
-  `T5L_ROOM_GUESS_SECONDS`, 30 s), per internet address (10, then one per 15 s; IPv6 per /64) and per room (20, then
-  one per 10 s, for guesses from many addresses together; a friend's invite still works then -- and so does an invite
-  code: a room that is being guessed at can switch to one). A guess is counted
+  `T5L_ROOM_GUESS_SECONDS`, 30 s), per internet address (10, then one per 15 s; IPv6 per /64, and 20 per /56 and 40
+  per /48 around it, so the 256 /64s of one /56 are not 256 budgets) and per room. A room's budget comes in two parts
+  (hardening 1.1.4): every network that guesses -- an IPv4 address, an IPv6 /48 -- has its own lane at that room
+  (`T5L_ROOM_LANE_GUESSES` 3, then one per `T5L_ROOM_LANE_SECONDS`, 20 minutes), spent first; only then comes the
+  room's shared budget (20, then one per 10 s). Guessers from many addresses can use up the shared budget, never
+  another network's lane: a member who types the right password gets in while the room is being guessed at (in
+  1.1.3 the empty shared budget answered everybody "try again in N s"), and a friend's invite and an invite code
+  work as always. Brute force stays bounded per room: the shared budget, plus three guesses per network and 20
+  minutes. The host of a password room sees under the room "Wrong passwords in the last 10 minutes: N (networks: M)"
+  (never who or from where) and **Room settings -> Turn away the guessers** (`room_bar`): from then on every network
+  that typed a wrong password in those 10 minutes is refused at once ("the room's host turned away password guesses
+  from your network; ask the host for an invite"), before its guess costs the room anything, so the shared budget
+  fills up again; members stay, an invite still brings anybody in. Considered and not taken: weighting accounts
+  over the room (accounts cost no more than the addresses they are made from), proof of work per guess (graphics
+  cards are far faster than a launcher; the server pays to check each one), a slower hash (the server's cost, not
+  the guesser's), accounts only (turns guests away and makes guessing no dearer). A guess is counted
   before the slow check and given back when it was right, so parallel tries on several connections cannot all pass
   while the first is hashed. The refusal says how long to wait (`rate_limited` "... try again in N s" with `retry`
   N, like a held-back invite). Setting a password costs a hash: limited like a password change (per player), and
@@ -630,6 +651,34 @@ Creating the application (the owner, once, about 5 minutes; nobody else can do t
 
 The application needs no bot, no OAuth redirect and no secret; the id is not a secret either (every Discord status
 shows it to anyone who looks).
+
+## Chime and taskbar flash
+
+(1.1.4; code: `notify.py`, the hooks in `tk_tab.py`, Settings -> "Sound and taskbar flash when a match is found or
+someone joins my room", launcher.json `"notify"`, on by default.) Players wait for a match in another window, so the
+tab tells them when something needs them -- one chime and the launcher's taskbar button flashing until its window is
+in front (FlashWindowEx, `FLASHW_TRAY | FLASHW_TIMERNOFG`; it also ends when the launcher brings itself forward after
+a match):
+
+| Event | When |
+|---|---|
+| match found | `match_found` that shows Accept (quick, ranked, a room's pair, a tournament's next game); not a match that starts by itself (an accepted invite, a ranked set's next game) |
+| someone joined | a new member in the room this player hosts (a visitor is not told who comes and goes) |
+| your turn | in a community room, the countdown to a match with this player began |
+| invite | `invited`: a friend's invite to a casual match or a room |
+| tournament set | `tour_call`: "Your tournament set is ready" |
+| rematch | the opponent's rematch question |
+
+Not for a challenge from a stranger in the lobby (anybody could ring the bell), chat, friend requests or any lobby
+update. Only while the player is elsewhere: another program (or a launcher dialog) in front, the launcher minimized,
+or another tab shown; never for a window that was never shown. At most once per event (the match id, the invite id,
+the tournament set -- a room's news is found by comparing one `room` message with the one before), and events within
+3 seconds of a chime make no second one (someone joins a classic room and the match starts: one chime).
+
+The sound is made in code: two soft bell tones (E5, then B5), about half a second, a 16-bit mono WAV built in memory --
+no game audio, no file. winsound cannot play a memory image asynchronously, so a daemon thread plays it and the Tk
+thread never waits; if Windows refuses it (no sound card), the system's "SystemAsterisk" plays instead. `T5_NOTIFY=0`
+turns the real sound and flash off (every test sets it; the tests give the tab a fake player and a fake flash).
 
 ## Protocol reference
 
@@ -928,6 +977,11 @@ restart keeping friendships, the schema migration (old, oldest, newer, a failed 
 the tab. **Discord** (`test_discord.py`): the IPC frames against a fake Discord on a test-only pipe (never the
 real Discord's): handshake, updates, taking it down, the rate limit, PING, no Discord, Discord starting later and
 restarting, a refused application id, the configuration, the texts in English and German.
+
+**Chime and taskbar flash** (`tests/test_notify.py`: the generated WAV -- format, softness, two tones, no file -- the
+playing thread and its fallback, the FlashWindowEx flags, the once-per-event and 3-second rules, what a room's messages
+make new, the Settings checkbox; `test_tk_notify.py`: each event in the tab against a real server with a fake player and
+a fake flash, the setting, the tab's own "player is elsewhere" rule).
 
 **Regional relays** (`test_relays.py`, `lobby/tools/relay_e2e.py`): the control channel, the relay node's
 limits, the choice by the sum of both round trips, dead / silent / full nodes, relays.json changes, the

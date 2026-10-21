@@ -21,12 +21,14 @@ Colours, fonts and the drawn pieces come from theme.py.
 """
 import re
 import time
+import weakref
 import tkinter as tk
 from tkinter import ttk
 
 from . import i18n, proto, ranks, theme, tk_tour
 from .i18n import N_, t
 from .lag import describe_event as describe_lag
+from .rank_art import ART
 from .theme import C
 
 # column headings of the lists, by column id (shown in capitals)
@@ -156,6 +158,7 @@ class OnlineView:
         self._anim_id = None
         self._anim_t = time.monotonic()
         self._wraps = []                   # (label, container, margin): wraplength follows the width
+        self._empty = {}                   # list -> its empty-state label (tree(empty=...))
         self._wrap_bound = set()
         self._wrap_after = None
         self.revealed = None               # the opponent once both accepted (match_reveal)
@@ -178,6 +181,38 @@ class OnlineView:
         self.set_ring_total = 1.0
         self._build()
         tab.set_var.trace_add("write", lambda *_: self.refresh())
+        me = weakref.ref(self)
+        ART.listeners.append(lambda: me() and me()._art_ready())
+        if ART.available():
+            self._art_columns()
+
+    def _art_ready(self):
+        """The game's rank plates arrived (rank_art.py): wider picture column, the lists again."""
+        try:
+            self._art_columns()
+            self.tab.art_ready()
+        except tk.TclError:
+            pass
+
+    def plates_on(self):
+        """True when the lists show the game's rank plates (rank_art.py)."""
+        return ART.has(self.th.list_plate())
+
+    def _art_columns(self):
+        """The picture column takes the plates; the RANK column then only says what a plate does not (a placement,
+        a provisional rank) and gives back the room: the lists keep their width."""
+        if not self.plates_on():
+            return
+        plate = 2 * self.th.list_plate()
+        pad = self.px(14)
+        for tv, icon, rank_w in ((self.tab.tv_players, True, 168), (self.tab.tv_friends, True, 168),
+                                 (self.tab.tv_board, False, 150)):
+            w = (self.px(20) + self.px(6) if icon else 0) + plate + pad
+            grow = w - int(tv.column("#0", "width"))
+            if grow <= 0:
+                continue
+            tv.column("#0", width=w, minwidth=w)
+            tv.column("rank", width=max(self.px(rank_w) - grow, self.px(110)), minwidth=self.px(50))
 
     # ------------------------------------------------------------------ helpers
     def card(self, parent, style="Card.TFrame", pad=14):
@@ -225,7 +260,8 @@ class OnlineView:
             except (tk.TclError, ValueError):
                 pass
 
-    def tree(self, parent, cols, widths, height=6, image_col=True, select="browse"):
+    def tree(self, parent, cols, widths, height=6, image_col=True, select="browse", empty=None):
+        """A list in a card. `empty`: what the list says while it has no rows (see show_empty)."""
         frame = self.body(parent)
         frame.columnconfigure(0, weight=1)
         frame.rowconfigure(0, weight=1)
@@ -245,7 +281,24 @@ class OnlineView:
         tv.tag_configure("me", font=self.th.fonts["bold"])
         tv.tag_configure("other", foreground=C["faint"])
         tv.tag_configure("closed", foreground=C["muted"])
+        if empty:
+            lab = ttk.Label(frame, text=empty, style="Card.Faint.TLabel", justify="center", anchor="center",
+                            wraplength=self.px(360))
+            self._empty[str(tv)] = lab
         return frame, tv
+
+    def show_empty(self, tv, empty):
+        """The list's empty-state line in the middle of the list (only while `empty`)."""
+        lab = self._empty.get(str(tv))
+        if lab is None:
+            return
+        try:
+            if empty:
+                lab.place(in_=tv, relx=0.5, rely=0.58, anchor="center")
+            else:
+                lab.place_forget()
+        except tk.TclError:
+            pass
 
     def section_head(self, parent, title, count_var=None):
         row = self.body(parent)
@@ -406,6 +459,10 @@ class OnlineView:
         self.wrap(ttk.Label(how, text=t("Online nobody can pause the fight: Start does not open the pause menu."),
                             style="Card.Faint.TLabel", justify="left"), how, 60).grid(
             row=7, column=0, columnspan=2, sticky="w", pady=(px(2), 0))
+        # docs/NETPLAY.md "Skipping intros and replays online": START counts there, from both players
+        self.wrap(ttk.Label(how, text=t("Intros and the replay after a round are skipped once both players have pressed Start."),
+                            style="Card.Faint.TLabel", justify="left"), how, 60).grid(
+            row=8, column=0, columnspan=2, sticky="w", pady=(px(2), 0))
         self._mode_changed(save=False)
         return scr
 
@@ -509,7 +566,7 @@ class OnlineView:
         card.grid(row=0, column=0, sticky="nsew", padx=(0, px(12)))
         card.columnconfigure(1, weight=1)
         card.rowconfigure(5, weight=1)
-        self.me_badge = theme.Badge(card, size=54)
+        self.me_badge = theme.Badge(card, size=34)
         self.me_badge.grid(row=0, column=0, rowspan=3, sticky="nw", padx=(0, px(12)))
         self.me_name = ttk.Label(card, text="", style="Card.H2.TLabel")
         self.me_name.grid(row=0, column=1, sticky="w")
@@ -644,7 +701,7 @@ class OnlineView:
         self.m_dot.grid(row=0, column=3, sticky="e", padx=(0, px(6)))
         self.m_state = ttk.Label(head, text="", style="Card.Bold.TLabel")
         self.m_state.grid(row=0, column=4, sticky="e")
-        self.m_badge = theme.Badge(f, size=40)
+        self.m_badge = theme.Badge(f, size=36)
         self.m_badge.grid(row=1, column=0, rowspan=2, sticky="w", pady=(px(10), 0), padx=(0, px(12)))
         self.m_name = ttk.Label(f, text="", style="Card.H2.TLabel")
         self.m_name.grid(row=1, column=1, sticky="sw", pady=(px(10), 0))
@@ -708,7 +765,9 @@ class OnlineView:
         ttk.Button(tools, text=t("Profile"), style="Card.Small.TButton", command=tab._profile_of_selected).pack(
             side="left", padx=(px(6), 0))
         fr, tab.tv_players = self.tree(pc, ("player", "rank", "rating", "record", "main", "status", "ping"),
-                                       (130, 168, 70, 80, 80, 110, 62), height=6)   # rank: "Beginner (placement 4/5)"
+                                       (130, 168, 70, 80, 80, 110, 62), height=6,   # rank: "Beginner (placement 4/5)"
+                                       empty=t("Nobody else is online right now. Ranked match and Quick match "
+                                               "keep looking until someone comes."))
         fr.grid(row=1, column=0, sticky="nsew")
         tab.tv_players.bind("<Double-1>", lambda _e: tab._profile_of_selected())
         tab.tv_players.bind("<Return>", lambda _e: tab._profile_of_selected())
@@ -727,7 +786,8 @@ class OnlineView:
             b = ttk.Button(tools, text=label, style="Card.Small.TButton", state="disabled", command=cmd)
             b.pack(side="left", padx=(px(6), 0))
             tab.actions[key], tab.action_text[key] = b, label
-        fr, tab.tv_rooms = self.tree(rc, ("room", "owner", "state", "ping"), (190, 140, 210, 70), height=2)
+        fr, tab.tv_rooms = self.tree(rc, ("room", "owner", "state", "ping"), (190, 140, 210, 70), height=2,
+                                     empty=t("No rooms open. Create one: friends can join it and play in turn."))
         fr.grid(row=1, column=0, sticky="nsew")
         tab.tv_rooms.bind("<Double-1>", lambda _e: tab.do_join() if str(tab.actions["join"].cget("state")) ==
                           "normal" else None)
@@ -769,7 +829,8 @@ class OnlineView:
             "Order: rating minus twice its uncertainty (a few matches are needed to climb). "
             "'?' = provisional.")).grid(row=1, column=0, sticky="w", pady=(px(2), px(6)))
         fr, tab.tv_board = self.tree(card, ("place", "player", "rank", "rating", "record", "main"),
-                                     (60, 170, 150, 80, 100, 120), height=10)
+                                     (60, 170, 150, 80, 100, 120), height=10,
+                                     empty=t("Nobody has a ranked result yet. Win a ranked set to be the first."))
         fr.grid(row=2, column=0, sticky="nsew")
         tab.tv_board.bind("<Double-1>", lambda _e: tab._profile_of(tab.tv_board))
         tab.tv_board.bind("<Return>", lambda _e: tab._profile_of(tab.tv_board))
@@ -791,7 +852,7 @@ class OnlineView:
         card.grid(row=1, column=0, sticky="nsew")
         card.columnconfigure(1, weight=1)
         card.rowconfigure(2, weight=1)
-        self.prof_badge = theme.Badge(card, size=46)
+        self.prof_badge = theme.Badge(card, size=40)
         self.prof_badge.grid(row=0, column=0, rowspan=2, sticky="nw", padx=(0, px(12)))
         ttk.Label(card, textvariable=tab.prof_title, style="Card.H2.TLabel").grid(row=0, column=1, sticky="w")
         ttk.Label(card, textvariable=tab.prof_text, style="Card.Muted.TLabel", justify="left").grid(
@@ -876,8 +937,8 @@ class OnlineView:
             b.pack(side="left", padx=(0, px(6)))
             tab.friend_actions[key] = b
 
-    def friend_image(self, status):
-        return self.th.presence_icon(status)
+    def friend_image(self, status, info=None):
+        return self.th.row_image(self.th.presence_icon(status), _tier_of(info) if info else None)
 
     def _build_footer(self, box):
         tab, px = self.tab, self.px
@@ -1025,6 +1086,9 @@ class OnlineView:
             rooms = ev.get("rooms", [])
             self.players_count.set(f"{len(players)}")
             self.rooms_count.set(f"{len(rooms)}" if rooms else t("none open"))
+            me_id = (tab.client.me or {}).get("id") if tab.client else None
+            self.show_empty(tab.tv_players, not [p for p in players if p.get("id") != me_id])
+            self.show_empty(tab.tv_rooms, not rooms)
             room = None
             me = tab.client.me if tab.client else None
             for r in rooms:
@@ -1117,11 +1181,17 @@ class OnlineView:
     def ping_image(self, ms):
         return self.th.ping_icon(ms)
 
+    def player_image(self, ms, p):
+        """Ping bars, and the game's rank plate when the launcher has them."""
+        return self.th.row_image(self.th.ping_icon(ms), _tier_of(p))
+
     def room_image(self, closed):
         return self.th.lock_icon() if closed else self.th.empty_icon()
 
     def rank_image(self, info):
-        return self.th.tier_icon(_tier_of(info))
+        tier = _tier_of(info)
+        plate = ART.image(self.box, tier, self.th.list_plate()) if tier is not None else None
+        return plate if plate is not None else self.th.tier_icon(tier)
 
     # ------------------------------------------------------------------ refresh
     def _pick_stage(self):
@@ -1375,7 +1445,7 @@ class OnlineView:
             self.bar_label.grid_forget()
         self._on_resize()
 
-    def _opponent_row(self, parent, opp, row, size=40):
+    def _opponent_row(self, parent, opp, row, size=36):
         px = self.px
         guest = opp.get("guest")
         b = theme.Badge(parent, size=size)
@@ -1605,10 +1675,10 @@ class OnlineView:
                     "placed": (t("PLACED"), "Card.PillAccent.TLabel")}.get(evn)
             if pill:
                 ttk.Label(rr, text=pill[0], style=pill[1]).pack(side="left", padx=(px(16), px(8)))
-                bd = theme.Badge(rr, size=26)
+                bd = theme.Badge(rr, size=22)
                 bd.set(_tier_of(rank_after), rank_after.get("provisional"))
                 bd.pack(side="left", padx=(0, px(6)))
-                ttk.Label(rr, text=rank_after.get("rank", ""), style="Card.Bold.TLabel").pack(side="left")
+                ttk.Label(rr, text=ranks.display_name(rank_after), style="Card.Bold.TLabel").pack(side="left")
             elif rank_after.get("placement"):
                 n, k = rank_after["placement"]
                 ttk.Label(rr, text="   " + t("Placement match {done} of {total}", done=n, total=k),

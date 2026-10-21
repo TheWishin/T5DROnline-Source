@@ -1174,6 +1174,15 @@ class TourManager:
         c = getattr(viewer, "conn", None)
         return c is not None and CAP in getattr(c, "caps", ())
 
+    def member(self, viewer, m):
+        """Spectating's close viewers (spectating.py "Limits"): the organizer and the players of the tournament whose
+        set m is come before other spectators of it."""
+        gs = getattr(m, "set", None)
+        aid = getattr(viewer, "account_id", None)
+        if aid is None or not isinstance(gs, TourSet):
+            return False
+        return aid == gs.tour.organizer_id or aid in gs.tour.entrants
+
     def set_match(self, tid, sid):
         """watch {tournament, set}: the match of that set being played (None between its games)."""
         t = self.tours.get(str(tid or ""))

@@ -67,6 +67,7 @@
  */
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <bcrypt.h>
 #include <stdlib.h>
 #include <atomic>
 #include <cstdio>
@@ -94,6 +95,9 @@ extern "C" void ps3_set_window_closed_handler(void (*fn)(void));
 extern "C" void ps3_set_window_close_guard(int (*fn)(void));
 namespace rb { void sndheap_install(); }   /* src/rollback/rb_sndheap.cpp */
 extern "C" void t5_unlock_install(void);   /* src/directfight/df_unlock.cpp: unlocks (docs/DIRECTFIGHT.md "Unlocks") */
+extern "C" void t5_select_trace(void);     /* src/directfight/df_unlock.cpp: T5_SELECT_TRACE=1 (diagnostics) */
+extern "C" uint32_t t5_df_session_matches(void);   /* src/directfight/df_fight.cpp: fights started in this netplay session */
+extern "C" uint32_t t5_df_find_mode(uint32_t f);    /* src/directfight/df_hooks.cpp: the mode manager's mode (offline tests) */
 extern "C" {
 void    ps3_hle_register_ctx(uint32_t nid, const char* name, void (*fn)(ppu_context*));
 int32_t cellPadInit(uint32_t max_connect);           /* ps3recomp libs/input/cellPad.c */
@@ -576,22 +580,43 @@ bool g_directfight = false;    /* T5_FIGHT / T5_FIGHT_FILE / persistent game / r
 constexpr uint32_t kRoundState = 0x1009322C;
 np::NoPauseRule g_np_rule;
 uint32_t g_np_cut[2], g_np_kept; /* this match: live frames whose START was taken out (per player), kept */
+uint32_t g_np_skip;              /* ... and live frames the rule pressed START in (both players had, in a skip part) */
 bool     g_np_noted = false;
+unsigned g_np_who_noted = 0;     /* the presses last noted (skip part << 2 | who) */
+uint32_t g_np_live = UINT32_MAX; /* start_gate: the last live boundary */
+uint32_t g_np_part_frames = 0;   /* ... the live frames in the skip part so far */
+unsigned g_np_part_live = 0;     /* ... and that part */
+uint32_t g_np_test_press[3] = { UINT32_MAX, UINT32_MAX, UINT32_MAX };   /* T5_TEST_SKIP_PRESS, per part */
 
-void no_pause_reset() { g_np_rule.reset(); }   /* frame 0: the frames are numbered anew (the tally stays for its report) */
+void no_pause_reset() { g_np_rule.reset(); g_np_live = UINT32_MAX; }   /* frame 0: the frames are numbered anew (the tally stays for its report) */
+
+np::NoPauseRule::State np_state_now()
+{
+    return { t5_df_game_mode() != 0, rd32(0x1008F070u), rd8(kMatchOver) != 0, t5_df_mode_next(), rd32(kRoundState) };
+}
 
 /* in[] = frame f's inputs, game memory = the state at f's boundary. live: the
  * frame is played for the first time (counts for the log only). */
 void no_pause_rule(uint32_t f, np::PadInput in[2], bool live)
 {
     if (!g_directfight) return;   /* offline and menu-driven test sessions: START as ever */
-    const np::NoPauseRule::State st = { t5_df_game_mode() != 0, rd32(0x1008F070u), rd8(kMatchOver) != 0, t5_df_mode_next(),
-                                        rd32(kRoundState) };
-    const bool allowed = g_np_rule.record(f, st);
+    const np::NoPauseRule::State st = np_state_now();
+    const np::NoPauseRule::Verdict v = g_np_rule.record(f, st, in);
     const bool any = ((in[0].buttons | in[1].buttons) & np::NoPauseRule::kStart) != 0;
-    const unsigned cut = np::NoPauseRule::apply(allowed, in);
-    if (!live || !any) return;
-    if (allowed) { g_np_kept++; return; }
+    const unsigned cut = np::NoPauseRule::apply(v, in);
+    if (!live) return;
+    if (v == np::NoPauseRule::kPress) g_np_skip++;
+    /* the skip parts: who has pressed START so far (live frames: under rollback a press may still be a
+     * prediction that a re-simulation takes back -- the game state is what counts, and it is compared) */
+    const unsigned part = g_np_rule.part_at(f), who = g_np_rule.pressed_at(f), key = part << 2 | who;
+    if (who && key != g_np_who_noted)
+        np::note("frame %u: %s (round state %u): START pressed by %s", f,
+                 part == np::NoPauseRule::kIntro ? "the intro" : "after the round", st.round,
+                 who == 3 ? "both players -- skipped" : who == 1 ? "P1 (skipped once P2 presses it too)"
+                                                                 : "P2 (skipped once P1 presses it too)");
+    g_np_who_noted = who ? key : 0;
+    if (!any || v == np::NoPauseRule::kPress) return;
+    if (v == np::NoPauseRule::kKeep) { g_np_kept++; return; }
     if (cut & 1) g_np_cut[0]++;
     if (cut & 2) g_np_cut[1]++;
     if (!g_np_noted) {
@@ -601,14 +626,35 @@ void no_pause_rule(uint32_t f, np::PadInput in[2], bool live)
     }
 }
 
+/* This PC's START goes out (netplay_core.cpp pad_into) only while the game shows
+ * a skip part at the live boundary whose sample is taken now -- elsewhere the
+ * rule takes it out anyway, and sending it would only make the peer mispredict.
+ * T5_TEST_SKIP_PRESS=N[:M] (tests): this PC's player presses START for 3 frames
+ * N frames into every intro and M frames (default N) into every part after a
+ * round (a scripted press, not filtered; -1 = never). */
+void start_gate(uint32_t f)
+{
+    if (!g_directfight || (g_np_live != UINT32_MAX && f <= g_np_live)) return;   /* live boundaries only (not a re-simulation) */
+    g_np_live = f;
+    const unsigned part = np::NoPauseRule::part_of(np_state_now());
+    np::set_no_start(part == np::NoPauseRule::kNone);
+    g_np_part_frames = part && part == g_np_part_live ? g_np_part_frames + 1 : part ? 1 : 0;
+    g_np_part_live = part;
+    const uint32_t n = g_np_test_press[part];
+    if (g_np_test_press[1] != UINT32_MAX || g_np_test_press[2] != UINT32_MAX)
+        np::set_test_buttons(part && n != UINT32_MAX && g_np_part_frames > n && g_np_part_frames <= n + 3
+                             ? np::NoPauseRule::kStart : 0);
+}
+
 /* the tally since the last one: at a match's end (the fight), and at the next
  * sync point after it (the KO replay and win pose: the post-match skip) */
 void no_pause_report(uint32_t f, const char* what)
 {
-    if (!g_directfight || (!g_np_cut[0] && !g_np_cut[1] && !g_np_kept && strcmp(what, "the match"))) return;
+    if (!g_directfight || (!g_np_cut[0] && !g_np_cut[1] && !g_np_kept && !g_np_skip && strcmp(what, "the match"))) return;
     np::note("frame %u: no pause online, %s: START taken out on %u frame(s) of P1's input and %u of P2's, kept on %u "
-             "(the post-match skip)", f, what, g_np_cut[0], g_np_cut[1], g_np_kept);
-    g_np_cut[0] = g_np_cut[1] = g_np_kept = 0;
+             "(the post-match skip), skipped on %u (both players pressed)", f, what, g_np_cut[0], g_np_cut[1], g_np_kept,
+             g_np_skip);
+    g_np_cut[0] = g_np_cut[1] = g_np_kept = g_np_skip = 0;
     g_np_noted = false;
 }
 
@@ -1145,6 +1191,76 @@ void go_paused(uint32_t f)
  * a game that had played other opponents began each fight from a different
  * state than one just started -- docs/NETPLAY.md "Desync hunt"). */
 uint32_t g_main_tls = 0;   /* the main thread's TLS block (its r13 - 0x7000), from its frame waits */
+
+/* The seed the TLS generator is pinned to while the select mode runs (below,
+ * on_frame_start): the session's seed mixed with the number of fights this
+ * session has started (the direct-fight driver counts them at FIGHT START, the
+ * same on both PCs and in a playback of the session). Mokujin's copy is drawn
+ * from it at the game mode's set-up: the same on both PCs, another one in every
+ * rematch, and other sessions draw others again. (The random cell draws at its
+ * confirm and follows the frame it is pressed on; its pick travels as the
+ * fighter it gave, df_fight.cpp.) A replay recorded before
+ * the mix (format 3 and older) plays back with one seed for the whole session,
+ * as it was recorded (rp::play_select_mix). */
+uint32_t select_seed(uint32_t* match_no)
+{
+    uint32_t k = t5_df_session_matches();
+    if (np::replaying() && !rp::play_select_mix()) k = 0;
+    *match_no = k;
+    return (np::session_seed() ^ 0x7E1EC7EDu) + k * 0x9E3779B9u;
+}
+
+/* Offline (no netplay, no direct fight, no replay): the TLS generator starts
+ * from the game's own fixed state word at every boot, and nothing that depends
+ * on timing moves it any more (rb_rand.cpp isolates it from the effect and
+ * stage draws), so Mokujin's copies and the other scene draws could come out
+ * the same after every start (runs off2: twice the same copy; only the players'
+ * timing made them differ). It is seeded once at the
+ * first frame boundary from the OS's random numbers (the game seeds its
+ * Mersenne Twister from the clock, 0xAE6C8, but not this one).
+ * T5_OFFLINE_SEED=<n> (tests): that seed, and while a select screen runs every
+ * generator (the TLS one, the Twister, rand(), the scene's LCG: reseed()) is
+ * pinned to n mixed with the number of select screens left so far (as online,
+ * select_seed()): how long the players took no longer counts, so the same picks
+ * give the same Mokujin copies at every start.
+ * =0: not seeded (as before). */
+void reseed(uint32_t seed);         /* (below) */
+bool g_offline_seeded = false;
+uint32_t g_offline_fixed = 0;       /* T5_OFFLINE_SEED=<n> */
+void offline_pin()
+{
+    static uint32_t f = 0, k = 0, was = 0, noted = 0;
+    const uint32_t m = t5_df_find_mode(f++);
+    if (was == 6 && m != 6) k++;
+    was = m;
+    if (m != 6) return;
+    const uint32_t seed = (g_offline_fixed ^ 0x7E1EC7EDu) + k * 0x9E3779B9u;
+    reseed(seed);   /* every generator, as at an online sync point (the Twister is seeded from the clock at boot) */
+    if (seed != noted) { noted = seed; np::note("offline: select screen %u, TLS generator pinned to 0x%08X (T5_OFFLINE_SEED)", k + 1, seed); }
+}
+void offline_seed()
+{
+    g_offline_seeded = true;
+    for (const char* k : { "T5_FIGHT", "T5_FIGHT_FILE", "T5_REPLAY_FILE" }) {
+        const char* v = getenv(k);
+        if (v && *v) return;      /* a direct fight or a playback: the driver's own seeds */
+    }
+    uint32_t seed = 0;
+    const char* e = getenv("T5_OFFLINE_SEED");
+    if (e && *e) {
+        seed = (uint32_t)strtoul(e, nullptr, 0);
+        if (!seed) { np::note("offline: the scene's random generator starts as the game sets it (T5_OFFLINE_SEED=0)"); return; }
+        g_offline_fixed = seed;
+    } else {
+        LARGE_INTEGER q; QueryPerformanceCounter(&q);
+        BCryptGenRandom(nullptr, (PUCHAR)&seed, sizeof seed, BCRYPT_USE_SYSTEM_PREFERRED_RNG);   /* (bcrypt: linked already) */
+        seed ^= (uint32_t)q.QuadPart ^ (uint32_t)(q.QuadPart >> 32) ^ (GetCurrentProcessId() * 0x9E3779B9u);
+        if (!seed) seed = 0x2545F491u;
+    }
+    rb::tls_rand_reseed(g_main_tls, seed, true);
+    np::note("offline: the scene's random generator seeded with 0x%08X (%s): Mokujin's copies and random picks differ "
+             "from start to start", seed, e && *e ? "T5_OFFLINE_SEED" : "this start's");
+}
 void reseed(uint32_t seed)
 {
     gcall(kFnMtSeed, seed);
@@ -1335,10 +1451,23 @@ void on_frame_start(ppu_context* ctx)
      * depended on how long each PC took there; Mokujin copied Feng on one PC
      * and Kazuya on the other (desync hunt runs v1c/v5: 0x1009094C 0x1001F vs
      * 0x1000F from the first frame). Pinned, the set-up draws the same on both. */
+    /* (and since 1.1.4 mixed with the session's match number -- select_seed() --
+     * so Mokujin and the random cell draw anew in every rematch) */
     if (g_main_tls && (g_directfight || g_persistent) && np::enabled() && ctx->thread_id == (g_main_tid != ~0ull ? g_main_tid : 1) &&
-        t5_df_mode_cur() == 6)
-        rb::tls_rand_reseed(g_main_tls, np::session_seed() ^ 0x7E1EC7EDu, false);   /* the private streams run on (the select's emitters) */
-    if (g_offline) { offline_frame(ctx); return; }
+        t5_df_mode_cur() == 6) {
+        static uint32_t noted = 0;
+        uint32_t k;
+        const uint32_t seed = select_seed(&k);
+        rb::tls_rand_reseed(g_main_tls, seed, false);   /* the private streams run on (the select's emitters) */
+        if (seed != noted) { noted = seed; np::note("select screen: TLS generator pinned to 0x%08X (session %u, match %u of it)", seed, np::sessions(), k + 1); }
+    }
+    t5_select_trace();
+    if (g_offline) {
+        if (!g_offline_seeded && g_main_tls) offline_seed();
+        if (g_offline_fixed && ctx->thread_id == (g_main_tid != ~0ull ? g_main_tid : 1)) offline_pin();
+        offline_frame(ctx);
+        return;
+    }
     bool fresh_start = false, resume = false;
     check_session();   /* a failed handshake / lost peer ends the match here (before and during lockstep) */
     if (!g_active) {
@@ -1485,6 +1614,7 @@ void on_frame_start(ppu_context* ctx)
          * docs/ROLLBACK.md section 30). */
         const double load_ms = drain_wait(f);
         side_drain(f);   /* the geometry manager parked too (a snapshot or restore beside it hung the present) */
+        start_gate(f);   /* this PC's START out only in a skip part (the live sample is taken in the boundary) */
         uint32_t run = rb::net::on_boundary(f, scene, in);
         if (load_ms >= 0) rb::net::load_seen(f, load_ms);
         if (run == f && scene) {
@@ -1605,6 +1735,7 @@ void on_frame_start(ppu_context* ctx)
      * a press there made the peer roll back into the fight's loading, which
      * then never finished). The rollback loop applies the same rule from its
      * first frame on; in lockstep it only matters for that first boundary. */
+    start_gate(f);   /* this PC's START out only in a skip part */
     np::begin_frame(f, h, in, g_directfight && intro_input_now());
     no_pause_rule(f, in, true);
     g_cur[0] = in[0];
@@ -1831,7 +1962,13 @@ void read_session_env()
     LeaveCriticalSection(&g_result_cs);
     { const char* f1 = t5_env("T5_FIGHT"); const char* f2 = t5_env("T5_FIGHT_FILE");
       g_directfight = (f1 && *f1) || (f2 && *f2) || g_persistent || np::replaying(); }   /* (a replay is a direct fight) */
-    np::set_no_start(g_directfight);   /* no pause online: this PC's START stays home (no_pause_rule) */
+    np::set_no_start(g_directfight);   /* no pause online: this PC's START stays home (no_pause_rule) -- out only in a skip part (start_gate) */
+    g_np_part_frames = 0; g_np_live = UINT32_MAX;
+    if (const char* tp = t5_env("T5_TEST_SKIP_PRESS")) {   /* tests: see start_gate */
+        const int n = atoi(tp); const char* c = strchr(tp, ':'); const int m = c ? atoi(c + 1) : n;
+        g_np_test_press[1] = n < 0 ? UINT32_MAX : (uint32_t)n; g_np_test_press[2] = m < 0 ? UINT32_MAX : (uint32_t)m;
+        np::note("test: this player presses START %d frames into every intro and %d after every round (-1 = never)", n, m);
+    }
     g_rounds = 0;
     if (const char* r = t5_env("T5_NET_ROUNDS")) {
         g_rounds = atoi(r);

@@ -4,9 +4,14 @@ The tier list is the game's: Tekken 5 DR keeps one rank badge sprite per rank,
 in rank order, in a table in its program (English names `beginner_b`,
 `9th_kyu_b` ... `tekken_lord_b`, each followed by a Japanese variant). The
 index in that table is RANKS' index here, so a tier can be handed to the game
-as-is (T5_HUD_RANKS, see docs/RANKED.md "In-game identity"). Whether the game's
-own rank number uses the same order is not verified yet; nothing depends on it
-except that hook.
+as-is (T5_HUD_RANKS, see docs/RANKED.md "In-game identity").
+
+The names are the ones on the game's English rank plates (its online lobby,
+rank_art.py): Beginner, 9th kyu ... 1st kyu, 1st dan ... 7th dan, Shihan ...
+Dragon Lord, Tekken Lord, Dark Lord. The last two plates say "Tekken Lord" too
+(the Japanese names are Tekken Lord Kouryu and Tekken Lord Kirin); here they
+are "Tekken Lord (Kouryu)" and "Tekken Lord (Kirin)" so every tier has a name of
+its own. Before 1.1.4 they were "Kouryu" and "Kirin" (index() still knows them).
 
 How a player moves through the tiers (all numbers in RankRules):
 
@@ -41,11 +46,13 @@ RANKS = [
     ("Shihan", 1800), ("Expert", 1840), ("Warrior", 1880), ("Master", 1920), ("Virtuoso", 1960),
     ("Champion", 2000), ("Lone Wolf", 2040), ("Destroyer", 2080), ("Berserker", 2120), ("Sage", 2160),
     ("Legend", 2200), ("Fujin", 2240), ("Raijin", 2280), ("Deity", 2320), ("Lord of War", 2360),
-    ("Dragon Lord", 2400), ("Tekken Lord", 2450), ("Dark Lord", 2500), ("Kouryu", 2550), ("Kirin", 2600),
+    ("Dragon Lord", 2400), ("Tekken Lord", 2450), ("Dark Lord", 2500), ("Tekken Lord (Kouryu)", 2550),
+    ("Tekken Lord (Kirin)", 2600),
 ]
 BEGINNER = 0
 FIRST_DAN = 10
 NAMES = [n for n, _ in RANKS]
+OLD_NAMES = {"kouryu": 35, "kirin": 36}      # what servers before 1.1.4 send for these tiers
 
 
 def threshold(tier):
@@ -75,7 +82,18 @@ def index(name_or_tier):
     for i, n in enumerate(NAMES):
         if n.lower() == low:
             return i
-    return None
+    return OLD_NAMES.get(low)
+
+
+def display_name(info):
+    """The rank's name for the UI: from the tier when the server sent one (an older server's names map to
+    today's), else the name it sent."""
+    tier = info.get("tier") if info else None
+    if isinstance(tier, int) and 0 <= tier < len(NAMES):
+        return NAMES[tier]
+    rank = (info or {}).get("rank") or ""
+    i = index(rank) if rank else None
+    return NAMES[i] if i is not None else rank
 
 
 @dataclass
@@ -154,5 +172,5 @@ def label(info):
         return ""
     if info.get("placement"):
         n, k = info["placement"]
-        return t("{rank} (placement {done}/{total})", rank=info["rank"], done=n, total=k)
-    return info["rank"] + ("?" if info.get("provisional") else "")
+        return t("{rank} (placement {done}/{total})", rank=display_name(info), done=n, total=k)
+    return display_name(info) + ("?" if info.get("provisional") else "")

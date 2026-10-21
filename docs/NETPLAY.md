@@ -419,17 +419,18 @@ both places where START skips something and cannot pause:
 
 | where (game state at the frame's boundary) | START | why |
 |---|---|---|
-| fight phase 17, round state `0x1009322C` = 9: the replay after a round's KO | kept | it skips the replay (~9 s), as it always did online; either player may, both games skip together (probe s1900: replay 9 -> 0xC 5 frames after the press, no pause) |
+| fight phase 17, round state `0x1009322C` 1, 2 (the fighters' intros), 8, 9, 0xC (after a round: KO slow motion, replay, on to the next round) | the rule's own presses once **both** players pressed START there (1.1.4, "Skipping intros and replays online" below); until then taken out | the skip; one player alone skips nothing (1.1.2/1.1.3 kept START in the replay for either player, but no player's START ever left the PC, so nobody could skip it) |
 | from 40 frames after the match was decided in this fight (decided byte `0x1008EBD5` rising after a fought frame) until the game asks for the select screen | kept | the direct-fight driver (lockstep, `df_fight.cpp post_match_skip`) and the rollback loop's post-match rule (`rb_net.cpp post_record`) skip the last KO replay and the win pose with START from 40 frames after the decision ("After the match", DIRECTFIGHT.md) |
-| everything else: the round's READY/FIGHT (round state 4), the fight (5), the KO frame and its slow motion (6, 8: START did nothing there, probe s1760), on to the next round (0xC), the intros, a rematch's select screen in lockstep | taken out | the pause menu |
+| everything else: the round's READY/FIGHT (round state 4), the fight (5), the KO frame (6), the loading (phase 0..12), a rematch's select screen in lockstep | taken out | the pause menu |
 
 The window after the decision opens only where the decided byte rises after a frame that was
 fought: the last match's byte is still set ~230 frames into a rematch's fight, where the pause
 menu works again.
 
-**Each player's own START never goes out** (`netplay_core.cpp device_input`, `np::set_no_start`):
-in a direct-fight session the local devices' START bit -- the pad's START, the keyboard's Enter,
-any remap or macro that ends in START -- is dropped before the input is sent. The driver's own
+**Each player's own START goes out only where it can skip** (`netplay_core.cpp device_input`,
+`np::set_no_start`, `t5_hooks.cpp start_gate`): in a direct-fight session the local devices' START
+bit -- the pad's START, the keyboard's Enter, any remap or macro that ends in START -- is dropped
+before the input is sent, except while the live boundary shows a skip part (1.1.4). The driver's own
 presses (`g_local_inject`), the rollback rule's forced input and the test inputs
 (`T5_NET_SCRIPT`, `T5_NET_PADFILE`) are not touched there; the tests use the latter to play a
 modified client that sends START anyway, and the frame rule takes it out again.
@@ -492,6 +493,77 @@ In the game (build/nopause/runs; two games on this PC, minimized, muted, below-n
 | s1760 / s1900 (main's code) | START in a round's KO slow motion / in its replay | nothing / the replay skipped 5 frames later; no menu either time |
 | off1 | offline direct fight (no netplay), START in the fight | the PAUSE menu opens (0x10092EA0 -> 2 at the press; screenshot) |
 | smoke quick | offline menus, arcade, VS with two pads, practice, title twice | PASS (81 checks) with up to 10 other games running; an earlier run beside 16-20 other games failed `practice` (black frames, no fight HUD) -- main's exe failed it the same way at that load |
+
+## Skipping intros and replays online (branch skip-114, 1.1.4)
+
+Owner's request: "replays should be skippable, and the intro at match start" -- the replay after a
+round's KO, the fighters' intros before round 1, the way to the next round. **Rule: online a part is
+skipped once both players have pressed START in it** (not at the same time: each press counts until
+the part ends). Offline nothing changes (any press skips as the game does); a replay file or a
+spectator's stream plays the recorded presses through the same rule, so it shows exactly what the
+live match did.
+
+**How the game skips (offline).** The round's state machine (`func_00044398`, a switch on the round
+state `0x1009322C` read by `func_0004137C`) runs every fight frame. State 1 is the P1 fighter's intro
+(171 frames), 2 the P2 fighter's (240): their cases (`0x44B28`, `0x44E18`) skip to the next state
+when that fighter's player has a button of mask `0x8F0` newly pressed in the game's per-player button
+word (`[TOC-0x7748] + 0 / + 4`; in VS START is one of them, the attack buttons and directions are not:
+mashing them never shortened an intro) or the intro animation is done (`func_0001377C`). State 9
+(the replay, 524 frames) and 0xC (on to the next round, 149 frames) go on with START too
+(`func_000425F0`, `func_00042028`). Measured with the rule's test override (probe2/probe3, rollback
+pair, `T5_DF_WATCH`): START cut state 1 to 42 frames, 2 to 32, 0xC to 43, 9 ends 2-3 frames after a
+press; it did nothing in READY/FIGHT (4: 169 frames either way) and the KO slow motion (8), and the
+pause menu (`0x10092EA0`) never opened. Online none of it was reachable: the rule took START out
+everywhere but the replay, and no player's START ever left the PC (`set_no_start`), so the 1.1.2
+"either player skips the replay" never happened in a real match.
+
+**The rule** (`no_pause.h`, `t5_hooks.cpp no_pause_rule`): two skip parts, by round state in the
+game mode's fight (phase 17, the select screen not asked for, the match not decided in this fight):
+the intro (1, 2) and after a round (8, 9, 0xC; the KO slow motion counts presses although START does
+nothing there). Per boundary the rule records the part and which players' START it has seen in this
+part, frame f's inputs included (bit 0 = P1, bit 1 = P2), and the frame both had. Until both: START
+taken out of both inputs, as everywhere. From that frame on the rule presses START for **both**
+players itself -- 3 frames, then every 20 frames while the part lasts: one press skips the P1 intro,
+the next the P2 intro (each fighter's intro listens to its own player), the replay, the way to the
+next round. The players' own START does not reach the game there either. Everything else is the
+1.1.2 rule unchanged: the post-match window (the last KO replay and the win pose, skipped by the
+driver / the rollback loop's post-match rule without anybody pressing) keeps START as it comes,
+the decided match has no skip part, START never reaches the fight. The rule is a function of the
+game state at the boundaries and the frames' two inputs, treats P1 and P2 alike and is re-recorded
+for re-simulated frames, so both PCs give the game the same inputs (the argument above). Each
+player's device START goes out only while this PC's live boundary shows a skip part (`start_gate`,
+before the sample: the rollback loop's boundary, lockstep's `begin_frame`): elsewhere it would only
+make the peer mispredict. Under rollback a press is predicted like any input (the last input
+repeats); the frames between a press and its arrival are re-simulated as usual (these parts are
+ordinary fight frames: no loads, compared state hashes). The log says who pressed: `frame N: the
+intro (round state 1): START pressed by P1 (skipped once P2 presses it too)` / `... by both players
+-- skipped` (live frames; under rollback a predicted press can still be taken back), and the match
+tally adds "skipped on N (both players pressed)".
+
+Test hook `T5_TEST_SKIP_PRESS=N[:M]`: this PC's player presses START (3 frames, like a script, not
+filtered) N frames into every intro and M frames into every part after a round (-1 = never).
+`tests/c/no_pause_test.cpp` (tests/test_no_pause.py) models it: intros, KO slow motion, replay and
+the way to the next round with their START reactions; P1 alone, P2 alone and both mashing START
+(also as a modified client), lockstep, rollback (inputs 0-9 frames late, ~8,000-9,000 rollbacks per
+PC) and replay: identical on both PCs at every frame, never paused, one player never skips a thing,
+both skip every intro, replay and way to the next round.
+
+**Proof** (build/skip114/runs; `tools/fight_flow_test.py --flow persistent --pattern NR --matches 2
+--rounds 2 --mash --polite`: a new session and a rematch, first to 2 rounds, two games on this PC, both
+recording replays; round-state durations from `T5_DF_WATCH=1009322C` in frames, natural lengths: P1
+intro 171-200, P2 intro 176-240, replay 524, on to the next round 149):
+
+| run | who presses START | intros (P1 / P2) | replay, next round | result |
+|---|---|---|---|---|
+| rb_one / ls_one (rollback / lockstep) | P1 only (20 frames into each intro, 150 after each round) | 171, 200 / 240, 176: full | 524, 149: full | same results and final hashes on both PCs (2461a6ef.., ed2d272b.. / 34361a19.., ef73a330..), 0 mismatching frames; P1's START taken out (9-10 frames per match) |
+| rb_both / ls_both | P1 as above, P2 50 / 200 frames in | 52-53 / 20 | 85-86, 19 | same results and hashes (83066c2c.., 746ac84b.. / 82330c53.., 752a87e8..), 0 mismatching frames; both PCs' round states identical frame for frame |
+| rb_mash / ls_mash | both mash START (`--mash-start 4`: every ~4th input, alone or with an attack) | 34-68 / 20 | 4-20, 19 | same results and hashes, 0 mismatching frames; pause menu opened 0 times; START taken out on ~385 + 382 frames |
+| rb_stress / ls_stress | both press as in rb_both and mash START; joiner stalled 60 ms every 0.2-0.6 s (`--stutter 60`), 5 % of packets dropped | 20-53 / 20 | 4-16, 19 | same results and hashes, 0 mismatching frames, pause menu 0; 1,267 rollbacks (rollback) |
+| replays | the 16 recordings of these 8 pairs (both sides) played back (`tools/replay_play.py`) | | | 16 of 16 IDENTICAL (2,914 hashes compared, 0 different, every result and sync point equal); the playbacks skip on the recorded frames (60 "pressed by both players" lines, round-state durations as live) |
+
+The post-match part (the last KO replay, the win pose) was skipped by the driver / the rollback rule as
+before in every match (2-3 frames of replay). Offline (smoke quick: arcade, VS with two pads,
+practice) PASS.
 
 ## Connection problems
 
@@ -886,6 +958,108 @@ first needs the relay with a blocked firewall. Two symmetric NATs with both fire
 the fallback (a consistent choice of the punched pair would avoid it: the other side would have to say in its
 F_HEARD where it saw this side -- a punch format change).
 
+## Relayed matches (branch relay-smooth, 1.1.4)
+
+The request: "make rollback over the relay smoother". What a relayed match does differently from a direct one,
+measured, and the one cause that was real.
+
+**Measured: relayed against direct at the same network.** e2e scenario `net_relay_smooth` (docs/SMOKE.md): the
+direct path through the shaper's proxy; the relayed path through a relay node (`run.py relay`) with each player's
+leg shaped (half the round trip and half the jitter each, the loss that compounds to the total), the launchers'
+relay bridges in between as on players' PCs; per case direct, relay with 1.1.3's bridge (`relay-old`) and relay
+with the pump (below), interleaved in one run, one match of one round each, the same game build. Rollback
+(rollbacks/s, mean and p95 depth: both games; stall ms outside the lockstep windows; time-sync sleeps; fps
+host/joiner):
+
+| RTT / jitter / loss | direct | relay, 1.1.3 bridge | relay, pump |
+|---|---|---|---|
+| 60 / 0 / 0 % | 3.98/s, 1.09, p95 2; 2 ms; 8; 58.3/58.3 | 3.42/s, 1.02, p95 1; 11 ms; 10; 58.7/59.0 | 2.90/s, 1.04, p95 1; 10 ms; 24; 58.9/58.8 |
+| 60 / +-8 / 2 % | 7.78/s, 1.35, p95 2; 26 ms; 2; 59.3/59.3 (delay 1) | 3.13/s, 1.00, p95 1; 14 ms; 1; 59.3/59.3 | 2.63/s, 1.02, p95 1; 3 ms; 2; 59.0/59.0 |
+| 120 / 0 / 0 % | 6.49/s, 2.01, p95 3; 52 ms; 25; 53.9/54.2 | 7.69/s, 2.02, p95 3; 54 ms; 15; 56.9/57.0 | 6.31/s, 2.06, p95 3; 16 ms; 30; 53.8/53.6 |
+| 120 / +-8 / 2 % | 5.05/s, 1.82, p95 3; 48 ms; 50; 47.6/47.6 | 7.94/s, 2.06, p95 3; 47 ms; 7; 55.8/55.6 | 6.61/s, 2.01, p95 3; 56 ms; 10; 55.2/55.2 |
+| 200 / 0 / 0 % | 6.61/s, 3.73, p95 5; 134 ms; 25; 50.1/50.3 | 8.09/s, 4.33, p95 6; 136 ms; 46; 57.0/57.1 | 7.66/s, 4.35, p95 6; 135 ms; 19; 55.9/55.9 |
+| 200 / +-8 / 2 % | 7.62/s, 4.52, p95 6; 142 ms; 23; 58.2/58.0 | 6.84/s, 4.20, p95 6; 138 ms; 27; 55.0/55.1 | 7.00/s, 4.23, p95 6; 134 ms; 28; 54.4/54.4 |
+
+The fps column moves with the other games on this PC (47-59 on any path), not with the path. Lockstep (`--netcode
+lockstep`, the lobby's delay; time the frames waited for the peer, host/joiner; fps):
+
+| RTT / jitter / loss | direct | relay, 1.1.3 bridge | relay, pump |
+|---|---|---|---|
+| 60 / +-8 / 2 % | delay 4; 1.0 / 2.2 %; 58.7/57.7 | delay 4; 0.0 / 4.5 %; 59.0/58.1 | delay 4; 0.0 / 2.3 %; 59.2/58.0 |
+| 120 / +-8 / 2 % | delay 6; 0.2 / 2.4 %; 59.0/58.3 | delay 6; 0.5 / 2.2 %; 59.0/58.0 | delay 6; 0.5 / 2.8 %; 58.3/56.8 |
+| 200 / +-8 / 2 % | delay 8; 0.2 / 3.4 %; 58.7/57.9 | delay 8; 0.0 / 1.0 %; 58.8/58.4 | delay 8; 0.0 / 1.6 %; 58.3/57.9 |
+
+So at the same network a relayed match is as smooth as a direct one, and these were ruled out with numbers:
+*the delay* -- the games measure the round trip themselves through whatever path they have (section "Input
+delay"; relayed 120 ms: the game's 122 ms, the lobby's relay measurement 122.6 ms, direct 121 ms; the lockstep delay
+from the lobby's measurement through the relay, 4/6/8, the same as direct); *lost packets* -- every INPUT carries
+all inputs the peer has not acknowledged (at least the last 8 frames) and the ack: a lost packet costs the next
+packet's 16.7 ms, no rollback of its own (2 % loss changes nothing above); *time sync* -- sleeps per minute the
+same on both paths (17/min each in the first trial at 120/8/2); *the relay's choice* -- the smallest sum of both
+players' round trips since 1.1.1 (`relay_regional` PASS); *the relay node* -- forwards each datagram in its
+receive callback, no batching. The one threshold effect: the auto rollback delay switches from 1 to 2 frames at
+60 ms, and a relay's few extra milliseconds can cross it (60/8/2 above: direct 59 ms -> 1 frame, relayed 62 ms ->
+2 frames: fewer rollbacks, one frame more input lag).
+
+**What was real: the launcher's hop.** On a relayed match between 1.1.1+ launchers every game packet passes
+through the launcher's relay bridge on both PCs (so the match can move onto a direct path while it runs:
+docs/ONLINE.md). The bridge forwarded on the lobby client's event loop -- one packet per loop pass, behind the
+lobby's messages and timers -- on a thread of normal priority, while the game's own threads run at
+THREAD_PRIORITY_HIGHEST (ps3recomp 0065; the game's network thread too, for this very reason: section "Thread
+placement" in docs/RENDER_PERF.md). On a PC whose processors the game keeps busy, Windows let that thread wait a
+time slice now and then. `lobby/tools/bridge_latency.py`: a stand-in game (its own process) sends 60 packets/s
+through a real RelayBridge to a stand-in relay that echoes them -- two bridge passes per sample, as on a relayed
+match; `--hog 4 --cpus 2`: the launcher on two processors kept busy by four threads at the game's priority (14 of
+every 16.7 ms):
+
+| extra round trip (ms) | p50 | p95 | p99 | max | > 5 ms |
+|---|---|---|---|---|---|
+| 1.1.3 bridge (event loop), run 1 / 2 | 5.66 / 5.86 | 13.31 / 13.12 | 14.12 / 14.02 | 23.49 / 26.47 | 499 / 502 of 900 |
+| pump, run 1 / 2 | 0.12 / 0.19 | 0.21 / 0.29 | 0.26 / 0.38 | 0.47 / 1.86 | 0 / 0 of 900 |
+| + a launcher thread busy in Python half the time (`--hog 2 --cpus 2 --py-load`): 1.1.3 / pump | 6.06 / 0.31 | 16.95 / 9.47 | 28.79 / 12.25 | 47.72 / 23.17 | 410 / 80 of 720 |
+| a free processor left (`--hog 3 --cpus 4`): 1.1.3 / pump | 0.20 / 0.20 | 0.28 / 0.27 | 0.33 / 0.32 | 0.88 / 0.38 | 0 / 0 |
+
+Late, bunched packets are what a rollback loop feels most: the peer's inputs arrive later (deeper rollbacks), in
+bursts (the frame-advantage estimate jumps: time-sync sleeps), and in lockstep a frame waits. That is why the
+relayed matches of busy PCs (4 cores, a browser, streaming) were worse than their round trip says.
+
+**The fix (launcher only, `nat.RelayBridge` "The pump").** A thread of the bridge's own waits on both of its
+sockets (the event loop's reading of them paused) and forwards every game packet the moment it arrives, at
+THREAD_PRIORITY_HIGHEST like the game's network thread; whatever else arrives on the game socket (punches, the
+lobby's peer pings, the relay's answers) is handed to the event loop as before, so the direct-path upgrade, the
+keepalive and the measurements work unchanged. While a bridge pumps, the interpreter switches threads every 1 ms
+instead of 5 (`sys.setswitchinterval`; put back with the last bridge), so another launcher thread busy in Python
+holds a packet 1 ms, not 5. A low-TTL punch (the bridge's burst toward the direct path) sets the socket's TTL around
+its send; the pump takes the same lock (`GameSocket.ttl_lock`) so no game packet leaves with that TTL.
+`T5_RELAY_PUMP=0` is 1.1.3's way. Nothing on the wire changed: the relay server, the game and the netplay
+protocol see the same packets; a 1.1.3 lobby/relay server needs nothing.
+(`ctypes.windll.kernel32.SetThreadPriority(GetCurrentThread(), ...)` fails in Python -- the pseudo-handle comes
+back as a 32-bit int, "invalid handle" -- so the pump types the handle; the e2e harness's own `_raise_this_thread`
+has always failed that way, which keeps the runner's launcher threads two levels below the games' threads, the
+same gap as on a player's PC.)
+
+**Proof.** Sync: every match of the grids above (18 rollback, 9 lockstep, 6 more with launchers and games pinned
+to 6 processors) and of `net_relay_upgrade`, `net_firewall` (the relay fallback), `net_mixed_fallback`,
+`relay_regional` (all PASS, the pump on): 0 mismatching frames, the same result hash on both PCs; their 18
+recorded sessions played back identical (`--replays`). With processors to spare the e2e numbers do not move
+(the tables above, and pinned to 6 processors at 120 and 200 ms: relay 1.1.3 / pump 7.53 / 8.07 and 8.36 / 7.83
+rollbacks/s, fps 59 everywhere -- two games and the runner did not saturate 6 processors); the gain is where the
+processors are busy (the bridge table). Direct matches do not use the bridge. lobby/tests/test_nat2.py
+`RelayBridgeTest`: the pump forwards both ways and is raised, lobby packets still reach the event loop (a peer
+ping through the relay), the switch interval comes back, the TTL lock, `T5_RELAY_PUMP=0`; the whole lobby suite
+(30 modules) passes.
+
+**The rig itself** (tools/e2e): `net_rollback`'s "relay path" case had never shaped the relayed path (RTT 0,
+unshaped), and the shaper's proxies waited in `select()` timeouts that Windows rounds to its 15.6 ms tick in a
+process without `timeBeginPeriod(1)` -- up to 15 ms of jitter of the emulated network's own per hop, two hops on
+a relayed path. The runner now asks for 1 ms and raises the proxy threads for real.
+
+**Not done (choices for the owner).** At 200 ms the rollbacks are 4-5 frames deep on average (p95 6) on either
+path with the auto delay of 2 frames; an auto delay of 3 above ~150 ms (as some games do) would take a frame off
+every rollback for a frame more of input lag -- a feel decision, not a relay one. The lobby server's own relay
+forwards in the server's event loop, behind the lobby's work (regional relay nodes do nothing else); moving it to a
+thread like the pump would need a server deploy and was not measured as a problem.
+
 ## What had to be made deterministic
 
 Found by running two instances with identical scripted input, comparing the
@@ -1229,6 +1403,37 @@ draws were not.
   seed (T5_NET_SEED, the lobby's, the same on both PCs before the handshake)
   at every boundary while the select mode runs, so the game mode's set-up
   (Mokujin's pick) draws the same on both PCs however long the select took.
+  **Since 1.1.4 the pin is mixed with the match number** (`select_seed()` in
+  t5_hooks.cpp: `(session seed ^ 0x7E1EC7ED) + k * 0x9E3779B9`, k = the fights
+  this session has started, counted by the direct-fight driver at FIGHT START --
+  the same on both PCs at their select screens and in a playback): with the
+  session seed alone every rematch drew the same, so Mokujin copied the same
+  fighter in every match of a session (owner report; the integration-114 base
+  build, run pair_base: Mokujin copied fighter 0x06 in all three matches of a
+  session, on both PCs; this build, runs pair_rb / pair_ls: 0x0C, 0x16, 0x05,
+  0x10 in four rematches, the same on both PCs). k = 0 is 1.1.3's seed; a
+  replay of format 3 or older plays back with k = 0 for every match, as it was
+  recorded (docs/REPLAYS.md "Format 4"). Each new seed is logged once ("select
+  screen: TLS generator pinned to ... (session s, match k of it)"), and FIGHT
+  START logs what each fighter block plays ("P1 plays 0x...", +0x4C of the
+  blocks 0x10090030 / 0x10090900: Mokujin's block holds the fighter he copies).
+
+**Offline** the generator is not reseeded by anything (no sync points), and it
+starts from the same state word at every boot, so with the same timing the same
+draws came out after every start (Mokujin's copy: runs off2, two boots, Christie
+both times; run off0 differed only through the players' timing). An offline game
+(no T5_NET_MODE / T5_CTL_DIR / T5_FIGHT / T5_FIGHT_FILE / T5_REPLAY_FILE) now
+seeds it once at the first frame boundary from the OS's random numbers
+(`offline_seed()`, BCryptGenRandom; the log says "offline: the scene's random
+generator seeded with ..."). `T5_OFFLINE_SEED=<n>` (tests): that seed, and every
+generator pinned at the select screens as online, so the same picks give the
+same Mokujin copy at every start; `T5_OFFLINE_SEED=0`: not seeded (the old
+behaviour). `tools/offline_random_test.py` checks both (two boots, VS, the
+random cell and Mokujin): default seeding, two boots each (off3, off6): a
+different Mokujin copy (0x08 / 0x1B) or a different random-cell fighter (Steve /
+Jack-5); `T5_OFFLINE_SEED=123` (off4, off7, off9): Mokujin copied the same
+fighter in both boots every time. The random cell itself does not repeat even
+then: it follows the frame it is pressed on, not only the generators.
 
 The TLS block (0x0E000000, 128 KB) is in the rollback state already
 (`rb_state.cpp` kSave): a restore puts the generator back with the frame,

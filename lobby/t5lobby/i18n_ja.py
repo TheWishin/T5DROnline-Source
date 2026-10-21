@@ -497,16 +497,18 @@ MESSAGES = {
     "Unlocks": "アンロック",
     "Unlock all stages (the Tekken 5 stages, without clearing Arcade)":
         "全ステージをアンロック（Tekken 5 のステージ、Arcade をクリアしなくても）",
+    "Unlock Jinpachi and Random select (without clearing Arcade)":
+        "Jinpachi と Random セレクトをアンロック（Arcade をクリアしなくても）",
     "Unlock all customization items (free in the item shop)":
         "全カスタマイズアイテムをアンロック（ITEM SHOP で無料）",
     "Offline only (Arcade, VS, Practice and the rest). Your save is not changed; items you take for free "
     "stay yours (the save is backed up first, in save-backups). Online, both players always get the "
-    "same stages and the default costumes.":
-        "オフライン専用です（Arcade、VS、Practice など）。セーブは変更されません。無料で手に入れたアイテムはそのまま"
-        "自分のものになります（先にセーブを save-backups にバックアップします）。オンラインでは両プレイヤーが常に"
-        "同じステージとデフォルトのコスチュームになります。",
+    "same stages; Jinpachi and Random are there in casual matches and rooms, not in ranked.":
+        "オフライン専用です（Arcade、VS、Practice など）。セーブは変更されません。無料で手に入れたアイテムはそのまま自分のものになります（先にセーブを save-backups "
+        "にバックアップします）。オンラインでは両プレイヤーが常に同じステージになります。Jinpachi と Random はカジュアルマッチとルームで使えますが、Ranked では使えません。",
     "Sound and start": "サウンドと起動",
     "Mute sound": "ミュート",
+    "Sound and taskbar flash when a match is found or someone joins my room": "対戦相手が見つかったとき、または誰かが自分のルームに入ったとき、音を鳴らしてタスクバーを点滅させる",
     "Start minimized, without taking focus (for testing)": "最小化して起動、フォーカスを奪わない（テスト用）",
     "Advanced: extra settings, one NAME=VALUE per line": "詳細：追加設定（1行に1つ、NAME=VALUE）",
     "Internal resolution": "内部解像度",
@@ -515,7 +517,7 @@ MESSAGES = {
     "Off (lowest latency, may tear)": "オフ（最小遅延、ティアリングあり）",
     "The game always runs at 60 fps, like on the PS3.": "ゲームは PS3 と同じく常に 60fps で動作します。",
     "Stage blur / glow": "ステージのぼかし / 光彩",
-    "On (default)": "オン（標準）",
+    "Off (default)": "オフ（標準）",
     "Off": "オフ",
     "Some stages blur the picture (the misty swamp) or let the sun glow. Off shows them sharp, "
     "without the glow. Only your picture changes: online, both players can choose differently.":
@@ -1730,6 +1732,8 @@ MESSAGES = {
     "With a controller: A accepts, B declines.": "コントローラー：A で受ける、B で断る。",
     "Online nobody can pause the fight: Start does not open the pause menu.":
         "オンラインでは誰も対戦をポーズできません。Start でポーズメニューは開きません。",
+    "Intros and the replay after a round are skipped once both players have pressed Start.":
+        "イントロとラウンド後のリプレイは、両プレイヤーが Start を押すとスキップされます。",
     "Lobby": "ロビー",
     "Leaderboard": "ランキング",
     "Profile": "プロフィール",
@@ -1768,6 +1772,12 @@ MESSAGES = {
     "Dismiss": "閉じる",
     "Use a controller here": "ここでコントローラーを使う",
     "none open": "募集中のルームなし",
+    "Nobody else is online right now. Ranked match and Quick match keep looking until someone comes.":
+        "今はほかに誰もオンラインにいません。Ranked 対戦と Quick Match は誰かが来るまで探し続けます。",
+    "No rooms open. Create one: friends can join it and play in turn.":
+        "募集中のルームはありません。ルームを作ると、フレンドが入って交代で対戦できます。",
+    "Nobody has a ranked result yet. Win a ranked set to be the first.":
+        "まだ Ranked の結果がある人はいません。Ranked セットに勝って一番乗りしよう。",
     "In your room “{name}”. Waiting for a second player...":
         "自分のルーム「{name}」。2人目のプレイヤーを待っています...",
     "In the room “{name}”. The match starts when you are both ready.":
@@ -2017,6 +2027,8 @@ MESSAGES = {
         "対戦データが壊れていました。",
     "You stopped watching.":
         "観戦をやめました。",
+    "A friend of the players took your place: the match has as many spectators as it can take.":
+        "プレイヤーのフレンドにあなたの観戦枠が譲られました。この対戦の観戦枠はいっぱいです。",
     "this launcher cannot watch matches; update it":
         "このランチャーは対戦を観戦できません。更新してください",
     "that match is not being played right now":
@@ -2037,6 +2049,12 @@ MESSAGES = {
         "この対戦にはすでに {count} 人の観戦者がいます",
     "the server cannot show more matches right now":
         "サーバーは今これ以上の対戦を表示できません",
+    "too many matches are watched from your network; stop watching one first":
+        "あなたのネットワークから観戦している対戦が多すぎます。先にどれかの観戦をやめてください",
+    "the places for guests at this match are taken; log in with an account to watch":
+        "この対戦のゲスト用の観戦枠は埋まっています。観戦するにはアカウントでログインしてください",
+    "the server cannot show guests more matches right now; log in with an account to watch":
+        "サーバーは今、ゲストにこれ以上の対戦を表示できません。観戦するにはアカウントでログインしてください",
     # firewall hint on the Online tab (t5lobby.fwcheck, tk_tab.fw_hint_text)
     "Firewall":
         "ファイアウォール",
@@ -2054,8 +2072,12 @@ MESSAGES = {
         "起動時に画面に合う段階をゲームが選びます。内蔵グラフィックでは最大1080p（プロセッサーとメモリーと電力を共有するため）。",
     "On this PC: {step}.":
         "このPCでは：{step}。",
-    "{step} on integrated graphics: try {better} for 60 fps.":
-        "内蔵グラフィックで{step}：60 fpsには{better}を試してください。",
+    "{step} on integrated graphics: a busy built-in GPU slows the processor too (they share its power and memory). For 60 fps choose Auto in Settings -> Internal resolution: {better} here.":
+        "内蔵グラフィックで{step}：内蔵GPUの負荷が高いとプロセッサーも遅くなります（電力とメモリーを共有しているため）。60 fpsには設定 -> 内部解像度で自動を選んでください（このPCでは{better}）。",
+    "Auto is the default on integrated graphics.":
+        "内蔵グラフィックでは自動が標準です。",
+    "Your processor ran at {ghz} GHz ({percent} % of its normal speed): set Windows power mode to Best performance.":
+        "プロセッサーは{ghz} GHz（通常の速度の{percent} %）で動作していました：Windowsの電源モードを「最適なパフォーマンス」にしてください。",
     "Extra settings below set {setting}: that wins over this choice.":
         "下の追加設定で{setting}が設定されています：この選択より優先されます。",
     "Fights were slower than 60 fps because of the graphics (GPU-bound): choose a lower Internal resolution in Settings.":
@@ -2074,6 +2096,9 @@ MESSAGES = {
     "private and community rooms are casual (unranked)": "非公開ルームとコミュニティルームはカジュアルです（Ranked ではありません）",
     "you are in that room": "すでにそのルームにいます",
     "the room's host removed you from this room": "ホストによってこのルームから外されました",
+    "the room's host turned away password guesses from your network; ask the host for an invite":
+        "ルームのホストがあなたのネットワークからのパスワード入力を締め出しました。ホストに招待を頼んでください",
+    "only a room with a password counts wrong guesses": "間違った入力を数えるのはパスワード付きのルームだけです",
     "that player is not in your room": "そのプレイヤーはあなたのルームにいません",
     "you cannot remove yourself; leave the room instead": "自分は外せません。ルームから出てください",
     "you can remove that player after their match": "そのプレイヤーは対戦が終わってから外せます",
@@ -2105,6 +2130,11 @@ MESSAGES = {
     "Remove player": "プレイヤーを外す",
     "Remove {name} from the room? They cannot come back into it.": "{name} さんをルームから外しますか？ もう戻れなくなります。",
     "Removed {name} from the room.": "{name} さんをルームから外しました。",
+    "Wrong passwords in the last 10 minutes: {count} (networks: {networks})":
+        "直近10分間の間違ったパスワード：{count} 件（ネットワーク：{networks}）",
+    "Turn away the guessers": "推測している人を締め出す",
+    "Networks turned away: {count}. They cannot try passwords on this room any more.":
+        "締め出したネットワーク：{count}。そこからはこのルームのパスワードをもう試せません。",
     "Room created.": "ルームを作成しました。",
     "Room created. Press Copy invite code to see the code you can share.": "ルームを作成しました。共有できるコードは「招待コードをコピー」で表示されます。",
     "Room name (optional):": "ルーム名（省略可）：",

@@ -50,6 +50,7 @@ for _p in (TOOLS, LAUNCHER, LOBBY):
         sys.path.insert(0, _p)
 
 os.environ["T5_PAD_NAV"] = "0"              # the tab never reads this PC's controllers
+os.environ["T5_NOTIFY"] = "0"               # ... and never chimes or flashes the taskbar on it
 os.environ.setdefault("T5DR_NO_UPDATE_CHECK", "1")
 
 import core                                  # noqa: E402  launcher/core.py
@@ -85,10 +86,63 @@ def log(msg):
 
 
 def below_normal_priority():
-    """This process and everything it starts (Windows children inherit BELOW_NORMAL) at below-normal."""
+    """This process and everything it starts (Windows children inherit BELOW_NORMAL) at below-normal. The runner's
+    own threads (Tk, the lobby clients) get THREAD_PRIORITY_HIGHEST inside that class -- the level of a normal
+    process's normal thread -- so that next to a dozen games (other agents' too) the launcher code still reads its
+    events on time; the games started from here stay below normal (a thread priority is not inherited).
+    The 1 ms timer resolution: the shaper's proxies hold packets for a few ms in select() timeouts, which Windows
+    rounds up to its 15.6 ms tick in a process that did not ask for better -- the emulated network had up to 15 ms
+    of jitter of its own on every hop (two hops on a relayed path; relay-smooth, 1.1.4)."""
     if IS_WIN:
         k32 = ctypes.windll.kernel32
         k32.SetPriorityClass(k32.GetCurrentProcess(), BELOW_NORMAL)
+        try:
+            ctypes.WinDLL("winmm").timeBeginPeriod(1)
+        except (OSError, AttributeError):
+            pass
+        _raise_this_thread()
+        orig_run = threading.Thread.run
+
+        def run(self):
+            _raise_this_thread()
+            orig_run(self)
+        threading.Thread.run = run
+
+
+def _raise_this_thread():
+    if IS_WIN:
+        try:
+            k32 = ctypes.windll.kernel32
+            k32.SetThreadPriority(k32.GetCurrentThread(), 2)       # THREAD_PRIORITY_HIGHEST
+        except Exception:      # noqa: BLE001
+            pass
+
+
+def raise_typed():
+    """THREAD_PRIORITY_HIGHEST for the calling thread, for real: _raise_this_thread's windll.kernel32 call passes the
+    GetCurrentThread() pseudo-handle as a 32-bit int and Windows refuses it ("invalid handle"), so the runner's threads
+    stay at its below-normal class's normal level -- two below the games' own threads, the gap between a launcher and
+    its game on a player's PC, which the relay scenarios rely on. The shaper's proxies are the network, not the
+    launcher: they get the raise (relay-smooth, 1.1.4)."""
+    if IS_WIN:
+        try:
+            k32 = ctypes.WinDLL("kernel32")
+            k32.SetThreadPriority.argtypes = (ctypes.c_void_p, ctypes.c_int)
+            k32.SetThreadPriority(ctypes.c_void_p(-2), 2)
+        except (OSError, AttributeError):
+            pass
+
+
+def pin_process(cpus):
+    """This process (and what it starts from now on) on the last `cpus` processors; 0 = all again. -> the mask."""
+    if not IS_WIN:
+        return 0
+    n = os.cpu_count() or 1
+    mask = sum(1 << i for i in range(n - min(cpus, n), n)) if cpus else (1 << n) - 1
+    k32 = ctypes.WinDLL("kernel32")
+    k32.SetProcessAffinityMask.argtypes = (ctypes.c_void_p, ctypes.c_size_t)
+    k32.SetProcessAffinityMask(ctypes.c_void_p(-1), mask)
+    return mask
 
 
 def free_port(kind=socket.SOCK_STREAM):
@@ -178,7 +232,7 @@ class LobbyServer:
         lf.close()
         Run.current.own(self.proc)
         self.starts += 1
-        t_end = time.time() + 15
+        t_end = time.time() + 60        # (it took 27 s once, next to two dozen games at 100 % CPU)
         while time.time() < t_end:
             if self.proc.poll() is not None:
                 raise RuntimeError(f"lobby server exited with {self.proc.returncode} (see {self.log_path})")
@@ -223,10 +277,11 @@ class Proxy:
         self.ip = shaper.ip                  # where the stand-ins live (127.0.0.2: "not this PC" for the firewall tests)
         self.sa = self._sock(self.ip)
         self.sb = self._sock(self.ip)
+        self.sr = self._sock(self.ip)        # shaper.replay: copies of real packets come from here (another address)
         self.ports = {a_port: self.sa.getsockname()[1], b_port: self.sb.getsockname()[1]}
         self.queue = []
         self.seq = 0
-        self.stats = {"a2b": 0, "b2a": 0, "dropped": 0, "cut": 0}
+        self.stats = {"a2b": 0, "b2a": 0, "dropped": 0, "cut": 0, "replayed": 0, "to_replayer": 0}
         self.rnd = random.Random(a_port * 7919 + b_port)
         self.stop = False
         self.thread = threading.Thread(target=self._loop, daemon=True, name=f"proxy {a_port}<->{b_port}")
@@ -267,9 +322,16 @@ class Proxy:
         self.seq += 1
         heapq.heappush(self.queue, item)
         self.stats[direction] += 1
+        if sh.replay and self.seq % sh.replay == 0:
+            # a recorded packet of the opponent's played back from another address 40 ms later (netplay
+            # hardening, 1.1.2: the game must not follow the opponent there while the real address is alive)
+            heapq.heappush(self.queue, (due + 0.04, self.seq, self.sr, data, item[4]))
+            self.seq += 1
+            self.stats["replayed"] += 1
 
     def _loop(self):
-        socks = [self.sa, self.sb]
+        raise_typed()
+        socks = [self.sa, self.sb, self.sr]
         while not self.stop:
             now = time.perf_counter()
             while self.queue and self.queue[0][0] <= now:
@@ -291,13 +353,16 @@ class Proxy:
                         break
                     except OSError:
                         break
+                    if s is self.sr:
+                        self.stats["to_replayer"] += 1     # a game answered the replayer: it followed the copy
+                        continue
                     # A sends to sb (B's stand-in) -> a2b; B sends to sa -> b2a
                     self._take(data, "a2b" if s is self.sb else "b2a")
 
     def close(self):
         self.stop = True
         self.thread.join(2)
-        for s in (self.sa, self.sb):
+        for s in (self.sa, self.sb, self.sr):
             try:
                 s.close()
             except OSError:
@@ -333,9 +398,12 @@ class RelayNodes:
     RTT = {"main": (150, 150), "usw": (20, 140), "usc": (60, 60)}
     NAMES = {"usw": "Oregon (US West)", "usc": "Texas (US Central)"}
 
-    def __init__(self, ctx, rtt=None):
+    def __init__(self, ctx, rtt=None, shaped=None):
+        """shaped: {relay id: LegShaper} -- that relay's legs go through ShapedDelay proxies that follow the
+        LegShaper's current settings (round trip, jitter, loss; its rtt tuple is then unused)."""
         from t5lobby import relayctl
         self.ctx = ctx
+        self.shaped = dict(shaped or {})
         self.rtt = dict(rtt or self.RTT)
         self.dir = os.path.join(ctx.dir, "relays")
         os.makedirs(self.dir, exist_ok=True)
@@ -383,13 +451,17 @@ class RelayNodes:
                 pass
 
     def routes(self, index):
-        """Delay proxies for player `index` (0 = A, 1 = B): {relay id: proxy address}."""
+        """Delay proxies for player `index` (0 = A, 1 = B, ... as many as the rtt tuples have): {relay id: proxy
+        address}."""
         relay_e2e = relay_tool()
         targets = {"main": ("127.0.0.1", self.ctx.server.udp),
                    **{rid: ("127.0.0.1", n["udp"]) for rid, n in self.nodes.items()}}
         out = {}
         for rid, target in targets.items():
-            px = relay_e2e.UdpDelay(target, self.rtt[rid][index], f"{rid}/{'AB'[index]}")
+            if rid in self.shaped:
+                px = ShapedDelay(target, self.shaped[rid], f"{rid}/{'ABCDEFGH'[index]}", seed=index * 7919 + 17)
+            else:
+                px = relay_e2e.UdpDelay(target, self.rtt[rid][index], f"{rid}/{'ABCDEFGH'[index]}")
             px.start()
             self.proxies.append(px)
             out[rid] = tuple(px.addr)
@@ -432,6 +504,98 @@ class RelayNodes:
             self.stop(rid)
 
 
+class LegShaper:
+    """The network of one leg of a relayed path (player <-> relay node), the same for every player and changed
+    between matches. set_total(): a relayed path shaped like the Shaper's direct one -- two legs in series, each
+    with half the round trip and half the jitter, and the loss that compounds to the total (relay-smooth, 1.1.4)."""
+
+    def __init__(self):
+        self.rtt = self.jitter = self.loss = 0.0
+        self.stats = {"up": 0, "down": 0, "dropped": 0}
+
+    def set_total(self, rtt=0.0, jitter=0.0, loss=0.0):
+        self.rtt, self.jitter = float(rtt) / 2.0, float(jitter) / 2.0
+        self.loss = 100.0 * (1.0 - (1.0 - float(loss) / 100.0) ** 0.5)
+
+    def describe(self):
+        return f"each leg rtt {self.rtt:g} ms, jitter +-{self.jitter:g} ms, loss {self.loss:.2f}%"
+
+
+class ShapedDelay(threading.Thread):
+    """relay_e2e.UdpDelay with jitter and loss: players send to `addr`, the proxy sends on to `target` from an
+    upstream socket of each player's own and back, each packet held for leg.rtt / 2 +- leg.jitter (uniform, so
+    packets may overtake each other, as in the Shaper's Proxy) or dropped with leg.loss %."""
+
+    def __init__(self, target, leg, name="", seed=1):
+        super().__init__(daemon=True, name=f"shaped-delay {name}")
+        self.target = tuple(target)
+        self.leg = leg
+        self.rnd = random.Random(seed)
+        self.front = Proxy._sock()
+        self.up = {}                    # player address -> upstream socket
+        self.back = {}                  # upstream socket -> player address
+        self.heap = []
+        self.seq = 0
+        self.stop_flag = False
+
+    @property
+    def addr(self):
+        return self.front.getsockname()
+
+    def _later(self, sock, data, dst, kind):
+        leg = self.leg
+        if leg.loss and self.rnd.random() * 100.0 < leg.loss:
+            leg.stats["dropped"] += 1
+            return
+        one_way = leg.rtt / 2000.0
+        if leg.jitter:
+            one_way += self.rnd.uniform(-leg.jitter, leg.jitter) / 1000.0
+        self.seq += 1
+        leg.stats[kind] += 1
+        heapq.heappush(self.heap, (time.perf_counter() + max(0.0, one_way), self.seq, sock, data, dst))
+
+    def run(self):
+        raise_typed()
+        while not self.stop_flag:
+            now = time.perf_counter()
+            while self.heap and self.heap[0][0] <= now:
+                _t, _s, sock, data, dst = heapq.heappop(self.heap)
+                try:
+                    sock.sendto(data, dst)
+                except OSError:
+                    pass
+            wait = min(0.002, max(0.0, self.heap[0][0] - now)) if self.heap else 0.002
+            try:
+                rd, _, _ = select.select([self.front, *self.up.values()], [], [], wait)
+            except OSError:
+                break
+            for sock in rd:
+                while True:
+                    try:
+                        data, src = sock.recvfrom(4096)
+                    except (BlockingIOError, InterruptedError, ConnectionResetError):
+                        break
+                    except OSError:
+                        break
+                    if sock is self.front:
+                        up = self.up.get(src)
+                        if up is None:
+                            up = self.up[src] = Proxy._sock()
+                            self.back[up] = src
+                        self._later(up, data, self.target, "up")
+                    else:
+                        self._later(self.front, data, self.back[sock], "down")
+
+    def close(self):
+        self.stop_flag = True
+        self.join(2)
+        for s in [self.front, *self.up.values()]:
+            try:
+                s.close()
+            except OSError:
+                pass
+
+
 class Shaper:
     """The network between the two games. Off: the games talk directly. On: every new session is
     routed through a Proxy with the current rtt/jitter/loss; `cut` drops everything (a pulled cable).
@@ -444,6 +608,7 @@ class Shaper:
         self.jitter = 0.0
         self.loss = 0.0
         self.cut = False
+        self.replay = 0                 # every n-th packet also played back from another address (0: off)
         self.proxies = {}
         self.build_override = {}     # player name -> T5_NET_BUILD to hand that player's game (mismatch tests)
         # The proxy's own address: what the games see as the opponent's. 127.0.0.2 for the firewall cases --
@@ -484,7 +649,7 @@ class Shaper:
 
     def stats(self, since=None):
         """Packets through the proxies (and dropped / cut), minus a former stats() result `since`."""
-        out = {"a2b": 0, "b2a": 0, "dropped": 0, "cut": 0}
+        out = {"a2b": 0, "b2a": 0, "dropped": 0, "cut": 0, "replayed": 0, "to_replayer": 0}
         for px in self.proxies.values():
             for k in out:
                 out[k] += px.stats[k]
@@ -613,7 +778,8 @@ class Player:
     settings and output folder, and the games it started."""
 
     def __init__(self, ctx, name, kind="real", password=None, char=None, input_delay="auto", env=None,
-                 mash_gap=20, game_mode=None, user_dir=None, tag="", sets=None, bot=False, lobby=None, devices=False):
+                 mash_gap=20, game_mode=None, user_dir=None, tag="", sets=None, bot=False, lobby=None, start_every=0,
+                 devices=False, exe_dir=None):
         """bot=True: no scripted presses; the player attacks live (T5_NET_PADFILE) only while ctx.plan says
         this player wins the game being fought, else stands still -- planned results (ranked sets 2-0, 2-1).
         sets=False: online.json "sets": false (the old protocol: every ranked game rated, rematch votes).
@@ -627,6 +793,20 @@ class Player:
         self.out = os.path.join(self.dir, "native")
         os.makedirs(self.dir, exist_ok=True)
         ctx.run.prepare_out(self.out)
+        if exe_dir:
+            # a cross-build pair: this player's game is another build (its t5dr.exe, and t5dr_game.dll when that build
+            # has one); the code id stays the run's, so the lobby pairs the two -- any difference in the games
+            # themselves shows as a desync
+            cm = os.path.join(self.out, "build", "cmake")
+            for name in ("t5dr.exe", "t5dr_game.dll"):
+                dst = os.path.join(cm, name)
+                if os.path.exists(dst):
+                    os.remove(dst)
+                src = os.path.join(exe_dir, name)
+                if os.path.isfile(src):
+                    shutil.copyfile(src, dst)
+            log(f"{self.name}: game from {exe_dir} (cross-build pair)")
+        self.exe_dir = exe_dir
         self.games = []
         self.events = []          # (time, event)
         self.notes = []           # (time, driver note)
@@ -637,6 +817,7 @@ class Player:
         self.fw_game = None
         self.fw_launcher = None
         self.mash_gap = mash_gap
+        self.start_every = start_every     # mash scripts with START about every n-th input (no pause online, 1.1.2)
         self.devices = bool(devices)
         self.extra_env = dict(env or {})
         st = self.app.settings
@@ -705,6 +886,13 @@ class Player:
         tab.show_codes = lambda codes, *a, **kw: me.codes.append(list(codes))
         tab._blocks_window = lambda rows, *a, **kw: me.notes.append((time.time(), {"kind": "blocks_window", "rows": rows}))
         tab.pad_visible = lambda: False
+        self.bars = []                       # (time, text, button labels) of every question bar the tab showed
+        orig_show_bar = tab.show_bar
+
+        def show_bar(text, buttons, *a, **kw):
+            me.bars.append((time.time(), str(text), [str(x[0]) for x in (buttons or ())]))
+            return orig_show_bar(text, buttons, *a, **kw)
+        tab.show_bar = show_bar
         if hasattr(tab, "bring_forward"):
             tab.bring_forward = lambda *a, **kw: None     # the (withdrawn) launcher window never goes to the front
         if hasattr(tab, "bring_game_forward"):
@@ -730,6 +918,7 @@ class Player:
         orig_event = tab.on_event
 
         def on_event(ev, *a, **kw):
+            me._force_stage(ev)
             me._record(ev)
             orig_event(ev, *a, **kw)
         tab.on_event = on_event
@@ -752,6 +941,12 @@ class Player:
         def make_driver():
             orig_make()
             d = tab.driver
+            orig_d_event = d.on_event
+
+            def d_on_event(ev, *a, **kw):           # (the tab hands every event to its driver first)
+                me._force_stage(ev)
+                return orig_d_event(ev, *a, **kw)
+            d.on_event = d_on_event
             orig_env = d.match_env
 
             def match_env(ev, ticket):
@@ -762,13 +957,22 @@ class Player:
                     # file every time would play the same match over and over)
                     import fight_flow_test
                     seed = (1000 + sum(map(ord, me.name)) + me.ctx.run.seed) * 7919 + sum(map(ord, ev.get("match", "")))
+                    kw = {"start_every": me.start_every} if me.start_every else {}
                     env["T5_NET_SCRIPT"] = fight_flow_test.mash_script(
-                        os.path.join(me.dir, f"mash-{ev.get('match')}.txt"), seed, gap=me.mash_gap)
+                        os.path.join(me.dir, f"mash-{ev.get('match')}.txt"), seed, gap=me.mash_gap, **kw)
                 if me.fw_game:
                     env["T5_NET_TEST_INBOUND"] = me.fw_game      # (a session without it: the firewall is off again)
                 return me.ctx.shaper.rewrite(me, env)
             d.match_env = match_env
         tab._make_driver = make_driver
+
+    def _force_stage(self, ev):
+        """run.py --stage: this launcher hands its game that stage instead of the lobby's pick -- the same rewrite
+        on both sides (in place, before the driver sees the event), so both games load the same stage; the lobby
+        never checks it."""
+        stage = getattr(self.ctx, "force_stage", None) or getattr(self.ctx.run, "stage", None)
+        if stage and self.kind == "real" and ev.get("t") == "match_start" and isinstance(ev.get("fight"), dict)                 and ev["fight"].get("stage") != stage:
+            ev["fight"] = dict(ev["fight"], stage=stage, lobby_stage=ev["fight"].get("stage"))
 
     def set_firewall(self, game=None, launcher=None):
         """Windows Firewall blocking this player's game and/or launcher, emulated from the next match on:
@@ -965,6 +1169,20 @@ class Player:
                 return b
         return None
 
+    def saw_bar(self, prefix, since=0.0):
+        """(text, labels) of a bar shown since `since` with a button starting with `prefix` (also one shown and
+        replaced before the runner looked), or None."""
+        wanted = {prefix}
+        try:
+            from t5lobby import i18n
+            wanted.add(i18n.t(prefix))
+        except Exception:      # noqa: BLE001
+            pass
+        for ts, text, labels in reversed(getattr(self, "bars", [])):
+            if ts >= since and any(lb.startswith(w) for lb in labels for w in wanted):
+                return text, labels
+        return None
+
     def click(self, prefix):
         b = self.bar_button(prefix)
         if b is None:
@@ -1068,7 +1286,10 @@ class Abort(Exception):
 class Run:
     current = None
 
-    def __init__(self, out, exe, game_root, seed=1, rounds=1, short=False, netcode="rollback"):
+    def __init__(self, out, exe, game_root, seed=1, rounds=1, short=False, netcode="rollback", stage=None,
+                 replays=False):
+        self.stage = stage           # run.py --stage: every real match fought on this stage (both launchers)
+        self.replays = replays       # run.py --replays: every scenario's recorded sessions played back (Ctx.close)
         self.out = os.path.abspath(out)
         os.makedirs(self.out, exist_ok=True)
         self.exe = exe
@@ -1118,8 +1339,41 @@ class Run:
                     setattr(dialogs, n, lambda *a, _n=n, _v=v, **kw: (log(f"dialog stubbed: {name}.{_n} {a[:2]}"), _v)[1])
         except ImportError:
             pass
+        self._old_lobby_loopback(name)
         log(f"lobby package {ref} loaded as {name} (from {base})")
         return name
+
+    @staticmethod
+    def _old_lobby_loopback(name):
+        """Test shim: T5_NET_BIND=127.0.0.1 (no firewall prompts for test games) is honoured by this tree's nat.py
+        (bind_ip, local_ipv4s), not by an older release's. Its client would offer this PC's LAN address and the lobby
+        would hand the games that address, which a game bound to loopback never hears ("no_peer"). So the older
+        package's game socket binds there too and offers only that address -- a PC whose one address is loopback;
+        nothing else of the old code changes."""
+        bind = os.environ.get("T5_NET_BIND", "").strip()
+        if not bind or bind == "0.0.0.0":
+            return
+        import importlib
+        nat = importlib.import_module(name + ".nat")
+        pr = importlib.import_module(name + ".proto")
+
+        def open_udp_socket(port=0):
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                s.bind((bind, port))
+            except OSError:
+                if not port:
+                    s.close()
+                    raise
+                s.bind((bind, 0))
+            pr.disable_udp_connreset(s)
+            s.setblocking(False)
+            return s
+        nat.open_udp_socket = open_udp_socket
+        nat.local_ipv4s = lambda target_ip: [bind]
+        client = importlib.import_module(name + ".client")
+        if hasattr(client, "local_ipv4s"):
+            client.local_ipv4s = nat.local_ipv4s
 
     def tk_root(self):
         """The one Tk root of the run: withdrawn and fully transparent. Every Toplevel is withdrawn and
@@ -1261,6 +1515,7 @@ class Ctx:
         self.shaper = Shaper()
         self.block_direct = {}
         self.no_nat2 = set()        # player names whose client behaves like 1.1.0 (no "nat2" cap)
+        self.stalls = []            # seconds the runner went without pumping (load), > 3 s each
         self.relays = None          # RelayNodes (regional relay scenarios)
         self.relay_routes = {}      # player name -> {relay id: delay proxy address}
         self.checks = []            # (name, ok, detail, level)
@@ -1291,7 +1546,14 @@ class Ctx:
     # ------------------------------------------------------------------ pumping
     def pump(self, seconds=0.05):
         root = self.run.root
-        t_end = time.monotonic() + seconds
+        now = time.monotonic()
+        gap = now - getattr(self, "_last_pump", now)
+        if gap > 3.0:
+            # the runner itself did not get the CPU (or a Tk callback blocked): what it checks right after may have
+            # gone by unseen -- counted, and the scenario's report says so
+            self.stalls.append(round(gap, 1))
+            log(f"[{self.name}] runner stalled {gap:.1f} s (load)")
+        t_end = now + seconds
         while True:
             try:
                 root.update()
@@ -1300,6 +1562,7 @@ class Ctx:
             for p in self.players:
                 p.bot_tick()
             if time.monotonic() >= t_end:
+                self._last_pump = time.monotonic()
                 return
             time.sleep(0.02)
 
@@ -1340,6 +1603,52 @@ class Ctx:
         self.evidence.append(str(text))
         log(f"[{self.name}] {text}")
 
+    def check_replays(self, parallel=2, per_file=600):
+        """run.py --replays: the sessions this scenario's real games recorded (<out>/replays, docs/REPLAYS.md) played
+        back by tools/replay_play.py with this run's game; every one must be identical to the live match (each
+        recorded state hash and result)."""
+        files = []
+        for p in self.players:
+            if p.kind != "real":
+                continue
+            d = os.path.join(p.out, "replays")
+            try:
+                names = sorted(os.listdir(d))
+            except OSError:
+                names = []
+            files += [os.path.join(d, n) for n in names if n.endswith(".t5replay")
+                      and os.path.getmtime(os.path.join(d, n)) >= self.t0 - 5]
+        real = [m for m in self.matches if any(isinstance(v, dict) and "result_file" in v for v in m.values())]
+        if not files:
+            self.check("replays: this scenario's online sessions were recorded", not real,
+                       f"no .t5replay file, {len(real)} real match(es) played")
+            return
+        exe = os.path.join(self.run.bin, "t5dr.exe")
+        exe = exe if os.path.isfile(exe) else self.run.exe
+        out = os.path.join(self.dir, "replay_play")
+        cmd = [sys.executable, os.path.join(TOOLS, "replay_play.py"), "--exe", exe,
+               "--vfs", os.path.join(self.run.game_root, "game", "vfs"), "--out", out,
+               "--parallel", str(parallel), "--timeout", str(per_file)] + files
+        logf = os.path.join(self.dir, "replay_play.log")
+        t0 = time.time()
+        limit = per_file * ((len(files) + parallel - 1) // parallel) + 120
+        with open(logf, "w", encoding="utf-8") as lf:
+            pr = subprocess.Popen(cmd, cwd=ROOT, stdout=lf, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                                  creationflags=core.CREATE_NO_WINDOW if IS_WIN else 0)
+            Run.current.own(pr)
+            while pr.poll() is None and time.time() - t0 < limit:
+                self.pump(1.0)
+            if pr.poll() is None:
+                pr.kill()
+        text = open(logf, encoding="utf-8", errors="replace").read()
+        lines = [ln for ln in text.splitlines() if re.match(r"\[\d+\] ", ln)]
+        for ln in lines:
+            self.check(f"replay {ln.split(':', 1)[0]} identical to the live match", "-- IDENTICAL" in ln, ln[:300])
+        summary = next((ln for ln in text.splitlines() if "replays identical to the live match" in ln), "")
+        self.check(f"replays: {len(files)} session(s) played back, all identical",
+                   pr.returncode == 0 and len(lines) == len(files), summary or f"exit {pr.returncode}, see {logf}")
+        self.note(f"replays: {summary} in {time.time() - t0:.0f} s ({logf})")
+
     def failed(self):
         return any(not ok and lvl == "fail" for _n, ok, _d, lvl in self.checks)
 
@@ -1361,6 +1670,13 @@ class Ctx:
         dlg = [d for d in getattr(self.run, "dialogs", []) if d[0] >= self.t0]
         if dlg:
             self.note(f"dialogs the code tried to show (answered by the runner): {[(k, a) for _t, k, a, _kw in dlg]}")
+        if self.stalls:
+            self.note(f"runner stalls (load: it did not get the CPU): {len(self.stalls)}, longest {max(self.stalls)} s")
+        if getattr(self.run, "replays", False) and self.game and self.players:
+            try:
+                self.check_replays()
+            except Exception as e:     # noqa: BLE001
+                self.check("replays played back", False, f"{type(e).__name__}: {e}")
         self.shaper.close()
         if self.relays is not None:
             self.relays.close()

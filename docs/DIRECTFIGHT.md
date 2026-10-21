@@ -204,8 +204,9 @@ What the select screen does (probes with scripted pads, build/cs/exp):
   the other side still chooses (always on P2; on P1 at the select screen a
   match returns to, not at a fresh one), then 0x15 on P1 and 0x0D on P2.
 - L1 loads customize data ("L1 BUTTON : LOAD CUSTOMIZE DATA"); Start, Select,
-  R1, L2, R2, L3 and R3 do nothing here. There is no random cell (Jinpachi's
-  cell 24 is skipped by the cursor).
+  R1, L2, R2, L3 and R3 do nothing here. On a fresh save there is no random
+  cell and no Jinpachi (the cursor skips cells 24 and 35); a casual match
+  offers both (1.1.4, "Unlocks" below: the random cell 24, Jinpachi 35).
 - The name and rank plates of the select screen come from the VS custom data
   (see "Names and ranks in the HUD") and are read every frame: written at the
   select screen they show at once.
@@ -347,8 +348,8 @@ screen.
 
 Not done: no in-game text beyond the name plates (the launcher's status line
 says the same: "Pick your fighter in the game", "Waiting for your opponent to
-pick..."); Jinpachi stays unpickable (no cell); the customize data (L1) is not
-offered online.
+pick..."); the customize data (L1) is not offered online. Jinpachi and the
+random cell: casual matches only (1.1.4, "Unlocks").
 
 Test: `tools/pick_flow_test.py` -- two games on this PC, each player's picks
 pressed through its `PS3_PAD_FILE` closed-loop on the cursor cell the game
@@ -472,10 +473,13 @@ mx_cpus4_rb: a 4-processor joiner, KO at frame 2022 undone, the match ran on to
 in the fight phase, and releases the pads.
 
 **Online START reaches the game only where it skips** (1.1.2, NETPLAY.md "No pause
-online"): in a session both games take START out of both players' inputs except in a
-round's replay and from 40 frames after a decision seen in this fight until the select
-screen is asked for -- exactly where this driver's skip presses (and the rollback loop's
-post-match rule) land. A START press in a fight that went on (the case above) can no
+online"): in a session both games take START out of both players' inputs except from 40
+frames after a decision seen in this fight until the select screen is asked for -- exactly
+where this driver's skip presses (and the rollback loop's post-match rule) land -- and
+(1.1.4, NETPLAY.md "Skipping intros and replays online") in the fighters' intros and after a
+round once both players have pressed START there: the rule then presses START for both. The
+driver's hold (the loading, phase up to 12, and from the decision on) is unchanged; those
+parts are all in phase 17 between them. A START press in a fight that went on (the case above) can no
 longer pause it; the driver needs START nowhere else (its menu presses are face buttons
 and directions, the in-game select blocks START).
 
@@ -1185,12 +1189,42 @@ on both PCs, under rollback and lockstep.
 
 **The check** (`costume::block_valid`, the same code and data on both PCs):
 every bought part an item of that character (the game's own price table
-*(0x10076724)[c], static data), a compact list without repeats; every worn
-part none or bought; every worn colour none or one bought (index < 32); the
-spare byte 0. One failure anywhere and the whole block is not used: that
-character fights in the default costume, on both PCs. So a damaged or forged
-save cannot make one PC load something the other does not, nor send the
-game's model code an item id the character does not have.
+*(0x10076724)[c], static data) and one of that costume's parts, a compact list
+without repeats; every worn part none, or one bought that goes in that place
+(HEAD, FACE, BODY up, BODY down); the bought colours only colours the costume
+has, every worn colour none or one bought; the spare byte 0. One failure
+anywhere and the whole block is not used: that character fights in the
+default costume, on both PCs. So a damaged or forged save cannot make one PC
+load something the other does not, nor send the game's model code an item id
+the character does not have, a part in another part's place or a colour the
+costume does not have.
+
+**The item shop's tables** (hardening 1.1.4; security review 3: the check in
+1.1.3 took any worn colour up to 31 and a part in any place -- the Lace
+Hairband as Lili's lower body). Per costume model the shop knows the parts of
+each place and the colours of COLOR1..3 (12 each where a costume has colours;
+most third costumes have none). That data is a pack in the game's
+T55DATA1.BIN, which the shop loads only while it is open (0x152014, resource
+0x25 -> *(0x10538F68)); online it is never in memory. So each PC reads it once
+from the game's own file, the way the game decodes its data, and logs the
+tables' hash (`costume tables: read from the game's data (585040 bytes), hash
+3F8DCD46AB3A752A`): entry 208 of the game's data table (0x10053FB0, 28-byte
+records {sector, stored, size, sum, flag, key, ptr}), XOR-decoded (little-endian
+words, k = key at every 0x800 bytes, then 5k + 3), its sum checked, inflated;
+the pack's 0x56 models, PAC nodes (named or not, the directory XOR-coded or not:
+the game's walker 0x1489E8), each model's parts (child 2: four places, the item
+id at +8 of each record) and its colour file (child 3: 03 01, then per place
+{default, count, prices, names}). Costume k of item character c is model
+`models[k]` of the game's table at 0x10052F04 (0x58FD0); a costume the
+character does not have wears nothing. Only these offsets and the logic are in
+the repository (`costume_logic.h` has the format; tests/c/costume_test.cpp builds
+made-up packs). When the tables cannot be read, every customized block is
+refused -- the default costume, the same on both PCs, which run the same game
+data. Checked against the game itself: with the decoded pack placed in guest
+memory, the game's own shop functions (0x15213C counts, 0x152470 item ids)
+gave the same parts per place and colour counts for all 81 costumes (1,570
+part entries, 0 different). The int113 test saves are still custom on both
+PCs; the review's two forged Lili saves now fall back to the default.
 
 **Why it cannot desync.** The blocks are written before lockstep frame 0 and
 never change during the fight; both PCs write the same bytes for both sides
@@ -1204,6 +1238,35 @@ any, would be a question for ranked fairness, not for sync (open).
 the costume a player fights in is still the confirm button (and, in a mirror
 of one costume, the game's rule that P2 gets the other costume): a
 customization shows when the player customized that costume offline.
+
+**Open (1.1.4 investigation of "with custom skins both customs turn white"):
+a side keeps the previous fight's look when its model does not change.** In one
+game process, when a side fights with the same model (character + costume) as
+in that side's previous fight, the game keeps the fighter it has loaded and the
+new block is not used: the fighter shows the previous fight's parts and
+colours -- for a first fight without customization the default costume, which is
+white for many second costumes (Kazuya's suit, Heihachi's trousers, Lili). Both
+PCs write and log the right block (`costumes written: ... custom`, the same
+hash), the picture does not follow it. A fight with another model on that side
+in between makes the next one load afresh. Reproduced offline
+(build/bugfix114/scripts/two_fights.py: P2 Kazuya default, then P2 Kazuya with
+colours -> white; custom A then custom B -> A) on the 1.1.3 and 1.1.4 builds,
+the same with every renderer switch off (`RSX_STATE_CACHE`, `RSX_RING_VIEWS`,
+`RSX_DISPATCH_SPANS`, `PS3_GCM_HEADER_RUN`, memos, pools, PSO cache), so it is
+the game's own reuse, not the 1.1.3 speed patches. Not the cause: Native, 1080p,
+1440p, 4K, Auto, the integrated Radeon, a warm shader cache, colours other than
+the default (single fights and online pairs show them right). Online it was not
+seen: a new opponent's session goes through the title first (`T5_DF_RESET`,
+on by default), which makes the game load the fighters again -- a persistent
+pair with the joiner's customization changed between two sessions showed the
+new one, and so did an in-game pick pair; within a session a side with the same
+model has the same block. So the player's white costumes are not explained yet.
+Not found yet either: what makes the game reload without the title; poking
+the per-side model words 0x10098E90, 0x104235E4/0x1042360C[side] and
+0x104257D4[side] at FIGHT START or at the stage panel changed nothing, and the
+fighter object's +0x42 crashes the game. In a player's log: two `fighters: ...
+(model 0xNN)` lines in a row with the same model on a side, the second
+`costumes written` naming a different block (another hash) for it.
 
 **Spectators** (docs/SPECTATE.md "Custom costumes in the stream"): the live stream's MATCH records are the
 replay's matches with the blocks, so a spectator's game writes them at its FIGHT START like a replay (`custom
@@ -1389,6 +1452,68 @@ With the rule (runs rule_rb / rule_ls: the same pair and pattern, stages 0, 13,
 settings on; the joiner fresh, both off): 5/5 matches in rollback and 5/5 in
 lockstep, 0 mismatching frames, the same hash. `T5_UNLOCK_ONLINE=save` keeps
 the old behaviour (tests only).
+
+**Jinpachi and Random online by match kind (1.1.4).** The owner: "Random and
+Jinpachi online in casual and rooms, not in ranked; Mokujin and Random
+different every match; offline random on every start; Jinpachi offline as a
+setting." The answer for 0x20 (Jinpachi offered, which also gives the grid its
+random cell) is now the match's, the same on both PCs, never a player's
+setting: the launcher puts `T5_NET_UNLOCKS=open|closed` into both games'
+environment from the lobby's match_start event (`handover.match_unlocks`):
+**open** for casual quick matches, rooms and friend invites (and their
+rematches), **closed** for ranked matches and **tournament sets** -- the
+competitive ones; to offer them there too, change `match_unlocks` (one
+function). Unset or anything else (an older launcher) is closed. The stages
+(0x10) stay off online either way. A persistent game sets each new session's
+answer when its "fight" command comes (`t5_unlock_set_open`, before the select
+screen it is picked on is built); a fresh select screen built with the other
+answer is built again (a select restart), so both grids are the same. A replay
+keeps the answer in its header (format 4, docs/REPLAYS.md) and plays back with
+it. The lobby takes Jinpachi in a casual match's result (server cap
+`boss_chars`; in ranked matches and tournament sets it still refuses him), so
+the history shows him; the launcher reports him only to a server that says so.
+
+The open grid (probe runs off0-off7, offline with `T5_UNLOCK_JINPACHI=1`,
+`T5_SELECT_TRACE=1`): the top row has 12 cells and the cursor cycles all of
+them, every column reaches it; cell **24** (left end) is the **random cell**,
+cell **35** (right end) is **Jinpachi** (models 0x52 with Cross, 0x53 with
+Triangle). The random cell draws a
+fighter and a costume at its confirm (the record holds the drawn model: Steve
+0x2A, Jack-5 0x30, Paul 0x01, once Jinpachi 0x52), not from the TLS generator
+alone (with every generator pinned at the select screen two starts still drew
+different ones). So in the in-game select a random-cell pick travels as the
+fighter it gave: the driver sends that character on its own cell with the
+button that gives the drawn model there (`pick_button_for`, the model table of
+"Mirror matches"), and the peer confirms exactly that model; the playback of
+the replay drives the same. Mokujin's copy is drawn later, at the game mode's
+set-up, from the select screen's pinned generator (docs/NETPLAY.md: since 1.1.4
+mixed with the match number, so it changes from match to match). FIGHT START
+logs what each fighter block plays (+0x4C of 0x10090030 / 0x10090900: the
+fighter in the low byte -- Mokujin's block holds the fighter it copies; the
+numbers match the select's ids for most, not all: Lili 0x1E, Jinpachi 0x22 --
+and bit 16 on P2's block).
+
+**Checked** (this PC, two games, muted, below-normal priority, other agents'
+games beside them; `tools/pick_flow_test.py --unlocks open|closed`, picks
+`rnd:<button>` / `jnp:<button>`, a session of 6 matches, both mashing):
+casual rollback (pair_rb) and lockstep (pair_ls) 6/6 matches each, 0
+mismatching frames, the same result hash on both PCs -- match 1 the random
+cell (P1: Lili in one run, Eddy in the other) against Jinpachi (P2, Cross,
+0x52), match 2 Jinpachi (P1, Triangle, 0x53) against the random cell (P2:
+Jinpachi once, Anna once), then a Mokujin rematch chain of 4: P1 Mokujin
+copied 0x0C, 0x16, 0x05, 0x10 in matches 3-6 (and P2's Mokujin 0x1B in
+match 6), the same on both PCs in every match. Their replays (format 4) play
+back identical (2 of 2, 12 matches, every hash and result). Ranked (pair_closed,
+`T5_NET_UNLOCKS=closed`): the select screen offers neither, every 0x20 check
+answers 0 (`T5_UNLOCK_TRACE=1`), 1/1 in sync. Through the launcher and a local
+lobby: e2e `cs_jinpachi_random` (quick match: both grids open, random cell vs
+Jinpachi) and `cs_ranked_lock` (ranked: neither on either grid).
+
+**Offline:** `T5_UNLOCK_JINPACHI=1` (launcher Settings -> Unlocks -> "Unlock
+Jinpachi and Random select") answers yes for 0x20 like the stages setting for
+0x10: Jinpachi and the random cell on every select screen, nothing written to
+the save; the launcher leaves it out of online games. Random draws at every
+start: docs/NETPLAY.md "Offline".
 
 The Tekken 5 stages themselves in netplay (for the lobby's `T5L_OLD_STAGES`):
 every one of them, ids 0-13 and 15, in one persistent session of 15 matches (a

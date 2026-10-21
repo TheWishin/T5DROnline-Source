@@ -15,6 +15,9 @@ was picked. --picks gives every match's P1/P2 scenario (cycled when shorter):
                             confirm with lp|rp|lk|rk (Square, Triangle, Cross, Circle)
     random                  press Select (the game picks a random character and costume)
     timeout                 press nothing: after N seconds the line's character
+    rnd:<button>            the game's own random cell (an open grid: --unlocks open), confirmed with that button:
+                            the fighter it draws is sent to the opponent (both games must fight the same)
+    jnp:<button>            Jinpachi (an open grid)
     late<S>:<char>:<button> the same as <char>:<button>, S seconds after the screen is live
 
 --flow persistent (default): both games started once with T5_CTL_DIR, every match a
@@ -22,6 +25,9 @@ control command; a new session ("idle", new ports/seed/key) for match 1 and ever
 --rematch-every K-th match after it, rematches in the running session in between (the
 lockstep pauses at the select screen and resumes at the fight). --flow rematch: one
 host and one joiner started with T5_FIGHT, the next matches as T5_FIGHT_FILE lines.
+--unlocks open|closed: T5_NET_UNLOCKS of every session (the lobby's match kind: open = casual, the grid
+offers Jinpachi and the random cell; closed = ranked). Each match's report also has what each fighter
+block plays (Mokujin's copy, "plays" at FIGHT START), which must be the same in both games.
 --locked-after K: from the (K+1)-th match of a session on, the line carries the
 characters the session's first match picked and no pick= (a ranked set's lock).
 
@@ -121,7 +127,16 @@ def char_id(s):
     raise ValueError(f"unknown character {s}")
 
 
-def cell_of(c):
+OPEN = False          # --unlocks open: the top row has the random cell (24) and Jinpachi (35) too (df_fight.cpp)
+RANDOM_CELL, JINPACHI_CELL = 24, 35
+
+
+def cell_of(c, open_grid=None):
+    open_grid = OPEN if open_grid is None else open_grid
+    if c == "rnd":
+        return RANDOM_CELL if open_grid else -1
+    if c == 35:
+        return JINPACHI_CELL if open_grid else -1
     if c == 12:
         c = 11
     return GRID.index(c) if c in GRID else -1
@@ -135,17 +150,19 @@ def col(c):
     return c - 24 if c >= 24 else c - 12 if c >= 12 else c
 
 
-def step(cell, target):
+def step(cell, target, open_grid=None):
     """One cursor step towards target (the driver's navigate(), df_fight.cpp)."""
+    open_grid = OPEN if open_grid is None else open_grid
     r, tr, c, tc = row(cell), row(target), col(cell), col(target)
     if r != tr:
-        if tr == 0 and c == 0:
+        if tr == 0 and c == 0 and not open_grid:
             return "RIGHT"
-        if tr == 0 and c == 11:
+        if tr == 0 and c == 11 and not open_grid:
             return "LEFT"
         return "DOWN" if (tr - r + 3) % 3 == 1 else "UP"
-    n = 10 if r == 0 else 12
-    cc, tcc = (c - 1, tc - 1) if r == 0 else (c, tc)
+    top10 = r == 0 and not open_grid
+    n = 10 if top10 else 12
+    cc, tcc = (c - 1, tc - 1) if top10 else (c, tc)
     fwd, back = (tcc - cc + n) % n, (cc - tcc + n) % n
     return "RIGHT" if fwd <= back else "LEFT"
 
@@ -324,13 +341,16 @@ class Picker(threading.Thread):
             time.sleep(float(m.group(1)))
             spec = m.group(2)
         ch, btn = spec.split(":")
-        target = cell_of(char_id(ch))
+        # the grid this game built: the game says whether it offers Jinpachi and the random cell
+        opn = "Jinpachi and the random cell offered" in self.g.log_since(self.pos)
+        self.open_grid = opn
+        target = cell_of("rnd" if ch == "rnd" else char_id(ch), opn)
         time.sleep(0.4)
         for _ in range(60):
             c = self.cell()
             if c == target:
                 break
-            self.g.press(step(c, target))
+            self.g.press(step(c, target, opn))
             t = time.time()
             while self.cell() == c and time.time() - t < 0.6:
                 time.sleep(0.03)
@@ -353,17 +373,22 @@ def session_env(a, k, match, game, port0):
         "T5_NET_START": "external", "T5_DF_STATUS_FILE": game.status_path,
         "T5_HUD_NAMES": "Tester One|Tester Two", "T5_HUD_RANKS": f"{(k * 3) % 37},{(k * 5) % 37}",
     }
+    if getattr(a, "unlocks", ""):
+        env["T5_NET_UNLOCKS"] = a.unlocks
     env["T5_NET_PORT"] = str(port0 if game.role == "host" else port0 + 1)
     env["T5_NET_PEER"] = f"127.0.0.1:{port0 + 1 if game.role == 'host' else port0}"
     return env
 
 
 RE_PICKS = re.compile(r"fighters: P1 (.+?) with (.+?) \(model 0x([0-9A-F]+)\), P2 (.+?) with (.+?) \(model 0x([0-9A-F]+)\)")
+RE_PLAYS = re.compile(r"fighters: .*; P1 plays (0x[0-9A-F]+).*?, P2 plays (0x[0-9A-F]+)")
 
 
 def expected(spec, line_char):
     """(name, button) a scenario must give, or None (random: anything)."""
     if spec == "random":
+        return None
+    if spec.startswith("rnd:"):
         return None
     if spec == "timeout":
         c = char_id(line_char)
@@ -543,7 +568,11 @@ def main():
                     help="restart that game after the aborts before match 1: a game whose select screen was "
                          "restarted many times meets a freshly started one")
     ap.add_argument("--seed", type=int, default=1, help="the aborts' random choices")
+    ap.add_argument("--unlocks", choices=["", "open", "closed"], default="",
+                    help="T5_NET_UNLOCKS of every session (open: Jinpachi and the random cell on both grids)")
     a = ap.parse_args()
+    global OPEN
+    OPEN = a.unlocks == "open"
     os.makedirs(a.out, exist_ok=True)
     plan = abort_plan(a.aborts, a.abort_plan)
     if (plan or a.offline) and a.flow != "persistent":
@@ -668,7 +697,14 @@ def main():
                 if "PICK MISMATCH" in text:
                     m.setdefault("problems", []).append(f"game {g.idx}: PICK MISMATCH")
             m["picks"] = got
+            plays = {}
+            for g in games:
+                mp = RE_PLAYS.search(g.log_since(pos[g.idx]))
+                plays[g.idx] = mp.groups() if mp else None
+            m["plays"] = plays
             problems = m.setdefault("problems", [])
+            if not a.offline and plays.get(1) != plays.get(2):
+                problems.append(f"the fighter blocks play different fighters: {plays}")
             for g in games:
                 bad = bad_lines(g.log_since(pos[g.idx]))
                 if bad:
@@ -707,7 +743,8 @@ def main():
             m["ok"] = not problems
             ok_all &= m["ok"]
             report["matches"].append(m)
-            log(f"match {k}: {'OK' if m['ok'] else 'FAILED'} -- picks {got.get(1)}, to FIGHT {m['to_fight_s']}, winners "
+            log(f"match {k}: {'OK' if m['ok'] else 'FAILED'} -- picks {got.get(1)}, plays {plays.get(1)} / {plays.get(2)}, "
+                f"to FIGHT {m['to_fight_s']}, winners "
                 f"{[r and r.get('winner') for r in (r1, r2)]}, desync {[r and r.get('desync') for r in (r1, r2)]}"
                 + (f"; problems {problems}" if problems else ""))
             if (not res_ok and not a.keep_going) or not all(g.running() for g in games) or len(results) < len(games):
@@ -744,7 +781,7 @@ def main():
                 report[f"pause{g.idx}"] = {"menu_opened": opens, "start_cut_p1": tally[0], "start_cut_p2": tally[1],
                                            "start_kept": tally[2]}
                 log(f"game {g.idx}: pause menu opened {opens} time(s); START taken out on {tally[0]} (P1) + "
-                    f"{tally[1]} (P2) frames, kept on {tally[2]} (where START skips: a round's replay, the match end)")
+                    f"{tally[1]} (P2) frames, kept on {tally[2]} (the post-match skip)")
                 if opens:
                     ok_all = False
         if report.get("aborts"):

@@ -1,0 +1,395 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index e06ee44..4c99604 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -154,6 +154,10 @@ if(APPLE)
+         "-framework QuartzCore"
+         "-framework Foundation"
+         "-framework AppKit"
++        "-framework VideoToolbox"
++        "-framework CoreMedia"
++        "-framework CoreVideo"
++        "-framework CoreFoundation"
+     )
+     set_source_files_properties(
+         "${CMAKE_CURRENT_SOURCE_DIR}/libs/video/rsx_metal_backend.m"
+diff --git a/libs/codec/mf_h264.cpp b/libs/codec/mf_h264.cpp
+index fa769be..bd03816 100644
+--- a/libs/codec/mf_h264.cpp
++++ b/libs/codec/mf_h264.cpp
+@@ -413,7 +413,374 @@ extern "C" MfH264* mfh264_take_prewarmed(uint32_t wait_ms)
+     return d;
+ }
+ 
+-#else  /* !_WIN32: no Media Foundation */
++#elif defined(__APPLE__)
++
++/* VideoToolbox (hardware where there is one). The AUs arrive in decode order with a counter for a
++ * timestamp, so the display order is rebuilt from the picture order counts in the slice headers and
++ * handed to VideoToolbox as the presentation time; the timestamp of the source AU is returned with
++ * each picture. */
++#include <VideoToolbox/VideoToolbox.h>
++#include <CoreMedia/CoreMedia.h>
++#include <CoreVideo/CoreVideo.h>
++#include <pthread.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <map>
++#include <vector>
++
++namespace {
++
++struct Bits {
++    const uint8_t* p; size_t n; size_t pos;
++    uint32_t bit() { if (pos >= n * 8) { pos++; return 0; } uint32_t b = (p[pos >> 3] >> (7 - (pos & 7))) & 1; pos++; return b; }
++    uint32_t u(int k) { uint32_t v = 0; while (k-- > 0) v = (v << 1) | bit(); return v; }
++    /* 31 leading zeros at most: more is a corrupt stream, and 1u << 32 is undefined */
++    uint32_t ue() { int z = 0; while (!bit() && z < 31) z++; return z ? ((1u << z) - 1 + u(z)) : 0; }
++    int32_t se() { uint32_t k = ue(); return (k & 1) ? (int32_t)((k + 1) / 2) : -(int32_t)(k / 2); }
++};
++
++/* NAL payload without the emulation prevention bytes (00 00 03 -> 00 00). */
++void unescape(const uint8_t* s, size_t n, std::vector<uint8_t>& out)
++{
++    out.clear();
++    for (size_t i = 0; i < n; i++) {
++        if (i >= 2 && s[i] == 3 && s[i - 1] == 0 && s[i - 2] == 0) continue;
++        out.push_back(s[i]);
++    }
++}
++
++struct SpsInfo {
++    bool ok = false;
++    uint32_t log2_max_frame_num = 4, poc_type = 0, log2_max_poc_lsb = 4;
++    bool frame_mbs_only = true;
++};
++
++void skip_scaling_list(Bits& b, int size)
++{
++    int last = 8, next = 8;
++    for (int j = 0; j < size; j++) {
++        if (next) { int d = b.se(); next = (last + d + 256) % 256; }
++        last = next ? next : last;
++    }
++}
++
++SpsInfo parse_sps(const uint8_t* nal, size_t n, uint32_t* id_out)
++{
++    SpsInfo r;
++    if (n < 4) return r;
++    std::vector<uint8_t> rb; unescape(nal + 1, n - 1, rb);
++    Bits b = { rb.data(), rb.size(), 0 };
++    const uint32_t profile = b.u(8); b.u(8); b.u(8);
++    *id_out = b.ue();   /* seq_parameter_set_id */
++    if (profile == 100 || profile == 110 || profile == 122 || profile == 244 || profile == 44 || profile == 83 ||
++        profile == 86 || profile == 118 || profile == 128 || profile == 138 || profile == 139 || profile == 134 ||
++        profile == 135) {
++        const uint32_t chroma = b.ue();
++        if (chroma == 3) b.bit();
++        b.ue(); b.ue(); b.bit();
++        if (b.bit()) {
++            for (int i = 0; i < (chroma != 3 ? 8 : 12); i++)
++                if (b.bit()) skip_scaling_list(b, i < 6 ? 16 : 64);
++        }
++    }
++    r.log2_max_frame_num = b.ue() + 4;
++    r.poc_type = b.ue();
++    if (r.poc_type == 0) r.log2_max_poc_lsb = b.ue() + 4;
++    else if (r.poc_type == 1) {
++        b.bit(); b.se(); b.se();
++        const uint32_t cnt = b.ue();
++        for (uint32_t i = 0; i < cnt && i < 256; i++) b.se();
++    }
++    b.ue(); b.bit(); b.ue(); b.ue();
++    r.frame_mbs_only = b.bit() != 0;
++    r.ok = true;
++    return r;
++}
++
++struct Frame { CVPixelBufferRef buf; int64_t pts; };
++
++}  // namespace
++
++struct MfH264 {
++    VTDecompressionSessionRef session = NULL;
++    CMVideoFormatDescriptionRef fmt = NULL;
++    /* every parameter set seen, by id (a stream can switch between several PPS) */
++    std::map<uint32_t, std::vector<uint8_t>> sps_by_id, pps_by_id;
++    std::map<uint32_t, uint32_t> pps_sps;      /* PPS id -> the SPS it refers to */
++    std::map<uint32_t, SpsInfo> sps_info;
++    SpsInfo si;                                /* of the SPS the current slice uses */
++    /* picture order count tracking */
++    int64_t prev_msb = 0, prev_lsb = 0, epoch = 0, counter = 0;
++    /* pictures VideoToolbox returned (its thread) and the AU timestamp each one belongs to */
++    pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
++    std::vector<Frame> out;
++    std::map<int64_t, int64_t> ts_of;
++    bool warned = false;
++};
++
++namespace {
++
++void on_frame(void* refcon, void*, OSStatus status, VTDecodeInfoFlags, CVImageBufferRef img,
++              CMTime pts, CMTime)
++{
++    MfH264* d = (MfH264*)refcon;
++    if (status != noErr || !img) {
++        static int n = 0;
++        if (n++ < 8) fprintf(stderr, "[mf_h264] VideoToolbox frame error %d\n", (int)status);
++        (void)pts;
++        return;
++    }
++    CVPixelBufferRetain((CVPixelBufferRef)img);
++    pthread_mutex_lock(&d->lock);
++    d->out.push_back({ (CVPixelBufferRef)img, pts.value });
++    pthread_mutex_unlock(&d->lock);
++}
++
++void close_session(MfH264* d)
++{
++    if (d->session) {
++        VTDecompressionSessionWaitForAsynchronousFrames(d->session);
++        VTDecompressionSessionInvalidate(d->session);
++        CFRelease(d->session);
++        d->session = NULL;
++    }
++    if (d->fmt) { CFRelease(d->fmt); d->fmt = NULL; }
++}
++
++/* The format description of every parameter set seen so far. */
++CMVideoFormatDescriptionRef make_format(MfH264* d)
++{
++    std::vector<const uint8_t*> sets;
++    std::vector<size_t> sizes;
++    for (auto& kv : d->sps_by_id) { sets.push_back(kv.second.data()); sizes.push_back(kv.second.size()); }
++    for (auto& kv : d->pps_by_id) { sets.push_back(kv.second.data()); sizes.push_back(kv.second.size()); }
++    CMVideoFormatDescriptionRef fmt = NULL;
++    OSStatus st = CMVideoFormatDescriptionCreateFromH264ParameterSets(kCFAllocatorDefault, sets.size(), sets.data(),
++                                                                      sizes.data(), 4, &fmt);
++    if (st != noErr) { fprintf(stderr, "[mf_h264] bad parameter sets (%d)\n", (int)st); return NULL; }
++    return fmt;
++}
++
++bool open_session(MfH264* d)
++{
++    close_session(d);
++    d->fmt = make_format(d);
++    if (!d->fmt) return false;
++    OSStatus st;
++    const int32_t pix = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange;   /* NV12 */
++    CFNumberRef pixnum = CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt32Type, &pix);
++    const void* keys[1] = { kCVPixelBufferPixelFormatTypeKey };
++    const void* vals[1] = { pixnum };
++    CFDictionaryRef attrs = CFDictionaryCreate(kCFAllocatorDefault, keys, vals, 1, &kCFTypeDictionaryKeyCallBacks,
++                                               &kCFTypeDictionaryValueCallBacks);
++    VTDecompressionOutputCallbackRecord cb = { on_frame, d };
++    st = VTDecompressionSessionCreate(kCFAllocatorDefault, d->fmt, NULL, attrs, &cb, &d->session);
++    CFRelease(attrs); CFRelease(pixnum);
++    if (st != noErr) { fprintf(stderr, "[mf_h264] VTDecompressionSessionCreate failed (%d)\n", (int)st); return false; }
++    return true;
++}
++
++/* Hand over what VideoToolbox returned, in the order it returned it (display order). */
++void deliver(MfH264* d, MfH264FrameCb cb, void* user)
++{
++    std::vector<Frame> frames;
++    pthread_mutex_lock(&d->lock);
++    frames.swap(d->out);
++    pthread_mutex_unlock(&d->lock);
++    std::vector<uint8_t> tmp;
++    for (Frame& f : frames) {
++        CVPixelBufferLockBaseAddress(f.buf, kCVPixelBufferLock_ReadOnly);
++        MfH264Frame fr = {};
++        fr.width = (uint32_t)CVPixelBufferGetWidth(f.buf);
++        fr.height = (uint32_t)CVPixelBufferGetHeight(f.buf);
++        const uint8_t* y = (const uint8_t*)CVPixelBufferGetBaseAddressOfPlane(f.buf, 0);
++        const uint8_t* uv = (const uint8_t*)CVPixelBufferGetBaseAddressOfPlane(f.buf, 1);
++        const size_t py = CVPixelBufferGetBytesPerRowOfPlane(f.buf, 0), puv = CVPixelBufferGetBytesPerRowOfPlane(f.buf, 1);
++        if (py == puv) {
++            fr.y = y; fr.uv = uv; fr.pitch = (uint32_t)py;
++        } else {   /* one pitch for both planes: repack */
++            const uint32_t ch = (fr.height + 1) / 2;   /* chroma rows: odd heights round up */
++            tmp.assign((size_t)fr.width * (fr.height + ch), 0);
++            for (uint32_t r = 0; r < fr.height; r++) memcpy(&tmp[(size_t)r * fr.width], y + r * py, fr.width);
++            for (uint32_t r = 0; r < ch; r++)
++                memcpy(&tmp[(size_t)(fr.height + r) * fr.width], uv + r * puv, fr.width);
++            fr.y = tmp.data(); fr.uv = tmp.data() + (size_t)fr.height * fr.width; fr.pitch = fr.width;
++        }
++        auto it = d->ts_of.find(f.pts);
++        fr.ts = it != d->ts_of.end() ? it->second : f.pts;
++        if (it != d->ts_of.end()) d->ts_of.erase(it);
++        cb(user, &fr);
++        CVPixelBufferUnlockBaseAddress(f.buf, kCVPixelBufferLock_ReadOnly);
++        CVPixelBufferRelease(f.buf);
++    }
++}
++
++}  // namespace
++
++extern "C" MfH264* mfh264_create(void) { return new MfH264(); }
++
++extern "C" void mfh264_destroy(MfH264* d)
++{
++    if (!d) return;
++    close_session(d);
++    pthread_mutex_lock(&d->lock);
++    for (Frame& f : d->out) CVPixelBufferRelease(f.buf);
++    d->out.clear();
++    pthread_mutex_unlock(&d->lock);
++    delete d;
++}
++
++extern "C" int mfh264_decode(MfH264* d, const uint8_t* au, uint32_t size, int64_t ts,
++                             MfH264FrameCb cb, void* user)
++{
++    if (!d || !au || size < 4) return -1;
++    /* Annex-B -> the slice NALs (as AVCC, length-prefixed) plus the parameter sets in band. */
++    std::vector<uint8_t> avcc;
++    const uint8_t* first_slice = NULL; size_t first_slice_n = 0;
++    bool idr = false; int ref_idc = 0, params_changed = 0;
++    size_t i = 0;
++    auto next_start = [&](size_t from, size_t* code_len) -> size_t {
++        for (size_t k = from; k + 3 <= size; k++)
++            if (au[k] == 0 && au[k + 1] == 0 && au[k + 2] == 1) { *code_len = 3; return k; }
++        return size;
++    };
++    size_t cl = 0;
++    i = next_start(0, &cl);
++    while (i < size) {
++        const size_t nal0 = i + 3;
++        size_t cl2 = 0;
++        size_t j = next_start(nal0, &cl2);
++        size_t nal_end = j;   /* trailing zero of a 4-byte start code belongs to the next one */
++        while (nal_end > nal0 && au[nal_end - 1] == 0) nal_end--;
++        if (nal_end > nal0) {
++            const uint8_t* nal = au + nal0; const size_t n = nal_end - nal0;
++            const int type = nal[0] & 0x1F;
++            if (type == 7) {
++                uint32_t id = 0; const SpsInfo si = parse_sps(nal, n, &id);
++                std::vector<uint8_t> v(nal, nal + n);
++                if (d->sps_by_id[id] != v) { d->sps_by_id[id] = v; d->sps_info[id] = si; params_changed = 1; }
++            } else if (type == 8) {
++                std::vector<uint8_t> rb; unescape(nal + 1, n - 1 < 16 ? n - 1 : 16, rb);
++                Bits b = { rb.data(), rb.size(), 0 };
++                const uint32_t pid = b.ue(), sid = b.ue();
++                std::vector<uint8_t> v(nal, nal + n);
++                if (d->pps_by_id[pid] != v) { d->pps_by_id[pid] = v; params_changed = 1; }
++                d->pps_sps[pid] = sid;
++            }
++            else if (type == 1 || type == 5) {
++                if (!first_slice) { first_slice = nal; first_slice_n = n; idr = type == 5; ref_idc = (nal[0] >> 5) & 3; }
++                const uint32_t be = (uint32_t)n;
++                avcc.push_back((uint8_t)(be >> 24)); avcc.push_back((uint8_t)(be >> 16));
++                avcc.push_back((uint8_t)(be >> 8)); avcc.push_back((uint8_t)be);
++                avcc.insert(avcc.end(), nal, nal + n);
++            }
++        }
++        i = j;
++    }
++    if (!first_slice || avcc.empty()) return 0;
++    if (d->sps_by_id.empty() || d->pps_by_id.empty()) return -2;
++    if (!d->session) {
++        if (!open_session(d)) return -2;
++    } else if (params_changed) {
++        /* A parameter set re-sent (or changed) in the middle of a stream: keep the session, and so the
++         * reference pictures, whenever it accepts the new description; a new session only starts clean. */
++        CMVideoFormatDescriptionRef nf = make_format(d);
++        if (!nf) return -2;
++        if (VTDecompressionSessionCanAcceptFormatDescription(d->session, nf)) {
++            CFRelease(d->fmt); d->fmt = nf;
++        } else {
++            CFRelease(nf);
++            if (!open_session(d)) return -2;
++        }
++    }
++
++    /* picture order count -> presentation time */
++    int64_t pts;
++    if (idr) { d->prev_msb = d->prev_lsb = 0; d->epoch++; d->counter = 0; }
++    std::vector<uint8_t> rb; unescape(first_slice + 1, first_slice_n - 1 < 64 ? first_slice_n - 1 : 64, rb);
++    Bits b = { rb.data(), rb.size(), 0 };
++    b.ue(); b.ue();                                   /* first_mb, slice_type */
++    { const uint32_t pps_id = b.ue();                 /* the SPS this slice's PPS refers to */
++      auto ps = d->pps_sps.find(pps_id);
++      auto si = d->sps_info.find(ps != d->pps_sps.end() ? ps->second : 0u);
++      d->si = si != d->sps_info.end() ? si->second : SpsInfo(); }
++    if (d->si.ok && d->si.poc_type == 0) {
++        b.u((int)d->si.log2_max_frame_num);           /* frame_num */
++        if (!d->si.frame_mbs_only) { if (b.bit()) b.bit(); }
++        if (idr) b.ue();                              /* idr_pic_id */
++        const int64_t lsb = b.u((int)d->si.log2_max_poc_lsb);
++        const int64_t max_lsb = 1ll << d->si.log2_max_poc_lsb;
++        int64_t msb = d->prev_msb;
++        if (lsb < d->prev_lsb && d->prev_lsb - lsb >= max_lsb / 2) msb += max_lsb;
++        else if (lsb > d->prev_lsb && lsb - d->prev_lsb > max_lsb / 2) msb -= max_lsb;
++        if (ref_idc) { d->prev_msb = msb; d->prev_lsb = lsb; }
++        pts = (d->epoch << 32) + (msb + lsb) + (1ll << 20);
++    } else {
++        /* TODO: picture order count type 1 and 2; type 1 with B-frames is displayed in the wrong order. */
++        pts = (d->epoch << 32) + (d->counter++) + (1ll << 20);   /* decode order = display order */
++    }
++    d->ts_of[pts] = ts;
++    if (d->ts_of.size() > 64) d->ts_of.erase(d->ts_of.begin());   /* pictures that never came out */
++
++    uint8_t* mem = (uint8_t*)malloc(avcc.size());
++    if (!mem) return -3;
++    memcpy(mem, avcc.data(), avcc.size());
++    CMBlockBufferRef bb = NULL;
++    OSStatus st = CMBlockBufferCreateWithMemoryBlock(kCFAllocatorDefault, mem, avcc.size(), kCFAllocatorMalloc,
++                                                     NULL, 0, avcc.size(), 0, &bb);
++    if (st != noErr) { free(mem); return -3; }
++    CMSampleTimingInfo timing = { CMTimeMake(1, 1), CMTimeMake(pts, 1), CMTimeMake(ts, 1) };
++    const size_t sample_size = avcc.size();
++    CMSampleBufferRef sb = NULL;
++    st = CMSampleBufferCreateReady(kCFAllocatorDefault, bb, d->fmt, 1, 1, &timing, 1, &sample_size, &sb);
++    CFRelease(bb);
++    if (st != noErr) return -3;
++    VTDecodeInfoFlags info = 0;
++    st = VTDecompressionSessionDecodeFrame(d->session, sb,
++                                           kVTDecodeFrame_EnableAsynchronousDecompression |
++                                           kVTDecodeFrame_EnableTemporalProcessing, NULL, &info);
++    CFRelease(sb);
++    if (st != noErr) {
++        if (!d->warned) { d->warned = true; fprintf(stderr, "[mf_h264] decode failed (%d)\n", (int)st); }
++        return -4;
++    }
++    VTDecompressionSessionWaitForAsynchronousFrames(d->session);
++    deliver(d, cb, user);
++    return 0;
++}
++
++extern "C" int mfh264_drain(MfH264* d, MfH264FrameCb cb, void* user)
++{
++    if (!d) return -1;
++    if (d->session) {
++        VTDecompressionSessionFinishDelayedFrames(d->session);
++        VTDecompressionSessionWaitForAsynchronousFrames(d->session);
++    }
++    deliver(d, cb, user);
++    return 0;
++}
++
++extern "C" void mfh264_flush(MfH264* d)
++{
++    if (!d) return;
++    close_session(d);   /* the next sequence starts with its own parameter sets */
++    /* TODO: the parameter sets of the previous stream are kept; drop them if a title is found that
++     * plays two streams with different SPS ids (CreateFromH264ParameterSets then fails). */
++    pthread_mutex_lock(&d->lock);
++    for (Frame& f : d->out) CVPixelBufferRelease(f.buf);
++    d->out.clear();
++    pthread_mutex_unlock(&d->lock);
++    d->ts_of.clear();
++    d->prev_msb = d->prev_lsb = 0;
++}
++
++/* VideoToolbox sessions are cheap to create, so there is nothing to start ahead of time (the
++ * Windows decoder is prewarmed because Media Foundation takes ~100 ms to come up). */
++extern "C" void mfh264_prewarm(void) {}
++extern "C" MfH264* mfh264_take_prewarmed(uint32_t wait_ms) { (void)wait_ms; return 0; }
++
++#else  /* neither Windows nor macOS: no H.264 decoder */
+ 
+ extern "C" MfH264* mfh264_create(void) { return 0; }
+ extern "C" void mfh264_destroy(MfH264* d) { (void)d; }

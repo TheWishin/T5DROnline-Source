@@ -11,6 +11,8 @@ sys.path.insert(0, os.path.dirname(HERE))
 # The Online tab must not start reading this PC's real controllers during a test (a plugged-in pad would put
 # "(A)" on the buttons the tests look for by name); the pad tests give the tab fake ones.
 os.environ.setdefault("T5_PAD_NAV", "0")
+# No chime and no flashing taskbar button from the Online tab on the PC that runs the tests (test_tk_notify.py gives it fakes).
+os.environ["T5_NOTIFY"] = "0"
 # Never ask the router of the PC that runs the tests for a port forward (port mapping tests use fakes).
 os.environ["T5_PORTMAP"] = "0"
 # The Online tab's firewall hint does not read this PC's Windows Firewall (test_firewall.py feeds the check its data).

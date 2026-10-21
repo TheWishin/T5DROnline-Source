@@ -516,6 +516,7 @@ MESSAGES = {
         "Online, ambos jugadores siempre tienen los mismos escenarios y los trajes predeterminados.",
     "Sound and start": "Sonido e inicio",
     "Mute sound": "Silenciar sonido",
+    "Sound and taskbar flash when a match is found or someone joins my room": "Sonido y parpadeo en la barra de tareas cuando se encuentra una partida o alguien entra en mi sala",
     "Start minimized, without taking focus (for testing)": "Iniciar minimizado, sin tomar el foco (para pruebas)",
     "Advanced: extra settings, one NAME=VALUE per line": "Avanzado: ajustes extra, uno NOMBRE=VALOR por línea",
     "Internal resolution": "Resolución interna",

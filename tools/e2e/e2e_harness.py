@@ -50,6 +50,7 @@ for _p in (TOOLS, LAUNCHER, LOBBY):
         sys.path.insert(0, _p)
 
 os.environ["T5_PAD_NAV"] = "0"              # the tab never reads this PC's controllers
+os.environ["T5_NOTIFY"] = "0"               # ... and never chimes or flashes the taskbar on it
 os.environ.setdefault("T5DR_NO_UPDATE_CHECK", "1")
 
 import core                                  # noqa: E402  launcher/core.py

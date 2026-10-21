@@ -33,6 +33,7 @@ for sub in ("tools", "lobby", "launcher", "tests"):
     if p not in sys.path:
         sys.path.insert(0, p)
 os.environ.setdefault("T5_PAD_NAV", "0")        # no controller thread in the Online tab
+os.environ["T5_NOTIFY"] = "0"                   # no chime, no taskbar flash on this PC
 os.environ.setdefault("T5_FW_CHECK", "0")       # the Online tab's firewall hint never reads this PC's firewall
 
 import tkinter as tk  # noqa: E402

@@ -34,6 +34,11 @@ Discord Rich Presence (optional, launcher Settings, off by default): t5lobby.dis
 "Searching ranked" or "In match: Jin vs Kazuya (Ranked, Set 1-0)" with a timer in the player's Discord status,
 through the Discord app on this PC; without Discord running it does nothing.
 
+Chime and taskbar flash (notify.py, launcher Settings, on by default): when a match asks for Accept, someone joins the
+player's room, a community room's turn comes, a friend invites, a tournament set is ready or the opponent asks for a
+rematch -- and the player is elsewhere (another program in front, the launcher minimized, another tab) -- a short
+chime plays and the launcher's taskbar button flashes until the window is in front. Once per event.
+
 Firewall hint (docs/TROUBLESHOOTING.md "The firewall blocks the game"): a read-only look at Windows Firewall's rules
 for the exact t5dr.exe the launcher starts and for the launcher itself (t5lobby.fwcheck, on a worker thread when the tab
 is shown and after matches), and what matches showed (this PC's UDP never reached the lobby server, or a game on the
@@ -61,7 +66,7 @@ import time
 import tkinter as tk
 from tkinter import filedialog, ttk
 
-from . import discord_rpc, fighters, fwcheck, lag, padmap, padnav, proto, ranks, servers, sets
+from . import discord_rpc, fighters, fwcheck, lag, notify, padmap, padnav, proto, ranks, servers, sets
 from .buildid import BuildInfo
 from .client import LobbyClient
 from .i18n import N_, stamp, t, translate_message
@@ -209,6 +214,10 @@ class OnlineTab:
         self._fronted = None                          # what it last came forward for (once per match / question)
         self.bring_game_forward = winfront.raise_game_window   # the game's window to the front (tests replace it)
         self._game_fronted = None                     # the match the game's window last came forward for
+        # chime + taskbar flash (notify.py; tests set fake hooks); and what is new in this player's room
+        self.notifier = notify.Notifier(enabled=self._notify_enabled, away=self._notify_away,
+                                        flash=self._notify_flash, log=_launcher_log)
+        self.room_watch = notify.RoomWatch()
         self.codes_window = None
         self.ready_deadline = None       # monotonic time the ready check ends (accepting is still possible)
         self.ready_sent = False          # we accepted: waiting for the opponent
@@ -1449,6 +1458,7 @@ class OnlineTab:
     def on_event(self, ev):
         kind = ev["t"]
         c = self.client
+        self._notify_event(ev)                             # (before anything brings the window forward)
         if kind.startswith("tour_") or kind == "match_found":
             self.tours.on_event(ev)                        # tournaments (tk_tour.py)
         if self.spec.on_event(ev):
@@ -1598,6 +1608,7 @@ class OnlineTab:
 
     def on_driver(self, n):
         k = n["kind"]
+        self._notify_driver(n)
         if self.driver is not None and self.driver.last_fps and self.driver.last_fps != self.cfg.get("last_fps"):
             self.cfg["last_fps"] = self.driver.last_fps
             self._save_cfg()
@@ -1631,6 +1642,52 @@ class OnlineTab:
             self._come_forward(("rematch", n.get("match")))     # a decision for the player
         elif k == "ask_result":
             self._come_forward(("ask", n.get("match")))
+
+    # ------------------------------------------------------------------ chime and taskbar flash (notify.py)
+    def _notify_enabled(self):
+        return bool(self.app.settings.get("notify", True))
+
+    def _notify_away(self):
+        """Is the player probably not looking at this tab: another program in front (a launcher dialog counts), the
+        launcher minimized, or another tab of it shown? A window that was never shown (tests) has no taskbar button."""
+        try:
+            if self.parent.winfo_toplevel().state() == "withdrawn":
+                return False
+            return not (self.launcher_in_front() and self._tab_viewable())
+        except tk.TclError:
+            return False
+
+    def _notify_flash(self):
+        return notify.flash_window(padnav.toplevel_hwnd(self.parent.winfo_toplevel()))
+
+    def _notify_event(self, ev):
+        """The lobby events that want the player (a match to accept, a friend's invite, a tournament set, news in
+        their room). Never an error for the tab."""
+        try:
+            kind, n = ev.get("t"), self.notifier
+            if kind == "match_found":
+                if ev.get("blind") or ev.get("ready_check"):         # (the Accept bar; not a match that starts itself)
+                    n.notify(notify.MATCH, ev.get("match"))
+            elif kind == "invited":
+                n.notify(notify.INVITE, ev.get("invite"))
+            elif kind == "tour_call":
+                n.notify(notify.TOUR, ((ev.get("tournament") or {}).get("id"), (ev.get("set") or {}).get("id")))
+            elif kind == "room":
+                me = ((self.client.me or {}).get("id")) if self.client is not None else None
+                for what, _name in self.room_watch.update(ev.get("room"), me):
+                    n.notify(what)
+            elif kind == "disconnected" or (kind == "lobby_state" and getattr(self.client, "my_room", 1) is None):
+                self.room_watch.reset()                             # (not in a room any more)
+        except Exception:                       # noqa: BLE001 -- a chime must never break the tab
+            pass
+
+    def _notify_driver(self, note):
+        """The opponent's rematch question (the driver's note)."""
+        try:
+            if note.get("kind") == "rematch_offer":
+                self.notifier.notify(notify.REMATCH, note.get("match"))
+        except Exception:                       # noqa: BLE001 -- a chime must never break the tab
+            pass
 
     def _come_forward(self, key):
         """The match is over and the game waits (pads neutral, at character select) for what comes next:

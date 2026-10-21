@@ -581,6 +581,11 @@ class App(tk.Tk):
         self.mute_var = tk.BooleanVar(value=self.settings["mute"])
         self.bg_var = tk.BooleanVar(value=self.settings["background"])
         ttk.Checkbutton(other, text=t("Mute sound"), variable=self.mute_var, command=self.save_settings).pack(anchor="w")
+        # The Online tab's chime and flashing taskbar button (lobby/t5lobby/notify.py): a match to accept, someone in the room
+        self.notify_var = tk.BooleanVar(value=bool(self.settings.get("notify", True)))
+        ttk.Checkbutton(other, text=t("Sound and taskbar flash when a match is found or someone joins my room"),
+                        variable=self.notify_var, style=self.wrap_style("TCheckbutton", 440),
+                        command=self.save_settings).pack(anchor="w", pady=(4, 0))
         ttk.Checkbutton(other, text=t("Start minimized, without taking focus (for testing)"), variable=self.bg_var,
                         style=self.wrap_style("TCheckbutton", 440), command=self.save_settings).pack(anchor="w",
                                                                                                     pady=(4, 0))
@@ -1132,6 +1137,8 @@ class App(tk.Tk):
             self.settings["spectators"] = bool(self.spectators_var.get())
             self.settings["spectators_ranked"] = bool(self.spectators_ranked_var.get())
         self.settings["mute"] = bool(self.mute_var.get())
+        if hasattr(self, "notify_var"):
+            self.settings["notify"] = bool(self.notify_var.get())
         self.settings["background"] = bool(self.bg_var.get())
         self.settings["extra_env"] = self.env_text.get("1.0", "end").strip()
         self.settings["nickname"] = self.nick_var.get().strip()

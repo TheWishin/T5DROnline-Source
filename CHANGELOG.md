@@ -50,6 +50,13 @@ part is in the README's status table.
   its functions out of date), so it is used as it is.
 
 ### Online
+- **A sound and a flashing taskbar button when the launcher has something for you.** Many of you wait for a match
+  in another window, so the launcher now plays a short chime and flashes its taskbar button (until you come back
+  to it) when a match is found and waits for your Accept, when someone joins your room, when it is your turn in a
+  room, when a friend invites you, when your tournament set is ready and when your opponent asks for a rematch.
+  Only when you are not looking at the Online tab, and once for each of these, not on every lobby update. The
+  chime is made by the launcher itself (two soft bell tones, no game audio, no file); **Settings -> Sound and
+  taskbar flash when a match is found or someone joins my room** switches it off. Texts in all languages.
 - **A room stays watchable between a match and its rematch.** The Rooms list took the Watch button away from a
   room as soon as its match ended, so whoever came by while the players chose their rematch could not watch,
   although the spectators already watching went on into the rematch. Now the room keeps Watch while its players'

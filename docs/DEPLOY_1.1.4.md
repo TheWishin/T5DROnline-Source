@@ -211,6 +211,7 @@ On this PC, nothing outside 127.0.0.1 and nothing against the real servers:
 - The diff v1.1.3 .. f2bc928 of `lobby/` read for schema, relay and env changes (above); `store.py`, `relaynode.py`,
   `relays.py`, `relayctl.py`, `udp.py`, `admin.py`, `status.py` and `deploy/linux/` are identical to v1.1.3.
 - A fresh database made by each version has the same objects (39), `user_version` 1 and `schema.tournaments` 2.
-- The lobby tests of 1.1.4 (`lobby/tests/test_private_rooms.py`, `test_spectate.py`, `test_spectate_limits.py`,
-  `test_deploy.py`, `test_ingame_pick.py` and the rest of the CI suite) cover the new server behaviour. A full
-  two-server rehearsal like DEPLOY_1.1.3.md's was not run for 1.1.4.
+- The lobby tests that cover the new server behaviour, each in its own process as CI runs them: `test_private_rooms`
+  (28 tests), `test_spectate_limits` (3), `test_spectate` (21), `test_deploy` (14), `test_ingame_pick` (17) and
+  `test_lobby` (35) all pass. The other lobby modules and a full two-server rehearsal like DEPLOY_1.1.3.md's were not
+  run for 1.1.4.

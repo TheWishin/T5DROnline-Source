@@ -5,6 +5,13 @@ part is in the README's status table.
 
 ## v1.1.4 (not released yet)
 
+### Fixes
+- **Set up controllers works again: the Controls window sees your pads.** Since 1.1.0 the window (Settings -> Set up
+  controllers...) read controllers only while it was the window in front, but it asked Windows which window it was
+  before Windows had made it, so it never counted as in front and found no controller at all -- "not recognized",
+  Xbox pads included. It now asks once the window is on the screen. The controller navigation of the Online tab
+  uses the same check. Checked on a PC with an Xbox pad: with the window in front it lists the pad.
+
 ### Security (hardening)
 - **Friends with the right password always get into a private room.** Somebody guessing a room's password from
   many internet addresses (a home connection with IPv6 has 256 of them) could keep the room's guess budget used up,

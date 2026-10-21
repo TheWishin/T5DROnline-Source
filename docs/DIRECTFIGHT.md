@@ -1236,6 +1236,35 @@ the costume a player fights in is still the confirm button (and, in a mirror
 of one costume, the game's rule that P2 gets the other costume): a
 customization shows when the player customized that costume offline.
 
+**Open (1.1.4 investigation of "with custom skins both customs turn white"):
+a side keeps the previous fight's look when its model does not change.** In one
+game process, when a side fights with the same model (character + costume) as
+in that side's previous fight, the game keeps the fighter it has loaded and the
+new block is not used: the fighter shows the previous fight's parts and
+colours -- for a first fight without customization the default costume, which is
+white for many second costumes (Kazuya's suit, Heihachi's trousers, Lili). Both
+PCs write and log the right block (`costumes written: ... custom`, the same
+hash), the picture does not follow it. A fight with another model on that side
+in between makes the next one load afresh. Reproduced offline
+(build/bugfix114/scripts/two_fights.py: P2 Kazuya default, then P2 Kazuya with
+colours -> white; custom A then custom B -> A) on the 1.1.3 and 1.1.4 builds,
+the same with every renderer switch off (`RSX_STATE_CACHE`, `RSX_RING_VIEWS`,
+`RSX_DISPATCH_SPANS`, `PS3_GCM_HEADER_RUN`, memos, pools, PSO cache), so it is
+the game's own reuse, not the 1.1.3 speed patches. Not the cause: Native, 1080p,
+1440p, 4K, Auto, the integrated Radeon, a warm shader cache, colours other than
+the default (single fights and online pairs show them right). Online it was not
+seen: a new opponent's session goes through the title first (`T5_DF_RESET`,
+on by default), which makes the game load the fighters again -- a persistent
+pair with the joiner's customization changed between two sessions showed the
+new one, and so did an in-game pick pair; within a session a side with the same
+model has the same block. So the player's white costumes are not explained yet.
+Not found yet either: what makes the game reload without the title; poking
+the per-side model words 0x10098E90, 0x104235E4/0x1042360C[side] and
+0x104257D4[side] at FIGHT START or at the stage panel changed nothing, and the
+fighter object's +0x42 crashes the game. In a player's log: two `fighters: ...
+(model 0xNN)` lines in a row with the same model on a side, the second
+`costumes written` naming a different block (another hash) for it.
+
 **Spectators** (docs/SPECTATE.md "Custom costumes in the stream"): the live stream's MATCH records are the
 replay's matches with the blocks, so a spectator's game writes them at its FIGHT START like a replay (`custom
 (replay)`, the players' blocks hash); a playback that wrote other blocks counts a setup problem. **The relay

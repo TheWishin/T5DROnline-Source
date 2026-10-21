@@ -1480,6 +1480,124 @@ class DialogTest(DialogBase):
         self.assertIn("START = B14", text)
 
 
+# ====================================================================== the window's handle (1.1.4)
+# Player report on 1.1.3: "Controller setup doesn't work, XInput neither: controller not recognized". The Controls
+# window read controllers only while its window handle was the foreground window, and it took that handle while
+# the window was being made. Tk on Windows makes a toplevel's real top-level window (the wrapper, `wm frame`) only
+# when it first shows it, so the handle was Tk's inner window, never in front: no controller was ever read
+# (1.1.0-1.1.3). Every test above hands the dialog its own foreground(), which is why none of them saw it.
+
+from unittest import mock  # noqa: E402
+
+
+@unittest.skipIf(cu is None, "no tkinter")
+class ForegroundHandleTest(DialogBase):
+    INNER, WRAPPER = 0xC02A6, 0xE0A52          # the two handles of one Controls window on a player's PC
+
+    def test_the_window_reads_controllers_once_it_is_shown(self):
+        shown = [False]
+
+        def handle(_widget):                    # what Windows answers: the inner window, the wrapper once shown
+            return self.WRAPPER if shown[0] else self.INNER
+        with mock.patch.object(padnav, "toplevel_hwnd", handle), \
+                mock.patch.object(padnav, "foreground_window", lambda: self.WRAPPER):
+            pad = xpad()
+            self.dlg = cu.ControlsDialog(self.root, FakeSettings(self.out), sources=[pad], clock=self.clock,
+                                         thread=False, ask=lambda *a: True)
+            self.addCleanup(self.cleanup_dialog)
+            self.run_for(0.2)
+            self.assertEqual(pad.reads, 0)                          # not in front: nothing is read
+            shown[0] = True
+            self.dlg.top.event_generate("<Map>")                    # Tk shows it (the wrapper is in front)
+            self.run_for(0.2)
+            self.assertGreater(pad.reads, 0)
+            self.assertEqual([d.name for d in self.dlg.poller.devices], ["XInput #1 (gamepad)"])
+            with mock.patch.object(padnav, "foreground_window", lambda: 0x1234):     # another program in front
+                self.run_for(0.05)
+                reads = pad.reads
+                self.run_for(0.2)
+                self.assertEqual(pad.reads, reads)
+
+    def test_a_lookup_that_finds_nothing_keeps_the_handle(self):
+        with mock.patch.object(padnav, "toplevel_hwnd", lambda w: 0):
+            check = padnav.ForegroundCheck(self.root)
+        self.assertEqual(check.hwnd, 0)
+        self.assertFalse(check())                                   # no handle: never in front
+        with mock.patch.object(padnav, "toplevel_hwnd", lambda w: self.WRAPPER):
+            check.refresh()
+        with mock.patch.object(padnav, "toplevel_hwnd", lambda w: 0):
+            check.refresh()
+        self.assertEqual(check.hwnd, self.WRAPPER)
+        with mock.patch.object(padnav, "foreground_window", lambda: self.WRAPPER):
+            self.assertTrue(check())
+
+
+@unittest.skipIf(cu is None or os.name != "nt", "the real window handles: Windows and tkinter only")
+class ForegroundHandleProbeTest(unittest.TestCase):
+    """The real Tk on this PC: before Tk shows a toplevel there is no wrapper (`wm frame` = the inner window) and
+    toplevel_hwnd says 0; once shown, the dialog's check holds the wrapper. The windows are fully transparent and
+    off the screen."""
+
+    def setUp(self):
+        try:
+            self.root = tk.Tk()
+        except tk.TclError:
+            self.skipTest("no display for Tk")
+        self.addCleanup(self.root.destroy)
+        self.hide(self.root)
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    @staticmethod
+    def hide(win):
+        win.attributes("-alpha", 0.0)
+        win.geometry("40x40-20000-20000")
+
+    def show(self, win):
+        for _ in range(200):
+            self.root.update()
+            if win.winfo_ismapped():
+                return
+            time.sleep(0.01)
+        self.fail("Tk never showed the window")
+
+    def test_the_handle_is_the_wrapper_made_when_tk_shows_the_window(self):
+        import ctypes
+        user32 = ctypes.WinDLL("user32")
+        user32.GetAncestor.restype = ctypes.c_void_p
+        user32.GetAncestor.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+        top = tk.Toplevel(self.root)
+        self.hide(top)
+        inner = top.winfo_id()
+        before = user32.GetAncestor(inner, 2) or 0                 # what 1.1.0-1.1.3 took
+        check = padnav.ForegroundCheck(top)
+        self.assertEqual(int(top.wm_frame(), 16), inner)           # no wrapper yet
+        self.assertEqual(padnav.toplevel_hwnd(top), 0)
+        self.assertEqual(check.hwnd, 0)
+        self.show(top)
+        wrapper = int(top.wm_frame(), 16)
+        self.assertNotEqual(wrapper, inner)
+        self.assertNotEqual(wrapper, before)
+        self.assertEqual(padnav.toplevel_hwnd(top), wrapper)
+        self.assertEqual(padnav.toplevel_hwnd(tk.Label(top)), wrapper)          # any widget of the window
+        self.assertEqual(check.hwnd, wrapper)
+        with mock.patch.object(padnav, "foreground_window", lambda: wrapper):
+            self.assertTrue(check())
+        with mock.patch.object(padnav, "foreground_window", lambda: before):
+            self.assertFalse(check())
+
+    def test_the_controls_window_checks_its_shown_window(self):
+        self.show(self.root)
+        dlg = cu.ControlsDialog(self.root, FakeSettings(self.tmp.name), sources=[xpad()], clock=Clock(),
+                                thread=False, ask=lambda *a: True)
+        self.addCleanup(lambda: dlg.alive() and (setattr(dlg.editor, "saved_text", dlg.editor.doc.render()),
+                                                 dlg.close()))
+        self.hide(dlg.top)
+        self.show(dlg.top)
+        self.assertEqual(dlg.poller.foreground.hwnd, int(dlg.top.wm_frame(), 16))
+        with mock.patch.object(padnav, "foreground_window", lambda: int(dlg.top.wm_frame(), 16)):
+            dlg.poller.step(dlg.poller.clock())
+        self.assertEqual([d.name for d in dlg.poller.devices], ["XInput #1 (gamepad)"])
 
 
 if __name__ == "__main__":

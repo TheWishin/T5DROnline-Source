@@ -455,7 +455,8 @@ class Runner(unittest.TestCase):
         self.assertEqual(cwd, os.path.join(d, "t", "cwd"))
         for k in ("PS3_WINDOW_BACKGROUND", "PS3_PAD_FILE", "PS3_PAD_FILE2", "AUDIO_RATE", "LD_FRAME_DUMP"):
             self.assertIn(k, env)
-        self.assertEqual(env["RSX_LIVE_DRAW"], "1")                  # run_game.py's defaults come along
+        if sys.platform != "darwin":                                 # run_game.py's defaults come along
+            self.assertEqual(env["RSX_LIVE_DRAW"], "1")
         self.assertEqual(env["X_TEST"], "1")
         self.assertNotIn("\\", env["PS3_PAD_FILE"])
 

@@ -26,11 +26,13 @@ DEFAULT_ENV = {
 def game_command(out=ROOT, extra_env=None):
     """(argv, env, cwd) to start the game built under `out`."""
     vfs = os.path.join(out, "game", "vfs")
-    exe = os.path.join(out, "build", "cmake", "t5dr.exe")
+    exe = os.path.join(out, "build", "cmake", "t5dr.exe" if os.name == "nt" else "t5dr")
     env = dict(os.environ)
     env["PS3_VFS_ROOT"] = vfs.replace("\\", "/")
     env["PS3_HDD0_ROOT"] = os.path.join(vfs, "dev_hdd0").replace("\\", "/")
     for k, v in DEFAULT_ENV.items():
+        if k == "RSX_LIVE_DRAW" and sys.platform == "darwin":
+            continue    # D3D12 only; macOS draws through the Metal backend
         env.setdefault(k, v)
     for k, v in (extra_env or {}).items():
         if v is None:
@@ -49,7 +51,7 @@ def main():
 
     cmd, env, cwd = game_command(os.path.abspath(a.out), dict(kv.split("=", 1) for kv in a.env))
     if not os.path.exists(cmd[0]):
-        sys.exit("t5dr.exe not built yet -- run tools/build_game.py")
+        sys.exit(f"{os.path.basename(cmd[0])} not built yet -- run tools/build_game.py")
     out = open(a.log, "w") if a.log else None
     sys.exit(subprocess.run(cmd, env=env, cwd=cwd, stdout=out, stderr=subprocess.STDOUT if out else None).returncode)
 

@@ -14,7 +14,7 @@ Steps (each skipped when its output is already there, unless --force):
   vfs      lay out game/vfs/ the way the runtime's file system expects
   lift     find functions and translate the PPU code to C++ in build/recomp/
   spu      extract and translate the SPU programs (sound core, skinning jobs) to C in build/spu/
-  compile  configure and build build/cmake/t5dr.exe
+  compile  configure and build build/cmake/t5dr.exe (macOS: build/cmake/t5dr)
 
 --out DIR puts game/, build/ and keys/ under DIR instead of the repository
 (the launcher uses <package>/native). Everything written there is
@@ -83,7 +83,7 @@ class Paths:
         self.recomp = os.path.join(self.build, "recomp")
         self.cmake = os.path.join(self.build, "cmake")
         self.spu = os.path.join(self.build, "spu")
-        self.exe = os.path.join(self.cmake, "t5dr.exe")
+        self.exe = os.path.join(self.cmake, "t5dr.exe" if os.name == "nt" else "t5dr")
         self.stamp = os.path.join(self.build, "t5dr_build.json")
 
 
@@ -261,7 +261,10 @@ def step_deps(a):
                  "zip, which already contains it.")
         if os.path.isdir(P.deps):
             rmtree(P.deps)
-        run(["git", "-c", "core.longpaths=true", "clone", "-b", PS3RECOMP_BRANCH, PS3RECOMP_URL, P.deps])
+        # autocrlf=true on every OS: some patches (0033) carry CRLF in their context lines, written
+        # against a Windows checkout, and only apply to a tree that has CRLF line endings.
+        run(["git", "-c", "core.longpaths=true", "clone", "-c", "core.autocrlf=true",
+             "-b", PS3RECOMP_BRANCH, PS3RECOMP_URL, P.deps])
         run(["git", "-C", P.deps, "checkout", "-q", PS3RECOMP_COMMIT])
         # Our fixes on top of the pinned commit (Windows build gaps and the like).
         patches = os.path.join(ROOT, "patches", "ps3recomp")
@@ -271,7 +274,14 @@ def step_deps(a):
     if not prereqs.python_crypto():
         if vend:
             fail("This package's Python is missing pycryptodome. Download the release again.")
-        run([PY, "-m", "pip", "install", "-q", "-r", os.path.join(P.deps, "requirements.txt")])
+        try:
+            run([PY, "-m", "pip", "install", "-q", "-r", os.path.join(P.deps, "requirements.txt")], capture=True)
+        except subprocess.CalledProcessError as e:
+            if "externally-managed-environment" in (e.output or ""):
+                fail("This Python refuses pip install (PEP 668; Homebrew's does). Use a virtual environment: "
+                     "python3 -m venv .venv && .venv/bin/pip install pycryptodome, then run the tools with "
+                     ".venv/bin/python.")
+            raise
 
 
 def step_keys(a):
@@ -530,7 +540,33 @@ def compile_game_dll(a):
     print(f"\nbuilt {P.exe} + t5dr_game.dll")
 
 
+def compile_unix(a):
+    """macOS: CMake + Ninja with the system compiler. The runtime is built from source with the
+    game (there is no prebuilt host), draws through ps3recomp's Metal backend and plays through SDL2."""
+    cmake, ninja = shutil.which("cmake"), shutil.which("ninja")
+    if not (cmake and ninja):
+        fail("CMake and Ninja were not found. On macOS: brew install cmake ninja sdl2 glslang spirv-cross")
+    configure = [cmake, "-S", ROOT, "-B", P.cmake, "-G", "Ninja", f"-DCMAKE_MAKE_PROGRAM={ninja}",
+                 "-DCMAKE_BUILD_TYPE=Release", f"-DPS3RECOMP_DIR={P.deps}", f"-DRECOMP_DIR={P.recomp}",
+                 f"-DSPU_DIR={P.spu}", f"-DPython3_EXECUTABLE={PY}", "-DT5DR_REQUIRE_SHADERS=ON"]
+    try:
+        run(configure, capture=True)
+    except subprocess.CalledProcessError as e:
+        if "T5DR_REQUIRE_SHADERS" in (e.output or ""):
+            fail("glslang and spirv-cross were not found; the game's shaders need them. "
+                 "On macOS: brew install glslang spirv-cross")
+        raise
+    run([cmake, "--build", P.cmake])
+    cc = subprocess.run(["cc", "--version"], capture_output=True, text=True).stdout.splitlines()
+    write_stamp((cc[0] if cc else "cc") + " (CMake)")
+    print(f"\nbuilt {P.exe}")
+
+
 def step_compile(a):
+    if sys.platform == "darwin":
+        return compile_unix(a)
+    if sys.platform != "win32":
+        fail("Building the game is supported on Windows and macOS only.")
     if prebuilt_host() and not a.full_compile:
         return compile_game_dll(a)
     vcvars = find_vcvars()

@@ -8,7 +8,7 @@ build/
 out/
 dump/
 
-*.zip
+/Tekken 5 - Dark Resurrection - Online (USA).zip
 *.pkg
 *.rap
 *.rif

@@ -42,7 +42,7 @@ index 1cf2d91..2d59e4c 100644
              const double kb = (double)savedata_dir_bytes(path) / 1024.0;
              if (kb >= 1024.0)
 diff --git a/libs/video/cellGcmSys.c b/libs/video/cellGcmSys.c
-index 604551b..fdb9649 100644
+index 5ade0f4..5f027db 100644
 --- a/libs/video/cellGcmSys.c
 +++ b/libs/video/cellGcmSys.c
 @@ -903,6 +903,18 @@ void cellGcm_request_tick(void)
@@ -106,7 +106,7 @@ index 604551b..fdb9649 100644
      static int n = 0;
      if (__atomic_fetch_add(&n, 1, __ATOMIC_RELAXED) < 8)
          fprintf(stderr, "[cellGcmSys] FIFO resync (%s) 0x%08X -> put 0x%08X\n",
-@@ -2185,17 +2206,54 @@ static void gcm_rsx_process_fifo_unlocked(void)
+@@ -2190,17 +2211,56 @@ static void gcm_rsx_process_fifo_unlocked(void)
                          fprintf(stderr, "[SEMA] m=0x%02X v=0x%08X off=0x%X\n", m, v, s_sema_offset); }
                      if (m == 0x64u)      s_sema_offset = v;
                      else if (m == 0x6Cu) vm_write32(la, v);
@@ -148,9 +148,11 @@ index 604551b..fdb9649 100644
 +                    s_sema_b_off = s_sema_offset; s_sema_b_val = v; s_sema_b_t0 = now;
 +                }
 +                if (!blk_ms || now - s_sema_b_t0 < blk_ms) {
-+                    /* Value first, address with release: the pump reads them
-+                     * in the other order, so on arm64 it never pairs a new
-+                     * address with the previous wait's value. */
++                    /* Value first, address with release: a pump that sees the
++                     * new address also sees the new value. It can still pair
++                     * the previous address with the new value; that costs one
++                     * spurious kick, or a wake that waits for the next tick,
++                     * and never steps over an unsatisfied acquire. */
 +                    __atomic_store_n(&s_sema_wait_val, v, __ATOMIC_RELAXED);
 +                    __atomic_store_n(&s_sema_wait_ea, la, __ATOMIC_RELEASE);
 +                    sem_blocked = 1;
@@ -169,7 +171,7 @@ index 604551b..fdb9649 100644
                  s_fifo_getoff += 4 + count * 4;
                  continue;
              }
-@@ -2519,8 +2577,14 @@ static void gcm_rsx_process_fifo_unlocked(void)
+@@ -2524,8 +2584,14 @@ static void gcm_rsx_process_fifo_unlocked(void)
            }
        } else burned = 0; }
  
@@ -185,7 +187,7 @@ index 604551b..fdb9649 100644
            if (++stuck >= 8) { gcm_fifo_dump_around(s_fifo_getoff);
                               gcm_fifo_resync_why("stuck-get", &s_fifo_getoff, put); stuck = 0; }
        } else { stuck = 0; last = s_fifo_getoff; } }
-@@ -2700,8 +2764,19 @@ void cellGcm_fifo_recycle(u32 ctx_ea)
+@@ -2705,8 +2771,19 @@ void cellGcm_fifo_recycle(u32 ctx_ea)
  
      /* Wait (bounded ~2s) for the walker to consume the tail + take the jump so
       * no commands are lost; a stalled ticker degrades to dropped commands. */
@@ -206,7 +208,7 @@ index 604551b..fdb9649 100644
      if (spins >= 2000) {
          static int warned = 0;
          if (__atomic_fetch_add(&warned, 1, __ATOMIC_RELAXED) < 4)
-@@ -2740,8 +2815,11 @@ s32 cellGcmSetDisplayBuffer(u32 bufferId, u32 offset, u32 pitch,
+@@ -2745,8 +2822,11 @@ s32 cellGcmSetDisplayBuffer(u32 bufferId, u32 offset, u32 pitch,
       * always in RSX local memory (location 0). */
      if (rsx_live_draw_enabled())
          rsx_live_draw_set_display_buffer(bufferId, 0, offset, pitch, width, height);
@@ -220,7 +222,7 @@ index 604551b..fdb9649 100644
  
      return CELL_OK;
  }
-@@ -3384,6 +3462,14 @@ u32 cellGcmResolveLocated(int local, u32 offset)
+@@ -3389,6 +3469,14 @@ u32 cellGcmResolveLocated(int local, u32 offset)
  {
      if (local)
          return s_config.localAddress + offset;
@@ -236,10 +238,47 @@ index 604551b..fdb9649 100644
  }
  
 diff --git a/libs/video/rsx_draw_engine.c b/libs/video/rsx_draw_engine.c
-index 020292d..5ab5be6 100644
+index 020292d..3198e2a 100644
 --- a/libs/video/rsx_draw_engine.c
 +++ b/libs/video/rsx_draw_engine.c
-@@ -853,6 +853,12 @@ static u32 eng_texture_slot(u32 location, u32 offset, u32 fmt, u32 w, u32 h,
+@@ -106,6 +106,7 @@ typedef struct {
+     int cleared;
+     int had_write;
+     int snapshot_valid;
++    u32 snap_w, snap_h;    /* size the snapshot was cropped to              */
+     u32 snapshot_rgba;     /* colour-format (depth bytes) copy, or 0      */
+     int snapshot_rgba_valid;
+ } eng_zdepth;
+@@ -683,15 +684,25 @@ static u32 eng_zdepth_get(u32 location, u32 offset, u32 rt_w, u32 rt_h)
+  * a depth-WRITING draw: a write-enable bit alone does not prove the pass
+  * produced a usable depth map, and a clear-only zeta falls through to guest
+  * memory instead (rsx_live_draw.c:6016-6018, 6265-6269). */
+-static u32 eng_zdepth_snapshot(u32 slot)
++static u32 eng_zdepth_snapshot(u32 slot, u32 tex_w, u32 tex_h)
+ {
+     eng_zdepth* z = &g.zdepths[slot];
+     if (!z->handle || !z->had_write) return 0;
+-    if (z->snapshot_valid && z->snapshot) return z->snapshot;
++    /* The copy is the guest texture's size, taken from the target's origin:
++     * the target is never smaller than the canvas, so a 512x512 shadow map
++     * sits in the corner of a larger depth image, and its normalised
++     * coordinates (and the texel size of a PCF tap) only make sense against
++     * the map itself. */
++    const u32 w = (tex_w && tex_w < z->w) ? tex_w : z->w;
++    const u32 h = (tex_h && tex_h < z->h) ? tex_h : z->h;
++    if (z->snapshot_valid && z->snapshot && z->snap_w == w && z->snap_h == h)
++        return z->snapshot;
+     if (!g.be->depth_snapshot) return 0;
+-    const u32 tex = g.be->depth_snapshot(g.be->user, z->handle, z->w, z->h);
++    const u32 tex = g.be->depth_snapshot(g.be->user, z->handle, w, h);
+     if (!tex) return 0;
+     z->snapshot = tex;
++    z->snap_w = w;
++    z->snap_h = h;
+     z->snapshot_valid = 1;
+     return tex;
+ }
+@@ -853,6 +864,12 @@ static u32 eng_texture_slot(u32 location, u32 offset, u32 fmt, u32 w, u32 h,
                              u32 levels, u32 pitch, int cube, u32 remap)
  {
      if (!w || !h || w > ENG_MAX_TEX_DIM || h > ENG_MAX_TEX_DIM) return 0;
@@ -252,7 +291,7 @@ index 020292d..5ab5be6 100644
      const u32 span = eng_texture_span(fmt, w, h, levels, pitch, cube);
      if (!span) return 0;
  
-@@ -964,6 +970,32 @@ static u32 eng_cube_mask(void)
+@@ -964,6 +981,32 @@ static u32 eng_cube_mask(void)
      return mask;
  }
  
@@ -285,7 +324,7 @@ index 020292d..5ab5be6 100644
  /* Are both of the guest's own programs resident? One answer, used by the
   * layout and by the pipeline, because they must not disagree: the built-in
   * program declares all sixteen inputs, so narrowing the layout for it would
-@@ -1100,6 +1132,8 @@ static u32 eng_pipeline_get(const rsx_vertex_layout_plan* layout,
+@@ -1100,6 +1143,8 @@ static u32 eng_pipeline_get(const rsx_vertex_layout_plan* layout,
       * a constant change must not be a new pipeline), the export-width bit of
       * SHADER_CONTROL, the cube and vertex-texture masks, the input layout,
       * and the structural render state. */
@@ -294,7 +333,7 @@ index 020292d..5ab5be6 100644
      u64 key = 1469598103934665603ull;
      if (fixed) {
          static const u32 fixed_tag = 0x4E464958u;   /* "XIFN" */
-@@ -1112,6 +1146,11 @@ static u32 eng_pipeline_get(const rsx_vertex_layout_plan* layout,
+@@ -1112,6 +1157,11 @@ static u32 eng_pipeline_get(const rsx_vertex_layout_plan* layout,
          key = eng_fnv1a(&fp_ctrl_key, sizeof fp_ctrl_key, key);
          key = eng_fnv1a(&cube_mask, sizeof cube_mask, key);
          key = eng_fnv1a(&vtex_mask, sizeof vtex_mask, key);
@@ -306,7 +345,7 @@ index 020292d..5ab5be6 100644
      }
      key = eng_fnv1a(&layout->mask, sizeof layout->mask, key);
      key = eng_fnv1a(&layout->stride, sizeof layout->stride, key);
-@@ -1145,6 +1184,9 @@ static u32 eng_pipeline_get(const rsx_vertex_layout_plan* layout,
+@@ -1145,6 +1195,9 @@ static u32 eng_pipeline_get(const rsx_vertex_layout_plan* layout,
              rsx_fp_apply_alpha_test_buffered(s_ps_hlsl, sizeof s_ps_hlsl,
                                               rs->alpha_func) < 0)
              fi = -1;
@@ -316,7 +355,16 @@ index 020292d..5ab5be6 100644
      }
      if (vi > 0 && fi > 0)
          handle = g.be->pipeline_create(g.be->user, s_vs_hlsl, s_ps_hlsl, rs,
-@@ -1799,11 +1841,22 @@ static u32 eng_present_surface(u32 buffer_id)
+@@ -1465,7 +1518,7 @@ static u32 sink_bind_textures(const u32* target_slots, u32 n_targets,
+             for (u32 i = 0; i < g.n_zdepths; i++)
+                 if (g.zdepths[i].location == t.location &&
+                     g.zdepths[i].offset == t.offset && current_zslot != i) {
+-                    const u32 snap = eng_zdepth_snapshot(i);
++                    const u32 snap = eng_zdepth_snapshot(i, t.width, t.height);
+                     if (snap) textures[u] = snap;
+                     break;
+                 }
+@@ -1799,11 +1852,22 @@ static u32 eng_present_surface(u32 buffer_id)
      if (buffer_id < 8 && g.display_buffers[buffer_id].valid) {
          const eng_display_buffer* d = &g.display_buffers[buffer_id];
          u32 best = ENG_INVALID;
@@ -344,7 +392,7 @@ index 020292d..5ab5be6 100644
      }
      return eng_current_surface();
 diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
-index e98e889..4cd92f6 100644
+index fc8d758..2f7be0c 100644
 --- a/libs/video/rsx_live_draw.c
 +++ b/libs/video/rsx_live_draw.c
 @@ -91,6 +91,9 @@ void rsx_pf_guest_flip(void) {}
@@ -370,10 +418,24 @@ index aee795c..d0f59bb 100644
  /* --- test hooks ---------------------------------------------------------- */
  
 diff --git a/libs/video/rsx_metal_backend.m b/libs/video/rsx_metal_backend.m
-index 24c9776..4e20bc1 100644
+index 24c9776..a3a9e5d 100644
 --- a/libs/video/rsx_metal_backend.m
 +++ b/libs/video/rsx_metal_backend.m
-@@ -2482,13 +2482,30 @@ static u32 eng_depth_snapshot(void* user, u32 depth, u32 w, u32 h)
+@@ -2173,10 +2173,12 @@ static void release_surfaces(void)
+ "                            sampler s [[sampler(0)]]) {\n"
+ "    return src.sample(s, i.uv);\n"
+ "}\n"
++/* Read by pixel, not sampled: the target may be smaller than the source, in which
++ * case it is a crop from the origin. */
+ "fragment float eng_depth_fs(BOut i [[stage_in]],\n"
+ "                            depth2d<float> src [[texture(0)]],\n"
+ "                            sampler s [[sampler(0)]]) {\n"
+-"    return src.sample(s, i.uv);\n"
++"    return src.read(uint2(i.pos.xy));\n"
+ "}\n"
+ "fragment float4 eng_depth_rgba8_fs(BOut i [[stage_in]],\n"
+ "                                   depth2d<float> src [[texture(0)]],\n"
+@@ -2482,19 +2484,41 @@ static u32 eng_depth_snapshot(void* user, u32 depth, u32 w, u32 h)
              return 0;
          }
      }
@@ -392,7 +454,9 @@ index 24c9776..4e20bc1 100644
 +     * see the older contents. */
 +    static struct { u32 depth, dst, w, h; } cache[32];   /* engine thread only */
 +    static u32 ncache;
-+    u32 dst = 0;
++    /* TODO: past 32 entries an eviction can leave the engine's own handle to the
++     * evicted copy dangling (rsx_draw_engine.c keeps one per zeta, at most 64). */
++    u32 dst = 0, evicted = 0;
 +    for (u32 i = 0; i < ncache; i++)
 +        if (cache[i].depth == depth && cache[i].w == w && cache[i].h == h && eng_obj(cache[i].dst)) {
 +            dst = cache[i].dst; break; }
@@ -405,30 +469,50 @@ index 24c9776..4e20bc1 100644
 +        dst = eng_obj_add([s_dev newTextureWithDescriptor:td]);
 +        if (!dst) return 0;
 +        u32 slot = ncache < 32 ? ncache++ : (depth % 32);
-+        if (cache[slot].dst) eng_obj_release(NULL, cache[slot].dst);   /* the slot's old copy, retired */
++        evicted = cache[slot].dst;
 +        cache[slot].depth = depth; cache[slot].dst = dst; cache[slot].w = w; cache[slot].h = h;
 +    }
  
      EngRecord* r = &s_eng_rec[s_eng_rec_count++];
      memset(r, 0, sizeof *r);
-@@ -2566,7 +2583,7 @@ static u32 eng_depth_snapshot_rgba8(void* user, u32 depth, u32 w, u32 h)
+     r->kind = ENG_REC_DEPTH_RESOLVE;
+     r->depth = depth;
+     r->resolve_dst = dst;
++    /* Released only now: with a record queued the slot is not recycled until
++     * the frame is encoded, so a draw still binding the old copy is safe. */
++    if (evicted) eng_obj_release(NULL, evicted);
+     return dst;
+ }
+ 
+@@ -2566,9 +2590,9 @@ static u32 eng_depth_snapshot_rgba8(void* user, u32 depth, u32 w, u32 h)
      }
      /* One persistent decode target per depth target: each resolve record
       * re-renders it in stream order, so nothing leaks per frame. */
 -    static struct { u32 depth, dst, w, h; } cache[32];
 +    static struct { u32 depth, dst, w, h; } cache[32];   /* engine thread only */
      static u32 ncache;
-     u32 dst = 0;
+-    u32 dst = 0;
++    u32 dst = 0, evicted = 0;
      for (u32 i = 0; i < ncache; i++)
-@@ -2581,6 +2598,7 @@ static u32 eng_depth_snapshot_rgba8(void* user, u32 depth, u32 w, u32 h)
+         if (cache[i].depth == depth && cache[i].w == w && cache[i].h == h && eng_obj(cache[i].dst)) {
+             dst = cache[i].dst; break; }
+@@ -2581,6 +2605,7 @@ static u32 eng_depth_snapshot_rgba8(void* user, u32 depth, u32 w, u32 h)
          dst = eng_obj_add([s_dev newTextureWithDescriptor:td]);
          if (!dst) return 0;
          u32 slot = ncache < 32 ? ncache++ : (depth % 32);
-+        if (cache[slot].dst) eng_obj_release(NULL, cache[slot].dst);   /* the slot's old copy, retired */
++        evicted = cache[slot].dst;
          cache[slot].depth = depth; cache[slot].dst = dst; cache[slot].w = w; cache[slot].h = h;
      }
      EngRecord* r = &s_eng_rec[s_eng_rec_count++];
-@@ -3721,6 +3739,14 @@ int rsx_metal_backend_pump_messages(void)
+@@ -2589,6 +2614,7 @@ static u32 eng_depth_snapshot_rgba8(void* user, u32 depth, u32 w, u32 h)
+     r->depth = depth;
+     r->resolve_dst = dst;
+     r->clear_flags = 1;   /* rgba8 decode */
++    if (evicted) eng_obj_release(NULL, evicted);   /* after the record, see eng_depth_snapshot */
+     return dst;
+ }
+ 
+@@ -3721,6 +3747,14 @@ int rsx_metal_backend_pump_messages(void)
  #endif
  }
  
@@ -465,7 +549,7 @@ index 30538f1..21d87f0 100644
  /* ---------------------------------------------------------------------------
   * Waitable handles: events, semaphores, threads, waitable timers
 diff --git a/runtime/ppu/tests/boot_main.cpp b/runtime/ppu/tests/boot_main.cpp
-index b555dea..bea013a 100644
+index bad848a..dd99ded 100644
 --- a/runtime/ppu/tests/boot_main.cpp
 +++ b/runtime/ppu/tests/boot_main.cpp
 @@ -298,9 +298,11 @@ extern "C" int  rsx_d3d12_backend_pump_messages(void);
@@ -492,7 +576,7 @@ index b555dea..bea013a 100644
  }
  static int rsx_pump_messages(void)
  { return s_rsx_live ? rsx_null_backend_pump_messages() : rsx_backend_pump(); }
-@@ -1910,7 +1916,14 @@ static LONG WINAPI vm_commit_veh(EXCEPTION_POINTERS* ep)
+@@ -1945,7 +1951,14 @@ static LONG WINAPI vm_commit_veh(EXCEPTION_POINTERS* ep)
  }
  #endif
  
@@ -507,7 +591,7 @@ index b555dea..bea013a 100644
  {
      if (argc < 2) { printf("usage: %s <PPU ELF>\n", argv[0]); return 2; }
  #ifdef PS3_GAME_DLL
-@@ -2080,3 +2093,57 @@ int main(int argc, char** argv)
+@@ -2115,3 +2128,57 @@ int main(int argc, char** argv)
       * produce. */
      return g_sys_process_exit_called ? (int)g_sys_process_exit_code : 0;
  }

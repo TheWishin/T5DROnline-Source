@@ -1731,6 +1731,8 @@ MESSAGES = {
     "With a controller: A accepts, B declines.": "コントローラー：A で受ける、B で断る。",
     "Online nobody can pause the fight: Start does not open the pause menu.":
         "オンラインでは誰も対戦をポーズできません。Start でポーズメニューは開きません。",
+    "Intros and the replay after a round are skipped once both players have pressed Start.":
+        "イントロとラウンド後のリプレイは、両プレイヤーが Start を押すとスキップされます。",
     "Lobby": "ロビー",
     "Leaderboard": "ランキング",
     "Profile": "プロフィール",

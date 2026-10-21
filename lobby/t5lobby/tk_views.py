@@ -459,6 +459,10 @@ class OnlineView:
         self.wrap(ttk.Label(how, text=t("Online nobody can pause the fight: Start does not open the pause menu."),
                             style="Card.Faint.TLabel", justify="left"), how, 60).grid(
             row=7, column=0, columnspan=2, sticky="w", pady=(px(2), 0))
+        # docs/NETPLAY.md "Skipping intros and replays online": START counts there, from both players
+        self.wrap(ttk.Label(how, text=t("Intros and the replay after a round are skipped once both players have pressed Start."),
+                            style="Card.Faint.TLabel", justify="left"), how, 60).grid(
+            row=8, column=0, columnspan=2, sticky="w", pady=(px(2), 0))
         self._mode_changed(save=False)
         return scr
 

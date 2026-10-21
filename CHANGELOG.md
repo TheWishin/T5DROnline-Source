@@ -100,6 +100,14 @@ part is in the README's status table.
 - **Mokujin and the random cell draw anew in every match.** In a rematch Mokujin used to copy the same fighter as in
   the match before (and every match of the session the same one). Now every match draws again, still the same on
   both PCs and in the replay. Replays from 1.1.3 play back as they were recorded.
+- **Skip the intros and the replay after a round online: both players press Start.** Online nobody could skip
+  anything: Start was taken out of both players' inputs so that nobody can pause the fight, and the replay after
+  every round (about 9 s) and the fighters' intros (about 7 s) always played to the end. Now the fighters' intros
+  before round 1, and after a round its slow motion, replay and the way to the next round are skipped as soon as
+  **both** players have pressed Start during them (not necessarily at the same time; the log names who pressed).
+  One player alone skips nothing, and Start still never pauses an online fight. Both games skip on the same frame,
+  in rollback and in lockstep; replays and spectators show the skips exactly as they happened. Offline nothing
+  changes. The launcher's Online page says it in all languages.
 - **A room stays watchable between a match and its rematch.** The Rooms list took the Watch button away from a
   room as soon as its match ended, so whoever came by while the players chose their rematch could not watch,
   although the spectators already watching went on into the rematch. Now the room keeps Watch while its players'

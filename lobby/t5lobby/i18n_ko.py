@@ -1706,6 +1706,8 @@ MESSAGES = {
     "With a controller: A accepts, B declines.": "컨트롤러: A 수락, B 거절.",
     "Online nobody can pause the fight: Start does not open the pause menu.":
         "온라인에서는 누구도 대전을 일시정지할 수 없습니다. Start로 일시정지 메뉴가 열리지 않습니다.",
+    "Intros and the replay after a round are skipped once both players have pressed Start.":
+        "인트로와 라운드 후 리플레이는 두 플레이어가 모두 Start를 누르면 건너뜁니다.",
     "Lobby": "로비",
     "Leaderboard": "순위표",
     "Profile": "프로필",

@@ -93,6 +93,12 @@ The local pad (keyboard or controller, not a player in a replay) steers it:
 | START | Enter | pause; again: go on |
 | SELECT | Tab | end the replay (the game closes) |
 
+The players' own skips are part of the recording: an intro or a round's replay that both players
+skipped with START online (1.1.4, NETPLAY.md "Skipping intros and replays online") is skipped on the
+same frame in the playback -- the recorded inputs go through the same rule, so the playback stays
+identical. The viewer's START only pauses the playback; it cannot skip anything there (that would
+make the playback differ from the live match).
+
 The game closes by itself a few seconds after the watched match's KO, and the tab shows the verdict
 ("identical to the live match (N checks, same result)", or the frame from which it went another way).
 `T5_REPLAY_CONTROLS=0` takes the pad away from the playback (tests), `T5_REPLAY_EXIT=0` keeps the

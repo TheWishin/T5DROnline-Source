@@ -419,17 +419,18 @@ both places where START skips something and cannot pause:
 
 | where (game state at the frame's boundary) | START | why |
 |---|---|---|
-| fight phase 17, round state `0x1009322C` = 9: the replay after a round's KO | kept | it skips the replay (~9 s), as it always did online; either player may, both games skip together (probe s1900: replay 9 -> 0xC 5 frames after the press, no pause) |
+| fight phase 17, round state `0x1009322C` 1, 2 (the fighters' intros), 8, 9, 0xC (after a round: KO slow motion, replay, on to the next round) | the rule's own presses once **both** players pressed START there (1.1.4, "Skipping intros and replays online" below); until then taken out | the skip; one player alone skips nothing (1.1.2/1.1.3 kept START in the replay for either player, but no player's START ever left the PC, so nobody could skip it) |
 | from 40 frames after the match was decided in this fight (decided byte `0x1008EBD5` rising after a fought frame) until the game asks for the select screen | kept | the direct-fight driver (lockstep, `df_fight.cpp post_match_skip`) and the rollback loop's post-match rule (`rb_net.cpp post_record`) skip the last KO replay and the win pose with START from 40 frames after the decision ("After the match", DIRECTFIGHT.md) |
-| everything else: the round's READY/FIGHT (round state 4), the fight (5), the KO frame and its slow motion (6, 8: START did nothing there, probe s1760), on to the next round (0xC), the intros, a rematch's select screen in lockstep | taken out | the pause menu |
+| everything else: the round's READY/FIGHT (round state 4), the fight (5), the KO frame (6), the loading (phase 0..12), a rematch's select screen in lockstep | taken out | the pause menu |
 
 The window after the decision opens only where the decided byte rises after a frame that was
 fought: the last match's byte is still set ~230 frames into a rematch's fight, where the pause
 menu works again.
 
-**Each player's own START never goes out** (`netplay_core.cpp device_input`, `np::set_no_start`):
-in a direct-fight session the local devices' START bit -- the pad's START, the keyboard's Enter,
-any remap or macro that ends in START -- is dropped before the input is sent. The driver's own
+**Each player's own START goes out only where it can skip** (`netplay_core.cpp device_input`,
+`np::set_no_start`, `t5_hooks.cpp start_gate`): in a direct-fight session the local devices' START
+bit -- the pad's START, the keyboard's Enter, any remap or macro that ends in START -- is dropped
+before the input is sent, except while the live boundary shows a skip part (1.1.4). The driver's own
 presses (`g_local_inject`), the rollback rule's forced input and the test inputs
 (`T5_NET_SCRIPT`, `T5_NET_PADFILE`) are not touched there; the tests use the latter to play a
 modified client that sends START anyway, and the frame rule takes it out again.
@@ -492,6 +493,77 @@ In the game (build/nopause/runs; two games on this PC, minimized, muted, below-n
 | s1760 / s1900 (main's code) | START in a round's KO slow motion / in its replay | nothing / the replay skipped 5 frames later; no menu either time |
 | off1 | offline direct fight (no netplay), START in the fight | the PAUSE menu opens (0x10092EA0 -> 2 at the press; screenshot) |
 | smoke quick | offline menus, arcade, VS with two pads, practice, title twice | PASS (81 checks) with up to 10 other games running; an earlier run beside 16-20 other games failed `practice` (black frames, no fight HUD) -- main's exe failed it the same way at that load |
+
+## Skipping intros and replays online (branch skip-114, 1.1.4)
+
+Owner's request: "replays should be skippable, and the intro at match start" -- the replay after a
+round's KO, the fighters' intros before round 1, the way to the next round. **Rule: online a part is
+skipped once both players have pressed START in it** (not at the same time: each press counts until
+the part ends). Offline nothing changes (any press skips as the game does); a replay file or a
+spectator's stream plays the recorded presses through the same rule, so it shows exactly what the
+live match did.
+
+**How the game skips (offline).** The round's state machine (`func_00044398`, a switch on the round
+state `0x1009322C` read by `func_0004137C`) runs every fight frame. State 1 is the P1 fighter's intro
+(171 frames), 2 the P2 fighter's (240): their cases (`0x44B28`, `0x44E18`) skip to the next state
+when that fighter's player has a button of mask `0x8F0` newly pressed in the game's per-player button
+word (`[TOC-0x7748] + 0 / + 4`; in VS START is one of them, the attack buttons and directions are not:
+mashing them never shortened an intro) or the intro animation is done (`func_0001377C`). State 9
+(the replay, 524 frames) and 0xC (on to the next round, 149 frames) go on with START too
+(`func_000425F0`, `func_00042028`). Measured with the rule's test override (probe2/probe3, rollback
+pair, `T5_DF_WATCH`): START cut state 1 to 42 frames, 2 to 32, 0xC to 43, 9 ends 2-3 frames after a
+press; it did nothing in READY/FIGHT (4: 169 frames either way) and the KO slow motion (8), and the
+pause menu (`0x10092EA0`) never opened. Online none of it was reachable: the rule took START out
+everywhere but the replay, and no player's START ever left the PC (`set_no_start`), so the 1.1.2
+"either player skips the replay" never happened in a real match.
+
+**The rule** (`no_pause.h`, `t5_hooks.cpp no_pause_rule`): two skip parts, by round state in the
+game mode's fight (phase 17, the select screen not asked for, the match not decided in this fight):
+the intro (1, 2) and after a round (8, 9, 0xC; the KO slow motion counts presses although START does
+nothing there). Per boundary the rule records the part and which players' START it has seen in this
+part, frame f's inputs included (bit 0 = P1, bit 1 = P2), and the frame both had. Until both: START
+taken out of both inputs, as everywhere. From that frame on the rule presses START for **both**
+players itself -- 3 frames, then every 20 frames while the part lasts: one press skips the P1 intro,
+the next the P2 intro (each fighter's intro listens to its own player), the replay, the way to the
+next round. The players' own START does not reach the game there either. Everything else is the
+1.1.2 rule unchanged: the post-match window (the last KO replay and the win pose, skipped by the
+driver / the rollback loop's post-match rule without anybody pressing) keeps START as it comes,
+the decided match has no skip part, START never reaches the fight. The rule is a function of the
+game state at the boundaries and the frames' two inputs, treats P1 and P2 alike and is re-recorded
+for re-simulated frames, so both PCs give the game the same inputs (the argument above). Each
+player's device START goes out only while this PC's live boundary shows a skip part (`start_gate`,
+before the sample: the rollback loop's boundary, lockstep's `begin_frame`): elsewhere it would only
+make the peer mispredict. Under rollback a press is predicted like any input (the last input
+repeats); the frames between a press and its arrival are re-simulated as usual (these parts are
+ordinary fight frames: no loads, compared state hashes). The log says who pressed: `frame N: the
+intro (round state 1): START pressed by P1 (skipped once P2 presses it too)` / `... by both players
+-- skipped` (live frames; under rollback a predicted press can still be taken back), and the match
+tally adds "skipped on N (both players pressed)".
+
+Test hook `T5_TEST_SKIP_PRESS=N[:M]`: this PC's player presses START (3 frames, like a script, not
+filtered) N frames into every intro and M frames into every part after a round (-1 = never).
+`tests/c/no_pause_test.cpp` (tests/test_no_pause.py) models it: intros, KO slow motion, replay and
+the way to the next round with their START reactions; P1 alone, P2 alone and both mashing START
+(also as a modified client), lockstep, rollback (inputs 0-9 frames late, ~8,000-9,000 rollbacks per
+PC) and replay: identical on both PCs at every frame, never paused, one player never skips a thing,
+both skip every intro, replay and way to the next round.
+
+**Proof** (build/skip114/runs; `tools/fight_flow_test.py --flow persistent --pattern NR --matches 2
+--rounds 2 --mash --polite`: a new session and a rematch, first to 2 rounds, two games on this PC, both
+recording replays; round-state durations from `T5_DF_WATCH=1009322C` in frames, natural lengths: P1
+intro 171-200, P2 intro 176-240, replay 524, on to the next round 149):
+
+| run | who presses START | intros (P1 / P2) | replay, next round | result |
+|---|---|---|---|---|
+| rb_one / ls_one (rollback / lockstep) | P1 only (20 frames into each intro, 150 after each round) | 171, 200 / 240, 176: full | 524, 149: full | same results and final hashes on both PCs (2461a6ef.., ed2d272b.. / 34361a19.., ef73a330..), 0 mismatching frames; P1's START taken out (9-10 frames per match) |
+| rb_both / ls_both | P1 as above, P2 50 / 200 frames in | 52-53 / 20 | 85-86, 19 | same results and hashes (83066c2c.., 746ac84b.. / 82330c53.., 752a87e8..), 0 mismatching frames; both PCs' round states identical frame for frame |
+| rb_mash / ls_mash | both mash START (`--mash-start 4`: every ~4th input, alone or with an attack) | 34-68 / 20 | 4-20, 19 | same results and hashes, 0 mismatching frames; pause menu opened 0 times; START taken out on ~385 + 382 frames |
+| rb_stress / ls_stress | both press as in rb_both and mash START; joiner stalled 60 ms every 0.2-0.6 s (`--stutter 60`), 5 % of packets dropped | 20-53 / 20 | 4-16, 19 | same results and hashes, 0 mismatching frames, pause menu 0; 1,267 rollbacks (rollback) |
+| replays | the 16 recordings of these 8 pairs (both sides) played back (`tools/replay_play.py`) | | | 16 of 16 IDENTICAL (2,914 hashes compared, 0 different, every result and sync point equal); the playbacks skip on the recorded frames (60 "pressed by both players" lines, round-state durations as live) |
+
+The post-match part (the last KO replay, the win pose) was skipped by the driver / the rollback rule as
+before in every match (2-3 frames of replay). Offline (smoke quick: arcade, VS with two pads,
+practice) PASS.
 
 ## Connection problems
 

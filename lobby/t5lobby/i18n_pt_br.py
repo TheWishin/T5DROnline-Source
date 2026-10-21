@@ -1733,6 +1733,8 @@ MESSAGES = {
     "With a controller: A accepts, B declines.": "Com controle: A aceita, B recusa.",
     "Online nobody can pause the fight: Start does not open the pause menu.":
         "Online ninguém pode pausar a luta: Start não abre o menu de pausa.",
+    "Intros and the replay after a round are skipped once both players have pressed Start.":
+        "As introduções e o replay depois de um round são pulados quando os dois jogadores apertam Start.",
     "Lobby": "Lobby",
     "Leaderboard": "Ranking",
     "Profile": "Perfil",

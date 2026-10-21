@@ -522,6 +522,7 @@ MESSAGES = {
         "là dans les matchs amicaux et les salons, pas en Ranked.",
     "Sound and start": "Son et démarrage",
     "Mute sound": "Couper le son",
+    "Sound and taskbar flash when a match is found or someone joins my room": "Son et clignotement dans la barre des tâches quand un match est trouvé ou que quelqu'un rejoint mon salon",
     "Start minimized, without taking focus (for testing)": "Démarrer réduit, sans prendre le focus (pour les tests)",
     "Advanced: extra settings, one NAME=VALUE per line": "Avancé : réglages supplémentaires, un NOM=VALEUR par ligne",
     "Internal resolution": "Résolution interne",

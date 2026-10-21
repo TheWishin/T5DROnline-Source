@@ -23,6 +23,7 @@ install for players or for whoever runs the server.
 - [Rooms](#rooms) (classic, community rooms that take turns, private rooms with a password or an invite code)
 - [Friends and invites](#friends-and-invites)
 - [Discord Rich Presence](#discord-rich-presence)
+- [Chime and taskbar flash](#chime-and-taskbar-flash)
 - Tournaments: their own page, [TOURNAMENTS.md](TOURNAMENTS.md)
 - [Protocol reference](#protocol-reference)
 - [Security and abuse protection](#security-and-abuse-protection)
@@ -49,6 +50,7 @@ lobby/
     fighters.py   character / stage keys <-> the game's ids (data/fighters.json) for T5_FIGHT
     match_driver.py  the glue: match_start -> game -> result file -> report -> rematch
     discord_rpc.py   optional Discord Rich Presence over the Discord app's local IPC pipe (no SDK)
+    notify.py     the chime (made in code) and the taskbar flash for a player who is elsewhere, and their rules
     tk_tab.py     the launcher's Online tab (tkinter): its logic and state; launcher/online.py imports it
     tk_views.py   the Online tab's screens: login, lobby, searching, match found, in match, result, errors
     tk_tour.py    the Online tab's Tournaments page, bracket canvas, Create window, "Your tournament set is ready"
@@ -650,6 +652,34 @@ Creating the application (the owner, once, about 5 minutes; nobody else can do t
 The application needs no bot, no OAuth redirect and no secret; the id is not a secret either (every Discord status
 shows it to anyone who looks).
 
+## Chime and taskbar flash
+
+(1.1.4; code: `notify.py`, the hooks in `tk_tab.py`, Settings -> "Sound and taskbar flash when a match is found or
+someone joins my room", launcher.json `"notify"`, on by default.) Players wait for a match in another window, so the
+tab tells them when something needs them -- one chime and the launcher's taskbar button flashing until its window is
+in front (FlashWindowEx, `FLASHW_TRAY | FLASHW_TIMERNOFG`; it also ends when the launcher brings itself forward after
+a match):
+
+| Event | When |
+|---|---|
+| match found | `match_found` that shows Accept (quick, ranked, a room's pair, a tournament's next game); not a match that starts by itself (an accepted invite, a ranked set's next game) |
+| someone joined | a new member in the room this player hosts (a visitor is not told who comes and goes) |
+| your turn | in a community room, the countdown to a match with this player began |
+| invite | `invited`: a friend's invite to a casual match or a room |
+| tournament set | `tour_call`: "Your tournament set is ready" |
+| rematch | the opponent's rematch question |
+
+Not for a challenge from a stranger in the lobby (anybody could ring the bell), chat, friend requests or any lobby
+update. Only while the player is elsewhere: another program (or a launcher dialog) in front, the launcher minimized,
+or another tab shown; never for a window that was never shown. At most once per event (the match id, the invite id,
+the tournament set -- a room's news is found by comparing one `room` message with the one before), and events within
+3 seconds of a chime make no second one (someone joins a classic room and the match starts: one chime).
+
+The sound is made in code: two soft bell tones (E5, then B5), about half a second, a 16-bit mono WAV built in memory --
+no game audio, no file. winsound cannot play a memory image asynchronously, so a daemon thread plays it and the Tk
+thread never waits; if Windows refuses it (no sound card), the system's "SystemAsterisk" plays instead. `T5_NOTIFY=0`
+turns the real sound and flash off (every test sets it; the tests give the tab a fake player and a fake flash).
+
 ## Protocol reference
 
 ### Control channel
@@ -947,6 +977,11 @@ restart keeping friendships, the schema migration (old, oldest, newer, a failed 
 the tab. **Discord** (`test_discord.py`): the IPC frames against a fake Discord on a test-only pipe (never the
 real Discord's): handshake, updates, taking it down, the rate limit, PING, no Discord, Discord starting later and
 restarting, a refused application id, the configuration, the texts in English and German.
+
+**Chime and taskbar flash** (`tests/test_notify.py`: the generated WAV -- format, softness, two tones, no file -- the
+playing thread and its fallback, the FlashWindowEx flags, the once-per-event and 3-second rules, what a room's messages
+make new, the Settings checkbox; `test_tk_notify.py`: each event in the tab against a real server with a fake player and
+a fake flash, the setting, the tab's own "player is elsewhere" rule).
 
 **Regional relays** (`test_relays.py`, `lobby/tools/relay_e2e.py`): the control channel, the relay node's
 limits, the choice by the sum of both round trips, dead / silent / full nodes, relays.json changes, the

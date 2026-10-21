@@ -504,6 +504,7 @@ MESSAGES = {
         "백업합니다). 온라인에서는 두 플레이어가 항상 같은 스테이지를 씁니다. Jinpachi와 Random은 캐주얼 매치와 방에서 쓸 수 있고, Ranked에서는 쓸 수 없습니다.",
     "Sound and start": "소리 및 시작",
     "Mute sound": "소리 끄기",
+    "Sound and taskbar flash when a match is found or someone joins my room": "매치가 잡히거나 누군가 내 방에 들어오면 소리와 작업 표시줄 깜박임",
     "Start minimized, without taking focus (for testing)": "최소화 상태로 포커스 없이 시작 (테스트용)",
     "Advanced: extra settings, one NAME=VALUE per line": "고급: 추가 설정, 한 줄에 하나씩 NAME=VALUE",
     "Internal resolution": "내부 해상도",

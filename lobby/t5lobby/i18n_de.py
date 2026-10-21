@@ -551,6 +551,7 @@ MESSAGES = {
         "Räumen, nicht in Ranked.",
     "Sound and start": "Ton und Start",
     "Mute sound": "Ton aus",
+    "Sound and taskbar flash when a match is found or someone joins my room": "Ton und Taskleistenblinken, wenn ein Match gefunden wird oder jemand meinem Raum beitritt",
     "Start minimized, without taking focus (for testing)": "Minimiert starten, ohne den Fokus zu nehmen (zum Testen)",
     "Advanced: extra settings, one NAME=VALUE per line":
         "Erweitert: zusätzliche Einstellungen, eine pro Zeile als NAME=WERT",

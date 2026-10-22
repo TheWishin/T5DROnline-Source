@@ -11,6 +11,8 @@ Same keys and groups as i18n_de.py; tests/test_i18n.py and tools/i18n_extract.py
 
 MESSAGES = {
     # ---- launcher/controls_edit.py
+    "Removed {sources} from your buttons: that is L2 / R2 at rest on a PlayStation pad, so the game held them all the time. Save to keep this.":
+        "Se quitó {sources} de tus botones: es L2 / R2 en reposo en un mando de PlayStation, así que el juego los mantenía presionados todo el tiempo. Guarda para conservarlo.",
     "Attack buttons": "Botones de ataque",
     "Several buttons with one press (macros)": "Varios botones a la vez (macros)",
     "Start, Select and the other buttons": "Start, Select y los demás botones",

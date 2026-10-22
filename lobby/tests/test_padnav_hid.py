@@ -65,10 +65,10 @@ class ParseTest(unittest.TestCase):
                          lx=0, ry=255, l2=255)
         _mode, held = padnav.ps_parse("dualsense", True, report("dualsense", "bt-ext", s))
         self.assertEqual(held, {"B1", "B2", "B3", "B4", "B5", "B10", "B13", "B15", "HAT_UP", "HAT_RIGHT", "X-", "RZ+",
-                                "RX+", "RY-"})
+                                "RX+"})                     # R2 released: no RY- (half axes, 1.1.5)
         _mode, held = padnav.ps_parse("edge", False, report("edge", "usb", phr.PadState(
             buttons={"fn_left", "paddle_right"})))
-        self.assertEqual(held - {"RX-", "RY-"}, {"B16", "B19"})
+        self.assertEqual(held, {"B16", "B19"})
         self.assertEqual(padmap.Controls().face_sources(DINPUT, -1, 0x054C, 0x0CE6)["cross"], ["B2"])   # "ps" layout
 
     def test_the_link_decides_a_dualsense_report_1(self):
@@ -161,6 +161,68 @@ DS_BT = HidInfo(r"\\?\hid#{00001124-0000-1000-8000-00805f9b34fb}_vid&0002054c_pi
 DS4_USB = HidInfo(r"\\?\hid#vid_054c&pid_09cc&mi_03#b", 0x054C, 0x09CC, "ds4", False, 64)
 
 
+class RestingTriggerTest(unittest.TestCase):
+    """1.1.5: "L2/R2 are active all the time" with PS4 / PS5 pads. A released trigger read like DirectInput reads
+    it sits at the far end of RX / RY, and up to 1.1.4 that end was "RX-" / "RY-" held for good -- the Controls
+    window could take it for a button and the game then held that button all the time. Now L2 / R2 travel is a
+    half axis, as in the game (pad_host_win32.c ps_trig): RX+ / RY+ past half way, RX- / RY- never."""
+
+    def test_a_pad_at_rest_holds_nothing_in_any_mode(self):
+        for model, mode in COMBOS:
+            _m, held = padnav.ps_parse(model, mode != "usb", report(model, mode, phr.PadState()))
+            self.assertEqual(held, set(), (model, mode))
+        self.assertEqual(padnav.ps_neutral(), frozenset())
+
+    def test_trigger_travel(self):
+        for v in range(256):
+            s = phr.PadState(l2=v, r2=255 - v)
+            _m, held = padnav.ps_parse("ds4", False, report("ds4", "usb", s))
+            self.assertEqual(held & {"RX+", "RX-", "RY+", "RY-"},
+                             ({"RX+"} if v >= 128 else set()) | ({"RY+"} if 255 - v >= 128 else set()), v)
+
+    def test_a_trigger_pulled_and_let_go_through_the_fake_pad_file(self):
+        # the recorded way a player binds L2: digital bit first, travel all the way, back to rest
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "hid.txt")
+            open(p, "w").close()
+            src = padnav.HidSource(env={"PS3_PAD_HID_FAKE": f"dualsense,usb,{p}"})
+            src.scan()
+            seen = [src.read()[0].pressed]
+            for l2 in (0, 3, 40, 130, 255, 255, 130, 40, 3, 0, 0):
+                with open(p, "a") as f:
+                    f.write(report("dualsense", "usb", phr.PadState(buttons={"l2"} if l2 else set(), l2=l2)).hex()
+                            + "\n")
+                seen.append(src.read()[0].pressed)
+            self.assertEqual(seen[0], frozenset())
+            self.assertEqual(seen[-1], frozenset(), "back at rest: nothing held")
+            self.assertFalse(any({"RX-", "RY-"} & s for s in seen), seen)
+            self.assertTrue(any("RX+" in s for s in seen) and all("B7" in s for s in seen[2:-2]), seen)
+
+    def test_winmm_reads_a_playstation_pads_triggers_as_half_axes(self):
+        lo, hi = 0, 65535
+        axes = [("X", 32767, lo, hi), ("Y", 32767, lo, hi), ("Z", 32767, lo, hi), ("RZ", 32767, lo, hi),
+                ("RX", 0, lo, hi), ("RY", 0, lo, hi)]
+        self.assertEqual(padnav.winmm_sources(0, 14, 0xFFFF, axes, ps_pad=True), set())
+        self.assertEqual(padnav.winmm_sources(0, 14, 0xFFFF, axes), {"RX-", "RY-"})      # other pads: as before
+        axes[4] = ("RX", 65535, lo, hi)
+        self.assertEqual(padnav.winmm_sources(0, 14, 0xFFFF, axes, ps_pad=True), {"RX+"})
+
+    def test_bindings_to_the_resting_end_are_ignored_on_playstation_pads_only(self):
+        text = "[dinput]\nL2 = RX-\n[dinput.054C:0CE6]\n3+4 = RY-\n2 = B4 RX-\n1 = RY-\n"
+        c = Controls(text)
+        t = c.table(DINPUT, 0, 0x054C, 0x0CE6)
+        self.assertFalse({s for s, _m in t.binds} & {"RX-", "RY-"})
+        self.assertEqual(t.mask_of("B7"), padmap.PS3_BIT["L2"])
+        self.assertEqual(t.mask_of("B4"), padmap.PS3_BIT["TRIANGLE"])
+        self.assertEqual(t.mask_of("B1"), padmap.PS3_BIT["SQUARE"])                  # its line is as if not there
+        self.assertTrue(any("never a press" in w for w in c.warnings))
+        other = c.table(DINPUT, 0, 0x0F0D, 0x00EE)
+        self.assertEqual(other.mask_of("RX-"), padmap.PS3_BIT["L2"])                 # another pad keeps it
+        for vid, pid in padmap.PS_PADS:
+            self.assertEqual(padnav.ps_model(vid, pid) is not None, True)
+        self.assertEqual(len(padmap.PS_PADS), len(padnav.PS_MODELS))
+
+
 class SourceTest(unittest.TestCase):
     def test_reads_every_report_and_keeps_taps(self):
         api = FakeApi(DS_BT)
@@ -170,7 +232,7 @@ class SourceTest(unittest.TestCase):
         d = src.read()[0]
         self.assertEqual((d.kind, d.key, d.name, d.vid, d.pid, d.slot), (DINPUT, "hid:" + DS_BT.path,
                                                                           "DualSense (Bluetooth)", 0x054C, 0x0CE6, None))
-        self.assertEqual(d.pressed, frozenset({"RX-", "RY-"}))                       # at rest: the triggers' ends
+        self.assertEqual(d.pressed, frozenset())                                     # at rest: nothing held
         api.push(DS_BT.path, "dualsense", "bt-ext", phr.PadState(buttons={"cross"}))
         api.push(DS_BT.path, "dualsense", "bt-ext", phr.PadState())
         self.assertIn("B2", src.read()[0].pressed)                                    # pressed and let go in one poll
@@ -283,7 +345,7 @@ class SourceTest(unittest.TestCase):
             with open(p, "w") as f:
                 f.write(report("dualsense", "bt-ext", phr.PadState(buttons={"cross"})).hex() + "\n")
             src.scan()
-            self.assertEqual(src.read()[0].pressed, frozenset({"RX-", "RY-"}))       # older reports are history
+            self.assertEqual(src.read()[0].pressed, frozenset())                     # older reports are history
             with open(p, "a") as f:
                 f.write("# a comment\n" + report("dualsense", "bt-ext", phr.PadState(buttons={"square"})).hex()
                         + "\n" + report("dualsense", "bt-ext", phr.PadState()).hex() + "\n")

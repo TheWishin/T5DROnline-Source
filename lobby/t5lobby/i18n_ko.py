@@ -11,6 +11,8 @@ Same keys and groups as i18n_de.py; tests/test_i18n.py and tools/i18n_extract.py
 
 MESSAGES = {
     # ---- launcher/controls_edit.py
+    "Removed {sources} from your buttons: that is L2 / R2 at rest on a PlayStation pad, so the game held them all the time. Save to keep this.":
+        "버튼에서 {sources}을(를) 뺐습니다: PlayStation 패드에서 L2 / R2를 놓은 상태라 게임이 계속 누른 것으로 처리했습니다. 유지하려면 저장하세요.",
     "Attack buttons": "공격 버튼",
     "Several buttons with one press (macros)": "한 번에 여러 버튼 (매크로)",
     "Start, Select and the other buttons": "Start, Select 및 기타 버튼",

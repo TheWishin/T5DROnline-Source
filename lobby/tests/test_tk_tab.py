@@ -547,12 +547,24 @@ class TkT6Test(TkBase):
         self.assertEqual(self.s.call(lambda: self.s.srv.by_name["ranker"].rating.r), rating)
         self.assertEqual(str(tab.char_cb.cget("state")), "readonly")
 
+    def test_long_waits_in_the_tab(self):
+        # 1.1.5: few frames behind, but the games stood still a third of the match (1.1.4 called it "ok")
+        tab = self.tab
+        self.ranked_result()
+        mid = tab.driver.last["match"]
+        tab.client.report_lag(mid, 10192, 92000.0, 60.2, 39.8)
+        self.other.report_lag(mid, 10192, 94800.0, 60.2, 39.8)
+        self.pump(lambda: "This match lagged" in tab.match_var.get())
+        self.assertEqual(tab.match_var.get(), "Lag check: This match lagged: the games waited 95 s for each other's "
+                                              "inputs. A wired connection and no uploads during matches help.")
+        self.assertIsNotNone(self.bar_button("Leave: too laggy"))
+
     def test_a_good_lag_check_offers_no_way_out(self):
         tab = self.tab
         self.ranked_result()
         mid = tab.driver.last["match"]
-        tab.client.report_lag(mid, 3000, 3000 * 1.0, 60.0)
-        self.other.report_lag(mid, 3000, 3000 * 1.0, 60.0)
+        tab.client.report_lag(mid, 3000, 3000 * 0.3, 60.0)
+        self.other.report_lag(mid, 3000, 3000 * 0.3, 60.0)
         self.pump(lambda: "That is what the ping explains" in tab.match_var.get())
         self.assertIsNone(self.bar_button("Leave: too laggy"))
 

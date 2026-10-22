@@ -1096,6 +1096,10 @@ MESSAGES = {
     "Your opponent's PC was the slow one.": "상대 PC가 느렸습니다.",
     "Both PCs kept up, so the connection stalled now and then (jitter or lost packets).":
         "두 PC 모두 속도를 따라갔으니, 연결이 가끔 멈췄던 것입니다 (지터 또는 패킷 손실).",
+    "This match lagged: the games waited {secs} s for each other's inputs.":
+        "이 대전은 랙이 있었습니다. 게임들이 서로의 입력을 {secs}초 기다렸습니다.",
+    "A wired connection and no uploads during matches help.":
+        "유선 연결을 쓰고 대전 중에는 업로드를 하지 않으면 도움이 됩니다.",
     # ---- lobby/t5lobby/match_driver.py
     "Your opponent closed the game.": "상대가 게임을 닫았습니다.",
     "The connection to your opponent's game was lost.": "상대 게임과의 연결이 끊겼습니다.",

@@ -5,6 +5,26 @@ part is in the README's status table.
 
 ## v1.1.5 (not released yet)
 
+**Rematches leave the relay again, and the lag check sees freezes.** Both online changes are in the lobby server:
+they work with 1.1.4 launchers as soon as the server is updated.
+
+### Online
+- **A rematch after the relay tries the direct connection again.** When a match had to go through the relay server
+  (for example because Windows Firewall blocked the game for a moment), every rematch of the session used to stay on
+  the relay, with longer ping and more freezes, although a new match would have played direct. Now the next rematch
+  connects anew and plays direct when that works. Only when it fails again do the rematches stay on the relay. Such a
+  rematch takes a few seconds longer to start.
+- **The lag check counts the time the games stood still.** A match in which the games kept waiting for each other's
+  inputs could still read "That is what the ping explains" (one match waited 92 s of about 4 minutes and ran at
+  40 fps). Now such a match says, for example: "This match lagged: the games waited 92 s for each other's inputs. A
+  wired connection and no uploads during matches help." In a ranked set, **Leave: too laggy** is offered after it,
+  as after any laggy match. In all seven languages.
+
+### Documentation
+- **Minimum requirements** at the top of the README's Requirements: Windows 10/11, a 4-core CPU from about 2014 on
+  (Intel Core i5/i7 4th gen, AMD Ryzen or newer; AVX2 recommended), a DirectX 12-capable graphics card, 8 GB RAM.
+  The CPU matters most: one fast core.
+
 ### Controls
 - **PS4 / PS5 controllers: L2 and R2 are no longer pressed all the time.** A released trigger counted as held when a
   button was bound to its resting end -- which the Controls window did by itself when you let go of a trigger while it

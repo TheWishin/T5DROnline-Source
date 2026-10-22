@@ -507,7 +507,10 @@ the launcher, `lobby/tools/ranked_session.py` and the tests.
    a new connection (`match_start` with `continue: true`); each launcher writes
    the next `T5_FIGHT` line to its game's `T5_FIGHT_FILE` and the same game
    process plays it (characters can be changed in the launcher between
-   matches). Otherwise a new connection and a new game.
+   matches). Otherwise a new connection and a new game -- also after a match on
+   the relay (1.1.5): that rematch tries the direct path again, and only a
+   second failure keeps the session on the relay (docs/NETPLAY.md "Rematches
+   after the relay").
 
 Two ways to run the game, picked automatically (`game_mode` in online.json
 forces one):
@@ -759,6 +762,23 @@ made the other game wait ("Your PC was the slow one (41 fps)"). Otherwise it is 
 If only one game reports, the lobby waits `T5L_LAG_WAIT` (6 s) and then sends what it has. If
 neither reports, it says there is nothing to compare.
 
+**Long waits (1.1.5).** Z is an average per frame, so a match whose games stood still a third of
+the time still read "about what the ping explains": production 2026-10-21, direct 97 ms, delay 5,
+the games waited 92 s and 94.8 s over 10,192 frames, 39.8 fps on 60 fps PCs -- "It was 5.6, ok".
+Now a game that waited `T5L_LAG_WAIT_SHARE` (5 %) of the match time or more (at least 3 s), or ran
+below 85 % of its PC's own speed, makes the verdict `slow`:
+
+> This match lagged: the games waited 95 s for each other's inputs. A wired connection and no
+> uploads during matches help.
+
+(With a slow PC to blame, its sentence replaces the tip.) The match time is the frames at the speed
+the game really ran. For reference, 1.1.4's matches waited about 0.5 s a minute direct (p90 2.4 s)
+and 1.1 s a minute on the relay (p90 4.7 s): 5 % flags the worst tenth or so. The server log line
+and the stored check (`assess.why`) say "network: the games waited 92 s / 95 s of 256 s (37 %) for
+each other's inputs", plus which game waited more when one waited clearly longer (1.25 times and
+2 s). `slow` counts as lag for **Leave: too laggy** like "more lag". A 1.1.4 launcher (no
+`lag_wait` cap) gets `more_lag` for it, and so its own sentences and the leave button.
+
 This extends the slow-PC check from "Slow PCs" below. That one warns before the match; this one
 reports after it.
 
@@ -766,7 +786,7 @@ reports after it.
 too laggy**. Either player may leave without penalty. The set ends, the opponent is told, and the
 rating does not change: the game that was just played keeps its result, and leaving adds no
 forfeit and no strike. In a ranked set (best of 3) it makes the whole set void; the server lets a
-player out for free only after a lag check whose verdict was "more lag" (any other leave is a loss). **Nothing ends by itself.** A bad check does not void the game, undo a
+player out for free only after a lag check whose verdict was "more lag" or "slow" (any other leave is a loss). **Nothing ends by itself.** A bad check does not void the game, undo a
 rating, or end the set. The players can still rematch. The server keeps the numbers with the
 match record (`matches.lag`, JSON) so an admin can look.
 

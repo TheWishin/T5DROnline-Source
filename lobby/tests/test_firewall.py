@@ -375,6 +375,115 @@ class FallbackLateTest(FallbackTest):
     test_a_fight_being_played_is_not_restarted = None
 
 
+class RematchAfterRelayTest(unittest.TestCase):
+    """1.1.5: a rematch after a match on the relay tries the direct path again (production 2026-10-21, 1.1.4: a firewall
+    blocked one game, the fallback moved the match onto the relay, and every rematch of the session stayed there with
+    4.5-8.5 s of freezes a match -- the firewall was fixed meanwhile, a new match from the lobby went direct)."""
+    server_cfg = {}
+    setUp, tearDown, pair = FallbackTest.setUp, FallbackTest.tearDown, FallbackTest.pair
+
+    def finish(self, ca, cb, mid):
+        ca.report_result(0, [3, 1], match_id=mid, source="game")
+        cb.report_result(0, [3, 1], match_id=mid, source="game")
+        self.assertEqual(expect(ca, "match_result", 15)["status"], "confirmed")
+        expect(cb, "match_result", 15)
+
+    def rematch(self, ca, cb, mid):
+        with mock.patch("t5lobby.client.local_ipv4s", lambda ip: []):
+            ca.rematch(mid, True, keep=True)                  # (both games still run, connected)
+            cb.rematch(mid, True, keep=True)
+            found = expect(ca, "match_found", 15)
+            sa, sb = expect(ca, "match_start", 30), expect(cb, "match_start", 30)
+        return found, sa, sb
+
+    def fallback(self, ca, cb, mid):
+        self.assertTrue(ca.nat_fallback(mid))
+        a2, b2 = expect(ca, "match_start", 20), expect(cb, "match_start", 20)
+        self.assertEqual((a2["match"], a2["path"], b2["path"]), (mid, "relay", "relay"))
+
+    def relays_open(self):
+        return self.s.call(lambda: len(self.s.srv.udp.relays))
+
+    def test_the_rematch_after_the_fallback_tries_the_direct_path_again(self):
+        ca, cb, ta, tb = self.pair()
+        self.assertEqual(ta.path, "direct")
+        self.fallback(ca, cb, ta.match_id)                    # match 1: the game heard nothing, the relay took over
+        self.finish(ca, cb, ta.match_id)
+        found, sa, sb = self.rematch(ca, cb, ta.match_id)      # (the firewall was fixed meanwhile)
+        self.assertFalse(found["keep"])                        # a new connection, not the running games' relay session
+        self.assertFalse(sa["continue"])
+        self.assertIsNotNone(sa["ticket"])
+        self.assertEqual((sa["path"], sb["path"]), ("direct", "direct"))
+        self.assertTrue(self.s.wait_for(lambda: len(self.s.srv.udp.relays) == 0))      # the old relay session is closed
+        m = self.s.call(lambda: self.s.srv.by_name["alice"].match)
+        self.assertTrue(m.direct_again)
+        self.finish(ca, cb, sa["match"])
+        found, s3, _ = self.rematch(ca, cb, sa["match"])       # direct now: the next rematch continues in the games
+        self.assertTrue(found["keep"])
+        self.assertTrue(s3["continue"])
+        self.assertEqual(s3["path"], "direct")
+
+    def test_a_second_failure_keeps_the_relay(self):
+        ca, cb, ta, tb = self.pair()
+        self.fallback(ca, cb, ta.match_id)
+        self.finish(ca, cb, ta.match_id)
+        found, sa, sb = self.rematch(ca, cb, ta.match_id)
+        self.assertEqual((found["keep"], sa["path"]), (False, "direct"))
+        self.fallback(ca, cb, sa["match"])                     # still blocked: the relay again (once more per match)
+        self.finish(ca, cb, sa["match"])
+        found, s3, _ = self.rematch(ca, cb, sa["match"])
+        self.assertTrue(found["keep"])                         # tried twice: the session stays on the relay
+        self.assertEqual((s3["continue"], s3["path"]), (True, "relay"))
+        self.assertEqual(self.relays_open(), 1)                # (adopted by the rematch)
+        self.finish(ca, cb, s3["match"])
+        found, s4, _ = self.rematch(ca, cb, s3["match"])
+        self.assertEqual((found["keep"], s4["continue"], s4["path"]), (True, True, "relay"))
+
+    def test_relay_from_the_start(self):
+        ca, cb, ta, tb = self.pair(a={"block_direct": True}, b={"block_direct": True})     # no punch gets through
+        self.assertEqual(ta.path, "relay")
+        self.finish(ca, cb, ta.match_id)
+        for c in (ca, cb):
+            c.block_direct = False                             # (the network changed: the direct path works now)
+        found, sa, sb = self.rematch(ca, cb, ta.match_id)
+        self.assertEqual((found["keep"], sa["continue"], sa["path"], sb["path"]), (False, False, "direct", "direct"))
+
+    def test_relay_from_the_start_and_again(self):
+        ca, cb, ta, tb = self.pair(a={"block_direct": True}, b={"block_direct": True})
+        self.finish(ca, cb, ta.match_id)
+        found, sa, _ = self.rematch(ca, cb, ta.match_id)
+        self.assertEqual((found["keep"], sa["path"]), (False, "relay"))     # tried again: the punch failed again
+        self.finish(ca, cb, sa["match"])
+        found, s3, _ = self.rematch(ca, cb, sa["match"])
+        self.assertEqual((found["keep"], s3["continue"], s3["path"]), (True, True, "relay"))
+
+
+class RematchAfterRelayOffTest(RematchAfterRelayTest):
+    server_cfg = {"rematch_direct": False}                     # T5L_REMATCH_DIRECT=0: as 1.1.4
+
+    def test_the_rematch_after_the_fallback_tries_the_direct_path_again(self):
+        ca, cb, ta, tb = self.pair()
+        self.fallback(ca, cb, ta.match_id)
+        self.finish(ca, cb, ta.match_id)
+        found, sa, _ = self.rematch(ca, cb, ta.match_id)
+        self.assertEqual((found["keep"], sa["continue"], sa["path"]), (True, True, "relay"))
+
+    test_a_second_failure_keeps_the_relay = test_relay_from_the_start = test_relay_from_the_start_and_again = None
+
+
+class RematchForcedRelayTest(RematchAfterRelayTest):
+    server_cfg = {"force_relay": True}                         # nothing would change: no new connection
+
+    def test_the_rematch_after_the_fallback_tries_the_direct_path_again(self):
+        ca, cb, ta, tb = self.pair()
+        self.assertEqual(ta.path, "relay")
+        self.finish(ca, cb, ta.match_id)
+        found, sa, _ = self.rematch(ca, cb, ta.match_id)
+        self.assertEqual((found["keep"], sa["continue"], sa["path"]), (True, True, "relay"))
+
+    test_a_second_failure_keeps_the_relay = test_relay_from_the_start = test_relay_from_the_start_and_again = None
+
+
 # ============================================================================== the match driver
 class _Client:
     def __init__(self):

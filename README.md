@@ -69,6 +69,14 @@ tested between two real PCs over the internet (AMD/60 Hz vs Intel/240 Hz).
 
 ## Requirements
 
+**Minimum requirements:** Windows 10 or 11 (64-bit), a 4-core CPU from about
+2014 on (Intel Core i5/i7 4th gen, AMD Ryzen or newer; AVX2 recommended), a
+DirectX 12-capable graphics card (feature level 11_0) and 8 GB RAM. The CPU
+matters most: the game's main work runs on one core, so one fast core helps
+more than many cores or a strong graphics card.
+
+In detail:
+
 - Windows 10 (version 1909 or newer) or Windows 11, 64-bit. Nothing else to
   install: no Visual C++ redistributable, no Visual Studio, no DirectX
   download. Windows "N" editions: the movies stay black without the Media
@@ -79,7 +87,8 @@ tested between two real PCs over the internet (AMD/60 Hz vs Intel/240 Hz).
   an NVIDIA RTX 3090 and on Windows' software renderer (WARP) only. Laptops
   with two graphics chips use the fast one by default.
 - A 64-bit Intel or AMD processor with SSE4.1: Intel Core 2 (2008) or newer,
-  AMD FX, A-series or Ryzen (2011) or newer. AVX2 is not needed. With AVX2
+  AMD FX, A-series or Ryzen (2011) or newer. That starts the game; for full
+  speed see the minimum above. AVX2 is not needed. With AVX2
   (Intel 4th-gen Core / AMD Ryzen and newer) the build makes faster code; the
   launcher decides this by itself. Only tested on a CPU with AVX2.
 - Speed: fights held 60 fps with 4 CPU threads in our tests (fast desktop

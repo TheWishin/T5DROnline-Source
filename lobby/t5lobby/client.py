@@ -311,7 +311,7 @@ class LobbyClient(TourCalls, SpectateClientMixin):
                                                 + (["spectate"] if self.spectate else [])
                                                 + (["private_rooms"] if self.private_rooms else [])
                                                 + (["game_fallback"] if self._can_fallback() else [])
-                                                + ["boss_chars"]})
+                                                + ["boss_chars", "lag_wait"]})
         except LobbyError:
             # Refused (version) or no answer (e.g. TLS on one side only): leave nothing half open.
             closing, self._closing = self._closing, True

@@ -12,6 +12,8 @@ texts to paste into the right group.
 
 MESSAGES = {
     # ---- launcher/controls_edit.py
+    "Removed {sources} from your buttons: that is L2 / R2 at rest on a PlayStation pad, so the game held them all the time. Save to keep this.":
+        "{sources} aus deinen Tasten entfernt: Das ist L2 / R2 in Ruhe auf einem PlayStation-Pad, deshalb hat das Spiel sie die ganze Zeit gedrückt gehalten. Speichere, um das zu behalten.",
     "Attack buttons": "Angriffstasten",
     "Several buttons with one press (macros)": "Mehrere Tasten mit einem Druck (Makros)",
     "Start, Select and the other buttons": "Start, Select und die anderen Tasten",

@@ -676,8 +676,14 @@ controller it is.
   that one has no button now"): a controller button can only be one game button.
   Set the other one again, or press Revert.
 - **A trigger or stick direction (for example RX-) seems pressed all the time.**
-  Some controllers rest their triggers at the end of the range. The screen
-  ignores such an axis until it has moved once.
+  Some controllers rest their triggers at the end of the range. The screen never
+  takes the end an axis rests at (since 1.1.5; before, letting go of a trigger
+  could set the next button to RX- / RY-, and the game then held that button
+  all the time: "L2/R2 always pressed" on PS4 / PS5 pads). On a DualShock 4 or
+  DualSense the released triggers are not a press at all any more, in the
+  screen and in the game, and a `controls.ini` from 1.1.4 that binds RX- / RY-
+  on such a pad is fixed when the window opens (Save keeps it; the game already
+  ignores those lines).
 - **I saved, but the game plays as before.** The game reads the file when it
   starts: close it and start it again (a game that is already running says so
   in the status line). The line `[pad] controls: ...` in the game log shows which

@@ -99,6 +99,15 @@ MACROS_TEKKEN = {
     DINPUT: ("1+2=B6", "3+4=B8", "1+3=B5", "2+4=B7"),
 }
 VID_NINTENDO, VID_MICROSOFT = 0x057E, 0x045E
+# The PlayStation pads the game reads directly (ps_model in the patch; padnav.PS_MODELS): DualShock 4 (two models),
+# DualSense, DualSense Edge. Their RX RY are L2 R2 travel, read as half axes: RX- / RY- (where the released
+# triggers rest) never come on, and a binding to them is ignored (ps_rest_source in the patch, 1.1.5).
+PS_PADS = frozenset(((0x054C, 0x05C4), (0x054C, 0x09CC), (0x054C, 0x0CE6), (0x054C, 0x0DF2)))
+PS_REST_SOURCES = ("RX-", "RY-")
+
+
+def is_ps_pad(kind, vid, pid):
+    return kind == DINPUT and (vid, pid) in PS_PADS
 
 # Keyboard names (k_keys in the patch, in its order: the first name of a key is the one the game prints) -> VK.
 KEY_NAMES = (
@@ -241,9 +250,10 @@ class Table:
         return [s for s, m in self.binds if m == mask]
 
 
-def _bind_line(t, kind, target, sources, replace, where, warn):
+def _bind_line(t, kind, target, sources, replace, where, warn, ps_pad=False):
     """One `TARGET = SOURCES` line (bind_line in the patch). replace: an explicit binding drops what the
-    target had and takes the sources away from whatever they did before."""
+    target had and takes the sources away from whatever they did before. ps_pad: a PlayStation pad's table,
+    where RX- / RY- are dropped and a line that bound only them is left out."""
     tg = target.strip()
     if tg.lower() in ("preset", "macros"):
         return
@@ -253,7 +263,7 @@ def _bind_line(t, kind, target, sources, replace, where, warn):
     if not mask:
         warn(f"{where}: unknown PS3 button '{tg}'")
         return
-    srcs = []
+    srcs, rest = [], 0
     for tok in re.split(r"[ ,\t]+", sources.strip()):
         if not tok or tok.lower() == "none":
             continue
@@ -261,8 +271,15 @@ def _bind_line(t, kind, target, sources, replace, where, warn):
         if src is None:
             warn(f"{where}: unknown {kind} input '{tok}' (for {tg})")
             continue
+        if ps_pad and src in PS_REST_SOURCES:
+            warn(f"{where}: {src} is where {'L2' if src == 'RX-' else 'R2'} rests on a PlayStation pad, "
+                 f"never a press: ignored (for {tg})")
+            rest += 1
+            continue
         if len(srcs) < 16 and src not in srcs:
             srcs.append(src)
+    if not srcs and rest:
+        return                      # it bound only a resting trigger: as if the line were not there
     if replace:
         # the new sources lose what they did before, and the target's old sources lose it
         kept = []
@@ -485,10 +502,11 @@ class Controls:
         if macros and macros.lower() == "tekken":
             _apply_lines(t, kind, MACROS_TEKKEN[kind], True, "macros", warn)
             t.desc.append("tekken macros")
+        ps = is_ps_pad(kind, vid, pid)
         for kv in layers:
             if kv:
                 for k, v in kv:
-                    _bind_line(t, kind, k, v, True, "controls.ini", warn)
+                    _bind_line(t, kind, k, v, True, "controls.ini", warn, ps_pad=ps)
         return t
 
     def face_sources(self, kind, port=-1, vid=0, pid=0):

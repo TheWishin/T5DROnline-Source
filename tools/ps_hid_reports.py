@@ -153,7 +153,8 @@ def axis_value(v):
 
 
 def expected_raw(model, mode, s):
-    """(bits[5], axes[8]) of the runtime's RawState for this report: the state DirectInput reports."""
+    """(bits[5], axes[8]) of the runtime's RawState for this report: the state DirectInput reports, with L2 / R2
+    travel (RX RY) as half axes."""
     words = [0] * 5
     b = set(s.buttons) & carried(model, mode)
     for i, n in enumerate(BUTTONS):
@@ -165,7 +166,9 @@ def expected_raw(model, mode, s):
             if c in dirs:
                 cid = CID_HAT + k
                 words[cid // 32] |= 1 << (cid % 32)
-    axes = [axis_value(v) for v in (s.lx, s.ly, s.rx, s.l2, s.r2, s.ry)] + [0, 0]
+    # L2 R2 travel (RX RY) are half axes in the runtime (1.1.5): 0..255 -> 0..32767, released = centre
+    axes = [axis_value(v) for v in (s.lx, s.ly, s.rx)] + [s.l2 * 32767 // 255, s.r2 * 32767 // 255,
+                                                          axis_value(s.ry)] + [0, 0]
     for a, v in enumerate(axes):
         if v > 16384:
             cid = CID_AXIS + a * 2

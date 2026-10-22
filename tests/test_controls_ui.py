@@ -691,7 +691,9 @@ class RuntimeDifferentialTest(unittest.TestCase):
             self.assertEqual((int(ports[p]["vid"], 16), int(ports[p]["pid"], 16)), (spec["vid"], spec["pid"]))
 
     def test_the_files_we_know(self):
-        for name, text in (("empty", ""), ("sample", sample_text()), ("hand made", HAND_MADE)):
+        for name, text in (("empty", ""), ("sample", sample_text()), ("hand made", HAND_MADE),
+                           ("1.1.4 captures of a let-go trigger", "[dinput]\nL2 = RX-\nR2 = RY-\n[dinput.054C:09CC]\n"
+                            "3+4 = RY-\n2 = B4 RX-\n[port2.dinput]\n1 = RX-\n")):
             self.compare(text, name)
 
     def test_presets_and_edits(self):
@@ -819,21 +821,43 @@ class PollerTest(unittest.TestCase):
         self.run_for(0.1)
         self.assertEqual([e.source for e in self.poller.drain()], ["B1"])
 
-    def test_an_axis_resting_at_its_end_is_not_a_press_until_it_has_been_let_go(self):
+    def test_the_end_an_axis_rests_at_is_never_a_press(self):
+        # 1.1.5 ("L2/R2 are active all the time"): a trigger read as a full axis rests at RX-. Up to 1.1.4 its
+        # resting end became a press once the trigger had been pulled and let go: a capture took "RX-" and the
+        # game held that button all the time.
         pad = FakePad()
-        pad.held = {"RX-", "RY-"}                       # DualShock triggers rest at -32768
+        pad.held = {"RX-", "RY-"}
         self.rig(pad)
         self.run_for(0.2)
         self.assertEqual(self.poller.held["winmm:0"], frozenset())
-        pad.held = {"RX-", "RY-", "B7"}
-        self.run_for(0.1)
-        self.assertEqual([e.source for e in self.poller.drain()], ["B7"])
-        pad.held = {"RX-", "RY-", "RX+"}                # RX left its end ... and goes to the other
+        for _ in range(3):
+            pad.held = {"RY-", "B7"}                    # L2 pulled: RX leaves its end, the digital bit comes on
+            self.run_for(0.05)
+            pad.held = {"RY-", "B7", "RX+"}             # ... all the way
+            self.run_for(0.1)
+            pad.held = {"RY-", "B7"}
+            self.run_for(0.05)
+            pad.held = {"RY-", "RX-"}                   # let go: back at rest
+            self.run_for(0.2)
+            self.assertEqual(self.poller.held["winmm:0"], frozenset())
+        self.assertEqual([e.source for e in self.poller.drain()], ["B7", "RX+"] * 3)
+
+    def test_a_trigger_half_pulled_when_the_window_comes_forward_goes_back_to_rest(self):
+        pad = FakePad()
+        pad.held = {"RY-"}                              # L2 half pulled when the window comes forward: no end
+        self.rig(pad)
+        self.run_for(0.2)
+        pad.held = {"RX+", "RY-"}                       # pulled all the way: a press
         self.run_for(0.1)
         pad.held = {"RY-"}
-        self.run_for(0.1)
-        self.poller.drain()
-        pad.held = {"RY-", "RX-"}                       # RX- is a real press now
+        self.run_for(0.05)
+        pad.held = {"RX-", "RY-"}                       # let go: its other end right after = going back
+        self.run_for(0.3)
+        self.assertEqual([e.source for e in self.poller.drain()], ["RX+"])
+        self.assertEqual(self.poller.held["winmm:0"], frozenset())
+        pad.held = {"RY-"}
+        self.run_for(0.5)
+        pad.held = {"RX-", "RY-"}                       # an axis end reached on its own (a stick) is a press
         self.run_for(0.1)
         self.assertEqual([e.source for e in self.poller.drain()], ["RX-"])
 
@@ -917,6 +941,22 @@ class CaptureTest(unittest.TestCase):
         c = cu.Capture(0.0)
         c.update(1.00, [self.E(1.00, "k", "B1")])
         self.assertEqual(c.update(1.20, [self.E(1.15, "k", "B2")]), ("ok", "B1"))
+
+    def test_a_trigger_is_its_button_not_several(self):
+        c = cu.Capture(0.0)
+        c.update(1.00, [self.E(1.00, "k", "B7")])                     # digital L2 ...
+        self.assertEqual(c.update(1.10, [self.E(1.02, "k", "RX+")]), ("ok", "B7"))     # ... with its travel
+        c = cu.Capture(0.0)
+        c.update(1.00, [self.E(1.00, "k", "RX+")])
+        self.assertEqual(c.update(1.10, [self.E(1.02, "k", "RY+")]), ("multi", ["RX+", "RY+"]))
+
+    def test_it_starts_once_the_controller_was_let_go(self):
+        c = cu.Capture(0.0, held={"B7"})                                               # the last button still held
+        self.assertIsNone(c.update(1.00, [self.E(1.00, "k", "RX+")], {"B7", "RX+"}))  # (its trigger travelling on)
+        self.assertIsNone(c.update(1.20, [], {"B7"}))
+        self.assertIsNone(c.update(1.30, [], set()))                                   # let go: ready now
+        self.assertIsNone(c.update(1.40, [self.E(1.40, "k", "B3")], {"B3"}))
+        self.assertEqual(c.update(1.50, [], {"B3"}), ("ok", "B3"))
 
     def test_timeout_only_when_asked_for(self):
         self.assertIsNone(cu.Capture(0.0).update(100.0, []))
@@ -1120,6 +1160,54 @@ class DialogTest(DialogBase):
         d.begin(["1+2"])
         self.press(stick, "B6")
         self.assertEqual(d.editor.sources(d.dev(), "1+2"), ["B6"])
+
+    def test_pulling_l2_on_a_dualsense_sets_one_button_and_not_the_next(self):
+        # 1.1.5 ("L2/R2 are active all the time" with PS4 / PS5 pads): the guided run on a DualSense read as
+        # the game reads it (padnav.HidSource on the game's fake pad file). 1.1.4: L2 = B7 + RX+ was "several
+        # buttons", and letting go of the trigger gave "RX-", which the next button got -- held all the time.
+        sys.path.insert(0, os.path.join(ROOT, "tools"))
+        import ps_hid_reports as phr
+        fake = os.path.join(self.out, "hid.txt")
+        open(fake, "w").close()
+
+        def pad(**kw):
+            with open(fake, "a") as f:
+                f.write(phr.report("dualsense", "usb", phr.PadState(**kw)).hex() + "\n")
+
+        def pull(trigger, button):
+            for v in (3, 60, 130, 200, 255, 255, 255, 200, 130, 60, 3, 0):
+                pad(buttons={button} if v else set(), **{trigger: v})
+                self.run_for(1 / 30)
+            self.run_for(0.4)
+        d = self.open(padnav.HidSource(env={"PS3_PAD_HID_FAKE": f"dualsense,usb,{fake}"}))
+        pad()
+        self.run_for(1.2)                                                  # (scanned, chosen)
+        self.assertEqual((d.dev().vid, d.dev().pid), (0x054C, 0x0CE6))
+        d.begin(["1+2", "3+4"])
+        pull("l2", "l2")
+        self.assertEqual(d.editor.sources(d.dev(), "1+2"), ["B7"])
+        self.assertEqual(d.cap_key, "3+4")                                 # still waiting: nothing taken for it
+        self.assertEqual(d.editor.sources(d.dev(), "3+4"), [])
+        pull("r2", "r2")
+        self.assertEqual(d.editor.sources(d.dev(), "3+4"), ["B8"])
+        self.assertIsNone(d.capture)
+        d.do_save()
+        self.assertNotRegex(self.saved(), r"R[XY][+-]")
+
+    def test_a_file_with_a_let_go_trigger_from_114_is_fixed_when_the_window_opens(self):
+        ini = "[dinput.054C:0CE6]\n3+4 = RY-\n2 = B4 RX-\n1 = RX-\n[dinput]\nL2 = RX-\n"
+        d = self.open(FakePad(name="DualSense", vid=0x054C, pid=0x0CE6), ini=ini)
+        self.assertIn("Removed RX- RY- from your buttons", d.status_var.get())
+        self.assertTrue(d.editor.dirty)
+        d.do_save()
+        text = self.saved()
+        self.assertIn("2 = B4", text)
+        self.assertNotIn("3+4", text)
+        self.assertIn("L2 = RX-", text)                                    # shared section: other pads use it
+        before, after = padmap.Controls(ini), padmap.Controls(text)        # the game's view did not change
+        for dev in ((DINPUT, 0, 0x054C, 0x0CE6), (DINPUT, 0, 0x0F0D, 0x00EE)):
+            self.assertEqual(before.table(*dev).binds, after.table(*dev).binds, dev)
+        self.assertEqual(ControlsEditor(text).drop_ps_rest(), [])
 
     def test_the_guided_run_goes_one_button_at_a_time_with_skip_and_clear(self):
         stick = FakePad()

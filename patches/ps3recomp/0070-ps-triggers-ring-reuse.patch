@@ -1,0 +1,152 @@
+diff --git a/libs/input/pad_host_win32.c b/libs/input/pad_host_win32.c
+index 54ae6d9..c5539cf 100644
+--- a/libs/input/pad_host_win32.c
++++ b/libs/input/pad_host_win32.c
+@@ -78,8 +78,10 @@ static u64 qpc_to_ns(LONGLONG t)
+  *            index (DUP=0 .. Y=15), LT=16, RT=17 (pressed past 30/255).
+  *   128..143 hat directions: 128 + hat*4 + {0 up, 1 right, 2 down, 3 left}
+  *   144..159 axis directions: 144 + axis*2 + {0 positive, 1 negative}, past
+- *            half deflection. Axes: DInput X Y Z RX RY RZ S0 S1;
+- *            XInput LX LY RX RY LT RT. Y axes are PS3-oriented: up < 0.
++ *            half deflection (a PlayStation pad's RX RY = L2 R2 travel are
++ *            half axes: RX+ RY+ past half way, RX- RY- never; see ps_trig).
++ *            Axes: DInput X Y Z RX RY RZ S0 S1; XInput LX LY RX RY LT RT.
++ *            Y axes are PS3-oriented: up < 0.
+  * -----------------------------------------------------------------------*/
+ 
+ #define CID_HAT   128
+@@ -363,8 +365,17 @@ typedef struct {
+     s8   axis[4];            /* LX LY RX RY <- device axis, -1 = none */
+     u8   inv[4];
+     char desc[96];           /* for the log: preset + layers */
++    int  ps_trig;            /* a PlayStation pad's table: RX- / RY- (released L2 / R2) are no inputs */
+ } BindTable;
+ 
++/* RX- / RY- on a PlayStation pad: where L2 / R2 rest. They never come on (ps_trig); a binding to one is
++ * dropped, and a line that bound nothing else is left out as if it were not there, so the button keeps
++ * its preset binding. Controls windows up to 1.1.4 could capture them (the trigger let go). */
++static int ps_rest_source(const BindTable* t, int cls, int id)
++{
++    return t->ps_trig && cls == CLS_DINPUT && (id == CID_AXIS + 3 * 2 + 1 || id == CID_AXIS + 4 * 2 + 1);
++}
++
+ /* Presets are lists of "TARGET=SOURCE SOURCE ..." lines in the config syntax. */
+ typedef struct { const char* name; int cls; const char* const* lines; } Preset;
+ 
+@@ -464,15 +475,22 @@ static void bind_line(BindTable* t, int cls, const char* target, const char* sou
+     }
+     u16 mask = parse_target_mask(tg);
+     if (!mask) { printf("[pad] %s: unknown PS3 button '%s'\n", where, tg); return; }
+-    int srcs[16], ns = 0;
++    int srcs[16], ns = 0, rest = 0;
+     char buf[200]; snprintf(buf, sizeof buf, "%s", sources);
+     char* save = NULL;
+     for (char* tok = strtok_s(buf, " ,\t", &save); tok; tok = strtok_s(NULL, " ,\t", &save)) {
+         if (name_eq(tok, "none")) continue;
+         int id = parse_source(cls, tok);
+         if (id < 0) { printf("[pad] %s: unknown %s input '%s' (for %s)\n", where, k_cls_name[cls], tok, tg); continue; }
++        if (ps_rest_source(t, cls, id)) {
++            printf("[pad] %s: %s is where %s rests on a PlayStation pad, never a press: ignored (for %s)\n",
++                   where, tok, id == CID_AXIS + 3 * 2 + 1 ? "L2" : "R2", tg);
++            rest++;
++            continue;
++        }
+         if (ns < 16) srcs[ns++] = id;
+     }
++    if (!ns && rest) return;             /* it bound only a resting trigger: as if the line were not there */
+     if (replace) {
+         /* The target's old sources lose it (combos that merely include it,
+          * like a 1+2 macro when 1 is re-bound, stay); the new sources lose
+@@ -516,10 +534,13 @@ static void desc_add(BindTable* t, const char* what)
+  * user's lines, least specific first:
+  *   [<cls>]  ->  [<cls>.VVVV:PPPP]  ->  [port<N>.<cls>]
+  * (keyboard players: [keys1] / [keys2]). */
++static int ps_model(u16 vid, u16 pid);
++
+ static void build_table(BindTable* t, int cls, int port, u16 vid, u16 pid, const char* keys_sec)
+ {
+     memset(t, 0, sizeof *t);
+     for (int a = 0; a < 4; a++) t->axis[a] = -1;
++    t->ps_trig = cls == CLS_DINPUT && ps_model(vid, pid) != 0;
+     const IniSec* layer[3] = { NULL, NULL, NULL };
+     char name[48];
+     if (cls == CLS_KEYS) {
+@@ -866,6 +887,7 @@ typedef struct {
+     u8   rumble[2];
+     int  di_buffered;          /* DInput event buffer set up (tap latch) */
+     int  di_primed;            /* first drain done: older events discarded (DInput, HID) */
++    int  ps_trig;              /* a PlayStation pad: RX RY are L2 R2 travel, read as half axes (ps_trig) */
+     struct HidDev* hid;        /* DEV_HID: the reader */
+     int  hid_failed;           /* DEV_HID: its death was counted (hid_fail_add) */
+     WCHAR path[MAX_PATH];      /* DEV_DINPUT / DEV_HID: HID device path ("" = unknown) */
+@@ -925,6 +947,15 @@ static s32 xi_stick(short raw)
+     return 0;
+ }
+ 
++/* A PlayStation pad's L2 / R2 travel (RX / RY) is a half axis: 0 = released .. 32767 = fully pressed.
++ * DirectInput gives it -32768..32767 with the released trigger at -32768, and every axis direction is
++ * "past half deflection" from the centre -- so a released trigger read as RX- / RY- held, for good, and
++ * anything bound there (a capture of the trigger's resting end, 1.1.4 and older) was held all the time.
++ * As a half axis its centre is the released trigger: RX+ / RY+ = pressed past half way, and RX- / RY- never
++ * come on. ps_trig: travel 0..255; ps_trig_di: DirectInput's -32768..32767 for the same travel. */
++static s32 ps_trig(u8 v) { return (s32)v * 32767 / 255; }
++static s32 ps_trig_di(LONG v) { return v < -32768 ? 0 : v > 32767 ? 32767 : (s32)((v + 32768) >> 1); }
++
+ static void axis_dirs(RawState* r)
+ {
+     for (int a = 0; a < NAXES; a++) {
+@@ -968,8 +999,9 @@ static void di_drain(PadDev* d, RawState* r)
+                     pov_set(r->tap, (int)(ofs - FIELD_OFFSET(DIJOYSTATE2, rgdwPOV)) / 4, ev[i].dwData);
+                 } else if (ofs < FIELD_OFFSET(DIJOYSTATE2, rgdwPOV) && (ofs & 3) == 0) {
+                     /* lX lY lZ lRx lRy lRz sliders: the axis order of dev_read */
+-                    const LONG v = (LONG)ev[i].dwData;
++                    LONG v = (LONG)ev[i].dwData;
+                     const unsigned a = ofs / 4;
++                    if (d->ps_trig && (a == 3 || a == 4)) v = ps_trig_di(v);   /* L2 R2: half axes */
+                     if (v > 16384) raw_set_tap(r, CID_AXIS + a * 2);
+                     if (v < -16384) raw_set_tap(r, CID_AXIS + a * 2 + 1);
+                 }
+@@ -1110,6 +1142,7 @@ static int ps_crc_gate(PsCrcGate* g, int ok)
+ /* 0..255 -> -32768..32767, what DirectInput gives for a logical 0..255 axis with DIPROP_RANGE -32768..32767. */
+ static s32 ps_axis(u8 v) { return (s32)v * 257 - 32768; }
+ 
++
+ /* st: LX LY RX RY; b: the three button bytes; b2mask: the bits of b[2] that are buttons. */
+ static void ps_fill(RawState* r, const u8* st, const u8* b, u8 b2mask, u8 l2, u8 r2)
+ {
+@@ -1123,7 +1156,7 @@ static void ps_fill(RawState* r, const u8* st, const u8* b, u8 b2mask, u8 l2, u8
+     r->bits[0] = (u32)(b[0] >> 4) | (u32)b[1] << 4 | (u32)(x & 7u) << 12 | (u32)(x >> 4) << 15;
+     r->axis[0] = ps_axis(st[0]); r->axis[1] = ps_axis(st[1]);     /* X Y   = left stick */
+     r->axis[2] = ps_axis(st[2]); r->axis[5] = ps_axis(st[3]);     /* Z RZ  = right stick */
+-    r->axis[3] = ps_axis(l2);    r->axis[4] = ps_axis(r2);        /* RX RY = L2 R2 */
++    r->axis[3] = ps_trig(l2);    r->axis[4] = ps_trig(r2);        /* RX RY = L2 R2 travel (half axes) */
+     r->lt = l2; r->rt = r2;
+     axis_dirs(r);
+ }
+@@ -1446,6 +1479,10 @@ static int dev_read(PadDev* d, RawState* r)
+     r->axis[0] = js.lX;  r->axis[1] = js.lY;  r->axis[2] = js.lZ;
+     r->axis[3] = js.lRx; r->axis[4] = js.lRy; r->axis[5] = js.lRz;
+     r->axis[6] = js.rglSlider[0]; r->axis[7] = js.rglSlider[1];
++    if (d->ps_trig) {                     /* a PlayStation pad through DirectInput: L2 R2 as with HID */
++        r->axis[3] = ps_trig_di(js.lRx); r->axis[4] = ps_trig_di(js.lRy);
++        r->lt = (u8)(r->axis[3] * 255 / 32767); r->rt = (u8)(r->axis[4] * 255 / 32767);
++    }
+     axis_dirs(r);
+     return 1;
+ }
+@@ -1609,6 +1646,7 @@ static void di_scan(void)
+         if (!d) { ReleaseSRWLockExclusive(&g_dev_lock); di->lpVtbl->Release(di); continue; }
+         d->kind = DEV_DINPUT; d->di = di; d->inst = in->guidInstance; d->di_buffered = buffered;
+         d->vid = vid; d->pid = pid; d->order = ++g_dev_order;
++        d->ps_trig = ps_model(vid, pid) != PSM_NONE;
+         snprintf(d->name, sizeof d->name, "%s", name);
+         wcscpy_s(d->path, MAX_PATH, path);
+         ReleaseSRWLockExclusive(&g_dev_lock);
+@@ -1680,6 +1718,7 @@ static void hid_add(HidDev* h, const WCHAR* path, const char* how)
+     PadDev* d = dev_alloc();
+     if (d) {
+         d->kind = DEV_HID; d->hid = h; d->vid = h->vid; d->pid = h->pid; d->order = ++g_dev_order;
++        d->ps_trig = 1;
+         snprintf(d->name, sizeof d->name, "%s", h->name);
+         wcscpy_s(d->path, MAX_PATH, path);
+     }

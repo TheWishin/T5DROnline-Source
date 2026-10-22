@@ -558,6 +558,38 @@ class ControlsEditor:
         self.notes = []
         self._touch()
 
+    def drop_ps_rest(self):
+        """Up to 1.1.4 this screen could take a PlayStation pad's let-go trigger (RX- / RY-: where L2 / R2 rest)
+        for a button, and the game then held that button all the time. Since 1.1.5 the game ignores them on these
+        pads (padmap.PS_REST_SOURCES). This takes them out of the pads' own sections ([dinput.054C:0CE6] ...);
+        a line left without a source goes, so the button has its preset one again -- what the game does with
+        it. The shared sections ([dinput], [portN.dinput]) keep theirs: on another pad RX- can be a real
+        input. Returns the sources taken out; the file changes only on Save."""
+        removed = []
+        for name in self.doc.section_names():
+            m = re.fullmatch(r"dinput\.([0-9A-Fa-f]{4}):([0-9A-Fa-f]{4})", name.strip(WS))
+            if not m or (int(m.group(1), 16), int(m.group(2), 16)) not in padmap.PS_PADS:
+                continue
+            gone = []
+            for i, _mask in self._target_lines(name):
+                ln = self.doc.lines[i]
+                toks = split_sources(ln.val)
+                kept = [tok for tok in toks if padmap.canon_source(DINPUT, tok) not in padmap.PS_REST_SOURCES]
+                if len(kept) == len(toks):
+                    continue
+                removed += [padmap.canon_source(DINPUT, tok) for tok in toks if tok not in kept]
+                if kept:
+                    ln.set_val(" ".join(kept))
+                else:
+                    gone.append(i)
+            self.doc.remove_lines(gone)
+        if removed:
+            self._touch()
+            self.notes.append(t("Removed {sources} from your buttons: that is L2 / R2 at rest on a PlayStation "
+                                "pad, so the game held them all the time. Save to keep this.",
+                                sources=" ".join(sorted(set(removed)))))
+        return removed
+
     def reload(self):
         """Read the file again (it changed on disk); unsaved edits are lost."""
         if self.path:
@@ -762,6 +794,8 @@ class ControlsEditor:
             c = padmap.canon_source(dev.kind, s)
             if c is None:
                 raise ValueError(f"unknown {dev.kind} input {s!r}")
+            if c in padmap.PS_REST_SOURCES and padmap.is_ps_pad(dev.kind, dev.vid, dev.pid):
+                raise ValueError(f"{c} is where L2 / R2 rest on a PlayStation pad, never a press")
             if c not in srcs:
                 srcs.append(c)
         srcs = srcs[:MAX_SOURCES]

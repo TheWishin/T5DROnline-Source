@@ -1,8 +1,9 @@
 /*
  * Unit test of the runtime's own reading of DualShock 4 / DualSense pads (libs/input/pad_host_win32.c,
  * ps3recomp patch 0042, "PlayStation pads read directly"): every report mode is built here byte by byte
- * and parsed by the runtime's code, which must give the state DirectInput gives for the same pad, and
- * through the "ps" layout the right PS3 buttons and sticks. No controller is needed or touched.
+ * and parsed by the runtime's code, which must give the state DirectInput gives for the same pad (L2 / R2
+ * travel as half axes, see test_triggers_at_rest), and through the "ps" layout the right PS3 buttons and
+ * sticks. No controller is needed or touched.
  *
  *   ps_hid_test                    the checks; prints "PASS <n> checks" (exit 0) or the failures (exit 1)
  *   ps_hid_test vectors=<file>     for tests/test_ps_hid.py: each line "<model> <bt> <hex report>"
@@ -133,10 +134,11 @@ static void expect_raw(int model, int mode, const St* s, RawState* e)
     case 7: raw_set(e, CID_HAT + 3); raw_set(e, CID_HAT + 0); break;
     default: break;
     }
-    /* DirectInput axes X Y Z RX RY RZ: LX LY RX-stick L2 R2 RY-stick, logical 0..255 -> -32768..32767 */
+    /* DirectInput axes X Y Z RX RY RZ: LX LY RX-stick L2 R2 RY-stick, logical 0..255 -> -32768..32767;
+     * L2 R2 travel (RX RY) as half axes, 0..255 -> 0..32767 (released = the centre: no RX- / RY-) */
     const u8 v[6] = { s->lx, s->ly, s->rx, s->l2, s->r2, s->ry };
     for (int a = 0; a < 6; a++) {
-        e->axis[a] = (s32)((v[a] * 65535L) / 255 - 32768);
+        e->axis[a] = (a == 3 || a == 4) ? (s32)((v[a] * 32767L) / 255) : (s32)((v[a] * 65535L) / 255 - 32768);
         if (e->axis[a] > 16384) raw_set(e, CID_AXIS + a * 2);
         if (e->axis[a] < -16384) raw_set(e, CID_AXIS + a * 2 + 1);
     }
@@ -352,6 +354,90 @@ static void test_layout(void)
     CHECK(m.btn == (CELL_PAD_CTRL_SQUARE | CELL_PAD_CTRL_TRIANGLE),
           "[dinput.054C:0CE6] 1 = B2 and tekken macros (R1 = 1+2): %04X (%s)", m.btn, t.desc);
     remove(path);
+    g_nkv = g_nsec = 0;
+}
+
+/* Released L2 / R2 never count as pressed (1.1.5: "L2/R2 are active all the time" with PS4 / PS5 pads).
+ * L2 / R2 travel (RX / RY) rests at 0. Read like DirectInput reads it (-32768 at rest) and turned into axis
+ * directions "past half deflection from the centre", a released trigger was RX- / RY- held for good, and a
+ * controls.ini that bound anything there (the 1.1.4 Controls window captured RX- when a trigger was let go)
+ * held that button all the time: L2 / R2, a face button, a macro -- also on the in-game select. Now the
+ * travel is a half axis (rest = centre): RX+ / RY+ past half way, RX- / RY- never, and a binding to them on
+ * a PlayStation pad is ignored. Other DirectInput pads keep their RX- / RY-. */
+static void ini_text(const char* text)
+{
+    char path[MAX_PATH]; GetTempPathA(sizeof path, path);
+    strcat_s(path, sizeof path, "ps_hid_test_rest.ini");
+    FILE* f = NULL; fopen_s(&f, path, "wb");
+    if (f) { fputs(text, f); fclose(f); }
+    g_nkv = g_nsec = 0;
+    CHECK(ini_load(path), "test controls.ini");
+    remove(path);
+}
+
+static int has_src(const BindTable* t, int id, u16 mask)
+{
+    for (int i = 0; i < t->n; i++) if (t->b[i].src == id && (t->b[i].mask & mask) == mask) return 1;
+    return 0;
+}
+
+static void test_triggers_at_rest(void)
+{
+    const int RXM = CID_AXIS + 3 * 2 + 1, RYM = CID_AXIS + 4 * 2 + 1, RXP = CID_AXIS + 3 * 2, RYP = CID_AXIS + 4 * 2;
+    /* 1. a pad at rest, every model and mode: no axis direction held, triggers at the centre */
+    for (int mi = 0; mi < 3; mi++) {
+        const int model = k_models[mi];
+        int modes[4]; const int nm = modes_of(model, modes);
+        for (int mk = 0; mk < nm; mk++) {
+            const St s = { 0, -1, 128, 128, 128, 128, 0, 0 };
+            u8 rep[600]; RawState r;
+            ps_parse(model, modes[mk] != M_USB, rep, build(model, modes[mk], &s, 3, rep), &r);
+            CHECK(!raw_get(&r, RXM) && !raw_get(&r, RYM) && (r.bits[CID_AXIS >> 5] >> (CID_AXIS & 31)) == 0 &&
+                  r.axis[3] == 0 && r.axis[4] == 0,
+                  "%s %s at rest: axis directions %04X, L2 R2 travel %d %d", k_psm_name[model], k_mode[modes[mk]],
+                  (unsigned)(r.bits[CID_AXIS >> 5] >> (CID_AXIS & 31)), (int)r.axis[3], (int)r.axis[4]);
+        }
+    }
+    RawState r;
+    ps_neutral(&r);
+    CHECK(!raw_get(&r, RXM) && !raw_get(&r, RYM), "ps_neutral holds no resting trigger");
+    /* 2. RX+ / RY+ past half the travel, never RX- / RY- */
+    for (int v = 0; v < 256; v++) {
+        const St s = { 0, -1, 128, 128, 128, 128, (u8)v, (u8)(255 - v) };
+        u8 rep[600];
+        ps_parse(PSM_DS, 0, rep, build(PSM_DS, M_USB, &s, 1, rep), &r);
+        const int bad = raw_get(&r, RXM) || raw_get(&r, RYM) || raw_get(&r, RXP) != (v >= 128) ||
+                        raw_get(&r, RYP) != (255 - v >= 128);
+        if (bad) { CHECK(0, "trigger travel %d / %d: RX+ %d RX- %d RY+ %d RY- %d", v, 255 - v, raw_get(&r, RXP),
+                         raw_get(&r, RXM), raw_get(&r, RYP), raw_get(&r, RYM)); break; }
+    }
+    CHECK(ps_trig_di(-32768) == 0 && ps_trig_di(32767) == 32767 && ps_trig_di(0) == 16384 && ps_trig_di(-70000) == 0,
+          "DirectInput's trigger range -> half axis");
+    /* 3. what the 1.1.4 Controls window could write, read for a DualSense: nothing held at rest, and the
+     *    buttons whose only binding was the resting end keep their preset ones */
+    ini_text("[dinput]\nL2 = RX-\n[dinput.054C:0CE6]\n3+4 = RY-\n2 = B4 RX-\n1 = RY-\nRX = RX\n");
+    BindTable t;
+    build_table(&t, CLS_DINPUT, 0, PS_VID, 0x0CE6, NULL);
+    CHECK(!has_src(&t, RXM, 0) && !has_src(&t, RYM, 0), "DualSense: no binding to RX- / RY- (%s)", t.desc);
+    CHECK(has_src(&t, 6, CELL_PAD_CTRL_L2) && has_src(&t, 3, CELL_PAD_CTRL_TRIANGLE) && has_src(&t, 0, CELL_PAD_CTRL_SQUARE),
+          "L2 = B7, 2 = B4 and 1 = B1 kept");
+    {
+        const St s = { 0, -1, 128, 128, 128, 128, 0, 0 };
+        u8 rep[600]; Merge m; memset(&m, 0, sizeof m);
+        ps_parse(PSM_DS, 1, rep, build(PSM_DS, M_EXT, &s, 1, rep), &r);
+        apply_table(&m, &t, &r, CLS_DINPUT);
+        CHECK(m.btn == 0 && m.tap_btn == 0 && axis_u8(m.ax[TGT_RX]) == 128,
+              "DualSense at rest through that controls.ini: buttons %04X, right stick X %d", m.btn, axis_u8(m.ax[TGT_RX]));
+        const St l2 = { 1u << 6, -1, 128, 128, 128, 128, 255, 0 };
+        memset(&m, 0, sizeof m);
+        ps_parse(PSM_DS, 1, rep, build(PSM_DS, M_EXT, &l2, 2, rep), &r);
+        apply_table(&m, &t, &r, CLS_DINPUT);
+        CHECK(m.btn == CELL_PAD_CTRL_L2 && axis_u8(m.ax[TGT_RX]) == 255, "L2 pulled: %04X, RX %d", m.btn,
+              axis_u8(m.ax[TGT_RX]));
+    }
+    /* the same file for a pad that is no PlayStation pad: its RX- binding stays (a stick may rest centred there) */
+    build_table(&t, CLS_DINPUT, 0, 0x0F0D, 0x0092, NULL);
+    CHECK(has_src(&t, RXM, CELL_PAD_CTRL_L2), "other DirectInput pads keep L2 = RX- (%s)", t.desc);
     g_nkv = g_nsec = 0;
 }
 
@@ -621,6 +707,7 @@ int main(int argc, char** argv)
     test_dualsense_01();
     test_not_input();
     test_layout();
+    test_triggers_at_rest();
     test_taps();
     test_crc_gate();
     test_steam_lists();

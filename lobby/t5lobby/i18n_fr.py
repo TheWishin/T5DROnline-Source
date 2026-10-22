@@ -1138,6 +1138,10 @@ MESSAGES = {
     "Your opponent's PC was the slow one.": "C'est le PC de ton adversaire qui était lent.",
     "Both PCs kept up, so the connection stalled now and then (jitter or lost packets).":
         "Les deux PC ont suivi, donc la connexion a calé de temps en temps (jitter ou paquets perdus).",
+    "This match lagged: the games waited {secs} s for each other's inputs.":
+        "Ce match a eu du lag : les jeux ont attendu {secs} s les entrées de l'autre.",
+    "A wired connection and no uploads during matches help.":
+        "Une connexion filaire et aucun envoi de fichiers pendant les matchs aident.",
     # ---- lobby/t5lobby/match_driver.py
     "Your opponent closed the game.": "Ton adversaire a fermé le jeu.",
     "The connection to your opponent's game was lost.": "La connexion au jeu de ton adversaire a été perdue.",

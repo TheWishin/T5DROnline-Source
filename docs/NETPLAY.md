@@ -958,6 +958,23 @@ first needs the relay with a blocked firewall. Two symmetric NATs with both fire
 the fallback (a consistent choice of the punched pair would avoid it: the other side would have to say in its
 F_HEARD where it saw this side -- a punch format change).
 
+**Rematches after the relay (1.1.5, lobby server only).** A rematch used to continue in the running games on the
+path they had, so once a session was on the relay every rematch stayed there. Production, 2026-10-21 (1.1.4): one
+player's firewall blocked his game, the fallback moved the match onto the relay (127 ms instead of 94 ms direct), and
+each following ~3-minute rematch waited 4.5-8.5 s for inputs (freezes) -- the firewall was fixed on his PC meanwhile,
+and a new match from the lobby went direct again. Now a rematch (or the next game of a ranked set) after a match on
+the relay is a new connection: both launchers send their games back to idle and the lobby runs registration and the
+punch as for a new match (`match_found` with `keep: false`, the old relay session is closed). Direct works: the
+session continues direct. It fails again (punch, or the game hears nothing and the fallback runs once more): the
+session stays on the relay for its following rematches (`Match.direct_again`), so a pair without a direct path pays
+the extra setup (punch window, or the fallback's 15 s) once. Not tried again: `T5L_FORCE_RELAY`, two symmetric NATs
+without predictable ports (nothing would change), both relay bridges already on the direct path. `T5L_REMATCH_DIRECT=0`
+turns it off. 1.1.4 launchers need nothing new (a rematch with `keep: false` is what they did when one game had
+closed). Tests: lobby/tests/test_firewall.py `RematchAfterRelay*`; e2e `net_relay_rematch` (real games, 1.1.4 build
+with this lobby: fallback onto the relay, firewall fixed, the rematch plays direct in a new session, the next one
+continues in it; punch blocked, the rematch tries once more and stays on the relay, the next one continues there: 6 of 6
+confirmed, same hashes, 0 mismatching frames) and `relay_rematch_stub`.
+
 ## Relayed matches (branch relay-smooth, 1.1.4)
 
 The request: "make rollback over the relay smoother". What a relayed match does differently from a direct one,

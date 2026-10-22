@@ -1204,6 +1204,10 @@ MESSAGES = {
     "Both PCs kept up, so the connection stalled now and then (jitter or lost packets).":
         "Beide PCs kamen mit, die Verbindung hat also zwischendurch gestockt (Jitter oder "
         "verlorene Pakete).",
+    "This match lagged: the games waited {secs} s for each other's inputs.":
+        "Dieses Match hat gelaggt: Die Spiele haben {secs} s auf die Eingaben des anderen gewartet.",
+    "A wired connection and no uploads during matches help.":
+        "Ein LAN-Kabel statt WLAN und keine Uploads während der Matches helfen.",
     # ---- lobby/t5lobby/match_driver.py
     "Your opponent closed the game.": "Dein Gegner hat das Spiel geschlossen.",
     "The connection to your opponent's game was lost.": "Die Verbindung zum Spiel deines Gegners ist abgebrochen.",

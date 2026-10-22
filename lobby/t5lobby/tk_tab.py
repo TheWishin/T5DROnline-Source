@@ -1904,7 +1904,7 @@ class OnlineTab:
                    (t("Leave"), lambda: self._rematch(False), "circle"),
                    (t("Block {name}", name=opp), lambda: self.block_opponent(opp))]
         check = self.lag
-        if check and check.get("verdict") == "more_lag" and check.get("can_leave"):
+        if check and lag.lagged(check.get("verdict")) and check.get("can_leave"):
             buttons.insert(3, (t("Leave: too laggy"), self._leave_for_lag))
         self.show_bar(text, buttons)
 
@@ -1929,7 +1929,7 @@ class OnlineTab:
         info, slot, _end = self.set_bar
         buttons = [(t("Leave set (counts as a loss)"), self._leave_set, "circle")]
         check = self.lag
-        if check and check.get("verdict") == "more_lag" and check.get("can_leave"):
+        if check and lag.lagged(check.get("verdict")) and check.get("can_leave"):
             buttons.insert(0, (t("Leave: too laggy"), self._leave_for_lag))
         self.show_bar(self._set_bar_text(), buttons)
 

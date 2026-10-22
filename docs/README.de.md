@@ -67,9 +67,19 @@ Online wurde zwischen zwei echten PCs über das Internet getestet
 
 ## Voraussetzungen
 
+**Mindestanforderungen:** Windows 10 oder 11 (64 Bit), eine CPU mit 4 Kernen ab
+etwa 2014 (Intel Core i5/i7 der 4. Generation, AMD Ryzen oder neuer; AVX2
+empfohlen), eine Grafikkarte, die DirectX 12 kann (Feature-Level 11_0), und 8 GB
+Arbeitsspeicher. Am meisten zählt die CPU: Die Hauptarbeit des Spiels läuft auf
+einem Kern, ein schneller Kern bringt also mehr als viele Kerne oder eine starke
+Grafikkarte.
+
+Im Einzelnen:
+
 - Windows 10 oder 11, 64 Bit.
 - Eine Grafikkarte mit DirectX 12 und eine 64-Bit-CPU mit SSE4.1 (praktisch jeder
-  PC der letzten 10+ Jahre).
+  PC der letzten 10+ Jahre). Damit startet das Spiel; für volles Tempo siehe die
+  Mindestanforderungen oben.
 - Arbeitsspeicher: Das Spiel brauchte auf dem Entwicklungs-PC etwa 1,2 GB. Kleine
   PCs haben wir nicht getestet. 8 GB oder mehr sind eine sichere Schätzung.
 - Etwa 1,5 GB freier Speicherplatz. Nach dem Bauen belegt es etwa 1,1 GB, dazu

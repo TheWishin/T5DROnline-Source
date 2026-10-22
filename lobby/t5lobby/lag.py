@@ -11,6 +11,10 @@ What it compares, with the numbers we really have (no game change is needed):
   it as a lag report. Z uses the larger of the two sides.
 * The cause of extra waiting: a PC whose own speed (without the waits) is below the warn speed
   makes the other PC wait for it. Waiting with both PCs fast is the network (jitter, loss).
+* How long the games stood still: Z is an average per frame, so a match that froze ~9 ms per frame
+  (92 s of 256 s, 40 fps on 60 fps PCs) still read "5.6 frames, what the ping explains" (1.1.4).
+  A game that waited WAIT_SHARE of the match time or more (or ran well below its PC's own speed)
+  makes the verdict "slow": "This match lagged: the games waited N s for each other's inputs."
 
 Nothing here ends a match or changes a rating. The result is shown to both players; leaving the set
 afterwards is their choice (docs/RANKED.md, "Post-game lag check").
@@ -19,6 +23,11 @@ from .i18n import num, t
 from .proto import FRAME_MS
 
 MIN_FRAMES = 300        # a report over fewer frames says too little (the first speed line is at 600)
+WAIT_SHARE = 0.05       # a game that stood still this share of the match time (or more): the match lagged ...
+WAIT_MIN_S = 3.0        # ... when that is at least this many seconds (a short match's few stalls say little)
+FPS_RATIO = 0.85        # ... the same for a game that ran below this share of its PC's own speed
+WAIT_DIFFER = 1.25      # one game waited this many times as long as the other, and WAIT_DIFFER_S more:
+WAIT_DIFFER_S = 2.0     # the server log names it
 
 
 def clean_report(msg):
@@ -45,25 +54,87 @@ def extra_frames(report):
     return (report["waited_ms"] / report["frames"]) / FRAME_MS
 
 
-def assess(delay, reports, warn_fps=55.0, tolerance=1.0):
+def match_seconds(report):
+    """How long the match ran on that PC: its frames at the speed the game really ran (waits included),
+    else its frames at 59.94 Hz plus the waits."""
+    fps = report.get("fps")
+    if fps:
+        return report["frames"] / fps
+    return report["frames"] * FRAME_MS / 1000.0 + report["waited_ms"] / 1000.0
+
+
+def stood_still(report, wait_share=WAIT_SHARE):
+    """Did this game wait for the other one much of the match (or run well below its PC's own speed)?"""
+    if not report or wait_share <= 0:
+        return False
+    waited = report["waited_ms"] / 1000.0
+    if waited < WAIT_MIN_S:
+        return False
+    if waited >= wait_share * match_seconds(report):
+        return True
+    fps, pc = report.get("fps"), report.get("pc_fps")
+    return bool(fps and pc and fps < FPS_RATIO * pc)
+
+
+def assess(delay, reports, warn_fps=55.0, tolerance=1.0, wait_share=WAIT_SHARE):
     """reports: [side 0 report or None, side 1 report or None] (clean_report results).
-    -> {expected, observed, extra [per side or None], verdict ok|more_lag|unknown, cause, slow [sides]}.
-    `cause` is network | pc | None (pc: `slow` names the sides whose own speed was below warn_fps)."""
+    -> {expected, observed, extra [per side or None], verdict ok|more_lag|slow|unknown, cause, slow [sides],
+        waited_s [per side or None], share (the longer wait / its match time), waited_more (side or None),
+        why (a line for the server log, None when ok)}.
+    `cause` is network | pc | None (pc: `slow` names the sides whose own speed was below warn_fps).
+    more_lag: the waits add more than `tolerance` frames per frame; slow: fewer, but a game stood still
+    `wait_share` of the match time or more (stood_still; 0 = off)."""
     extra = [extra_frames(r) if r else None for r in reports]
     have = [e for e in extra if e is not None]
     slow = [i for i, r in enumerate(reports) if r and r.get("pc_fps") and warn_fps > 0 and r["pc_fps"] < warn_fps]
+    waited = [round(r["waited_ms"] / 1000.0, 1) if r else None for r in reports]
+    shares = [min(1.0, r["waited_ms"] / 1000.0 / max(match_seconds(r), 0.001)) for r in reports if r]
     out = {"expected": int(delay), "observed": None, "extra": [None if e is None else round(e, 2) for e in extra],
-           "verdict": "unknown", "cause": None, "slow": slow}
+           "verdict": "unknown", "cause": None, "slow": slow, "waited_s": waited,
+           "share": round(max(shares), 3) if shares else None, "waited_more": None, "why": None}
     if not have:
         return out
+    if None not in waited:
+        lo, hi = sorted(waited)
+        if hi >= WAIT_DIFFER * lo and hi - lo >= WAIT_DIFFER_S:
+            out["waited_more"] = waited.index(hi)
     worst = max(have)
     out["observed"] = round(delay + worst, 1)
-    if worst <= tolerance:
-        out["verdict"] = "ok"
-    else:
+    if worst > tolerance:
         out["verdict"] = "more_lag"
-        out["cause"] = "pc" if slow else "network"
+    elif any(stood_still(r, wait_share) for r in reports):
+        out["verdict"] = "slow"
+    else:
+        out["verdict"] = "ok"
+        return out
+    out["cause"] = "pc" if slow else "network"
+    out["why"] = why(out, reports)
     return out
+
+
+def why(a, reports):
+    """The server log's words for a lagged match: "network: the games waited 92 s / 95 s of 256 s (37 %) for each
+    other's inputs" (+ "; P2's game waited more" when one waited clearly longer; pc: which PC was slow first)."""
+    secs = " / ".join("-" if w is None else f"{w:.0f} s" for w in a["waited_s"])
+    total = max(match_seconds(r) for r in reports if r)
+    text = f"the games waited {secs} of {total:.0f} s ({(a['share'] or 0) * 100:.0f} %) for each other's inputs"
+    if a["waited_more"] is not None:
+        text += f"; P{a['waited_more'] + 1}'s game waited more"
+    if a["cause"] == "pc":
+        pcs = ", ".join(f"P{i + 1} {(reports[i] or {}).get('pc_fps') or 0:.0f} fps" for i in a["slow"])
+        return f"pc: below full speed: {pcs}; {text}"
+    return f"network: {text}"
+
+
+def waited_most(a):
+    """The longer of the two games' waits in seconds (the "N s" the players see), or None."""
+    have = [w for w in (a.get("waited_s") or ()) if w is not None]
+    return max(have) if have else None
+
+
+def lagged(verdict):
+    """Did the lag check find the match worse than its ping (more_lag; slow: the games stood still a lot)?"""
+    return verdict in ("more_lag", "slow")
 
 
 def describe(ping_ms, a, side, reports=None):
@@ -72,10 +143,15 @@ def describe(ping_ms, a, side, reports=None):
     head = f"Ping {ping_ms:.0f} ms should mean about {a['expected']} frames behind."
     if a["verdict"] == "unknown":
         return head + " The games did not report how it went, so there is nothing to compare."
-    text = f"{head} It was {a['observed']:.1f}."
-    if a["verdict"] == "ok":
-        return text + " That is what the ping explains."
-    text += " That is more than the ping explains."
+    if a["verdict"] == "slow":
+        text = f"This match lagged: the games waited {waited_most(a):.0f} s for each other's inputs."
+        if a["cause"] != "pc":
+            return text + " A wired connection and no uploads during matches help."
+    else:
+        text = f"{head} It was {a['observed']:.1f}."
+        if a["verdict"] == "ok":
+            return text + " That is what the ping explains."
+        text += " That is more than the ping explains."
     if a["cause"] == "pc":
         mine = side in a["slow"]
         theirs = (1 - side) in a["slow"]
@@ -99,6 +175,16 @@ def describe_event(ev):
         verdict = ev["verdict"]
     except (KeyError, TypeError, ValueError):
         return str(ev.get("text", ""))
+    cause = ev.get("cause")
+    if verdict == "slow":
+        try:
+            secs = float(ev["waited_s"])
+        except (KeyError, TypeError, ValueError):
+            return str(ev.get("text", ""))
+        text = t("This match lagged: the games waited {secs} s for each other's inputs.", secs=f"{secs:.0f}")
+        if cause in ("both_pcs", "your_pc", "opponent_pc"):
+            return text + " " + _pc_sentence(ev, cause)
+        return text + " " + t("A wired connection and no uploads during matches help.")
     text = t("Ping {ping} ms should mean about {frames} frames behind.", ping=f"{ping:.0f}", frames=expected)
     if verdict == "unknown" or ev.get("observed_frames") is None:
         return text + " " + t("The games did not report how it went, so there is nothing to compare.")
@@ -106,14 +192,17 @@ def describe_event(ev):
     if verdict == "ok":
         return text + " " + t("That is what the ping explains.")
     text += " " + t("That is more than the ping explains.")
-    cause = ev.get("cause")
-    if cause == "both_pcs":
-        return text + " " + t("Both PCs ran below full speed.")
-    if cause in ("your_pc", "opponent_pc"):
-        fps = (ev.get("yours" if cause == "your_pc" else "opponent") or {}).get("pc_fps")
-        if cause == "your_pc":
-            return text + " " + (t("Your PC was the slow one ({fps} fps).", fps=f"{fps:.0f}") if fps
-                                 else t("Your PC was the slow one."))
-        return text + " " + (t("Your opponent's PC was the slow one ({fps} fps).", fps=f"{fps:.0f}") if fps
-                             else t("Your opponent's PC was the slow one."))
+    if cause in ("both_pcs", "your_pc", "opponent_pc"):
+        return text + " " + _pc_sentence(ev, cause)
     return text + " " + t("Both PCs kept up, so the connection stalled now and then (jitter or lost packets).")
+
+
+def _pc_sentence(ev, cause):
+    if cause == "both_pcs":
+        return t("Both PCs ran below full speed.")
+    fps = (ev.get("yours" if cause == "your_pc" else "opponent") or {}).get("pc_fps")
+    if cause == "your_pc":
+        return (t("Your PC was the slow one ({fps} fps).", fps=f"{fps:.0f}") if fps
+                else t("Your PC was the slow one."))
+    return (t("Your opponent's PC was the slow one ({fps} fps).", fps=f"{fps:.0f}") if fps
+            else t("Your opponent's PC was the slow one."))

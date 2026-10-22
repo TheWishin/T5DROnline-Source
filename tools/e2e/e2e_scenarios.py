@@ -1509,6 +1509,110 @@ def firewall_stub(ctx):
     _fw_cases(ctx, a, b, real=False)
 
 
+# ------------------------------------------------------------------ rematches after the relay (1.1.5)
+# Production 2026-10-21 (1.1.4): a firewall blocked one game, the fallback moved the match onto the relay, and every
+# rematch of the session stayed there with freezes -- the firewall was fixed meanwhile. Now a rematch after the relay
+# tries the direct path again (docs/NETPLAY.md "Rematches after the relay"); a second failure keeps the relay.
+def _rr_play(ctx, a, b, mid, label, real):
+    if real:
+        if not wait_fight(ctx, mid, (a, b), timeout=180):
+            raise Abort(f"{label}: no fight")
+        wait_results(ctx, mid, (a, b))
+        row = match_row(ctx, mid, (a, b), "confirmed", label)
+    else:
+        wait_results(ctx, mid, (a, b), timeout=120)
+        st = [p.matches.get(mid, {}).get("status") for p in (a, b)]
+        ctx.check(f"{label}: lobby result confirmed", st == ["confirmed", "confirmed"], st)
+        row = {"match": mid, "label": label, "status": st[0], "path": a.matches.get(mid, {}).get("path")}
+    ctx.matches.append(dict(row, cont=a.matches.get(mid, {}).get("cont"), keep=a.matches.get(mid, {}).get("keep")))
+    return row
+
+
+def _rr_rematch(ctx, a, b, label, keep, path, real):
+    """Both click Rematch: a new connection (keep False) or the running games (keep True), on `path`. (A stub game
+    ends with its match: its rematches are always new connections.)"""
+    mid = rematch(ctx, a, b)
+    m = a.matches.get(mid, {})
+    keep = keep and real
+    ctx.check(f"{label}: {'continues in the running games' if keep else 'a new connection (match_found keep false)'}",
+              bool(m.get("keep")) == keep and bool(m.get("cont")) == keep, f"keep {m.get('keep')}, continue {m.get('cont')}")
+    got = m.get("path")
+    ctx.check(f"{label}: path {path}", got == path or (path == "direct" and got == "lan"), got)
+    return mid
+
+
+def _relay_rematch(ctx, a, b, real):
+    # 1. the production case: the direct path is found, a game blocked completely hears nothing, the relay takes over
+    ctx.shaper.set(0, 0, 0, on=True, ip="127.0.0.2")
+    a.set_firewall("block", None)
+    since = time.time()
+    mid = queue_match(ctx, a, b, "quick")
+    ctx.check("match 1: the lobby found the direct path", a.matches[mid].get("path") in ("direct", "lan"),
+              a.matches[mid].get("path"))
+    ctx.wait(lambda: len(a.events_of("match_start", since)) >= 2 and len(b.events_of("match_start", since)) >= 2, 90,
+             "match 1 moves onto the relay (a second match_start on both PCs)")
+    ctx.check("match 1: on the relay after the fallback", a.matches[mid].get("path") == "relay", a.matches[mid].get("path"))
+    _rr_play(ctx, a, b, mid, "match 1 (the fallback's relay)", real)
+    a.set_firewall(None, None)                         # the player fixed the firewall
+    mid = _rr_rematch(ctx, a, b, "rematch 1 after the relay", keep=False, path="direct", real=real)
+    _rr_play(ctx, a, b, mid, "rematch 1 (direct again)", real)
+    mid = _rr_rematch(ctx, a, b, "rematch 2", keep=True, path="direct", real=real)
+    _rr_play(ctx, a, b, mid, "rematch 2 (same session, direct)", real)
+    for p in (a, b):
+        leave(ctx, p)
+    ctx.shaper.set(0, 0, 0, on=False)
+    ctx.wait(lambda: a.action_on("quick") and b.action_on("quick"), 60, "free for the next pairing")
+    # (1.1.4 game, seen here: after a rematch inside the session, with no next match, both persistent games stopped at
+    # the same frame waiting for each other's input until the 20 s peer_timeout; a match found meanwhile was not taken
+    # by one game in the control channel's 10 s, and its launcher went to process mode. Not this change: wait it out.)
+    ctx.sleep(25.0 if real else 1.0)
+    # 2. no direct path at all (a punch blocked on both launchers): one more try, then the relay for the session
+    for p in (a, b):
+        p.client.block_direct = True
+    try:
+        mid = queue_match(ctx, a, b, "quick")
+        ctx.check("match 4: relay from the start", a.matches[mid].get("path") == "relay", a.matches[mid].get("path"))
+        _rr_play(ctx, a, b, mid, "match 4 (relay, no direct path)", real)
+        mid = _rr_rematch(ctx, a, b, "rematch 4a: the direct path tried again, failed again", keep=False, path="relay",
+                          real=real)
+        _rr_play(ctx, a, b, mid, "rematch 4a (relay again)", real)
+        mid = _rr_rematch(ctx, a, b, "rematch 4b: stays on the relay", keep=True, path="relay", real=real)
+        _rr_play(ctx, a, b, mid, "rematch 4b (same session, relay)", real)
+    finally:
+        for p in (a, b):
+            p.client.block_direct = False
+            leave(ctx, p)
+
+
+@scenario("net_relay_rematch", "6 netcode", game=True, suites=("game", "net"),
+          desc="1.1.5: a rematch after the relay tries the direct path again (fallback -> firewall fixed -> rematch "
+               "direct, next rematch in the same session); without a direct path one more try, then the relay stays")
+def net_relay_rematch(ctx):
+    from t5lobby import nat as _nat
+    if not hasattr(_nat, "InboundFilter"):
+        raise Skip("no T5_NET_TEST_INBOUND in this tree (firewall-fallback, 1.1.3)")
+    game_server(ctx)
+    a = ctx.player("E2E RrA")
+    b = ctx.player("E2E RrB")
+    login(ctx, a)
+    login(ctx, b)
+    _relay_rematch(ctx, a, b, real=True)
+
+
+@scenario("relay_rematch_stub", "6 netcode", suites=("lobby", "net"),
+          desc="net_relay_rematch with stub games")
+def relay_rematch_stub(ctx):
+    from t5lobby import nat as _nat
+    if not hasattr(_nat, "InboundFilter"):
+        raise Skip("no T5_NET_TEST_INBOUND in this tree (firewall-fallback, 1.1.3)")
+    stub_server(ctx)
+    a = ctx.player("E2E RrsA", kind="stub", env={"T5_STUB_SECONDS": 3})
+    b = ctx.player("E2E RrsB", kind="stub", env={"T5_STUB_SECONDS": 3})
+    login(ctx, a)
+    login(ctx, b)
+    _relay_rematch(ctx, a, b, real=False)
+
+
 # ------------------------------------------------------------------ regional relays (1.1.1)
 def _regional_world(ctx, real, rtt=None):
     """Lobby server with two regional relay nodes (RelayNodes: usw, usc) behind simulated round trips."""

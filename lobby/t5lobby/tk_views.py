@@ -27,7 +27,7 @@ from tkinter import ttk
 
 from . import i18n, proto, ranks, theme, tk_tour
 from .i18n import N_, t
-from .lag import describe_event as describe_lag
+from .lag import describe_event as describe_lag, lagged
 from .rank_art import ART
 from .theme import C
 
@@ -1698,7 +1698,7 @@ class OnlineView:
                                                                                                sticky="w")
         lag = tab.lag
         if lag and lag.get("text"):
-            bad = lag.get("verdict") == "more_lag"
+            bad = lagged(lag.get("verdict"))
             lr = self.body(v)
             lr.grid(row=row, column=0, sticky="we", pady=(px(8), 0))
             lr.columnconfigure(1, weight=1)

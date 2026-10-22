@@ -799,7 +799,8 @@ class LagCheckTest(Base):
         row = self.s.call(lambda: self.s.srv.store.match_row(mid))
         stored = json.loads(row["lag"])["assess"]
         self.assertEqual((stored["verdict"], stored["cause"]), ("slow", "network"))
-        self.assertTrue(stored["why"].startswith("network: the games waited 92 s / 95 s"), stored["why"])
+        p1p2 = "92 s / 95 s" if ea["slot"] == 0 else "95 s / 92 s"    # the log lists P1 first; a may be either side
+        self.assertTrue(stored["why"].startswith("network: the games waited " + p1p2), stored["why"])
         self.assertEqual(self.s.call(lambda: self.s.srv.counters["lag_slow"]), 1)
         a.leave_set("lag")                                            # a ranked set is left for free after it
         sa = expect(a, "set_end")

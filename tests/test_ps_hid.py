@@ -78,7 +78,7 @@ class ReportBuilderTest(unittest.TestCase):
                                                                    lx=0, ly=255, l2=255))
         self.assertEqual(bits[0], (1 << 1) | (1 << 13))                  # no mute on a DS4
         self.assertEqual(bits[4] & 0xF, 0b0011)                          # up + right
-        self.assertEqual(axes, [-32768, 32767, 128, 32767, -32768, 128, 0, 0])
+        self.assertEqual(axes, [-32768, 32767, 128, 32767, 0, 128, 0, 0])     # L2 R2 travel: half axes (1.1.5)
 
 
 def find_ps3recomp():

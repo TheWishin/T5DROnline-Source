@@ -2843,3 +2843,45 @@ publishes hangs (the test's timeout reports it). Smoke quick on the final build:
   renderer's caches; the D3D12 calls were the separable part, and they are cheap after 0062 (recording them
   through the ring saves only 0.15-0.4 ms of a 3-4.5 ms translation).
 - Not tried on a real 4-core laptop.
+
+## Ring reuse with a slow renderer thread (1.1.5, patch 0070)
+
+Player report (1.1.4, Linux / Steam Proton, vkd3d-proton, Radeon RX 9060 XT, Ryzen 7 5700X3D, offline, 1080p,
+vsync): "vertices on models freak out and return to normal after about a second"; the logs show no error. Under
+vkd3d-proton every D3D12 call costs more than on Windows, so with `RSX_XLAT_OVERLAP=2` (patch 0067) the renderer
+thread could fall behind the walker. The suspicion: the walker hands out vertex / index / constant / upload ring
+memory for the next frame (or the vertex-fetch worker fills it) while calls of the last frame that read it are
+still queued for the renderer thread or running on the GPU.
+
+**Test hooks** (patch 0070, off unless set):
+
+| switch | what it does |
+|---|---|
+| `RSX_XLAT_RENDER_DELAY_US=<us>[,<ms>]` | the renderer thread spins `<us>` after every call it makes and sleeps `<ms>` after every present: a renderer thread as slow as you like |
+| `RSX_RING_GUARD=1` | every range of the vertex, index, vertex-constant, pixel-constant and upload rings the walker hands out (the inline fetch, the vertex jobs' reservations, texture uploads) is checked against the list that used those bytes last (per 64 KB / 4 KB block: the fence value that list signals): a write while that list is not finished on the GPU -- or not even submitted, its calls still in the renderer thread's ring -- is counted and logged (`[ring-guard] ... reused while list N still uses them`); a summary line every 600 presents |
+
+**Result: the hypothesis is wrong.** Pool stage (30), Lili vs Asuka, `RSX_XLAT_OVERLAP=2`,
+`RSX_XLAT_RENDER_DELAY_US=8,30` (the renderer thread ~45 ms behind a frame, the game at 20 fps):
+
+- `RSX_RING_GUARD=1`: **2.6 million ring ranges checked, 0 reused** before the GPU was done with them (a single
+  fight and the walker side of a lockstep pair, `build/fix115/runs/g1`, `build/fix115/pairs/p1`).
+- Lockstep pair, host the 1.1.4 runtime with `RSX_XLAT_OVERLAP=0`, joiner this one slowed as above
+  (`T5_NET_SHOT=300,900`, every surface dumped): the fighters, the crowd and the shadow maps are identical; the only
+  differences are the stage's animated torch light and window (the two games' renderer frame counters were 2,223 /
+  1,349: the slowed side drew fewer menu frames before the fight) and a hit spark (not part of the state a pair
+  keeps equal; see "Same picture, same game" above).
+
+Why it holds by design: every walk waits for the last handed-off present (`rsx_live_draw_sync`), and every point
+that resets a ring cursor or submits -- `ld_begin_recording`, `ld_flush`, the ring-full and constant-ring-full
+flushes -- first takes the real list over (`ld_own_enter`: the renderer thread has made every queued call) and
+then waits for the GPU fence of the list it reuses. A slower renderer thread makes those waits longer (fps), it
+cannot make them shorter. The vertex jobs are drained before every submit, before every guest-memory write of the
+walker (`rsx_live_draw_guest_write_barrier`) and before the flip.
+
+**Next suspects** for that report, in order: the other two game-side changes of 1.1.4 -- 0069 (the lifted stores'
+reserved-line check; the handshake with an SPU's first reservation of a line relies on `FlushProcessWriteBuffers`,
+which Wine implements differently from Windows) and 0066 (register promotion in the lifted code) -- both change how
+the game's own code meets memory the SPU skinning jobs share. To tell them apart on the player's PC, one evening
+each: `RSX_XLAT_OVERLAP=0` (rules the renderer thread out for good), `PS3_COH_LOCAL=0` (every lifted store takes the
+runtime's exact out-of-line check, 0069's fast path off), `RSX_VERTEX_THREADS=0` (no async vertex fetch), and
+`RSX_RING_GUARD=1` once (a `[ring-guard] ... reused` line in the log would prove this section wrong on Proton).

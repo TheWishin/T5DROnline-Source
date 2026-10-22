@@ -3,6 +3,24 @@
 All notable changes, newest first. The project is a test release. Short commit hashes are in parentheses. The state of each
 part is in the README's status table.
 
+## v1.1.5 (not released yet)
+
+### Controls
+- **PS4 / PS5 controllers: L2 and R2 are no longer pressed all the time.** A released trigger counted as held when a
+  button was bound to its resting end -- which the Controls window did by itself when you let go of a trigger while it
+  waited for the next button. That button (L2, R2, a punch, a macro) was then held for good, in fights and on the
+  character select (where a held button can pick the wrong costume, or Panda instead of Kuma). Now a DualShock 4,
+  DualSense or DualSense Edge trigger counts only when you pull it (past half way for the RX+ / RY+ names), the game
+  ignores such old bindings, and the Controls window never takes the end an axis rests at and cleans an old
+  `controls.ini` when it opens (Save keeps it). Other controllers and Xbox pads work as before.
+- **Setting a button with a trigger in the Controls window:** pulling L2 / R2 sets the trigger's own button (no more
+  "several buttons at once"), and the next question waits until you let go.
+
+### Graphics
+- **Models' vertices jumping for about a second (reported on Linux / Steam Proton):** not caused by 1.1.4's frame
+  overlap -- checked with a deliberately slowed renderer and a memory check, everything stayed in order. Still open;
+  if you see it, add `RSX_RING_GUARD=1` under Extra settings for one evening and send us the game log.
+
 ## v1.1.4 (2026-10-21)
 
 **Jinpachi and Random in casual matches, Start skips the intros and replays online, a chime when a match is found, the game's own rank plates, and a faster game.** Both players need 1.1.4

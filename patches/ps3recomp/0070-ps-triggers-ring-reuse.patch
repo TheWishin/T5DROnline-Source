@@ -150,3 +150,163 @@ index 54ae6d9..c5539cf 100644
          snprintf(d->name, sizeof d->name, "%s", h->name);
          wcscpy_s(d->path, MAX_PATH, path);
      }
+diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
+index fc8d758..7a59113 100644
+--- a/libs/video/rsx_live_draw.c
++++ b/libs/video/rsx_live_draw.c
+@@ -3194,6 +3194,48 @@ static int ld_async_present(void)
+     if (v < 0) { const char* e = getenv("RSX_ASYNC_PRESENT"); v = (e && *e == '0') ? 0 : 1; }
+     return v;
+ }
++/* RSX_RING_GUARD=1 (test hook, patch 0070): every range of the vertex, index, vertex-constant, pixel-constant
++ * and upload rings the walker hands out is checked against the list that used those bytes before (per
++ * 64 KB / 4 KB block: the fence value that list signals): a write while that list is not finished on the
++ * GPU -- or not even submitted, its calls still queued for the renderer thread -- is reused too early and
++ * counted ("[ring-guard]"). With RSX_XLAT_RENDER_DELAY_US it shows whether the overlap (patch 0067) can
++ * hand out memory a queued frame still reads (docs/RENDER_PERF.md "Ring reuse"). */
++enum { LDG_VB, LDG_IB, LDG_CB, LDG_PSCB, LDG_UPLOAD, LDG_N };
++static int g_ldg_on = -1;
++static u64* g_ldg_blk[LDG_N];
++static u64 g_ldg_checked, g_ldg_early;
++static void ld_ring_guard(int ring, u64 off, u64 len)
++{
++    static const char* const names[LDG_N] = { "vertex", "index", "vertex-constant", "pixel-constant", "upload" };
++    static const u32 shift[LDG_N] = { 16, 16, 12, 12, 16 };
++    if (g_ldg_on < 0) {
++        const char* e = getenv("RSX_RING_GUARD");
++        g_ldg_on = e && *e == '1';
++        if (g_ldg_on) {
++            const u64 cap[LDG_N] = { VERT_BUFFER_SIZE, INDEX_BUFFER_SIZE, CB_RING_BYTES, PS_CB_RING_BYTES, UPLOAD_SIZE };
++            for (int i = 0; i < LDG_N; i++) g_ldg_blk[i] = (u64*)calloc((size_t)(cap[i] >> shift[i]) + 2, sizeof(u64));
++            fprintf(stderr, "[ring-guard] on: ring memory reuse is checked against the GPU fence (test hook)\n");
++        }
++    }
++    if (!g_ldg_on || !len || !g_ldg_blk[ring]) return;
++    const u64 cur = g.fence_value + 1;           /* what the list being recorded will signal */
++    const u64 done = g.fence->lpVtbl->GetCompletedValue(g.fence);
++    g_ldg_checked++;
++    for (u64 b = off >> shift[ring]; b <= (off + len - 1) >> shift[ring]; b++) {
++        const u64 last = g_ldg_blk[ring][b];
++        if (last && last != cur && last > done) {
++            if (g_ldg_early++ < 12)
++                fprintf(stderr, "[ring-guard] %s ring bytes 0x%llX+%llu reused while list %llu still uses them "
++                                "(GPU done to %llu, recording %llu, renderer thread %lld bytes behind)\n",
++                        names[ring], (unsigned long long)off, (unsigned long long)len, (unsigned long long)last,
++                        (unsigned long long)done, (unsigned long long)cur,
++                        (long long)(g_rq_wl - __atomic_load_n(&g_rq_r, __ATOMIC_ACQUIRE)));
++            break;
++        }
++    }
++    for (u64 b = off >> shift[ring]; b <= (off + len - 1) >> shift[ring]; b++) g_ldg_blk[ring][b] = cur;
++}
++
+ static void ld_begin_recording_owned(void);
+ /* Patch 0067: resetting the list (and waiting for the GPU before it) needs the
+  * real list: the walker takes it over from the renderer thread first. */
+@@ -3641,6 +3683,7 @@ static ID3D12Resource* create_texture_mipped(DXGI_FORMAT fmt, const tex_level_t*
+         const u32 pitch = (lv[m].row_bytes + 255) & ~255u;
+         const u32 start = (g.upload_used + 511) & ~511u;
+         if ((u64)start + (u64)pitch * lv[m].rows > UPLOAD_SIZE) break;
++        ld_ring_guard(LDG_UPLOAD, start, (u64)pitch * lv[m].rows);
+         for (u32 y = 0; y < lv[m].rows; y++)
+             memcpy(g.upload_mapped + start + (size_t)y * pitch,
+                    lv[m].data + (size_t)y * lv[m].row_bytes, lv[m].row_bytes);
+@@ -3696,6 +3739,7 @@ static ID3D12Resource* create_texture_cube(
+                 ld_tex_release(tex);   /* nothing recorded against it yet */
+                 return NULL;
+             }
++            ld_ring_guard(LDG_UPLOAD, start, (u64)pitch * level->rows);
+             for (u32 y = 0; y < level->rows; y++)
+                 memcpy(g.upload_mapped + start + (size_t)y * pitch,
+                        level->data + (size_t)y * level->row_bytes,
+@@ -7219,6 +7263,7 @@ static int ld_upload_pixel_constants(u32* out_offset)
+     const LONGLONG upload_begin = ld_profile_qpc();
+ #endif
+     u8* destination = g.ps_cb_mapped + offset;
++    ld_ring_guard(LDG_PSCB, offset, allocation_bytes ? allocation_bytes : data_bytes);
+     memset(destination, 0, data_bytes);
+     if (g.fp_constants.count)
+         memcpy(
+@@ -8086,6 +8131,8 @@ static int ld_vjob_submit(u32 prim, const rsx_vertex_layout_plan* layout,
+         memset(&j->ia, 0, sizeof(j->ia));
+         j->base_index = 0; j->restart_en = 0; j->restart_val = 0;
+     }
++    ld_ring_guard(LDG_VB, g.vb_used, vb_bytes);
++    ld_ring_guard(LDG_IB, g.ib_used, ib_bytes);
+     j->vb_dst = g.vb_mapped + g.vb_used;
+     j->ib_dst = (u32*)((u8*)g.ib_mapped + g.ib_used);
+     j->ib_count = (u32)n_idx;
+@@ -10229,6 +10276,8 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+         g.ps_cb_used = 0; g_ld_ps_cb_epoch++;
+         ld_rings_reset();
+     }
++    ld_ring_guard(LDG_VB, g.vb_used, draw_vb_bytes);
++    ld_ring_guard(LDG_IB, g.ib_used, draw_ib_bytes);
+     if (draw_vb_bytes)
+         memcpy(
+             g.vb_mapped + g.vb_used, vertex_data,
+@@ -10278,6 +10327,7 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+         return;
+     }
+     g.cb_used = vertex_cb_offset;
++    ld_ring_guard(LDG_CB, vertex_cb_offset, CB_BLOCK_ALIGNED);
+     u32 ps_cb_offset = 0;
+     if (!ld_upload_pixel_constants(&ps_cb_offset)) {
+         live_draw_csv_emit(prim, n_tri, "drop_ps_cbring");
+@@ -14519,6 +14569,9 @@ void rsx_live_draw_present(u32 buffer_id)
+     }
+     ((rq_u32*)ld_rq_put(RQ_PRESENT, sizeof(rq_u32)))->v = buffer_id;
+     g_xo_present_end = g_rq_wl;
++    if (g_ldg_on > 0 && (g_xo_async % 600u) == 0)
++        fprintf(stderr, "[ring-guard] %llu ring ranges checked, %llu reused before the GPU was done with them\n",
++                (unsigned long long)g_ldg_checked, (unsigned long long)g_ldg_early);
+     g_xo_async++;
+     g_xo_last_async = (unsigned)g_xo_async;
+     ld_rq_publish();
+diff --git a/libs/video/rsx_record_ring.h b/libs/video/rsx_record_ring.h
+index e14ee34..3226c38 100644
+--- a/libs/video/rsx_record_ring.h
++++ b/libs/video/rsx_record_ring.h
+@@ -517,9 +517,34 @@ static void ld_rq_replay(const ld_rq_hdr* h, ID3D12GraphicsCommandList* L)
+  * until the walker wakes it. Returns once g_rq_stop is set
+  * and the ring is empty (tests; the renderer thread never stops). */
+ static volatile LONG g_rq_stop;
++/* RSX_XLAT_RENDER_DELAY_US=<us>[,<ms>] (test hook, patch 0070): the renderer thread spins <us> after every
++ * call it makes and sleeps <ms> after every present -- a renderer thread as slow as vkd3d-proton's can be
++ * (Linux / Steam Proton), to check that nothing the walker writes for the GPU is reused before the GPU and
++ * this thread are done with it (RSX_RING_GUARD, docs/RENDER_PERF.md "Ring reuse"). */
++static double g_rq_delay_us = -1.0;
++static DWORD g_rq_delay_present_ms;
++static void ld_rq_delay(int present)
++{
++    if (g_rq_delay_us < 0) {
++        const char* e = getenv("RSX_XLAT_RENDER_DELAY_US");
++        g_rq_delay_us = e && *e ? atof(e) : 0.0;
++        const char* c = e ? strchr(e, ',') : NULL;
++        g_rq_delay_present_ms = c ? (DWORD)atoi(c + 1) : 0;
++        if (g_rq_delay_us > 0 || g_rq_delay_present_ms)
++            fprintf(stderr, "[xlat-overlap] RSX_XLAT_RENDER_DELAY_US: the renderer thread waits %.1f us a call, "
++                            "%lu ms a present (test hook)\n", g_rq_delay_us, (unsigned long)g_rq_delay_present_ms);
++    }
++    if (present && g_rq_delay_present_ms) Sleep(g_rq_delay_present_ms);
++    if (g_rq_delay_us > 0) {
++        const LONGLONG end = rq_qpc() + (LONGLONG)(g_rq_delay_us * (double)rq_qpf() / 1e6);
++        while (rq_qpc() < end) _mm_pause();
++    }
++}
++
+ static void ld_rq_consume(ID3D12GraphicsCommandList* (*list)(void))
+ {
+     t_ld_render = 1;
++    ld_rq_delay(0);
+     LONGLONG r = __atomic_load_n(&g_rq_r, __ATOMIC_ACQUIRE);
+     for (;;) {
+         LONGLONG w = __atomic_load_n(&g_rq_w, __ATOMIC_ACQUIRE);
+@@ -541,6 +566,7 @@ static void ld_rq_consume(ID3D12GraphicsCommandList* (*list)(void))
+         while (r != w) {
+             const ld_rq_hdr* h = (const ld_rq_hdr*)(g_rq_buf + (uint32_t)(r % LD_RQ_BYTES));
+             ld_rq_replay(h, L);
++            if (g_rq_delay_us != 0.0) ld_rq_delay(h->op == RQ_PRESENT);
+             r += h->bytes;
+             /* consumed: room for the walker, and the end of a sync wait */
+             __atomic_store_n(&g_rq_r, r, __ATOMIC_SEQ_CST);

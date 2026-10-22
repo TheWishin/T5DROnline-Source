@@ -148,6 +148,33 @@ class RecordRing(unittest.TestCase):
         self.assertRegex(r.stdout, r"(?m)^PASS$", tail)
         self.assertRegex(r.stdout, r"identical, 0 sync failures, 0 unexpected calls", tail)
 
+    def test_a_slow_renderer_thread_changes_nothing(self):
+        # 1.1.5 (patch 0070, RSX_XLAT_RENDER_DELAY_US): the renderer thread as slow as under Proton -- every call
+        # still arrives once, in order, and every sync waits for it
+        env = dict(os.environ, RSX_XLAT_RENDER_DELAY_US="3,1")
+        r = subprocess.run([self.exe, "20000"], capture_output=True, text=True, timeout=600, cwd=self.tmp.name, env=env)
+        tail = r.stdout[-2000:] + r.stderr[-500:]
+        self.assertEqual(r.returncode, 0, tail)
+        self.assertIn("RSX_XLAT_RENDER_DELAY_US", r.stdout + r.stderr)
+        self.assertRegex(r.stdout, r"identical, 0 sync failures, 0 unexpected calls", tail)
+
+
+class RingReuseHooks(unittest.TestCase):
+    """1.1.5 "vertices freak out for a second" (Proton): the test hooks that showed the overlap does not reuse
+    ring memory early (patch 0070; docs/RENDER_PERF.md "Ring reuse")."""
+
+    def test_hooks_in_the_patch_and_documented(self):
+        p = os.path.join(ROOT, "patches", "ps3recomp", "0070-ps-triggers-ring-reuse.patch")
+        if not os.path.isfile(p):
+            self.skipTest("no patch 0070 in this checkout")
+        patch = text("patches", "ps3recomp", "0070-ps-triggers-ring-reuse.patch")
+        doc = text("docs", "RENDER_PERF.md")
+        for name in ("RSX_XLAT_RENDER_DELAY_US", "RSX_RING_GUARD"):
+            self.assertIn(name, patch)
+            self.assertIn(name, doc)
+        # off unless asked for: nothing else changes what the renderer does
+        self.assertIn('g_ldg_on = e && *e == \'1\';', patch)
+
 
 if __name__ == "__main__":
     unittest.main()

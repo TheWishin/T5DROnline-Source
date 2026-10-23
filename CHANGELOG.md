@@ -41,6 +41,41 @@ they work with 1.1.4 launchers as soon as the server is updated.
   overlap -- checked with a deliberately slowed renderer and a memory check, everything stayed in order. Still open;
   if you see it, add `RSX_RING_GUARD=1` under Extra settings for one evening and send us the game log.
 
+### macOS (Apple silicon), offline -- build from source (by n0madic, thank you)
+- The game builds and plays on macOS 13+ (arm64): `python3 tools/build_game.py --pkg ... --rap ...`
+  then `python3 tools/run_game.py`. Metal draws, SDL2 plays the sound and reads the keyboard.
+  Online play, rollback, the launcher and the release zip are Windows-only for now.
+- `patches/ps3recomp/0071-macos-port.patch`: the guest runs on its own thread so AppKit has the
+  main thread; display buffers are registered with the draw engine even when the backend comes up
+  later; vertex arrays in main memory resolve through the IO table (a page the guest once derived
+  from a VRAM address read VRAM, so two of three vertex rings were garbage: black/white flicker;
+  macOS only, the D3D12 build shares the function and has not been measured with it);
+  pitch-linear textures have one mip level (banded floors and fighters); depth-format shadow
+  samplers compare instead of returning the raw depth (a cyan cast on everything in the light's
+  frustum); one depth snapshot per depth target instead of a new texture per depth clear (the
+  Metal object table ran out from the second stage on: black arenas, dark fighters); the FIFO
+  walker honours the NV406E semaphore ACQUIRE the game sends once a frame (on by default on
+  macOS, `GCM_SEMA_ACQUIRE=0` turns it off) -- the walker read the fighters' skinned vertices
+  before the CPU had finished writing them, so limbs twitched every frame. The wait parks the
+  drain instead of stalling the vblank thread, the stuck-get watchdog leaves it alone (as
+  upstream sp00nznet/ps3recomp#327), and the ring recycle no longer waits for a walker parked
+  on it: either deadlock dropped frames and cut the hit sparks short. The wait's time limit
+  starts over with every acquire, so a title that waits for the same value each frame is not
+  skipped after the first 200 ms. `ps3_ms_now` has a clock off Windows (it returned 0).
+- `patches/ps3recomp/0072-macos-audio.patch`: the Windows mixer schedule serves SDL2 too -- paced
+  on the clock, no steering by the device queue (that made the mixer run ahead of the title and
+  every other block came out silent: a rasp), plus thread QoS classes on Apple silicon. The
+  restart of the schedule after a full device queue is for the SDL2 backend only; WASAPI is
+  unchanged.
+- `patches/ps3recomp/0073-macos-video.patch`: movies are decoded by VideoToolbox (the system H.264
+  decoder, no extra packages). Without it the picture stayed blank and the game stalled after the
+  logos.
+- The ps3recomp checkout uses `core.autocrlf=true` on every OS (patch 0033 only applies to CRLF
+  trees).
+- `tools/build_game.py` builds on macOS only (CMake `-DT5DR_REQUIRE_SHADERS=ON` stops the configure
+  step when glslang or spirv-cross is missing) and explains Homebrew Python's refusal of `pip
+  install`; the README builds in a virtual environment.
+
 ## v1.1.4 (2026-10-21)
 
 **Jinpachi and Random in casual matches, Start skips the intros and replays online, a chime when a match is found, the game's own rank plates, and a faster game.** Both players need 1.1.4

@@ -480,8 +480,8 @@ NPUB30009 version 01.00. The builder refuses everything else.
 **Where can I get the game?** From your own PlayStation Network account. We do
 not provide the package or the license and cannot help to get them.
 
-**Does it run on Linux or macOS?** No. Only Windows runs a recompiled title
-today.
+**Does it run on Linux or macOS?** macOS on Apple silicon: yes, offline, built from source
+(see "Building on macOS"). No release zip, launcher or online play there yet. Linux: no.
 
 **Does it run on Windows on ARM (Snapdragon laptops)?** Not tested. Windows 11
 should run it through its x64 emulation, more slowly; Windows 10 on ARM cannot.
@@ -518,7 +518,7 @@ will use our own lobby.
   and `key_vault.cpp`) to read the public key tables from them.
 - The ATRAC3plus music decoder is FFmpeg's, via PPSSPP's `at3_standalone`
   (LGPL-2.1 or later), as vendored by ps3recomp.
-- Movies are decoded with Windows Media Foundation.
+- Movies are decoded with Windows Media Foundation (VideoToolbox on macOS).
 - The release zip also carries Python (PSF license) and LLVM clang-cl / lld-link
   (Apache-2.0 with LLVM exception). Their license texts are in `LICENSES\`.
 - The game itself is the work of Bandai Namco and the original Tekken team.
@@ -558,6 +558,23 @@ python tools/run_game.py [--log FILE] [NAME=VALUE ...]
 `patches/ps3recomp/*.patch` in name order, then unpacks, decrypts, lifts and
 compiles. Each step is skipped when its output exists. `--out DIR` puts all
 output under DIR.
+
+## Building on macOS
+
+Apple silicon, macOS 13 or newer, Xcode command line tools and
+`brew install cmake ninja sdl2 glslang spirv-cross` (glslang and spirv-cross translate the game's
+shaders for Metal). Python 3.10+ with pycryptodome; Homebrew's Python refuses a plain `pip install`,
+so use a virtual environment:
+
+```
+python3 -m venv .venv && .venv/bin/pip install pycryptodome
+.venv/bin/python tools/build_game.py --pkg <your.pkg> --rap <your.rap> --out native
+.venv/bin/python tools/run_game.py --out native
+```
+
+Offline only: online play, rollback and the launcher are Windows-only for now. Keyboard: arrow keys
+(d-pad), Space (cross), Q (circle), E (square), R (triangle), U/O (L1/R1), Return (start), Tab
+(select); the sticks are W/A/S/D and I/J/K/L. `PS3_PAD_FILE=<file>` drives the pad from a script.
 
 Where to read on:
 

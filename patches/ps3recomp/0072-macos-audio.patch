@@ -1,0 +1,259 @@
+diff --git a/libs/audio/cellAudio.c b/libs/audio/cellAudio.c
+index 1e21630..789c570 100644
+--- a/libs/audio/cellAudio.c
++++ b/libs/audio/cellAudio.c
+@@ -104,6 +104,7 @@ extern uint32_t sys_event_queue_create_direct(uint64_t key, int32_t size);
+   #include <pthread.h>
+   #include <unistd.h>
+   #include <time.h>
++  #include "../../runtime/platform/win32_compat.h"   /* QueryPerformanceCounter, GetTickCount64 */
+   typedef pthread_t thread_t;
+   typedef pthread_mutex_t mutex_t;
+   #define mutex_init(m)    pthread_mutex_init(m, NULL)
+@@ -220,6 +221,12 @@ static void audio_backend_shutdown(void)
+ static int audio_backend_submit(const float* stereo_samples, u32 num_samples)
+ {
+     if (!s_sdl_audio_dev) return -1;
++    /* The queue level before this block: the mixer steers its schedule by it, and AUDIO_RATE
++     * reports the lowest and how often it was empty (an audible underrun). */
++    const unsigned queued = SDL_GetQueuedAudioSize(s_sdl_audio_dev) / (2 * sizeof(float));
++    if (queued < g_audio_pad_min) g_audio_pad_min = queued;
++    if (queued == 0) g_audio_starved++;
++    g_audio_last_pad = queued;
+     SDL_QueueAudio(s_sdl_audio_dev, stereo_samples,
+                    num_samples * 2 * sizeof(float));
+     return (int)num_samples;
+@@ -239,12 +246,13 @@ static void audio_backend_wait(void) { SDL_Delay(1); }
+ /* The SDL backend has no device recovery. */
+ static void audio_backend_lose(const char* why) { (void)why; }
+ 
+-static u32 audio_backend_queued_samples(void)
++/* Seconds since the first call: the time base of the log lines (the WASAPI backend keeps its own). */
++static double audio_now_s(void)
+ {
+-    if (s_sdl_audio_dev) {
+-        return SDL_GetQueuedAudioSize(s_sdl_audio_dev) / (2 * sizeof(float));
+-    }
+-    return 0;
++    static LARGE_INTEGER t0, qpf;
++    LARGE_INTEGER n; QueryPerformanceCounter(&n);
++    if (!t0.QuadPart) { t0 = n; QueryPerformanceFrequency(&qpf); }
++    return (double)(n.QuadPart - t0.QuadPart) / (double)qpf.QuadPart;
+ }
+ 
+ #endif /* AUDIO_BACKEND_SDL2 */
+@@ -892,7 +900,6 @@ static void audio_tag_block(AudioPortSlot* port, u32 block_idx)
+     memcpy(&b[CELL_AUDIO_BLOCK_SAMPLES * (u32)port->param.nChannel - 1], k_audio_tag, 4);
+ }
+ 
+-#ifdef _WIN32
+ /* Has every running port's next block been written since it was tagged? */
+ static int audio_ports_written(void)
+ {
+@@ -907,7 +914,6 @@ static int audio_ports_written(void)
+     mutex_unlock(&s_audio_mutex);
+     return ok;
+ }
+-#endif
+ 
+ /* Mix one block from all active ports into s_mix_buffer (stereo float) */
+ /* Hand one mixed block to the host device. Shared by the Windows and POSIX
+@@ -1069,7 +1075,6 @@ static void audio_notify_event_queues(void)
+     }
+ }
+ 
+-#ifdef _WIN32
+ /* t5dr offline soak (0041): one line in every player's log when sound breaks
+  * up. A friend's offline run had "audio problems" and a log with nothing to
+  * say about them; AUDIO_RATE is a developer switch. Every 5 s: blocks the
+@@ -1099,7 +1104,11 @@ static void audio_health_check(void)
+     t0 = now; un0 = g_audio_unwritten_all; st0 = g_audio_starved_all; blocks = 0;
+ }
+ 
++#ifdef _WIN32
+ static unsigned __stdcall audio_mix_thread_func(void* arg)
++#else
++static void* audio_mix_thread_func(void* arg)
++#endif
+ {
+     (void)arg;
+     host_sched_thread_start(HS_ROLE_AUDIO, 0, "audio-mix");
+@@ -1136,17 +1145,23 @@ static unsigned __stdcall audio_mix_thread_func(void* arg)
+     if (wait_us < 0) { const char* e = getenv("PS3_AUDIO_WAIT_US"); wait_us = e ? atoi(e) : 4000; }
+     if (lead < 0) { const char* e = getenv("PS3_AUDIO_LEAD"); lead = e ? atoi(e) : 3; if (lead < 1) lead = 1; }
+     const long long wait_ticks = (long long)wait_us * qf.QuadPart / 1000000;
++#if AUDIO_BACKEND_WASAPI
+     const long long block_ticks = (long long)CELL_AUDIO_BLOCK_SAMPLES * qf.QuadPart / CELL_AUDIO_SAMPLE_RATE;
+-    double pad_avg = -1.0;
++#endif
++    double pad_avg = -1.0;   /* smoothed device queue level: steers the schedule on WASAPI only */
++    (void)pad_avg;
+     int primed = 0;
+     unsigned seen_gen = 0;                 /* which device stream the lead/steering state belongs to */
+     long long stall_from = 0;              /* QPC of the first poll the device was full on, 0 = not stalled */
++    int device_was_full = 0;               /* the last poll found no room: resync the schedule */
+     const long long stall_ticks = (long long)AUDIO_STALL_MS * qf.QuadPart / 1000;
+     /* High-resolution timer (Windows 10 1803+): sub-millisecond sleeps for the
+      * wait above; Sleep(1) would overshoot it by a whole tick. */
++#ifdef _WIN32
+     HANDLE hr_timer = CreateWaitableTimerExW(NULL, NULL, 0x00000002 /* CREATE_WAITABLE_TIMER_HIGH_RESOLUTION */,
+                                              TIMER_ALL_ACCESS);
+     timeBeginPeriod(1);   /* Sleep(1) must mean ~1 ms, not the 15.6 ms default tick */
++#endif
+     while (s_mix_thread_running) {
+         unsigned gen = 0;
+         const int room = audio_backend_room(&gen);
+@@ -1160,9 +1175,23 @@ static unsigned __stdcall audio_mix_thread_func(void* arg)
+             if (!stall_from) stall_from = sn.QuadPart;
+             else if (sn.QuadPart - stall_from > stall_ticks) { audio_backend_lose("the device queue (full for 200 ms)"); stall_from = 0; continue; }
+             audio_backend_wait();
++            device_was_full = 1;
+             continue;
+         }
+         stall_from = 0;
++        /* The device queue had no room, so the schedule fell behind while the mixer waited:
++         * start it again from now. Mixing the missed blocks back to back would not give the
++         * title time to write any of them (every other block came out silent). */
++#if !AUDIO_BACKEND_WASAPI
++        /* WASAPI frees room 10 ms at a time and reports "full" for a moment as a matter of
++         * course; its schedule is steered by the queue level instead (above). */
++        if (device_was_full) {
++            LARGE_INTEGER rs; QueryPerformanceCounter(&rs);
++            q0.QuadPart = rs.QuadPart -
++                (long long)(blocks * CELL_AUDIO_BLOCK_SAMPLES * qf.QuadPart / CELL_AUDIO_SAMPLE_RATE);
++        }
++#endif
++        device_was_full = 0;
+         if (room < 0 || !dev_pace) {
+             LARGE_INTEGER now; QueryPerformanceCounter(&now);
+             const long long due = q0.QuadPart +
+@@ -1173,6 +1202,7 @@ static unsigned __stdcall audio_mix_thread_func(void* arg)
+                  * 250 us steps woke this thread ~20 times a block, 3,700
+                  * times a second). Waiting for the title's late block: poll
+                  * every 250 us as before. */
++#ifdef _WIN32
+                 LARGE_INTEGER d; d.QuadPart = -2500;   /* 250 us, relative */
+                 if (now.QuadPart < due) {
+                     const long long left = (due - now.QuadPart) * 10000000LL / qf.QuadPart;   /* 100 ns */
+@@ -1182,6 +1212,16 @@ static unsigned __stdcall audio_mix_thread_func(void* arg)
+                     WaitForSingleObject(hr_timer, 8);
+                 else if (now.QuadPart < due) Sleep(1);
+                 else SwitchToThread();
++#else
++                {
++                    long long us = 250;
++                    if (now.QuadPart < due) {
++                        us = (due - now.QuadPart) * 1000000LL / qf.QuadPart;
++                        us = us < 50 ? 50 : us > 6000 ? 6000 : us;
++                    }
++                    usleep((useconds_t)us);
++                }
++#endif
+                 continue;
+             }
+             /* More than 50 ms behind (device just went away, a debugger
+@@ -1245,6 +1285,7 @@ static unsigned __stdcall audio_mix_thread_func(void* arg)
+         /* Hold the device queue at the lead: nudge the schedule by a sixty-
+          * fourth of the (smoothed) error per block. The level seen before each
+          * submit swings by the engine's 10 ms pulls, hence the average. */
++#if AUDIO_BACKEND_WASAPI
+         if (room >= 0 && !dev_pace) {
+             const double pad = (double)g_audio_last_pad;
+             pad_avg = pad_avg < 0 ? pad : pad_avg + (pad - pad_avg) / 32.0;
+@@ -1254,49 +1295,15 @@ static unsigned __stdcall audio_mix_thread_func(void* arg)
+             if (adj < -block_ticks / 50) adj = -block_ticks / 50;
+             q0.QuadPart += adj;
+         }
++#endif
+     }
+ 
++#ifdef _WIN32
+     if (hr_timer) CloseHandle(hr_timer);
++#endif
+     printf("[cellAudio] Mixing thread stopped\n");
+     return 0;
+ }
+-#else
+-static void* audio_mix_thread_func(void* arg)
+-{
+-    (void)arg;
+-    printf("[cellAudio] Mixing thread started\n");
+-
+-    /* Pace by what the device has actually consumed. The old loop mixed a
+-     * block and then slept a fixed 2-5 ms -- with a block being 256 samples
+-     * (5.33 ms at 48 kHz) that ran the guest's audio clock up to ~2.6x faster
+-     * than real time whenever the queue was short, so the title's producers
+-     * fell behind and the output was chopped garbage. Keep ~4 blocks
+-     * (~21 ms) queued: mix only when the device has drained below that. */
+-    /* Also never run ahead of the wall clock by more than those ~4 blocks:
+-     * with no host device (or one that swallows samples) the queue reads 0
+-     * forever and the device bound alone would spin. */
+-    struct timespec t0; clock_gettime(CLOCK_MONOTONIC, &t0);
+-    unsigned long long mixed = 0;
+-    while (s_mix_thread_running) {
+-        struct timespec now; clock_gettime(CLOCK_MONOTONIC, &now);
+-        unsigned long long el_us = (unsigned long long)(now.tv_sec - t0.tv_sec) * 1000000ull
+-                                 + (unsigned long long)((now.tv_nsec - t0.tv_nsec) / 1000);
+-        unsigned long long ahead_us = mixed * CELL_AUDIO_BLOCK_SAMPLES * 1000000ull / 48000ull;
+-        if (audio_backend_queued_samples() >= CELL_AUDIO_BLOCK_SAMPLES * 4 ||
+-            ahead_us > el_us + 4ull * CELL_AUDIO_BLOCK_SAMPLES * 1000000ull / 48000ull) {
+-            usleep(1000);
+-            continue;
+-        }
+-        mixed++;
+-        audio_mix_one_block();
+-        audio_submit_mix();
+-        audio_notify_event_queues();
+-    }
+-
+-    printf("[cellAudio] Mixing thread stopped\n");
+-    return NULL;
+-}
+-#endif
+ 
+ static int audio_start_mix_thread(void)
+ {
+diff --git a/runtime/platform/host_sched.c b/runtime/platform/host_sched.c
+index 0ecbe28..f49fd6e 100644
+--- a/runtime/platform/host_sched.c
++++ b/runtime/platform/host_sched.c
+@@ -182,8 +182,38 @@ int     host_sched_power_text(char* out, unsigned n, int* throttled)
+         { if (n) out[0] = 0; if (throttled) *throttled = 0; return 0; }
+ int     host_sched_load_text(char* buf, int len) { if (len > 0) buf[0] = 0; return 0; }
+ void    host_sched_process_init(void) {}
++#ifdef __APPLE__
++#include <pthread.h>
++#include <pthread/qos.h>
++/* The Windows build raises priorities by role. macOS has no numeric priorities worth setting, but
++ * a thread without a QoS class may be run on an efficiency core of an Apple-silicon Mac, and the
++ * frame loop, the sound core and the mixer lose their deadlines (a fight wrote ~60% of the audio
++ * blocks in time). So: the threads the frame and the sound depend on run at the top class, the
++ * guest and decoder threads one below it, helpers lowest. */
++static qos_class_t host_sched_qos(int role)
++{
++    switch (role) {
++    case HS_ROLE_MAIN: case HS_ROLE_TICKER: case HS_ROLE_SPU: case HS_ROLE_AUDIO:
++        return QOS_CLASS_USER_INTERACTIVE;
++    case HS_ROLE_BACKGROUND:
++        return QOS_CLASS_UTILITY;
++    default:
++        return QOS_CLASS_USER_INITIATED;
++    }
++}
++#endif
++
+ void    host_sched_thread_start(int role, int guest_prio, const char* name)
+-        { (void)role; (void)guest_prio; ppu_fp_thread_init(name); }
++{
++    (void)guest_prio;
++#ifdef __APPLE__
++    const char* e = getenv("PS3_SCHED_QOS");
++    if (!(e && *e == '0')) pthread_set_qos_class_self_np(host_sched_qos(role), 0);
++#else
++    (void)role;
++#endif
++    ppu_fp_thread_init(name);
++}
+ int     host_sched_enabled(void) { return 0; }
+ int     host_sched_sleep_us(uint64_t usec) { (void)usec; return 0; }
+ int     host_sched_sleep_subms(uint64_t usec) { (void)usec; return 0; }

@@ -937,6 +937,15 @@ MESSAGES = {
     "CMake and Ninja were not found. Install the Visual Studio component 'C++ CMake "
     "tools for Windows'.":
         "CMake e Ninja não foram encontrados. Instale o componente do Visual Studio “C++ CMake tools for Windows”.",
+    "CMake and Ninja were not found. On macOS: brew install cmake ninja sdl2 glslang spirv-cross":
+        "CMake e Ninja não foram encontrados. No macOS: brew install cmake ninja sdl2 glslang spirv-cross",
+    "glslang and spirv-cross were not found; the game's shaders need them. "
+    "On macOS: brew install glslang spirv-cross":
+        "glslang e spirv-cross não foram encontrados; os shaders do jogo precisam deles. No macOS: brew install glslang spirv-cross",
+    "Building the game is supported on Windows and macOS only.":
+        "O jogo só pode ser compilado no Windows e no macOS.",
+    "This Python refuses pip install (PEP 668; Homebrew's does). Use a virtual environment: python3 -m venv .venv && .venv/bin/pip install pycryptodome, then run the tools with .venv/bin/python.":
+        "Este Python recusa pip install (PEP 668; o do Homebrew recusa). Use um ambiente virtual: python3 -m venv .venv && .venv/bin/pip install pycryptodome, e execute as ferramentas com .venv/bin/python.",
     "expected 1 SPU image, found {count}": "esperava 1 imagem SPU, encontrou {count}",
     "step '{step}' failed: a tool exited with code {code} -- the lines above say why.":
         "a etapa “{step}” falhou: uma ferramenta saiu com código {code} -- as linhas acima dizem o motivo.",

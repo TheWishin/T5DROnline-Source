@@ -1444,6 +1444,7 @@ class LobbyServer(SpectateMixin, RoomsMixin):
              "peak": rank.peak, "peak_rank": ranks.name(rank.peak), "place": self.store.place(aid),
              "member_since": row["created"],
              "chars": self.store.char_usage(aid), "main": self.store.main_char(aid),
+             "stats": self.store.match_stats(aid),
              "voids_24h": self.store.strikes(aid, time.time() - DAY),
              "history": self.store.history(aid, max(0, min(50, n_history))),
              "sets": self.store.set_history(aid, max(0, min(20, n_history)))}

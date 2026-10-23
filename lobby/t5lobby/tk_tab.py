@@ -75,6 +75,12 @@ from .proto import DEFAULT_PORT, LobbyError
 from . import theme, tk_rooms, tk_spectate, tk_tour, tk_views, tklist, winfront
 from .ranks import record_label as _record
 
+
+def _rate(wins, games):
+    """Win rate in whole percent (0 for no games)."""
+    return round(100 * wins / games) if games else 0
+
+
 AVAILABLE = True
 DEFAULT_SERVER = f"127.0.0.1:{DEFAULT_PORT}"
 # What the server's codes mean, in English; shown through _word() (t() on the text, the code itself if unknown).
@@ -1437,17 +1443,32 @@ class OnlineTab:
             if p.get("place"):
                 rating += ", " + t("#{place} on the leaderboard", place=p["place"])
             lines = [rating]
-            rec = p.get("record", [0, 0, 0])
-            parts = [t("Record {record}", record=_record(rec, draws=True))]
-            if p.get("account"):
-                parts.append(t("ranked matches {count}", count=p["ranked_games"]))
+            st = p.get("stats") if isinstance(p.get("stats"), dict) else None
+            mode = {k: st.get(k) or {} for k in ("ranked", "casual")} if st else {}
+            played = sum(m.get("games", 0) for m in mode.values())
+            parts = []
+            if played:         # a 1.1.5 server: matches played and win rate, all / ranked / casual
+                won = sum(m.get("wins", 0) for m in mode.values())
+                lines.append(t("Played {games}: {wins} won, {losses} lost, win rate {rate} %", games=played, wins=won,
+                               losses=sum(m.get("losses", 0) for m in mode.values()), rate=_rate(won, played)))
+                split = [t(text, games=m["games"], rate=_rate(m.get("wins", 0), m["games"]))
+                         for text, m in ((N_("Ranked {games}, {rate} % won"), mode["ranked"]),
+                                         (N_("Casual {games}, {rate} % won"), mode["casual"])) if m.get("games")]
+                lines.append(", ".join(split))
+            else:
+                rec = p.get("record", [0, 0, 0])
+                parts.append(t("Record {record}", record=_record(rec, draws=True)))
+                if p.get("account"):
+                    parts.append(t("ranked matches {count}", count=p["ranked_games"]))
             if p.get("peak_rank"):
                 peak = ranks.display_name({"tier": p.get("peak"), "rank": p["peak_rank"]})
                 parts.append(t("highest rank {rank}", rank=peak))
-            lines.append(", ".join(parts))
+            if parts:
+                lines.append(", ".join(parts))
             if p.get("chars"):
                 lines.append(t("Characters: {list}", list=", ".join(
-                    f"{self.table.fighter_name(c['char'])} {c['wins']}/{c['games']}" for c in p["chars"])))
+                    f"{self.table.fighter_name(c['char'])} {c['wins']}/{c['games']} ({_rate(c['wins'], c['games'])} %)"
+                    for c in p["chars"])))
             if p.get("voids_24h"):
                 lines.append(t("Matches without result caused in the last 24 h: {count}", count=p["voids_24h"]))
             if p.get("self") and p.get("recovery_codes_left") is not None:

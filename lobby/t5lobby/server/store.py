@@ -635,6 +635,20 @@ class Store:
                             "status = 'playing'", (reason, now, sid))
         return len(ids)
 
+    def match_stats(self, aid):
+        """{ranked: {games, wins, losses, draws}, casual: {...}} over counted matches (as char_usage counts them)."""
+        out = {k: {"games": 0, "wins": 0, "losses": 0, "draws": 0} for k in ("ranked", "casual")}
+        for r in self._x(
+                "SELECT ranked, COUNT(*) AS games, "
+                "SUM(CASE WHEN (p1_account = ? AND winner = 0) OR (p2_account = ? AND winner = 1) THEN 1 ELSE 0 END) "
+                "AS wins, SUM(CASE WHEN winner IS NULL THEN 1 ELSE 0 END) AS draws FROM matches "
+                "WHERE (p1_account = ? OR p2_account = ?) AND status IN ('confirmed','onesided','forfeit','resolved') "
+                "GROUP BY ranked", (aid, aid, aid, aid)):
+            games, wins, draws = r["games"], r["wins"] or 0, r["draws"] or 0
+            out["ranked" if r["ranked"] else "casual"] = {"games": games, "wins": wins, "draws": draws,
+                                                          "losses": games - wins - draws}
+        return out
+
     def char_usage(self, aid, limit=5):
         """[{char, games, wins}] over counted matches, most played first."""
         rows = self._x(

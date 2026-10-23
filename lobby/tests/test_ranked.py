@@ -324,6 +324,9 @@ class RankedFlowTest(Base):
         self.assertEqual(prof["history"][0]["you_char"], "jin")
         self.assertEqual(prof["history"][0]["score"], [3, 1])
         self.assertGreater(prof["history"][0]["delta"], 0)
+        none = {"games": 0, "wins": 0, "losses": 0, "draws": 0}
+        self.assertEqual(prof["stats"], {"ranked": {"games": 1, "wins": 1, "losses": 0, "draws": 0}, "casual": none})
+        self.assertEqual(b.profile()["stats"]["ranked"], {"games": 1, "wins": 0, "losses": 1, "draws": 0})
         hist = b.history("Jin")
         self.assertEqual(hist[0]["opponent"], "Hwoarang")
         board = a.leaderboard()

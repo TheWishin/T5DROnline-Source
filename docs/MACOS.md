@@ -27,7 +27,14 @@
     lifted code had it already);
   - entry detours without code patching: the lifter's `--hook-slots` (every
     function on `src/rollback/hook_slots.txt` calls the hook in its slot, if
-    any, before its body `func_X__orig`); `rb::detour` stores into the slot;
+    any, before its body `func_X__orig`); `rb::detour` stores into the slot.
+    One difference to a patched entry: a slot also catches calls the compiler
+    inlined, which a patched entry on Windows would miss. The detours the
+    lockstep uses (the TLS random generator 0x3AFC3C, the scene and sound
+    tasks, the unlock check) have no caller in their own translation unit, so
+    nothing can have been inlined there; some rollback-only targets (sound
+    library calls, the draw cut's 0x0A25A8 / 0x35D894, the sound heap's
+    malloc) and diagnostics do -- worth a look if a rollback pair differs;
   - the write watch's kernel writes: `ppu_fs.cpp`/`sys_fs.c` read files into
     guest memory through a host buffer off Windows (a `read(2)` into a
     protected page fails with EFAULT instead of faulting);

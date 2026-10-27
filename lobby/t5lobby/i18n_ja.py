@@ -475,6 +475,51 @@ MESSAGES = {
     "Keep the PC responsive (slower)": "PCの操作性を優先（遅くなります）",
     "Open build.log": "build.log を開く",
     "Report a problem...": "問題を報告...",
+    "Check my problem": "問題をチェック",
+    "Check my problem...": "問題をチェック...",
+    "Looking…": "確認中…",
+    "No known problem found.": "既知の問題は見つかりませんでした。",
+    "If something still goes wrong, \"Report a problem...\" makes one zip with your logs to send to whoever helps you.":
+        "それでも問題が続く場合は、「問題を報告...」でログをまとめたzipを作り、手伝ってくれる人に送ってください。",
+    "Problem": "問題",
+    "Note": "注意",
+    "Help": "ヘルプ",
+    "The launcher looks in this PC's logs and settings for the problems other players had, and says how to fix them. Nothing is changed and nothing is sent.":
+        "ランチャーがこのPCのログと設定から、他のプレイヤーに起きた問題を探し、直し方を表示します。何も変更せず、何も送信しません。",
+    "Your game package is version {version}": "ゲームのパッケージがバージョン{version}です",
+    "The port works only with version {supported} of the game: TEKKEN 5 DARK RESURRECTION ONLINE, US PSN (NPUB30009), a .pkg of {size} bytes, with its license {rap}. Version {version} cannot be used, whatever the license. Choose the {supported} package on the Build tab and press BUILD GAME.":
+        "このポートはゲームのバージョン{supported}でのみ動作します：TEKKEN 5 DARK RESURRECTION ONLINE、北米PSN（NPUB30009）、{size}バイトの.pkgとそのライセンス{rap}。バージョン{version}はどのライセンスでも使えません。ビルドタブで{supported}のパッケージを選び、BUILD GAMEを押してください。",
+    "build.log: the package says version {version}.": "build.log：パッケージのバージョンは{version}です。",
+    "Unpacking the game ran out of memory": "ゲームの展開中にメモリが不足しました",
+    "Close other programs (browser, games, launchers) and press BUILD GAME again; since 1.1.5 the launcher unpacks the game in small pieces. If it fails again, check that Windows has a page file (System > About > Advanced system settings > Performance > Virtual memory: automatic).":
+        "他のプログラム（ブラウザー、ゲーム、ランチャー）を閉じて、もう一度BUILD GAMEを押してください。1.1.5からランチャーはゲームを小さな単位で展開します。それでも失敗する場合は、Windowsにページファイルがあるか確認してください（システム > バージョン情報 > システムの詳細設定 > パフォーマンス > 仮想メモリ：自動）。",
+    "build.log: the computer ran out of memory while the game data was unpacked.":
+        "build.log：ゲームデータの展開中にメモリが足りなくなりました。",
+    "The game package looks damaged or incomplete": "ゲームのパッケージが壊れているか不完全です",
+    "Download the package again (it must be {size} bytes), choose it on the Build tab, tick \"Redo every step\" and press BUILD GAME.":
+        "パッケージをもう一度ダウンロードし（{size}バイトである必要があります）、ビルドタブで選んで「全ステップをやり直す」にチェックを入れ、BUILD GAMEを押してください。",
+    "build.log: the package could not be read to the end or not decrypted.": "build.log：パッケージを最後まで読めなかったか、復号できませんでした。",
+    "The game says its data is damaged": "ゲームがデータの破損を報告しています",
+    "On the Build tab tick \"Redo every step\" and press BUILD GAME: it unpacks the game again. If the message comes back, download the package again (it must be {size} bytes).":
+        "ビルドタブで「全ステップをやり直す」にチェックを入れてBUILD GAMEを押すと、ゲームが展開し直されます。それでもメッセージが出る場合は、パッケージをもう一度ダウンロードしてください（{size}バイトである必要があります）。",
+    "Game log: the game showed the message \"{message}\".": "ゲームログ：ゲームが「{message}」というメッセージを表示しました。",
+    "Your graphics card is an older model": "グラフィックカードが古いモデルです",
+    "{gpu} is a Direct3D 12 card of the oldest kind (resource binding tier 1: GeForce cards with a Fermi chip, among them some GT 730 models, and older Intel graphics). The game's graphics take several times longer on it than on later cards, whatever the processor: fights can stay below 30 frames per second, and a lower Internal resolution helps only a little. Later cards (a GT 730 with a Kepler chip, GTX 750, Radeon HD 7000 and newer) run the game at full speed.":
+        "{gpu}は最も古い種類のDirect3D 12カードです（resource binding tier 1：Fermiチップの GeForce、一部のGT 730を含む、および古いIntelグラフィックス）。プロセッサーに関係なく、ゲームのグラフィックスは新しいカードの数倍の時間がかかります。対戦が30フレーム毎秒を下回ることがあり、内部解像度を下げてもあまり効果はありません。それ以降のカード（KeplerチップのGT 730、GTX 750、Radeon HD 7000以降）ならフルスピードで動きます。",
+    "Game log: {gpu}, resource binding tier {tier}.": "ゲームログ：{gpu}、resource binding tier {tier}。",
+    "Your processor has {cores} cores": "プロセッサーのコア数は{cores}です",
+    "The game is made for 4 cores; on {cores} it can stay below 60 frames per second in fights (an i3-3240 reached about 20). Close other programs while you play, keep Windows' power plan on Balanced or High performance, and see \"Low frame rate\" in the help.":
+        "このゲームは4コア向けです。{cores}コアでは対戦中に60フレーム毎秒を下回ることがあります（i3-3240では約20）。プレイ中は他のプログラムを閉じ、Windowsの電源プランを「バランス」か「高パフォーマンス」にして、ヘルプの「Low frame rate」を見てください。",
+    "This PC: {cores} cores, {logical} logical processors.": "このPC：{cores}コア、論理プロセッサー{logical}個。",
+    "The launcher runs under Wine or Proton": "ランチャーがWineまたはProtonで動いています",
+    "That works, with a few known differences: since 1.1.5 the launcher sets the safe graphics defaults for Wine by itself. A dark blue or black game window (sound playing) means the Proton build does not suit the game: try another one (Proton Experimental, proton-cachyos-slr). See \"Linux and Steam Deck\" in the help.":
+        "動作しますが、いくつか既知の違いがあります。1.1.5からランチャーがWine向けの安全なグラフィックス設定を自動で使います。ゲーム画面が濃い青や黒のまま（音は出る）なら、そのProtonビルドはゲームに合っていません。別のもの（Proton Experimental、proton-cachyos-slr）を試してください。ヘルプの「Linux and Steam Deck」を見てください。",
+    "This PC: {wine}.": "このPC：{wine}。",
+    "Windows Firewall blocks the game": "Windowsファイアウォールがゲームをブロックしています",
+    "Online matches then often go through a relay (more lag) or do not connect. Open Windows Security > Firewall & network protection > Allow an app through firewall, and allow t5dr.exe (in {folder}) for private and public networks; or remove the block rule for it there.":
+        "その場合、オンライン対戦はリレー経由（遅延が増える）になるか、つながりません。Windows セキュリティ > ファイアウォールとネットワーク保護 > ファイアウォールによるアプリケーションの許可 を開き、t5dr.exe（{folder}内）をプライベートとパブリックのネットワークで許可するか、そこにあるブロックのルールを削除してください。",
+    "Windows Firewall: a block rule or \"Block all incoming connections\" for t5dr.exe.":
+        "Windowsファイアウォール：t5dr.exeのブロックルール、または「すべての着信接続をブロック」。",
     "Checking the build…": "ビルドを確認中…",
     "Your name (shown in the game)": "名前（ゲーム内に表示）",
     "PLAY OFFLINE": "オフラインプレイ",

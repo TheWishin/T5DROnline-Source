@@ -25,6 +25,7 @@ import os
 import sys
 import tempfile
 import time
+import types
 from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -673,6 +674,27 @@ class Walk:
                                     issues_url="https://example.org/issues", log=lambda m: None, visible=False)
         self.screen("report window", rd.top)
         rd.close()
+        # 'Check my problem' with every finding it has (problem_check.py), and with none
+        import problem_check as pcheck
+        import problem_check_ui as check_ui
+        os.makedirs(os.path.join(d, "logs"), exist_ok=True)
+        with open(os.path.join(d, "build.log"), "w", encoding="utf-8") as f:
+            f.write("PARAM.SFO: T / NPUB30009 / version 01.01\n# exit code 2\n")
+        with open(os.path.join(d, "logs", "game-1.log"), "w", encoding="utf-8") as f:
+            f.write("[DIALOG] The installed game data is corrupted.\n[gpu] adapter: NVIDIA GeForce GT 730 (vendor 10DE, "
+                    "4096 MB, feature level 11_0, resource binding tier 1, dedicated)\n")
+        blocked = lambda exe: types.SimpleNamespace(state="blocked", blocked=["game"])      # noqa: E731
+        facts = {"cores": 2, "logical": 4, "wine": "Wine 9.0 (Proton)"}
+        found = pcheck.check_build(d) + pcheck.check_game_log(d) + pcheck.check_firewall(d, blocked)
+        found += pcheck.check_pc(facts)
+        for name, items in (("check window", found), ("check window, nothing found", [])):
+            cd = check_ui.CheckDialog(app, d, report=lambda: None, visible=False, facts=facts, fw=blocked)
+            cd.findings, cd.error = items, None
+            cd.show()
+            self.screen(name, cd.top)
+            cd.close()
+        for p in (os.path.join(d, "build.log"), os.path.join(d, "logs", "game-1.log")):
+            os.remove(p)
         import updater
         up = updater.Updater(app)
         cancel_timers(app)

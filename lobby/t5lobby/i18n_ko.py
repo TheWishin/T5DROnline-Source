@@ -471,6 +471,51 @@ MESSAGES = {
     "Keep the PC responsive (slower)": "PC 반응성 유지 (더 느림)",
     "Open build.log": "build.log 열기",
     "Report a problem...": "문제 신고...",
+    "Check my problem": "내 문제 확인",
+    "Check my problem...": "내 문제 확인...",
+    "Looking…": "확인 중…",
+    "No known problem found.": "알려진 문제를 찾지 못했습니다.",
+    "If something still goes wrong, \"Report a problem...\" makes one zip with your logs to send to whoever helps you.":
+        "그래도 문제가 있으면 \"문제 신고...\"로 로그를 담은 zip을 만들어 도와주는 사람에게 보내세요.",
+    "Problem": "문제",
+    "Note": "참고",
+    "Help": "도움말",
+    "The launcher looks in this PC's logs and settings for the problems other players had, and says how to fix them. Nothing is changed and nothing is sent.":
+        "런처가 이 PC의 로그와 설정에서 다른 플레이어들이 겪었던 문제를 찾아 해결 방법을 알려 줍니다. 아무것도 바꾸지 않고 아무것도 보내지 않습니다.",
+    "Your game package is version {version}": "게임 패키지가 버전 {version}입니다",
+    "The port works only with version {supported} of the game: TEKKEN 5 DARK RESURRECTION ONLINE, US PSN (NPUB30009), a .pkg of {size} bytes, with its license {rap}. Version {version} cannot be used, whatever the license. Choose the {supported} package on the Build tab and press BUILD GAME.":
+        "이 포트는 게임 버전 {supported}에서만 동작합니다: TEKKEN 5 DARK RESURRECTION ONLINE, 북미 PSN(NPUB30009), {size}바이트의 .pkg와 그 라이선스 {rap}. 버전 {version}은 어떤 라이선스로도 쓸 수 없습니다. 빌드 탭에서 {supported} 패키지를 선택하고 BUILD GAME을 누르세요.",
+    "build.log: the package says version {version}.": "build.log: 패키지 버전이 {version}입니다.",
+    "Unpacking the game ran out of memory": "게임 압축 해제 중 메모리가 부족했습니다",
+    "Close other programs (browser, games, launchers) and press BUILD GAME again; since 1.1.5 the launcher unpacks the game in small pieces. If it fails again, check that Windows has a page file (System > About > Advanced system settings > Performance > Virtual memory: automatic).":
+        "다른 프로그램(브라우저, 게임, 런처)을 닫고 BUILD GAME을 다시 누르세요. 1.1.5부터 런처는 게임을 작은 조각으로 풉니다. 다시 실패하면 Windows에 페이지 파일이 있는지 확인하세요(시스템 > 정보 > 고급 시스템 설정 > 성능 > 가상 메모리: 자동).",
+    "build.log: the computer ran out of memory while the game data was unpacked.":
+        "build.log: 게임 데이터를 푸는 동안 메모리가 부족했습니다.",
+    "The game package looks damaged or incomplete": "게임 패키지가 손상되었거나 불완전합니다",
+    "Download the package again (it must be {size} bytes), choose it on the Build tab, tick \"Redo every step\" and press BUILD GAME.":
+        "패키지를 다시 내려받고({size}바이트여야 합니다) 빌드 탭에서 선택한 뒤 \"모든 단계 다시 하기\"를 체크하고 BUILD GAME을 누르세요.",
+    "build.log: the package could not be read to the end or not decrypted.": "build.log: 패키지를 끝까지 읽지 못했거나 복호화하지 못했습니다.",
+    "The game says its data is damaged": "게임이 데이터 손상을 알립니다",
+    "On the Build tab tick \"Redo every step\" and press BUILD GAME: it unpacks the game again. If the message comes back, download the package again (it must be {size} bytes).":
+        "빌드 탭에서 \"모든 단계 다시 하기\"를 체크하고 BUILD GAME을 누르면 게임을 다시 풉니다. 메시지가 다시 나오면 패키지를 다시 내려받으세요({size}바이트여야 합니다).",
+    "Game log: the game showed the message \"{message}\".": "게임 로그: 게임이 \"{message}\" 메시지를 표시했습니다.",
+    "Your graphics card is an older model": "그래픽 카드가 오래된 모델입니다",
+    "{gpu} is a Direct3D 12 card of the oldest kind (resource binding tier 1: GeForce cards with a Fermi chip, among them some GT 730 models, and older Intel graphics). The game's graphics take several times longer on it than on later cards, whatever the processor: fights can stay below 30 frames per second, and a lower Internal resolution helps only a little. Later cards (a GT 730 with a Kepler chip, GTX 750, Radeon HD 7000 and newer) run the game at full speed.":
+        "{gpu}은(는) 가장 오래된 종류의 Direct3D 12 카드입니다(resource binding tier 1: Fermi 칩의 GeForce, 일부 GT 730 포함, 그리고 오래된 Intel 그래픽). 프로세서와 상관없이 게임 그래픽이 이후 카드보다 몇 배 오래 걸립니다. 대전이 초당 30프레임 아래로 떨어질 수 있고, 내부 해상도를 낮춰도 효과가 적습니다. 이후 카드(Kepler 칩의 GT 730, GTX 750, Radeon HD 7000 이상)는 게임을 최고 속도로 돌립니다.",
+    "Game log: {gpu}, resource binding tier {tier}.": "게임 로그: {gpu}, resource binding tier {tier}.",
+    "Your processor has {cores} cores": "프로세서 코어가 {cores}개입니다",
+    "The game is made for 4 cores; on {cores} it can stay below 60 frames per second in fights (an i3-3240 reached about 20). Close other programs while you play, keep Windows' power plan on Balanced or High performance, and see \"Low frame rate\" in the help.":
+        "이 게임은 4코어용입니다. {cores}코어에서는 대전 중 초당 60프레임 아래로 떨어질 수 있습니다(i3-3240은 약 20). 플레이 중에는 다른 프로그램을 닫고, Windows 전원 관리 옵션을 균형 조정 또는 고성능으로 두고, 도움말의 \"Low frame rate\"를 보세요.",
+    "This PC: {cores} cores, {logical} logical processors.": "이 PC: 코어 {cores}개, 논리 프로세서 {logical}개.",
+    "The launcher runs under Wine or Proton": "런처가 Wine 또는 Proton에서 실행 중입니다",
+    "That works, with a few known differences: since 1.1.5 the launcher sets the safe graphics defaults for Wine by itself. A dark blue or black game window (sound playing) means the Proton build does not suit the game: try another one (Proton Experimental, proton-cachyos-slr). See \"Linux and Steam Deck\" in the help.":
+        "동작하지만 몇 가지 알려진 차이가 있습니다. 1.1.5부터 런처가 Wine용 안전한 그래픽 기본값을 직접 설정합니다. 게임 창이 짙은 파란색이나 검은색이면(소리는 남) 그 Proton 빌드가 게임과 맞지 않는 것이니 다른 것(Proton Experimental, proton-cachyos-slr)을 써 보세요. 도움말의 \"Linux and Steam Deck\"을 보세요.",
+    "This PC: {wine}.": "이 PC: {wine}.",
+    "Windows Firewall blocks the game": "Windows 방화벽이 게임을 차단합니다",
+    "Online matches then often go through a relay (more lag) or do not connect. Open Windows Security > Firewall & network protection > Allow an app through firewall, and allow t5dr.exe (in {folder}) for private and public networks; or remove the block rule for it there.":
+        "그러면 온라인 매치가 자주 릴레이를 거치거나(지연 증가) 연결되지 않습니다. Windows 보안 > 방화벽 및 네트워크 보호 > 방화벽을 통해 앱 허용을 열고 t5dr.exe({folder} 안)를 개인 및 공용 네트워크에서 허용하거나, 그곳의 차단 규칙을 지우세요.",
+    "Windows Firewall: a block rule or \"Block all incoming connections\" for t5dr.exe.":
+        "Windows 방화벽: t5dr.exe에 대한 차단 규칙 또는 \"들어오는 연결 모두 차단\".",
     "Checking the build…": "빌드 확인 중…",
     "Your name (shown in the game)": "내 이름 (게임에 표시)",
     "PLAY OFFLINE": "오프라인 플레이",

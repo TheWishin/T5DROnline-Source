@@ -480,6 +480,53 @@ MESSAGES = {
     "Keep the PC responsive (slower)": "Manter o PC responsivo (mais lento)",
     "Open build.log": "Abrir build.log",
     "Report a problem...": "Relatar um problema...",
+    "Check my problem": "Verificar meu problema",
+    "Check my problem...": "Verificar meu problema...",
+    "Looking…": "Procurando…",
+    "No known problem found.": "Nenhum problema conhecido encontrado.",
+    "If something still goes wrong, \"Report a problem...\" makes one zip with your logs to send to whoever helps you.":
+        "Se algo ainda der errado, \"Relatar um problema...\" cria um zip com seus logs para enviar a quem estiver ajudando você.",
+    "Problem": "Problema",
+    "Note": "Observação",
+    "Help": "Ajuda",
+    "The launcher looks in this PC's logs and settings for the problems other players had, and says how to fix them. Nothing is changed and nothing is sent.":
+        "O launcher procura nos logs e nas configurações deste PC os problemas que outros jogadores tiveram e diz como corrigi-los. Nada é alterado e nada é enviado.",
+    "Your game package is version {version}": "Seu pacote do jogo é a versão {version}",
+    "The port works only with version {supported} of the game: TEKKEN 5 DARK RESURRECTION ONLINE, US PSN (NPUB30009), a .pkg of {size} bytes, with its license {rap}. Version {version} cannot be used, whatever the license. Choose the {supported} package on the Build tab and press BUILD GAME.":
+        "O port só funciona com a versão {supported} do jogo: TEKKEN 5 DARK RESURRECTION ONLINE, PSN dos EUA (NPUB30009), um .pkg de {size} bytes, com a licença {rap}. A versão {version} não pode ser usada com nenhuma licença. Escolha o pacote {supported} na aba Compilar e aperte BUILD GAME.",
+    "build.log: the package says version {version}.": "build.log: o pacote informa a versão {version}.",
+    "Unpacking the game ran out of memory": "A memória acabou ao descompactar o jogo",
+    "Close other programs (browser, games, launchers) and press BUILD GAME again; since 1.1.5 the launcher unpacks the game in small pieces. If it fails again, check that Windows has a page file (System > About > Advanced system settings > Performance > Virtual memory: automatic).":
+        "Feche outros programas (navegador, jogos, launchers) e aperte BUILD GAME de novo; desde a 1.1.5 o launcher descompacta o jogo em pedaços pequenos. Se falhar de novo, verifique se o Windows tem arquivo de paginação (Sistema > Sobre > Configurações avançadas do sistema > Desempenho > Memória virtual: automática).",
+    "build.log: the computer ran out of memory while the game data was unpacked.":
+        "build.log: o computador ficou sem memória ao descompactar os dados do jogo.",
+    "The game package looks damaged or incomplete": "O pacote do jogo parece danificado ou incompleto",
+    "Download the package again (it must be {size} bytes), choose it on the Build tab, tick \"Redo every step\" and press BUILD GAME.":
+        "Baixe o pacote de novo (ele deve ter {size} bytes), escolha-o na aba Compilar, marque \"Refazer todas as etapas\" e aperte BUILD GAME.",
+    "build.log: the package could not be read to the end or not decrypted.":
+        "build.log: não foi possível ler o pacote até o fim ou descriptografá-lo.",
+    "The game says its data is damaged": "O jogo diz que seus dados estão danificados",
+    "On the Build tab tick \"Redo every step\" and press BUILD GAME: it unpacks the game again. If the message comes back, download the package again (it must be {size} bytes).":
+        "Na aba Compilar, marque \"Refazer todas as etapas\" e aperte BUILD GAME: o jogo é descompactado de novo. Se a mensagem voltar, baixe o pacote de novo (ele deve ter {size} bytes).",
+    "Game log: the game showed the message \"{message}\".": "Log do jogo: o jogo mostrou a mensagem \"{message}\".",
+    "Your graphics card is an older model": "Sua placa de vídeo é um modelo antigo",
+    "{gpu} is a Direct3D 12 card of the oldest kind (resource binding tier 1: GeForce cards with a Fermi chip, among them some GT 730 models, and older Intel graphics). The game's graphics take several times longer on it than on later cards, whatever the processor: fights can stay below 30 frames per second, and a lower Internal resolution helps only a little. Later cards (a GT 730 with a Kepler chip, GTX 750, Radeon HD 7000 and newer) run the game at full speed.":
+        "{gpu} é uma placa Direct3D 12 do tipo mais antigo (resource binding tier 1: GeForce com chip Fermi, entre elas alguns modelos GT 730, e gráficos Intel antigos). Os gráficos do jogo levam várias vezes mais tempo nela do que em placas posteriores, seja qual for o processador: as lutas podem ficar abaixo de 30 quadros por segundo, e reduzir a Resolução interna ajuda pouco. Placas posteriores (uma GT 730 com chip Kepler, GTX 750, Radeon HD 7000 e mais novas) rodam o jogo em velocidade total.",
+    "Game log: {gpu}, resource binding tier {tier}.": "Log do jogo: {gpu}, resource binding tier {tier}.",
+    "Your processor has {cores} cores": "Seu processador tem {cores} núcleos",
+    "The game is made for 4 cores; on {cores} it can stay below 60 frames per second in fights (an i3-3240 reached about 20). Close other programs while you play, keep Windows' power plan on Balanced or High performance, and see \"Low frame rate\" in the help.":
+        "O jogo foi feito para 4 núcleos; com {cores} ele pode ficar abaixo de 60 quadros por segundo nas lutas (um i3-3240 chegava a uns 20). Feche outros programas enquanto joga, deixe o plano de energia do Windows em Equilibrado ou Alto desempenho e veja \"Low frame rate\" na ajuda.",
+    "This PC: {cores} cores, {logical} logical processors.":
+        "Este PC: {cores} núcleos, {logical} processadores lógicos.",
+    "The launcher runs under Wine or Proton": "O launcher está rodando no Wine ou Proton",
+    "That works, with a few known differences: since 1.1.5 the launcher sets the safe graphics defaults for Wine by itself. A dark blue or black game window (sound playing) means the Proton build does not suit the game: try another one (Proton Experimental, proton-cachyos-slr). See \"Linux and Steam Deck\" in the help.":
+        "Funciona, com algumas diferenças conhecidas: desde a 1.1.5 o launcher define sozinho os padrões gráficos seguros para o Wine. Uma janela do jogo azul-escura ou preta (com som) significa que essa versão do Proton não combina com o jogo: tente outra (Proton Experimental, proton-cachyos-slr). Veja \"Linux and Steam Deck\" na ajuda.",
+    "This PC: {wine}.": "Este PC: {wine}.",
+    "Windows Firewall blocks the game": "O Firewall do Windows bloqueia o jogo",
+    "Online matches then often go through a relay (more lag) or do not connect. Open Windows Security > Firewall & network protection > Allow an app through firewall, and allow t5dr.exe (in {folder}) for private and public networks; or remove the block rule for it there.":
+        "Assim as partidas online muitas vezes passam por um relay (mais lag) ou não conectam. Abra Segurança do Windows > Firewall e proteção de rede > Permitir um aplicativo pelo firewall e permita o t5dr.exe (em {folder}) para redes privadas e públicas, ou remova ali a regra que o bloqueia.",
+    "Windows Firewall: a block rule or \"Block all incoming connections\" for t5dr.exe.":
+        "Firewall do Windows: uma regra de bloqueio ou \"Bloquear todas as conexões de entrada\" para o t5dr.exe.",
     "Checking the build…": "Verificando a compilação…",
     "Your name (shown in the game)": "Seu nome (aparece no jogo)",
     "PLAY OFFLINE": "JOGAR OFFLINE",

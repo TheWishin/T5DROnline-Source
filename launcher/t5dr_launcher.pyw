@@ -27,6 +27,7 @@ import online  # noqa: E402
 from core import N_, t  # noqa: E402  (English text in, the player's language out; lobby/t5lobby/i18n.py)
 import problem_report as report  # noqa: E402
 import problem_report_ui as report_ui  # noqa: E402
+import problem_check_ui  # noqa: E402
 import replays  # noqa: E402
 import replays_ui  # noqa: E402
 import updater  # noqa: E402
@@ -440,6 +441,9 @@ class App(tk.Tk):
         self.error_lbl = tk.Label(b, textvariable=self.error, fg=COLORS["error"], wraplength=860, justify="left",
                                   font=(core.ui_family(), 10, "bold"))
         self.error_lbl.grid(row=4, column=0, columnspan=3, sticky="w")
+        # after a failed build: 'Check my problem' (problem_check_ui.py) under the message
+        self.check_btn = ttk.Button(b, text=t("Check my problem..."), command=self.check_problem)
+        self.error.trace_add("write", lambda *_a: self._show_check_btn())
 
         # log
         tab.rowconfigure(3, weight=1)
@@ -494,6 +498,7 @@ class App(tk.Tk):
                    command=lambda: core.open_path(os.path.join(self.settings.out_dir, "gamedata"))).pack(
             side="left", padx=8)
         ttk.Button(links, text=t("Report a problem..."), command=self.report_problem).pack(side="left")
+        ttk.Button(links, text=t("Check my problem..."), command=self.check_problem).pack(side="left", padx=8)
         ttk.Label(box, style="Muted.TLabel", wraplength=820, justify="left", text=t(
             "The game opens in its own window (DirectX 12). Keyboard and Xbox-style controllers both work; "
             "see Settings for the keys. Esc closes the game. START skips the intro movie.")).pack(
@@ -1281,6 +1286,21 @@ class App(tk.Tk):
             core.log("status: " + t)
 
     # ------------------------------------------------------------------ report a problem
+    def _show_check_btn(self):
+        try:
+            if self.error.get():
+                self.check_btn.grid(row=5, column=0, sticky="w", pady=(4, 0))
+            else:
+                self.check_btn.grid_remove()
+        except tk.TclError:
+            pass
+
+    def check_problem(self):
+        """The 'Check my problem' window (problem_check_ui.py): the known cases in this PC's logs, with the fix."""
+        if self.readonly:
+            return None
+        return problem_check_ui.open_for(self)
+
     def report_problem(self):
         """Open the 'Report a problem' window (Build and Play tab, and the Online tab after a match).
         Everything the zip needs from the launcher is read here, on the Tk thread; the window's worker

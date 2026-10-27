@@ -106,7 +106,13 @@ real time windows, which is why it is not in the per-push tier.
    the HLE NID table, the exports for `t5dr_game.dll`, the link).
 4. `PS3RECOMP_BUILD_TESTS=ON`: `sync_stress` and the condition-variable
    tests (ctest). `fiber_switch` is left out: it does not link on Windows at
-   the pin, with or without our patches.
+   the pin, with or without our patches. Patch 0083 gives the two programs
+   stand-ins for the hooks our patches call from the sync sources and that
+   live in files they do not link (`host_sched_main_wait_begin/end` from 0063,
+   `cellSpurs_queue_wait_help/done`, `ppu_fp_thread_init`); before it they did
+   not link (the Monday run was red from 0063 on). It touches only
+   `tests/sync_stress`, so it changes nothing that is built for players --
+   but, like every patch, the code ID (`patch_digest`).
 5. `tests/run_ps3recomp_tests.py`: ps3recomp's self-contained native tests,
    compiled straight from source with clang-cl and run. `spu_float` is
    `test_spu_float_neon.c` (patch 0003's SSE4.1 SPU float ops, bit-exact

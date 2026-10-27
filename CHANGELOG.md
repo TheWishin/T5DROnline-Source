@@ -33,6 +33,9 @@ part is in the README's status table.
   "T5DR needs Python 3.10 or newer; this is X.Y at <path>" and the macOS hint (brew install python@3.12, a venv made
   with python3.12). A Mac's system python3 3.9 used to get through keys, decrypt and unpack and fail only in the lift.
   `tools/prereqs.py`'s Python line says the same.
+- CI, Monday "runtime" job: ps3recomp patch 0083 (test shims, `tests/sync_stress` only) lets `sync_stress` and
+  `test_cond_semantics` link again (hooks of patches 0063 and later they do not link). Nothing built for players
+  changes; the code ID does (it covers every patch), so 1.1.7 asks for one build anyway.
 
 ## v1.1.6 (2026-10-27)
 

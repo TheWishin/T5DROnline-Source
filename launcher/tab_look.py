@@ -190,6 +190,8 @@ def apply(app, keys=("build", "settings", "play", "replays")):
                 look.card_frame(kids[0])
                 if kids[0].winfo_manager() == "pack":
                     kids[0].pack_configure(padx=px(m), pady=(px(m), px(8)))
+                    if key == "play":              # (nothing in it grows: the card as tall as what it holds)
+                        kids[0].pack_configure(fill="x", expand=False)
             continue
         # every tab's cards the same distance from the window's edges as the Online tab's (tk_views.OnlineView)
         if key == "build":                         # (its cards keep their own 8 px apart)

@@ -213,6 +213,50 @@ most 10 times per 24 hours (`T5L_PAIR_CAP`); later matches between them are
 played as casual (both are told). A ranked set counts once, however many games
 it had; the cap is checked when a set begins, never in the middle of one.
 
+### Sides: P1 and P2 by a coin (1.1.7)
+
+Owner's decision (2026-10-27): in ranked the side is always random -- "never the one with the lower ping is P1".
+Up to 1.1.6 the queue made the player with the lower UDP round trip **to the lobby server** P1 (and so the netplay
+host), "more likely the better-connected PC". Since 1.1.7 the server draws the sides with a fair coin
+(`secrets.randbelow(2)`, `server/casual.py` "The server's sides"):
+
+| | P1 / P2 |
+|---|---|
+| ranked queue | drawn for each set (game 1); the set's next games keep them |
+| ranked room | drawn for each new set (not the room's order); the set's next games keep them |
+| ranked rematch (a new set; a launcher without sets: a new rated game) | drawn again; the same sides continue inside the running games, other sides come over a new netplay session (`match_found` `keep: false`, like Swap sides in casual) |
+| quick queue | drawn (the owner asked for ranked; nothing speaks for the old rule anywhere); a quick rematch keeps them, as before |
+| challenges, invites, casual rooms | the players' wishes (docs/ONLINE.md "Sides and stages by choice"), unchanged |
+| tournament sets | the bracket's order, unchanged (the organizer's question, not decided here) |
+
+**Why the host need not be the better-connected PC.** In the game the side is the netplay role: the host is P1, the
+joiner P2 (`netplay_core.cpp` `slot = join ? 1 : 0`). What the host does differently is small and symmetric in
+effect: it answers the first valid HELLO and announces the session id, and it picks the match's rollback input
+delay -- from the round trip both games measure (the same both ways) and both players' settings. Both games send
+their inputs to each other directly, both follow a peer's new address (NAT rebinding), both launchers punch
+(`nat.py` has no roles), the relay keeps one session per side, and the seed and the lockstep delay come from the
+lobby for both. And the old rule's number was each PC's round trip to the lobby server (Nuremberg), which says
+nothing about the path between the two PCs. So the coin decides the role too; no game or launcher change.
+
+**Inside a set the sides stay.** The games 2 and 3 of a set continue inside the running games (2-4 s from the command
+to the fight), and a game keeps its slot for its whole netplay session; other sides would mean a new connection
+before every game (measured: 22 s instead of 8-11 s from a result to the next fight, docs "Ranked sets"). The set's
+score (`set.wins`, [P1, P2]) and the HUD's "Alice [1]" also assume one order per set, and the launchers
+map them by their slot. Each set's coin is fair, so over many sets each player is P1 half the time. Other options
+for the owner: **swap after each game** (P1 of game 1 is P2 in game 2; fair inside every set, a new connection for
+every game, the server must send the set score in each game's order) or **a coin for every game** (the same costs,
+half the time). Either is server-only as well.
+
+**Older launchers.** The side comes in `match_found` (or `match_reveal` after a blind ready check) and `match_start`
+(`role`, `slot`) as always, and every launcher starts its game with that role (`handover.MatchTicket.game_env`:
+`T5_NET_MODE`). A 1.1.6 launcher plays the side it is given (`lobby/tests/test_sides.py` runs the client of git tag
+v1.1.6 -- the same `lobby/t5lobby` as the release zip, file for file -- on this server; the e2e scenario
+`ranked_sides` plays real games with it). So the change is server-only (docs/DEPLOY_1.1.7.md).
+
+**Rating and record** do not depend on the side: the winner is a player, `glicko.match` and the record use the
+players, and the database keeps P1 / P2 names and the winner's side per game and per set, which history, profile and
+the set's score turn into "you" and "the opponent" (`store.py`).
+
 ## Characters and stages
 
 **Picked in the game** (branch ingame-select, below) when both players' launchers
@@ -407,7 +451,8 @@ set counts once for the ranking. Each game is still first to 3 rounds (`T5L_ROUN
 
 **What the players see.** The queue (or a ranked room) finds an opponent as before. Game 1 starts. When it
 ends, the tab shows "Set 1-0 -- game 2 of 3 starts in 6 s" and the next game starts by itself: no rematch
-vote, the same two characters (the set's character lock), the same sides (P1 stays P1). In the fight the
+vote, the same two characters (the set's character lock), the same sides (P1 stays P1; the sides are drawn for
+each set, "Sides" above). In the fight the
 names under the health bars carry the games won from game 2 on ("Alice [1]"). When a player has 2 wins the
 set is over: "You won the set 2-1; rating 1532 (+32) -- PROMOTED to 1st Dan!". **Rematch** after that is a
 new set.
@@ -987,6 +1032,9 @@ python -m unittest test_t6          # Tekken 6 style options: blind ready, block
                                     # lock, lag check, notices, no IP addresses in messages
 python -m unittest test_friends     # friends and invites: requests, presence, limits, blocks, migration, old clients
 python -m unittest test_tk_friends  # the Friends page, invites and Discord Rich Presence in the Online tab
+python -m unittest test_sides       # P1 / P2 by a coin (1.1.7): about half each over many queue matches, never
+                                    # tied to the ping; a set with the lower ping on P2 (rating, record, history);
+                                    # rematches, ranked rooms, the 1.1.6 client on this server
 python -m unittest test_sets        # ranked sets: 2-0, 2-1, quits in game 1/2/3, leaving, desync replays and the
                                     # void after 2, pair cap and cooldown, older clients, server restart, rooms,
                                     # the driver with stub games, texts and HUD names

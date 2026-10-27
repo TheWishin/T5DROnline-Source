@@ -40,6 +40,14 @@ FAST = dict(host="127.0.0.1", port=0, udp_port=0, udp_port2=-1, db=":memory:", s
             max_match_seconds=0.0)          # lone reports are settled after result_timeout (test_abuse: the wait)
 
 
+def coin_keeps_the_sides():
+    """The server's side coin (server/casual.py, 1.1.7) fixed to 0: a ranked rematch keeps P1 and P2, so it may go on
+    inside the running games -- for tests of that path (a coin of 1 makes it a new netplay session, test_sides.py)."""
+    from unittest import mock
+    from t5lobby.server import casual
+    return mock.patch.object(casual, "_side_coin", return_value=0)
+
+
 class ServerThread:
     def __init__(self, **cfg):
         kw = dict(FAST)

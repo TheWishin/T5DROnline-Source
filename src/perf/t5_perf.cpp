@@ -16,8 +16,7 @@
  * main thread once per frame after the flip.
  */
 #define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-#include <intrin.h>
+#include "../platform/t5_win.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -76,11 +75,11 @@ template <int K> int64_t w_wait(ppu_context* ctx)
     if (ctx->thread_id != g_main_tid) return g_orig_sc[K](ctx);
     LARGE_INTEGER a, b;
     ULONG64 c0 = 0, c1 = 0;
-    QueryThreadCycleTime(GetCurrentThread(), &c0);
+    c0 = t5p_thread_cycles();
     QueryPerformanceCounter(&a);
     int64_t r = g_orig_sc[K](ctx);
     QueryPerformanceCounter(&b);
-    QueryThreadCycleTime(GetCurrentThread(), &c1);
+    c1 = t5p_thread_cycles();
     g_wait_cyc += c1 - c0;
     /* the frame semaphore separately from other semaphores */
     if (K == W_SEM && (uint32_t)ctx->gpr[3] == rd32(kFrameSemPtr)) g_sem_ticks += b.QuadPart - a.QuadPart;
@@ -91,11 +90,11 @@ void h_wait_flip(ppu_context* ctx)
 {
     LARGE_INTEGER a, b;
     ULONG64 c0 = 0, c1 = 0;
-    QueryThreadCycleTime(GetCurrentThread(), &c0);
+    c0 = t5p_thread_cycles();
     QueryPerformanceCounter(&a);
     cellGcmSetWaitFlip();
     QueryPerformanceCounter(&b);
-    QueryThreadCycleTime(GetCurrentThread(), &c1);
+    c1 = t5p_thread_cycles();
     if (ctx->thread_id == g_main_tid) { g_wait[W_FLIP] += b.QuadPart - a.QuadPart; g_wait_cyc += c1 - c0; }
 }
 template <int K> void hook(lv2_syscall_fn fn)
@@ -117,6 +116,9 @@ uint64_t g_thr_cpu[PPU_THREAD_MAX];
 DWORD g_thr_tid[PPU_THREAD_MAX];
 void thread_cpu(uint64_t frames)
 {
+#if !defined(_WIN32)
+    (void)frames;   /* GetThreadTimes on the host thread's handle: Windows only (a diagnostic) */
+#else
     char line[1600]; int n = 0;
     for (int i = 0; i < PPU_THREAD_MAX; i++) {
         const ppu_thread_info& t = g_ppu_threads[i];
@@ -132,6 +134,7 @@ void thread_cpu(uint64_t frames)
         g_thr_tid[i] = t.host_tid; g_thr_cpu[i] = cpu;
     }
     if (n) fprintf(stderr, "[perf] guest thread cpu ms/frame:%s\n", line);
+#endif
 }
 
 void summary()
@@ -152,22 +155,22 @@ void summary()
 void h_cellGcmSetFlip(ppu_context* ctx)
 {
     LARGE_INTEGER now; QueryPerformanceCounter(&now);
-    ULONG64 cyc = 0; QueryThreadCycleTime(GetCurrentThread(), &cyc);
+    ULONG64 cyc = t5p_thread_cycles();
     if (!g_main_tid) {
         g_main_tid = ctx->thread_id;
         g_t0 = g_last = now;
         g_cyc_last = cyc;
         /* TSC rate: QueryThreadCycleTime counts TSC ticks */
-        LARGE_INTEGER a, b; QueryPerformanceCounter(&a); unsigned long long ta = __rdtsc();
+        LARGE_INTEGER a, b; QueryPerformanceCounter(&a); unsigned long long ta = t5p_cycles();
         Sleep(50);
-        QueryPerformanceCounter(&b); unsigned long long tb = __rdtsc();
+        QueryPerformanceCounter(&b); unsigned long long tb = t5p_cycles();
         g_tsc_per_ms = (double)(tb - ta) / qpc_ms(b.QuadPart - a.QuadPart);
         hook<W_SEM>(w_wait<W_SEM>); hook<W_COND>(w_wait<W_COND>); hook<W_LWCOND>(w_wait<W_LWCOND>);
         hook<W_MUTEX>(w_wait<W_MUTEX>); hook<W_EQ>(w_wait<W_EQ>); hook<W_SLEEP>(w_wait<W_SLEEP>);
         fprintf(stderr, "[perf] frame log on, main thread %llu, TSC %.0f MHz\n",
                 (unsigned long long)g_main_tid, g_tsc_per_ms / 1000.0);
         QueryPerformanceCounter(&g_last);
-        QueryThreadCycleTime(GetCurrentThread(), &g_cyc_last);
+        g_cyc_last = t5p_thread_cycles();
     } else if (ctx->thread_id == g_main_tid) {
         const double dt = qpc_ms(now.QuadPart - g_last.QuadPart);
         const uint64_t wc = g_wait_cyc.exchange(0);

@@ -1,0 +1,3 @@
+#pragma once
+#include <math.h>   /* declaration-only stand-in: tests/test_macos_port.py */
+#include "__t5_std.h"

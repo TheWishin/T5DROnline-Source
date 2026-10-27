@@ -1,0 +1,66 @@
+# Guest functions that get a hook slot when the lifted code is built for macOS online
+# (tools/build_game.py --macos-online passes this file to ppu_lifter.py --hook-slots).
+#
+# rb::detour (src/rollback/rb_detour.cpp) patches a lifted function's first bytes on x86-64.
+# An arm64 Mac may not write its own code pages, so there the lifter emits each function
+# listed here as "call the hook in my slot, if any, else my body (func_X__orig)", and
+# detour() stores the hook into the slot. Every guest function src/ detours must be on this
+# list (tests/test_macos_port.py checks it); one that is not stays undetoured on a Mac and
+# is reported in the log ("no hook slot").
+#
+# Generated from the detour() calls in src/ (the comment names the file); hex, one per line.
+00010BD8  # rollback/rb_rand.cpp
+00014618  # rollback/rb_rand.cpp
+00015A40  # rollback/rb_rand.cpp
+00017744  # rollback/rb_rand.cpp
+00017768  # rollback/rb_rand.cpp
+0001958C  # rollback/rb_rand.cpp
+00019944  # rollback/rb_rand.cpp
+00039964  # rollback/rb_rand.cpp
+000671E4  # rollback/rb_ktrace.cpp
+000A25A8  # rollback/rb_icall.cpp
+000A9140  # rollback/rb_rand.cpp
+000AC594  # rollback/rb_sound.cpp
+000DB2A4  # rollback/rb_rand.cpp
+000E859C  # rollback/rb_rand.cpp
+000E9284  # rollback/rb_rand.cpp
+000EF688  # rollback/rb_rand.cpp
+000EF7BC  # rollback/rb_rand.cpp
+000F0594  # rollback/rb_rand.cpp
+000F1A28  # rollback/rb_rand.cpp
+000F1A74  # rollback/rb_rand.cpp
+000F4690  # rollback/rb_rand.cpp
+000FD094  # rollback/rb_rand.cpp
+001522C8  # directfight/df_unlock.cpp
+00152918  # directfight/df_unlock.cpp
+00154898  # rollback/rb_icall.cpp
+001549D4  # rollback/rb_icall.cpp
+0015A3A0  # rollback/rb_shadowtrace.cpp
+0029E754  # directfight/df_unlock.cpp
+0029E7F4  # directfight/df_unlock.cpp
+002A732C  # directfight/df_unlock.cpp
+002AAD50  # rollback/rb_icall.cpp
+0031F778  # rollback/rb_icall.cpp
+00326C34  # rollback/rb_sound.cpp
+003270E0  # rollback/rb_sound.cpp
+003271DC  # rollback/rb_sound.cpp
+0032819C  # rollback/rb_sound.cpp
+00328CC4  # rollback/rb_sound.cpp
+00328D68  # rollback/rb_sound.cpp
+00329158  # rollback/rb_sound.cpp
+00331E20  # rollback/rb_sound.cpp
+00334628  # rollback/rb_sound.cpp
+0033465C  # rollback/rb_sound.cpp
+003349B0  # rollback/rb_sound.cpp
+0035D894  # rollback/rb_icall.cpp
+00369228  # rollback/rb_rand.cpp
+00374438  # rollback/rb_ktrace.cpp
+0038C798  # rollback/rb_ktrace.cpp
+0038C90C  # rollback/rb_ktrace.cpp
+003AAA40  # rollback/rb_sndheap.cpp
+003AB2C8  # rollback/rb_sndheap.cpp
+003AFC3C  # rollback/rb_rand.cpp
+003C5420  # rollback/rb_ktrace.cpp
+003C5460  # rollback/rb_ktrace.cpp
+003C54A0  # rollback/rb_ktrace.cpp
+003C5500  # rollback/rb_ktrace.cpp

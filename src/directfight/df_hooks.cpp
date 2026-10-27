@@ -19,7 +19,7 @@
  *   T5_DF_LOG=path         frame log (default df_frames.log in the cwd)
  */
 #define WIN32_LEAN_AND_MEAN
-#include <windows.h>
+#include "../platform/t5_win.h"
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -224,7 +224,7 @@ bool sem_parked(uint32_t id)
 {
     if (id == 0 || id > 64) return false;
     const df_sys_semaphore_info& m = g_sys_semaphores[id - 1];
-    return m.active && *(volatile const int32_t*)&m.value == 0 && *(volatile const int32_t*)&m.waiters > 0;
+    return m.active && T5P_PEEK_I32(&m.value) == 0 && T5P_PEEK_I32(&m.waiters) > 0;
 }
 
 /* A reset or leave that waits too long (df_fight.cpp stuck_check): what the
@@ -437,16 +437,15 @@ LONG CALLBACK guard_veh(EXCEPTION_POINTERS* ep)
     DWORD old;
     VirtualProtect(vm_base + (ea & ~0xFFFu), 0x1000, PAGE_READWRITE, &old);
     uint32_t off = 0;
-    const uint32_t top = rb::guest_of_host((uintptr_t)ep->ContextRecord->Rip, &off);
-    HMODULE mod = nullptr; char mname[MAX_PATH] = "?";
-    if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                           (LPCSTR)ep->ContextRecord->Rip, &mod) && mod)
-        GetModuleFileNameA(mod, mname, sizeof mname);
-    const char* base = strrchr(mname, 0x5C);   /* the last backslash */
+    const uintptr_t pc = (uintptr_t)T5P_CTX_PC(ep->ContextRecord);
+    const uint32_t top = rb::guest_of_host(pc, &off);
+    uintptr_t mod = 0; char mname[MAX_PATH] = "?";
+    t5p_module_of((const void*)pc, mname, sizeof mname, &mod);
+    const char* base = strrchr(mname, T5P_SEP[0]);   /* the last path separator */
     if (g_guard_hits++ < 32)
         note("frame %u: GUARD write to 0x%08X by host thread %lu at %s+0x%llX (lifted %s%06X+0x%X) <- %s", g_frame.load(), ea,
              (unsigned long)GetCurrentThreadId(), base ? base + 1 : mname,
-             (unsigned long long)(ep->ContextRecord->Rip - (uintptr_t)mod), top ? "func_" : "none ", top, off,
+             (unsigned long long)(pc - mod), top ? "func_" : "none ", top, off,
              rb::guest_backtrace(12).c_str());
     return EXCEPTION_CONTINUE_EXECUTION;
 }

@@ -43,7 +43,7 @@
  *      point; the next fight comes from T5_FIGHT_FILE.
  */
 #define WIN32_LEAN_AND_MEAN
-#include <windows.h>
+#include "../platform/t5_win.h"
 #include <stdio.h>
 #include <ctype.h>
 #include <string>
@@ -339,7 +339,7 @@ void write_text(const std::string& path, const std::string& text)
         fwrite(text.data(), 1, text.size(), fp);
         fclose(fp);
         /* the launcher may be reading the file this very moment (Windows refuses the replace then) */
-        for (int i = 0; i < 60 && !MoveFileExA(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING); i++) Sleep(1);
+        for (int i = 0; i < 60 && !t5p_replace_file(tmp.c_str(), path.c_str()); i++) Sleep(1);
     }
 }
 
@@ -407,7 +407,7 @@ bool read_fight_file(Fight& out)
     fclose(fp);
     const std::string done = g_fight_file + ".done";
     remove(done.c_str());
-    MoveFileExA(g_fight_file.c_str(), done.c_str(), MOVEFILE_REPLACE_EXISTING);
+    t5p_replace_file(g_fight_file.c_str(), done.c_str());
     note("next fight from %s: %s", g_fight_file.c_str(), line);
     return parse_fight(line, out);
 }
@@ -850,7 +850,7 @@ void persistent_frame(uint32_t f)
         t5_netplay_session_end("quit");
         ctl_state("quit", f, g_ctl_match, nullptr, g_sessions);
         fflush(stdout); fflush(stderr);
-        TerminateProcess(GetCurrentProcess(), 0);
+        t5p_exit_now(0);
         return;
     }
     if (c.cmd == "idle") {
@@ -1016,7 +1016,7 @@ void select_load_check(uint32_t f)
          "the launcher starts a fresh one", f, limit, what, mode_cur(), rd32(kSelectState), reader_desc().c_str());
     ctl_state("error", f, g_ctl_match, "stuck", g_sessions);
     fflush(stdout); fflush(stderr);
-    TerminateProcess(GetCurrentProcess(), 6);
+    t5p_exit_now(6);
 }
 
 void stuck_check(uint32_t f)
@@ -1043,7 +1043,7 @@ void stuck_check(uint32_t f)
          f, g_state_name, g_stuck_s, mode_cur(), mode_next(), rd32(kSelectState));
     ctl_state("error", f, g_ctl_match, "stuck", g_sessions);
     fflush(stdout); fflush(stderr);
-    TerminateProcess(GetCurrentProcess(), 6);
+    t5p_exit_now(6);
 }
 
 /* ---- in-game select (docs/DIRECTFIGHT.md "Character select in the game") --------

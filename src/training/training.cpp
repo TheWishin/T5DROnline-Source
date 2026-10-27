@@ -30,12 +30,11 @@
  * frame data for this session.
  */
 #define WIN32_LEAN_AND_MEAN
-#include <windows.h>
+#include "../platform/t5_win.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <intrin.h>      /* __rdtsc: T5_TRAINING_STATS */
 
 #include "ppu_recomp.h"     /* ppu_context, vm_base */
 #include "rsx_overlay.h"    /* ps3recomp patch 0045 */
@@ -107,7 +106,11 @@ void init()
     g_cfg.online = o && *o == '1';
     const char* l = getenv("T5_TRAINING_LANG");
     if (l && *l) g_cfg.de = !_strnicmp(l, "de", 2);
+#if defined(_WIN32)
     else g_cfg.de = PRIMARYLANGID(GetUserDefaultUILanguage()) == LANG_GERMAN;
+#else
+    else { const char* lg = getenv("LANG"); g_cfg.de = lg && !strncmp(lg, "de", 2); }   /* de_DE.UTF-8 */
+#endif
     if (const char* r = getenv("T5_TRAINING_ROWS")) {
         const int n = atoi(r);
         if (n >= 4 && n <= 24) g_cfg.rows = n;
@@ -141,6 +144,7 @@ bool g_f2_down = false;
 
 const char* tr(const char* en, const char* de) { return g_cfg.de ? de : en; }
 
+#if defined(_WIN32)
 bool window_focused()
 {
     HWND fg = GetForegroundWindow();
@@ -160,6 +164,11 @@ void poll_hotkey()
     }
     g_f2_down = down;
 }
+#else
+/* F2 needs the key state of the game's window: the Metal backend's keyboard is the
+ * runtime's, so on a Mac the overlay follows T5_TRAINING alone. */
+void poll_hotkey() {}
+#endif
 
 /* ---- drawing ----------------------------------------------------------------- */
 constexpr float kPx = 2.0f;                 /* font pixel: 12 x 16 canvas units per character */
@@ -309,9 +318,9 @@ extern "C" void t5_training_frame(ppu_context* ctx)
             QueryPerformanceFrequency(&fq);
             LARGE_INTEGER a, b;   /* the cycle counter's rate, once */
             QueryPerformanceCounter(&a);
-            const unsigned long long r0 = __rdtsc();
+            const unsigned long long r0 = t5p_cycles();
             do QueryPerformanceCounter(&b); while (b.QuadPart - a.QuadPart < fq.QuadPart / 50);
-            cyc_per_us = (double)(__rdtsc() - r0) / (1e6 * (double)(b.QuadPart - a.QuadPart) / (double)fq.QuadPart);
+            cyc_per_us = (double)(t5p_cycles() - r0) / (1e6 * (double)(b.QuadPart - a.QuadPart) / (double)fq.QuadPart);
         }
         const double us = 1e6 * (double)(t1.QuadPart - t0.QuadPart) / (double)fq.QuadPart;
         const double cus = cyc_per_us > 0 ? (double)(c1 - c0) / cyc_per_us : 0;

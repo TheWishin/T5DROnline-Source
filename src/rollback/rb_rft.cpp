@@ -13,7 +13,7 @@
  */
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
-#include <windows.h>
+#include "../platform/t5_win.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -29,6 +29,7 @@ extern "C" uint8_t* vm_base;
 
 namespace rb {
 
+#if defined(_WIN32)   /* x86 trap flag + 4 KB page protection: Windows only (docs/MACOS.md) */
 namespace {
 uint32_t g_ea = 0, g_len = 0, g_page = 0;
 std::atomic<bool> g_on{ false };
@@ -112,5 +113,13 @@ void rft_disarm(const char* tag)
     std::sort(v.begin(), v.end(), [](auto& x, auto& y) { return x.first > y.first; });
     for (auto& p : v) { logline("R %s x%d %s", tag, p.first, p.second.c_str()); note("access (%s) x%d: %s", tag, p.first, p.second.c_str()); }
 }
+
+#else
+/* The same single-step trap would need the write watch's fault handler on 16 KB
+ * pages (t5_plat_posix.c); tests only, never in a match. */
+bool rft_install() { const char* e = getenv("T5_RB_RFT"); if (e && *e) note("access tracer: Windows only -- off"); return false; }
+void rft_arm() {}
+void rft_disarm(const char* tag) { (void)tag; }
+#endif
 
 } // namespace rb

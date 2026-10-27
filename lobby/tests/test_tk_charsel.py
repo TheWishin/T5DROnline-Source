@@ -35,7 +35,10 @@ class CharSelectTest(TkBase):
         self.assertTrue(sel.is_open())
         keys = [k for k, _n, _b in sel.tiles]
         self.assertEqual(keys[0], fighters.RANDOM)
-        self.assertEqual(keys[1:], [f["key"] for f in tab.table.selectable()])
+        # Random first, then A to Z by the name shown (owner)
+        names = {f["key"]: f["name"] for f in tab.table.selectable()}
+        self.assertEqual(keys[1:], sorted(names, key=lambda k: names[k].casefold()))
+        self.assertEqual(sel.columns, tk_charsel.COLUMNS)                  # (no pictures here: names only)
         lit = [k for k, _n, b in sel.tiles if str(b.cget("style")) == "Card.Accent.TButton"]
         self.assertEqual(lit, [tab._char_key()])
         # arrow keys: right, then down one row (COLUMNS tiles further)
@@ -84,6 +87,43 @@ class CharSelectTest(TkBase):
         self.root.update()
         starred = [k for k, _n, b in sel.tiles if str(b.cget("text")).endswith(tk_charsel.STAR)]
         self.assertEqual(starred, ["lili"])
+        sel.close()
+
+    def test_pictures_from_the_cache(self):
+        import os
+        import tempfile
+        from t5lobby import fighter_art, rank_art
+        tab = self.login()
+        sel = tab.charsel
+        d = tempfile.mkdtemp(prefix="t5dr-faces")
+        for g in range(fighter_art.COUNT):                             # stand-ins: one colour each
+            px = bytes((g * 7 % 256, 90, 160, 255)) * (fighter_art.SIZE * fighter_art.SIZE)
+            with open(fighter_art.face_path(d, g), "wb") as f:
+                f.write(rank_art.png_bytes(px, fighter_art.SIZE, fighter_art.SIZE))
+        with open(os.path.join(d, "fighters.json"), "w") as f:
+            f.write('{"format": %d, "count": %d}' % (fighter_art.FORMAT, fighter_art.COUNT))
+        faces = fighter_art.FACES
+        saved = (faces.folder, set(faces.sizes), dict(faces.images))
+        self.addCleanup(lambda: (setattr(faces, "folder", saved[0]), setattr(faces, "sizes", saved[1]),
+                                 setattr(faces, "images", saved[2])))
+        faces.folder, faces.sizes, faces.images = d, set(), {}
+        os.environ["T5_FIGHTER_ART"] = d                                   # (a fixed folder: the tab keeps it)
+        self.addCleanup(os.environ.pop, "T5_FIGHTER_ART", None)
+        sel.open()
+        self.root.update()
+        self.assertEqual(sel.columns, tk_charsel.COLUMNS)                  # not made at this size yet
+        faces.prepare_now([sel.pic_size])                                   # (the thread's work, here at once)
+        self.root.update()
+        self.assertTrue(sel.is_open())                                      # filled in while open
+        self.assertEqual(sel.columns, tk_charsel.COLUMNS_PICTURES)
+        by_key = {k: b for k, _n, b in sel.tiles}
+        self.assertTrue(str(by_key["jin"].cget("image")))
+        self.assertEqual(str(by_key["jin"].cget("compound")), "top")
+        self.assertTrue(str(by_key[fighters.RANDOM].cget("image")))        # an empty picture: the names line up
+        self.assertTrue(str(by_key["jin"].cget("style")).startswith("Fighter."))
+        sel._focus(0)
+        sel._move(0, 1, 0)                                                  # down: 9 tiles further now
+        self.assertEqual(sel.cursor, tk_charsel.COLUMNS_PICTURES)
         sel.close()
 
     def test_a_ranked_set_locks_it(self):

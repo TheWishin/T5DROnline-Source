@@ -762,8 +762,8 @@ the training overlay's frame data to tell the two apart (`T5_TRAINING_ALL=1`:
 EWGF +5 on block / +26 on hit, WGF -10 / +29, both i11), one picture per attempt
 9-20 frames after the 2 (`T5_DF_SHOT`, attempts every 150 frames, so the same
 offset can be shown for both moves) and a draw CSV of those frames
-(`RSX_DRAW_CSV` gated on the shot). Builds of integration-115 on this PC's
-RTX 3090; local evidence under `build/int115/d-runs/` (git-ignored).
+(`RSX_DRAW_CSV` gated on the shot). Builds of integration-115; local evidence
+under `build/int115/d-runs/` (git-ignored).
 
 **What the game draws.** The EWGF has its own effect from 9 frames after the
 2 (before the fist lands) for more than 10 frames: blue lightning around the
@@ -773,7 +773,9 @@ straight onto the 3D target) and a blue-white flash on both fighters (the
 lighting); the orange hit spark of both moves comes on top when it hits. The
 plain WGF has the hit spark and a few arcs a little later. Every one of these
 draws is executed (CSV outcome `execute`), and the pictures show it with Stage
-blur / glow On and Off and at Lowest (0.5x) alike: the glow composite that Off
+blur / glow On and Off and at Lowest (0.5x) alike, on the RTX 3090 and on the
+integrated Radeon (Lowest, Off: the same pictures frame for frame, the
+scripted runs being identical): the glow composite that Off
 leaves out is stage 20's sun glow (the 3D pass into two 128 x 128 buffers,
 blurred, added back), drawn every frame whether anything hits or not, not part
 of the effect.

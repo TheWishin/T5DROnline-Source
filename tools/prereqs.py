@@ -181,8 +181,9 @@ def check():
     if release:
         # A release ships ps3recomp, the compiler and the runtime: a missing one means the zip was not fully
         # extracted. Never offer Git there (1.1.6: a player pressed "Install missing..." for it; nothing changed).
-        add("ps3recomp", "ps3recomp source", src == "vendored",
-            "included in this package" if src == "vendored" else
+        vendored = src == "vendored"
+        add("ps3recomp", "ps3recomp source", vendored,
+            "included in this package" if vendored else
             "missing from this folder -- extract the release zip again", "lift, compile")
     else:
         git = shutil.which("git")

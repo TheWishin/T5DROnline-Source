@@ -468,7 +468,7 @@ class MessageCoverageTests(German):
                     s = python_sample(c) if isinstance(c, (ast.Constant, ast.JoinedStr)) and id(c) not in keys else None
                     if s and re.search(r"[A-Za-z]{3,}", s) and s == s.strip():
                         details.append(s)
-        self.assertEqual(len(names), 9)
+        self.assertEqual(len(names), 10)       # (1.1.7: the ps3recomp line twice -- release folder / checkout)
         for s in names + details:
             self.assertTrue(self.covered(s) or s in i18n_de.MESSAGES or s in ("CMake", "Ninja"), s)
         self.assertEqual(i18n.translate_message("missing CMake and Ninja"), "fehlt: CMake and Ninja")

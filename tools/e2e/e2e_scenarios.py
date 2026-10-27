@@ -2735,9 +2735,23 @@ class _Resp:
 
 @scenario("update_check", "8 launcher", suites=("quick", "lobby"),
           desc="the update check and download against mocked GitHub answers (no network): offer, cache, 304, "
-               "rate limit, draft, 404, foreign host, checksum, stage and swap keeping native/")
+               "rate limit, draft, 404, foreign host, signature (unsigned / other key refused), checksum, stage and "
+               "swap keeping native/")
 def update_check(ctx):
     import updater as up
+    import release_sig
+    # The shipped launcher trusts the owner's release key only; this fake release is signed with a stand-in key
+    # of this scenario, trusted for the scenario's run only (the shipped key list is put back afterwards).
+    seed = hashlib.sha256(b"t5dr e2e update_check stand-in release key").digest()
+    shipped = up.RELEASE_PUBLIC_KEYS
+    up.RELEASE_PUBLIC_KEYS = (release_sig.public_key(seed).hex(),)
+    try:
+        _update_check(ctx, up, release_sig, seed)
+    finally:
+        up.RELEASE_PUBLIC_KEYS = shipped
+
+
+def _update_check(ctx, up, release_sig, seed):
     inst = os.path.join(ctx.dir, "T5DR-Online-1.0.0")
     os.makedirs(os.path.join(inst, "launcher"), exist_ok=True)
     os.makedirs(os.path.join(inst, "native", "gamedata"), exist_ok=True)
@@ -2764,12 +2778,16 @@ def update_check(ctx):
              "body": "## Fixes\n- rematch\n\n---\n| Code ID | `0123456789abcdef` |",
              "assets": [{"name": "T5DR-Online-1.0.1.zip", "browser_download_url": base + "T5DR-Online-1.0.1.zip",
                          "size": len(zbytes), "state": "uploaded", "digest": f"sha256:{sha}"},
-                        {"name": "SHA256SUMS", "browser_download_url": base + "SHA256SUMS", "size": 100, "state": "uploaded"}]}
+                        {"name": "SHA256SUMS", "browser_download_url": base + "SHA256SUMS", "size": 100, "state": "uploaded"},
+                        {"name": "SHA256SUMS.sig", "browser_download_url": base + "SHA256SUMS.sig", "size": 300,
+                         "state": "uploaded"}]}
         d.update(over)
         return json.dumps(d).encode()
 
     calls = []
-    plan = {"api": ("ok", release_json()), "zip": zbytes, "sums": f"{sha}  T5DR-Online-1.0.1.zip\n".encode()}
+    sums = f"{sha}  T5DR-Online-1.0.1.zip\n".encode()
+    plan = {"api": ("ok", release_json()), "zip": zbytes, "sums": sums,
+            "sig": release_sig.make_sig_file(seed, "1.0.1", sums).encode()}
 
     def opener(url, headers=None, kind="download", timeout=None):
         calls.append((url, dict(headers or {})))
@@ -2782,6 +2800,8 @@ def update_check(ctx):
             raise urllib.error.HTTPError(url, what, "mock", body or {}, None)
         if url.endswith("SHA256SUMS"):
             return _Resp(plan["sums"])
+        if url.endswith("SHA256SUMS.sig"):
+            return _Resp(plan["sig"])
         return _Resp(plan["zip"], {"Content-Length": str(len(plan["zip"]))})
     cache = os.path.join(inst, up.CACHE_FILE)
     now = time.time()
@@ -2815,7 +2835,23 @@ def update_check(ctx):
     rel8, prob8 = up.check_latest(cache, force=True, opener=opener, now=now)
     ctx.check("an asset on another host is refused", rel8 is None and prob8 and "not on this project" in prob8, prob8)
     # download, verify, stage
+    unsigned = json.loads(release_json())
+    unsigned["assets"] = [a for a in unsigned["assets"] if a["name"] != "SHA256SUMS.sig"]
+    try:
+        up.prepare_update(up.parse_release(unsigned), root=inst, opener=opener, need_python=False)
+        ctx.check("an unsigned release is refused", False, "it was staged")
+    except up.UpdateError as e:
+        ctx.check("an unsigned release is refused, nothing changed", "not signed" in str(e) and
+                  up.local_version(inst) == "1.0.0" and not any(os.path.exists(d) for d in up.stage_roots(inst)), str(e))
     rel = up.parse_release(json.loads(release_json()))
+    plan["sig"] = release_sig.make_sig_file(hashlib.sha256(b"somebody else's key").digest(), "1.0.1", sums).encode()
+    try:
+        up.prepare_update(rel, root=inst, opener=opener, need_python=False)
+        ctx.check("a release signed by another key is refused", False, "it was staged")
+    except up.UpdateError as e:
+        ctx.check("a release signed by another key is refused, nothing changed", "signature check" in str(e) and
+                  up.local_version(inst) == "1.0.0" and not any(os.path.exists(d) for d in up.stage_roots(inst)), str(e))
+    plan["sig"] = release_sig.make_sig_file(seed, "1.0.1", sums).encode()
     plan["zip"] = zbytes[:-1] + bytes([zbytes[-1] ^ 1])
     try:
         up.prepare_update(rel, root=inst, opener=opener, need_python=False)

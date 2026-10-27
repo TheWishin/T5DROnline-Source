@@ -279,10 +279,11 @@ class App(tk.Tk):
         f = th.fonts
         px = th.px
         self.option_add("*Text.Font", f["mono"])
-        st.configure("Step.TLabel", font=f["body"], foreground=C["faint"], padding=(px(6), px(2)))
-        st.configure("StepRun.TLabel", font=f["bold"], foreground=C["accent_hi"], padding=(px(6), px(2)))
-        st.configure("StepDone.TLabel", font=f["body"], foreground=C["ok"], padding=(px(6), px(2)))
-        st.configure("StepFail.TLabel", font=f["bold"], foreground=C["bad"], padding=(px(6), px(2)))
+        # (5 px apart: the nine steps are the Build tab's widest row, in Spanish)
+        st.configure("Step.TLabel", font=f["body"], foreground=C["faint"], padding=(px(5), px(2)))
+        st.configure("StepRun.TLabel", font=f["bold"], foreground=C["accent_hi"], padding=(px(5), px(2)))
+        st.configure("StepDone.TLabel", font=f["body"], foreground=C["ok"], padding=(px(5), px(2)))
+        st.configure("StepFail.TLabel", font=f["bold"], foreground=C["bad"], padding=(px(5), px(2)))
         # the same window at any DPI (fonts grow with it), never larger than the screen
         sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
         self.minsize(min(px(900), sw - 40), min(px(680), sh - 80))

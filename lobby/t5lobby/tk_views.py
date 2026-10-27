@@ -643,13 +643,15 @@ class OnlineView:
             row=0, column=0, sticky="w")
         self.room_label = ttk.Label(top, text="", style="Card.Accent.TLabel")
         self.room_label.grid(row=1, column=0, sticky="w")
+        self.room_label.grid_remove()             # (only while in a room: no empty line above the buttons)
         ttk.Label(top, text=t("Character"), style="Card.Muted.TLabel").grid(row=0, column=1, sticky="e",
                                                                           padx=(0, px(8)))
         # the fighter: a button that opens the select grid (tk_charsel.py; tab.char_cb stands in for the old list)
         cb = tk_charsel.build(self, top).button
         cb.grid(row=0, column=2, sticky="e")
-        # the health handicap for casual matches, under the character (tk_rules.py)
-        tk_rules.build_life_picker(self, top, tab).grid(row=1, column=1, columnspan=2, sticky="e", pady=(px(2), 0))
+        # the health handicap for casual matches, next to the character (tk_rules.py): one row, so the lists below
+        # keep more of the height
+        tk_rules.build_life_picker(self, top, tab).grid(row=0, column=3, sticky="e", padx=(px(14), 0))
         self.lock_label = ttk.Label(top, text=t("Locked for this ranked set"), style="Card.Faint.TLabel")
         tab.actions = {}
         tab.action_text = {}
@@ -1138,6 +1140,10 @@ class OnlineView:
             else:
                 text = ""
             self.room_label.configure(text=text)
+            if text:
+                self.room_label.grid()
+            else:
+                self.room_label.grid_remove()
         elif kind == "challenged":
             self.challenger = ev.get("from")
             self.challenge_ev = ev
@@ -1324,7 +1330,7 @@ class OnlineView:
         self.ranked_sub.configure(text=t("Create an account to play ranked") if me and guest else
                                   t("Rated: close to your rank, good connection"))
         if tab.set_locked and not self.lock_label.winfo_manager():
-            self.lock_label.grid(row=2, column=1, columnspan=2, sticky="e")
+            self.lock_label.grid(row=1, column=1, columnspan=3, sticky="e")
         elif not tab.set_locked and self.lock_label.winfo_manager():
             self.lock_label.grid_forget()
 

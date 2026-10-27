@@ -657,11 +657,11 @@ class Theme:
         self._button_family("Ghost", None, C["hover"], C["pressed"], None, C["accent"])
         acc_dis = C["faint"]
         # (style suffix, layout family, font, padding, foreground, disabled / active foreground); the heights:
-        # small 28, normal 34, hero 50 px at 100 % (the element adds only room for the focus ring)
+        # small 28, normal 34, hero 46 px at 100 % (the element adds only room for the focus ring)
         kinds = (("TButton", "Base", f["button"], (px(14), px(6)), C["text"], None),
                  ("Accent.TButton", "Accent", f["button"], (px(16), px(6)), C["on_accent"], acc_dis),
-                 ("Hero.TButton", "Accent", f["hero"], (px(24), px(11)), C["on_accent"], acc_dis),
-                 ("HeroAlt.TButton", "Base", f["hero"], (px(24), px(11)), C["text"], None),
+                 ("Hero.TButton", "Accent", f["hero"], (px(22), px(9)), C["on_accent"], acc_dis),
+                 ("HeroAlt.TButton", "Base", f["hero"], (px(22), px(9)), C["text"], None),
                  ("Ghost.TButton", "Ghost", f["button"], (px(8), px(6)), C["muted"], "active"),
                  ("Link.TButton", "Ghost", f["body"], (px(6), px(3)), C["accent_hi"], "active"),
                  ("Small.TButton", "Base", f["small"], (px(10), px(4)), C["text"], None),
@@ -869,7 +869,7 @@ class Theme:
         st.configure("Main.TNotebook", background=C["bg"], borderwidth=0, tabmargins=(0, 0, 0, 0), tabposition="nw")
         st.layout("Main.TNotebook.Tab", st.layout("TNotebook.Tab"))
         st.configure("Main.TNotebook.Tab", background=C["bg"], foreground=C["muted"], font=f["h3"],
-                     padding=(px(18), px(9), px(18), px(8)), focuscolor=C["accent"], borderwidth=0)
+                     padding=(px(18), px(8), px(18), px(7)), focuscolor=C["accent"], borderwidth=0)
         st.map("Main.TNotebook.Tab", foreground=[("selected", C["text"]), ("active", C["text"])],
                background=[("selected", C["bg"])], expand=[("selected", (0, 0, 0, 0))])
 

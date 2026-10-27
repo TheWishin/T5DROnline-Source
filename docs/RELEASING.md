@@ -151,6 +151,41 @@ offer what it returns. That endpoint never returns drafts or pre-releases, so:
 - the release notes' "Code ID" line tells the launcher whether players must build the game once
   after the update (it says so in the offer).
 
+## Update drill (tools/update_drill.py)
+
+The update a player makes, for real, from an older release to the new one -- the path 1.1.5 broke (its launcher
+closed two seconds after the update, on every PC with a .pkg). It runs on the owner's PC with the real package:
+
+    python tools/update_drill.py --old-zip T5DR-Online-1.1.6.zip --tag v1.1.7 --pkg "D:/game/xxx.pkg" --work D:/drill/116
+
+1. Unpacks the old release's zip into `--work` (an empty folder) and writes the package into its `launcher.json`,
+   as a player's launcher has it.
+2. The old release's own Python and updater fetch the new release by its tag (`--tag`: also a pre-release),
+   check it (size, SHA-256, signature), stage it and start the swap step -- the same calls the launcher's
+   "Update now" makes (`prepare_update`, `start_swap`).
+3. Waits for the swap step's `result.json` ("done", "undone" or an error; when the new launcher already removed
+   the staging folder, the folder's `release.json` decides), then `--alive` seconds (30).
+4. **PASS** when the swap step says updated, the folder has the new version and the new launcher still runs.
+   It prints the swap step's log and ends the launchers it started.
+
+Other forms:
+
+- `--new-zip T5DR-Online-1.1.7.zip` instead of `--tag`: a local zip (a candidate before the tag, a test build).
+  The old updater unpacks and swaps it exactly as after a download; only the download and its checksum and
+  signature check are skipped.
+- `--close-after 3`: the player closes the new launcher after 3 s (`WM_CLOSE` to its window). PASS when the
+  update stayed and no launcher came back. (From 1.1.7 on a launcher confirms the update after 15 s or when
+  closed by hand; one that ends by itself before is rolled back.)
+- `--expect rollback`: the new release is broken on purpose. PASS when the swap step put the old files back
+  and the old launcher runs again.
+
+Checked by hand on 2026-10-27 (from the release zips): 1.1.4 -> 1.1.5 FAIL (the launcher was gone after the
+update), 1.1.4 -> 1.1.6 PASS, 1.1.5 -> 1.1.6 PASS; 1.1.4 and 1.1.6 -> a 1.1.7 test build (1.1.6 + this tree's
+launcher) PASS, closed by hand after 3 s PASS, and the same build with 1.1.5's crash (SystemExit 2 s after the
+start) rolled back to the old version, its launcher running (`--expect rollback` PASS); with 1.1.6's launcher
+(confirms after 0.3 s) and the same crash the update was kept (FAIL). `tests/test_update_drill.py` covers the
+arguments, the reading of the result and the verdict.
+
 ## What the workflow does
 
 Job **build** (`windows-latest`, read-only token):

@@ -16,6 +16,9 @@ part is in the README's status table.
   requires it alive after 15 s (`tools/smoke_release.py`); the preflight runs it with the GUI checks, the release
   workflow requires this starter check (it was informational). On a PC without a package around, the old check
   passed 1.1.5's zip; this one fails it and passes 1.1.6's.
+- `tools/update_drill.py`: the update a player makes, for real, from an older release zip with a real package, to a
+  release by its tag (a pre-release too) or to a local zip; `--close-after`, `--expect rollback`
+  (docs/RELEASING.md "Update drill").
 
 ## v1.1.6 (2026-10-27)
 

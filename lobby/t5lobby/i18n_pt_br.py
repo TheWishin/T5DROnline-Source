@@ -2385,13 +2385,8 @@ MESSAGES = {
         "Mínimo (placas de vídeo antigas)",
     "Default":
         "Padrão",
-    "Lowest: Internal resolution Lowest; stage blur / glow, shadows and effects off (so no hit effects "
-    "either). Default puts them back. Only your picture changes: online, both players can choose differently.":
-        "Mínimo: resolução interna Mínima; desfoque / brilho dos "
-        "cenários, sombras e efeitos desligados (então também "
-        "sem efeitos de golpes). Padrão os restaura. Só a sua "
-        "imagem muda: online, cada jogador pode escolher "
-        "diferente.",
+    "Lowest: Internal resolution Lowest; stage blur / glow and shadows off. Effects stay on: the hit effects show what happens in a fight. Default puts them back. Only your picture changes: online, both players can choose differently.":
+        "Mínimo: resolução interna Mínima; desfoque / brilho dos cenários e sombras desligados. Os efeitos continuam ligados: os efeitos de golpes mostram o que acontece na luta. Padrão os restaura. Só a sua imagem muda: online, cada jogador pode escolher a sua.",
     # ---- lobby/t5lobby/tk_casual.py
     "Any side": "Qualquer lado",
     "P1 (left)": "P1 (esquerda)",

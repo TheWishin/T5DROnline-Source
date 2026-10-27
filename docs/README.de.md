@@ -202,8 +202,9 @@ Sprachen gleich.
   blendet auch die Treffer-Funken und andere Treffer-Effekte aus (auch den
   EWGF-Blitz), dazu Flammen, Rauch, Nebel und Wasserfälle. **Am niedrigsten
   (alte Grafikkarten)** stellt die interne Auflösung auf „Am niedrigsten“ und
-  schaltet Stage-Unschärfe / Leuchten, Schatten und Effekte aus; **Standard**
-  stellt sie wieder her. Online kann jeder Spieler selbst wählen.
+  schaltet Stage-Unschärfe / Leuchten und Schatten aus; die Effekte bleiben an
+  (die Treffer-Effekte zeigen, was im Kampf passiert); **Standard** stellt sie
+  wieder her. Online kann jeder Spieler selbst wählen.
 - **Settings** -> **Power saving (laptops, handhelds)** (Stromsparen): Auto
   (Standard) schaltet es ein bei Akkubetrieb, Stromsparmodus oder dem
   Energiesparplan, einem mobilen Prozessor oder integrierter Grafik; mit An und

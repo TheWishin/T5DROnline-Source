@@ -2498,13 +2498,8 @@ MESSAGES = {
         "Am niedrigsten (alte Grafikkarten)",
     "Default":
         "Standard",
-    "Lowest: Internal resolution Lowest; stage blur / glow, shadows and effects off (so no hit effects "
-    "either). Default puts them back. Only your picture changes: online, both players can choose differently.":
-        "Am niedrigsten: Interne Auflösung „Am niedrigsten“; "
-        "Stage-Unschärfe / Leuchten, Schatten und Effekte aus "
-        "(also auch keine Treffer-Effekte). „Standard“ stellt "
-        "sie wieder her. Nur dein Bild ändert sich: Online "
-        "können beide Spieler verschieden wählen.",
+    "Lowest: Internal resolution Lowest; stage blur / glow and shadows off. Effects stay on: the hit effects show what happens in a fight. Default puts them back. Only your picture changes: online, both players can choose differently.":
+        "Am niedrigsten: Interne Auflösung „Am niedrigsten“; Stage-Unschärfe / Leuchten und Schatten aus. Die Effekte bleiben an: Die Treffer-Effekte zeigen, was im Kampf passiert. „Standard“ stellt sie wieder her. Nur dein Bild ändert sich: Online kann jeder Spieler selbst wählen.",
     # ---- lobby/t5lobby/tk_casual.py
     "Any side": "Seite egal",
     "P1 (left)": "P1 (links)",

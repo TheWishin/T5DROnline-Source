@@ -2403,13 +2403,8 @@ MESSAGES = {
         "Mínimo (tarjetas gráficas antiguas)",
     "Default":
         "Predeterminado",
-    "Lowest: Internal resolution Lowest; stage blur / glow, shadows and effects off (so no hit effects "
-    "either). Default puts them back. Only your picture changes: online, both players can choose differently.":
-        "Mínimo: resolución interna Mínima; desenfoque / brillo "
-        "de escenarios, sombras y efectos desactivados (así que "
-        "tampoco efectos de golpe). Predeterminado los "
-        "restablece. Solo cambia tu imagen: en línea, cada "
-        "jugador puede elegir distinto.",
+    "Lowest: Internal resolution Lowest; stage blur / glow and shadows off. Effects stay on: the hit effects show what happens in a fight. Default puts them back. Only your picture changes: online, both players can choose differently.":
+        "Mínimo: resolución interna Mínima; desenfoque / brillo de escenarios y sombras desactivados. Los efectos siguen activados: los efectos de golpe muestran lo que pasa en el combate. Predeterminado los restablece. Solo cambia tu imagen: en línea, cada jugador puede elegir lo suyo.",
     # ---- lobby/t5lobby/tk_casual.py
     "Any side": "Cualquier lado",
     "P1 (left)": "P1 (izquierda)",

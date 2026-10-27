@@ -2366,11 +2366,8 @@ MESSAGES = {
         "最低（古いグラフィックカード）",
     "Default":
         "標準",
-    "Lowest: Internal resolution Lowest; stage blur / glow, shadows and effects off (so no hit effects "
-    "either). Default puts them back. Only your picture changes: online, both players can choose differently.":
-        "最低：内部解像度を「最低」にし、ステージのぼかし / 光彩、影、エフェクトをオフにします（ヒットエフェクトも表示"
-        "されません）。「標準」で元に戻ります。変わるのは自分の画面だけなので、オンラインでも各プレイヤーが別々に選べます"
-        "。",
+    "Lowest: Internal resolution Lowest; stage blur / glow and shadows off. Effects stay on: the hit effects show what happens in a fight. Default puts them back. Only your picture changes: online, both players can choose differently.":
+        "最低：内部解像度を「最低」にし、ステージのぼかし / 光彩と影をオフにします。エフェクトはオンのままです（ヒットエフェクトで対戦の状況がわかります）。「標準」で元に戻ります。変わるのは自分の画面だけなので、オンラインでも各プレイヤーが別々に選べます。",
     # ---- lobby/t5lobby/tk_casual.py
     "Any side": "どちらでも",
     "P1 (left)": "P1（左）",

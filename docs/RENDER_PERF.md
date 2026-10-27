@@ -3186,8 +3186,8 @@ is worth a change of its own now.
 
 Owner's 1.1.5 list: more graphics settings for weak graphics cards, each measured, and a "Lowest" preset for old
 cards. **Launcher -> Settings -> Graphics (weak graphics cards)**: Shadows and Effects, each On (default) / Off,
-and two buttons: **Lowest (old graphics cards)** (Internal resolution Lowest; stage blur / glow, shadows and effects
-off) and **Default** (puts them back: Internal resolution as the launcher picks it -- Auto on integrated graphics,
+and two buttons: **Lowest (old graphics cards)** (Internal resolution Lowest; stage blur / glow and shadows off;
+effects stay on -- owner, 1.1.5: the hit effects show what happens in a fight) and **Default** (puts them back: Internal resolution as the launcher picks it -- Auto on integrated graphics,
 else Native --, stage blur / glow Off as since 1.1.4, shadows and effects on). Window, VSync and power saving are
 not touched. Every setting changes only what is drawn: no guest memory, no command the game sees, so the two PCs of
 a match may choose differently (pairs below).

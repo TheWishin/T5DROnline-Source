@@ -586,9 +586,9 @@ class App(tk.Tk):
         ttk.Button(row, text=t("Default"),
                    command=lambda: self._graphics_preset(core.DEFAULT_PRESET)).pack(side="left")
         ttk.Label(gx, style="Muted.TLabel", wraplength=300, justify="left", text=t(
-            "Lowest: Internal resolution Lowest; stage blur / glow, shadows and effects off (so no hit effects "
-            "either). Default puts them back. Only your picture changes: online, both players can choose "
-            "differently.")).pack(
+            "Lowest: Internal resolution Lowest; stage blur / glow and shadows off. Effects stay on: the hit "
+            "effects show what happens in a fight. Default puts them back. Only your picture changes: online, "
+            "both players can choose differently.")).pack(
             anchor="w", pady=(4, 0))
 
         # Power saving (PS3_LAPTOP, core.POWER_SAVING; docs/RENDER_PERF.md "Laptops, handhelds and 8-core APUs"):

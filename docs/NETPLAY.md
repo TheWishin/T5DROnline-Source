@@ -561,7 +561,19 @@ refill, timer, give-up, slot symmetry, and lockstep vs rollback with late inputs
 vs replay: the same state every frame; plus source checks), `tests/test_replays.py` (format 5),
 `lobby/tests/test_training.py`, `tools/fight_flow_test.py --line-extra "train=1 life=70|100"
 --give-up-every 2400` (real pairs), e2e `net_training` (a training room through the lobby: rollback with RTT
-80 ms, loss and jitter, and lockstep).
+80 ms, loss and jitter, and lockstep), e2e `spectate_training`.
+
+Tested (2026-10-27, this PC, build/int115/h-runs; both players mashing with a gap of up to 25 frames, a SELECT
+hold every 2400 frames): `fight_flow_test` persistent pairs, a new session then rematches, P1 at 70 % --
+rollback with the joiner stuttering (20 ms suspends): 4/4 and 4/4 fights (runs ff2, ff4; 260 rollbacks on one
+side in ff2), lockstep with P2 at 50 %: 3/3 (ff3) -- every fight ended by the give-up, health refilled in all
+of them, 0 mismatching frames, the same result hash on both PCs; the 8 replays the four games recorded (ff4,
+ff3) play back identical (every recorded hash and result). Through the lobby (e2e, the launchers' own Online
+tab, a local server): `net_training` rollback RTT 80 ms +-10 ms, 2 % loss (279 and 108 rollbacks per fight),
+rollback RTT 20, lockstep RTT 20 -- 6 training fights, each `training` in the lobby, the same hash, 0
+mismatching frames, the next fight started by itself, Leave room during a fight ended it ("left") on both;
+`spectate_training`: a spectator from the start plays both fights identical (82 hashes compared, 0
+different).
 
 ## Skipping intros and replays online (branch skip-114, 1.1.4)
 

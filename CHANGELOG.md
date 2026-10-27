@@ -5,6 +5,39 @@ part is in the README's status table.
 
 ## v1.1.7 (not released yet)
 
+### Launcher
+- Fighter pictures in the ranked character select and the profile's main-fighter portrait show again
+  (`lobby/t5lobby/fighter_art.py`, `rank_art.py`): 1.1.5/1.1.6 read them from the game but called `after(func)`
+  instead of `after(0, func)`, so no window heard of it; a second size asked meanwhile is made too. Checked in the
+  real launcher of the release layout with a local lobby.
+- The warning about an unsupported v01.01 package shows before the first build (GitHub #20/#21,
+  `launcher/core.py` `make_peek_keys`, `tools/build_game.py`): a fresh release folder has no `keys/ps3.keys` until
+  BUILD GAME's keys step, so the Build tab could not look inside the package. Choosing a package now makes that
+  key file in the background with the keys step's own `tools/make_keys.py` (same public data, a few KB, written to
+  the output folder where the build reuses it); the line under the package says it is checking, then turns red
+  for v01.01. That line also wraps instead of being cut off (German).
+- The launcher never closes because of its own helper code (`launcher/t5dr_launcher.pyw`): an error in a button,
+  timer or startup step -- `SystemExit` included, which Tk lets through and which closed 1.1.5 -- goes into
+  `launcher.log` and the window stays open; errors in the launcher's threads are logged too (they were printed
+  nowhere under pythonw). Only the player's close ends it.
+- An incomplete release folder (no `deps/ps3recomp`, `toolchain/llvm`, `runtime/` or `python/` -- the zip not fully
+  extracted, or run from inside it) is called that (`tools/prereqs.py`, `launcher/core.py`, `tools/build_game.py`):
+  the Build tab and BUILD GAME say to extract the zip again with "Extract All" into a short path such as `C:\T5DR`,
+  and "Install missing..." no longer offers Git or Visual Studio for it (1.1.6 offered Git; installing it changed
+  nothing). A developer's checkout still gets Git offered.
+- Lobby chat: easier to see who wrote what (player feedback; `lobby/t5lobby/tk_tab.py`, `tk_views.py`, `theme.py`): the
+  sender's name in bold in a colour of their own (from the name, the same on every PC, readable on the dark card),
+  your own name in the accent colour, a name line with space above whenever another player writes, and the
+  launcher's and server's lines muted.
+- A "Community Discord" button in the launcher's header, beside "Check for updates": it opens the players'
+  Discord (https://discord.gg/4DwDHAkk2x, `launcher/core.py` `DISCORD_URL`) in the browser; the report window
+  names it for questions too.
+- Updates are checked at every start and offered right away (`launcher/updater.py`): the launcher asks GitHub each
+  time instead of reusing an answer up to an hour old (why some 1.1.4 launchers kept offering the withdrawn 1.1.5
+  after 1.1.6 was out), conditionally with the cached ETag and Last-Modified so an unchanged answer is a 304 that
+  does not use up GitHub's 60 requests an hour; "Update available" opens by itself after the start -- once per
+  session, never during a build, a game or an online match (then when it ends). "Check for updates" stays.
+
 ### Updates and releases
 - An update keeps the new launcher only once it has run for 15 seconds or was closed by hand
   (`launcher/updater.py` `CONFIRM_AFTER_MS`, `App.on_close`): a new launcher that closes by itself before -- as

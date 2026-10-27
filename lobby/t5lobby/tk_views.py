@@ -871,6 +871,19 @@ class OnlineView:
                                bg=C["surface"], fg=C["text"], relief="flat", borderwidth=0, highlightthickness=0,
                                padx=px(2), pady=px(2), cursor="arrow", takefocus=0)
         tab.chat_log.grid(row=1, column=0, sticky="nsew")
+        # who wrote what (1.1.7, players asked for it): a sender's name in bold in their own colour above their lines
+        # (your own in the accent colour), space before another sender, the launcher's and the server's lines muted
+        log, fonts = tab.chat_log, self.th.fonts
+        log.tag_configure("chat_head", font=fonts["bold"], spacing1=px(9), spacing3=px(1))
+        log.tag_configure("chat_msg", foreground=C["text"], lmargin1=px(8), lmargin2=px(8), spacing1=px(1))
+        log.tag_configure("chat_sys", foreground=C["muted"], font=fonts["small"], spacing1=px(9), spacing3=px(1))
+
+    def chat_name_tag(self, name, mine=False):
+        """The chat log's tag for a sender's name: bold (chat_head) in theme.name_color(name), the accent for you."""
+        color = theme.C["accent_hi"] if mine else theme.name_color(name)
+        tag = "chat_name_" + color.lstrip("#")
+        self.tab.chat_log.tag_configure(tag, foreground=color)
+        return tag
         row = self.body(cc)
         row.grid(row=2, column=0, sticky="we", pady=(px(8), 0))
         row.columnconfigure(0, weight=1)

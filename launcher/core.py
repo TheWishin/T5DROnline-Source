@@ -51,6 +51,7 @@ SETTINGS_FILE = os.path.join(ROOT, "launcher.json")
 LAUNCHER_LOG = os.path.join(ROOT, "launcher.log")     # what the launcher did; goes into the problem report
 LAUNCHER_LOG_MAX = 512 * 1024                         # then it moves to launcher.log.1 (one old copy is kept)
 ISSUES_URL = "https://github.com/TheWishin/T5DROnline/issues"
+DISCORD_URL = "https://discord.gg/4DwDHAkk2x"      # the players' community (header button, the report window)
 _log_lock = threading.Lock()
 
 
@@ -285,8 +286,9 @@ class Settings(dict):
 
 # --------------------------------------------------------------------------- input files
 
-def describe_pkg(path):
-    """(ok, level, text) for the chosen package; level is 'ok', 'warn' or 'error'."""
+def describe_pkg(path, out_dir=None):
+    """(ok, level, text) for the chosen package; level is 'ok', 'warn' or 'error'. `out_dir`: the launcher's output
+    folder, whose keys/ps3.keys the look inside the package uses (make_peek_keys)."""
     if not path:
         return False, "error", t("No package chosen.")
     if not os.path.exists(path):
@@ -300,7 +302,7 @@ def describe_pkg(path):
         return False, "error", t("This is not a PS3 package (.pkg).")
     # What is inside (PARAM.SFO and the program's header, read from the package in well under a second): a v01.01
     # package names itself like the supported one would, and the build used to blame the .rap for it.
-    facts = _package_facts(path)
+    facts = _package_facts(path, peek_keys_path(out_dir))
     if facts and facts["title_id"] == build_game.TITLE_ID:
         ver, prog = facts["version"], facts["program"]
         ver = build_game.OTHER_VERSIONS.get(prog, ver) if ver in ("?", build_game.TITLE_VERSION) else ver
@@ -325,21 +327,73 @@ def describe_pkg(path):
 _FACTS = {}
 
 
-def _package_facts(path):
-    """build_game.package_facts(path), once per file (path, size, time): the Build tab asks on every change."""
+def _package_facts(path, keys=None):
+    """build_game.package_facts(path), once per file (path, size, time) and key file: the Build tab asks on every
+    change; a key file made since (make_peek_keys) reads it again."""
     try:
         st = os.stat(path)
     except OSError:
         return None
     if cloud_only(path):
         return None                         # (reading inside it would download 600 MB)
-    key = (os.path.abspath(path), st.st_size, st.st_mtime)
+    key = (os.path.abspath(path), st.st_size, st.st_mtime, build_game.peek_key_file(keys))
     if key not in _FACTS:
         try:
-            _FACTS[key] = build_game.package_facts(path)
+            _FACTS[key] = build_game.package_facts(path, keys=keys)
         except (Exception, SystemExit):   # noqa: BLE001 -- a line under the file chooser must never stop the launcher
             _FACTS[key] = None
     return _FACTS[key]
+
+
+def peek_keys_path(out_dir):
+    """<output folder>/keys/ps3.keys: where BUILD GAME's keys step writes the key file (build_game.Paths.keys)."""
+    return os.path.join(os.path.abspath(out_dir), "keys", "ps3.keys") if out_dir else None
+
+
+def peek_needs_keys(out_dir):
+    """A release folder before the first build: the look inside the package (the v01.01 warning) needs the key
+    file that BUILD GAME's keys step makes. 1.1.5/1.1.6 showed the warning only after that step (GitHub #20/#21)."""
+    try:
+        return build_game.peek_needs_keys(keys=peek_keys_path(out_dir))
+    except Exception:       # noqa: BLE001 -- only a hint under the file chooser
+        return False
+
+
+def make_peek_keys(out_dir, timeout=90):
+    """Make <output folder>/keys/ps3.keys the way BUILD GAME's keys step does (tools/make_keys.py: the public PS3
+    key data from RPCS3's open-source key_vault.h / key_vault.cpp on github.com, a few KB; the same file the build
+    makes and then reuses), so the Build tab can read the chosen package's version before the first build.
+    Written to a temporary name and moved into place, so a build started meanwhile never reads half a file.
+    -> (ok, detail). Runs in a thread (it waits for the download)."""
+    dst = peek_keys_path(out_dir)
+    if not dst:
+        return False, "no output folder"
+    if os.path.isfile(dst):
+        return True, "already there"
+    tmp = f"{dst}.{os.getpid()}.tmp"
+    exe = sys.executable
+    if exe.lower().endswith("pythonw.exe") and os.path.exists(os.path.join(os.path.dirname(exe), "python.exe")):
+        exe = os.path.join(os.path.dirname(exe), "python.exe")
+    cmd = [exe, os.path.join(TOOLS, "make_keys.py"), "--out", tmp]
+    src = os.environ.get("T5DR_KEYS_SOURCE")        # (tests: a local copy of the two source files, no download)
+    if src:
+        cmd += ["--source", src]
+    try:
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL,
+                           creationflags=CREATE_NO_WINDOW if IS_WIN else 0)
+        if r.returncode != 0 or not os.path.isfile(tmp):
+            return False, ((r.stderr or r.stdout or "").strip().splitlines() or [f"exit code {r.returncode}"])[-1]
+        if not os.path.isfile(dst):
+            os.replace(tmp, dst)
+        return True, "made"
+    except (OSError, subprocess.SubprocessError) as e:
+        return False, str(e)
+    finally:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
 
 
 def describe_rap(path, pkg=None):
@@ -478,6 +532,11 @@ def install_warnings(root=ROOT, out=None):
     elif os.path.isdir(root) and not _writable(root):
         warn.append(t("Windows does not let the launcher write into this folder. Move it to a folder of your "
                       "own, for example {example}.", example=EXAMPLE_DIR))
+    missing = prereqs.release_missing(root)
+    if missing:
+        warn.insert(0, t("This folder is incomplete ({folders} missing). Extract the release zip again with \"Extract "
+                         "All\" into a short path such as {example}, then start T5DR Online.exe from there -- not from "
+                         "inside the zip.", folders=", ".join(missing), example=prereqs.INCOMPLETE_EXAMPLE))
     if norm.startswith("\\"):
         warn.append(t("This folder is on a network share. Building and playing from there is slow and was "
                       "not tested; copy it to a local drive."))

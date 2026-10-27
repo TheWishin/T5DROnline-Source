@@ -684,6 +684,107 @@ class PackageFacts(unittest.TestCase):
             self.assertEqual(bg.package_facts(p)["version"], "01.00")
             self.assertNotIn("T5DR_KEYS", os.environ)                      # only for the import
 
+    def key_source(self):
+        """A stand-in for RPCS3's key_vault.h / key_vault.cpp in the layout tools/make_keys.py parses, holding the
+        package keys of the test's pkg_extract.py (T5DR_KEYS_SOURCE: no download in a test)."""
+        d = os.path.join(self.tmp.name, "key-source")
+        os.makedirs(d)
+        keys = {"PKG_AES_KEY": self.mod.PS3_GPKG_KEY, "PKG_AES_KEY2": self.mod.PSP_PKG_KEY}
+        h = ""
+        for n in ("NP_KLIC_KEY", "RAP_KEY", "RAP_PBOX", "RAP_E1", "RAP_E2", "PKG_AES_KEY", "PKG_AES_KEY2"):
+            h += "constexpr u8 %s[0x10] = { %s };\n" % (n, ", ".join("0x%02X" % b for b in keys.get(n, bytes(16))))
+        put(os.path.join(d, "key_vault.h"), h)
+        put(os.path.join(d, "key_vault.cpp"), 'void KeyVault::LoadSelfNPDRMKeys()\n{\n  sk.emplace_back(0x0001000000000000, '
+            '0x0001000000000000, 0x0000, KEY_NPDRM,\n    "' + "00" * 32 + '",\n    "' + "00" * 16 + '");\n}\n')
+        return d
+
+    def test_release_folder_warns_before_the_first_build(self):
+        # 1.1.5/1.1.6 (GitHub #20/#21): a fresh release folder has no keys/ps3.keys before BUILD GAME's keys step,
+        # so the look inside the package never happened and a v01.01 package showed "the supported version" until
+        # the build failed. Now the key file is made when a package is chosen (core.make_peek_keys, the keys step's
+        # tools/make_keys.py), and the package is read.
+        bg = self.core.build_game
+        tree = self.release_tree()
+        out = os.path.join(self.tmp.name, "chosen-output-folder")       # (Settings: any folder)
+        with mock.patch.object(bg, "P", bg.Paths(os.path.join(self.tmp.name, "elsewhere"), tree)), \
+                mock.patch.object(bg, "ROOT", os.path.join(self.tmp.name, "fresh")), \
+                mock.patch.dict(os.environ, {"T5DR_KEYS_SOURCE": self.key_source()}, clear=False), \
+                mock.patch.dict(bg._PKG_TOOL, {}, clear=True), mock.patch.dict(self.core._FACTS, {}, clear=True):
+            os.environ.pop("T5DR_KEYS", None)
+            p = self.pkg("v0101", {"TITLE": "T5", "TITLE_ID": bg.TITLE_ID, "APP_VER": "01.01", "VERSION": "01.00"},
+                         "UP0700-NPUB30009_00-0000000000000000")
+            self.assertEqual(self.core.describe_pkg(p, out)[:2], (True, "ok"))    # no key file yet: the header only
+            self.assertTrue(self.core.peek_needs_keys(out))
+            ok, detail = self.core.make_peek_keys(out)
+            self.assertTrue(ok, detail)
+            self.assertTrue(os.path.isfile(os.path.join(out, "keys", "ps3.keys")))
+            self.assertEqual(os.listdir(os.path.join(out, "keys")), ["ps3.keys"])     # no temporary file left
+            self.assertFalse(self.core.peek_needs_keys(out))
+            ok, level, text = self.core.describe_pkg(p, out)
+            self.assertEqual((ok, level), (False, "error"), text)
+            self.assertIn("version 01.01 of the game", text)
+            good = self.pkg("v0100", {"TITLE": "T5", "TITLE_ID": bg.TITLE_ID, "VERSION": "01.00"}, bg.CONTENT_ID)
+            self.assertEqual(self.core.describe_pkg(good, out)[:2], (True, "ok"))
+            self.assertEqual(bg.package_facts(good, keys=os.path.join(out, "keys", "ps3.keys"))["version"], "01.00")
+
+    def test_launcher_build_tab_warns_before_the_first_build(self):
+        # The same in the launcher itself, with a real Tk main loop: choosing the package starts the key file in
+        # the background ("checking ..."), and the line turns red when it is there.
+        try:
+            import test_i18n as ti
+        except ImportError as e:      # pragma: no cover
+            self.skipTest(f"no tkinter ({e})")
+        bg = self.core.build_game
+        tree = self.release_tree()
+        d = os.path.join(self.tmp.name, "fresh")
+        st = self.core.Settings(os.path.join(d, "launcher.json"))
+        st["out"] = os.path.join(d, "native")
+        st["language"] = "en"
+        patches = [mock.patch.object(bg, "P", bg.Paths(os.path.join(self.tmp.name, "elsewhere"), tree)),
+                   mock.patch.object(bg, "ROOT", d),
+                   mock.patch.dict(os.environ, {"T5DR_KEYS_SOURCE": self.key_source(),
+                                                "T5_ONLINE_DIR": os.path.join(d, "user")}, clear=False),
+                   mock.patch.dict(bg._PKG_TOOL, {}, clear=True), mock.patch.dict(self.core._FACTS, {}, clear=True),
+                   mock.patch.object(self.core, "LAUNCHER_LOG", os.path.join(self.tmp.name, "launcher.log"))]
+        for x in patches:
+            x.start()
+            self.addCleanup(x.stop)
+        os.environ.pop("T5DR_KEYS", None)
+        saved = list(sys.path)
+        self.addCleanup(lambda: sys.path.__setitem__(slice(None), saved))
+        mod = ti.load_launcher()
+        try:
+            app = mod.App(offscreen=False, settings=st)
+        except ti.tk.TclError as e:
+            self.skipTest(f"no display: {e}")
+        app.withdraw()
+        ti.cancel_timers(app)
+
+        def close():
+            ti.cancel_timers(app)
+            app.online.on_close()
+            app.destroy()
+        self.addCleanup(close)
+        p = self.pkg("v0101", {"TITLE": "T5", "TITLE_ID": bg.TITLE_ID, "APP_VER": "01.01", "VERSION": "01.00"},
+                     "UP0700-NPUB30009_00-0000000000000000")
+        app.pkg_var.set(p)
+        app.refresh_inputs()
+        self.assertIn("checking the game version inside the package", app.pkg_info.get())
+        import time
+        t_end = time.monotonic() + 60
+
+        def poll():           # (a real main loop: the thread's after(0, ...) needs one -- update() is not enough)
+            if "version 01.01" in app.pkg_info.get() or time.monotonic() > t_end:
+                app.quit()
+            else:
+                app.after(50, poll)
+        app.after(50, poll)
+        app.mainloop()
+        self.assertIn("version 01.01 of the game", app.pkg_info.get())
+        self.assertTrue(str(app.pkg_lbl.cget("style")).endswith("error.TLabel"), app.pkg_lbl.cget("style"))
+        with open(os.path.join(self.tmp.name, "launcher.log"), encoding="utf-8") as f:
+            self.assertIn("package check: key file made before the build", f.read())
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -974,6 +974,7 @@ class OnlineTab:
         """The health handicap picker (tk_rules.py): remembered, and sent when the server and the game have it."""
         self._save_cfg()
         c = self.client
+        tk_rules.sync_picker(self)
         if c and c.me and c.handicap_ok():
             life = tk_rules.parse_life(self.life_var.get())
             if life != c.life:

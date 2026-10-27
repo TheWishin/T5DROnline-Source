@@ -68,5 +68,18 @@ def build_life_picker(view, parent, tab):
     return f
 
 
+def sync_picker(tab):
+    """The picker is off while logged in to a server (or with a game) that has no health handicap."""
+    cb = getattr(tab, "life_cb", None)
+    c = getattr(tab, "client", None)
+    if cb is None:
+        return
+    off = c is not None and getattr(c, "me", None) and not c.handicap_ok()
+    try:
+        cb.configure(state="disabled" if off else "readonly")
+    except tk.TclError:
+        pass
+
+
 def life_var(cfg):
     return tk.StringVar(value=life_label(clean_life((cfg or {}).get("life", 100))))

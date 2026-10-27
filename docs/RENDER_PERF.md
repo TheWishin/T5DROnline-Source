@@ -3277,3 +3277,147 @@ stage 17, the ground mist of stage 34 (all 18 stages below).
   (`[slow-frames]`, GPU busy and the translation median).
 - The tier-1 descriptor path and the translation per draw on old cards are agent C's (speed-115); this patch only
   removes draws.
+
+## Online pictures and old graphics cards (1.1.5, patch 0081, branch `render-online-115`)
+
+Two questions for 1.1.5: which draws the renderer drops in rollback games (patch 0076 counted 1-2 per game with an
+unusual primitive type, only in rollback runs) and whether anything visible is lost online (GitHub #12: the EWGF's
+lightning missing); and what can be taken off the per-draw work of an old graphics card with D3D12 resource
+binding tier 1 (the Fermi GT 730: 32-37 ms of GPU per frame, "2-core mode and slow graphics cards" above).
+
+### The dropped draws of rollback runs were walker garbage, gone since patch 0035
+
+`drop{prim}` above 0 is in 59 game logs under `build/`, all of them rollback games -- and all 59 from 2026-10-17,
+the day before patch 0035 (docs/ROLLBACK.md "The GCM ring's last word, and the drain thread's recycle"). Every one
+of them also has `FIFO JUMP to unmapped IO` / `FIFO CALL to unmapped IO` and `FIFO resync` lines (471 in the 59
+logs): the drain thread's recycle had rewound the ring under a title still writing it, and the FIFO walker parsed
+the previous lap's leftovers -- a `VERTEX_BEGIN_END` argument that was no primitive type at all. Of the 2026-10-17
+logs with the renderer's counters, 421 of 730 rollback logs and 17 of 1,597 offline ones have those jumps, and only
+rollback logs with jumps have a dropped "primitive" (59 of the 421); of the 271 rollback logs since 2026-10-18 none
+has a jump or a dropped draw of any kind (`drop{...}` all 0), and neither have the pairs of this branch (among them
+one session of six matches at RTT 150 with 2 % loss, both sides mashing motions and the joiner stuttering 60 ms every
+0.2-0.6 s: 30,600 frames, 0 dropped draws of any kind, 0 mismatching frames). So the two draws a game were never an
+effect, and the renderer drops nothing online any more.
+
+Patch 0081 makes the next one say where it came from: the note names the FIFO offset of the packet (the walker's
+`get`), the flip, the colour target and the 25 ring words around it (`[live-draw]   ring at 0x...: ... [word]
+...`), `RSX_PRIM_NOTES=n` names more than the first three of a kind, and with `PS3_LATENCY_LOG` every one is a `Z`
+line on the latency log's clock, next to the rollbacks (`M`/`Q`) and boundaries (`N`).
+
+### The EWGF's lightning (GitHub #12): lost with long frames, not with rollback -- still open
+
+**How it was looked at.** A scripted EWGF in a pair (`build/int115/s-runs/ewgf_pair.py`, local): Kazuya on the host
+does f, n, d, d/f+2 every 150 frames from frame 1000; Heihachi on the joiner taps R2 every 5 frames (no move, but
+an input change: the host rolls back 1-3 frames all the time and through every EWGF; the joiner rolls back when the
+host's motion arrives). The same script in a lockstep pair is the same game frame for frame. With `LD_FRAME_DUMP`
+gated by the `T5_NET_SHOT` gate every presented frame of the 30 after a press is written on both PCs, and with
+`RSX_FX_COUNT=1` (patch 0081, diagnostics, off by default) the latency log gets per present the effect draws the
+game submitted (`H` lines; `Y` is patch 0080's skipped tick). Offline: the same moves as scripted input of a direct
+fight (`ewgf_off.py`, local, after agent D's), with `RSX_TEST_SLOW_GPU` for a slow graphics card.
+
+**What the pictures show.** Rollback host, rollback joiner, lockstep host and lockstep joiner show the same frames:
+the hit spark, the blue lightning around Kazuya's arm and on Heihachi, from 9 frames after the press; only the
+arcs' shapes differ on every screen (they differ between the two PCs of a lockstep pair too: a random source outside
+the game's synchronized state). Re-simulating the EWGF's frames loses nothing. (The game's "particle" thread, a
+thread beside the frame whose memory is in the rollback state, was checked as a suspect: parked with no post pending
+at every boundary of these pairs, so no snapshot or restore catches it half way.) But in some EWGFs the lightning was
+gone after one or two frames on one PC -- 2 of 8 on the rollback host of the first pair, and one on the lockstep host
+as well -- ~40 draws a frame fewer for the rest of the effect (frames.csv), the renderer dropping none (`drop{...}`
+all 0): the game had not submitted them. Those runs dumped every frame of the window (the dumps made those frames
+25-35 ms long); without the dumps, at 60 fps, 12 of 12 EWGFs kept the lightning on both PCs, rollback or not.
+
+**Long frames, not rollback.** Offline, the same scripted EWGFs/WGFs, the frames (presents) of each hit with 40 or
+more effect draws above the count before the press (attempts 3-6):
+
+| run | fps | effect frames per hit |
+|---|---|---|
+| RTX 3090 | 60.0 | 63, 70, 59, 67 |
+| + a GPU of ~12 ms a frame (`RSX_TEST_SLOW_GPU=6300000,256`) | 60.0 | 63, 70, 59, 67 |
+| + a GPU of ~32 ms a frame (`RSX_TEST_SLOW_GPU=16000000,256`, the GT 730 of #12), 10 runs | 28.3-29.4 | 13, 5, 11, 3 in 8 runs; 43, 25, 50, 40 and 64, 40, 47, 61 in the other two |
+
+The effect is not aged faster, it is ended: at 60 fps its draws (~210 a frame with the stage's own ~110) fall off
+over ~65 frames; at 29 fps they stay at ~210 for a few frames and drop back to the stage's own in one frame -- and
+the stage's own effects are fewer too (106 a frame instead of 112). The game itself stops its effects when its
+frames are long, deterministically (8 of 10 runs frame for frame the same) but not always at the same moment. GitHub
+#12's PC (i3-3240 + Fermi GT 730, ~20 fps) sees almost none of them ("the electricity effect for the EWGF isn't
+visible ... other hit effects as well"); at 60 fps online only a stretch of long frames does it.
+
+**Ruled out** (slow GPU, effect frames 13, 5, 11, 3 each time):
+
+- the renderer: `drop{...}` 0 in every run; the draws are not submitted;
+- the vblank handler per frame: a runtime rule that calls the title's vblank handler (0x34BC08: the callback list
+  at 0x106D4BE0, the frame semaphore, the counter at 0x106D4D90) only once per frame -- the counter then steps exactly
+  1 per flip (2,717 of 2,720) instead of 1-3 -- changed nothing;
+- flip completions without a flip: at 29 fps the runtime completed ~1,500 flips a run on vblank ticks between the
+  game's `cellGcmResetFlipStatus` and its flip request (8 a run at 60 fps); a gate that completes a flip only after
+  a request removed them (3 left) and changed nothing;
+- one frame in flight (`RSX_FRAMES_IN_FLIGHT=1`), and timed semaphore waits (none timed out in a slow run);
+- the particle thread at rollback boundaries (above).
+
+The two experiments (vblank rule, flip gate) are not in patch 0081: they change the runtime's pacing for nothing
+measurable (`build/int115/s-runs/cellGcmSys-experiments.diff`, local).
+
+**Next step** (after 1.1.5, with a player's clip and log): find what ends the effects. Watch the game's effect pool
+per frame (`PS3_LATENCY_WATCH`) once it is located, or compare the HLE calls of a 60 fps and a 29 fps fight (a time
+source the game reads per frame -- `sys_time_get_system_time`, the timebase, `cellGcmGetLastFlipTime` -- is the next
+suspect: everything the vblank and the flip give the game was held at 60 fps values above without a change). From a
+player: `RSX_FX_COUNT=1` with `PS3_LATENCY_LOG=<file>` under Extra settings writes the `H` lines that show whether
+an effect ended early, next to the frame times.
+
+### Tier 1: less binding work per draw (no such card here; measured as calls and CPU)
+
+Every GPU on this PC is resource binding tier 3, so the GT 730's GPU time cannot be measured here. What can be
+measured is the work the renderer hands a tier-1 driver per draw: there the driver emulates descriptor tables --
+every table a draw sets is copied into the card's own binding slots -- so the tables set, the heap changes and the
+root signature changes are what it multiplies. The tier-1 path (patch 0081) is on by default with `resource binding
+tier 1` and off on tier 2 and 3, where nothing changes; `RSX_TIER1_PATH=1` / `=0` forces it, which is how it was
+measured here:
+
+- **texture units the fragment program does not sample are not bound**: the game leaves units enabled that the next
+  program does not read (1,538 a frame in a fight); each got its texture looked up, hashed, uploaded when new and, when
+  it pointed at a render target, a feedback copy. They keep the white texture and the default sampler;
+- **a draw that differs from the one before it only in such units keeps that draw's table** (texture or sampler):
+  without it the white units made ~13 more tables a frame to set; with it the count is that of the old path;
+- **the main descriptor heaps are set once per command list**: every copy, depth snapshot and guest-view pass set the
+  same two heaps again and the draw after it once more (on some old cards a heap change flushes the binding state).
+
+`fight_bench` (Lili vs Asuka, stage 20, 3,000 frames), two rounds each, per frame:
+
+| | path off | path on |
+|---|---|---|
+| draws | 832 | 830 |
+| tables set (textures + samplers) | 892 (472 + 420) | 897 (476 + 421) |
+| root signatures set | 2 | 2 |
+| descriptor heaps set | 3.0 | 1.0 |
+| tables copied into the shader-visible heap: textures / samplers | 175 / 33 | 170 / 38 |
+| textures hashed | 127 (3.66 MB) | 126 (2.66 MB) |
+| renderer CPU: translation / draw recording / texture binding | 1.625 / 1.025 / 0.305 ms | 1.559 / 0.962 / 0.250 ms |
+
+So on a tier-1 card the driver gets the same number of tables, two heap changes a frame fewer, and the CPU side of
+the renderer is ~4 % (texture binding ~18 %) lighter; whether the heap changes were part of the GT 730's 32 ms is
+what the next tier-1 player log says. Pictures: offline scripted EWGFs on stages 19, 34 and 20, path off against
+on, 6 shots each -- pixel-identical whenever the two runs' fights line up (stage 34: 6 of 6; stage 20: 3 of 6 and the
+other three within 1,888 pixels of particles, as two runs with the path off differ by up to 2,244); in some runs the
+scripted fight starts a frame earlier or later (the training display's input counter 380 against 381), with the
+path off as well (stage 20 off against off), and then every shot is a frame apart.
+
+**What a tier-1 player's 1.1.5 log shows.** `[gpu] tier-1 binding path: on (resource binding tier 1)`, and every
+`[gpu-pass]` line (on by default on tier 1 since patch 0075) now starts with the binding work per frame before the
+passes' GPU times:
+`[gpu-pass] 600 frames, N ms GPU per frame in 1.0 lists; per frame: binding 832 draws, tables set 897 (textures
+476, samplers 421, vertex textures 0), root signatures 2, descriptor heaps 1.0 of 3.0, constant buffers 639; tables
+copied: textures 170, samplers 38.3; units not sampled 1538, tables kept 771 (tier-1 path on) | pass ...`
+(this PC's fight; `tables kept`: draws that took the table of the draw before; `descriptor heaps 1.0 of 3.0`:
+set of asked). With
+`RSX_TIER1_PATH=0` under Extra settings the same line shows the old path for a direct comparison on that card.
+
+### Checked
+
+- Rollback pair at 120 ms RTT (8 ms jitter, 2 % loss, both mashing, 92 s, merged with patch 0080): 0 mismatching
+  frames on both PCs, the same final hash, `drop{...}` all 0, no dropped-draw note; patch 0080's skipped ticks still
+  cost exactly one refresh each (1 skipped tick: 2 refreshes between two flip completions, 16 times; 4: 5, twice).
+- EWGF pairs on the final build (frame dumps on): rollback 0 and lockstep 0 mismatching frames; the lightning at 9, 12
+  and 15 frames after the 2 offline, on both rollback PCs and in lockstep (`build/int115/s-runs/
+  ewgf_final_online_vs_offline.png`, local: game pictures stay out of the repo); with the dumps' long frames 1 of 8
+  EWGFs lost it on the rollback host and 1 of 8 on the lockstep joiner.
+- Patch series 0001-0081 applies (`prepare_ps3recomp`) and gives the files built; unit tests, i18n checks.

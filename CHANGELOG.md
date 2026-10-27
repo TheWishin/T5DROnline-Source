@@ -16,6 +16,10 @@ part is in the README's status table.
   key file in the background with the keys step's own `tools/make_keys.py` (same public data, a few KB, written to
   the output folder where the build reuses it); the line under the package says it is checking, then turns red
   for v01.01. That line also wraps instead of being cut off (German).
+- The launcher never closes because of its own helper code (`launcher/t5dr_launcher.pyw`): an error in a button,
+  timer or startup step -- `SystemExit` included, which Tk lets through and which closed 1.1.5 -- goes into
+  `launcher.log` and the window stays open; errors in the launcher's threads are logged too (they were printed
+  nowhere under pythonw). Only the player's close ends it.
 
 ## v1.1.6 (2026-10-27)
 

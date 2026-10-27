@@ -170,8 +170,63 @@ def enable_dpi_awareness():
         pass
 
 
+class _GuardedCall(tk.CallWrapper):
+    """Tk's CallWrapper lets SystemExit out of a button, timer or binding: mainloop() then ends and the launcher
+    closes (1.1.5: a helper's SystemExit in the Build tab's package check closed it 2 s after its start). Here it is
+    reported like any other error (App.report_callback_exception: launcher.log) and the window stays open; only the
+    player's close ends the launcher. Installed by App (guard_tk_callbacks) for every callback made after it."""
+
+    def __call__(self, *args):
+        try:
+            return super().__call__(*args)
+        except SystemExit:
+            try:
+                self.widget._report_exception()
+            except Exception:     # noqa: BLE001 -- reporting must not end the launcher either
+                pass
+            return None
+
+
+def guard_tk_callbacks():
+    if tk.CallWrapper is not _GuardedCall:
+        tk.CallWrapper = _GuardedCall
+
+
+def log_thread_errors():
+    """An error in one of the launcher's threads (a check, a download, a picture reader) goes into launcher.log;
+    under pythonw it was printed nowhere (1.1.5/1.1.6's fighter pictures failed that way unseen)."""
+    import traceback
+
+    def hook(args):
+        if args.exc_type is SystemExit:
+            return
+        name = getattr(args.thread, "name", "?")
+        core.log(f"error in the launcher's thread {name}:\n"
+                 + "".join(traceback.format_exception(args.exc_type, args.exc_value, args.exc_traceback)))
+    threading.excepthook = hook
+
+
+def run_mainloop(app):
+    """app.mainloop() until the window is closed. Should anything still end the loop with an error while the window
+    is there (a Tcl-level callback outside CallWrapper), it is logged and the loop goes on."""
+    import traceback
+    while True:
+        try:
+            app.mainloop()
+            return
+        except (Exception, SystemExit) as e:     # noqa: BLE001 -- (Ctrl+C in a console still ends it)
+            core.log("error in the launcher's main loop (the window stays open):\n"
+                     + "".join(traceback.format_exception(type(e), e, e.__traceback__)))
+            try:
+                if not app.winfo_exists():
+                    return
+            except tk.TclError:
+                return
+
+
 class App(tk.Tk):
     def __init__(self, offscreen=False, settings=None):
+        guard_tk_callbacks()         # (before the first callback: a SystemExit in one must not close the window)
         super().__init__()
         self.readonly = offscreen
         self.settings = settings if settings is not None else core.Settings()
@@ -220,8 +275,12 @@ class App(tk.Tk):
         into launcher.log, so a problem report shows it."""
         import traceback
         if not self.readonly:
-            core.log("error in the launcher:\n" + "".join(traceback.format_exception(exc, val, tb)))
-        super().report_callback_exception(exc, val, tb)
+            core.log("error in the launcher (the window stays open):\n"
+                     + "".join(traceback.format_exception(exc, val, tb)))
+        try:
+            super().report_callback_exception(exc, val, tb)
+        except Exception:     # noqa: BLE001 -- (no stderr under pythonw)
+            pass
 
     def _click_through(self):
         """WS_EX_TRANSPARENT on the (layered) frame: mouse clicks go to the windows below."""
@@ -1745,7 +1804,14 @@ def main():
                          "(Quick match). Without a saved login the tab opens with a hint")
     a, unknown = ap.parse_known_args()      # (an unknown option from an old shortcut must not stop the launcher)
     enable_dpi_awareness()
-    app = App(offscreen=bool(a.screenshots))
+    if not a.screenshots:
+        log_thread_errors()
+    try:
+        app = App(offscreen=bool(a.screenshots))
+    except (Exception, SystemExit) as e:     # noqa: BLE001 -- no window to keep: launcher.log at least says why
+        import traceback
+        core.log("the launcher could not start:\n" + "".join(traceback.format_exception(type(e), e, e.__traceback__)))
+        raise
     if a.low_priority:
         app.lowprio_var.set(True)
     if a.force:
@@ -1761,7 +1827,7 @@ def main():
             app.after(300, lambda: app.search_on_start(a.search.strip().lower()))
         else:
             core.log(f"command line: --search {a.search} is neither ranked nor casual, ignored")
-    app.mainloop()
+    run_mainloop(app)
     if app.restart_requested:
         # (without --search: a restart after an update or a language change must not start searching again)
         subprocess.Popen([sys.executable] + without_search(sys.argv), cwd=os.getcwd())

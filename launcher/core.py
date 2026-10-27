@@ -541,6 +541,12 @@ RE_FUNCS = re.compile(r"(\d+)/(\d+) functions")
 # The lift step printed nothing for this long: the Build tab says so. The lifter itself prints at least every ~30 s
 # while it works (ps3recomp patch 0048: "... still lifting: 3 chunks left, elapsed 1.5m").
 LIFT_QUIET_S = 180
+# Any step that printed nothing for this long (seconds) gets a hint naming it and the program it started last (GitHub
+# #27: a BUILD GAME seemed stuck all night). Generous: the compile step prints when a file is done, and the slowest
+# file takes 1-2 minutes on a slow PC (tools/build_game_dll.py); the unpack prints every 64 MB (patch 0074).
+QUIET_S = {"deps": 300, "keys": 120, "decrypt": 120, "unpack": 180, "vfs": 120, "lift": LIFT_QUIET_S, "spu": 300,
+           "compile": 600}
+RE_TOKEN = re.compile(r'"[^"]*"|\S+')
 
 
 def build_line_events(step, line):
@@ -575,6 +581,47 @@ def lift_quiet_hint(step, quiet_s):
              "has the details.", minutes=int(quiet_s // 60))
 
 
+def started_tool(line):
+    """The program a "  > <command>" line of build_game.py starts (the script for a Python tool), else None."""
+    if not line.startswith("  > "):
+        return None
+    words = [w.strip('"') for w in RE_TOKEN.findall(line[4:])]
+    for w in words:
+        if w.lower().endswith((".py", ".pyw")):
+            return os.path.basename(w)
+    return os.path.basename(words[0]) if words else None
+
+
+def step_quiet_hint(step, quiet_s, tool=None):
+    """The Build tab's hint once a step has printed nothing for QUIET_S[step] seconds, else None. The translation
+    step keeps its own words (lift_quiet_hint)."""
+    if step == "lift":
+        hint = lift_quiet_hint(step, quiet_s)
+    elif step in QUIET_S and quiet_s >= QUIET_S[step]:
+        hint = t("The step \"{title}\" has printed nothing for {minutes} minutes. On a slow or busy PC it may still be "
+                 "working. If nothing changes, press Cancel and then BUILD GAME again; build.log has the details.",
+                 title=t(STEP_TITLES[step]), minutes=int(quiet_s // 60))
+    else:
+        return None
+    if hint and tool:
+        hint += " " + t("Last program started: {tool}.", tool=tool)
+    return hint
+
+
+ES_CONTINUOUS, ES_SYSTEM_REQUIRED = 0x80000000, 0x00000001
+
+
+def keep_awake(on):
+    """While BUILD GAME runs, Windows does not go to sleep (the screen may still turn off): a build left alone on a PC
+    that sleeps after 15-30 minutes stopped there until morning. Per thread: the build's reading thread asks."""
+    if not IS_WIN:
+        return
+    try:
+        ctypes.windll.kernel32.SetThreadExecutionState(ES_CONTINUOUS | (ES_SYSTEM_REQUIRED if on else 0))
+    except (AttributeError, OSError):
+        pass
+
+
 class BuildRun:
     """Runs tools/build_game.py in the background; events go to `self.events` (a Queue):
        ('line', text) ('step', name) ('skip', name) ('sub', fraction) ('error', text) ('end', code)."""
@@ -598,6 +645,7 @@ class BuildRun:
             cmd += ["--steps"] + list(steps)
         self.cmd = cmd
         self.step = None                        # the step build_game.py is in
+        self.tool = None                        # the program it started last ("  > ..." lines)
         self.last_output = time.monotonic()     # when it last printed a line
         self._quiet_noted = False               # the quiet hint went to the log view in this quiet stretch
         self._log = None                        # build.log while the build runs
@@ -619,6 +667,13 @@ class BuildRun:
         threading.Thread(target=self._pump, daemon=True).start()
 
     def _pump(self):
+        keep_awake(True)
+        try:
+            self._read()
+        finally:
+            keep_awake(False)
+
+    def _read(self):
         with open(self.log_path, "w", encoding="utf-8", errors="replace") as log:
             with self._log_lock:
                 log.write(f"# T5DR Online build log, {datetime.datetime.now():%Y-%m-%d %H:%M:%S}, "
@@ -631,7 +686,11 @@ class BuildRun:
                     log.flush()
                     self.last_output = time.monotonic()
                     self._quiet_noted = False
+                    step = self.step
                     self.step, events = build_line_events(self.step, line)
+                    if self.step != step:
+                        self.tool = None
+                    self.tool = started_tool(line) or self.tool
                 for ev in events:
                     self.events.put(ev)
             code = self.proc.wait()
@@ -641,14 +700,16 @@ class BuildRun:
         self.events.put(("end", -1 if self.cancelled else code))
 
     def quiet_hint(self, now=None):
-        """lift_quiet_hint() for this build (the Build tab asks on every tick). The first time in a quiet stretch
-        it also goes to the log view and build.log as a "[launcher] ..." line."""
+        """step_quiet_hint() for this build (the Build tab asks on every tick). The first time in a quiet stretch
+        it also goes to the log view, build.log and launcher.log as a "[launcher] ..." line."""
         now = time.monotonic() if now is None else now
         with self._log_lock:
-            hint = lift_quiet_hint(self.step, now - self.last_output)
+            hint = step_quiet_hint(self.step, now - self.last_output, self.tool)
             if hint and not self._quiet_noted:
                 self._quiet_noted = True
                 line = "[launcher] " + hint
+                log(f"build: step {self.step} printed nothing for {int(now - self.last_output)} s"
+                    + (f" ({self.tool})" if self.tool else ""))
                 self.events.put(("line", line))
                 if self._log is not None:
                     try:

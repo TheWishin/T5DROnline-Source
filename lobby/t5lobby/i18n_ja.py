@@ -925,6 +925,13 @@ MESSAGES = {
         "れておくと、次回からは --search で自動的にログインして検索が始まります。",
     "Ranked matches need an account: log in with your name and password.":
         "Ranked 対戦にはアカウントが必要です。名前とパスワードでログインしてください。",
+    # 1.1.5: a build step that prints nothing for long (launcher/core.py step_quiet_hint)
+    "The step \"{title}\" has printed nothing for {minutes} minutes. On a slow or busy PC it may still be "
+    "working. If nothing changes, press Cancel and then BUILD GAME again; build.log has the details.":
+        "「{title}」ステップが {minutes} 分間何も出力していません。遅いPCや負荷の高いPCではまだ処理中の場合があり"
+        "ます。変化がなければキャンセルを押してからもう一度 BUILD GAME を押してください。詳細は build.log "
+        "にあります。",
+    "Last program started: {tool}.": "最後に起動したプログラム：{tool}",
     "The license (.rap) does not belong to this package. Use the .rap whose name matches "
     "the package's content ID ({id}).":
         "ライセンス（.rap）がこのパッケージのものではありません。名前がパッケージのコンテンツID（{id}）と一致する "

@@ -913,6 +913,13 @@ MESSAGES = {
         "자동으로 로그인하고 검색을 시작합니다.",
     "Ranked matches need an account: log in with your name and password.":
         "Ranked 매치는 계정이 필요합니다: 이름과 비밀번호로 로그인하세요.",
+    # 1.1.5: a build step that prints nothing for long (launcher/core.py step_quiet_hint)
+    "The step \"{title}\" has printed nothing for {minutes} minutes. On a slow or busy PC it may still be "
+    "working. If nothing changes, press Cancel and then BUILD GAME again; build.log has the details.":
+        "'{title}' 단계가 {minutes}분 동안 아무것도 출력하지 않았습니다. 느리거나 바쁜 PC에서는 아직 작업 중일 "
+        "수 있습니다. 변화가 없으면 취소를 누른 뒤 BUILD GAME을 다시 누르세요. 자세한 내용은 build.log에 "
+        "있습니다.",
+    "Last program started: {tool}.": "마지막으로 시작된 프로그램: {tool}",
     "The license (.rap) does not belong to this package. Use the .rap whose name matches "
     "the package's content ID ({id}).":
         "라이선스(.rap)가 이 패키지의 것이 아닙니다. 이름이 패키지의 콘텐츠 ID({id})와 맞는 .rap를 쓰세요.",

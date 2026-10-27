@@ -933,6 +933,13 @@ MESSAGES = {
         "entra e começa a buscar sozinho.",
     "Ranked matches need an account: log in with your name and password.":
         "Partidas Ranked precisam de uma conta: entre com seu nome e senha.",
+    # 1.1.5: a build step that prints nothing for long (launcher/core.py step_quiet_hint)
+    "The step \"{title}\" has printed nothing for {minutes} minutes. On a slow or busy PC it may still be "
+    "working. If nothing changes, press Cancel and then BUILD GAME again; build.log has the details.":
+        "A etapa “{title}” não mostrou nada há {minutes} minutos. Num PC lento ou ocupado ela ainda pode estar "
+        "trabalhando. Se nada mudar, clique em Cancelar e depois em BUILD GAME de novo; o build.log tem os "
+        "detalhes.",
+    "Last program started: {tool}.": "Último programa iniciado: {tool}.",
     "The license (.rap) does not belong to this package. Use the .rap whose name matches "
     "the package's content ID ({id}).":
         "A licença (.rap) não pertence a este pacote. Use o .rap cujo nome corresponde ao content ID do pacote "

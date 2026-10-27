@@ -999,6 +999,13 @@ MESSAGES = {
         "bleiben“: Beim nächsten Mal meldet --search dich an und startet die Suche von selbst.",
     "Ranked matches need an account: log in with your name and password.":
         "Ranked-Matches brauchen ein Konto: Melde dich mit Name und Passwort an.",
+    # 1.1.5: a build step that prints nothing for long (launcher/core.py step_quiet_hint)
+    "The step \"{title}\" has printed nothing for {minutes} minutes. On a slow or busy PC it may still be "
+    "working. If nothing changes, press Cancel and then BUILD GAME again; build.log has the details.":
+        "Der Schritt „{title}“ hat seit {minutes} Minuten nichts ausgegeben. Auf einem langsamen oder "
+        "ausgelasteten PC kann er noch arbeiten. Wenn sich nichts tut, klicke auf Abbrechen und dann wieder auf "
+        "BUILD GAME; build.log hat die Details.",
+    "Last program started: {tool}.": "Zuletzt gestartetes Programm: {tool}.",
     "The license (.rap) does not belong to this package. Use the .rap whose name matches "
     "the package's content ID ({id}).":
         "Die Lizenz (.rap) gehört nicht zu diesem Paket. Nimm die .rap, deren Name zur "

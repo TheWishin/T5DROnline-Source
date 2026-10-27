@@ -174,6 +174,23 @@ While the build runs, the launcher keeps Windows from going to sleep. The
 screen can still turn off. Before 1.1.5, a PC that went to sleep during the
 build also paused the build until it woke up.
 
+### The build ran out of memory while unpacking
+
+Launchers before 1.1.5 decrypted the package in one piece and needed several GB
+of free memory for it; a PC with less stopped with a memory error
+(`MemoryError`). From 1.1.5 the package is unpacked in 16 MB pieces (about
+220 MB at most). Update the launcher and press **BUILD GAME** again. A package
+that is cut short is now named as an incomplete download: download it again.
+
+### The build starts the game and plays fights by itself (step "Shaders")
+
+From 1.1.5, BUILD GAME ends with a shader warm-up: the game opens and plays
+one fight on every stage, so your first real fights do not stutter while the
+game makes its shaders. It takes about 3.5 minutes on a fast PC, longer on a
+slow one, and runs once per build.
+**Skip warm-up** on the Build tab ends it at once; the game is built and
+works, and the first fights on each stage make the rest.
+
 ### The build stops at "Translate code"
 
 "Translate code" runs several helper processes side by side. Up to 1.1.1, an
@@ -482,6 +499,15 @@ PC's clock -- except on a 60 Hz monitor, where it follows the monitor.
   `[pacing] display 50 Hz: slower than the game's 59.94 Hz`.
 - Tested with simulated 30, 50 and 144 Hz monitors (`RSX_TEST_DISPLAY_HZ`),
   not with real ones: the test PC has a 59.94 Hz monitor.
+
+### Hit sparks, the EWGF lightning or shadows are missing
+
+Look at **Settings** -> **Graphics (weak graphics cards)** (from 1.1.5):
+**Effects Off** hides the hit sparks and other hit effects (the EWGF lightning
+too), flames, smoke, mist and waterfalls; **Shadows Off** hides the shadows.
+**Lowest (old graphics cards)** keeps the effects on; **Default** puts
+everything back. Each player chooses for their own PC, also online. More for
+weak PCs: [WEAK_PC.md "Player checklist"](WEAK_PC.md#player-checklist).
 
 ### The game closes by itself
 
@@ -925,6 +951,18 @@ friend's server (README, "Online"). **(untested)**
 You are only matched with players who have the same build: the same release
 **and** a build made from it. After you update to a new release, click BUILD
 GAME again (the Play offline tab tells you). Ask your opponent to do the same.
+1.1.4 and 1.1.5 players are never matched: training rooms and the health
+handicap changed the game, so both need 1.1.5.
+
+### No Training room, side choice or health handicap
+
+These need 1.1.5 on both sides and the lobby server updated for 1.1.5. With an
+older server the launcher turns them off (and the Stats page too). A player
+with an older launcher cannot join a training room ("training rooms need a
+newer launcher; update it"), and a side or stage wish counts only in
+challenges, invites and rooms, never in Quick or Ranked. How they work:
+[ONLINE.md "Training rooms and the health handicap"](ONLINE.md#training-rooms-and-the-health-handicap)
+and ["Sides and stages by choice"](ONLINE.md#sides-and-stages-by-choice).
 
 ### Lag during an online match
 
@@ -933,6 +971,22 @@ lockstep, so a late packet makes both wait. The lobby suggests an input delay fr
 the measured ping (2 frames on one PC or LAN, 3 at about 40 ms, 5 at about 100
 ms). Use a cable instead of Wi-Fi, stop downloads, and close other games. The
 result bar can show how many frames behind a match was.
+
+From 1.1.5:
+
+- **"This match lagged: the games waited N s for each other's inputs."** The
+  games stood still that long during the match, whatever the ping said: the
+  connection (often Wi-Fi or an upload) or the other PC. In a ranked set
+  **Leave: too laggy** is offered after it. More in
+  [RANKED.md "Post-game lag check"](RANKED.md#post-game-lag-check).
+- **Far matches have more input delay:** above 150 ms ping both games get at
+  least 3 frames, above 250 ms 4, so the rollback corrects less and the
+  characters jump less. That is set by the server, also in ranked.
+- **A rematch after a match on the relay** tries the direct connection again,
+  so it may take a few seconds longer to start and then play with less ping.
+- **The Ping column:** "~" marks an estimate through the nearest relay
+  server; without it, it is the ping measured in your match with that player
+  since the launcher started.
 
 ## Windows versions and other PCs
 
@@ -998,13 +1052,23 @@ said 30-45 fps; that was fixed by later work. On a weaker PC:
   is not enough. The 3D scene gets softer, the HUD stays sharp; the game
   itself does not change, so you can play online against someone who uses
   another step. If you chose 1080p, 1440p or 4K, go back to **Native** first:
-  those need a strong graphics card.
+  those need a strong graphics card. From 1.1.5, **Settings** -> **Graphics
+  (weak graphics cards)** -> **Lowest (old graphics cards)** also switches
+  stage blur / glow and shadows off (a GT 730 and the like); **Default** puts
+  it back. See also [WEAK_PC.md](WEAK_PC.md) "Old graphics card".
 - **Few CPU cores**: the game sets its number of helper threads to the cores
   it may use; there is nothing to set. In our tests (fast desktop cores held to
   4-8 threads) fights ran at 60 fps from 4 threads up. Online against a far-away
   player (150 ms) rollback costs more: about 50 fps with 4-8 threads while
   other programs were running. Online, both games run at the speed of the
-  slower PC, so close other programs on both.
+  slower PC, so close other programs on both. From 1.1.5 a PC with 2 cores
+  (an i3-3240, an i5-4210M) gets a 2-core mode by itself. `PS3_TWO_CORE_OWN=1`
+  under Extra settings gives the game a core of its own; it was slower on our
+  stand-in, a real 2-core PC may differ ([WEAK_PC.md](WEAK_PC.md)
+  "2 cores / 4 threads").
+- **Stutter in the first fight on a stage** after a new build: the game makes
+  its shaders. From 1.1.5 BUILD GAME plays every stage once for that (see
+  [the Shaders step](#the-build-starts-the-game-and-plays-fights-by-itself-step-shaders)).
 
 What may help as well:
 

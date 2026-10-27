@@ -311,18 +311,35 @@ class Check(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def test_cached_for_an_hour_then_conditional(self):
-        gh = FakeGitHub(api=self.data)
+    def test_every_start_asks_conditionally(self):
+        # 1.1.7: every start asks GitHub (1.1.4's launchers reused an hour-old answer and kept offering the
+        # withdrawn 1.1.5 after 1.1.6 was out) -- with the cached ETag and Last-Modified, so an unchanged release
+        # is a 304, which does not use up the 60 requests an hour
+        gh = FakeGitHub(api=self.data, api_headers={"ETag": 'W/"1"', "Last-Modified": "Tue, 27 Oct 2026 16:50:00 GMT"})
         rel, problem = updater.check_latest(self.cache, opener=gh, now=1000)
         self.assertEqual((rel["version"], problem), ("1.0.1", None))
-        rel, _ = updater.check_latest(self.cache, opener=gh, now=1000 + 3500)
-        self.assertEqual(len(gh.calls), 1)                         # from the cache
+        self.assertNotIn("If-None-Match", gh.calls[0][1])
         gh.api_status = 304
-        rel, problem = updater.check_latest(self.cache, opener=gh, now=1000 + 3700)
+        rel, problem = updater.check_latest(self.cache, opener=gh, now=1000 + 60)      # the next start, a minute on
         self.assertEqual((rel["version"], problem), ("1.0.1", None))
         self.assertEqual(len(gh.calls), 2)
-        self.assertEqual(gh.calls[1][1].get("If-None-Match"), 'W/"1"')   # 304s do not use up the limit
         self.assertEqual(gh.calls[1][0], updater.API_LATEST)
+        self.assertEqual(gh.calls[1][1].get("If-None-Match"), 'W/"1"')
+        self.assertEqual(gh.calls[1][1].get("If-Modified-Since"), "Tue, 27 Oct 2026 16:50:00 GMT")
+
+    def test_a_new_release_is_seen_at_the_next_start(self):
+        gh = FakeGitHub(api=self.data)
+        self.assertEqual(updater.check_latest(self.cache, opener=gh, now=1000)[0]["version"], "1.0.1")
+        gh.api, _ = release("1.0.2", b"y")                                              # published meanwhile
+        gh.api_headers = {"ETag": 'W/"2"'}
+        rel, problem = updater.check_latest(self.cache, opener=gh, now=1000 + 60)
+        self.assertEqual((rel["version"], problem), ("1.0.2", None))
+
+    def test_max_age_reuses_a_young_answer(self):
+        gh = FakeGitHub(api=self.data)
+        updater.check_latest(self.cache, opener=gh, now=1000)
+        rel, _ = updater.check_latest(self.cache, opener=gh, now=1000 + 30, max_age=60)
+        self.assertEqual((rel["version"], len(gh.calls)), ("1.0.1", 1))
 
     def test_button_forces_a_new_check(self):
         gh = FakeGitHub(api=self.data)
@@ -357,6 +374,18 @@ class Check(unittest.TestCase):
         self.assertEqual(len(gh.calls), 1)
         rel, problem = updater.check_latest(self.cache, opener=gh, now=5001)
         self.assertEqual(rel["version"], "1.0.1")
+
+    def test_rate_limited_start_uses_only_a_young_answer(self):
+        gh = FakeGitHub(api=self.data)
+        updater.check_latest(self.cache, opener=gh, now=1000)
+        gh.api_status, gh.api_headers = 403, {"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "20000"}
+        self.assertEqual(updater.check_latest(self.cache, opener=gh, now=1100)[1],
+                         "GitHub limits update checks right now. Try again later.")
+        rel, problem = updater.check_latest(self.cache, opener=gh, now=1200)            # limited, answer 200 s old
+        self.assertEqual((rel["version"], problem), ("1.0.1", None))
+        rel, problem = updater.check_latest(self.cache, opener=gh, now=1000 + updater.CHECK_INTERVAL + 1)
+        self.assertEqual((rel, problem), (None, None))                                  # too old to stand in
+        self.assertEqual(len(gh.calls), 2)
 
 
 # --------------------------------------------------------------------------- download, check, unpack

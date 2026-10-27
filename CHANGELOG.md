@@ -32,6 +32,11 @@ part is in the README's status table.
 - A "Community Discord" button in the launcher's header, beside "Check for updates": it opens the players'
   Discord (https://discord.gg/4DwDHAkk2x, `launcher/core.py` `DISCORD_URL`) in the browser; the report window
   names it for questions too.
+- Updates are checked at every start and offered right away (`launcher/updater.py`): the launcher asks GitHub each
+  time instead of reusing an answer up to an hour old (why some 1.1.4 launchers kept offering the withdrawn 1.1.5
+  after 1.1.6 was out), conditionally with the cached ETag and Last-Modified so an unchanged answer is a 304 that
+  does not use up GitHub's 60 requests an hour; "Update available" opens by itself after the start -- once per
+  session, never during a build, a game or an online match (then when it ends). "Check for updates" stays.
 
 ## v1.1.6 (2026-10-27)
 

@@ -4,14 +4,17 @@ r"""Updates: the launcher offers new releases and installs them itself, like Tek
     python launcher/updater.py --check            the public repository's latest release (diagnostics)
     pythonw <runner>/t5dr_update.py --apply PLAN  the swap step; the launcher starts it (5. below)
 
-1. Check. At start (at most once an hour; the answer is cached in update-check.json next to
-   launcher.json) and from the "Check for updates" button, the latest *published* release of the
-   public repository is read with GitHub's REST API, unauthenticated (60 requests an hour per
-   address; a conditional request with the ETag does not count when nothing changed). That API
-   never returns drafts, so a release the owner has not published yet (VirusTotal first) is never
-   offered. No network, a rate limit or any other failure: nothing at start, a sentence on the button.
+1. Check. At every start (1.1.7; before, an answer up to an hour old was reused) and from the
+   "Check for updates" button, the latest *published* release of the public repository is read with
+   GitHub's REST API, unauthenticated (60 requests an hour per address). The request is conditional
+   (the cached answer's ETag and Last-Modified, update-check.json next to launcher.json): an
+   unchanged release is a 304, which does not count against that limit. That API never returns
+   drafts, so a release the owner has not published yet (VirusTotal first) is never offered. No
+   network, a rate limit or any other failure: nothing at start, a sentence on the button.
 2. Offer: the version, a summary of the release notes, the download size, and whether the game has
-   to be built once afterwards (the notes' "Code ID" against the build stamp).
+   to be built once afterwards (the notes' "Code ID" against the build stamp). At start it opens by
+   itself right away -- once per session, and never during a build, a game or an online match (then
+   it opens when that has ended); the button opens it again.
 3. Download and check: the zip and SHA256SUMS from the release's assets, https only, from
    github.com/TheWishin/T5DROnline/releases/download/... and GitHub's release-file storage for this
    repository's ID (objects.githubusercontent.com, and release-assets.githubusercontent.com where
@@ -103,7 +106,9 @@ RELEASE_PUBLIC_KEYS = (
 )
 SIG_ASSET = "SHA256SUMS.sig"
 
-CHECK_INTERVAL = 3600            # seconds between two checks at start
+CHECK_INTERVAL = 3600            # how old a cached answer may be to stand in while GitHub rate-limits us
+START_CHECK_MS = 2000            # the check after the launcher's start (1.1.7: every start asks GitHub, conditionally)
+FREE_POLL_MS = 2000              # a found update waits for the build / game / match to end, looking this often
 CACHE_FILE = "update-check.json"
 CACHE_FORMAT = 2                 # 2: releases carry "sig" (1.1.2); an older cache is asked again
 TIMEOUT = 15
@@ -351,9 +356,13 @@ def _write_json(path, data):
         pass
 
 
-def check_latest(cache_path, force=False, opener=None, now=None):
-    """(release or None, problem or None) -- never raises. Without force, an answer younger than an
-    hour is reused. A rate limit is remembered until GitHub's reset time (also for force)."""
+def check_latest(cache_path, force=False, opener=None, now=None, max_age=0):
+    """(release or None, problem or None) -- never raises. GitHub is asked every time (1.1.7: 1.1.4's
+    launchers reused an hour-old answer and kept offering the withdrawn 1.1.5 after 1.1.6 was out), but
+    conditionally: with the cached answer's ETag and Last-Modified, so an unchanged release is a 304
+    that does not use up the 60 requests an hour. `max_age` > 0 reuses a younger answer without asking.
+    A rate limit is remembered until GitHub's reset time; meanwhile the cached answer stands in only
+    when it is younger than CHECK_INTERVAL (a problem sentence for force, the button)."""
     now = time.time() if now is None else now
     opener = opener or open_url
     cache = _read_json(cache_path) or {}
@@ -362,18 +371,24 @@ def check_latest(cache_path, force=False, opener=None, now=None):
         cache = {"rate_reset": cache["rate_reset"]} if isinstance(cache.get("rate_reset"), (int, float)) else {}
     if cache.get("rate_reset", 0) > now:
         when = time.strftime("%H:%M", time.localtime(cache["rate_reset"]))
-        return cache.get("release"), (f"GitHub asks to wait with update checks until {when}." if force else None)
-    if not force and "release" in cache and 0 <= now - cache.get("checked", 0) < CHECK_INTERVAL:
+        fresh = 0 <= now - cache.get("checked", 0) < CHECK_INTERVAL
+        return (cache.get("release") if fresh else None), \
+            (f"GitHub asks to wait with update checks until {when}." if force else None)
+    if not force and max_age > 0 and "release" in cache and 0 <= now - cache.get("checked", 0) < max_age:
         return cache.get("release"), None
     headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
-    if cache.get("etag") and cache.get("release"):
-        headers["If-None-Match"] = cache["etag"]
+    if cache.get("release"):
+        if cache.get("etag"):
+            headers["If-None-Match"] = cache["etag"]
+        if cache.get("last_modified"):
+            headers["If-Modified-Since"] = cache["last_modified"]
     try:
         with opener(API_LATEST, headers, "api") as r:
             data = json.loads(r.read(4_000_000).decode("utf-8"))
             etag = r.headers.get("ETag")
+            last_modified = r.headers.get("Last-Modified")
         rel = parse_release(data)
-        cache = {"fmt": CACHE_FORMAT, "checked": now, "etag": etag, "release": rel}
+        cache = {"fmt": CACHE_FORMAT, "checked": now, "etag": etag, "last_modified": last_modified, "release": rel}
     except urllib.error.HTTPError as e:
         hdr = e.headers or {}
         if e.code == 304:
@@ -1083,8 +1098,8 @@ class Updater:
         app.after(100, self._pump)
         if os.environ.get(CONFIRM_ENV):
             app.after(300, confirm_started)       # runs once the main loop is up: the window is there
-        self._offered = False           # the offer window was shown once this session
-        self._focus_bound = False
+        self._offered = False           # the offer window was shown once this session (the button shows it again)
+        self._waiting = False           # a found update waits for the launcher to be free (_offer_when_free)
         self.button = None
         if header is not None:
             from tkinter import ttk
@@ -1093,7 +1108,7 @@ class Updater:
         if not self.readonly:
             app.after(1500, self.report_last_update)     # after the build-tools check wrote its status
             if is_release_install(root) and not os.environ.get(NO_CHECK_ENV):
-                app.after(4000, lambda: self.check(manual=False))
+                app.after(START_CHECK_MS, lambda: self.check(manual=False))
 
     def _pump(self):
         while True:
@@ -1182,42 +1197,39 @@ class Updater:
             self.release = rel
             if self.button is not None:
                 self.button.configure(text=t("Update to {version}…", version=rel["version"]))
-            if manual or (not busy_reason(self.app) and self._in_front()):
+            if manual:
                 self.offer()
-            else:
-                # Never pop up over another program (a game in front) or in the middle of a match: the
-                # button says it, and the offer opens when the launcher is next in front and free.
-                self._status(t("Version {version} is available: click 'Update to {version}' at the top.",
-                               version=rel["version"]))
-                if not self._focus_bound:
-                    self._focus_bound = True
-                    self.app.bind("<FocusIn>", self._on_focus, add="+")
+            elif not self._offered:
+                # At start (1.1.7, the owner's wish): the offer opens right away -- but never during a build, a
+                # game or an online match: then the button says it, and the offer opens once that has ended.
+                self._offer_when_free()
         elif manual:
             _box("show_info", t("Updates"), t("You have the newest version ({version}).", version=self.local),
                  self.app)
 
-    def _in_front(self):
-        """True when the launcher's window is the foreground window (Windows; elsewhere always)."""
-        if not IS_WIN:
-            return True
+    def _offer_when_free(self):
+        """The start's offer: now when the launcher is free, else once the build / game / match has ended (looked at
+        every FREE_POLL_MS). Once per session; the button opens it again."""
+        if self._offered or self.win is not None or not self.release or not is_newer(self.release["version"],
+                                                                                      self.local):
+            self._waiting = False
+            return
         try:
-            import ctypes
-            u = ctypes.windll.user32
-            u.GetForegroundWindow.restype = ctypes.c_void_p
-            u.GetAncestor.restype = ctypes.c_void_p
-            u.GetAncestor.argtypes = [ctypes.c_void_p, ctypes.c_uint]
-            u.GetParent.restype = ctypes.c_void_p
-            hwnd = u.GetParent(self.app.winfo_id()) or self.app.winfo_id()
-            fg = u.GetForegroundWindow()
-            return bool(fg) and (fg == hwnd or u.GetAncestor(fg, 3) == hwnd)      # GA_ROOTOWNER
-        except Exception:     # noqa: BLE001
-            return False
-
-    def _on_focus(self, _e=None):
-        if (self.release and not self._offered and self.win is None and is_newer(self.release["version"], self.local)
-                and not busy_reason(self.app)):
-            self.app.after(200, self.offer)
-            self._offered = True
+            why = busy_reason(self.app)
+        except Exception:     # noqa: BLE001 -- (a process list that fails: ask again later)
+            why = "?"
+        if not why:
+            self._waiting = False
+            self.offer()
+            return
+        if not self._waiting:
+            self._waiting = True
+            self._status(t("Version {version} is available: click 'Update to {version}' at the top.",
+                           version=self.release["version"]))
+        try:
+            self.app.after(FREE_POLL_MS, self._offer_when_free)
+        except Exception:     # noqa: BLE001 -- the window is gone
+            pass
 
     def _status(self, text):
         try:

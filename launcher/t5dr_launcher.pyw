@@ -182,6 +182,9 @@ class App(tk.Tk):
         self.step_t0 = None
         self.cur_step = None
         self._run_shown = False        # the Play tab shows "Running ..." (the game's end is explained once)
+        self._dialogs_seen = 0         # the game's own message boxes already shown (GameRun.dialog_count)
+        self._dialog_text = ""         # the Play tab's sentence about the last one
+        self._dialog_box = False       # a message box about one came up for this game (once per game)
         self.sub = 0.0
         self._last_status = None
         if not offscreen:
@@ -1215,6 +1218,7 @@ class App(tk.Tk):
             dialogs.show_error(APP_TITLE, t("Could not start the game:\n{error}", error=e), parent=self)
             return None
         self.game = g
+        self._dialogs_seen, self._dialog_text, self._dialog_box = 0, "", False
         core.log(f"game started: process {pid}, log {os.path.basename(g.log_path)}, settings give "
                  f"{', '.join(f'{k}={v}' for k, v in sorted(self.settings.env_overrides().items())) or 'nothing'}, "
                  f"asked for by the launcher: {', '.join(sorted(env or {})) or 'nothing'}")
@@ -1348,14 +1352,16 @@ class App(tk.Tk):
         if self.build:
             self._drain_build()
         if self.game:
+            self._game_dialogs()
             if self.game.running():
                 el = int(time.time() - self.game.started)
                 fps = f"{self.game.fps:.0f} fps" if self.game.fps else t("starting…")
-                self.run_var.set(t("Running — {elapsed} — {fps}", elapsed=core.clock(el), fps=fps))
+                self.run_var.set(t("Running — {elapsed} — {fps}", elapsed=core.clock(el), fps=fps)
+                                 + ("\n" + self._dialog_text if self._dialog_text else ""))
                 self._run_shown = True
             elif self._run_shown:
                 self._run_shown = False
-                why = core.explain_exit(self.game.proc.returncode, self.game.last_lines)
+                why = core.explain_exit(self.game.proc.returncode, self.game.last_lines, self.game.dialogs)
                 # patch 0063: the game log's [slow-frames] verdicts -- the graphics were the limit
                 speed = self._speed_notes()
                 core.log(f"game ended: exit code {self.game.proc.returncode}" + (", explained to the player"
@@ -1365,6 +1371,31 @@ class App(tk.Tk):
                                  (t("The game closed.") + (" " + speed if speed else "")))
                 self._update_play_buttons()
         self.after(150, self._tick)
+
+    def _game_dialogs(self):
+        """The game's own message boxes (core.DialogScan): the runtime answers them by itself, so the player would see
+        nothing but a still or black screen. Each new one goes to the Play tab, the status line and launcher.log; one
+        after which the game stops ("The installed game data is corrupted. Ending game.") also brings the launcher
+        forward with a message box."""
+        g = self.game
+        if g.dialog_count <= self._dialogs_seen or not g.dialogs:
+            return
+        self._dialogs_seen = g.dialog_count
+        text = g.dialogs[-1]
+        fatal, _advice = core.dialog_info(text)
+        self._dialog_text = core.dialog_message(text)
+        core.log("game dialog: " + " | ".join(text.splitlines()) + (" (the game stops after it)" if fatal else ""))
+        self.status.set(self._dialog_text)
+        if fatal and not self.readonly and not self._dialog_box:
+            self._dialog_box = True
+            def show(msg=self._dialog_text):
+                try:
+                    from t5lobby import winfront
+                    winfront.raise_window(self)
+                except Exception:      # noqa: BLE001 -- the box comes anyway
+                    pass
+                dialogs.show_error(APP_TITLE, msg, parent=self)
+            self.after(0, show)
 
     def _selected_tab(self):
         """Key of the selected tab ('build', 'play', 'settings', 'online', 'replays'), or None when no tab is selected: Tk

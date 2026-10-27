@@ -674,8 +674,9 @@ def kill_tree(pid):
 
 # --------------------------------------------------------------------------- game process
 
-def explain_exit(code, lines):
-    """One plain sentence for the Play tab when the game ended on its own; None when it closed normally."""
+def explain_exit(code, lines, dialogs=()):
+    """One plain sentence for the Play tab when the game ended on its own; None when it closed normally. `dialogs`:
+    the game's own message boxes (GameRun.dialogs); one after which the game stops explains the end."""
     text = "\n".join(lines[-80:])
     if code == 12 or "[gpu] device lost" in text:
         return t("The graphics card stopped working for the game (the driver crashed, was reset or updated). "
@@ -697,12 +698,68 @@ def explain_exit(code, lines):
         # character select after a match ends itself; the next match starts a fresh one.
         return t("The game could not get back to character select after the last match and closed itself. "
                  "It starts again for your next match.")
+    fatal = [d for d in dialogs if dialog_info(d)[0]]
+    if fatal:
+        return dialog_message(fatal[-1])
     crashed = "[CRASH]" in text or "[STACKOVERFLOW]" in text
     if code == 0 and not crashed:
         return None
     if crashed:
         return t("The game stopped after a crash (exit code {code}). The game log has the details.", code=code)
     return t("The game stopped (exit code {code}). The game log has the details.", code=code)
+
+
+# The game's own message boxes (cellMsgDialog). The runtime answers them by itself and only prints their text, between
+# a line "[DIALOG] <first line>" and a line of "=" signs; the player saw nothing of it ("The installed game data is
+# corrupted. Ending game." left a silent black screen). The launcher shows each one with what to do.
+DIALOG_START = "[DIALOG] "
+DIALOG_MAX_LINES = 8          # a longer one is cut there (another thread's output in between, a missing end line)
+
+
+class DialogScan:
+    """Feed it the game log line by line; feed() returns the text of a dialog when its last line has come, else None."""
+
+    def __init__(self):
+        self.lines = None
+
+    def feed(self, line):
+        line = line.rstrip("\r\n")
+        if line.startswith(DIALOG_START):
+            done = self.finish()                       # (an unfinished one before it ends here)
+            self.lines = [line[len(DIALOG_START):]]
+            return done
+        if self.lines is None:
+            return None
+        if line.startswith("=====") or line.startswith("[cellMsgDialog]"):
+            return self.finish()
+        self.lines.append(line)
+        return self.finish() if len(self.lines) >= DIALOG_MAX_LINES else None
+
+    def finish(self):
+        text = "\n".join(l.strip() for l in (self.lines or []) if l.strip())
+        self.lines = None
+        return text or None
+
+
+def dialog_info(text):
+    """(fatal: the game stops after it, the sentence for the player) for a dialog the game showed. The texts are the
+    US game's own (English); the ones seen in game logs so far have their own advice."""
+    low = " ".join((text or "").lower().split())
+    if "game data is corrupted" in low:      # "The installed game data is corrupted. Ending game. ..."
+        return True, t("Your built game data is probably damaged. Open the Build tab, tick \"Redo every step\" and "
+                       "press BUILD GAME. If the message comes back, download the package again: it must be exactly "
+                       "{size} bytes.", size=f"{build_game.PKG_SIZE:,}")
+    if "unable to save" in low:              # "Unable to save Play Data. Cancel Play Data save?"
+        return False, t("The game could not write its save, so progress may be lost. Check that the disk is not full "
+                        "and that no antivirus blocks the folder native\\gamedata.")
+    if "unable to load" in low:              # "Unable to load Play Data."
+        return False, t("The game could not read its save. If it happens every time, click Report a problem.")
+    return False, t("If the game does not go on, click Report a problem.")
+
+
+def dialog_message(text):
+    """The Play tab's sentence for a dialog: the game's own words (English, as the game has them) and what to do."""
+    return t("The game shows: \"{text}\" {advice}", text=" ".join((text or "").split()), advice=dialog_info(text)[1])
 
 
 UNLOCK_ENV = ("T5_UNLOCK_STAGES", "T5_UNLOCK_ITEMS", "T5_UNLOCK_JINPACHI")
@@ -782,6 +839,8 @@ class GameRun:
         self.log_path = None
         self.fps = None
         self.last_lines = []
+        self.dialogs = []          # the texts of the game's own message boxes, oldest first (DialogScan; the last 20)
+        self.dialog_count = 0      # how many it showed in all
         self.started = None
 
     def start(self, extra_env=None, monitor_point=None):
@@ -838,15 +897,24 @@ class GameRun:
             kill_tree(self.proc.pid)
 
     def _tail(self):
+        scan = DialogScan()
         with open(self.log_path, encoding="utf-8", errors="replace") as f:
             while True:
                 line = f.readline()
                 if not line:
                     if not self.running():
+                        line = scan.finish()           # a dialog the game's end cut short
+                        if line:
+                            self.dialogs = (self.dialogs + [line])[-20:]
+                            self.dialog_count += 1
                         break
                     time.sleep(0.25)
                     continue
                 line = line.rstrip()
+                dialog = scan.feed(line)
+                if dialog:
+                    self.dialogs = (self.dialogs + [dialog])[-20:]
+                    self.dialog_count += 1
                 if line.startswith("[fps]"):
                     try:
                         self.fps = float(line.split()[1])

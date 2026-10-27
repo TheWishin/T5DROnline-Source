@@ -901,6 +901,21 @@ MESSAGES = {
     "build will most likely refuse it.":
         "{id}  ({size} バイト) -- このプログラムのコンテンツIDは {program} "
         "で、対応するもの（{supported}）ではありません。ビルドはほぼ確実に拒否します。",
+    # 1.1.5: the game's own message boxes (launcher/core.py dialog_info, dialog_message)
+    "The game shows: \"{text}\" {advice}": "ゲームのメッセージ：「{text}」 {advice}",
+    "Your built game data is probably damaged. Open the Build tab, tick \"Redo every step\" and press BUILD "
+    "GAME. If the message comes back, download the package again: it must be exactly {size} bytes.":
+        "ビルドしたゲームデータが壊れている可能性があります。ビルドタブを開き、「全ステップをやり直す」にチェック"
+        "を入れて BUILD GAME を押してください。それでもこのメッセージが出る場合は、パッケージをダウンロードし直し"
+        "てください（ちょうど {size} バイトのはずです）。",
+    "The game could not write its save, so progress may be lost. Check that the disk is not full and that no "
+    "antivirus blocks the folder native\\gamedata.":
+        "ゲームがセーブデータを書き込めませんでした。進行状況が失われる可能性があります。ディスクの空き容量と、ウ"
+        "イルス対策ソフトが native\\gamedata フォルダーをブロックしていないか確認してください。",
+    "The game could not read its save. If it happens every time, click Report a problem.":
+        "ゲームがセーブデータを読み込めませんでした。毎回起きる場合は「問題を報告...」をクリックしてください。",
+    "If the game does not go on, click Report a problem.":
+        "ゲームが先に進まない場合は「問題を報告...」をクリックしてください。",
     "The license (.rap) does not belong to this package. Use the .rap whose name matches "
     "the package's content ID ({id}).":
         "ライセンス（.rap）がこのパッケージのものではありません。名前がパッケージのコンテンツID（{id}）と一致する "

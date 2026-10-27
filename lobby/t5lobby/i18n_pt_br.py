@@ -909,6 +909,21 @@ MESSAGES = {
     "build will most likely refuse it.":
         "{id}  ({size} bytes) -- o programa dele tem o content ID {program}, não o suportado ({supported}). A "
         "compilação provavelmente vai recusá-lo.",
+    # 1.1.5: the game's own message boxes (launcher/core.py dialog_info, dialog_message)
+    "The game shows: \"{text}\" {advice}": "O jogo mostra: “{text}” {advice}",
+    "Your built game data is probably damaged. Open the Build tab, tick \"Redo every step\" and press BUILD "
+    "GAME. If the message comes back, download the package again: it must be exactly {size} bytes.":
+        "Os dados do jogo compilado provavelmente estão danificados. Abra a aba Compilar, marque “Refazer todas "
+        "as etapas” e aperte BUILD GAME. Se a mensagem voltar, baixe o pacote de novo: ele deve ter exatamente "
+        "{size} bytes.",
+    "The game could not write its save, so progress may be lost. Check that the disk is not full and that no "
+    "antivirus blocks the folder native\\gamedata.":
+        "O jogo não conseguiu gravar o save, então o progresso pode se perder. Confira se o disco não está cheio "
+        "e se nenhum antivírus bloqueia a pasta native\\gamedata.",
+    "The game could not read its save. If it happens every time, click Report a problem.":
+        "O jogo não conseguiu ler o save. Se isso acontecer sempre, clique em “Relatar um problema...”.",
+    "If the game does not go on, click Report a problem.":
+        "Se o jogo não continuar, clique em “Relatar um problema...”.",
     "The license (.rap) does not belong to this package. Use the .rap whose name matches "
     "the package's content ID ({id}).":
         "A licença (.rap) não pertence a este pacote. Use o .rap cujo nome corresponde ao content ID do pacote "

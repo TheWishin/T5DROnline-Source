@@ -891,6 +891,19 @@ MESSAGES = {
     "build will most likely refuse it.":
         "{id}  ({size}바이트) -- 프로그램의 콘텐츠 ID가 {program}로, 지원되는 ID({supported})가 아닙니다. "
         "빌드에서 거부될 가능성이 큽니다.",
+    # 1.1.5: the game's own message boxes (launcher/core.py dialog_info, dialog_message)
+    "The game shows: \"{text}\" {advice}": "게임 메시지: '{text}' {advice}",
+    "Your built game data is probably damaged. Open the Build tab, tick \"Redo every step\" and press BUILD "
+    "GAME. If the message comes back, download the package again: it must be exactly {size} bytes.":
+        "빌드한 게임 데이터가 손상된 것 같습니다. 빌드 탭을 열고 '모든 단계 다시 하기'를 체크한 뒤 BUILD GAME을 "
+        "누르세요. 메시지가 다시 나오면 패키지를 다시 다운로드하세요: 정확히 {size}바이트여야 합니다.",
+    "The game could not write its save, so progress may be lost. Check that the disk is not full and that no "
+    "antivirus blocks the folder native\\gamedata.":
+        "게임이 세이브를 쓰지 못해 진행 상황이 사라질 수 있습니다. 디스크가 가득 차지 않았는지, 백신이 "
+        "native\\gamedata 폴더를 막고 있지 않은지 확인하세요.",
+    "The game could not read its save. If it happens every time, click Report a problem.":
+        "게임이 세이브를 읽지 못했습니다. 매번 이러면 '문제 신고...'를 클릭하세요.",
+    "If the game does not go on, click Report a problem.": "게임이 진행되지 않으면 '문제 신고...'를 클릭하세요.",
     "The license (.rap) does not belong to this package. Use the .rap whose name matches "
     "the package's content ID ({id}).":
         "라이선스(.rap)가 이 패키지의 것이 아닙니다. 이름이 패키지의 콘텐츠 ID({id})와 맞는 .rap를 쓰세요.",

@@ -41,6 +41,12 @@ they work with 1.1.4 launchers as soon as the server is updated.
   overlap -- checked with a deliberately slowed renderer and a memory check, everything stayed in order. Still open;
   if you see it, add `RSX_RING_GUARD=1` under Extra settings for one evening and send us the game log.
 
+### Training
+- **Frame data: moves whose hit reaction looked free too early show the right number.** Bryan's d+4 showed -17 on
+  hit; it is +3 (and -13 on block). Some hit reactions set the game's "idle" flag long before the defender can do
+  anything; the overlay now waits for the end of the reaction there, as the game itself does (checked with the
+  defender mashing a jab). Players' report; docs/TRAINING.md.
+
 ### macOS (Apple silicon), offline -- build from source (by n0madic, thank you)
 - The game builds and plays on macOS 13+ (arm64): `python3 tools/build_game.py --pkg ... --rap ...`
   then `python3 tools/run_game.py`. Metal draws, SDL2 plays the sound and reads the keyboard.

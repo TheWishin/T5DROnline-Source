@@ -197,6 +197,7 @@ df_lv2_fn g_orig_wait = nullptr;
 std::atomic<bool> g_installed{ false };
 bool g_probe = false, g_dump_modes = false;
 std::vector<uint32_t> g_dump_frames;
+std::vector<uint32_t> g_dump_every;   /* T5_DF_DUMP "++n" entries: n frames after every FIGHT START (tag fs<FIGHT START frame>) */
 uint32_t g_mgr = 0;            /* tcb_mode_manager_t object */
 uint32_t g_last_cur = ~0u, g_last_next = ~0u, g_last_obj = 0;
 uint32_t g_mode_changes = 0;
@@ -564,6 +565,11 @@ void on_frame(ppu_context* ctx)
     shot(f);
     find_text(f);
     for (uint32_t d : g_dump_frames) if (d == f) dump_memory(f, "f");
+    if (g_fight_frame) for (uint32_t d : g_dump_every) if (g_fight_frame + d == f) {
+        char tag[32];
+        snprintf(tag, sizeof tag, "fs%06u_p%u", g_fight_frame, d);
+        dump_memory(f, tag);
+    }
     QueryPerformanceCounter(&t1); QueryPerformanceFrequency(&fq);
     const double ms = 1000.0 * (double)(t1.QuadPart - t0.QuadPart) / (double)fq.QuadPart;
     static int slow = 0;
@@ -690,9 +696,11 @@ struct Register {
         if (s1 && *s1) { g_script[0] = parse_script(s1); g_scripted[0] = true; }
         if (s2 && *s2) { g_script[1] = parse_script(s2); g_scripted[1] = true; }
         if (dm) for (const char* p = dm; *p;) {
+            const bool every = p[0] == '+' && p[1] == '+';
+            if (every) p += 2;
             char* e; unsigned long v = strtoul(p, &e, 10);
             if (e == p) break;
-            g_dump_frames.push_back((uint32_t)v);
+            (every ? g_dump_every : g_dump_frames).push_back((uint32_t)v);
             p = e; while (*p == ',') p++;
         }
         if (const char* pk = getenv("T5_DF_POKE")) for (const char* p = pk; *p;) {

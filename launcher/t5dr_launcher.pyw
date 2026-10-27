@@ -1236,6 +1236,17 @@ class App(tk.Tk):
     def play(self):
         self.start_game()
 
+    def search_on_start(self, mode):
+        """--search ranked|casual: the Online tab, logged in with the saved login, searching (README "Start a search
+        from a shortcut"). Without a saved login the tab only says what to do."""
+        if self.readonly:
+            return
+        core.log(f"command line: --search {mode}")
+        start = getattr(self.online, "search_on_start", None)
+        if start is not None:
+            start(mode)                     # before the tab is shown: showing it logs in with the saved login
+        self.nb.select(self.tabs["online"])
+
     def _hwnd(self):
         try:
             return ctypes.windll.user32.GetParent(self.winfo_id()) or self.winfo_id()
@@ -1555,7 +1566,10 @@ def main():
     ap.add_argument("--low-priority", action="store_true", help="(testing) build at below-normal priority")
     ap.add_argument("--play-seconds", type=int, default=0, help="(testing, with --screenshots) run the game this long")
     ap.add_argument("--force", action="store_true", help="(testing) tick 'Redo every step'")
-    a = ap.parse_args()
+    ap.add_argument("--search", metavar="ranked|casual",
+                    help="open the Online tab, log in with the saved login and start searching: ranked, or casual "
+                         "(Quick match). Without a saved login the tab opens with a hint")
+    a, unknown = ap.parse_known_args()      # (an unknown option from an old shortcut must not stop the launcher)
     enable_dpi_awareness()
     app = App(offscreen=bool(a.screenshots))
     if a.low_priority:
@@ -1566,9 +1580,30 @@ def main():
         screenshots(app, a.screenshots, a.prefix, a.build_steps, a.play_seconds)
     elif a.build_steps:
         app.after(800, lambda: app.start_build(a.build_steps))
+    if unknown:
+        core.log(f"command line: ignored {' '.join(unknown)}")
+    if a.search and not a.screenshots:
+        if a.search.strip().lower() in ("ranked", "casual"):
+            app.after(300, lambda: app.search_on_start(a.search.strip().lower()))
+        else:
+            core.log(f"command line: --search {a.search} is neither ranked nor casual, ignored")
     app.mainloop()
     if app.restart_requested:
-        subprocess.Popen([sys.executable] + sys.argv, cwd=os.getcwd())
+        # (without --search: a restart after an update or a language change must not start searching again)
+        subprocess.Popen([sys.executable] + without_search(sys.argv), cwd=os.getcwd())
+
+
+def without_search(argv):
+    """argv without "--search X" / "--search=X"."""
+    out, skip = [], False
+    for x in argv:
+        if skip:
+            skip = False
+        elif x == "--search":
+            skip = True
+        elif not x.startswith("--search="):
+            out.append(x)
+    return out
 
 
 if __name__ == "__main__":

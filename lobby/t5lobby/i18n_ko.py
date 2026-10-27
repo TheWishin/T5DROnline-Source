@@ -904,6 +904,15 @@ MESSAGES = {
     "The game could not read its save. If it happens every time, click Report a problem.":
         "게임이 세이브를 읽지 못했습니다. 매번 이러면 '문제 신고...'를 클릭하세요.",
     "If the game does not go on, click Report a problem.": "게임이 진행되지 않으면 '문제 신고...'를 클릭하세요.",
+    # 1.1.5: the launcher's --search ranked|casual (lobby/t5lobby/tk_tab.py search_on_start)
+    "Build the game first (Build tab); then the search starts by itself next time.":
+        "먼저 게임을 빌드하세요 (빌드 탭). 다음부터는 검색이 자동으로 시작됩니다.",
+    "Log in to start the search. Tick \"Remember me\" when you log in with your account: next time --search "
+    "logs in and starts searching by itself.":
+        "검색을 시작하려면 로그인하세요. 계정으로 로그인할 때 '로그인 유지'를 체크하면 다음부터 --search가 "
+        "자동으로 로그인하고 검색을 시작합니다.",
+    "Ranked matches need an account: log in with your name and password.":
+        "Ranked 매치는 계정이 필요합니다: 이름과 비밀번호로 로그인하세요.",
     "The license (.rap) does not belong to this package. Use the .rap whose name matches "
     "the package's content ID ({id}).":
         "라이선스(.rap)가 이 패키지의 것이 아닙니다. 이름이 패키지의 콘텐츠 ID({id})와 맞는 .rap를 쓰세요.",

@@ -944,6 +944,15 @@ MESSAGES = {
         "problème... ».",
     "If the game does not go on, click Report a problem.":
         "Si le jeu ne continue pas, clique sur « Signaler un problème... ».",
+    # 1.1.5: the launcher's --search ranked|casual (lobby/t5lobby/tk_tab.py search_on_start)
+    "Build the game first (Build tab); then the search starts by itself next time.":
+        "Compile d'abord le jeu (onglet Compiler) ; la prochaine fois, la recherche démarrera toute seule.",
+    "Log in to start the search. Tick \"Remember me\" when you log in with your account: next time --search "
+    "logs in and starts searching by itself.":
+        "Connecte-toi pour lancer la recherche. Coche « Se souvenir de moi » en te connectant avec ton compte : "
+        "la prochaine fois, --search te connecte et lance la recherche tout seul.",
+    "Ranked matches need an account: log in with your name and password.":
+        "Les matchs Ranked demandent un compte : connecte-toi avec ton nom et ton mot de passe.",
     "The license (.rap) does not belong to this package. Use the .rap whose name matches "
     "the package's content ID ({id}).":
         "La licence (.rap) ne correspond pas à ce paquet. Utilise le .rap dont le nom correspond au content ID du "

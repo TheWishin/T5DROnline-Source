@@ -990,6 +990,15 @@ MESSAGES = {
         "Das Spiel konnte seinen Spielstand nicht lesen. Passiert das jedes Mal, klicke auf „Problem melden...“.",
     "If the game does not go on, click Report a problem.":
         "Geht das Spiel nicht weiter, klicke auf „Problem melden...“.",
+    # 1.1.5: the launcher's --search ranked|casual (lobby/t5lobby/tk_tab.py search_on_start)
+    "Build the game first (Build tab); then the search starts by itself next time.":
+        "Bau zuerst das Spiel (Reiter Bauen); beim nächsten Mal startet die Suche dann von selbst.",
+    "Log in to start the search. Tick \"Remember me\" when you log in with your account: next time --search "
+    "logs in and starts searching by itself.":
+        "Melde dich an, um die Suche zu starten. Setz beim Anmelden mit deinem Konto den Haken bei „Angemeldet "
+        "bleiben“: Beim nächsten Mal meldet --search dich an und startet die Suche von selbst.",
+    "Ranked matches need an account: log in with your name and password.":
+        "Ranked-Matches brauchen ein Konto: Melde dich mit Name und Passwort an.",
     "The license (.rap) does not belong to this package. Use the .rap whose name matches "
     "the package's content ID ({id}).":
         "Die Lizenz (.rap) gehört nicht zu diesem Paket. Nimm die .rap, deren Name zur "

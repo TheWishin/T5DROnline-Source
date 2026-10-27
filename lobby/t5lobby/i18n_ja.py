@@ -916,6 +916,15 @@ MESSAGES = {
         "ゲームがセーブデータを読み込めませんでした。毎回起きる場合は「問題を報告...」をクリックしてください。",
     "If the game does not go on, click Report a problem.":
         "ゲームが先に進まない場合は「問題を報告...」をクリックしてください。",
+    # 1.1.5: the launcher's --search ranked|casual (lobby/t5lobby/tk_tab.py search_on_start)
+    "Build the game first (Build tab); then the search starts by itself next time.":
+        "先にゲームをビルドしてください（ビルドタブ）。次回からは検索が自動で始まります。",
+    "Log in to start the search. Tick \"Remember me\" when you log in with your account: next time --search "
+    "logs in and starts searching by itself.":
+        "検索を始めるにはログインしてください。アカウントでログインするときに「ログイン状態を保持」にチェックを入"
+        "れておくと、次回からは --search で自動的にログインして検索が始まります。",
+    "Ranked matches need an account: log in with your name and password.":
+        "Ranked 対戦にはアカウントが必要です。名前とパスワードでログインしてください。",
     "The license (.rap) does not belong to this package. Use the .rap whose name matches "
     "the package's content ID ({id}).":
         "ライセンス（.rap）がこのパッケージのものではありません。名前がパッケージのコンテンツID（{id}）と一致する "

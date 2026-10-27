@@ -938,6 +938,15 @@ MESSAGES = {
         "El juego no pudo leer su partida guardada. Si pasa siempre, haz clic en “Reportar un problema...”.",
     "If the game does not go on, click Report a problem.":
         "Si el juego no sigue, haz clic en “Reportar un problema...”.",
+    # 1.1.5: the launcher's --search ranked|casual (lobby/t5lobby/tk_tab.py search_on_start)
+    "Build the game first (Build tab); then the search starts by itself next time.":
+        "Compila primero el juego (pestaña Compilar); la próxima vez la búsqueda empezará sola.",
+    "Log in to start the search. Tick \"Remember me\" when you log in with your account: next time --search "
+    "logs in and starts searching by itself.":
+        "Inicia sesión para empezar la búsqueda. Marca “Recordarme” al iniciar sesión con tu cuenta: la próxima "
+        "vez, --search inicia sesión y empieza a buscar solo.",
+    "Ranked matches need an account: log in with your name and password.":
+        "Las partidas Ranked necesitan una cuenta: inicia sesión con tu nombre y contraseña.",
     "The license (.rap) does not belong to this package. Use the .rap whose name matches "
     "the package's content ID ({id}).":
         "La licencia (.rap) no pertenece a este paquete. Usa el .rap cuyo nombre coincide con el content ID del "

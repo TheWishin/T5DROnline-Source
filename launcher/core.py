@@ -498,12 +498,15 @@ def game_state(out):
 STEP_TITLES = {          # English; t(STEP_TITLES[step]) where it is shown
     "deps": N_("Recompiler"), "keys": N_("Key data"), "decrypt": N_("Check & decrypt"), "unpack": N_("Unpack"),
     "vfs": N_("Game files"), "lift": N_("Translate code"), "spu": N_("Sound core"), "compile": N_("Compile"),
+    "shaders": N_("Shaders"),     # 1.1.5: tools/shader_warmup.py (build_game.py --warmup)
 }
 # Rough share of the total time per step (measured on a 16-core PC; see docs/RELEASE.md).
-STEP_WEIGHT = {"deps": 1, "keys": 1, "decrypt": 2, "unpack": 12, "vfs": 1, "lift": 40, "spu": 8, "compile": 35}
+STEP_WEIGHT = {"deps": 1, "keys": 1, "decrypt": 2, "unpack": 12, "vfs": 1, "lift": 40, "spu": 8, "compile": 35,
+               "shaders": 10}
 RE_STEP = re.compile(r"^\[(\w+)\]\s*$")
 RE_NINJA = re.compile(r"^\[(\d+)/(\d+)\]")
 RE_FUNCS = re.compile(r"(\d+)/(\d+) functions")
+RE_WARMUP = re.compile(r"^\[warmup\] fight (\d+) of (\d+)")
 # The lift step printed nothing for this long: the Build tab says so. The lifter itself prints at least every ~30 s
 # while it works (ps3recomp patch 0048: "... still lifting: 3 chunks left, elapsed 1.5m").
 LIFT_QUIET_S = 180
@@ -523,6 +526,9 @@ def build_line_events(step, line):
     elif step == "compile" and RE_NINJA.match(line):
         n, d = map(int, RE_NINJA.match(line).groups())
         events.append(("sub", n / max(d, 1)))
+    elif step == "shaders" and RE_WARMUP.match(line):
+        n, d = map(int, RE_WARMUP.match(line).groups())
+        events.append(("sub", (n - 1) / max(d, 1)))
     elif step == "lift" and RE_FUNCS.search(line):
         n, d = map(int, RE_FUNCS.search(line).groups())
         # the lifter reports twice (translate, then write): weight 70/30. Its other lines (the heartbeat, notices
@@ -562,6 +568,8 @@ class BuildRun:
             cmd.append("--force")
         if steps:
             cmd += ["--steps"] + list(steps)
+        # 1.1.5: the shader warm-up after the build (once per built game; it never fails the build)
+        cmd.append("--warmup")
         self.cmd = cmd
         self.step = None                        # the step build_game.py is in
         self.last_output = time.monotonic()     # when it last printed a line
@@ -1057,25 +1065,42 @@ def igpu_res_text(step, better):
 
 
 # [slow-frames] (ps3recomp patches 0047, 0059, 0063) ends with a verdict when a 30 s window was GPU-bound, or the
-# integrated graphics were busy enough to slow the processor as well.
+# integrated graphics were busy enough to slow the processor as well. Patch 0075 made it honest: "GPU-bound: the
+# graphics need" (a lower Internal resolution helps: the GPU near 100 % busy above Native, or integrated graphics)
+# only then; "GPU-bound: the graphics card needs ... at <step>" (the card itself is the limit at Native or below),
+# "CPU and GPU in turn" and "CPU-bound" otherwise -- an i3-3240 with an old GT 730 was told to lower a resolution
+# that was already 0.5x (docs/RENDER_PERF.md "2-core mode and slow graphics cards").
 SLOW_GPU_BOUND = re.compile(r"^\[slow-frames\].*\| GPU-bound: the graphics need ([0-9.]+) ms a frame")
 SLOW_IGPU_BUSY = re.compile(r"^\[slow-frames\].*\| integrated graphics busy ([0-9]+) % of the time")
+SLOW_CARD_BOUND = re.compile(r"^\[slow-frames\].*\| GPU-bound: the graphics card needs ([0-9.]+) ms a frame")
+SLOW_CPU_BOUND = re.compile(r"^\[slow-frames\].*\| (?:CPU-bound|CPU and GPU in turn): the game needs ([0-9.]+) ms a "
+                            r"frame and the render translation ([0-9.]+)")
 
 
 def speed_hint(lines):
-    """One sentence for the Play tab after a game, from its [slow-frames] lines: the graphics were the limit."""
-    gpu = igpu = 0
+    """One sentence for the Play tab after a game, from its [slow-frames] lines: what was the limit."""
+    gpu = igpu = card = cpu = 0
     for line in lines:
         if SLOW_GPU_BOUND.match(line):
             gpu += 1
         elif SLOW_IGPU_BUSY.match(line):
             igpu += 1
+        elif SLOW_CARD_BOUND.match(line):
+            card += 1
+        elif SLOW_CPU_BOUND.match(line):
+            cpu += 1
     if gpu:
         return t("Fights were slower than 60 fps because of the graphics (GPU-bound): choose a lower "
                  "Internal resolution in Settings.")
     if igpu:
         return t("Fights were slower than 60 fps: the integrated graphics were busy and slowed the processor "
                  "too. A lower Internal resolution in Settings helps.")
+    if card and card >= cpu:
+        return t("Fights were slower than 60 fps because of the graphics card: it is too slow for this game even "
+                 "at this Internal resolution.")
+    if cpu or card:
+        return t("Fights were slower than 60 fps because of the processor: close other programs while you play. "
+                 "A lower Internal resolution does not help.")
     return None
 
 

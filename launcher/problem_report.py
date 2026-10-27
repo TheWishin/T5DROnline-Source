@@ -761,7 +761,9 @@ GAME_LOG_FACTS = re.compile(r"^\[(?:gpu|display|pacing|cpu|sched|game-dll|netpla
 # Lines that sum up how the game ran (patch 0047: slow frames with their reason, the display lock's
 # late frames; online, the match's speed against this PC's own -- a slow opponent's PC makes both
 # games slow, docs/WEAK_PC.md); the last few of each kind go into system.txt.
-GAME_LOG_RUN = re.compile(r"^\[(?:slow-frames|pacing\] display lock:|cellAudio\] sound glitches|netplay\] speed:)")
+# Patch 0075: and the per-pass GPU times, on by default with an old graphics card (resource binding tier 1).
+GAME_LOG_RUN = re.compile(r"^\[(?:slow-frames|pacing\] display lock:|cellAudio\] sound glitches|netplay\] speed:|"
+                          r"gpu-pass\] [0-9]+ frames)")
 
 
 def facts_from_log(path, limit=16):
@@ -802,6 +804,10 @@ def run_lines_from_log(path, keep=4, limit=64 * 1024 * 1024):
 # whoever reads the report (docs/RENDER_PERF.md "4K on integrated graphics").
 SLOW_VERDICT_GPU = re.compile(r"\| GPU-bound: the graphics need ([0-9.]+) ms a frame")
 SLOW_VERDICT_IGPU = re.compile(r"\| integrated graphics busy ([0-9]+) % of the time")
+# Patch 0075: the card itself is the limit (Native or below), or the processor
+SLOW_VERDICT_CARD = re.compile(r"\| GPU-bound: the graphics card needs ([0-9.]+) ms a frame at ([^-|]+?) --")
+SLOW_VERDICT_CPU = re.compile(r"\| (CPU-bound|CPU and GPU in turn): the game needs ([0-9.]+) ms a frame and the "
+                              r"render translation ([0-9.]+)")
 FACT_GPU = re.compile(r"^\[gpu\] adapter: (.+?) \(vendor [0-9A-Fa-f]+, .*?\b(integrated|dedicated)\)")
 FACT_RES = re.compile(r"^\[display\] internal resolution (.+?) \(([0-9.]+)x\)")
 
@@ -823,6 +829,24 @@ def speed_diagnosis(run_lines, facts, screens=()):
         out.append(f"Integrated graphics busy up to {busy} % of the time in {n_igpu} of the last {len(slow)} windows: "
                    "they share the processor's memory and power, so the game's own work (the 'game' part) slows "
                    "down too; a lower Internal resolution helps.")
+    card = [SLOW_VERDICT_CARD.search(ln) for ln in slow]
+    cpu = [SLOW_VERDICT_CPU.search(ln) for ln in slow]
+    n_card, n_cpu = sum(1 for m in card if m), sum(1 for m in cpu if m)
+    if n_card:
+        need = max(float(m.group(1)) for m in card if m)
+        step = [m.group(2) for m in card if m][-1]
+        out.append(f"The graphics card itself was the limit in {n_card} of the last {len(slow)} windows (up to "
+                   f"{need:.1f} ms a frame at {step}): a lower Internal resolution saves little; see the GPU's "
+                   "resource binding tier in the line.")
+    if n_cpu:
+        game = max(float(m.group(2)) for m in cpu if m)
+        xlat = max(float(m.group(3)) for m in cpu if m)
+        turn = sum(1 for m in cpu if m and m.group(1).startswith("CPU and GPU"))
+        out.append(f"The processor was the limit in {n_cpu} of the last {len(slow)} windows (game up to {game:.1f} ms, "
+                   f"render translation up to {xlat:.1f} ms a frame" +
+                   (f"; in {turn} of them the frames also waited for the graphics card" if turn else "") +
+                   "): a lower Internal resolution does not help; other programs, the power mode and the number of "
+                   "processor cores do.")
     integrated = res = None
     for ln in facts:
         m = FACT_GPU.match(ln)

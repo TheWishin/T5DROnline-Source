@@ -271,6 +271,7 @@ MESSAGES = {
     "Compile": "컴파일",
     "Game files": "게임 파일",
     "Sound core": "사운드 코어",
+    "Shaders": "셰이더",
     "Translate code": "코드 변환",
     "The translation step has printed nothing for {minutes} minutes. On a slow or busy PC it may still be "
     "working. If nothing changes, close other programs, press Cancel and then BUILD GAME again; build.log "
@@ -2072,6 +2073,10 @@ MESSAGES = {
         "그래픽 때문에 대전이 60 fps보다 느렸습니다 (GPU 한계): 설정에서 내부 해상도를 낮추세요.",
     "Fights were slower than 60 fps: the integrated graphics were busy and slowed the processor too. A lower Internal resolution in Settings helps.":
         "대전이 60 fps보다 느렸습니다: 내장 그래픽이 바빠서 프로세서도 느려졌습니다. 설정에서 내부 해상도를 낮추면 도움이 됩니다.",
+    "Fights were slower than 60 fps because of the graphics card: it is too slow for this game even at this Internal resolution.":
+        "그래픽 카드 때문에 대전이 60 fps보다 느렸습니다: 이 내부 해상도에서도 이 게임에는 너무 느립니다.",
+    "Fights were slower than 60 fps because of the processor: close other programs while you play. A lower Internal resolution does not help.":
+        "프로세서 때문에 대전이 60 fps보다 느렸습니다: 플레이하는 동안 다른 프로그램을 닫으세요. 내부 해상도를 낮춰도 도움이 되지 않습니다.",
     # ---- private and community rooms (lobby/t5lobby/tk_rooms.py; the server's messages: i18n_known.py)
     "private rooms need a newer launcher; update it": "비공개 방은 더 새로운 런처가 필요합니다. 런처를 업데이트하세요",
     "only the room's host can do that": "방장만 할 수 있습니다",

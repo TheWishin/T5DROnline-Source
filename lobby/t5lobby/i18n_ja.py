@@ -274,6 +274,7 @@ MESSAGES = {
     "Compile": "コンパイル",
     "Game files": "ゲームファイル",
     "Sound core": "サウンドコア",
+    "Shaders": "シェーダー",
     "Translate code": "コード変換",
     "The translation step has printed nothing for {minutes} minutes. On a slow or busy PC it may still be "
     "working. If nothing changes, close other programs, press Cancel and then BUILD GAME again; build.log "
@@ -2102,6 +2103,10 @@ MESSAGES = {
         "グラフィックが原因で対戦が60 fpsより遅くなりました（GPUがボトルネック）：設定で内部解像度を下げてください。",
     "Fights were slower than 60 fps: the integrated graphics were busy and slowed the processor too. A lower Internal resolution in Settings helps.":
         "対戦が60 fpsより遅くなりました：内蔵グラフィックの負荷が高く、プロセッサーも遅くなりました。設定で内部解像度を下げると改善します。",
+    "Fights were slower than 60 fps because of the graphics card: it is too slow for this game even at this Internal resolution.":
+        "グラフィックカードが原因で対戦が60 fpsより遅くなりました：この内部解像度でも、このゲームには性能が足りません。",
+    "Fights were slower than 60 fps because of the processor: close other programs while you play. A lower Internal resolution does not help.":
+        "プロセッサーが原因で対戦が60 fpsより遅くなりました：プレイ中は他のプログラムを閉じてください。内部解像度を下げても改善しません。",
     # ---- private and community rooms (lobby/t5lobby/tk_rooms.py; the server's messages: i18n_known.py)
     "private rooms need a newer launcher; update it": "非公開ルームには新しいランチャーが必要です。アップデートしてください",
     "only the room's host can do that": "それができるのはルームのホストだけです",

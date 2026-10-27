@@ -24,6 +24,8 @@ extern "C" int t5_df_game_mode(void);             /* src/directfight/df_fight.cp
 extern "C" int32_t t5_sem_count(uint32_t id);          /* src/netplay/t5_hooks.cpp: a kernel semaphore's count */
 extern "C" long cellSpurs_jobs_run(void);              /* ps3recomp patch 0039: SPURS jobs run so far */
 extern "C" int t5_sem_set_count(uint32_t id, int32_t v);
+extern "C" void cellGcm_skip_ticks(int n);             /* ps3recomp patch 0080: give up exactly n frames (time sync) */
+extern "C" void cellGcm_display_margin_min_ms(double ms);   /* ps3recomp patch 0080: the display lock's margin, at least */
 
 namespace rb { namespace net {
 
@@ -159,6 +161,19 @@ bool g_ts_flip = false;          /* T5_RB_NET_TS_FLIP=1: take the sleep in the f
 LARGE_INTEGER g_t_frame0; uint32_t g_frames_timed = 0; double g_frame_ms = 1000.0 / 60.0;   /* measured frame time (last 60 live frames) */   /* T5_RB_NET_TS=win,interval,max: averaging window, frames between sleeps, max frames per sleep */
 int g_lead_mine[kLeadWinMax], g_lead_theirs[kLeadWinMax]; int g_lead_n = 0;
 uint32_t g_last_sleep_frame = 0;
+/* rollback-smooth-115: a correction skips whole vblank ticks (cellGcm_skip_ticks) instead of
+ * sleeping at the boundary; T5_RB_NET_TS_MODE=sleep is the old way (ts_correct) */
+bool g_ts_drop_mode = true;
+int g_ts_drop_max = 1;                  /* ticks per correction (T5_RB_NET_TS's max in sleep mode) */
+double g_ts_min = 1.0;                 /* T5_RB_NET_TS_MIN: the advantage (frames) that calls for a correction */
+uint32_t g_ts_hold = 0;                 /* no lead samples before this frame: a correction's effect is on its way */
+/* rollback-smooth-115: the display lock (ps3recomp patch 0034) puts the vblank tick the 99th
+ * percentile of what frames cost (tick -> present) + 1.5 ms before the display's vblank; a frame
+ * that re-simulates costs more, and at 180 ms ~26 pictures per side and match were shown twice
+ * because a frame (with a rollback or without) came too late for its refresh. While the loop runs
+ * against a peer the margin is at least T5_RB_NET_DISPLAY_MARGIN ms (3.5; ~2 ms more from the pad
+ * to the screen): ~12 (docs/ROLLBACK.md section 34). */
+double g_display_margin = 3.5;
 int g_delay = 0;
 
 /* per-frame history, by frame number */
@@ -450,8 +465,11 @@ bool enabled()
             if (const char* s = getenv("T5_RB_NET_TS_FLIP")) g_ts_flip = *s == '1';
             if (const char* s = getenv("T5_RB_NET_TS")) {
                 int w = 0, i = 0, m = 0;
-                if (sscanf(s, "%d,%d,%d", &w, &i, &m) == 3) { g_lead_win = std::max(5, std::min(kLeadWinMax, w)); g_ts_interval = std::max(1, i); g_ts_max = std::max(1, std::min(8, m)); }
+                if (sscanf(s, "%d,%d,%d", &w, &i, &m) == 3) { g_lead_win = std::max(5, std::min(kLeadWinMax, w)); g_ts_interval = std::max(1, i); g_ts_max = std::max(1, std::min(8, m)); g_ts_drop_max = g_ts_max; }
             }
+            if (const char* s = getenv("T5_RB_NET_TS_MODE")) g_ts_drop_mode = _stricmp(s, "sleep") != 0;
+            if (const char* s = getenv("T5_RB_NET_TS_MIN")) g_ts_min = std::max(0.5, std::min(8.0, atof(s)));
+            if (const char* s = getenv("T5_RB_NET_DISPLAY_MARGIN")) g_display_margin = atof(s);   /* negative: the runtime's own */
             QueryPerformanceFrequency(&g_qpf);
         }
         g_enabled = e == 1;
@@ -479,6 +497,7 @@ void start(uint32_t f)
     state_init();
     g_saved_minvb[0] = rd32(kMinVblanks); g_saved_minvb[1] = rd32(kMinVblanks + 4);
     wr32(kMinVblanks, 0); wr32(kMinVblanks + 4, 0);   /* no vblank pacing in the present: re-simulated frames must not wait for one */
+    if (np::mode() == np::Mode::Host || np::mode() == np::Mode::Join) cellGcm_display_margin_min_ms(g_display_margin);
     g_active = true;
     g_started_at = f;
     g_next_f = f; g_early_f = UINT32_MAX; g_tick_waited = false; g_early_tick_seen = false;
@@ -509,6 +528,7 @@ void session_reset()
      * every later play call matched against stale entries, every library
      * tick skipped, every stop dropped). */
     wr32(kMinVblanks, g_saved_minvb[0]); wr32(kMinVblanks + 4, g_saved_minvb[1]);
+    cellGcm_display_margin_min_ms(-1.0);   /* ... and the display lock's own margin */
     sound_reset();
     report();
     note("rbnet: session over: the loop stops (whole session: %u frames, %u rollbacks, %u stalls; reader tokens given back %u)",
@@ -522,6 +542,7 @@ void session_reset()
     g_checked = g_hash_sent = g_floor = g_started_at = g_lock_until = 0;
     g_last_phase = 0xFFFFFFFFu;
     g_lead_n = 0; g_last_sleep_frame = 0; g_frames_timed = 0; g_t_live_ok = false;
+    g_ts_hold = 0;
     g_wait_acc_ms = 0; g_delay = 0;
     g_next_f = 0; g_early_f = UINT32_MAX; g_tick_waited = false; g_early_tick_seen = false; g_early_committed = 0;
     g_last_remote = np::kNeutral;
@@ -579,9 +600,11 @@ static void live_tick_part(uint32_t f)
         const int peer_frame = (int)rc0 - 1 - g_delay;
         const int mine = (int)f - peer_frame;
         np::rb_set_lead(mine);
-        g_lead_mine[g_lead_n % g_lead_win] = mine;
-        g_lead_theirs[g_lead_n % g_lead_win] = np::rb_peer_lead();
-        g_lead_n++;
+        if (!g_ts_drop_mode || f >= g_ts_hold) {   /* (drop mode: only samples taken after the last correction took effect) */
+            g_lead_mine[g_lead_n % g_lead_win] = mine;
+            g_lead_theirs[g_lead_n % g_lead_win] = np::rb_peer_lead();
+            g_lead_n++;
+        }
     }
     const bool intro = intro_at(f);
     if (intro) g_intro_frames++;
@@ -760,6 +783,69 @@ static void rollback_done(uint32_t f)
     LATLOG('Q', "%u %u %.2f %.2f", f, g_resim_from, wall, cpu);   /* PS3_LATENCY_LOG: the rollback to g_resim_from is done (wall / CPU ms) */
 }
 
+/* Time sync (GGPO's): the side ahead gives frames up so both predict and roll
+ * back about equally. The advantage is a trimmed mean (the middle 60 %) of
+ * (mine - theirs) / 2 over the window: a lost or late packet makes one side's
+ * estimate jump by a frame or two for a few frames, and the plain mean then
+ * called for corrections the next window had to undo; a median of these whole
+ * frames rounded half-frame advantages up (latency branch, docs/ROLLBACK.md
+ * section 28).
+ *
+ * rollback-smooth-115 (docs/ROLLBACK.md section 34): a correction used to
+ * sleep at the boundary for its frames' time, measured with GetTickCount64 --
+ * a 15.6 ms clock, so a "1 frame" sleep lasted anything from ~0 to ~31 ms --
+ * and a frame started late made the runtime hold the next tick for it
+ * (PS3_LATE_FLIP, patch 0059): a correction cost 0 to 4 refreshes, and one
+ * that cost nothing was repeated 10 frames later. Now the runtime skips exactly
+ * that many vblank ticks (cellGcm_skip_ticks, patch 0080): the picture on the
+ * screen stays one refresh longer and the next frame starts one tick later --
+ * the least a 60 Hz display allows. The window starts again once the
+ * correction has reached both estimates (this side's at once, the peer's
+ * report of it a round trip later), so it is not repeated before its effect
+ * could be seen; one tick per correction (T5_RB_NET_TS's third value), up to
+ * four at once from 2.5 frames of advantage, from T5_RB_NET_TS_MIN frames of
+ * advantage (default 1).
+ * T5_RB_NET_TS_MODE=sleep: the old way. */
+static void ts_correct(uint32_t f)
+{
+    int d[kLeadWinMax];
+    for (int i = 0; i < g_lead_win; i++) d[i] = g_lead_mine[i] - g_lead_theirs[i];
+    std::sort(d, d + g_lead_win);
+    const int cut = g_lead_win / 5;
+    double sum = 0;
+    for (int i = cut; i < g_lead_win - cut; i++) sum += d[i];
+    const double adv = sum / (2.0 * (g_lead_win - 2 * cut));   /* frames this side is ahead of the peer */
+    g_st.lead_sum += adv;
+    if (!(adv >= (g_ts_drop_mode ? g_ts_min : 1.0) && f - g_last_sleep_frame >= (uint32_t)g_ts_interval)) return;
+    if (g_ts_drop_mode) {
+        /* one tick at a time; a side far ahead (a peer that loaded later) gives
+         * the frames up at once, not one per window with stalls at the
+         * prediction window in between */
+        const int frames = adv >= 2.5 ? std::min(4, (int)(adv + 0.5)) : std::min(g_ts_drop_max, (int)adv);
+        const double ms = frames * g_frame_ms;
+        cellGcm_skip_ticks(frames);
+        LATLOG('S', "%u %d %.2f", f, frames, ms);   /* PS3_LATENCY_LOG: a correction at boundary f (ticks, ms); the runtime logs Y when it skips */
+        const int rtt = np::rb_rtt_ms();
+        const uint32_t rttf = rtt > 0 ? (uint32_t)((double)rtt / g_frame_ms + 0.999) : 0;
+        g_ts_hold = f + (uint32_t)frames + rttf + 2;
+        g_lead_n = 0;
+        g_last_sleep_frame = f;
+        g_st.sleeps++; g_st.sleep_ms += ms;
+        g_wait_acc_ms += ms;
+        if (g_verbose) note("rbnet: frame %u: %.1f frames ahead of the peer, %d tick(s) dropped, next estimate from frame %u", f, adv, frames, g_ts_hold + (uint32_t)g_lead_win);
+        return;
+    }
+    const int frames = std::min(g_ts_max, (int)adv);
+    const double ms = frames * g_frame_ms;
+    if (g_ts_flip) ts_sleep_request(ms);   /* taken in this frame's flip wait (rb_hooks.cpp) */
+    else np::rb_wait_remote(UINT32_MAX - 1, (uint32_t)ms);   /* at the boundary, socket pumped */
+    g_last_sleep_frame = f;
+    g_st.sleeps++; g_st.sleep_ms += ms;
+    LATLOG('S', "%u %d %.2f", f, frames, ms);   /* PS3_LATENCY_LOG: a time-sync sleep at boundary f (frames, ms) */
+    g_wait_acc_ms += ms;
+    if (g_verbose) note("rbnet: frame %u: %.1f frames ahead of the peer, slept %d frame(s)", f, adv, frames);
+}
+
 static uint32_t boundary(uint32_t f, bool scene_flag, np::PadInput out[2])
 {
     LATLOG('N', "%u %d %d %d", f, g_resim ? 1 : 0, g_early_f == f ? 1 : 0, fighting_now() ? 1 : 0);   /* PS3_LATENCY_LOG: boundary f (resim, early, fighting) */
@@ -856,33 +942,7 @@ static uint32_t boundary(uint32_t f, bool scene_flag, np::PadInput out[2])
     }
     np::rb_poll();
 
-    if (g_timesync && !g_resim && g_lead_n >= g_lead_win && np::mode() != np::Mode::Local && !np::rb_peer_lost()) {
-        /* a trimmed mean (the middle 60 %): a lost or late packet makes one
-         * side's estimate jump by a frame or two for a few frames, and the
-         * plain mean then called for sleeps (each a repeated frame on the
-         * screen) that the next window had to undo; a median of these whole
-         * frames rounded half-frame advantages up and slept more, not less
-         * (latency branch, docs/ROLLBACK.md section 26) */
-        int d[kLeadWinMax];
-        for (int i = 0; i < g_lead_win; i++) d[i] = g_lead_mine[i] - g_lead_theirs[i];
-        std::sort(d, d + g_lead_win);
-        const int cut = g_lead_win / 5;
-        double sum = 0;
-        for (int i = cut; i < g_lead_win - cut; i++) sum += d[i];
-        const double adv = sum / (2.0 * (g_lead_win - 2 * cut));   /* frames this side is ahead of the peer */
-        g_st.lead_sum += adv;
-        if (adv >= 1.0 && f - g_last_sleep_frame >= (uint32_t)g_ts_interval) {
-            const int frames = std::min(g_ts_max, (int)adv);
-            const double ms = frames * g_frame_ms;
-            if (g_ts_flip) ts_sleep_request(ms);   /* taken in this frame's flip wait (rb_hooks.cpp) */
-            else { LARGE_INTEGER t0; QueryPerformanceCounter(&t0); np::rb_wait_remote(UINT32_MAX - 1, (uint32_t)ms); (void)t0; }   /* at the boundary, socket pumped */
-            g_last_sleep_frame = f;
-            g_st.sleeps++; g_st.sleep_ms += ms;
-            LATLOG('S', "%u %d %.2f", f, frames, ms);   /* PS3_LATENCY_LOG: a time-sync sleep at boundary f (frames, ms) */
-            g_wait_acc_ms += ms;
-            if (g_verbose) note("rbnet: frame %u: %.1f frames ahead of the peer, slept %d frame(s)", f, adv, frames);
-        }
-    }
+    if (g_timesync && !g_resim && g_lead_n >= g_lead_win && np::mode() != np::Mode::Local && !np::rb_peer_lost()) ts_correct(f);
 
     uint32_t rc = np::rb_remote_contig();
     /* a scene change (or a prediction window exhausted) waits for the peer */

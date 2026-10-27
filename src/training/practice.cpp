@@ -20,6 +20,9 @@
  *   T5_PRACTICE=1          on (the launcher sets 0 or 1; unset = off)
  *   T5_PRACTICE_DUMMY      the dummy's behaviour at the start: game | block | crouch | walk | step
  *   T5_PRACTICE_LOG        file: one line per action (tests)
+ * Guest memory written (offline Practice only, all through put32): both fighters'
+ * places (put_place), the Practice menu's TRAINING DUMMY and where the menu puts
+ * it (set_dummy), and P1's / P2's masks in the input ring (t5_hooks.cpp).
  */
 #include <stdarg.h>
 #include <stdint.h>
@@ -42,6 +45,9 @@ constexpr uint32_t kGameType = 0x1008EBAC;   /* 10 = Practice */
 constexpr uint32_t kGtPractice = 10;
 constexpr uint32_t kRunning  = 0x1008F083;   /* u8: 1 while the fight runs, 0 while the pause menu is open (and in its first frame) */
 constexpr uint32_t kDummySetting = 0x1008EFF0;   /* low byte (0x1008EFF3): the Practice menu's TRAINING DUMMY (Dummy::setting) */
+/* ... and where the menu puts it when it closes (traced: both 9 after "backward roll", both 10 after
+ * CONTROLLER, then the dummy plays P2's pad): the dummy acts on these, the menu shows the one above */
+constexpr uint32_t kDummyApplied[2] = { 0x1008EC60, 0x1008EC64 };   /* low bytes 0x1008EC63, 0x1008EC67 */
 constexpr uint32_t kFighter[2] = { 0x10090030, 0x10090900 };
 
 inline uint32_t rd32(uint32_t a) { uint32_t v; memcpy(&v, vm_base + a, 4); return _byteswap_ulong(v); }
@@ -55,8 +61,10 @@ inline uint8_t  rd8(uint32_t a)  { return vm_base[a]; }
  * +0x780: rows 0-2 the rotation (row 2 the facing direction), row 3 the
  * position. The game takes the root's motion from the matrices, so a place
  * written to the base alone springs back or jumps (traced: a fighter put 4,000
- * units away moved another 1,273 in the next frame) and an angle written to
- * +0x30 alone is undone. put_place moves and turns all of them alike. */
+ * units away moved another 1,273 in the next frame). put_place moves all of
+ * them alike. The facing is the game's own: an angle written to all of them is
+ * undone by the animation in the next frame, so a fighter left facing away is
+ * turned with a tap on its pad instead (t5_practice_pads). */
 constexpr uint32_t kPosX = 0x10, kPosZ = 0x18, kAngle = 0x30, kRootX = 0x24, kRootAngle = 0x84;   /* root z: kRootX + 8 */
 constexpr uint32_t kMatrix[3] = { 0x700, 0x740, 0x780 };
 
@@ -202,20 +210,30 @@ void note_place(const char* what)
 /* The Practice menu's TRAINING DUMMY: a behaviour sets it (want >= 0) and keeps the
  * player's own choice, which comes back with want -1 (and while the menu is open) */
 int g_saved_setting = -1;
+void put_low_byte(uint32_t word, int v)
+{
+    const uint32_t w = rd32(word);
+    if ((int)(w & 0xFF) != v) put32(word, (w & ~0xFFu) | (uint32_t)v);
+}
+void set_dummy(int v)
+{
+    put_low_byte(kDummySetting, v);
+    for (uint32_t a : kDummyApplied) put_low_byte(a, v);
+}
 void apply_setting(int want)
 {
-    const uint32_t w = rd32(kDummySetting);
+    const int cur = (int)(rd32(kDummySetting) & 0xFF);
     if (want < 0) {
-        if (g_saved_setting >= 0 && (int)(w & 0xFF) != g_saved_setting) {
-            put32(kDummySetting, (w & ~0xFFu) | (uint32_t)g_saved_setting);
+        if (g_saved_setting >= 0 && cur != g_saved_setting) {
+            set_dummy(g_saved_setting);
             note("training dummy setting %d (the player's)", g_saved_setting);
         }
         g_saved_setting = -1;
         return;
     }
-    if (g_saved_setting < 0) g_saved_setting = (int)(w & 0xFF);
-    if ((int)(w & 0xFF) != want) {
-        put32(kDummySetting, (w & ~0xFFu) | (uint32_t)want);
+    if (g_saved_setting < 0) g_saved_setting = cur;
+    if (cur != want) {
+        set_dummy(want);
         note("training dummy setting %d", want);
     }
 }
@@ -311,7 +329,7 @@ extern "C" void t5_practice_pads(uint16_t* p1, uint16_t* p2)
             float d = pl[p].angle - face_toward(pl[p].x, pl[p].z, pl[1 - p].x, pl[1 - p].z);
             while (d > 3.14159265f) d -= 6.28318531f;
             while (d < -3.14159265f) d += 6.28318531f;
-            if (fabsf(d) > 1.2f) { g_nudge[p] = 2; note(p ? "dummy faces away: a tap toward P1" : "P1 faces away: a tap toward the dummy"); }
+            if (fabsf(d) > 1.2f) { g_nudge[p] = p ? 6 : 2; note(p ? "dummy faces away: a tap toward P1" : "P1 faces away: a tap toward the dummy"); }
         }
     }
     const Sample me = read_fighter(kFighter[0]), dm = read_fighter(kFighter[1]);
@@ -334,8 +352,8 @@ extern "C" void t5_practice_pads(uint16_t* p1, uint16_t* p2)
         if (g_rec.next(&rel)) *p2 = from_rel(rel, dm.right);
         else if (g_mode != DummyMode::Game) *p2 = g_dummy.frame(g_mode, dm, g_prev_hp);
     }
-    const bool tap2 = g_nudge[1] > 0;
-    if (tap2) { g_nudge[1]--; *p2 = dm.right ? kLeft : kRight; }   /* toward P1 on the screen */
+    const bool tap2 = g_nudge[1] > 0;     /* CONTROLLER for 6 frames, the tap in the last 3 */
+    if (tap2) { if (g_nudge[1] <= 3) *p2 = dm.right ? kLeft : kRight; g_nudge[1]--; }   /* toward P1 on the screen */
     /* the game's own TRAINING DUMMY for the behaviour: CONTROLLER (P2's pad) for a recording, the pad
      * behaviours and a tap */
     apply_setting(g_rec.state() != Recorder::State::Idle || tap2 ? (int)Dummy::kSetController : g_dummy.setting(g_mode));

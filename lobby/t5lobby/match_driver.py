@@ -812,8 +812,8 @@ class MatchDriver:
         elif ev.get("rematch_window") and self.auto_rematch > 0:
             self.rematch(ev["match"], True)
 
-    def rematch(self, match_id=None, accept=True):
-        """Offer / accept (or decline) a rematch against the last opponent."""
+    def rematch(self, match_id=None, accept=True, swap=False):
+        """Offer / accept (or decline) a rematch against the last opponent (swap: P1 and P2 the other way round)."""
         mid = match_id or (self.last or {}).get("match")
         if not mid or mid in self.rematch_sent:
             return
@@ -821,7 +821,10 @@ class MatchDriver:
         keep = accept and self.connected_game()
         if accept and self.auto_rematch > 0:
             self.auto_rematch -= 1
-        self._call(self.client.rematch, mid, accept, keep)
+        if swap:
+            self._call(self.client.rematch, mid, accept, keep, True)
+        else:
+            self._call(self.client.rematch, mid, accept, keep)
         if not accept and self.mode == "process":
             self.stop_game()
 

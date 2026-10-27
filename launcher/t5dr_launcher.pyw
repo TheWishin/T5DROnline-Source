@@ -182,11 +182,17 @@ class App(tk.Tk):
         self.step_t0 = None
         self.cur_step = None
         self._run_shown = False        # the Play tab shows "Running ..." (the game's end is explained once)
+        self._dialogs_seen = 0         # the game's own message boxes already shown (GameRun.dialog_count)
+        self._dialog_text = ""         # the Play tab's sentence about the last one
+        self._dialog_box = False       # a message box about one came up for this game (once per game)
         self.sub = 0.0
         self._last_status = None
         if not offscreen:
             core.log(f"launcher {self.info.get('version', '?')} started, Python {sys.version.split()[0]}, "
                      f"output {self.settings.out_dir}")
+            wine = core.run_game.under_wine()
+            if wine:          # (Linux / Steam Deck: the game gets two defaults there, tools/run_game.py WINE_ENV)
+                core.log(core.run_game.wine_note(wine))
             gone = replays.prune(self.settings.replay_dir)       # the newest replays.DEFAULT_KEEP files stay
             if gone:
                 core.log(f"replays: {gone} old replay file(s) deleted (the newest {replays.DEFAULT_KEEP} are kept)")
@@ -1215,6 +1221,7 @@ class App(tk.Tk):
             dialogs.show_error(APP_TITLE, t("Could not start the game:\n{error}", error=e), parent=self)
             return None
         self.game = g
+        self._dialogs_seen, self._dialog_text, self._dialog_box = 0, "", False
         core.log(f"game started: process {pid}, log {os.path.basename(g.log_path)}, settings give "
                  f"{', '.join(f'{k}={v}' for k, v in sorted(self.settings.env_overrides().items())) or 'nothing'}, "
                  f"asked for by the launcher: {', '.join(sorted(env or {})) or 'nothing'}")
@@ -1231,6 +1238,17 @@ class App(tk.Tk):
 
     def play(self):
         self.start_game()
+
+    def search_on_start(self, mode):
+        """--search ranked|casual: the Online tab, logged in with the saved login, searching (README "Start a search
+        from a shortcut"). Without a saved login the tab only says what to do."""
+        if self.readonly:
+            return
+        core.log(f"command line: --search {mode}")
+        start = getattr(self.online, "search_on_start", None)
+        if start is not None:
+            start(mode)                     # before the tab is shown: showing it logs in with the saved login
+        self.nb.select(self.tabs["online"])
 
     def _hwnd(self):
         try:
@@ -1348,14 +1366,17 @@ class App(tk.Tk):
         if self.build:
             self._drain_build()
         if self.game:
+            self._game_dialogs()
             if self.game.running():
                 el = int(time.time() - self.game.started)
                 fps = f"{self.game.fps:.0f} fps" if self.game.fps else t("starting…")
-                self.run_var.set(t("Running — {elapsed} — {fps}", elapsed=core.clock(el), fps=fps))
+                self.run_var.set(t("Running — {elapsed} — {fps}", elapsed=core.clock(el), fps=fps)
+                                 + ("\n" + self._dialog_text if self._dialog_text else ""))
                 self._run_shown = True
             elif self._run_shown:
                 self._run_shown = False
-                why = core.explain_exit(self.game.proc.returncode, self.game.last_lines)
+                why = core.explain_exit(self.game.proc.returncode, self.game.last_lines,
+                                        getattr(self.game, "dialogs", ()))
                 # patch 0063: the game log's [slow-frames] verdicts -- the graphics were the limit
                 speed = self._speed_notes()
                 core.log(f"game ended: exit code {self.game.proc.returncode}" + (", explained to the player"
@@ -1365,6 +1386,32 @@ class App(tk.Tk):
                                  (t("The game closed.") + (" " + speed if speed else "")))
                 self._update_play_buttons()
         self.after(150, self._tick)
+
+    def _game_dialogs(self):
+        """The game's own message boxes (core.DialogScan): the runtime answers them by itself, so the player would see
+        nothing but a still or black screen. Each new one goes to the Play tab, the status line and launcher.log; one
+        after which the game stops ("The installed game data is corrupted. Ending game.") also brings the launcher
+        forward with a message box."""
+        g = self.game
+        count, shown = getattr(g, "dialog_count", 0), getattr(g, "dialogs", ())    # (tests' stand-in games: none)
+        if count <= self._dialogs_seen or not shown:
+            return
+        self._dialogs_seen = count
+        text = shown[-1]
+        fatal, _advice = core.dialog_info(text)
+        self._dialog_text = core.dialog_message(text)
+        core.log("game dialog: " + " | ".join(text.splitlines()) + (" (the game stops after it)" if fatal else ""))
+        self.status.set(self._dialog_text)
+        if fatal and not self.readonly and not self._dialog_box:
+            self._dialog_box = True
+            def show(msg=self._dialog_text):
+                try:
+                    from t5lobby import winfront
+                    winfront.raise_window(self)
+                except Exception:      # noqa: BLE001 -- the box comes anyway
+                    pass
+                dialogs.show_error(APP_TITLE, msg, parent=self)
+            self.after(0, show)
 
     def _selected_tab(self):
         """Key of the selected tab ('build', 'play', 'settings', 'online', 'replays'), or None when no tab is selected: Tk
@@ -1522,7 +1569,10 @@ def main():
     ap.add_argument("--low-priority", action="store_true", help="(testing) build at below-normal priority")
     ap.add_argument("--play-seconds", type=int, default=0, help="(testing, with --screenshots) run the game this long")
     ap.add_argument("--force", action="store_true", help="(testing) tick 'Redo every step'")
-    a = ap.parse_args()
+    ap.add_argument("--search", metavar="ranked|casual",
+                    help="open the Online tab, log in with the saved login and start searching: ranked, or casual "
+                         "(Quick match). Without a saved login the tab opens with a hint")
+    a, unknown = ap.parse_known_args()      # (an unknown option from an old shortcut must not stop the launcher)
     enable_dpi_awareness()
     app = App(offscreen=bool(a.screenshots))
     if a.low_priority:
@@ -1533,9 +1583,30 @@ def main():
         screenshots(app, a.screenshots, a.prefix, a.build_steps, a.play_seconds)
     elif a.build_steps:
         app.after(800, lambda: app.start_build(a.build_steps))
+    if unknown:
+        core.log(f"command line: ignored {' '.join(unknown)}")
+    if a.search and not a.screenshots:
+        if a.search.strip().lower() in ("ranked", "casual"):
+            app.after(300, lambda: app.search_on_start(a.search.strip().lower()))
+        else:
+            core.log(f"command line: --search {a.search} is neither ranked nor casual, ignored")
     app.mainloop()
     if app.restart_requested:
-        subprocess.Popen([sys.executable] + sys.argv, cwd=os.getcwd())
+        # (without --search: a restart after an update or a language change must not start searching again)
+        subprocess.Popen([sys.executable] + without_search(sys.argv), cwd=os.getcwd())
+
+
+def without_search(argv):
+    """argv without "--search X" / "--search=X"."""
+    out, skip = [], False
+    for x in argv:
+        if skip:
+            skip = False
+        elif x == "--search":
+            skip = True
+        elif not x.startswith("--search="):
+            out.append(x)
+    return out
 
 
 if __name__ == "__main__":

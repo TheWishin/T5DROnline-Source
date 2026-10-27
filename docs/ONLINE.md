@@ -22,6 +22,7 @@ install for players or for whoever runs the server.
 - [Ratings, queues, results](#ratings-queues-results)
 - [Rooms](#rooms) (classic, community rooms that take turns, private rooms with a password or an invite code)
 - [Friends and invites](#friends-and-invites)
+- [Sides and stages by choice](#sides-and-stages-by-choice) (casual: P1 / P2, the stage, Swap sides on a rematch)
 - [Discord Rich Presence](#discord-rich-presence)
 - [Chime and taskbar flash](#chime-and-taskbar-flash)
 - Tournaments: their own page, [TOURNAMENTS.md](TOURNAMENTS.md)
@@ -607,6 +608,46 @@ update, in one transaction with the version number. A database from a newer serv
 server still opens an upgraded database (tested), so going back to an older release works. Deleting an account
 (admin tool) deletes its friends and requests.
 
+## Sides and stages by choice
+
+(1.1.5; code: `server/casual.py`, `client.py` `set_casual_prefs`, the launcher's `tk_casual.py`.) In the matches two
+players chose each other for -- an accepted **challenge**, a friend's casual **invite**, a **room**'s match (classic or
+community, not a ranked room's) and the rematches of those -- each player can ask for a **side** (P1, P2 or any) and a
+**stage** (Random or one of the stages). The two choices are in the play card, right of Strict ("Challenges,
+invites, rooms: [Any side] [Random stage]"); the launcher keeps them in online.json and sends them to the server after
+every login and whenever they change (`casual_prefs`). A challenge and a friend's casual invite carry the sender's
+wishes ("Alice (2nd Dan) challenges you -- wants to be P1 on Scrapyard"), and the match card says what this player got
+("Casual match vs Alice (P2 on Stage 24)"; when a coin flip went against a wish, the status line says so).
+
+| | rule |
+|---|---|
+| side | a wish is granted when the other player wants the other side or does not care; both want the same side: a coin flip; nobody cares: as before (the challenger, the inviter, the room's first player is P1) |
+| stage | the same wish on both sides: that stage (Random: drawn as before, the same stage for the same seed); different wishes: one of the two, by the match's seed -- Random against a stage gives that stage half the time, else a random one. A Tekken 5 stage only when the server draws those too (`T5L_OLD_STAGES`) and both launchers know them (`old_stages`); the welcome lists the stages a launcher may offer (`casual.stages`) |
+| Swap sides | after a casual match by choice the rematch question has **Rematch: swap sides** (Triangle / Y on a pad): the rematch has P1 and P2 the other way round. Either player may ask; the other one's offer then says "with the sides swapped". It comes over a new netplay session (the persistent game goes back to its select screen), a few seconds more than a rematch inside the running games |
+
+**Ranked and Quick** (and their rematches, ranked rooms, tournament sets) keep the server's sides -- the queue makes
+the player with the lower server round trip P1 -- and a random stage; a quick match's rematch has no Swap sides.
+
+**The side is the netplay role, and that is enough.** In the game the side is the role: the host is P1 (slot 0), the
+joiner P2 (`netplay_core.cpp`: `slot = join ? 1 : 0`). Nothing in setting up the connection depends on the role: both
+launchers punch (nat.py has no roles), both games get the other's address (`T5_NET_PEER`), the relay keeps one
+session per side, and the input delay and the seed come from the server for both. In the game the host answers the
+first valid hello, announces the session id and decides the rollback delay from both players' settings; the joiner
+takes them. So a side wish only orders the two players of the match: no game change, the same build id, CODE_VERSION
+unchanged. A running game keeps its slot for its whole netplay session, which is why a swapped rematch is a new
+session (`keep` false) and not a rematch inside the running games.
+
+**Older launchers** (1.1.4 and before) send no wishes: they count as "any side, Random stage", so their matches are as
+before. Against a new launcher they get their side and the stage in `match_found` / `match_start` as always, and asked
+for a swap they see an ordinary rematch offer (and play the other side). A new launcher on an older server finds no
+`casual_choice` feature and hides the choices; it never asks for a swap there.
+
+Tests: `lobby/tests/test_casual.py` (the wishes and their checks, coin flips, stages and the seed, challenges,
+invites, classic and community rooms -- a community room's turns follow its line also with swapped sides --, swap on a
+rematch from either player, Quick / Ranked / ranked rooms unchanged, the 1.1.4 launcher from git on the new server
+and new launchers on the 1.1.4 server), `lobby/tests/test_tk_casual.py` (the launcher: the choices, the question, the
+match card, Rematch: swap sides).
+
 ## Spectating
 
 Friends of a player in a match, and anybody for a room's match, can watch it live in their own game, a few
@@ -705,7 +746,7 @@ Client to server:
 
 | t | fields | reply / effect |
 |---|---|---|
-| `hello` | `proto`, `client`, `build: {elf, code, net, release, id}`, `caps` (optional: `delta`, `blind_ready`, `notices`, `ingame_pick`, `sets`, `nat2`, `relays`, `friends`, `tournaments`, `spectate`, `game_fallback`, `private_rooms`) | `welcome {server, proto, udp_port, udp_port2, build, accounts, guests, motd, ip, time, ..., caps, relay_only}`; with the `private_rooms` cap also `room_limits {max_size, next_seconds}`; with the `relays` cap also `relays [{id, name, host, port}]` (regional relays); with the `friends` cap also `friend_limits {max, per_day, invite_seconds}`; with the `tournaments` cap also `tournaments {noshow, organizers}` (the `tour_*` messages: docs/TOURNAMENTS.md "Protocol") |
+| `hello` | `proto`, `client`, `build: {elf, code, net, release, id}`, `caps` (optional: `delta`, `blind_ready`, `notices`, `ingame_pick`, `sets`, `nat2`, `relays`, `friends`, `tournaments`, `spectate`, `game_fallback`, `private_rooms`) | `welcome {server, proto, udp_port, udp_port2, build, accounts, guests, motd, ip, time, ..., caps, relay_only}`; with the `private_rooms` cap also `room_limits {max_size, next_seconds}`; with the `relays` cap also `relays [{id, name, host, port}]` (regional relays); with the `friends` cap also `friend_limits {max, per_day, invite_seconds}`; with the `tournaments` cap also `tournaments {noshow, organizers}` (the `tour_*` messages: docs/TOURNAMENTS.md "Protocol"); `casual {stages}` (1.1.5: the stages this launcher may offer for casual matches, feature `casual_choice`) |
 | `login` | `mode: guest\|account\|register\|resume`, `name`, `password`, `token` | `login_ok {you, token, resumed?}` |
 | `ping` | | `pong {time}` (keepalive; silent clients are dropped after 90 s) |
 | `udp_rtt` | `ms` | the client's UDP ping to the server (lobby list, matchmaking) |
@@ -717,6 +758,8 @@ Client to server:
 | `room_create` | `name`, `ranked`; with `private_rooms`: `size` (2..`T5L_ROOM_MAX_SIZE`), `rotation: winner\|queue`, `private: password\|code`, `password`, `hidden` | `room {room, code}` (`code`: the invite code, to the host only) |
 | `room_join` | `room`; `password` (a locked room); or `code` (the room id optional) | `room {room}`; a classic room's two members start a ready check, a community room's line its next match. Wrong: `auth_failed` "wrong room password" / "no room has that invite code"; too many: `rate_limited` with `retry` |
 | `room_leave` / `rematch` | (`rematch` without `match`: Ready again; in a community room: back in line) | `room {room}` |
+| `rematch` | `match` (the finished one), `accept`, `keep` (this game still runs connected), `swap` (1.1.5: P1 and P2 the other way round; casual matches by choice, ignored elsewhere) | `rematch {state: waiting\|accepted, next}`; the other player gets `rematch {state: offered, from, timeout, swap}` |
+| `casual_prefs` | `side: 0\|1\|null` (P1, P2, any), `stage` (a key of `welcome.casual.stages` or `random`); 1.1.5, sent after every login and on change | `ok`; the wishes for challenges, invites and rooms ([Sides and stages by choice](#sides-and-stages-by-choice)) |
 | `room_lock` | (`private_rooms`, the host) `lock: password\|code\|none`, `password`, `hidden` | `room {room, code}` -- `code` again makes a new invite code (the old one stops working) |
 | `room_kick` | (`private_rooms`, the host) `player` (id) | `room {room}`; refused while they play the room's match; they get `notice room_kicked` and cannot come back |
 | `room_line` | `in: true\|false` (community rooms) | `room {room}`: sit out / back in line |
@@ -751,7 +794,7 @@ Server to client (pushed):
 | `lobby_state` | `players [{id, name, guest, status, rating, rd, record, room, rtt, build, release}]` (`room` null for a hidden room), `rooms [{id, name, owner, members, ranked, build, status, watch, size, rotation, private, lock}]` (a client without `private_rooms` gets no locked room; nobody a hidden one), `queue {quick, ranked}` |
 | `lobby_delta` | only to clients with `caps: ["delta"]`, after one `lobby_state`: `players` (changed or new), `gone` (ids), `rooms` (changed or new), `rooms_gone`, `queue` -- each only when it changed. The client library merges it and emits a complete `lobby_state` |
 | `chat` | `from`, `text`, `time` |
-| `challenged` / `challenge_update` | `challenge`, `from` / `state: accepted\|declined\|cancelled\|expired` |
+| `challenged` / `challenge_update` | `challenge`, `from`, `ping`, `wish {side, stage}` (1.1.5: the challenger's) / `state: accepted\|declined\|cancelled\|expired` |
 | `match_found` | `match`, `ranked`, `origin: queue\|room\|challenge`, `role`, `slot`, `opponent`, `ready_check`, `ready_timeout`, `ping {ms, kind: estimate, known}` (the best relay path, docs/RANKED.md "Found match"), `set`. A blind check (queue match, client with `blind_ready`) has `blind: true`, `opponent: null` and no `role` / `slot` |
 | `match_reveal` | blind checks only, once both accepted: `match`, `role`, `slot`, `opponent`, `you` |
 | `opponent_ready` | `match` |
@@ -760,7 +803,7 @@ Server to client (pushed):
 | `nat_peer_punching` | `match`: the opponent's planned punch has started (its NAT is open toward us) |
 | `nat_relay` | `match`, `udp_port`, `reason`, `bridge` (both clients `nat2`: keep the game socket in the launcher and upgrade to the direct path when it works); on a regional relay (both clients `relays`) also `relay {id, name, host, port}` and `relay_token` (hex: bind there with it instead of the match token); `fallback: true` when a running direct match moves onto the relay (`nat_fallback`: the launcher opens a new socket, its game holds the old one) |
 | `relays` | `relays [{id, name, host, port}]`: the regional relays changed (clients with the `relays` cap measure them again) |
-| `match_start` | `match`, `role`, `slot`, `path`, `peer`, `relay_port`, `relay {id, name, host, port}` (a regional relay), `rtt_ms`, `jitter_ms`, `delay`, `rounds`, `ranked`, `build`, `opponent`, `seed`, `fight {p1, p2, stage, rounds, pick}` |
+| `match_start` | `match`, `role`, `slot`, `path`, `peer`, `relay_port`, `relay {id, name, host, port}` (a regional relay), `rtt_ms`, `jitter_ms`, `delay`, `rounds`, `ranked`, `build`, `opponent`, `seed`, `fight {p1, p2, stage, rounds, pick}`; `casual {swap}` (1.1.5) when the players' side and stage wishes counted (the rematch can swap sides) |
 | `match_cancel` | `match`, `reason: declined\|ready_timeout\|opponent_left\|udp_unreachable\|no_connection\|relay_full`, `you` (true = because of you) |
 | `match_result` | `match`, `status`, `winner`, `score`, `ranked`, `rating {before, after, delta}`, `you` |
 | `set_end` | `set`, `reason: declined\|left\|lag\|expired\|cancelled`, `by: you\|opponent\|null` |
@@ -770,7 +813,7 @@ Server to client (pushed):
 | `friends` | clients with the `friends` cap: the whole list (as the `friends` reply) after login and whenever it changed |
 | `friend_status` | `name`, `status`, `activity`, `invite`, `retry` (1.1.3, as in `friends`): a friend came online, went into a match, went offline ... |
 | `friend_request` / `friend_update` | someone asks you; the answer to your request (`state: accepted\|declined`) |
-| `invited` | `invite`, `from` (brief), `kind: casual\|room`, `room {id, name, ranked}`, `expires` |
+| `invited` | `invite`, `from` (brief), `kind: casual\|room`, `room {id, name, ranked}`, `expires`; a casual one also `wish {side, stage}` (1.1.5) |
 | `invite_update` | `invite`, `state: accepted\|declined\|cancelled\|expired`, `name` (the other side), `kind`; to the inviter also `retry` (1.1.3): whole seconds until the next invite to that friend (30 after a no or a take-back, else 0) |
 | `kicked` | `reason` |
 | `room` | `room`: this player's room as its members see it -- the list entry plus `size`, `rotation`, `lock`, `hidden`, `owner_id`, `players [{brief, state: playing\|line\|away}]`, `line` (ids in turn order), `playing` (ids), `next {at, players}` (a community room's countdown, server time), `watch` (this member may watch its match). Pushed when it changes; never a password or a code |
@@ -1062,7 +1105,7 @@ colour, rating, W-L):
 | State | The card |
 |---|---|
 | Not logged in | Server, name, then Log in / Create account (password rules checked as you type) / Guest; Host for friends |
-| In the lobby | Ranked match and Quick match, the character, Strict; the players, rooms (a lock = cannot be joined now) and chat below |
+| In the lobby | Ranked match and Quick match, the character, Strict; side and stage for challenges, invites and rooms (1.1.5, a server that has them); the players, rooms (a lock = cannot be joined now) and chat below |
 | Searching | A turning ring, the time searching, the queues, Stop searching (B) |
 | Match found | Ping bars (green up to 60 ms, yellow up to 120, red above), a 15 s countdown ring, Accept (A) / Decline (B); the opponent is shown once both accepted |
 | In a match | The opponent, ping, input delay, connection, "Your game is running" and where the game is |
@@ -1085,7 +1128,7 @@ The Online tab runs with a pad or an arcade stick, no mouse or keyboard needed o
 |---|---|
 | **A** (Cross) | Accept a found match, a challenge or a friend's invite. Rematch (also when the opponent offers one). Search: ranked for an account at first, quick for a guest, afterwards the kind you searched last. After you left a game (B), A is "back to ranked". |
 | **B** (Circle) | Decline a found match, a challenge or a friend's invite. Leave / No thanks after a game. Stop searching. |
-| **Y** (Triangle) | Nothing. Every match gets a random stage from the server, a rematch too, so there is no stage to choose. (The fighter is picked in the game itself, with the game's controls.) |
+| **Y** (Triangle) | **Rematch: swap sides** after a casual match by choice (1.1.5, [Sides and stages by choice](#sides-and-stages-by-choice)); nothing else. The stage is chosen in the launcher before a challenge or a room (the fighter in the game itself, with the game's controls). |
 
 - The buttons say which pad button presses them: "Accept (A)", "Decline (B)", "Ranked match (A)". A stick
   shows its own button names, "Accept (B2)". The line under the lobby names the pad and its Cross, Circle and

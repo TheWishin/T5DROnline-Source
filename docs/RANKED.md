@@ -235,7 +235,10 @@ its stage select; names are known for two stages so far). Not offered: Jinpachi
 (no cursor cell in Versus) and Panda (reached through Kuma's cell with another
 button, unverified). Rounds: first to 3 (`T5L_ROUNDS`), like Tekken 6 online.
 The stage is always resolved by the server: the game's own random pick happens
-before lockstep starts and would differ between the two PCs.
+before lockstep starts and would differ between the two PCs. Ranked and Quick
+draw it at random; in a casual match the players chose each other for
+(challenge, invite, room) their stage wishes count (1.1.5, docs/ONLINE.md
+"Sides and stages by choice").
 
 **The Tekken 5 stages** (1.1.2): `data/fighters.json` also lists the old
 stages of Tekken 5, keys `t5s01`..`t5s15` ("t5": the game's stage ids 0-13 and

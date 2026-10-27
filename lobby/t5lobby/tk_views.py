@@ -661,6 +661,10 @@ class OnlineView:
         tab.strict_check = ttk.Checkbutton(f, text=t("Strict (ranked: +-150 rating)"), variable=tab.strict_var,
                                            command=tab._save_cfg, style="Card.TCheckbutton")
         tab.strict_check.grid(row=3, column=0, sticky="w", pady=(px(6), 0))
+        # side and stage for challenges, invites and rooms (tk_casual.py), right of Strict: the card keeps its height
+        row = tab.casual.build(f, px)
+        row.grid(row=3, column=0, columnspan=2, sticky="e", pady=(px(6), 0))
+        row.grid_remove()                    # (shown after a login on a server that has them)
         self.wrap(ttk.Label(f, textvariable=tab.hint_var, style="Card.Faint.TLabel", justify="left"),
                   card, 40).grid(row=4, column=0, columnspan=2, sticky="w", pady=(px(6), 0))
         return f

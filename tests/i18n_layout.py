@@ -239,6 +239,14 @@ class Client:
     def private_rooms_ok(self):
         return True
 
+    def casual_ok(self):
+        return True
+
+    def casual_stages(self):
+        """Every stage, the Tekken 5 ones too: the widest names the casual stage choice can get (tk_casual.py)."""
+        from t5lobby import fighters
+        return fighters.table().stage_pool(old_stages=True)
+
     def __init__(self):
         self.me = {"id": "p1", "name": "Me", "guest": False, "rating": 1500, "record": [3, 2, 0], "status": "idle",
                    "main": "jin", "tier": 31, "rank": "Lord of War", "provisional": False}

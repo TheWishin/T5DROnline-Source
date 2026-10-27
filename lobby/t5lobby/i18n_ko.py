@@ -704,6 +704,10 @@ MESSAGES = {
     "OK": "확인",
     # ---- lobby/t5lobby/fighters.py
     "Random": "랜덤",
+    "Scrapyard": "고철 처리장",
+    "Industrial yard": "공업 지대",
+    "Stage {number}": "스테이지 {number}",
+    "Tekken 5 stage {number}": "Tekken 5 스테이지 {number}",
     # ---- lobby/t5lobby/handover.py
     "direct connection": "직접 연결",
     "local network": "로컬 네트워크",
@@ -877,6 +881,49 @@ MESSAGES = {
     "{supported}.":
         "이 사본은 다른 버전의 게임입니다: '{title}' 버전 {version}, 콘텐츠 ID {id} (프로그램 SHA-1 {sha}...). 이 포트"
         "는 {game}, 콘텐츠 ID {supported}만 지원합니다.",
+    # 1.1.5: the package's version, read before the build (tools/build_game.py, launcher/core.py)
+    "This package is version {version} of the game (program content ID {id}). The port supports only version "
+    "{supported}: {game}, content ID {cid}, {size} bytes. This version cannot be used, whatever the license "
+    "(.rap).":
+        "이 패키지는 게임 버전 {version}입니다 (프로그램 콘텐츠 ID {id}). 이 포트는 버전 {supported}만 "
+        "지원합니다: {game}, 콘텐츠 ID {cid}, {size}바이트. 이 버전은 어떤 라이선스(.rap)로도 쓸 수 없습니다.",
+    "{id}  ({size} bytes) -- version {version} of the game. The port supports only version {supported}; the "
+    "build will refuse this package.":
+        "{id}  ({size}바이트) -- 게임 버전 {version}입니다. 이 포트는 버전 {supported}만 지원하므로 빌드에서 이 "
+        "패키지는 거부됩니다.",
+    "{id}  ({size} bytes) -- its program has content ID {program}, not the supported one ({supported}). The "
+    "build will most likely refuse it.":
+        "{id}  ({size}바이트) -- 프로그램의 콘텐츠 ID가 {program}로, 지원되는 ID({supported})가 아닙니다. "
+        "빌드에서 거부될 가능성이 큽니다.",
+    # 1.1.5: the game's own message boxes (launcher/core.py dialog_info, dialog_message)
+    "The game shows: \"{text}\" {advice}": "게임 메시지: '{text}' {advice}",
+    "Your built game data is probably damaged. Open the Build tab, tick \"Redo every step\" and press BUILD "
+    "GAME. If the message comes back, download the package again: it must be exactly {size} bytes.":
+        "빌드한 게임 데이터가 손상된 것 같습니다. 빌드 탭을 열고 '모든 단계 다시 하기'를 체크한 뒤 BUILD GAME을 "
+        "누르세요. 메시지가 다시 나오면 패키지를 다시 다운로드하세요: 정확히 {size}바이트여야 합니다.",
+    "The game could not write its save, so progress may be lost. Check that the disk is not full and that no "
+    "antivirus blocks the folder native\\gamedata.":
+        "게임이 세이브를 쓰지 못해 진행 상황이 사라질 수 있습니다. 디스크가 가득 차지 않았는지, 백신이 "
+        "native\\gamedata 폴더를 막고 있지 않은지 확인하세요.",
+    "The game could not read its save. If it happens every time, click Report a problem.":
+        "게임이 세이브를 읽지 못했습니다. 매번 이러면 '문제 신고...'를 클릭하세요.",
+    "If the game does not go on, click Report a problem.": "게임이 진행되지 않으면 '문제 신고...'를 클릭하세요.",
+    # 1.1.5: the launcher's --search ranked|casual (lobby/t5lobby/tk_tab.py search_on_start)
+    "Build the game first (Build tab); then the search starts by itself next time.":
+        "먼저 게임을 빌드하세요 (빌드 탭). 다음부터는 검색이 자동으로 시작됩니다.",
+    "Log in to start the search. Tick \"Remember me\" when you log in with your account: next time --search "
+    "logs in and starts searching by itself.":
+        "검색을 시작하려면 로그인하세요. 계정으로 로그인할 때 '로그인 유지'를 체크하면 다음부터 --search가 "
+        "자동으로 로그인하고 검색을 시작합니다.",
+    "Ranked matches need an account: log in with your name and password.":
+        "Ranked 매치는 계정이 필요합니다: 이름과 비밀번호로 로그인하세요.",
+    # 1.1.5: a build step that prints nothing for long (launcher/core.py step_quiet_hint)
+    "The step \"{title}\" has printed nothing for {minutes} minutes. On a slow or busy PC it may still be "
+    "working. If nothing changes, press Cancel and then BUILD GAME again; build.log has the details.":
+        "'{title}' 단계가 {minutes}분 동안 아무것도 출력하지 않았습니다. 느리거나 바쁜 PC에서는 아직 작업 중일 "
+        "수 있습니다. 변화가 없으면 취소를 누른 뒤 BUILD GAME을 다시 누르세요. 자세한 내용은 build.log에 "
+        "있습니다.",
+    "Last program started: {tool}.": "마지막으로 시작된 프로그램: {tool}",
     "The license (.rap) does not belong to this package. Use the .rap whose name matches "
     "the package's content ID ({id}).":
         "라이선스(.rap)가 이 패키지의 것이 아닙니다. 이름이 패키지의 콘텐츠 ID({id})와 맞는 .rap를 쓰세요.",
@@ -2159,4 +2206,18 @@ MESSAGES = {
     "{name} ({rank}) invites you to the private room “{room}”": "{name} ({rank})님이 비공개 방 '{room}'(으)로 초대했습니다",
     "“{room}” is private. Its password:": "'{room}'은(는) 비공개 방입니다. 비밀번호:",
     "this server has no private rooms": "이 서버에는 비공개 방이 없습니다",
+    # ---- lobby/t5lobby/tk_casual.py
+    "Any side": "아무 쪽이나",
+    "P1 (left)": "P1 (왼쪽)",
+    "P2 (right)": "P2 (오른쪽)",
+    "Challenges, invites, rooms:": "도전, 초대, 방:",
+    "Random stage": "랜덤 스테이지",
+    "wants to be P{n} on {stage}": "P{n}, {stage} 희망",
+    "wants to be P{n}": "P{n} 희망",
+    "wants to play on {stage}": "{stage} 희망",
+    "You both wanted P{n}: a coin flip made you P{m}.": "둘 다 P{n}을(를) 원해서 동전 던지기로 P{m}이(가) 되었습니다.",
+    "Your opponent wanted another stage: a coin flip chose {stage}.": "상대가 다른 스테이지를 원해서 동전 던지기로 {stage}(으)로 정해졌습니다.",
+    "P{n} on {stage}": "P{n}, {stage}",
+    "Rematch: swap sides": "Rematch: 사이드 교체",
+    "with the sides swapped": "사이드를 바꿔서",
 }

@@ -72,7 +72,7 @@ from .client import LobbyClient
 from .i18n import N_, stamp, t, translate_message
 from .match_driver import MatchDriver, fps_from_logs, game_files, game_supports_pick
 from .proto import DEFAULT_PORT, LobbyError
-from . import theme, tk_rooms, tk_spectate, tk_tour, tk_views, tklist, winfront
+from . import theme, tk_casual, tk_rooms, tk_spectate, tk_tour, tk_views, tklist, winfront
 from .ranks import record_label as _record
 
 
@@ -253,6 +253,7 @@ class OnlineTab:
         self._relogin_n = 0
         self._login_busy = False         # a login is on its way (no automatic one beside it)
         self._kicked = False             # removed by the server (ban, kick): no automatic login after that
+        self._pending_search = None      # "ranked" / "quick": the launcher's --search, started after the saved login
         self.ask_string = theme.ask_string           # dialogs (tests replace them)
         self.ask_yes_no = theme.ask_yes_no
         self.new_window = tk.Toplevel                # the tab's own windows (tests make hidden ones)
@@ -290,6 +291,7 @@ class OnlineTab:
         self._pad_until = 0.0            # no controller action before this (pad clock)
         self.spec = tk_spectate.Spectating(self)   # watching live matches (docs/SPECTATE.md)
         self.rooms_ui = tk_rooms.RoomsUI(self)     # private and community rooms (docs/ONLINE.md "Rooms")
+        self.casual = tk_casual.CasualUI(self)     # side and stage by choice (docs/ONLINE.md "Sides and stages by choice")
         self._bar_t = -1e9               # when the question bar's buttons last changed (pad clock): BAR_ARM_S
         self.tours = tk_tour.TourController(self)    # tournaments: the page, the calls (docs/TOURNAMENTS.md)
         self.fw_check = fwcheck.check    # the read-only firewall check (tests replace it)
@@ -407,6 +409,7 @@ class OnlineTab:
         for k, b in self.actions.items():
             b.configure(state="normal" if on.get(k) else "disabled")
         self.spec.set_actions(busy)
+        self.casual.refresh()
         connected = self.client is not None
         for b in (self.b_guest, self.b_login, self.b_register, self.b_forgot):
             b.configure(state="disabled" if connected else "normal")
@@ -548,6 +551,7 @@ class OnlineTab:
                     if self.driver is not None:
                         self.driver.on_event(ev)
                     self.on_event(ev)
+                    self.casual.after_event(ev)
             except queue.Empty:
                 pass
         if self.driver is not None:
@@ -692,6 +696,7 @@ class OnlineTab:
                         tournaments=True,
                         **self.spec.client_kw())
         self.spec.new_client(c)
+        self.casual.new_client(c)
         # this PC's game speed from its last online match (the lobby warns / keeps slow PCs out of ranked);
         # before the first one, from the newest game log (offline play)
         try:
@@ -770,9 +775,11 @@ class OnlineTab:
             self.on_char()
             if client.recovery_codes:
                 self.show_codes(client.recovery_codes, first=True)
+            self._run_pending_search()
 
         def failed():
             self._login_busy = False
+            self._pending_search = None             # (--search: the player sees why in the status line)
             # Only the server's "no" ends the saved login. A server that cannot be reached (restarting for an
             # update, an outage, no internet) leaves it: it works again once the server is back.
             if mode == "session" and refused.get("auth"):
@@ -838,6 +845,44 @@ class OnlineTab:
         if s and self.app.game_state().get("ok"):
             self.name_var.set(s.get("name", self.name_var.get()))
             self.do_login("session", session=s["token"])
+
+    # The launcher's command line --search ranked / --search casual (a desktop shortcut, Steam's launch options;
+    # casual = the Quick match queue): the Online tab opens, logs in with the saved login and starts searching.
+    SEARCH_MODES = {"ranked": "ranked", "casual": "quick", "quick": "quick"}
+
+    def search_on_start(self, mode):
+        """Remember a search to start once the saved login is in (try_saved_login logs in when the tab is shown).
+        Without a saved login for this server, or a game that is not built, only a hint. -> True when the search
+        will start by itself."""
+        mode = self.SEARCH_MODES.get(str(mode or "").strip().lower())
+        if not mode:
+            return False
+        if self.client is not None and self.client.me:
+            self._pending_search = mode
+            self._run_pending_search()
+            return True
+        if not self.app.game_state().get("ok"):
+            self.status(t("Build the game first (Build tab); then the search starts by itself next time."),
+                        error=True)
+            return False
+        if self._saved_session() is None:
+            self.status(t("Log in to start the search. Tick \"Remember me\" when you log in with your account: next "
+                          "time --search logs in and starts searching by itself."))
+            return False
+        self._pending_search = mode
+        return True
+
+    def _run_pending_search(self):
+        mode, self._pending_search = self._pending_search, None
+        me = self.client.me if self.client is not None and self.client.connected else None
+        if not mode or not me:
+            return
+        if mode == "ranked" and me.get("guest", True):
+            self.status(t("Ranked matches need an account: log in with your name and password."), error=True)
+            return
+        if me.get("status") != "idle":
+            return                                  # already searching, in a room or a match
+        self.do_queue(mode)
 
     def _make_driver(self):
         if self.driver is not None:          # a game left from before a lost connection
@@ -1639,6 +1684,7 @@ class OnlineTab:
                 self._match_head = t("Ranked match vs {name}", name=ev["opponent"]["name"])
             else:
                 self._match_head = t("Casual match vs {name}", name=ev["opponent"]["name"])
+            self._match_head += self.casual.head_suffix(ev)        # (P2 on Scrapyard): casual by choice
             regional = (ev.get("relay") or {}).get("name") if ev.get("path") == "relay" else None
             self._match_tail = t("ping {ms} ms ({how}), input delay {frames} frames ({delay_ms} ms)",
                                  ms=f"{ev.get('rtt_ms', 0):.0f}",
@@ -1715,9 +1761,10 @@ class OnlineTab:
                 (t("I quit"), lambda: self._answer_result("quit")),
             ])
         elif k == "rematch_offer":
-            self.show_bar(t("{opponent} wants a rematch", opponent=n["opponent"]),
+            swapped, more = self.casual.offer(n)          # "with the sides swapped" / Rematch: swap sides
+            self.show_bar(t("{opponent} wants a rematch", opponent=n["opponent"]) + swapped,
                           [(t("Rematch"), lambda: self._rematch(True), "cross"),
-                           (t("No thanks"), lambda: self._rematch(False), "circle")])
+                           (t("No thanks"), lambda: self._rematch(False), "circle")] + more)
         self.view.after_driver(n)
         if k == "rematch_offer":
             self._come_forward(("rematch", n.get("match")))     # a decision for the player
@@ -1822,11 +1869,14 @@ class OnlineTab:
             self.driver.answer(what)
         self.status(t("Result sent; waiting for your opponent's report..."))
 
-    def _rematch(self, accept):
+    def _rematch(self, accept, swap=False):
         self.view.rematch_sent(bool(accept))
         self.hide_bar()
         if self.driver:
-            self.driver.rematch(None, accept)
+            if swap:
+                self.driver.rematch(None, accept, swap=True)      # P1 and P2 the other way round (tk_casual.py)
+            else:
+                self.driver.rematch(None, accept)
         if accept:
             self.status(t("Rematch offered; waiting for your opponent..."))
 
@@ -1951,6 +2001,7 @@ class OnlineTab:
     def _show_rematch_bar(self):
         text, opp = self.rematch_bar
         buttons = [(t("Rematch {name}", name=opp), lambda: self._rematch(True), "cross"),
+                   *self.casual.rematch_buttons(),            # Rematch: swap sides (Triangle), casual by choice
                    (t("Next game"), self._next_game),
                    (t("Leave"), lambda: self._rematch(False), "circle"),
                    (t("Block {name}", name=opp), lambda: self.block_opponent(opp))]
@@ -2058,8 +2109,8 @@ class OnlineTab:
     # ------------------------------------------------------------------ controller (padnav.py)
     # A pad or arcade stick runs the whole online loop: Cross (A) accepts a found match or a challenge,
     # starts the rematch, and searches; Circle (B) declines, leaves, and stops the search. Which stick
-    # button is Cross comes from the game's controls.ini. Triangle (Y) is read but unused: every match
-    # gets a random stage from the server (a rematch too), so there is no stage choice to make.
+    # button is Cross comes from the game's controls.ini. Triangle (Y) is Rematch: swap sides after a casual
+    # match by choice (tk_casual.py); the stage is chosen in the launcher, never on the pad.
     def _tab_viewable(self):
         return bool(self.parent.winfo_viewable())
 

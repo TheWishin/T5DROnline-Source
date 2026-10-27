@@ -382,6 +382,22 @@ Good to know:
   are casual. See [docs/ONLINE.md](docs/ONLINE.md) "Rooms".
 - More in [docs/ONLINE.md](docs/ONLINE.md) and [docs/RANKED.md](docs/RANKED.md).
 
+### Start a search from a shortcut
+
+From 1.1.5, `T5DR Online.exe --search ranked` opens the launcher on the Online
+tab, logs in and starts a ranked search. `--search casual` starts a quick
+match instead. This works only with a saved login: log in once with your
+account and **Remember me** ticked. Without a saved login, the tab opens and
+tells you to log in. Then click the search button yourself.
+
+- **Desktop shortcut:** right-click `T5DR Online.exe` -> **Show more options**
+  -> **Create shortcut** (Windows 11). Open the shortcut's **Properties** and
+  add ` --search ranked` at the end of **Target**, after the closing quote:
+  `"C:\Games\T5DR\T5DR Online.exe" --search ranked`
+- **Steam** (as a non-Steam game): add `T5DR Online.exe` with **Games -> Add a
+  Non-Steam Game to My Library**, then **Properties -> Launch options**:
+  `--search casual`
+
 ### Spectating
 
 A friend in a match, any room's match or a tournament set can be watched live:
@@ -482,7 +498,9 @@ not provide the package or the license and cannot help to get them.
 
 **Does it run on Linux or macOS?** macOS on Apple silicon: yes, offline, built from source
 (see "Building on macOS"). No release zip or launcher there yet, and online play is a test build
-(docs/MACOS_ONLINE_TEST.md). Linux: no.
+(docs/MACOS_ONLINE_TEST.md). Linux: not
+supported, but players run the Windows release under Proton or Wine; what they found is in
+[docs/TROUBLESHOOTING.md "Linux and Steam Deck"](docs/TROUBLESHOOTING.md#linux-and-steam-deck-wine-proton).
 
 **Does it run on Windows on ARM (Snapdragon laptops)?** Not tested. Windows 11
 should run it through its x64 emulation, more slowly; Windows 10 on ARM cannot.

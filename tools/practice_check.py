@@ -104,9 +104,11 @@ def check(log_lines):
          "round start: the fighters 2000 apart" + (f" ({xyz(start[0])})" if start else ""))
     s = xyz(start[0]) if start else None
     resets = [i for i, p in enumerate(places) if p[1] == "reset round start:"]
-    later = [i for i, p in enumerate(places) if p[1] == "30 frames later:"]
+    later = [i for i, p in enumerate(places) if p[1] == "30 frames later:" or p[1] == "after the turn, back to:"]
     good(len(resets) >= 5, f"{len(resets)} round-start resets (want 5)")
-    for i in resets:
+    # the places are checked while the dummy stands (later on it walks, sidesteps, plays a recording)
+    first_mode = next((int(ln.split()[0]) for ln in log_lines if re.match(r"^\d+ dummy \w+$", ln)), 1 << 30)
+    for i in [r for r in resets if int(places[r][0]) < first_mode]:
         after = next((j for j in later if j > i), None)
         if s and after is not None:
             a = xyz(places[after])

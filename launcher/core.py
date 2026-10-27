@@ -1096,8 +1096,8 @@ def speed_hint(lines):
         return t("Fights were slower than 60 fps: the integrated graphics were busy and slowed the processor "
                  "too. A lower Internal resolution in Settings helps.")
     if card and card >= cpu:
-        return t("Fights were slower than 60 fps because of the graphics card: it is too slow for this game even "
-                 "at this Internal resolution.")
+        return t("Fights were slower than 60 fps because of the graphics card: it is too slow for this game. "
+                 "Internal resolution Lowest helps a little at most.")
     if cpu or card:
         return t("Fights were slower than 60 fps because of the processor: close other programs while you play. "
                  "A lower Internal resolution does not help.")

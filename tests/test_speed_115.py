@@ -58,6 +58,9 @@ class Verdict(unittest.TestCase):
         p = added(patch_text())
         for want in ('" | GPU-bound: the graphics card needs %.1f ms a frame at %s -- "',
                      '"the card itself is the limit%s, a lower Internal resolution saves little"',
+                     '"Internal resolution Lowest may help a little; the card itself is the limit%s"',
+                     "slowish && busy >= 0.85 && rscale > 0.99f",
+                     "const int slowish = (slow + n_late) * 10 >= frames && slow + n_late >= 10;",
                      '" | CPU and GPU in turn: the game needs %.1f ms a frame and the "',
                      '"render translation %.1f, then the frame waits %.1f ms for the graphics card%s, busy %.0f %% "',
                      '" | CPU-bound: the game needs %.1f ms a frame and the render "',
@@ -103,8 +106,8 @@ class Verdict(unittest.TestCase):
         for lang in ("de", "es", "fr", "ja", "ko", "pt_br"):
             with open(os.path.join(ROOT, "lobby", "t5lobby", f"i18n_{lang}.py"), encoding="utf-8") as f:
                 cat = f.read()
-            for key in ("Fights were slower than 60 fps because of the graphics card: it is too slow for this game "
-                        "even at this Internal resolution.",
+            for key in ("Fights were slower than 60 fps because of the graphics card: it is too slow for this game. "
+                        "Internal resolution Lowest helps a little at most.",
                         "Fights were slower than 60 fps because of the processor: close other programs while you "
                         "play. A lower Internal resolution does not help."):
                 self.assertIn(f'"{key}":', cat, lang)
@@ -118,9 +121,11 @@ class Warmup(unittest.TestCase):
         self.w = shader_warmup
 
     def test_fights_cover_the_stage_select_and_every_fighter(self):
+        # (Jinpachi, id 35, is locked offline: his warm-up fight never started)
         lines = self.w.fight_lines(18)
         self.assertEqual([s for s, _, _, _ in lines], list(range(17, 35)))
-        self.assertEqual(sorted(f for _, p1, p2, _ in lines for f in (p1, p2)), list(range(36)))
+        self.assertEqual(sorted(set(f for _, p1, p2, _ in lines for f in (p1, p2))), list(range(35)))
+        self.assertNotIn(35, [f for _, p1, p2, _ in self.w.fight_lines(99) for f in (p1, p2)])   # Jinpachi: locked
         self.assertEqual(lines[0][3], "0,1,17,1")
         self.assertEqual(len(self.w.fight_lines(99)), 33)        # 18 + the 15 Tekken 5 stages
 
@@ -190,7 +195,17 @@ class Runtime(unittest.TestCase):
     def test_slow_gpu_hook_is_test_only(self):
         p = added(patch_text())
         self.assertIn('getenv("RSX_TEST_SLOW_GPU")', p)
-        self.assertIn("if (g_ld_sg_cfg) ld_slow_gpu_frame();", p)
+        self.assertIn("if (g_ld_sg_cfg) {   /* RSX_TEST_SLOW_GPU (test hook) */", p)
+        self.assertIn("    ld_frame_end_extras();", p)          # before every present (not the FIFO flip method)
+
+    def test_texture_fast_path(self):
+        p = added(patch_text())
+        for want in ("static void decode_argb8_identity(", "o[x] = (v >> 8) | (v << 24);", 'getenv("RSX_TEX_FAST")',
+                     'getenv("RSX_TEX_FAST_CHECK")', "(remap & 0xFFFFu) == 0xAAE4u", "base_fmt == TEX_FMT_A8R8G8B8"):
+            self.assertIn(want, p)
+
+    def test_ring_guard_per_slot(self):
+        self.assertIn("static u64* g_ldg_blk[LD_SLOTS_MAX][LDG_N];", added(patch_text()))
 
     def test_files_it_touches(self):
         files = re.findall(r"(?m)^diff --git a/(\S+)", patch_text())

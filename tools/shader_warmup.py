@@ -15,8 +15,8 @@ below-normal priority, as one persistent game (T5_CTL_DIR, docs/DIRECTFIGHT.md "
 on a stage with two fighters (offline, nobody presses a button), FIGHT START + --fight-seconds, "idle" (back to
 a fresh select screen), the next fight, ... "quit". It runs where the launcher starts the game
 (run_game.game_command: <out> is the working directory), so the caches are the ones the player's games use.
-The fights cover every stage of the stage select (ids 17-34) with all 36 fighters once (two a fight), then the
-Tekken 5 stages (ids 0-13, 15) as far as --fights allows.
+The fights cover every stage of the stage select (ids 17-34) with the 35 fighters of the select screen (two a
+fight; Jinpachi needs an unlock offline), then the Tekken 5 stages (ids 0-13, 15) as far as --fights allows.
 
 Never fails a build: a game that does not start, stops or gets stuck ends the warm-up with a note and exit
 code 0; the first fights then build their pipelines as before. warmup.json in the cache folder (the game's
@@ -39,13 +39,17 @@ import run_game  # noqa: E402
 
 # Stage select ids first (what ranked and quick matches draw), then the Tekken 5 stages (lobby fighters.json).
 STAGES = list(range(17, 35)) + list(range(0, 14)) + [15]
-FIGHTERS = 36
+FIGHTERS = 35   # ids 0-34: Jinpachi (35) is not selectable offline without his unlock -- his fight never started
+# P1 presses during each fight (as tools/fight_bench.py): the fighters move, hit and block, so the hit sparks and
+# effects of a real fight are drawn too -- with idle fighters a warmed stage still met ~10 new pipelines.
+PAD = ["RIGHT", "SQUARE", "", "TRIANGLE", "", "CROSS", "", "RIGHT", "CIRCLE", "", "LEFT", "", "SQUARE", "",
+       "SQUARE TRIANGLE", ""]
 CACHE = os.path.join("scratch", "rsx_shader_cache_v2")
 MARKER = "warmup.json"
 
 
 def fight_lines(n):
-    """n fight lines "p1,p2,stage,1": stage after stage, the fighters two by two (all 36 in the first 18)."""
+    """n fight lines "p1,p2,stage,1": stage after stage, the fighters two by two (all 35 in the first 18)."""
     out = []
     for i in range(min(n, len(STAGES))):
         p1, p2 = (2 * i) % FIGHTERS, (2 * i + 1) % FIGHTERS
@@ -75,7 +79,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--out", default=ROOT, help="the build's output root (build_game.py --out)")
     ap.add_argument("--fights", type=int, default=18, help="how many fights (18 = every stage of the stage select)")
-    ap.add_argument("--fight-seconds", type=float, default=4.0, help="seconds of each fight after FIGHT START")
+    ap.add_argument("--fight-seconds", type=float, default=6.0, help="seconds of each fight after FIGHT START")
     ap.add_argument("--minutes", type=float, default=12.0, help="give up after this long")
     ap.add_argument("--force", action="store_true", help="run again although warmup.json says it ran for this build")
     ap.add_argument("env", nargs="*", help="extra NAME=VALUE for the game (tests)")
@@ -121,14 +125,14 @@ def warmup(a, out):
     log_path = os.path.join(out, "logs", "warmup.log")
     os.makedirs(os.path.dirname(log_path), exist_ok=True)
     note(f"{len(lines)} short fights in a hidden game, so the first real fights do not stutter "
-         f"(about {max(1, round(len(lines) * 14 / 60))} minutes)")
+         f"(about {max(1, round((20 + len(lines) * (8 + a.fight_seconds)) / 60))} minutes)")
     t_end = time.time() + 60 * a.minutes
     done = 0
     with open(log_path, "w", encoding="utf-8", errors="replace") as log:
         p = subprocess.Popen(cmd, env=env, cwd=cwd, stdout=log, stderr=subprocess.STDOUT,
                              creationflags=subprocess.BELOW_NORMAL_PRIORITY_CLASS)
         try:
-            done = play(ctl, status, p, lines, a.fight_seconds, t_end)
+            done = play(ctl, status, p, lines, a.fight_seconds, t_end, pad)
             if p.poll() is None:
                 ctl.send("quit")
                 try:
@@ -148,7 +152,19 @@ def warmup(a, out):
     return 0
 
 
-def play(ctl, status, p, lines, fight_seconds, t_end):
+def set_pad(path, buttons):
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        f.write(buttons)
+    for _ in range(50):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            time.sleep(0.005)
+
+
+def play(ctl, status, p, lines, fight_seconds, t_end, pad):
     """Drive the persistent game through `lines`; returns how many fights reached FIGHT START."""
     done = 0
     last_match = 0
@@ -174,7 +190,13 @@ def play(ctl, status, p, lines, fight_seconds, t_end):
             note("this fight did not start -- stopping")
             return done
         done += 1
-        time.sleep(fight_seconds)
+        t0 = time.time()
+        k = 0
+        while time.time() - t0 < fight_seconds:
+            set_pad(pad, PAD[k % len(PAD)])
+            k += 1
+            time.sleep(0.25)
+        set_pad(pad, "")
         ctl.send("idle")
         t0 = time.time()
         while time.time() - t0 < 90:

@@ -2144,8 +2144,8 @@ MESSAGES = {
         "Les combats étaient sous 60 fps à cause du graphisme (limité par le GPU) : choisis une résolution interne plus basse dans Réglages.",
     "Fights were slower than 60 fps: the integrated graphics were busy and slowed the processor too. A lower Internal resolution in Settings helps.":
         "Les combats étaient sous 60 fps : la puce graphique intégrée était occupée et a aussi ralenti le processeur. Une résolution interne plus basse dans Réglages aide.",
-    "Fights were slower than 60 fps because of the graphics card: it is too slow for this game even at this Internal resolution.":
-        "Les combats étaient sous 60 fps à cause de la carte graphique : elle est trop lente pour ce jeu, même avec cette résolution interne.",
+    "Fights were slower than 60 fps because of the graphics card: it is too slow for this game. Internal resolution Lowest helps a little at most.":
+        "Les combats étaient sous 60 fps à cause de la carte graphique : elle est trop lente pour ce jeu. La résolution interne la plus basse aide un peu tout au plus.",
     "Fights were slower than 60 fps because of the processor: close other programs while you play. A lower Internal resolution does not help.":
         "Les combats étaient sous 60 fps à cause du processeur : ferme les autres programmes pendant que tu joues. Une résolution interne plus basse n'aide pas.",
     # ---- private and community rooms (lobby/t5lobby/tk_rooms.py; the server's messages: i18n_known.py)

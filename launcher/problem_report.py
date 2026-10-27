@@ -836,8 +836,8 @@ def speed_diagnosis(run_lines, facts, screens=()):
         need = max(float(m.group(1)) for m in card if m)
         step = [m.group(2) for m in card if m][-1]
         out.append(f"The graphics card itself was the limit in {n_card} of the last {len(slow)} windows (up to "
-                   f"{need:.1f} ms a frame at {step}): a lower Internal resolution saves little; see the GPU's "
-                   "resource binding tier in the line.")
+                   f"{need:.1f} ms a frame at {step}): Internal resolution Lowest helps a little at most; see the "
+                   "GPU's resource binding tier in the line.")
     if n_cpu:
         game = max(float(m.group(2)) for m in cpu if m)
         xlat = max(float(m.group(3)) for m in cpu if m)

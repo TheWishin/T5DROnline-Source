@@ -1,5 +1,5 @@
 diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
-index 5f2aa48..8e3da35 100644
+index 5f2aa48..98853d5 100644
 --- a/libs/video/rsx_live_draw.c
 +++ b/libs/video/rsx_live_draw.c
 @@ -90,6 +90,7 @@ void rsx_pf_stamp(int slot) { (void)slot; }
@@ -134,7 +134,135 @@ index 5f2aa48..8e3da35 100644
      fprintf(stderr, "\n");
      g_gp.n_acc = 0; g_gp.total_ticks = 0; g_gp.lists = 0; g_gp.frames0 = frames_now;
  }
-@@ -11291,10 +11329,130 @@ static void sink_clear_impl(void* user, const rsx_dispatch* r, u32 mask)
+@@ -3205,7 +3243,7 @@ static int ld_async_present(void)
+  * hand out memory a queued frame still reads (docs/RENDER_PERF.md "Ring reuse"). */
+ enum { LDG_VB, LDG_IB, LDG_CB, LDG_PSCB, LDG_UPLOAD, LDG_N };
+ static int g_ldg_on = -1;
+-static u64* g_ldg_blk[LDG_N];
++static u64* g_ldg_blk[LD_SLOTS_MAX][LDG_N];   /* patch 0075: per frame slot (each slot has its own rings) */
+ static u64 g_ldg_checked, g_ldg_early;
+ static void ld_ring_guard(int ring, u64 off, u64 len)
+ {
+@@ -3216,16 +3254,19 @@ static void ld_ring_guard(int ring, u64 off, u64 len)
+         g_ldg_on = e && *e == '1';
+         if (g_ldg_on) {
+             const u64 cap[LDG_N] = { VERT_BUFFER_SIZE, INDEX_BUFFER_SIZE, CB_RING_BYTES, PS_CB_RING_BYTES, UPLOAD_SIZE };
+-            for (int i = 0; i < LDG_N; i++) g_ldg_blk[i] = (u64*)calloc((size_t)(cap[i] >> shift[i]) + 2, sizeof(u64));
++            for (int k = 0; k < LD_SLOTS_MAX; k++)
++                for (int i = 0; i < LDG_N; i++)
++                    g_ldg_blk[k][i] = (u64*)calloc((size_t)(cap[i] >> shift[i]) + 2, sizeof(u64));
+             fprintf(stderr, "[ring-guard] on: ring memory reuse is checked against the GPU fence (test hook)\n");
+         }
+     }
+-    if (!g_ldg_on || !len || !g_ldg_blk[ring]) return;
++    u64* const blk = g_ldg_on ? g_ldg_blk[g_ld_cur < LD_SLOTS_MAX ? g_ld_cur : 0][ring] : NULL;
++    if (!g_ldg_on || !len || !blk) return;
+     const u64 cur = g.fence_value + 1;           /* what the list being recorded will signal */
+     const u64 done = g.fence->lpVtbl->GetCompletedValue(g.fence);
+     g_ldg_checked++;
+     for (u64 b = off >> shift[ring]; b <= (off + len - 1) >> shift[ring]; b++) {
+-        const u64 last = g_ldg_blk[ring][b];
++        const u64 last = blk[b];
+         if (last && last != cur && last > done) {
+             if (g_ldg_early++ < 12)
+                 fprintf(stderr, "[ring-guard] %s ring bytes 0x%llX+%llu reused while list %llu still uses them "
+@@ -3236,7 +3277,7 @@ static void ld_ring_guard(int ring, u64 off, u64 len)
+             break;
+         }
+     }
+-    for (u64 b = off >> shift[ring]; b <= (off + len - 1) >> shift[ring]; b++) g_ldg_blk[ring][b] = cur;
++    for (u64 b = off >> shift[ring]; b <= (off + len - 1) >> shift[ring]; b++) blk[b] = cur;
+ }
+ 
+ static void ld_begin_recording_owned(void);
+@@ -3516,6 +3557,47 @@ static void decode_texel(u32 base_fmt, const u8* p, u32 remap, u8 d[4])
+     d[3] = remap_comp(s, remap, 0);
+ }
+ 
++/* Patch 0075: the commonest texture -- 32-bit A8R8G8B8 with the identity remap (0xAAE4) -- without the
++ * per-texel decode_texel (a format switch and four remap lookups a texel): RGBA is the guest's ARGB word
++ * rotated by one byte. The same bytes come out (RSX_TEX_FAST_CHECK=1 decodes every such level both ways
++ * and counts differences). The game's intro movie and the menus' movie backgrounds upload a 1280 x 720
++ * texture of this kind every other frame: 4 ms of the translation on the 7950X each, the i5-2500 log's
++ * "render translation" slow frames in its first 30 s. RSX_TEX_FAST=0: the per-texel decode. */
++static int ld_tex_fast_on(void)
++{
++    static int v = -1;
++    if (v < 0) { const char* e = getenv("RSX_TEX_FAST"); v = !(e && *e == '0'); }
++    return v;
++}
++static int ld_tex_fast_check(void)
++{
++    static int v = -1;
++    if (v < 0) { const char* e = getenv("RSX_TEX_FAST_CHECK"); v = e && *e == '1'; }
++    return v;
++}
++static u64 g_ld_tex_fast_levels, g_ld_tex_fast_diffs;
++static void decode_argb8_identity(const u8* src, u32 pitch, u32 w, u32 h, int linear, u32 lw, u32 lh, u8* dst)
++{
++    u32* out = (u32*)dst;
++    for (u32 y = 0; y < h; y++) {
++        u32* o = out + (size_t)y * w;
++        if (linear) {
++            const u8* row = src + (size_t)y * pitch;
++            for (u32 x = 0; x < w; x++) {
++                u32 v;
++                memcpy(&v, row + (size_t)x * 4, 4);
++                o[x] = (v >> 8) | (v << 24);
++            }
++        } else {
++            for (u32 x = 0; x < w; x++) {
++                u32 v;
++                memcpy(&v, src + (size_t)morton_index(x, y, lw, lh) * 4, 4);
++                o[x] = (v >> 8) | (v << 24);
++            }
++        }
++    }
++}
++
+ typedef struct { u32 w, h; const u8* data; u32 row_bytes, rows; } tex_level_t;
+ 
+ /* ---------------------------------------------------------------------------
+@@ -4104,14 +4186,30 @@ static ID3D12Resource* decode_guest_texture(const rsx_dsp_texture* t, u32 remap)
+               }
+               pdn++;
+           } }
+-        for (u32 y = 0; y < mh; y++)
+-            for (u32 x = 0; x < mw; x++) {
+-                const u8* pixel = linear
+-                    ? level_src + (size_t)y * pitch + (size_t)x * texel_size
+-                    : level_src + (size_t)morton_index(x, y, lw, lh) * texel_size;
+-                decode_texel(base_fmt, pixel, remap,
+-                             rgba[n] + ((size_t)y * mw + x) * 4);
+-            }
++        const int fast = base_fmt == TEX_FMT_A8R8G8B8 && texel_size == 4 && (remap & 0xFFFFu) == 0xAAE4u &&
++                         ld_tex_fast_on();   /* patch 0075 */
++        if (fast)
++            decode_argb8_identity(level_src, pitch, mw, mh, linear, lw, lh, rgba[n]);
++        u8* check = fast && ld_tex_fast_check() ? (u8*)malloc((size_t)mw * mh * 4) : NULL;
++        u8* slow_dst = fast ? check : rgba[n];
++        if (slow_dst) {
++            for (u32 y = 0; y < mh; y++)
++                for (u32 x = 0; x < mw; x++) {
++                    const u8* pixel = linear
++                        ? level_src + (size_t)y * pitch + (size_t)x * texel_size
++                        : level_src + (size_t)morton_index(x, y, lw, lh) * texel_size;
++                    decode_texel(base_fmt, pixel, remap,
++                                 slow_dst + ((size_t)y * mw + x) * 4);
++                }
++        }
++        if (check) {
++            g_ld_tex_fast_levels++;
++            if (memcmp(check, rgba[n], (size_t)mw * mh * 4)) g_ld_tex_fast_diffs++;
++            if ((g_ld_tex_fast_levels & 63u) == 1u)
++                fprintf(stderr, "[tex-fast] check: %llu levels decoded both ways, %llu different\n",
++                        (unsigned long long)g_ld_tex_fast_levels, (unsigned long long)g_ld_tex_fast_diffs);
++            free(check);
++        }
+         /* LD_TEXRGBA_DUMP=1: the DECODED level-0 RGBA, with a non-black count
+          * and the remap that produced it.
+          *
+@@ -11291,6 +11389,121 @@ static void sink_clear_impl(void* user, const rsx_dispatch* r, u32 mask)
      }
  }
  
@@ -256,15 +384,32 @@ index 5f2aa48..8e3da35 100644
  static void sink_flip(void* user, const rsx_dispatch* r, u32 arg)
  {
      ld_begin_recording();
-     (void)user; (void)r;
-+    if (g_ld_sg_cfg) ld_slow_gpu_frame();   /* patch 0075: RSX_TEST_SLOW_GPU (test hook) */
-+    if (g_gp.on > 0) {   /* patch 0075: what the GPU reads from the upload heaps this frame ([gpu-pass] line) */
+@@ -14554,10 +14767,25 @@ static void ld_xo_ab(void)
+     }
+ }
+ 
++/* Patch 0075: the frame's end on the walker, before its present is recorded -- the slow-GPU test hook's
++ * dispatch, and what the GPU reads from the upload heaps for this frame ([gpu-pass] line). */
++static void ld_frame_end_extras(void)
++{
++    if (g_ld_sg_cfg) {   /* RSX_TEST_SLOW_GPU (test hook) */
++        ld_begin_recording();
++        ld_slow_gpu_frame();
++    }
++    if (g_gp.on > 0) {
 +        g_ld_up[0] += g.vb_used; g_ld_up[1] += g.ib_used; g_ld_up[2] += g.cb_used; g_ld_up[3] += g.ps_cb_used;
 +        g_ld_up[4] += g.upload_used; g_ld_up_frames++;
 +    }
-     const u32 buffer_id = arg & 7u;
-     g_ld_flip_requested++;
-     g_ld_last_requested_buffer = buffer_id;
++}
++
+ void rsx_live_draw_present(u32 buffer_id)
+ {
+     if (!g.ready) return;
+     g_xo_last_async = 0;
++    ld_frame_end_extras();
+     if (!g_xo_on) { ld_present_body(buffer_id, 0); return; }
+     ld_vjob_drain();                  /* the frame's last guest-memory reads: before its flip completes */
+     ld_display_sync();                /* resize / fullscreen switch: here, on the window's thread (it
 diff --git a/libs/video/rsx_live_draw.h b/libs/video/rsx_live_draw.h
 index c78f6a0..97d720b 100644
 --- a/libs/video/rsx_live_draw.h
@@ -505,7 +650,7 @@ index d991aab..b4a03bb 100644
  static inline const char* hsp_mask_text(uint64_t m, char* out, unsigned n)
  {
 diff --git a/runtime/ppu/tests/boot_main.cpp b/runtime/ppu/tests/boot_main.cpp
-index dd99ded..f2a9e1c 100644
+index dd99ded..d87e89f 100644
 --- a/runtime/ppu/tests/boot_main.cpp
 +++ b/runtime/ppu/tests/boot_main.cpp
 @@ -466,6 +466,9 @@ extern "C" unsigned ppu_boot_frames_presented(void) { return (unsigned)g_frames_
@@ -518,18 +663,23 @@ index dd99ded..f2a9e1c 100644
  /* Patch 0067: presents handed to the renderer's present thread (rsx_live_draw.h) */
  extern "C" unsigned rsx_live_draw_present_async(void);
  extern "C" void rsx_live_draw_xo_info(long long* end_qpc, unsigned* done, long long* wait_ticks);
-@@ -613,14 +616,54 @@ struct SlowFrames {
+@@ -612,15 +615,62 @@ struct SlowFrames {
+                 snprintf(gpu_txt, sizeof gpu_txt, "; GPU busy %.1f ms a frame (%.0f %% of the time%s)",
                           (gms - gpu_ms0) / fr, busy * 100.0, igpu ? ", integrated graphics" : "");
              host_sched_clock_text(clk, sizeof clk);
-             const int slowish = slow * 10 >= frames && slow >= 10;
+-            const int slowish = slow * 10 >= frames && slow >= 10;
 -            if (slowish && (busy >= 0.85 || n_gpu * 2 >= slow))
++            /* patch 0075: frames late for their vblank count too -- a steady 50 fps has no frame over
++             * 1.25 periods (20.9 ms) and got no verdict at all */
++            const int slowish = (slow + n_late) * 10 >= frames && slow + n_late >= 10;
 +            /* Patch 0075: an honest verdict. A lower Internal resolution is suggested only when the GPU
 +             * is near 100 % busy and the resolution is above Native (or the graphics are integrated: one
 +             * power budget). An i3-3240 with an old GT 730 (resource binding tier 1) read "GPU-bound ...
 +             * a lower Internal resolution is what helps" at 0.5x with the GPU 66 % busy -- its GPU time
 +             * did not follow the resolution (16x fewer pixels: +30 % fps), and most of the frame was
 +             * the game's own work on 2 cores, then a wait for the GPU (one frame in flight). Now:
-+             * "GPU-bound" (the card itself is the limit at Native or below), "CPU and GPU in turn"
++             * "GPU-bound: the graphics card needs ..." (the card itself is the limit: at Native Lowest may
++             * still help a little, below Native it saves little), "CPU and GPU in turn"
 +             * (frames wait for the GPU, which is not near 100 % busy) or "CPU-bound", each with the
 +             * game part and the render translation (its processor time: the GPU wait taken out) and
 +             * the GPU's resource binding tier. */
@@ -548,6 +698,10 @@ index dd99ded..f2a9e1c 100644
 -                         "Internal resolution is what helps", busy >= 0 ? (gms - gpu_ms0) / fr : 0.0,
 -                         igpu ? " (integrated graphics)" : "");
 +                         "Internal resolution is what helps", gpf, igpu ? " (integrated graphics)" : "");
++            else if (slowish && busy >= 0.85 && rscale > 0.99f)
++                snprintf(verdict, sizeof verdict, " | GPU-bound: the graphics card needs %.1f ms a frame at %s -- "
++                         "Internal resolution Lowest may help a little; the card itself is the limit%s", gpf,
++                         rsx_internal_res_label(), tier);
 +            else if (slowish && busy >= 0.85)
 +                snprintf(verdict, sizeof verdict, " | GPU-bound: the graphics card needs %.1f ms a frame at %s -- "
 +                         "the card itself is the limit%s, a lower Internal resolution saves little", gpf,

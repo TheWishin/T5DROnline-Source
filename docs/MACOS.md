@@ -249,7 +249,7 @@ Phases (each ends with something the owner can see):
 | item | why | cost |
 |---|---|---|
 | **A Mac with Apple Silicon** (M1 or newer; 16 GB memory recommended -- clang needs 2-4 GB per lifted chunk), macOS 14 or newer | nothing past the groundwork can be checked without one | owned or ~600-1,000 USD (a used M1/M2 Mac mini is enough) |
-| a way for an agent to use it: Remote Login (SSH) from this PC, or Claude Code installed on the Mac | builds, runs, frame dumps | -- |
+| a way to build and test on it from this PC: Remote Login (SSH), or a remote session on the Mac | builds, runs, frame dumps | -- |
 | Xcode Command Line Tools (free, `xcode-select --install`), Homebrew with cmake, ninja, python 3.12, glslang, spirv-cross (and sdl2: ps3recomp's CMake insists on it off Windows) | build | free |
 | **Apple Developer Program**: decision by the owner. Gives a Developer ID certificate for signing and notarization, so players open the game normally. Without it: the game runs, but each player must allow it once in System Settings > Privacy & Security > "Open Anyway" (macOS 15 removed the right-click shortcut), and again after updates | player experience | **99 USD a year**; the owner creates the account, never an agent |
 | a Mac player or two for online tests against PCs, later a closed test | Mac vs PC over the internet | -- |

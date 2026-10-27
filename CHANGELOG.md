@@ -23,6 +23,13 @@ part is in the README's status table.
   published as a pre-release (the workflow now makes every draft one), update drills from the last two releases
   with a real package, then marked latest, then the lobby's release notice. Never a tag on a red or skipped check.
 
+### Developer tools
+- `tools/build_game.py`'s deps step no longer says "already done" for a ps3recomp checkout with an older patch series:
+  `tools/prepare_ps3recomp.py` notes the series it applied (`.git/t5dr-prepared.json`), and a checkout whose series
+  differs (or, unnoted, that a patch of the series still applies to) is prepared again; the old tree is kept aside
+  unless it is exactly what was prepared. A release's vendored copy is never touched. The preflight's unit tests run
+  against the tree the zip is built from.
+
 ## v1.1.6 (2026-10-27)
 
 **Hotfix: the 1.1.5 launcher closed right after it started.** On a PC with the game's package (.pkg) chosen in the

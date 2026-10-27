@@ -49,7 +49,8 @@ and Pillow for the smoke suite's frame checks):
 - `test_build_game.py` -- pins, the output layout (`--out`, defaults inside
   ignored folders), the code ID, argument parsing and step order, one
   `ERROR:` line and exit 2 on a build error, the `deps` step's commands
-  (patches in name order) and its vendored-copy check, `.rap`/`.pkg`
+  (patches in name order), its vendored-copy check, and with real git a
+  developer's checkout prepared again when the patch series changed, `.rap`/`.pkg`
   validation, `PARAM.SFO` parsing, another title or another version refused.
 - `test_lift_spu_jobs.py` -- the job fingerprint against the runtime's own
   (see the FNV note below), the job table, guest reads from a synthetic ELF,

@@ -592,6 +592,13 @@ def started_tool(line):
     return os.path.basename(words[0]) if words else None
 
 
+def step_title(step):
+    """t(STEP_TITLES[step]) with the texts written out (tests/test_i18n.py keeps t(variable) out of this file)."""
+    return {"deps": t("Recompiler"), "keys": t("Key data"), "decrypt": t("Check & decrypt"), "unpack": t("Unpack"),
+            "vfs": t("Game files"), "lift": t("Translate code"), "spu": t("Sound core"),
+            "compile": t("Compile")}.get(step, step)
+
+
 def step_quiet_hint(step, quiet_s, tool=None):
     """The Build tab's hint once a step has printed nothing for QUIET_S[step] seconds, else None. The translation
     step keeps its own words (lift_quiet_hint)."""
@@ -600,7 +607,7 @@ def step_quiet_hint(step, quiet_s, tool=None):
     elif step in QUIET_S and quiet_s >= QUIET_S[step]:
         hint = t("The step \"{title}\" has printed nothing for {minutes} minutes. On a slow or busy PC it may still be "
                  "working. If nothing changes, press Cancel and then BUILD GAME again; build.log has the details.",
-                 title=t(STEP_TITLES[step]), minutes=int(quiet_s // 60))
+                 title=step_title(step), minutes=int(quiet_s // 60))
     else:
         return None
     if hint and tool:

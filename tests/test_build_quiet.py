@@ -62,6 +62,10 @@ class Hint(unittest.TestCase):
             self.assertIsNotNone(core.step_quiet_hint(step, limit), step)
         self.assertIsNone(core.step_quiet_hint(None, 99999))
 
+    def test_step_titles(self):
+        for step, title in core.STEP_TITLES.items():
+            self.assertEqual(core.step_title(step), title)          # (written out twice: the same English)
+
     def test_words(self):
         h = core.step_quiet_hint("unpack", 185, "pkg_extract.py")
         self.assertEqual(h, 'The step "Unpack" has printed nothing for 3 minutes. On a slow or busy PC it may still be '

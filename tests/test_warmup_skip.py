@@ -16,7 +16,10 @@ for _d in ("launcher", "lobby", "tools"):
     if os.path.join(ROOT, _d) not in sys.path:
         sys.path.append(os.path.join(ROOT, _d))
 import core  # noqa: E402
+
+_path = list(sys.path)
 import shader_warmup as w  # noqa: E402
+sys.path[:] = _path        # (it puts lobby/ in front: test_smoke's late "import run" would find lobby/run.py)
 
 
 class FakeProc:

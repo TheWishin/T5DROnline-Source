@@ -34,7 +34,7 @@
  * T5_COSTUME_SAVE2 for P2.
  */
 #define WIN32_LEAN_AND_MEAN
-#include <windows.h>
+#include "../platform/t5_win.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string>

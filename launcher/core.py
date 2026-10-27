@@ -503,7 +503,7 @@ def game_exe(out):
 
 def game_state(out):
     """What the Play tab shows: dict(built, ok, text, needs_rebuild, elf_sha1)."""
-    exe = os.path.join(out, "build", "cmake", "t5dr.exe")
+    exe = game_exe(out)     # t5dr.exe; t5dr on macOS
     elf = os.path.join(out, "game", "EBOOT.elf")
     stamp = os.path.join(out, "build", "t5dr_build.json")
     st = dict(built=False, ok=False, needs_rebuild=False, elf_sha1=None, text="")

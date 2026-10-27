@@ -11,7 +11,7 @@
  */
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
-#include <windows.h>
+#include "../platform/t5_win.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -28,6 +28,7 @@ extern "C" uint8_t* vm_base;
 
 namespace rb {
 
+#if defined(_WIN32)   /* x86 trap flag + 4 KB page protection: Windows only (docs/MACOS.md) */
 namespace {
 struct R { uint32_t base, len; };
 std::vector<R> g_ranges, g_active;        /* configured ranges; the ranges armed right now */
@@ -195,5 +196,15 @@ void wft_disarm(const char* tag)
     for (auto& kv : g_addr_who) logline("WA %s %s %d", tag, kv.first.c_str(), kv.second);
     g_addr_who.clear();
 }
+
+#else
+/* A port would trap on 16 KB pages on Apple Silicon and use the write watch's
+ * fault handler (t5_plat_posix.c) -- the two cannot both protect a page. */
+void wft_install() { const char* e = getenv("T5_RB_WFT"); if (e && *e) note("write-fault tracer: Windows only -- off"); }
+bool wft_enabled() { return false; }
+void wft_arm() {}
+void wft_arm_pages(const uint32_t* pages, size_t n) { (void)pages; (void)n; }
+void wft_disarm(const char* tag) { (void)tag; }
+#endif
 
 } // namespace rb

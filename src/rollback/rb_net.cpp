@@ -1,13 +1,12 @@
 /* Rollback netplay loop -- see rb_net.h. */
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
-#include <windows.h>
+#include "../platform/t5_win.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <algorithm>
 #include <atomic>
-#include <intrin.h>
 
 #include "rb.h"
 #include "rb_state.h"
@@ -281,13 +280,13 @@ double cyc_per_ms()
     if (g_cyc_per_ms > 0) return g_cyc_per_ms;
     /* QueryThreadCycleTime counts TSC ticks: measure the TSC against QPC once */
     LARGE_INTEGER f, a, b; QueryPerformanceFrequency(&f); QueryPerformanceCounter(&a);
-    const uint64_t t0 = __rdtsc();
+    const uint64_t t0 = t5p_cycles();
     do { QueryPerformanceCounter(&b); } while ((b.QuadPart - a.QuadPart) * 100 < f.QuadPart);
-    const uint64_t t1 = __rdtsc();
+    const uint64_t t1 = t5p_cycles();
     g_cyc_per_ms = (double)(t1 - t0) * (double)f.QuadPart / (double)(b.QuadPart - a.QuadPart) / 1000.0;
     return g_cyc_per_ms;
 }
-uint64_t thread_cycles() { ULONG64 c = 0; QueryThreadCycleTime(GetCurrentThread(), &c); return c; }
+uint64_t thread_cycles() { return t5p_thread_cycles(); }
 double ft_pct(const uint32_t* h, double q)
 {
     uint64_t n = 0; for (int i = 0; i < kFtBins; i++) n += h[i];
@@ -389,12 +388,22 @@ void offer()
     g_offered = true;
     if (!offered_by_env()) return;
     {   /* the rollback state needs the write watch on the guest memory: without it, no offer (lockstep) */
-        void* addrs[4]; ULONG_PTR count = 4; DWORD gran = 0;
-        if (GetWriteWatch(0, vm_base + 0x10000000u, 0x1000, addrs, &count, &gran) != 0) {
+        if (!t5p_write_watch_available(vm_base + 0x10000000u)) {
             note("rbnet: guest memory has no write watch (PS3_VM_WRITE_WATCH) -- rollback not offered, the match runs in lockstep");
             return;
         }
     }
+#if defined(__APPLE__)
+    {   /* macOS: the write watch is page protection there (t5_plat_posix.c), not yet run against a PC, and
+         * the first Mac-vs-PC test is the lockstep one (docs/MACOS_ONLINE_TEST.md): a Mac offers rollback
+         * only when asked to; the peer then runs the lockstep too */
+        const char* r = getenv("T5_MACOS_ROLLBACK");
+        if (!(r && *r == '1')) {
+            note("rbnet: macOS: rollback not offered (T5_MACOS_ROLLBACK=1 tests it) -- the match runs in lockstep");
+            return;
+        }
+    }
+#endif
     np::rb_offer(true);
     note("rbnet: rollback offered to the peer (T5_RB_MODE=off keeps the delay-based lockstep)");
 }

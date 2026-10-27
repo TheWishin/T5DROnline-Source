@@ -15,8 +15,7 @@
  * main thread and only while a window or the cut is on.
  */
 #define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-#include <intrin.h>
+#include "../platform/t5_win.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -169,9 +168,9 @@ int hook(ppu_context* ctx, uint32_t target)
     }
     if (!g_tm_on.load(std::memory_order_relaxed) || g_sp >= 1024) return 0;
     Frame& f = g_stk[g_sp++];
-    f.target = target; f.children = 0; f.t0 = __rdtsc();
+    f.target = target; f.children = 0; f.t0 = t5p_cycles();
     ps3_indirect_call_direct(ctx, target);
-    const uint64_t dt = __rdtsc() - f.t0;
+    const uint64_t dt = t5p_cycles() - f.t0;
     g_sp--;
     Tm& t = tm_slot(target);
     t.calls++; t.incl += dt; t.excl += dt - f.children; t.ret0 += (uint32_t)ctx->gpr[3] == 0;
@@ -183,9 +182,9 @@ uint64_t tsc_hz()
 {
     if (g_tsc_hz) return g_tsc_hz;
     LARGE_INTEGER f, a, b; QueryPerformanceFrequency(&f); QueryPerformanceCounter(&a);
-    const uint64_t t0 = __rdtsc();
+    const uint64_t t0 = t5p_cycles();
     do { QueryPerformanceCounter(&b); } while ((b.QuadPart - a.QuadPart) * 50 < f.QuadPart);
-    const uint64_t t1 = __rdtsc();
+    const uint64_t t1 = t5p_cycles();
     g_tsc_hz = (t1 - t0) * (uint64_t)f.QuadPart / (uint64_t)(b.QuadPart - a.QuadPart);
     return g_tsc_hz;
 }

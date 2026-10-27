@@ -1,0 +1,440 @@
+diff --git a/libs/input/cellPad.c b/libs/input/cellPad.c
+index 5d543a0..c3a88bf 100644
+--- a/libs/input/cellPad.c
++++ b/libs/input/cellPad.c
+@@ -1247,8 +1247,37 @@ s32 cellPad_sample_local(u32 port_no, CellPadData* out)
+     out->button[CELL_PAD_BTN_OFFSET_PRESS_R2]       = st.r2;
+     return CELL_OK;
+ #else
+-    (void)port_no;
+-    return CELL_PAD_ERROR_NO_DEVICE;
++    /* SDL2 (macOS, Linux): what cellPadGetData would hand the title for this port -- the
++     * first four game controllers, and on port 0 the window's keyboard and PS3_PAD_FILE --
++     * sampled now. Netplay's local input (T5DR's src/netplay) is read here; without it a
++     * Mac player's input never left the machine. Port 0 is always there (neutral when
++     * nothing is pressed), as for the title. */
++    if (port_no >= PAD_MAX_HOST_PORTS) return CELL_OK;   /* len = 0: nothing there */
++    pad_poll_backend();
++    const PadHostState* hs = &s_host_state[port_no];
++    if (!hs->connected && port_no != 0) return CELL_OK;
++    const u16 b = hs->buttons;
++    out->len = CELL_PAD_LEN_CHANGE_DEFAULT;
++    out->button[1] = (u16)(0x70 | (CELL_PAD_LEN_CHANGE_DEFAULT / 2));
++    out->button[CELL_PAD_BTN_OFFSET_DIGITAL1] = (u16)(b & 0xFF);
++    out->button[CELL_PAD_BTN_OFFSET_DIGITAL2] = (u16)(b >> 8);
++    out->button[CELL_PAD_BTN_OFFSET_ANALOG_RIGHT_X] = hs->analog_rx;
++    out->button[CELL_PAD_BTN_OFFSET_ANALOG_RIGHT_Y] = hs->analog_ry;
++    out->button[CELL_PAD_BTN_OFFSET_ANALOG_LEFT_X]  = hs->analog_lx;
++    out->button[CELL_PAD_BTN_OFFSET_ANALOG_LEFT_Y]  = hs->analog_ly;
++    out->button[CELL_PAD_BTN_OFFSET_PRESS_RIGHT]    = hs->press_right;
++    out->button[CELL_PAD_BTN_OFFSET_PRESS_LEFT]     = hs->press_left;
++    out->button[CELL_PAD_BTN_OFFSET_PRESS_UP]       = hs->press_up;
++    out->button[CELL_PAD_BTN_OFFSET_PRESS_DOWN]     = hs->press_down;
++    out->button[CELL_PAD_BTN_OFFSET_PRESS_TRIANGLE] = hs->press_triangle;
++    out->button[CELL_PAD_BTN_OFFSET_PRESS_CIRCLE]   = hs->press_circle;
++    out->button[CELL_PAD_BTN_OFFSET_PRESS_CROSS]    = hs->press_cross;
++    out->button[CELL_PAD_BTN_OFFSET_PRESS_SQUARE]   = hs->press_square;
++    out->button[CELL_PAD_BTN_OFFSET_PRESS_L1]       = hs->press_l1;
++    out->button[CELL_PAD_BTN_OFFSET_PRESS_R1]       = hs->press_r1;
++    out->button[CELL_PAD_BTN_OFFSET_PRESS_L2]       = hs->trigger_l2;
++    out->button[CELL_PAD_BTN_OFFSET_PRESS_R2]       = hs->trigger_r2;
++    return CELL_OK;
+ #endif
+ }
+ 
+@@ -1258,6 +1287,7 @@ s32 cellPad_local_connected(u32 port_no)
+ #if PAD_BACKEND_XINPUT
+     return padh_port_connected(port_no);
+ #else
+-    return port_no == 0;
++    if (port_no == 0) return 1;                     /* the keyboard (and PS3_PAD_FILE) at least */
++    return port_no < PAD_MAX_HOST_PORTS && s_host_state[port_no].connected;
+ #endif
+ }
+diff --git a/runtime/platform/fp_env.c b/runtime/platform/fp_env.c
+index 6de7c79..578b368 100644
+--- a/runtime/platform/fp_env.c
++++ b/runtime/platform/fp_env.c
+@@ -68,6 +68,37 @@ static void fp_process_init(void)
+                     "fused multiply-add in runtime code: %s\n", s_fp_mxcsr, fma);
+ }
+ 
++#ifdef PPU_FP_ARM64
++/* arm64 (Apple silicon): the same contract with FPCR (ppu_fp_det.h PPU_FPCR_*). No test
++ * override: a Mac test compares against a PC, which has none either. */
++void ppu_fp_thread_init(const char* who)
++{
++    (void)fp_process_init;   /* (the MXCSR half's) */
++    if (__sync_bool_compare_and_swap(&s_fp_init, 0, 1)) {
++        fprintf(stderr, "[fp] guest threads: FPCR 0x%08X (round to nearest, no flush to zero, no default NaN)\n",
++                PPU_FPCR_CANON);
++        __sync_lock_test_and_set(&s_fp_init, 2);
++    }
++    while (s_fp_init != 2) { }
++    const uint32_t m = ppu_fpcr_get();
++    if ((m & PPU_FPCR_CTRL) != PPU_FPCR_CANON) {
++        const long n = __sync_add_and_fetch(&s_fp_odd_start, 1);
++        if (n <= 8)
++            fprintf(stderr, "[fp] thread '%s' started with FPCR 0x%08X; set to 0x%08X\n", who ? who : "?", m, PPU_FPCR_CANON);
++    }
++    ppu_fpcr_set((m & ~PPU_FPCR_CTRL) | PPU_FPCR_CANON);
++}
++
++void ppu_fp_env_fix(uint32_t seen, const char* where)
++{
++    if (s_fp_init != 2) { ppu_fp_thread_init(where); return; }
++    const long n = __sync_add_and_fetch(&s_fp_violations, 1);
++    if (n <= 8 || (n & (n - 1)) == 0)
++        fprintf(stderr, "[fp] FPCR changed to 0x%08X on a guest thread (found after: %s); restored to 0x%08X (%ld time(s))\n",
++                seen, where ? where : "?", PPU_FPCR_CANON, n);
++    ppu_fpcr_set((seen & ~PPU_FPCR_CTRL) | PPU_FPCR_CANON);
++}
++#else
+ void ppu_fp_thread_init(const char* who)
+ {
+ #ifdef PPU_FP_X64
+@@ -116,5 +147,6 @@ void ppu_fp_env_fix(uint32_t seen, const char* where)
+     (void)seen; (void)where;
+ #endif
+ }
++#endif /* PPU_FP_ARM64 */
+ 
+ uint32_t ppu_fp_env_violations(void) { return (uint32_t)s_fp_violations; }
+diff --git a/runtime/ppu/ppu_fp_det.h b/runtime/ppu/ppu_fp_det.h
+index 0e3e7c2..2d88ba1 100644
+--- a/runtime/ppu/ppu_fp_det.h
++++ b/runtime/ppu/ppu_fp_det.h
+@@ -47,6 +47,9 @@
+ #endif
+ #else
+ #include <math.h>   /* other hosts (arm64 builds of ps3recomp): the plain C functions */
++#if defined(__aarch64__) || defined(_M_ARM64)
++#define PPU_FP_ARM64 1
++#endif
+ #endif
+ 
+ #ifdef __cplusplus
+@@ -64,8 +67,20 @@ extern "C" {
+ #define PPU_MXCSR_CANON 0x1F80u   /* all exceptions masked, round to nearest, no FTZ, no DAZ */
+ #define PPU_MXCSR_CTRL  0xFFC0u   /* control bits; the low six are sticky status flags */
+ 
+-/* Runtime side (runtime/platform/fp_env.c): set the canonical MXCSR on this thread (thread
+- * entries), and restore + count + log a changed one (the check below). */
++/* arm64 (Apple silicon): FPCR. Canonical 0 = round to nearest, no flush to zero (FZ, FZ16,
++ * FIZ), no default-NaN mode (DN), IEEE half precision (AHP), no alternate handling (AH, NEP),
++ * no trap enabled -- what macOS gives a new thread, and what an x86 PC computes with under
++ * MXCSR 0x1F80. Apple's own frameworks may set FZ on threads they own (audio render
++ * threads); guest code must never run with it (docs/MACOS.md, "Determinism"). */
++#define PPU_FPCR_CANON 0u
++#define PPU_FPCR_CTRL  0x07C89F07u   /* AHP DN FZ RMode FZ16 IDE IXE UFE OFE DZE IOE NEP AH FIZ */
++#ifdef PPU_FP_ARM64
++PPU_FP_INL uint32_t ppu_fpcr_get(void) { uint64_t v; __asm__ volatile("mrs %0, fpcr" : "=r"(v)); return (uint32_t)v; }
++PPU_FP_INL void ppu_fpcr_set(uint32_t v) { const uint64_t w = v; __asm__ volatile("msr fpcr, %0" : : "r"(w)); }
++#endif
++
++/* Runtime side (runtime/platform/fp_env.c): set the canonical MXCSR (arm64: FPCR) on this
++ * thread (thread entries), and restore + count + log a changed one (the check below). */
+ void ppu_fp_thread_init(const char* who);
+ void ppu_fp_env_fix(uint32_t seen, const char* where);
+ uint32_t ppu_fp_env_violations(void);
+@@ -74,6 +89,9 @@ PPU_FP_INL void ppu_fp_env_check(const char* where)
+ #ifdef PPU_FP_X64
+     const uint32_t m = _mm_getcsr();
+     if (__builtin_expect((m & PPU_MXCSR_CTRL) != PPU_MXCSR_CANON, 0)) ppu_fp_env_fix(m, where);
++#elif defined(PPU_FP_ARM64)
++    const uint32_t m = ppu_fpcr_get();
++    if (__builtin_expect((m & PPU_FPCR_CTRL) != PPU_FPCR_CANON, 0)) ppu_fp_env_fix(m, where);
+ #else
+     (void)where;
+ #endif
+@@ -96,8 +114,32 @@ PPU_FP_INL int32_t ppu_cvt_i32(double v, int rn)   /* v already in int32 range *
+ PPU_FP_INL int64_t ppu_cvt_i64(double v, int rn)   /* v already in int64 range */
+ { return rn ? _mm_cvtsd_si64(_mm_set_sd(v)) : _mm_cvttsd_si64(_mm_set_sd(v)); }
+ #else
+-PPU_FP_INL double ppu_sqrt_det(double x) { return __builtin_sqrt(x); }
+-PPU_FP_INL float  ppu_sqrtf_det(float x) { return __builtin_sqrtf(x); }
++/* The square root of a negative number (not -0) is the invalid operation's default NaN, and
++ * x86 and arm64 disagree on its sign: sqrtsd/sqrtss give 0xFFF8000000000000 / 0xFFC00000 (the
++ * "QNaN floating-point indefinite", sign set), fsqrt gives 0x7FF8... / 0x7FC00000. The lifted
++ * fsqrt, fsqrts and frsqrte take the host's result as it is, so a Mac must produce the PC's
++ * bits for Mac-vs-PC play (docs/MACOS.md). NaN operands come back quieted with their sign and
++ * payload on both, -0 stays -0. */
++#if defined(PPU_FP_ARM64) && (defined(__clang__) || defined(__GNUC__))
++/* The compiler takes any NaN for any other (NaN bits are not part of its semantics) and folds
++ * "x < 0 ? that NaN : sqrt(x)" back into a plain fsqrt -- it did, at -O2. An empty asm makes
++ * the root opaque, so the choice stays. */
++#define PPU_FP_OPAQUE(v) __asm__("" : "+w"(v))
++#else
++#define PPU_FP_OPAQUE(v) ((void)0)
++#endif
++PPU_FP_INL double ppu_sqrt_det(double x)
++{
++    double r = __builtin_sqrt(x);
++    PPU_FP_OPAQUE(r);
++    return x < 0.0 ? ppu_fp_f64(0xFFF8000000000000ull) : r;
++}
++PPU_FP_INL float ppu_sqrtf_det(float x)
++{
++    float r = __builtin_sqrtf(x);
++    PPU_FP_OPAQUE(r);
++    return x < 0.0f ? ppu_fp_f32(0xFFC00000u) : r;
++}
+ PPU_FP_INL int32_t ppu_cvt_i32(double v, int rn) { return rn ? (int32_t)nearbyint(v) : (int32_t)v; }
+ PPU_FP_INL int64_t ppu_cvt_i64(double v, int rn) { return rn ? (int64_t)nearbyint(v) : (int64_t)v; }
+ #endif
+diff --git a/runtime/ppu/ppu_fs.cpp b/runtime/ppu/ppu_fs.cpp
+index 31d5757..348559e 100644
+--- a/runtime/ppu/ppu_fs.cpp
++++ b/runtime/ppu/ppu_fs.cpp
+@@ -394,6 +394,36 @@ static void cellFsClose(ppu_context* ctx)
+  * Touch each page read-then-write so the fault happens here, in user mode,
+  * where the handler can commit it. Read-then-write rather than a plain store so
+  * nothing already in the buffer is disturbed. */
++/* Read a file into guest memory.
++ *
++ * Off Windows a host may keep guest pages read-only between two looks at
++ * them: T5DR's rollback write watch (its src/platform/t5_plat_posix.c) records
++ * the first write to a page in its fault handler, as Windows' MEM_WRITE_WATCH
++ * does in the kernel. A kernel write into such a page does not fault -- read(2)
++ * fails with EFAULT and fread comes back short -- and touching the pages first
++ * (fs_prefault) leaves a window in which the watch may protect them again. So
++ * the data goes through a host buffer and lands in guest memory by memcpy: an
++ * ordinary store, which the fault handler sees. Windows keeps the direct fread. */
++#if defined(_WIN32)
++#define fs_fread_guest(dst, n, fp) fread((dst), 1, (n), (fp))
++#else
++static size_t fs_fread_guest(void* dst, size_t n, FILE* fp)
++{
++    static thread_local unsigned char* t_buf = nullptr;
++    const size_t kBuf = 256 * 1024;
++    if (!t_buf && !(t_buf = (unsigned char*)malloc(kBuf))) return fread(dst, 1, n, fp);
++    size_t done = 0;
++    while (done < n) {
++        const size_t want = n - done < kBuf ? n - done : kBuf;
++        const size_t got = fread(t_buf, 1, want, fp);
++        memcpy((unsigned char*)dst + done, t_buf, got);
++        done += got;
++        if (got < want) break;
++    }
++    return done;
++}
++#endif
++
+ static inline void fs_prefault(uint32_t buf, uint64_t len)
+ {
+     if (!vm_base || !len) return;
+@@ -416,7 +446,7 @@ static void cellFsRead(ppu_context* ctx)
+     if (ppu_vm_size && (uint64_t)buf + nbytes > ppu_vm_size) nbytes = ppu_vm_size - buf;
+     fs_test_delay(nbytes);
+     fs_prefault(buf, nbytes);
+-    size_t n = fread(vm_base + buf, 1, (size_t)nbytes, g_files[fd]);   /* raw bytes, no swap */
++    size_t n = fs_fread_guest(vm_base + buf, (size_t)nbytes, g_files[fd]);   /* raw bytes, no swap */
+     if (n > 0 && fd >= 0 && fd < FS_MAX) cellAtrac_fs_read(buf, (uint64_t)fpos_before, (uint32_t)n, g_fd_host[fd]);
+     /* PS3_FSLOG_EOF=<fd>,<bytes>: report end-of-file past <bytes> on one descriptor.
+      * The intro cinematic is 28 seconds and this port renders it at a few frames
+@@ -812,7 +842,7 @@ static void cellFsAioRead(ppu_context* ctx)
+         /* AIO reads are absolute -- they do not disturb the fd's own file
+          * position, and the guest interleaves them freely across threads. */
+         if (HOST_FSEEK64(g_files[fd], offset) == 0)
+-            n = fread(vm_base + buf, 1, (size_t)size, g_files[fd]);
++            n = fs_fread_guest(vm_base + buf, (size_t)size, g_files[fd]);
+         err = CELL_OK;
+     }
+     if (getenv("PS3_FSLOG"))
+diff --git a/runtime/syscalls/sys_fs.c b/runtime/syscalls/sys_fs.c
+index b28cd98..bfc43f4 100644
+--- a/runtime/syscalls/sys_fs.c
++++ b/runtime/syscalls/sys_fs.c
+@@ -441,6 +441,36 @@ int64_t sys_fs_open(ppu_context* ctx)
+     return CELL_OK;
+ }
+ 
++/* Read a file into guest memory.
++ *
++ * Off Windows a host may keep guest pages read-only between two looks at
++ * them: T5DR's rollback write watch (its src/platform/t5_plat_posix.c) records
++ * the first write to a page in its fault handler, as Windows' MEM_WRITE_WATCH
++ * does in the kernel. A kernel write into such a page does not fault -- read(2)
++ * fails with EFAULT and fread comes back short -- and touching the pages first
++ * (vm_commit) leaves a window in which the watch may protect them again. So
++ * the data goes through a host buffer and lands in guest memory by memcpy: an
++ * ordinary store, which the fault handler sees. Windows keeps the direct fread. */
++#if defined(_WIN32)
++#define sys_fs_fread_guest(dst, n, fp) fread((dst), 1, (n), (fp))
++#else
++static size_t sys_fs_fread_guest(void* dst, size_t n, FILE* fp)
++{
++    static _Thread_local unsigned char* t_buf = NULL;
++    const size_t kBuf = 256 * 1024;
++    if (!t_buf && !(t_buf = (unsigned char*)malloc(kBuf))) return fread(dst, 1, n, fp);
++    size_t done = 0;
++    while (done < n) {
++        const size_t want = n - done < kBuf ? n - done : kBuf;
++        const size_t got = fread(t_buf, 1, want, fp);
++        memcpy((unsigned char*)dst + done, t_buf, got);
++        done += got;
++        if (got < want) break;
++    }
++    return done;
++}
++#endif
++
+ /* ---------------------------------------------------------------------------
+  * sys_fs_read
+  *
+@@ -472,7 +502,7 @@ int64_t sys_fs_read(ppu_context* ctx)
+      * as a read error on every movie and never decoded a frame -- solid green
+      * video. ppu_fs.cpp fs_prefault is the same fix for cellFs. */
+     if (size) vm_commit(buf_addr, (uint32_t)size);
+-    size_t nread = fread(buf, 1, (size_t)size, f->fp);
++    size_t nread = sys_fs_fread_guest(buf, (size_t)size, f->fp);
+ 
+     /* PS3_FSTRACE=<n>: every nth read, the fd and the file offset it came from.
+      *
+diff --git a/tools/ppu_lifter.py b/tools/ppu_lifter.py
+index c97ada4..bb7ded6 100644
+--- a/tools/ppu_lifter.py
++++ b/tools/ppu_lifter.py
+@@ -1344,6 +1344,8 @@ class PPULifter:
+             prefix += "_"
+         self.prefix = prefix
+         self.weak_emit = bool(weak_emit)
++        # --hook-slots: guest function address -> slot index (see _function_def_lines)
++        self.hook_slots: dict[int, int] = {}
+         # Cache for _range_insns: (instructions, len, ordered, addrs). Keyed by
+         # the instruction-list identity so the FULL list (mid-function / serial
+         # lift) is sorted+indexed once, not rescanned per call.
+@@ -4200,8 +4202,22 @@ class PPULifter:
+     # Output generation
+     # ------------------------------------------------------------------ #
+ 
++    def _finalize_hook_slots(self) -> None:
++        """Keep the --hook-slots addresses that start an emitted function (a mid-function
++        wrapper added after the list was read counts), numbered 0..N-1 in address order."""
++        want = getattr(self, "hook_slots", {})
++        if not want or getattr(self, "_hook_slots_final", False):
++            return
++        have = {f.start_addr for f in self._emit_functions()}
++        kept = sorted(a for a in want if a in have)
++        for a in sorted(set(want) - set(kept)):
++            print(f"  WARNING: --hook-slots 0x{a:08X}: no lifted function starts there -- no slot")
++        self.hook_slots = {a: i for i, a in enumerate(kept)}
++        self._hook_slots_final = True
++
+     def emit_header(self) -> str:
+         """Generate the C header file content."""
++        self._finalize_hook_slots()
+         # function_table / function_table_count are per-image; prefix their
+         # extern declarations (and the matching comment) to match the source.
+         # 'function_table_count' starts with 'function_table', so a single
+@@ -4217,6 +4233,28 @@ class PPULifter:
+         defined = {f.start_addr for f in self.functions}
+         for target in sorted((self.call_targets | self.branch_targets) - defined):
+             lines.append(f"void {self.prefix}func_{target:08X}(ppu_context* ctx); /* external */")
++        slots = getattr(self, "hook_slots", {})
++        if slots:
++            p = self.prefix
++            lines.append("")
++            lines.append("/* Hook slots (ppu_lifter.py --hook-slots): each listed function first calls the")
++            lines.append(" * function in its slot, if any, instead of its body; the body is func_X__orig.")
++            lines.append(" * A host sets a slot (an atomic pointer store) to intercept the function without")
++            lines.append(" * patching code. */")
++            lines.append(f"#define {p.upper()}PPU_HOOK_SLOTS {len(slots)}")
++            lines.append("typedef struct { uint32_t addr; uint32_t slot; void (*orig)(ppu_context*); } ppu_hook_entry;")
++            lines.append("#ifdef __cplusplus")
++            lines.append('extern "C" {')
++            lines.append("#endif")
++            lines.append(f"extern void (*{p}ppu_hook_slots[])(ppu_context*);")
++            lines.append(f"extern const ppu_hook_entry {p}ppu_hook_table[];")
++            lines.append(f"extern const uint32_t {p}ppu_hook_count;")
++            lines.append("#ifdef __cplusplus")
++            lines.append("}")
++            lines.append("#endif")
++            by_addr = {f.start_addr: f for f in self._emit_functions()}
++            for addr in sorted(slots):
++                lines.append(f"void {by_addr[addr].name}__orig(ppu_context* ctx);")
+         lines.append("")
+         return "\n".join(lines)
+ 
+@@ -4387,7 +4425,21 @@ class PPULifter:
+         if label:
+             lines.append(f"/* {label} */")
+         weak = "__attribute__((weak)) " if getattr(self, "weak_emit", False) else ""
+-        lines.append(f"void {weak}{func.name}(ppu_context* ctx) {{")
++        slot = getattr(self, "hook_slots", {}).get(func.start_addr)
++        if slot is not None:
++            # Hook slot (--hook-slots): the entry a host may take over without patching code
++            # (arm64 macOS may not write its own text pages). An empty slot costs one load and
++            # a predicted branch; the body itself is func_X__orig, which a hook calls to run
++            # the original. Calls, tail calls and the function table all reach the entry.
++            lines.append(f"void {weak}{func.name}(ppu_context* ctx) {{")
++            lines.append(f"    void (*const hook)(ppu_context*) = "
++                         f"__atomic_load_n(&{self.prefix}ppu_hook_slots[{slot}], __ATOMIC_ACQUIRE);")
++            lines.append("    if (__builtin_expect(hook != 0, 0)) { hook(ctx); return; }")
++            lines.append(f"    {func.name}__orig(ctx);")
++            lines.append("}")
++            lines.append(f"void {func.name}__orig(ppu_context* ctx) {{")
++        else:
++            lines.append(f"void {weak}{func.name}(ppu_context* ctx) {{")
+         body = [f"    {bline}" if not bline.endswith(":") else bline
+                 for bline in _fuse_cr(func.body_lines)]
+ 
+@@ -4445,12 +4497,27 @@ class PPULifter:
+         lines.append("};")
+         lines.append(f"const uint64_t {self.prefix}function_table_count = {len(funcs)};")
+         lines.append("")
++        slots = getattr(self, "hook_slots", {})
++        if slots:
++            by_addr = {f.start_addr: f for f in funcs}
++            p = self.prefix
++            lines.append("/* Hook slots (--hook-slots) */")
++            lines.append('extern "C" {')
++            lines.append(f"void (*{p}ppu_hook_slots[{len(slots)}])(ppu_context*) = {{ 0 }};")
++            lines.append(f"const ppu_hook_entry {p}ppu_hook_table[{len(slots)}] = {{")
++            for addr, k in sorted(slots.items(), key=lambda kv: kv[1]):
++                lines.append(f"    {{ 0x{addr:08X}u, {k}u, {by_addr[addr].name}__orig }},")
++            lines.append("};")
++            lines.append(f"const uint32_t {p}ppu_hook_count = {len(slots)};")
++            lines.append("}")
++            lines.append("")
+         return lines
+ 
+     def emit_source(self) -> str:
+         """Full single-file C source (kept for small binaries and tests; the
+         default build path uses write_source_files, which splits the output
+         to stay under the MSVC source-line limit)."""
++        self._finalize_hook_slots()
+         emit_funcs = self._emit_functions()
+         func_by_addr = {f.start_addr: f for f in emit_funcs}
+         sorted_addrs = sorted(func_by_addr.keys())
+@@ -4468,6 +4535,7 @@ class PPULifter:
+         single file; splitting also lets the build compile chunks in parallel
+         and rebuild incrementally. Chunks are cut only at function
+         boundaries. Returns the list of written paths."""
++        self._finalize_hook_slots()
+         emit_funcs = self._emit_functions()
+         func_by_addr = {f.start_addr: f for f in emit_funcs}
+         sorted_addrs = sorted(func_by_addr.keys())
+@@ -5479,6 +5547,10 @@ def main() -> None:
+                         help="keep the guest GPRs/FPRs/CR/XER/CTR a lifted function uses in C locals "
+                              "between calls and returns (written back to the context only there); "
+                              f"default {'on' if REGPROMO_DEFAULT else 'off'}")
++    parser.add_argument("--hook-slots", metavar="FILE", default=None,
++                        help="guest function addresses (hex, one per line, # comments) whose entry gets a "
++                             "hook slot: the function calls the hook a host stored in its slot instead of "
++                             "its body (func_X__orig), so a host can intercept it without patching code")
+     parser.add_argument("--regpromo-skip", metavar="FILE", default=None,
+                         help="guest function addresses (hex, one per line, # comments) that keep the "
+                              "unpromoted body -- e.g. functions whose host prologue a runtime patches")
+@@ -5943,6 +6015,11 @@ def main() -> None:
+         with open(args.regpromo_skip) as _sf:
+             lifter.regpromo_skip = {int(_t, 16) for _ln in _sf
+                                     for _t in [_ln.split("#", 1)[0].strip()] if _t}
++    if args.hook_slots:
++        with open(args.hook_slots) as _hf:
++            _want = sorted({int(_t, 16) for _ln in _hf for _t in [_ln.split("#", 1)[0].strip()] if _t})
++        lifter.hook_slots = {_a: _i for _i, _a in enumerate(_want)}
++        print(f"  hook slots: {len(_want)} function(s) asked for")
+     print(f"  register promotion: {'on' if lifter.regpromo else 'off'}"
+           + (f" ({len(lifter.regpromo_skip)} functions skipped)" if args.regpromo_skip else ""))
+ 

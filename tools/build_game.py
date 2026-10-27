@@ -309,6 +309,9 @@ CODE_VERSION = 7   # 2: sound core lifted with SPU_CORE_EXTRA_FUNCS; 3: sound co
                    # 7 (1.1.5): online training rooms (endless health) and the health handicap change what the
                    # game simulates online (src/netplay/match_rules.h)
 
+# Guest functions src/ detours: a macOS online build lifts them with hook slots (step_lift).
+HOOK_SLOTS = os.path.join(ROOT, "src", "rollback", "hook_slots.txt")
+
 # The lifted code's profile for profile-guided optimisation (docs/BUILD_PERF.md): text, split into
 # four parts and turned into clang's format at compile time (build_game_dll.prepare_profiles).
 PGO_PROFILE = os.path.join(ROOT, "tools", "gamedll", "t5dr_lifted.proftext")
@@ -569,6 +572,12 @@ def step_lift(a):
     # only slower; for comparisons. The stamp records it, so switching lifts again.
     regpromo = os.environ.get("T5DR_LIFT_REGPROMO", "1") != "0"
     lifter_id = (sha1(lifter) if os.path.exists(lifter) else "") + ("" if regpromo else ":regpromo=off")
+    # macOS online (--macos-online): every function src/ detours gets a hook slot (rb_detour.cpp; an
+    # arm64 Mac may not patch its own code). The stamp records the list, so a change lifts again.
+    hooks = []
+    if getattr(a, "macos_online", False):
+        hooks = ["--hook-slots", HOOK_SLOTS]
+        lifter_id += ":hooks=" + sha1(HOOK_SLOTS)
     if os.path.exists(os.path.join(P.recomp, "ppu_recomp.h")) and not a.force:
         made_by = open(stamp).read().strip() if os.path.exists(stamp) else None
         if made_by == lifter_id:
@@ -587,7 +596,7 @@ def step_lift(a):
          "--functions", os.path.join(P.analysis, "functions.json"),
          "--hle-stubs", os.path.join(P.analysis, "EBOOT.imports.json"),
          "--code-end", CODE_END, "--max-chunk-lines", "80000",
-         "-o", P.recomp] + ([] if regpromo else ["--regpromo", "off"]))
+         "-o", P.recomp] + ([] if regpromo else ["--regpromo", "off"]) + hooks)
     with open(stamp, "w") as f:
         f.write(lifter_id + "\n")
 
@@ -652,10 +661,11 @@ def find_vcvars():
     return bat
 
 
-def write_stamp(compiler):
+def write_stamp(compiler, extra=None):
     with open(P.stamp, "w") as f:
-        json.dump({"code_id": code_id(), "elf_sha1": ELF_SHA1, "title": TITLE_ID, "version": TITLE_VERSION,
-                   "compiler": compiler, "built": datetime.datetime.now().isoformat(timespec="seconds")},
+        json.dump(dict({"code_id": code_id(), "elf_sha1": ELF_SHA1, "title": TITLE_ID, "version": TITLE_VERSION,
+                        "compiler": compiler, "built": datetime.datetime.now().isoformat(timespec="seconds")},
+                       **(extra or {})),
                   f, indent=1)
 
 
@@ -683,9 +693,12 @@ def compile_unix(a):
     cmake, ninja = shutil.which("cmake"), shutil.which("ninja")
     if not (cmake and ninja):
         fail("CMake and Ninja were not found. On macOS: brew install cmake ninja sdl2 glslang spirv-cross")
+    online = bool(getattr(a, "macos_online", False))
     configure = [cmake, "-S", ROOT, "-B", P.cmake, "-G", "Ninja", f"-DCMAKE_MAKE_PROGRAM={ninja}",
                  "-DCMAKE_BUILD_TYPE=Release", f"-DPS3RECOMP_DIR={P.deps}", f"-DRECOMP_DIR={P.recomp}",
-                 f"-DSPU_DIR={P.spu}", f"-DPython3_EXECUTABLE={PY}", "-DT5DR_REQUIRE_SHADERS=ON"]
+                 f"-DSPU_DIR={P.spu}", f"-DPython3_EXECUTABLE={PY}", "-DT5DR_REQUIRE_SHADERS=ON",
+                 # (always given: a build folder that was configured with it on keeps it in its cache)
+                 f"-DT5DR_MACOS_ONLINE={'ON' if online else 'OFF'}"]
     try:
         run(configure, capture=True)
     except subprocess.CalledProcessError as e:
@@ -695,8 +708,10 @@ def compile_unix(a):
         raise
     run([cmake, "--build", P.cmake])
     cc = subprocess.run(["cc", "--version"], capture_output=True, text=True).stdout.splitlines()
-    write_stamp((cc[0] if cc else "cc") + " (CMake)")
-    print(f"\nbuilt {P.exe}")
+    # "online": whether this build has the online modules (the lobby client refuses to start a
+    # match with a game that has none; a Windows build always has them and writes no key)
+    write_stamp((cc[0] if cc else "cc") + " (CMake)", {"online": online})
+    print(f"\nbuilt {P.exe}" + (" (online modules: a test build, docs/MACOS_ONLINE_TEST.md)" if online else ""))
 
 
 def step_shaders(a):
@@ -776,7 +791,12 @@ def main():
     ap.add_argument("--code-id", action="store_true", help="print the code ID of this version and exit")
     ap.add_argument("--full-compile", action="store_true",
                     help="compile everything with CMake + Visual Studio even when a prebuilt runtime is present")
+    ap.add_argument("--macos-online", action="store_true",
+                    help="macOS: build the online modules too (netplay, rollback, direct fight) -- a test build "
+                         "until a Mac-vs-PC match is proven in sync (docs/MACOS_ONLINE_TEST.md)")
     a = ap.parse_args()
+    if a.macos_online and sys.platform != "darwin":
+        ap.error("--macos-online is for macOS (a Windows build always has the online modules)")
     if a.code_id:
         print(code_id())
         return

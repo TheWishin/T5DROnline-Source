@@ -24,7 +24,7 @@
  * environment: the runtime caches getenv().
  */
 #define WIN32_LEAN_AND_MEAN
-#include <windows.h>
+#include "../platform/t5_win.h"
 #include <stdio.h>
 #include <string>
 #include <vector>
@@ -39,7 +39,7 @@ namespace {
 
 std::string g_dir;
 uint32_t g_seen = 0;                  /* seq of the last command taken */
-FILETIME g_mtime = {};
+uint64_t g_mtime = 0;
 uint32_t g_last_check = 0;
 std::string g_state_text;
 
@@ -177,28 +177,27 @@ bool ctl_poll(CtlCmd& out, uint32_t f, uint32_t every)
     if (g_dir.empty()) return false;
     if (every > 1 && f - g_last_check < every) return false;
     g_last_check = f;
-    const std::string path = g_dir + "\\cmd.json";
-    WIN32_FILE_ATTRIBUTE_DATA a;
-    if (!GetFileAttributesExA(path.c_str(), GetFileExInfoStandard, &a)) return false;
-    if (!CompareFileTime(&a.ftLastWriteTime, &g_mtime) && g_seen) return false;
+    const std::string path = g_dir + T5P_SEP "cmd.json";
+    uint64_t mtime = 0;
+    if (!t5p_file_stamp(path.c_str(), &mtime)) return false;
+    if (mtime == g_mtime && g_seen) return false;
     /* Opened with FILE_SHARE_DELETE: the launcher replaces cmd.json atomically
      * (os.replace = MoveFileEx), and Windows refuses that while another process
      * has the file open without delete sharing -- a command written while this
      * poll read the old one failed on the launcher's side (rematch-fix: one of
      * ~20 commands in a run, PermissionError in the test harness). */
     std::string text;
-    HANDLE h = CreateFileA(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                           nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (h == INVALID_HANDLE_VALUE) return false;
+    const intptr_t h = t5p_open_read_shared(path.c_str());
+    if (h == -1) return false;
     {
         char buf[4096];
-        DWORD n = 0;
-        while (ReadFile(h, buf, sizeof buf, &n, nullptr) && n > 0) text.append(buf, n);
-        CloseHandle(h);
+        long n = 0;
+        while ((n = t5p_read(h, buf, sizeof buf)) > 0) text.append(buf, (size_t)n);
+        t5p_close(h);
     }
     CtlCmd c;
     if (!parse_cmd(text, c)) return false;   /* half written? the next poll reads it again */
-    g_mtime = a.ftLastWriteTime;
+    g_mtime = mtime;
     if (c.seq <= g_seen) return false;
     g_seen = c.seq;
     note("frame %u: control command %u: %s%s%s (%zu variable(s))", f, c.seq, c.cmd.c_str(),
@@ -228,11 +227,11 @@ void ctl_state(const char* state, uint32_t f, const std::string& match, const ch
     text += ", \"error\": ";
     text += error ? json_str(error) : "null";
     text += "}\n";
-    const std::string path = g_dir + "\\state.json", tmp = path + ".tmp";
+    const std::string path = g_dir + T5P_SEP "state.json", tmp = path + ".tmp";
     if (FILE* fp = fopen(tmp.c_str(), "wb")) {
         fwrite(text.data(), 1, text.size(), fp);
         fclose(fp);
-        for (int i = 0; i < 60 && !MoveFileExA(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING); i++) Sleep(1);
+        for (int i = 0; i < 60 && !t5p_replace_file(tmp.c_str(), path.c_str()); i++) Sleep(1);
     }
 }
 

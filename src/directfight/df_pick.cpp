@@ -25,7 +25,7 @@
  *     are read every frame: writing them shows at once.
  */
 #define WIN32_LEAN_AND_MEAN
-#include <windows.h>
+#include "../platform/t5_win.h"
 #include <stdio.h>
 #include <string.h>
 #include "df.h"

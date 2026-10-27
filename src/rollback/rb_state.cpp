@@ -1,7 +1,7 @@
 /* The state set, its hash and the undo-log snapshots -- see rb_state.h. */
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
-#include <windows.h>
+#include "../platform/t5_win.h"
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -404,7 +404,7 @@ void state_init()
     PumpHold hold;
     for (const Range& r : kSave) { memcpy(g_shadow + off, vm_base + r.base, r.len); off += r.len; }
     /* the pages dirtied before now are of no interest: reset the watch */
-    for (const Range& r : kSave) ResetWriteWatch(vm_base + r.base, r.len);
+    for (const Range& r : kSave) t5p_write_watch_reset(vm_base + r.base, r.len);
     state_hash_full();
     QueryPerformanceCounter(&b);
     memset(g_log, 0, sizeof g_log);
@@ -466,11 +466,11 @@ uint32_t state_commit(uint32_t f, void (*on_page)(uint32_t, uint64_t), double* m
         const Range& r = kSave[ri];
         for (uint64_t off = 0; off < r.len; off += (64ull << 20)) {
             uint64_t len = std::min<uint64_t>(64ull << 20, r.len - off);
-            ULONG_PTR count = g_ww.size();
-            DWORD gran = 0;
+            uintptr_t count = g_ww.size();
+            uint32_t gran = 0;
             LARGE_INTEGER w0, w1; QueryPerformanceCounter(&w0);
-            if (GetWriteWatch(WRITE_WATCH_FLAG_RESET, vm_base + r.base + off, (SIZE_T)len, g_ww.data(), &count, &gran) != 0) {
-                note("GetWriteWatch failed (%lu) -- PS3_VM_WRITE_WATCH=1 missing?", GetLastError());
+            if (t5p_write_watch(1, vm_base + r.base + off, (size_t)len, g_ww.data(), &count, &gran) != 0) {
+                note("GetWriteWatch failed (%lu) -- PS3_VM_WRITE_WATCH=1 missing?", (unsigned long)GetLastError());
                 return 0;
             }
             QueryPerformanceCounter(&w1); ww_ticks += w1.QuadPart - w0.QuadPart;
@@ -704,7 +704,7 @@ static bool state_rollback_(uint32_t to, uint32_t* pages, double* ms, bool lazy)
     }
     /* our own writes must not count as the next frame's dirt -- unless lazy:
      * then they must, so the refresh brings the shadow to them */
-    if (!lazy) for (const Range& r : kSave) ResetWriteWatch(vm_base + r.base, r.len);
+    if (!lazy) for (const Range& r : kSave) t5p_write_watch_reset(vm_base + r.base, r.len);
     QueryPerformanceCounter(&b);
     if (pages) *pages = n;
     if (ms) *ms = 1000.0 * (double)(b.QuadPart - a.QuadPart) / (double)q.QuadPart;

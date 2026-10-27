@@ -503,7 +503,8 @@ NPUB30009 version 01.00. The builder refuses everything else.
 not provide the package or the license and cannot help to get them.
 
 **Does it run on Linux or macOS?** macOS on Apple silicon: yes, offline, built from source
-(see "Building on macOS"). No release zip, launcher or online play there yet. Linux: not
+(see "Building on macOS"). No release zip or launcher there yet, and online play is a test build
+(docs/MACOS_ONLINE_TEST.md). Linux: not
 supported, but players run the Windows release under Proton or Wine; what they found is in
 [docs/TROUBLESHOOTING.md "Linux and Steam Deck"](docs/TROUBLESHOOTING.md#linux-and-steam-deck-wine-proton).
 
@@ -596,7 +597,8 @@ python3 -m venv .venv && .venv/bin/pip install pycryptodome
 .venv/bin/python tools/run_game.py --out native
 ```
 
-Offline only: online play, rollback and the launcher are Windows-only for now. Keyboard: arrow keys
+Offline only for players: online play on a Mac is a test build until a Mac-vs-PC match is proven in sync
+(`--macos-online`, docs/MACOS_ONLINE_TEST.md); the launcher and the release zip are Windows-only. Keyboard: arrow keys
 (d-pad), Space (cross), Q (circle), E (square), R (triangle), U/O (L1/R1), Return (start), Tab
 (select); the sticks are W/A/S/D and I/J/K/L. `PS3_PAD_FILE=<file>` drives the pad from a script.
 

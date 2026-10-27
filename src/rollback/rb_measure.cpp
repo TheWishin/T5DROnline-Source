@@ -15,7 +15,7 @@
  *     the log: contiguous pages dirty in >= half of the frames.
  */
 #define WIN32_LEAN_AND_MEAN
-#include <windows.h>
+#include "../platform/t5_win.h"
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -61,14 +61,14 @@ uint32_t collect(uint16_t* table, uint32_t* by_cat)
     for (const Region& r : g_regions) {
         for (uint64_t off = 0; off < r.size; off += (64ull << 20)) {
             uint64_t len = std::min<uint64_t>(64ull << 20, r.size - off);
-            ULONG_PTR count = g_buf.size();
-            DWORD gran = 0;
-            UINT rc = GetWriteWatch(WRITE_WATCH_FLAG_RESET, vm_base + r.base + off, (SIZE_T)len,
-                                    g_buf.data(), &count, &gran);
+            uintptr_t count = g_buf.size();
+            uint32_t gran = 0;
+            int rc = t5p_write_watch(1, vm_base + r.base + off, (size_t)len,
+                                     g_buf.data(), &count, &gran);
             if (rc != 0) {
                 static int n = 0;
                 if (n++ < 3) note("GetWriteWatch failed at 0x%08llX+0x%llX: %lu (is PS3_VM_WRITE_WATCH=1 set?)",
-                                  (unsigned long long)(r.base + off), (unsigned long long)len, GetLastError());
+                                  (unsigned long long)(r.base + off), (unsigned long long)len, (unsigned long)GetLastError());
                 g_watch_ok = false;
                 return 0;
             }
@@ -138,12 +138,8 @@ void measure_on_frame(ppu_context* ctx)
         init = true;
         QueryPerformanceFrequency(&g_qpf);
         g_last = now;
-        { FILETIME ct, et, kt, ut; GetProcessTimes(GetCurrentProcess(), &ct, &et, &kt, &ut);
-          /* process start in QPC units: now - (wall now - creation time) */
-          FILETIME nowft; GetSystemTimeAsFileTime(&nowft);
-          ULARGE_INTEGER a, b; a.LowPart = nowft.dwLowDateTime; a.HighPart = nowft.dwHighDateTime;
-          b.LowPart = ct.dwLowDateTime; b.HighPart = ct.dwHighDateTime;
-          g_t0.QuadPart = now.QuadPart - (LONGLONG)((double)(a.QuadPart - b.QuadPart) / 1e7 * (double)g_qpf.QuadPart); }
+        /* process start in QPC units: now - (wall now - creation time) */
+        g_t0.QuadPart = now.QuadPart - (LONGLONG)(t5p_process_uptime_s() * (double)g_qpf.QuadPart);
         if (const char* e = getenv("T5_RB_PARK_EVERY")) g_park_every = (uint32_t)atoi(e);
         if (const char* e = getenv("T5_RB_PARK_MS")) g_park_ms = (uint32_t)atoi(e);
         if (const char* e = getenv("T5_RB_SUMMARY")) g_summary = (uint32_t)atoi(e);

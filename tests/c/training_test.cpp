@@ -345,6 +345,34 @@ static void test_special_hit_reaction()
     }
 }
 
+/* A move of two animations (traced: Bryan's f+1+2 vs Jin, local lockstep): a wind-up
+ * without active frames from 10, the attack animation from 28, active at 31 -> i22, not i4.
+ * A second move started with a new button press still starts anew (SS into an attack). */
+static void test_two_animation_move()
+{
+    {
+        Timeline a(140), d(140);
+        a.move(10, 0, 28);
+        a.input(10, 10, kRight | kSquare | kTriangle);
+        a.move(28, 0x16, 53); a.active(31, 33);
+        d.move(32, 0, 56);
+        const Run r = run(a, d);
+        CHECK_EQ(r.results.size(), 1);
+        if (r.results.size() == 1) { CHECK_EQ(r.results[0].startup, 22); CHECK(r.results[0].kind == Kind::Block); CHECK_EQ(r.results[0].adv, 3); }
+    }
+    {
+        Timeline a(140), d(140);
+        a.move(10, 0, 30);                      /* a sidestep ... */
+        a.input(10, 11, kUp);
+        a.input(19, 19, kTriangle);             /* ... and 2 pressed during it */
+        a.move(20, 7, 45); a.active(29, 29);
+        d.move(30, 0, 48);
+        const Run r = run(a, d);
+        CHECK_EQ(r.results.size(), 1);
+        if (r.results.size() == 1) CHECK_EQ(r.results[0].startup, 10);
+    }
+}
+
 /* ---- practice tools ----------------------------------------------------------------- */
 struct ComboRun { std::vector<PAction> acts; std::vector<bool> hidden; };
 static ComboRun combo(const std::vector<uint16_t>& frames, bool facing_left = false)
@@ -739,6 +767,7 @@ int main()
     test_string();
     test_down_and_counter();
     test_special_hit_reaction();
+    test_two_animation_move();
     test_combos();
     test_dummy();
     test_recorder();

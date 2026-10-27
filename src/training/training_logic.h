@@ -174,12 +174,19 @@ public:
             }
             mv_[p].contacted = true;
         }
-        /* 3. moves started by a fighter (not a reaction to the other's attack) */
+        /* 3. moves started by a fighter (not a reaction to the other's attack). A move
+         *    made of several animations -- a wind-up without active frames, then the
+         *    attack (Bryan's f+1+2: 18 frames of wind-up, active 3 frames into the
+         *    second animation) -- is one move: a new animation before the first active
+         *    frame, with no button pressed since the move began and no frame in which
+         *    the fighter could act, goes on with the same startup. */
         bool started[2] = { false, false };
         for (int p = 0; p < 2; p++) {
             const int o = 1 - p;
             const bool reaction = prev_[o].active && is_reaction_cls(s[p].cls);
+            if (mv_[p].live && t > mv_[p].start && (s[p].input & ~prev_[p].input & kButtons)) mv_[p].pressed = true;
             if (s[p].new_move && !acts(s[p]) && !reaction && !s[p].down) {   /* lying down is no move of its own */
+                if (mv_[p].live && !mv_[p].first_active && !mv_[p].pressed && !acts(prev_[p])) continue;
                 started[p] = true;
                 mv_[p] = Move{};
                 mv_[p].start = t;
@@ -252,7 +259,7 @@ public:
 private:
     static bool is_reaction_cls(uint32_t c) { return c == 0 || c >= 0x10000; }
     static bool is_attack_cls(uint32_t c) { return c != 0 && c < 0x10000; }
-    struct Move { uint64_t start = 0, first_active = 0; bool live = false, contacted = false; };
+    struct Move { uint64_t start = 0, first_active = 0; bool live = false, contacted = false, pressed = false; };
     struct Exchange {
         bool open = false, settled = false, hit = false, counter = false, def_btn = false, down = false;
         int att = 0, startup = 0;

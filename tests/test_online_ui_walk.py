@@ -286,8 +286,8 @@ class OnlineUiWalk(unittest.TestCase):
         for key in ("build", "play", "settings", "online"):
             app.nb.select(app.tabs[key])
             app.update()
-        for i in (1, 2, 0):
-            self.tab.nb.select(i)
+        for page in ("board_page", "stats_page", "prof_page", "lobby_page"):
+            self.tab.nb.select(getattr(self.tab, page))
             app.update()
 
     def errors(self):

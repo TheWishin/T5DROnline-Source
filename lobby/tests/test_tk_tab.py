@@ -168,6 +168,25 @@ class TkTabTest(TkBase):
         tab.report_btn.invoke()
         self.assertEqual(self.app.reports, 1)
 
+    def test_fold_the_cards(self):
+        """The fold button (right of the lists' tabs) puts the account and match cards away, so the lists get the
+        height; it brings them back, and so does anything that happens in the match card (a search here)."""
+        tab = self.tab
+        view = tab.view
+        tab.server_var.set(self.s.addr)
+        tab.do_login("guest")
+        self.pump(lambda: str(tab.actions["quick"].cget("state")) == "normal")
+        view.top_btn.invoke()
+        self.assertTrue(view.top_hidden)
+        self.assertEqual((tab.me_row.winfo_manager(), view.stage_card.winfo_manager()), ("", ""))
+        view.top_btn.invoke()
+        self.assertEqual((tab.me_row.winfo_manager(), view.stage_card.winfo_manager()), ("grid", "grid"))
+        view.top_btn.invoke()
+        tab.actions["quick"].invoke()                       # (the keyboard / controller can still start a search)
+        self.pump(lambda: view.stage_card.winfo_manager() == "grid")
+        self.assertFalse(view.top_hidden)
+        self.assertEqual(tab.me_row.winfo_manager(), "grid")
+
     def test_the_connection_ends_in_the_middle_of_the_events(self):
         """The lobby drops the tab while more events wait in its queue (build/e2e finding, old UI): the poll
         stops at "disconnected" instead of reading the next event from a client that is gone, and the tab

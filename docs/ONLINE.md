@@ -545,10 +545,10 @@ private room, the rule checked match by match), e2e `private_room_turns` (three 
 training and the health handicap".)
 
 **Training room.** Create room -> **Training room: endless health, nothing counted**. Its fights are
-practice with a friend, like Tekken 8's practice lobby: health refills a second after the last hit, no round
-timer, no rating, no record, no history, no blame -- whatever ends a fight (a player holding SELECT for a
-second, a 100 % combo, a player leaving or closing the game, a lost connection) finishes the match with the
-status `training`. A fight is one round; when it ends both launchers go back to the select screen by
+practice with a friend, like Tekken 8's practice lobby: damage never KOs, health refills a second after the
+last hit, no round timer, no rating, no record, no history, no blame -- whatever ends a fight (a player holding
+SELECT for a second to give up, a player leaving or closing the game, a lost connection) finishes the match with
+the status `training`. A fight is one round; when it ends both launchers go back to the select screen by
 themselves (an automatic rematch in the running games, only after a fight that ended in the game: the
 result has no `reason`), which is also how the two pick other fighters. **Leave room** works any time in a
 training room, during its fight too (elsewhere only between matches): the match ends without a result
@@ -652,8 +652,8 @@ community, not a ranked room's) and the rematches of those -- each player can as
 **stage** (Random or one of the stages). The two choices are in the play card, right of Strict ("Challenges,
 invites, rooms: [Any side] [Random stage]"); the launcher keeps them in online.json and sends them to the server after
 every login and whenever they change (`casual_prefs`). A challenge and a friend's casual invite carry the sender's
-wishes ("Alice (2nd Dan) challenges you -- wants to be P1 on Scrapyard"), and the match card says what this player got
-("Casual match vs Alice (P2 on Stage 24)"; when a coin flip went against a wish, the status line says so).
+wishes ("Alice (2nd Dan) challenges you -- wants to be P1 on Ghetto Pit"), and the match card says what this player got
+("Casual match vs Alice (P2 on All Hollow's Eve)"; when a coin flip went against a wish, the status line says so).
 
 | | rule |
 |---|---|
@@ -1007,7 +1007,8 @@ Settings (environment variables; command-line flags `--host --port --udp-port
 | `T5L_FRIEND_REQUEST_DAYS` / `T5L_FRIEND_RETRY_DAYS` / `T5L_INVITE_SECONDS` | `14` / `7` / `60` | an unanswered request runs out; a declined one may be repeated after; an invite waits |
 | `T5L_INVITE_RETRY_SECONDS` | `30` | after a declined (or taken-back) invite or challenge, the same player asks the same player again only after this (0 = off) |
 | `T5L_FRIEND_REQUESTS_ADDRESS` | `60` | friend requests per 24 h from one internet address, all its accounts together (0 = no limit) |
-| `T5L_LAG_TOLERANCE` / `T5L_LAG_WAIT` | `1` / `6` | post-game lag check: extra frames allowed, seconds to wait for the second report |
+| `T5L_LAG_TOLERANCE` / `T5L_LAG_WAIT` / `T5L_LAG_WAIT_SHARE` | `1` / `6` / `0.05` | post-game lag check: extra frames allowed, seconds to wait for the second report, the share of the match a game may wait for the other's inputs before the verdict is `slow` (1.1.5; 0 = off) |
+| `T5L_REMATCH_DIRECT` | `1` | 1.1.5: a rematch after a match on the relay tries the direct path again (docs/NETPLAY.md "Rematches after the relay"); `0` = stay on the relay |
 | `T5L_ACCEPT_ONESIDED` | `1` | count a lone result report when the other player left |
 | `T5L_LOG_LEVEL` | `INFO` | |
 | `T5L_LOG_FILE`, `T5L_LOG_MAX_MB`, `T5L_LOG_BACKUPS` | , `10`, `5` | also log to a file, rotated (Windows hosts) |
@@ -1142,14 +1143,14 @@ colour, rating, W-L):
 | State | The card |
 |---|---|
 | Not logged in | Server, name, then Log in / Create account (password rules checked as you type) / Guest; Host for friends |
-| In the lobby | Ranked match and Quick match, the character, Strict; side and stage for challenges, invites and rooms (1.1.5, a server that has them); the players, rooms (a lock = cannot be joined now) and chat below |
+| In the lobby | Ranked match and Quick match, the character (a button that opens the select grid: Random first, then every fighter from A to Z with its picture -- the head and shoulders of the game's own select-screen render, read from your built game into native\cache\fighters by lobby/t5lobby/fighter_art.py, never shipped; names alone until then -- the chosen one lit, your main starred; arrow keys, Enter, Esc; Cross / A picks, Circle / B closes -- lobby/t5lobby/tk_charsel.py), Strict; side and stage for challenges, invites and rooms (1.1.5, a server that has them); the players, rooms (a lock = cannot be joined now) and chat below |
 | Searching | A turning ring, the time searching, the queues, Stop searching (B) |
 | Match found | Ping bars (green up to 60 ms, yellow up to 120, red above), a 15 s countdown ring, Accept (A) / Decline (B); the opponent is shown once both accepted |
 | In a match | The opponent, ping, input delay, connection, "Your game is running" and where the game is |
 | Result | Win / loss banner, rounds, rating change, promotion / demotion / placement, lag check, Rematch (A) / Next game / Leave (B) / Block |
 | Errors | One line on a red banner: what went wrong and what to do |
 | Friends (a page next to Lobby, Leaderboard, Profile) | Your friends with a dot (green online, yellow in a match, grey ring offline), rank and what they do; Invite to a match / Invite to my room / Remove; Add a friend (account name); REQUESTS with Accept / Decline / Take back |
-| Stats (the last page) | The community's numbers from the lobby server: accounts, players who played, matches, ranked matches, the last 24 hours; every fighter's matches, wins, win rate and share of the picks, All / Ranked / Casual, sorted by a click on a column (grey: fewer than 30 matches). An older server: a line saying it has no stats page yet |
+| Stats (next to the Leaderboard) | The community's numbers from the lobby server: accounts, players who played, matches, ranked matches, the last 24 hours; every fighter's matches, wins, win rate and share of the picks, All / Ranked / Casual, sorted by a click on a column (grey: fewer than 30 matches). An older server: a line saying it has no stats page yet |
 | Invite from a friend | Their badge and name, "invites you to a casual match" (or "to the room ..."), Accept (A) / Decline (B) |
 
 A ranked set's score goes into `OnlineTab.set_var` ("Set 1-0, game 2 of 3"); the match cards show it as a

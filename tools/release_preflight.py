@@ -146,6 +146,13 @@ def main():
         print("\nPREFLIGHT FAILED at: 7. ready for players (date the heading, fill in or remove every comment, "
               "put the version into both README release lines)", flush=True)
         sys.exit(1)
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    import release_sign                 # the publish job signs SHA256SUMS (RELEASING.md "Release signature")
+    keys = release_sign.updater_keys()
+    if keys:
+        ids = ", ".join(release_sign.release_sig.key_id(bytes.fromhex(k)) for k in keys)
+        print(f"\n   release signature: this launcher trusts key {ids}; the publish job needs the secret "
+              f"{release_sign.KEY_ENV} in the 'release' environment (or it stops before publishing)", flush=True)
     print(f"\nPREFLIGHT OK for {ver}: safe to tag v{ver}", flush=True)
     if not a.keep:
         rmtree(work)

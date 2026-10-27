@@ -473,6 +473,8 @@ MESSAGES = {
         "BUILD GAME を押してください。数分かかります。ゲームデータはこのフォルダーに残ります。",
     "BUILD GAME": "BUILD GAME",
     "Redo every step": "全ステップをやり直す",
+    "Skip warm-up": "ウォームアップをスキップ",
+    "Skipping…": "スキップ中…",
     "Keep the PC responsive (slower)": "PCの操作性を優先（遅くなります）",
     "Open build.log": "build.log を開く",
     "Report a problem...": "問題を報告...",
@@ -772,8 +774,39 @@ MESSAGES = {
     "OK": "OK",
     # ---- lobby/t5lobby/fighters.py
     "Random": "ランダム",
-    "Scrapyard": "スクラップ置き場",
-    "Industrial yard": "工業地帯",
+    "Western Gate": "Western Gate",
+    "Autumn Temple": "Autumn Temple",
+    "Meteor Shower": "Meteor Shower",
+    "Ghetto Pit": "Ghetto Pit",
+    "City Lights": "City Lights",
+    "Great Plains": "Great Plains",
+    "Galleon": "Galleon",
+    "All Hollow's Eve": "All Hollow's Eve",
+    "Winter Palace": "Winter Palace",
+    "Festival": "Festival",
+    "Aurora Australis": "Aurora Australis",
+    "Heaven's Gate": "Heaven's Gate",
+    "Space Colony": "Space Colony",
+    "Pool Party": "Pool Party",
+    "Playroom": "Playroom",
+    "Wolves' Den": "Wolves' Den",
+    "Industrial Complex": "Industrial Complex",
+    "Ominous Mist": "Ominous Mist",
+    "Dragon's Nest": "Dragon's Nest",
+    "Burning Temple": "Burning Temple",
+    "Waterfall": "Waterfall",
+    "Urban Jungle": "Urban Jungle",
+    "City at Sunset": "City at Sunset",
+    "Moonlit Wilderness": "Moonlit Wilderness",
+    "Pirate's Cove": "Pirate's Cove",
+    "Secret Garden": "Secret Garden",
+    "Cathedral": "Cathedral",
+    "Acid Rain": "Acid Rain",
+    "Polar Paradise": "Polar Paradise",
+    "Hell's Gate": "Hell's Gate",
+    "Final Frontier": "Final Frontier",
+    "Poolside": "Poolside",
+    "Final Stage": "Final Stage",
     "Stage {number}": "ステージ {number}",
     "Tekken 5 stage {number}": "Tekken 5 ステージ {number}",
     # ---- lobby/t5lobby/handover.py
@@ -1887,6 +1920,10 @@ MESSAGES = {
     "My profile": "マイプロフィール",
     "Find an opponent online": "オンラインで対戦相手を探す",
     "Character": "キャラクター",
+    "Choose your fighter": "キャラクターを選ぶ",
+    "{star} your main: {character}": "{star} メイン：{character}",
+    "Arrow keys move, Enter picks, Esc closes. With a controller: Cross / A picks, Circle / B closes.":
+        "矢印キーで移動、Enterで決定、Escで閉じる。コントローラー：× / Aで決定、○ / Bで閉じる。",
     "Locked for this ranked set": "この Ranked セット中は固定",
     "Ranked match": "Ranked 対戦",
     "Quick match": "Quick Match",
@@ -2364,11 +2401,8 @@ MESSAGES = {
         "最低（古いグラフィックカード）",
     "Default":
         "標準",
-    "Lowest: Internal resolution Lowest; stage blur / glow, shadows and effects off (so no hit effects "
-    "either). Default puts them back. Only your picture changes: online, both players can choose differently.":
-        "最低：内部解像度を「最低」にし、ステージのぼかし / 光彩、影、エフェクトをオフにします（ヒットエフェクトも表示"
-        "されません）。「標準」で元に戻ります。変わるのは自分の画面だけなので、オンラインでも各プレイヤーが別々に選べます"
-        "。",
+    "Lowest: Internal resolution Lowest; stage blur / glow and shadows off. Effects stay on: the hit effects show what happens in a fight. Default puts them back. Only your picture changes: online, both players can choose differently.":
+        "最低：内部解像度を「最低」にし、ステージのぼかし / 光彩と影をオフにします。エフェクトはオンのままです（ヒットエフェクトで対戦の状況がわかります）。「標準」で元に戻ります。変わるのは自分の画面だけなので、オンラインでも各プレイヤーが別々に選べます。",
     # ---- lobby/t5lobby/tk_casual.py
     "Any side": "どちらでも",
     "P1 (left)": "P1（左）",
@@ -2383,4 +2417,7 @@ MESSAGES = {
     "P{n} on {stage}": "P{n}・{stage}",
     "Rematch: swap sides": "Rematch：サイド交代",
     "with the sides swapped": "サイドを交代して",
+    # the fold button right of the Online tab's lists (tk_views.toggle_top)
+    "Hide": "隠す",
+    "Show": "表示",
 }

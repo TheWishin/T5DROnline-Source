@@ -482,6 +482,8 @@ MESSAGES = {
         "Presiona BUILD GAME. Tarda unos minutos; los datos del juego se quedan en esta carpeta.",
     "BUILD GAME": "BUILD GAME",
     "Redo every step": "Rehacer todos los pasos",
+    "Skip warm-up": "Saltar el calentamiento",
+    "Skipping…": "Saltando…",
     "Keep the PC responsive (slower)": "Mantener la PC usable (más lento)",
     "Open build.log": "Abrir build.log",
     "Report a problem...": "Reportar un problema...",
@@ -789,8 +791,39 @@ MESSAGES = {
     "OK": "OK",
     # ---- lobby/t5lobby/fighters.py
     "Random": "Aleatorio",
-    "Scrapyard": "Desguace",
-    "Industrial yard": "Zona industrial",
+    "Western Gate": "Western Gate",
+    "Autumn Temple": "Autumn Temple",
+    "Meteor Shower": "Meteor Shower",
+    "Ghetto Pit": "Ghetto Pit",
+    "City Lights": "City Lights",
+    "Great Plains": "Great Plains",
+    "Galleon": "Galleon",
+    "All Hollow's Eve": "All Hollow's Eve",
+    "Winter Palace": "Winter Palace",
+    "Festival": "Festival",
+    "Aurora Australis": "Aurora Australis",
+    "Heaven's Gate": "Heaven's Gate",
+    "Space Colony": "Space Colony",
+    "Pool Party": "Pool Party",
+    "Playroom": "Playroom",
+    "Wolves' Den": "Wolves' Den",
+    "Industrial Complex": "Industrial Complex",
+    "Ominous Mist": "Ominous Mist",
+    "Dragon's Nest": "Dragon's Nest",
+    "Burning Temple": "Burning Temple",
+    "Waterfall": "Waterfall",
+    "Urban Jungle": "Urban Jungle",
+    "City at Sunset": "City at Sunset",
+    "Moonlit Wilderness": "Moonlit Wilderness",
+    "Pirate's Cove": "Pirate's Cove",
+    "Secret Garden": "Secret Garden",
+    "Cathedral": "Cathedral",
+    "Acid Rain": "Acid Rain",
+    "Polar Paradise": "Polar Paradise",
+    "Hell's Gate": "Hell's Gate",
+    "Final Frontier": "Final Frontier",
+    "Poolside": "Poolside",
+    "Final Stage": "Final Stage",
     "Stage {number}": "Escenario {number}",
     "Tekken 5 stage {number}": "Escenario {number} de Tekken 5",
     # ---- lobby/t5lobby/handover.py
@@ -1908,6 +1941,10 @@ MESSAGES = {
     "My profile": "Mi perfil",
     "Find an opponent online": "Busca un rival online",
     "Character": "Personaje",
+    "Choose your fighter": "Elige a tu peleador",
+    "{star} your main: {character}": "{star} tu main: {character}",
+    "Arrow keys move, Enter picks, Esc closes. With a controller: Cross / A picks, Circle / B closes.":
+        "Las flechas mueven, Enter elige, Esc cierra. Con mando: Cruz / A elige, Círculo / B cierra.",
     "Locked for this ranked set": "Fijo en este set Ranked",
     "Ranked match": "Partida Ranked",
     "Quick match": "Quick Match",
@@ -2401,13 +2438,8 @@ MESSAGES = {
         "Mínimo (tarjetas gráficas antiguas)",
     "Default":
         "Predeterminado",
-    "Lowest: Internal resolution Lowest; stage blur / glow, shadows and effects off (so no hit effects "
-    "either). Default puts them back. Only your picture changes: online, both players can choose differently.":
-        "Mínimo: resolución interna Mínima; desenfoque / brillo "
-        "de escenarios, sombras y efectos desactivados (así que "
-        "tampoco efectos de golpe). Predeterminado los "
-        "restablece. Solo cambia tu imagen: en línea, cada "
-        "jugador puede elegir distinto.",
+    "Lowest: Internal resolution Lowest; stage blur / glow and shadows off. Effects stay on: the hit effects show what happens in a fight. Default puts them back. Only your picture changes: online, both players can choose differently.":
+        "Mínimo: resolución interna Mínima; desenfoque / brillo de escenarios y sombras desactivados. Los efectos siguen activados: los efectos de golpe muestran lo que pasa en el combate. Predeterminado los restablece. Solo cambia tu imagen: en línea, cada jugador puede elegir lo suyo.",
     # ---- lobby/t5lobby/tk_casual.py
     "Any side": "Cualquier lado",
     "P1 (left)": "P1 (izquierda)",
@@ -2423,4 +2455,7 @@ MESSAGES = {
     "P{n} on {stage}": "P{n} en {stage}",
     "Rematch: swap sides": "Rematch: cambiar de lado",
     "with the sides swapped": "con los lados cambiados",
+    # the fold button right of the Online tab's lists (tk_views.toggle_top)
+    "Hide": "Ocultar",
+    "Show": "Mostrar",
 }

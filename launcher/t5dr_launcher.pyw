@@ -279,10 +279,11 @@ class App(tk.Tk):
         f = th.fonts
         px = th.px
         self.option_add("*Text.Font", f["mono"])
-        st.configure("Step.TLabel", font=f["body"], foreground=C["faint"], padding=(px(6), px(2)))
-        st.configure("StepRun.TLabel", font=f["bold"], foreground=C["accent_hi"], padding=(px(6), px(2)))
-        st.configure("StepDone.TLabel", font=f["body"], foreground=C["ok"], padding=(px(6), px(2)))
-        st.configure("StepFail.TLabel", font=f["bold"], foreground=C["bad"], padding=(px(6), px(2)))
+        # (5 px apart: the nine steps are the Build tab's widest row, in Spanish)
+        st.configure("Step.TLabel", font=f["body"], foreground=C["faint"], padding=(px(5), px(2)))
+        st.configure("StepRun.TLabel", font=f["bold"], foreground=C["accent_hi"], padding=(px(5), px(2)))
+        st.configure("StepDone.TLabel", font=f["body"], foreground=C["ok"], padding=(px(5), px(2)))
+        st.configure("StepFail.TLabel", font=f["bold"], foreground=C["bad"], padding=(px(5), px(2)))
         # the same window at any DPI (fonts grow with it), never larger than the screen
         sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
         self.minsize(min(px(900), sw - 40), min(px(680), sh - 80))
@@ -313,16 +314,39 @@ class App(tk.Tk):
 
     # ------------------------------------------------------------------ layout
     def _layout(self):
-        head = ttk.Frame(self, padding=(16, 12, 16, 4))
-        head.pack(fill="x")
-        if getattr(self, "theme", None) is not None:
-            self.theme.Mark(head, size=30).pack(side="left", padx=(0, 10))
-        ttk.Label(head, text="Tekken 5: Dark Resurrection Online", style="H1.TLabel").pack(side="left")
-        ttk.Label(head, style="Muted.TLabel",
-                  text="   " + t("native Windows build  ·  launcher {version}",
-                                 version=self.info.get("version", "?"))).pack(side="left")
+        dark = getattr(self, "theme", None) is not None
+        name = "Tekken 5: Dark Resurrection Online"
+        sub = t("native Windows build  ·  launcher {version}", version=self.info.get("version", "?"))
+        if dark:
+            # one slim bar: the mark, the name with "Online" in the accent colour, the build in small capitals, and
+            # Check for updates on the right
+            # a band drawn by the theme (a warm glow, the accent's slashes) with the name and the build on it
+            px, th = self.px, self.theme.apply(self)
+            head = self.theme.Band(self, height=52)
+            head.pack(fill="x")
+            head.pack_propagate(False)
+            first, last = name.rsplit(" ", 1)
+            h, x, m = px(52), px(18), px(26)
+            self.theme.draw_mark(head, x, (h - m) / 2.0, m)
+            x += m + px(10)
+            for text, font, col in ((first + " ", th.fonts["brand"], self.theme.C["text"]),
+                                    (last, th.fonts["brand"], self.theme.C["accent_hi"]),
+                                    (sub.upper(), th.fonts["caps"], self.theme.C["muted"])):
+                if font is th.fonts["caps"]:
+                    x += px(16)
+                head.create_text(x, h / 2.0 + (px(2) if font is th.fonts["caps"] else 0), text=text, anchor="w",
+                                 fill=col, font=font)
+                x += font.measure(text)
+            head.configure(width=x + px(24))
+        else:
+            head = ttk.Frame(self, padding=(16, 12, 16, 4))
+            head.pack(fill="x")
+            ttk.Label(head, text=name, style="H1.TLabel").pack(side="left")
+            ttk.Label(head, style="Muted.TLabel", text="   " + sub).pack(side="left")
         self.updater = updater.attach(self, head)     # "Check for updates", the offer, the update itself
-        self.nb = ttk.Notebook(self)
+        if dark and getattr(self.updater, "button", None) is not None:
+            self.updater.button.pack_configure(padx=(0, self.px(16)))
+        self.nb = ttk.Notebook(self, style="Main.TNotebook") if dark else ttk.Notebook(self)
         self.nb.pack(fill="both", expand=True, padx=12, pady=(4, 0))
         self.tabs = {}
         for key, label in (("build", t("Build")), ("play", t("Play offline")), ("settings", t("Settings")),
@@ -429,6 +453,8 @@ class App(tk.Tk):
         self.detail = tk.StringVar(value=t("Press BUILD GAME. It takes a few minutes; the game data stays in this folder."))
         ttk.Label(b, textvariable=self.detail, style="Muted.TLabel", wraplength=860,
                   justify="left").grid(row=2, column=0, columnspan=3, sticky="w")
+        # while the shader warm-up runs (the last step): end it; the game is built and works without it
+        self.skip_btn = ttk.Button(b, text=t("Skip warm-up"), command=self.skip_warmup)
         row = ttk.Frame(b)
         row.grid(row=3, column=0, columnspan=3, sticky="we", pady=(8, 2))
         self.build_btn = self.big_button(row, t("BUILD GAME"), self.start_build)
@@ -467,7 +493,8 @@ class App(tk.Tk):
             sb = ttk.Scrollbar(self.log.frame, orient="vertical", command=self.log.yview)
             sb.pack(side="right", fill="y", before=self.log._w)   # (str(self.log) is its frame)
             self.log.configure(yscrollcommand=sb.set)
-            self.log.frame.configure(bg=COLORS["log_bg"])
+            self.log.frame.configure(bg=COLORS["log_bg"], highlightthickness=1,      # (framed like the cards)
+                                     highlightbackground=self.theme.C["line"], highlightcolor=self.theme.C["line"])
 
     def _play_tab(self, tab):
         box = ttk.Frame(tab, padding=24)
@@ -584,9 +611,9 @@ class App(tk.Tk):
         ttk.Button(row, text=t("Default"),
                    command=lambda: self._graphics_preset(core.DEFAULT_PRESET)).pack(side="left")
         ttk.Label(gx, style="Muted.TLabel", wraplength=300, justify="left", text=t(
-            "Lowest: Internal resolution Lowest; stage blur / glow, shadows and effects off (so no hit effects "
-            "either). Default puts them back. Only your picture changes: online, both players can choose "
-            "differently.")).pack(
+            "Lowest: Internal resolution Lowest; stage blur / glow and shadows off. Effects stay on: the hit "
+            "effects show what happens in a fight. Default puts them back. Only your picture changes: online, "
+            "both players can choose differently.")).pack(
             anchor="w", pady=(4, 0))
 
         # Power saving (PS3_LAPTOP, core.POWER_SAVING; docs/RENDER_PERF.md "Laptops, handhelds and 8-core APUs"):
@@ -1021,6 +1048,22 @@ class App(tk.Tk):
         if self.build:
             self.build.cancel()
 
+    def skip_warmup(self):
+        """Skip warm-up (the Shaders step): tools/shader_warmup.py ends, the build finishes as built."""
+        if self.build and self.cur_step == "shaders" and self.build.skip_warmup():
+            self.skip_btn.configure(state="disabled", text=t("Skipping…"))
+            core.log("build: shader warm-up skipped by the player")
+
+    def _show_skip_btn(self, show):
+        try:
+            if show:
+                self.skip_btn.configure(state="normal", text=t("Skip warm-up"))
+                self.skip_btn.grid(row=2, column=2, sticky="e")
+            else:
+                self.skip_btn.grid_remove()
+        except tk.TclError:
+            pass
+
     def _paint_step(self, s):
         st = self.step_state[s]
         style = {"running": "StepRun.TLabel", "done": "StepDone.TLabel", "skip": "StepDone.TLabel",
@@ -1061,9 +1104,12 @@ class App(tk.Tk):
                 self.cur_step, self.sub, self.step_t0 = val, 0.0, time.time()
                 self.step_state[val] = "running"
                 self._paint_step(val)
+                self._show_skip_btn(val == "shaders")
             elif ev == "skip" and val:
                 self.step_state[val] = "skip"
                 self._paint_step(val)
+                if val == "shaders":
+                    self._show_skip_btn(False)            # (already warmed for this build)
             elif ev == "sub":
                 self.sub = val
             elif ev == "error":
@@ -1111,6 +1157,7 @@ class App(tk.Tk):
         self.cur_step = None
         set_big_state(self.build_btn, True)
         self.cancel_btn.configure(state="disabled")
+        self._show_skip_btn(False)
         self.refresh_game_state()
 
     # ------------------------------------------------------------------ play

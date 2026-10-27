@@ -42,7 +42,7 @@ class TkFriendsTest(TkBase):
     def befriend(self):
         """The tab asks Rival, Rival accepts."""
         tab = self.tab
-        tab.nb.select(3)
+        tab.nb.select(tab.friends_page)
         tab.friend_name_var.set("Rival")
         self.pump(lambda: str(tab.friend_actions["add"].cget("state")) == "normal")
         tab.friend_actions["add"].invoke()
@@ -57,7 +57,7 @@ class TkFriendsTest(TkBase):
     def test_add_a_friend_and_see_them_online(self):
         tab = self.tab
         self.login()
-        tab.nb.select(3)                                          # the Friends page
+        tab.nb.select(tab.friends_page)                           # the Friends page
         self.root.update()
         self.assertIn("No friends yet", tab.friends_note_var.get())
         self.rival(auto_ready=True)
@@ -89,7 +89,7 @@ class TkFriendsTest(TkBase):
         self.assertEqual(tab.nb.tab(tab.friends_page, "text"), "Friends (1)")
         self.assertEqual(tab.requests_count_var.get(), "1")
         self.assertEqual(texts(tab.tv_requests)["in:Rival"][1], "wants to be your friend")
-        tab.nb.select(3)
+        tab.nb.select(tab.friends_page)
         tab.tv_requests.selection_set("in:Rival")
         self.pump(lambda: str(tab.friend_actions["accept"].cget("state")) == "normal")
         self.assertEqual(str(tab.friend_actions["cancel_request"].cget("state")), "disabled")
@@ -236,7 +236,7 @@ class TkFriendsTest(TkBase):
         tab.server_var.set(self.s.addr)
         tab.do_login("guest")
         self.pump(lambda: tab.client is not None and tab.client.me is not None)
-        tab.nb.select(3)
+        tab.nb.select(tab.friends_page)
         self.pump(lambda: "Friends need an account" in tab.friends_note_var.get())
         self.assertEqual(str(tab.friend_actions["add"].cget("state")), "disabled")
         tab.client.me["guest"] = False                            # as if an account on a server without the feature

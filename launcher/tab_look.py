@@ -9,7 +9,7 @@ labelled frame per section). Here each labelled frame of the Build and Settings 
 moves inside, in the Online tab's section style (its text unchanged) -- and every ttk widget in it gets the card's variant of its style
 ("Muted.TLabel" -> "Card.Muted.TLabel", a wrapping check box "W440.TCheckbutton" -> "W440.Card.TCheckbutton", ...),
 which also holds for a style the launcher sets later (the build steps, the package check's colours): those
-widgets' configure() translates it. The Play offline tab's content becomes one card.
+widgets' configure() translates it. The Play offline and Replays tabs' content becomes one card each.
 """
 import tkinter as tk
 import tkinter.font as tkfont
@@ -18,6 +18,7 @@ from tkinter import ttk
 # ttk classes that keep their style in a card (they draw their own ground: lists, bars, scroll bars)
 KEEP = frozenset(("Treeview", "TScrollbar", "TProgressbar", "TNotebook", "TPanedwindow", "TSizegrip"))
 TK_GROUND = frozenset(("Label", "Frame", "Message", "Checkbutton", "Radiobutton", "Canvas"))
+MARGIN = 14             # px at 100 %: from the tab row's line and the window's sides to the cards (every tab)
 
 
 class Look:
@@ -38,13 +39,16 @@ class Look:
         # sitting on the border line.
         self.inset = px(12) + 1                   # the card image's corner (theme.py: radius 12, border radius + 1)
         self.side = 0                             # (the content as far in as before: no tab gets wider)
-        # (the titles keep their case, so a heading font rather than the small capitals of the Online tab's sections)
-        self.caps_h = tkfont.Font(font=self.th.fonts["h3"]).metrics("linespace")
+        # (the titles in the Online tab's section style: small capitals, muted -- shown by a label of their own, the
+        # frame's text stays as it is written: tests and tools find the boxes by it)
+        self.caps_h = tkfont.Font(font=self.th.fonts["caps"]).metrics("linespace")
         img = self.th.images.get("frame_Card")
         if img is not None and "CardLF.border" not in st.element_names():
             size = 2 * px(12) + px(48)
-            st.element_create("CardLF.border", "image", img, border=self.inset, sticky="nsew", width=size,
-                              height=size)
+            sh = getattr(self.th, "shadow", 0)          # (the card image's shadow under its bottom edge)
+            st.element_create("CardLF.border", "image", img, border=(self.inset, self.inset, self.inset,
+                                                                     self.inset + sh), sticky="nsew", width=size,
+                              height=size + sh)
         if "CardLF.border" in st.element_names():
             st.layout("Card.TLabelframe", [("CardLF.border", {"sticky": "nsew"})])
         top = px(12)
@@ -141,21 +145,52 @@ class Look:
             # (the content's place inside the card: the card image's corners plus a little; under the title)
             edge = self.inset + self.side
             top = self.px(12) + self.caps_h + self.px(8) if title else edge
-            # (the title stays as it is written -- tests and tools find the boxes by it; the heading style does the rest)
             lf.configure(text=title, style="Card.TLabelframe", padding=(edge, top, edge, self.inset))
+            if title:
+                lbl = ttk.Label(lf, text=title.upper(), style="Card.Caps.TLabel")
+                # (made after the box's content: it takes the box's own extra bindings -- the Settings tab's wheel
+                # scrolling -- and goes to the bottom of the stacking order, so the box's last widget stays last)
+                own = (str(lf), lf.winfo_class(), str(lf.winfo_toplevel()), "all")
+                extra = tuple(tag for tag in lf.bindtags() if tag not in own)
+                lbl.bindtags(extra + lbl.bindtags())
+                lbl.lower()
+                lf.configure(labelwidget=lbl)
         except tk.TclError:
             return
         self.cards.append(lf)
         self.restyle(lf)
 
-    def card_frame(self, f, pad=18):
-        """A plain frame (the Play offline tab's content) -> one card."""
+    def card_frame(self, f, pad=16):
+        """A plain frame (the Play offline and Replays tabs' content) -> one card; its big title goes on a hero
+        band at the card's top (theme.Band: a warm glow and the accent's slashes, the title in the display face)."""
         try:
             f.configure(style="Card.TFrame", padding=self.px(pad))
         except tk.TclError:
             return
         self.cards.append(f)
         self.restyle(f)
+        for w in f.winfo_children():
+            try:
+                if w.winfo_class() == "TLabel" and str(w.cget("style")) == "Card.H1.TLabel"                         and w.winfo_manager() == "pack":
+                    self.hero(f, w)
+                    break
+            except tk.TclError:
+                pass
+
+    def hero(self, card, label):
+        """`label` (a big title packed in `card`) -> the same title on a hero band in its place (the label stays,
+        hidden: tools and tests read the page's texts from the widgets)."""
+        px, C, fonts = self.px, self.C, self.th.fonts
+        title = str(label.cget("text"))
+        h = px(70)
+        band = self.theme.Band(card, height=70, base=C["surface"], glow=self.theme.mix(C["accent"], C["surface"], 0.7),
+                               reach=640)
+        x = px(22)
+        band.create_text(x, h / 2.0, text=title, anchor="w", fill=C["text"], font=fonts["h1"])
+        band.configure(width=x + fonts["h1"].measure(title) + px(24))
+        band.pack(before=label, fill="x", pady=(0, px(12)))
+        label.pack_forget()
+        return band
 
 
 def labelframes(w):
@@ -169,24 +204,58 @@ def labelframes(w):
     return out
 
 
-def apply(app, keys=("build", "settings", "play")):
-    """Give the launcher's Build, Settings and Play offline tabs the Online tab's cards. -> the Look, or None
+def apply(app, keys=("build", "settings", "play", "replays")):
+    """Give the launcher's Build, Settings, Play offline and Replays tabs the Online tab's cards. -> the Look, or None
     without the dark theme (lobby/ missing: the plain look stays)."""
     theme = getattr(app, "theme", None)
     tabs = getattr(app, "tabs", None) or {}
     if theme is None or not tabs:
         return None
     look = Look(app, theme)
+    px = look.px
+    m = MARGIN
     for key in keys:
         tab = tabs.get(key)
         if tab is None:
             continue
-        if key == "play":
+        if key in ("play", "replays"):            # (one frame holds the whole tab: one card)
             kids = [c for c in tab.winfo_children() if c.winfo_class() == "TFrame"]
             if kids:
                 look.card_frame(kids[0])
+                if kids[0].winfo_manager() == "pack":
+                    kids[0].pack_configure(padx=px(m), pady=(px(m), px(8)))
+                    if key == "play":              # (nothing in it grows: the card as tall as what it holds)
+                        kids[0].pack_configure(fill="x", expand=False)
             continue
+        # every tab's cards the same distance from the window's edges as the Online tab's (tk_views.OnlineView)
+        if key == "build":                         # (its cards keep their own 8 px apart)
+            tab.configure(padding=(px(m - 8), px(m - 8), px(m - 8), 0))
+        elif key == "settings":
+            inner = getattr(getattr(app, "settings_scroll", None), "inner", None)
+            box = [c for c in inner.winfo_children() if c.winfo_class() == "TFrame"][:1] if inner else []
+            if box:
+                box[0].configure(padding=(px(m), px(m), px(m), px(m)))
         for lf in labelframes(tab):
             look.card_labelframe(lf)
+    # every list in the window: zebra rows and the row under the mouse lit (theme.list_look)
+    def lists(w):
+        for c in w.winfo_children():
+            if c.winfo_class() == "Treeview":
+                look.theme.list_look(c)
+            lists(c)
+    lists(app)
+    # the launcher's own tab row: an icon before each name, light on the chosen tab
+    nb = getattr(app, "nb", None)
+    for key, icon in (("build", "build"), ("play", "play"), ("settings", "settings"), ("online", "online"),
+                      ("replays", "replays")):
+        tab = tabs.get(key)
+        if nb is None or tab is None:
+            continue
+        try:
+            on = look.th.icon(icon, look.C["text"])
+            off = look.th.icon(icon, look.C["muted"])
+            nb.tab(tab, image=(off, "selected", on, "active", on), compound="left")
+        except tk.TclError:
+            pass
     app.tab_look = look
     return look

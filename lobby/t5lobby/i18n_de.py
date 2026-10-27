@@ -511,6 +511,8 @@ MESSAGES = {
         "diesem Ordner.",
     "BUILD GAME": "BUILD GAME",
     "Redo every step": "Alle Schritte neu machen",
+    "Skip warm-up": "Aufwärmen überspringen",
+    "Skipping…": "Überspringe…",
     "Keep the PC responsive (slower)": "PC bedienbar halten (langsamer)",
     "Open build.log": "build.log öffnen",
     "Report a problem...": "Problem melden...",
@@ -836,8 +838,39 @@ MESSAGES = {
     "OK": "OK",
     # ---- lobby/t5lobby/fighters.py
     "Random": "Zufall",
-    "Scrapyard": "Schrottplatz",
-    "Industrial yard": "Industriegelände",
+    "Western Gate": "Western Gate",
+    "Autumn Temple": "Autumn Temple",
+    "Meteor Shower": "Meteor Shower",
+    "Ghetto Pit": "Ghetto Pit",
+    "City Lights": "City Lights",
+    "Great Plains": "Great Plains",
+    "Galleon": "Galleon",
+    "All Hollow's Eve": "All Hollow's Eve",
+    "Winter Palace": "Winter Palace",
+    "Festival": "Festival",
+    "Aurora Australis": "Aurora Australis",
+    "Heaven's Gate": "Heaven's Gate",
+    "Space Colony": "Space Colony",
+    "Pool Party": "Pool Party",
+    "Playroom": "Playroom",
+    "Wolves' Den": "Wolves' Den",
+    "Industrial Complex": "Industrial Complex",
+    "Ominous Mist": "Ominous Mist",
+    "Dragon's Nest": "Dragon's Nest",
+    "Burning Temple": "Burning Temple",
+    "Waterfall": "Waterfall",
+    "Urban Jungle": "Urban Jungle",
+    "City at Sunset": "City at Sunset",
+    "Moonlit Wilderness": "Moonlit Wilderness",
+    "Pirate's Cove": "Pirate's Cove",
+    "Secret Garden": "Secret Garden",
+    "Cathedral": "Cathedral",
+    "Acid Rain": "Acid Rain",
+    "Polar Paradise": "Polar Paradise",
+    "Hell's Gate": "Hell's Gate",
+    "Final Frontier": "Final Frontier",
+    "Poolside": "Poolside",
+    "Final Stage": "Final Stage",
     "Stage {number}": "Stage {number}",
     "Tekken 5 stage {number}": "Tekken-5-Stage {number}",
     # ---- lobby/t5lobby/handover.py
@@ -2014,6 +2047,10 @@ MESSAGES = {
     "My profile": "Mein Profil",
     "Find an opponent online": "Gegner online finden",
     "Character": "Charakter",
+    "Choose your fighter": "Wähle deinen Kämpfer",
+    "{star} your main: {character}": "{star} dein Main: {character}",
+    "Arrow keys move, Enter picks, Esc closes. With a controller: Cross / A picks, Circle / B closes.":
+        "Pfeiltasten bewegen, Enter wählt, Esc schließt. Mit Controller: Kreuz / A wählt, Kreis / B schließt.",
     "Locked for this ranked set": "Für dieses Ranked-Set gesperrt",
     "Ranked match": "Ranked-Match",
     "Quick match": "Quick Match",
@@ -2496,13 +2533,8 @@ MESSAGES = {
         "Am niedrigsten (alte Grafikkarten)",
     "Default":
         "Standard",
-    "Lowest: Internal resolution Lowest; stage blur / glow, shadows and effects off (so no hit effects "
-    "either). Default puts them back. Only your picture changes: online, both players can choose differently.":
-        "Am niedrigsten: Interne Auflösung „Am niedrigsten“; "
-        "Stage-Unschärfe / Leuchten, Schatten und Effekte aus "
-        "(also auch keine Treffer-Effekte). „Standard“ stellt "
-        "sie wieder her. Nur dein Bild ändert sich: Online "
-        "können beide Spieler verschieden wählen.",
+    "Lowest: Internal resolution Lowest; stage blur / glow and shadows off. Effects stay on: the hit effects show what happens in a fight. Default puts them back. Only your picture changes: online, both players can choose differently.":
+        "Am niedrigsten: Interne Auflösung „Am niedrigsten“; Stage-Unschärfe / Leuchten und Schatten aus. Die Effekte bleiben an: Die Treffer-Effekte zeigen, was im Kampf passiert. „Standard“ stellt sie wieder her. Nur dein Bild ändert sich: Online kann jeder Spieler selbst wählen.",
     # ---- lobby/t5lobby/tk_casual.py
     "Any side": "Seite egal",
     "P1 (left)": "P1 (links)",
@@ -2518,4 +2550,7 @@ MESSAGES = {
     "P{n} on {stage}": "P{n} auf {stage}",
     "Rematch: swap sides": "Rematch: Seiten tauschen",
     "with the sides swapped": "mit getauschten Seiten",
+    # the fold button right of the Online tab's lists (tk_views.toggle_top)
+    "Hide": "Ausblenden",
+    "Show": "Einblenden",
 }

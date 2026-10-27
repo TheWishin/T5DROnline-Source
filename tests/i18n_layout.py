@@ -494,8 +494,19 @@ class Walk:
                                    "quiet_hint": lambda _self: core.lift_quiet_hint("lift", 240)})()
         app._drain_build()
         self.screen("build quiet hint")
-        app.build, app.cur_step = None, None
+        # the shader warm-up (the last step) with its Skip warm-up button next to the step line
         app.step_state["lift"] = "pending"
+        app.step_state["shaders"] = "running"
+        app.cur_step, app.step_t0, app.sub = "shaders", time.time() - 300, 0.44
+        app.build = type("B", (), {"events": __import__("queue").Queue(), "quiet_hint": lambda _self: ""})()
+        app._show_skip_btn(True)
+        app._drain_build()
+        self.screen("build warm-up")
+        app.skip_btn.configure(text=i18n.t("Skipping…"))
+        self.screen("build warm-up skipping")
+        app._show_skip_btn(False)
+        app.build, app.cur_step = None, None
+        app.step_state["shaders"] = "pending"
         app.detail.set(detail)
 
     def _online(self):
@@ -508,6 +519,35 @@ class Walk:
         tab._set_account_view(True)
         tab.on_event({"t": "lobby_state", "players": PLAYERS, "rooms": ROOMS, "queue": {"ranked": 3, "quick": 1}})
         self.screen("online lobby")
+        # the character select grid over the tab (tk_charsel.py), the player's main starred
+        if getattr(tab, "charsel", None) is not None:
+            if isinstance(tab.client.me, dict):
+                tab.client.me.setdefault("main", "devil_jin")
+            tab.charsel.open()
+            self.screen("online character select")
+            tab.charsel.close()
+            # with the fighters' pictures (fighter_art.py; stand-ins of one colour: the walk has no game)
+            from t5lobby import fighter_art, rank_art
+            faces = fighter_art.FACES
+            saved = (faces.folder, set(faces.sizes), dict(faces.images), os.environ.get("T5_FIGHTER_ART"))
+            pics = tempfile.mkdtemp(prefix="t5dr-walk-faces")
+            for g in range(fighter_art.COUNT):
+                with open(fighter_art.face_path(pics, g), "wb") as f:
+                    f.write(rank_art.png_bytes(bytes((90, 100, 120, 255)) * fighter_art.SIZE ** 2, fighter_art.SIZE,
+                                               fighter_art.SIZE))
+            with open(os.path.join(pics, "fighters.json"), "w") as f:
+                f.write('{"format": %d, "count": %d}' % (fighter_art.FORMAT, fighter_art.COUNT))
+            os.environ["T5_FIGHTER_ART"] = pics
+            faces.folder, faces.sizes, faces.images = pics, set(), {}
+            faces.prepare_now([tab.charsel.pic_size])
+            tab.charsel.open()
+            self.screen("online character select, pictures")
+            tab.charsel.close()
+            faces.folder, faces.sizes, faces.images = saved[0], saved[1], saved[2]
+            if saved[3] is None:
+                os.environ.pop("T5_FIGHTER_ART", None)
+            else:
+                os.environ["T5_FIGHTER_ART"] = saved[3]
         from t5lobby import fwcheck
         tab.fw_status = fwcheck.Status("blocked", ["game", "launcher"],
                                        paths={"launcher": r"C:\T5DR Online\python\pythonw.exe"})

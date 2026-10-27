@@ -759,6 +759,23 @@ class BuildRun:
             self.cancelled = True
             kill_tree(self.proc.pid)
 
+    # tools/shader_warmup.py SKIP_FILE: the warm-up looks for it every quarter of a second
+    WARMUP_SKIP = os.path.join("logs", "warmup.skip")
+
+    def skip_warmup(self):
+        """The Build tab's Skip warm-up: the shader warm-up ends at once, the build ends as built (exit code 0,
+        a working game). True when asked."""
+        if not (self.proc and self.proc.poll() is None):
+            return False
+        path = os.path.join(self.out, self.WARMUP_SKIP)
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w") as f:
+                f.write("skip\n")
+        except OSError:
+            return False
+        return True
+
 
 def kill_tree(pid):
     if IS_WIN:
@@ -1209,12 +1226,13 @@ GRAPHICS_HINTS = {       # English; t(hint) where it is shown
                   "or waterfalls. Saves graphics work (the most on misty stages) and some processor time."),
 }
 
-# "Lowest" (Settings -> Graphics): everything a weak or old graphics card can do without -- the 3D scene
-# at half size, no stage blur / glow, every effect above off. "Default" puts these settings back: Internal
-# resolution as the launcher picks it (Auto on integrated graphics, else Native), stage blur / glow Off
+# "Lowest" (Settings -> Graphics): what a weak or old graphics card can do without -- the 3D scene at half
+# size, no stage blur / glow, no shadows. Effects stay ON (owner, 1.1.5): the hit sparks and the other hit
+# effects show what happens in a fight; Lowest even switches them back on. "Default" puts these settings back:
+# Internal resolution as the launcher picks it (Auto on integrated graphics, else Native), stage blur / glow Off
 # (the default since 1.1.4), every effect on. The other settings (window, VSync, power saving) stay.
-LOWEST_PRESET = dict({"internal_res": "lowest", "internal_res_set": True, "stage_blur": "off"},
-                     **{key: "off" for key in GRAPHICS})
+LOWEST_PRESET = {"internal_res": "lowest", "internal_res_set": True, "stage_blur": "off", "shadows": "off",
+                 "effects": "on"}
 DEFAULT_PRESET = dict({"internal_res": "native", "internal_res_set": False, "stage_blur": "off"},
                       **{key: spec[3] for key, spec in GRAPHICS.items()})
 

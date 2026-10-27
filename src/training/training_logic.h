@@ -8,7 +8,9 @@
  * 0x8D0 apart), found by tracing scripted fights frame by frame
  * (docs/TRAINING.md "How the frame data is measured"):
  *   +0x15C  u32  attack class of the current move: 0 = none (idle, walk,
- *                block/hit reactions have 0 or >= 0x10000)
+ *                a guard); a hit reaction has the hits of the combo in the
+ *                upper half (0x10000, 0x20000, ...) -- a hit even without
+ *                damage (Bryan's taunt 1+3+4 stuns for 0)
  *   +0x168  u32  the current move/animation; 0x8001xxxx = standing, 0x8002..
  *                0x80FF = the defaults of other stances, among them lying on
  *                the ground after a knockdown or a throw (0x8004..0x8007 seen)
@@ -148,9 +150,22 @@ public:
             have_prev_ = true;
             return false;
         }
-        /* 1. first active frame of each fighter's current move */
         for (int p = 0; p < 2; p++)
-            if (s[p].active && mv_[p].live && !mv_[p].first_active) mv_[p].first_active = t;
+            if (s[p].new_move) anim_[p] = t;
+        /* 1. first active frame of each fighter's current move. An attack can also
+         *    come out of an animation in which its fighter can act all along (step 3
+         *    then saw no move start): Bryan's taunt 1+3+4 -- cancellable from its
+         *    first frame to its last active frame, active 28 frames in. Its move
+         *    began with that animation. */
+        for (int p = 0; p < 2; p++) {
+            if (!s[p].active) continue;
+            if (!mv_[p].live) {
+                mv_[p] = Move{};
+                mv_[p].start = anim_[p] ? anim_[p] : t;
+                mv_[p].live = true;
+            }
+            if (!mv_[p].first_active) mv_[p].first_active = t;
+        }
         /* 2. contact: the other one starts a block/hit reaction right after
          *    this one's active frame, or loses health while it is active.
          *    (Before step 3: a string's next move may start in this frame.) */
@@ -159,6 +174,9 @@ public:
             const bool reacts = prev_[p].active && s[o].new_move && !acts(s[o]) && is_reaction_cls(s[o].cls);
             const bool damaged = s[o].hp < prev_[o].hp && (prev_[p].active || s[p].active);
             if (!reacts && !damaged) continue;
+            /* a hit reaction (+0x15C >= 0x10000, a guard has 0) is a hit even
+             * without damage: Bryan's taunt stuns for 0 damage, guard or not */
+            const bool stun = s[o].cls >= 0x10000;
             if (ex_.open && ex_.att == p && !ex_.settled) {
                 /* the same attacker again (a string, a juggle): recoveries start over */
                 ex_.att_act = ex_.def_act = ex_.def_flag = 0;
@@ -169,9 +187,11 @@ public:
                 ex_.open = true;
                 ex_.att = p;
                 ex_.contact = t;
-                ex_.startup = mv_[p].first_active && mv_[p].start ? (int)(mv_[p].first_active - mv_[p].start + 1) : 0;
+                /* only the move going on now: an older one's startup is no answer */
+                ex_.startup = mv_[p].live && mv_[p].first_active && mv_[p].start ? (int)(mv_[p].first_active - mv_[p].start + 1) : 0;
                 ex_.counter = !acts(prev_[o]) && is_attack_cls(prev_[o].cls);
             }
+            if (stun) ex_.hit = true;
             mv_[p].contacted = true;
         }
         /* 3. moves started by a fighter (not a reaction to the other's attack). A move
@@ -193,7 +213,7 @@ public:
                 mv_[p].live = true;
             }
         }
-        /* 4. damage decides hit or block */
+        /* 4. damage (or a hit reaction, step 2) decides hit or block */
         if (ex_.open && !ex_.settled && s[ex_.def()].hp < prev_[ex_.def()].hp) ex_.hit = true;
         if (ex_.open && !ex_.settled && s[ex_.def()].down) ex_.down = true;   /* knocked down or thrown */
         /* 5. recoveries. The attacker can act from its can-act frame (a
@@ -269,6 +289,7 @@ private:
     Sample prev_[2];
     bool have_prev_ = false;
     uint64_t t_ = 1;          /* frame numbers start at 1: 0 means "not yet" */
+    uint64_t anim_[2] = { 0, 0 };   /* the frame each fighter's current animation began */
     Move mv_[2];
     Exchange ex_;
     Result last_;

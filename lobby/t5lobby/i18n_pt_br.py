@@ -478,6 +478,8 @@ MESSAGES = {
         "Aperte BUILD GAME. Leva alguns minutos; os dados do jogo ficam nesta pasta.",
     "BUILD GAME": "BUILD GAME",
     "Redo every step": "Refazer todas as etapas",
+    "Skip warm-up": "Pular o aquecimento",
+    "Skipping…": "Pulando…",
     "Keep the PC responsive (slower)": "Manter o PC responsivo (mais lento)",
     "Open build.log": "Abrir build.log",
     "Report a problem...": "Relatar um problema...",
@@ -783,8 +785,39 @@ MESSAGES = {
     "OK": "OK",
     # ---- lobby/t5lobby/fighters.py
     "Random": "Aleatório",
-    "Scrapyard": "Ferro-velho",
-    "Industrial yard": "Pátio industrial",
+    "Western Gate": "Western Gate",
+    "Autumn Temple": "Autumn Temple",
+    "Meteor Shower": "Meteor Shower",
+    "Ghetto Pit": "Ghetto Pit",
+    "City Lights": "City Lights",
+    "Great Plains": "Great Plains",
+    "Galleon": "Galleon",
+    "All Hollow's Eve": "All Hollow's Eve",
+    "Winter Palace": "Winter Palace",
+    "Festival": "Festival",
+    "Aurora Australis": "Aurora Australis",
+    "Heaven's Gate": "Heaven's Gate",
+    "Space Colony": "Space Colony",
+    "Pool Party": "Pool Party",
+    "Playroom": "Playroom",
+    "Wolves' Den": "Wolves' Den",
+    "Industrial Complex": "Industrial Complex",
+    "Ominous Mist": "Ominous Mist",
+    "Dragon's Nest": "Dragon's Nest",
+    "Burning Temple": "Burning Temple",
+    "Waterfall": "Waterfall",
+    "Urban Jungle": "Urban Jungle",
+    "City at Sunset": "City at Sunset",
+    "Moonlit Wilderness": "Moonlit Wilderness",
+    "Pirate's Cove": "Pirate's Cove",
+    "Secret Garden": "Secret Garden",
+    "Cathedral": "Cathedral",
+    "Acid Rain": "Acid Rain",
+    "Polar Paradise": "Polar Paradise",
+    "Hell's Gate": "Hell's Gate",
+    "Final Frontier": "Final Frontier",
+    "Poolside": "Poolside",
+    "Final Stage": "Final Stage",
     "Stage {number}": "Cenário {number}",
     "Tekken 5 stage {number}": "Cenário {number} do Tekken 5",
     # ---- lobby/t5lobby/handover.py
@@ -1894,6 +1927,10 @@ MESSAGES = {
     "My profile": "Meu perfil",
     "Find an opponent online": "Encontre um oponente online",
     "Character": "Personagem",
+    "Choose your fighter": "Escolha seu lutador",
+    "{star} your main: {character}": "{star} seu main: {character}",
+    "Arrow keys move, Enter picks, Esc closes. With a controller: Cross / A picks, Circle / B closes.":
+        "As setas movem, Enter escolhe, Esc fecha. Com controle: X / A escolhe, Círculo / B fecha.",
     "Locked for this ranked set": "Fixo neste set Ranked",
     "Ranked match": "Partida Ranked",
     "Quick match": "Quick Match",
@@ -2383,13 +2420,8 @@ MESSAGES = {
         "Mínimo (placas de vídeo antigas)",
     "Default":
         "Padrão",
-    "Lowest: Internal resolution Lowest; stage blur / glow, shadows and effects off (so no hit effects "
-    "either). Default puts them back. Only your picture changes: online, both players can choose differently.":
-        "Mínimo: resolução interna Mínima; desfoque / brilho dos "
-        "cenários, sombras e efeitos desligados (então também "
-        "sem efeitos de golpes). Padrão os restaura. Só a sua "
-        "imagem muda: online, cada jogador pode escolher "
-        "diferente.",
+    "Lowest: Internal resolution Lowest; stage blur / glow and shadows off. Effects stay on: the hit effects show what happens in a fight. Default puts them back. Only your picture changes: online, both players can choose differently.":
+        "Mínimo: resolução interna Mínima; desfoque / brilho dos cenários e sombras desligados. Os efeitos continuam ligados: os efeitos de golpes mostram o que acontece na luta. Padrão os restaura. Só a sua imagem muda: online, cada jogador pode escolher a sua.",
     # ---- lobby/t5lobby/tk_casual.py
     "Any side": "Qualquer lado",
     "P1 (left)": "P1 (esquerda)",
@@ -2406,4 +2438,7 @@ MESSAGES = {
     "P{n} on {stage}": "P{n} em {stage}",
     "Rematch: swap sides": "Rematch: trocar de lado",
     "with the sides swapped": "com os lados trocados",
+    # the fold button right of the Online tab's lists (tk_views.toggle_top)
+    "Hide": "Ocultar",
+    "Show": "Mostrar",
 }

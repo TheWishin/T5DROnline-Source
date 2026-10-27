@@ -108,8 +108,14 @@ class Settings(unittest.TestCase):
         env = s.env_overrides()
         self.assertEqual(env["PS3_INTERNAL_RES"], "lowest")
         self.assertEqual(env["PS3_STAGE_BLUR"], "0")
-        for key, (_n, var, _m, _d) in core.GRAPHICS.items():
-            self.assertEqual(env[var], "0", key)
+        self.assertEqual(env["PS3_SHADOWS"], "0")
+        # effects stay on (owner, 1.1.5): the hit effects show what happens in a fight -- and Lowest switches them
+        # back on when they were off
+        self.assertNotIn("PS3_EFFECTS", env)
+        self.assertEqual((s["shadows"], s["effects"]), ("off", "on"))
+        s["effects"] = "off"
+        core.apply_preset(s, core.LOWEST_PRESET)
+        self.assertEqual(s["effects"], "on")
         # the other settings stay as they were
         self.assertEqual((s["vsync"], s["display"]), ("off", "borderless"))
         s.save()

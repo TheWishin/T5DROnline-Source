@@ -231,9 +231,9 @@ both PCs get the same, and sends `fight: {p1, p2, stage, rounds}` in
 
 Keys ("jin", "s20") are stable; the ids in `lobby/t5lobby/data/fighters.json`
 are the game's own (character ids 0-35 in the game's order, stage ids 17-34 of
-its stage select; names are known for two stages so far). Not offered: Jinpachi
-(no cursor cell in Versus) and Panda (reached through Kuma's cell with another
-button, unverified). Rounds: first to 3 (`T5L_ROUNDS`), like Tekken 6 online.
+its stage select, each with its name: docs/DIRECTFIGHT.md "Stage ids"). Not
+offered: Jinpachi (no cursor cell in Versus) and Panda (reached through Kuma's
+cell with another button, unverified). Rounds: first to 3 (`T5L_ROUNDS`), like Tekken 6 online.
 The stage is always resolved by the server: the game's own random pick happens
 before lockstep starts and would differ between the two PCs. Ranked and Quick
 draw it at random; in a casual match the players chose each other for
@@ -885,6 +885,7 @@ New `T5L_*` variables (all in `server/config.py`):
 | `T5L_STRIKE_LIMIT` | 3 | blamed voids per 24 h before they count as losses |
 | `T5L_PAIR_CAP` | 10 | ranked matches per pair of accounts per 24 h |
 | `T5L_REMATCH_WINDOW` | 20 | seconds to agree on a rematch |
+| `T5L_REMATCH_DIRECT` | 1 | 1.1.5: a rematch after a match on the relay is a new connection that tries the direct path again; a second failure keeps the relay (docs/NETPLAY.md "Rematches after the relay"); 0 = stay on the relay |
 | `T5L_RANKED_SET_WINS` | 2 | games to win a ranked set (2 = best of 3), rated once at its end; 1 = every ranked game rated on its own (as before) |
 | `T5L_SET_NEXT_SECONDS` | 6 | countdown from a game's result to the set's next game |
 | `T5L_SET_REPLAYS` | 2 | games without a winner (desync, draw, too short) played again per set; one more and the set is void |
@@ -903,6 +904,7 @@ New `T5L_*` variables (all in `server/config.py`):
 | `T5L_MAX_FRIENDS`, `T5L_FRIEND_REQUESTS_DAY`, `T5L_FRIEND_PENDING`, `T5L_FRIEND_REQUEST_DAYS`, `T5L_FRIEND_RETRY_DAYS`, `T5L_INVITE_SECONDS`, `T5L_INVITE_RETRY_SECONDS`, `T5L_FRIEND_REQUESTS_ADDRESS` | 100, 20, 30, 14, 7, 60, 30, 60 | friends and invites (docs/ONLINE.md "Friends and invites") |
 | `T5L_LAG_TOLERANCE` | 1 | extra frames of waiting before the lag check says "more than the ping explains" |
 | `T5L_LAG_WAIT` | 6 | seconds the lag check waits for the second player's report |
+| `T5L_LAG_WAIT_SHARE` | 0.05 | 1.1.5: a game that waited this share of the match time (3 s or more) for the other's inputs makes the verdict `slow` ("Long waits" above); 0 = off |
 | `T5L_MIN_FPS` | 40 | a PC whose last match ran slower may not play ranked (0 = off) |
 | `T5L_WARN_FPS` | 55 | below this both players are told at match found (0 = off) |
 | `T5L_MAX_MATCH_SECONDS` | 420 | a lone result counts against an opponent who is online only after this long since the start |

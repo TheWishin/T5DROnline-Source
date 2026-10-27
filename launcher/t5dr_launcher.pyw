@@ -395,8 +395,10 @@ class App(tk.Tk):
             e.bind("<FocusOut>", lambda _e: self.refresh_inputs())
             ttk.Button(files, text=t("Browse…"), command=lambda k=kind: self.browse(k)).grid(
                 row=row * 2, column=2, padx=(8, 0))
-            lbl = ttk.Label(files, textvariable=info, style="Muted.TLabel")
-            lbl.grid(row=row * 2 + 1, column=1, columnspan=2, sticky="w", pady=(0, 4))
+            lbl = ttk.Label(files, textvariable=info, style="Muted.TLabel", justify="left")
+            lbl.grid(row=row * 2 + 1, column=1, columnspan=2, sticky="we", pady=(0, 4))
+            # (wraps at its width: the v01.01 warning was cut off in German at 100 %)
+            lbl.bind("<Configure>", lambda e: e.widget.configure(wraplength=max(1, e.width - 4)))
             if kind == "pkg":
                 self.pkg_lbl = lbl
             else:
@@ -922,7 +924,9 @@ class App(tk.Tk):
                 except (RuntimeError, tk.TclError):
                     pass
             threading.Thread(target=work, name="find-game-files", daemon=True).start()
-        _ok, lvl, txt = core.describe_pkg(pkg)
+        _ok, lvl, txt = core.describe_pkg(pkg, self.settings.out_dir)
+        if pkg and lvl != "error" and self._peek_keys():
+            txt += "  ·  " + t("checking the game version inside the package…")
         self.pkg_info.set(("✔ " if lvl == "ok" else "⚠ " if lvl == "warn" else "") + txt)
         self.pkg_lbl.configure(style=f"{lvl}.TLabel" if pkg else "Muted.TLabel")
         _ok, lvl, txt = core.describe_rap(rap, pkg)
@@ -930,6 +934,33 @@ class App(tk.Tk):
         self.rap_lbl.configure(style=f"{lvl}.TLabel" if rap else "Muted.TLabel")
         self.settings["pkg"], self.settings["rap"] = pkg, rap
         self.settings.save()
+
+    def _peek_keys(self):
+        """A release folder before its first build has no keys/ps3.keys, so the Build tab could not look inside the
+        chosen package and a v01.01 package showed no warning until the build failed (1.1.5/1.1.6, GitHub #20/#21).
+        Make the key file in the background, as BUILD GAME's keys step would (core.make_peek_keys), then check the
+        package again. Once per output folder; True while it runs."""
+        out = self.settings.out_dir
+        job = getattr(self, "_peek_job", None)
+        if job is not None and job["out"] == out:
+            return job["running"]
+        if self.readonly or not core.peek_needs_keys(out):
+            return False
+        job = self._peek_job = {"out": out, "running": True}
+
+        def work():
+            ok, detail = core.make_peek_keys(out)
+            core.log(f"package check: key file {'made' if ok else 'NOT made'} before the build ({detail})")
+
+            def done():
+                job["running"] = False
+                self.refresh_inputs()
+            try:
+                self.after(0, done)
+            except (RuntimeError, tk.TclError):
+                pass
+        threading.Thread(target=work, name="peek-keys", daemon=True).start()
+        return True
 
     # ------------------------------------------------------------------ prerequisites
     def refresh_prereqs(self):

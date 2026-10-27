@@ -10,6 +10,12 @@ part is in the README's status table.
   (`lobby/t5lobby/fighter_art.py`, `rank_art.py`): 1.1.5/1.1.6 read them from the game but called `after(func)`
   instead of `after(0, func)`, so no window heard of it; a second size asked meanwhile is made too. Checked in the
   real launcher of the release layout with a local lobby.
+- The warning about an unsupported v01.01 package shows before the first build (GitHub #20/#21,
+  `launcher/core.py` `make_peek_keys`, `tools/build_game.py`): a fresh release folder has no `keys/ps3.keys` until
+  BUILD GAME's keys step, so the Build tab could not look inside the package. Choosing a package now makes that
+  key file in the background with the keys step's own `tools/make_keys.py` (same public data, a few KB, written to
+  the output folder where the build reuses it); the line under the package says it is checking, then turns red
+  for v01.01. That line also wraps instead of being cut off (German).
 
 ## v1.1.6 (2026-10-27)
 

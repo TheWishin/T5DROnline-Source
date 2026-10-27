@@ -217,6 +217,7 @@ MESSAGES = {
     "Cannot read the file: {error}": "No se puede leer el archivo: {error}",
     "This is not a PS3 package (.pkg).": "Esto no es un paquete de PS3 (.pkg).",
     "{id}  ({size} bytes) -- the supported version": "{id}  ({size} bytes) -- la versión compatible",
+    "checking the game version inside the package…": "comprobando la versión del juego dentro del paquete…",
     "{id}  ({size} bytes) -- Tekken 5 DR, but not the supported package ({supported}). "
     "The build will most likely refuse it.":
         "{id}  ({size} bytes) -- Tekken 5 DR, pero no el paquete compatible ({supported}). Lo más probable es que la "

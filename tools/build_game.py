@@ -202,20 +202,41 @@ def self_content_id(data):
 _PKG_TOOL = {}
 
 
-def _pkg_tool(deps):
+def peek_key_file(keys=None):
+    """The keys/ps3.keys the package peek can use: `keys` (the launcher passes its output folder's), this build's
+    (P.keys), <ROOT>/native/keys/ps3.keys; None when none is there yet."""
+    for k in ([keys] if keys else []) + [P.keys, os.path.join(ROOT, "native", "keys", "ps3.keys")]:
+        if k and os.path.isfile(k):
+            return k
+    return None
+
+
+def peek_needs_keys(deps=None, keys=None):
+    """True when the package peek waits for keys/ps3.keys: a release's pkg_extract.py (the package keys are not
+    shipped: package_release.strip_pkg_keys) and no key file yet -- a fresh release folder before BUILD GAME's keys
+    step (1.1.5/1.1.6: the version warning never showed there; GitHub #20/#21)."""
+    if os.environ.get("T5DR_KEYS") or peek_key_file(keys):
+        return False
+    try:
+        with open(os.path.join(deps or P.deps, "tools", "pkg_extract.py"), encoding="utf-8", errors="replace") as f:
+            return "_t5dr_key(" in f.read()
+    except OSError:
+        return False
+
+
+def _pkg_tool(deps, keys=None):
     """ps3recomp's pkg_extract.py as a module (for its keystream: the package key stays in ps3recomp), or None."""
     path = os.path.join(deps, "tools", "pkg_extract.py")
-    if path not in _PKG_TOOL:
+    # A release's pkg_extract.py reads the package key from T5DR_KEYS while it is imported, and without it
+    # raises SystemExit: in 1.1.5 that closed the launcher right after its start (the Build tab peeks into the
+    # chosen package). So the key file's path for the import, and SystemExit is one more "cannot peek".
+    old = os.environ.get("T5DR_KEYS")
+    key = old or peek_key_file(keys)
+    slot = (path, key)                    # (a key file made later -- the launcher makes one -- is tried again)
+    if slot not in _PKG_TOOL:
         mod = None
-        # A release's pkg_extract.py reads the package key from T5DR_KEYS while it is imported, and without it
-        # raises SystemExit: in 1.1.5 that closed the launcher right after its start (the Build tab peeks into the
-        # chosen package). So the key file's path for the import, and SystemExit is one more "cannot peek".
-        old = os.environ.get("T5DR_KEYS")
-        if not old:
-            for k in (P.keys, os.path.join(ROOT, "native", "keys", "ps3.keys")):
-                if os.path.exists(k):
-                    os.environ["T5DR_KEYS"] = k
-                    break
+        if not old and key:
+            os.environ["T5DR_KEYS"] = key
         try:
             import importlib.util
             spec = importlib.util.spec_from_file_location("t5dr_pkg_extract", path)
@@ -230,15 +251,15 @@ def _pkg_tool(deps):
                 os.environ["T5DR_KEYS"] = old
             else:
                 os.environ.pop("T5DR_KEYS", None)
-        _PKG_TOOL[path] = mod
-    return _PKG_TOOL[path]
+        _PKG_TOOL[slot] = mod
+    return _PKG_TOOL[slot]
 
 
-def pkg_peek(path, want=("PARAM.SFO", "EBOOT.BIN"), limit=1 << 16, deps=None):
+def pkg_peek(path, want=("PARAM.SFO", "EBOOT.BIN"), limit=1 << 16, deps=None, keys=None):
     """{file name: its first `limit` bytes} for the files named in `want`, read straight from a retail PS3 package:
     its file table and a few KB, nothing unpacked, well under a second. None when that is not possible (not a
     package, a debug package, ps3recomp's pkg_extract.py or pycryptodome missing)."""
-    mod = _pkg_tool(deps or P.deps)
+    mod = _pkg_tool(deps or P.deps, keys)
     if mod is None:
         return None
     try:
@@ -272,10 +293,10 @@ def pkg_peek(path, want=("PARAM.SFO", "EBOOT.BIN"), limit=1 << 16, deps=None):
         return None
 
 
-def package_facts(path, deps=None):
+def package_facts(path, deps=None, keys=None):
     """What a package says about itself before anything is unpacked: {"title", "title_id", "version" (PARAM.SFO),
     "program" (the content ID of its program, whose license it needs)}, or None when it cannot be read that way."""
-    files = pkg_peek(path, deps=deps)
+    files = pkg_peek(path, deps=deps, keys=keys)
     if not files:
         return None
     s = parse_sfo(files.get("PARAM.SFO", b""))

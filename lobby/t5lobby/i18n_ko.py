@@ -213,6 +213,7 @@ MESSAGES = {
     "Cannot read the file: {error}": "파일을 읽을 수 없습니다: {error}",
     "This is not a PS3 package (.pkg).": "PS3 패키지(.pkg)가 아닙니다.",
     "{id}  ({size} bytes) -- the supported version": "{id}  ({size}바이트) -- 지원 버전",
+    "checking the game version inside the package…": "패키지 안의 게임 버전을 확인하는 중…",
     "{id}  ({size} bytes) -- Tekken 5 DR, but not the supported package ({supported}). "
     "The build will most likely refuse it.":
         "{id}  ({size}바이트) -- Tekken 5 DR이지만 지원 패키지({supported})가 아닙니다. 빌드에서 거부될 가능성이 큽니"

@@ -395,7 +395,9 @@ In the game:
   wall resets, the dummy's behaviours, a recording played once and in a loop;
   PASS = the places in the practice log are where they should be 30 frames
   after each reset, a wall found for each wall reset, the slot recorded and
-  played.
+  played (1.1.5 final build: PASS on stage 20 -- all four walls, every reset
+  in place, the dummy's settings back afterwards; `tools/training_check.py`
+  PASS as before, 25 results).
 - The smoke suite (quick) runs without the overlay, as players with the
   setting Off and every existing test do.
 

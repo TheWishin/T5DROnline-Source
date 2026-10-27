@@ -19,6 +19,9 @@ part is in the README's status table.
 - `tools/update_drill.py`: the update a player makes, for real, from an older release zip with a real package, to a
   release by its tag (a pre-release too) or to a local zip; `--close-after`, `--expect rollback`
   (docs/RELEASING.md "Update drill").
+- The release order is mandatory (docs/RELEASING.md): PREFLIGHT OK with the GUI checks, CI green, tag, the draft
+  published as a pre-release (the workflow now makes every draft one), update drills from the last two releases
+  with a real package, then marked latest, then the lobby's release notice. Never a tag on a red or skipped check.
 
 ## v1.1.6 (2026-10-27)
 

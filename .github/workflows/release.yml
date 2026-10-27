@@ -479,8 +479,10 @@ jobs:
             # checks it on VirusTotal and clicks "Publish release" (docs/RELEASING.md). The tag is
             # made on publishing, on the public main (the README commit), so the release's
             # "Source code" archives hold the README only.
+            # Always a pre-release at first (docs/RELEASING.md, the release order): published as one, no launcher
+            # offers it while the owner runs the update drills; the owner marks a plain version latest after them.
             gh release create "$TAG" "$zip" SHA256SUMS "${sig[@]}" --draft --target main --title "$title" \
-              --notes-file RELEASE_NOTES.md --prerelease="$PRERELEASE"
+              --notes-file RELEASE_NOTES.md --prerelease
           else
             draft=$(gh release view "$TAG" --json isDraft --jq .isDraft)
             has_zip=$(gh release view "$TAG" --json assets --jq "[.assets[] | select(.name == \"$zip\")] | length > 0")
@@ -495,12 +497,15 @@ jobs:
             else
               gh release upload "$TAG" "$zip" SHA256SUMS "${sig[@]}" --clobber
             fi
-            gh release edit "$TAG" --title "$title" --notes-file RELEASE_NOTES.md --prerelease="$PRERELEASE"
+            # (the pre-release mark stays as it is: the owner removes it after the update drills)
+            gh release edit "$TAG" --title "$title" --notes-file RELEASE_NOTES.md
           fi
           gh release view "$TAG" --json url,isDraft,isPrerelease,assets --jq '"\(.url) draft=\(.isDraft) prerelease=\(.isPrerelease) assets=\([.assets[].name])"'
           {
-            echo "## $TAG is a draft"
+            echo "## $TAG is a draft (pre-release)"
             echo
             echo "Download $zip from the draft on the public repository's Releases page, check it on"
-            echo "VirusTotal, then click **Publish release**. Nothing is public before that."
+            echo "VirusTotal, then click **Publish release** with **Set as a pre-release** still ticked. Then the"
+            echo "update drills from the last two releases (tools/update_drill.py --tag $TAG), and only then mark it"
+            echo "latest (docs/RELEASING.md, steps 7-10). No launcher offers it before that."
           } >> "$GITHUB_STEP_SUMMARY"

@@ -108,16 +108,27 @@ job asks for `contents: write` itself; the build job only reads.
        python tools/check_no_game_data.py --keys keys/ps3.keys
        python tools/release_notes.py --version 0.1.0-preview --check
 
+**The order is mandatory (owner, after 1.1.5).** Every step below, in this order, for every release -- a hotfix
+too. Never tag on a red or skipped check: not a failed unit test "that is unrelated", not a preflight that ran
+`--no-gui`, not CI still running. 1.1.5 reached players because its launcher was never started from the release
+zip with a package chosen (the preflight ran the smoke test `--no-gui`) and nobody made the update a player makes
+before it was public; it closed 2 s after its start on every PC with a .pkg, also right after the update.
+
+    PREFLIGHT OK (with the GUI checks) -> push main, CI green -> tag -> draft: VirusTotal, publish as PRE-RELEASE
+    -> update drills from the last two releases (real package) -> owner marks it latest -> t5lobby-admin release X
+
 4. **Preflight (required):** `python tools/release_preflight.py --version 0.1.0-preview`
    runs what the release workflow runs (changelog, guard, patch series, the zip with
-   `--release`, the binary checks, the zip smoke test, unit tests) on this PC, and last checks
+   `--release`, the binary checks, the zip smoke test **with the GUI checks**: the launcher renders every tab and
+   `T5DR Online.exe` starts it with a package chosen and it still runs 15 s later, unit tests) on this PC, and last checks
    that the changelog section is ready for players: a date in its heading and no HTML comments
    (placeholders for branches still to merge, notes for the release; the launcher's update offer
    shows the notes as plain text, comments included), and that the release line of README.md and
    docs/README.de.md names the version. Tag only when it prints `PREFLIGHT OK`. (0.1.5-preview's first run failed on the runner at the
-   binary check; the preflight finds that in ~4 minutes locally.)
+   binary check; the preflight finds that in ~4 minutes locally.) Run it at a desktop (not over a
+   service session): the GUI checks need one.
 
-5. **Push `main`** and wait for CI to be green. Once: the secret `T5DR_RELEASE_SIGNING_KEY` must exist in
+5. **Push `main`** and wait for CI to be green -- every job of the push, none skipped or cancelled. Once: the secret `T5DR_RELEASE_SIGNING_KEY` must exist in
    the `release` environment ("Release signature", owner steps), or the run stops before publishing.
 
 6. **Tag and push the tag:**
@@ -125,23 +136,39 @@ job asks for `contents: write` itself; the build job only reads.
        git tag -a v0.1.0-preview -m "T5DR Online 0.1.0-preview"
        git push origin v0.1.0-preview
 
-   The tag must point at a commit on `main`.
+   The tag must point at a commit on `main`. The run (Actions -> Release) must be green, its required
+   "Smoke test -- launcher starts with a package chosen" included.
 
-7. **The owner checks it on VirusTotal, then publishes.** The run (Actions -> Release) builds
+7. **The owner checks it on VirusTotal, then publishes it as a pre-release.** The run builds
    and checks the zip (about 7 minutes) and creates the release in the public repository as a
-   **draft**: only the owner sees it. The owner downloads the zip from the draft (public
-   repository -> Releases -> the draft), uploads it to https://www.virustotal.com, and clicks
-   **Publish release** only when it is clean (owner's rule, 2026-10-18). If a scanner flags it:
+   **draft** marked **pre-release**: only the owner sees it. The owner downloads the zip from the draft (public
+   repository -> Releases -> the draft), uploads it to https://www.virustotal.com, and when it is clean
+   (owner's rule, 2026-10-18) clicks **Publish release** with **Set as a pre-release** still ticked. A pre-release
+   is public, but no launcher offers it (`/releases/latest` never returns one). If a scanner flags it:
    leave the draft, report the detection names, fix, tag a new version.
 
-8. **Check the release page**: the zip, `SHA256SUMS` and `SHA256SUMS.sig` are attached, the notes
-   are right, the pre-release badge is there for a suffixed version.
+8. **Update drills from the last two releases, with a real package** (see "Update drill"), on the owner's PC:
+
+       python tools/update_drill.py --old-zip T5DR-Online-<last>.zip     --tag v<new> --pkg "<the .pkg>" --work D:/drill/a
+       python tools/update_drill.py --old-zip T5DR-Online-<one before>.zip --tag v<new> --pkg "<the .pkg>" --work D:/drill/b
+
+   Both must print `UPDATE DRILL PASS` (the drill reads the pre-release by its tag). A FAIL: the release stays a
+   pre-release (nobody is offered it); mark it "Do not use" in its notes, fix, release the next version.
+
+9. **The owner marks it latest**: Releases -> the release -> **Edit** -> untick **Set as a pre-release**, tick
+   **Set as the latest release** -> **Update release**. Launchers offer it within about an hour. (A suffixed
+   version, `-rc1`, stays a pre-release: players get it by hand.)
+
+10. **Tell the lobby**: `t5lobby-admin release <new>` on the central server (launchers of older releases are told to
+    update). Only now may players be told it is out. Then check the release page: the zip, `SHA256SUMS` and
+    `SHA256SUMS.sig` are attached, the notes are right.
 
 **What players' launchers do with it** (`launcher/updater.py`, README "Updating"): launchers with the
 self-update ask `GET /repos/TheWishin/T5DROnline/releases/latest` at start (at most once an hour) and
 offer what it returns. That endpoint never returns drafts or pre-releases, so:
 
-- a draft is offered to nobody; **Publish release** offers it to everyone within about an hour;
+- a draft is offered to nobody, nor is a published pre-release (step 7: the workflow makes every draft a
+  pre-release); marking it latest (step 9) offers it to everyone within about an hour;
 - a suffixed version (`-preview`, `-rc1`) is a GitHub pre-release and is **not** offered by the
   launcher (players get it by hand); only a plain `vX.Y.Z` reaches everyone;
 - the launcher needs the two assets exactly as the workflow names them, `T5DR-Online-<version>.zip`

@@ -110,6 +110,7 @@ bool g_in_practice = false;
 int g_prev_hp = 0;
 uint64_t g_frame = 0;
 uint64_t g_msg_until = 0;     /* the status line shows the last change this long */
+uint64_t g_check_at = 0;      /* T5_PRACTICE_LOG: the places again 30 frames after a reset (tests) */
 
 const char* kModeKey[] = { "game", "block", "crouch", "walk", "step" };
 
@@ -162,6 +163,7 @@ void act(PAction a)
         put_place(0, g_start[0]);
         put_place(1, g_start[1]);
         note_place("reset round start:");
+        g_check_at = g_frame + 30;
         break;
     case PAction::DummyWallFront:
     case PAction::DummyWallBack:
@@ -218,7 +220,9 @@ extern "C" void t5_practice_pads(uint16_t* p1, uint16_t* p2)
         put_place(0, out[0]);
         put_place(1, out[1]);
         note_place(wall ? "wall:" : "no wall there, back to:");
+        g_check_at = g_frame + 30;
     }
+    if (g_check_at && g_frame == g_check_at) { g_check_at = 0; note_place("30 frames later:"); }
     const Sample me = read_fighter(kFighter[0]), dm = read_fighter(kFighter[1]);
     if (!g_prev_hp) g_prev_hp = dm.hp;
     const uint16_t raw = *p1;

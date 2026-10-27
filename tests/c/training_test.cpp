@@ -512,6 +512,21 @@ static void test_recorder()
     r.record(kLeft);
     r.toggle_record();
     CHECK_EQ(r.length(0), 1);
+    /* the neutral frames before the first input go, the ones after it stay */
+    r.toggle_record();
+    for (uint16_t x : { 0, 0, 0, (int)kUp, 0, 0 }) r.record(x);
+    r.toggle_record();
+    CHECK_EQ(r.length(0), 3);
+    r.toggle_play(false);
+    CHECK(r.next(&m) && m == kUp);
+    r.stop();
+    /* nothing but neutral: an empty slot */
+    r.toggle_record();
+    for (int i = 0; i < 30; i++) r.record(0);
+    r.toggle_record();
+    CHECK_EQ(r.length(0), 0);
+    r.toggle_play(true);
+    CHECK(r.state() == Recorder::State::Idle);
 }
 
 static bool near(float a, float b, float eps = 0.01f) { return fabsf(a - b) < eps; }

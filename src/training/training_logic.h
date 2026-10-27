@@ -502,7 +502,7 @@ public:
     /* SELECT+1: start recording the current slot (its old content goes), or stop */
     void toggle_record()
     {
-        if (st_ == State::Recording) { stop(); return; }
+        if (st_ == State::Recording) { stop(); trim(slot_); return; }
         stop();
         st_ = State::Recording;
         len_[slot_] = 0;
@@ -525,7 +525,7 @@ public:
     {
         if (st_ != State::Recording) return;
         data_[slot_][len_[slot_]++] = (uint16_t)(rel & ~(kSelect | kStart));
-        if (len_[slot_] >= kMaxFrames) stop();
+        if (len_[slot_] >= kMaxFrames) { stop(); trim(slot_); }
     }
     /* Playing: the next frame (rel), or false when nothing plays (a single play ends after its last frame) */
     bool next(uint16_t* rel)
@@ -541,6 +541,16 @@ public:
     void clear_all() { *this = Recorder{}; }
 
 private:
+    /* the neutral frames before the first input go (letting go of the SELECT combo); the
+     * rest stays, so a loop keeps its pause at the end */
+    void trim(int s)
+    {
+        int k = 0;
+        while (k < len_[s] && !data_[s][k]) k++;
+        if (k == len_[s]) { len_[s] = 0; return; }
+        memmove(&data_[s][0], &data_[s][k], sizeof(uint16_t) * (size_t)(len_[s] - k));
+        len_[s] -= k;
+    }
     uint16_t data_[kSlots][kMaxFrames] = {};
     int len_[kSlots] = {};
     int slot_ = 0, pos_ = 0;

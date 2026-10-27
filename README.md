@@ -189,7 +189,6 @@ It is game data. Do not share it. To uninstall, delete the whole folder.
   graphics cards)** sets Internal resolution Lowest and switches stage blur /
   glow, shadows and effects off; **Default** puts them back. Each also leaves
   the processor less to translate. Online, each player can choose their own.
-  Measurements: [docs/RENDER_PERF.md](docs/RENDER_PERF.md#graphics-settings-for-weak-graphics-cards-115-patch-0079-branch-graphics-115).
 - **Settings** -> **Power saving (laptops, handhelds)**: Auto (default) turns
   it on with a battery, battery saver or the Power saver plan, a mobile
   processor or integrated graphics; On and Off decide yourself. The game then

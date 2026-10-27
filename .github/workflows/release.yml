@@ -352,7 +352,27 @@ jobs:
             echo "</details>"
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # The publish job gets the files through the Actions cache (10 GB of its own), not as an artifact: the private
+      # repository's artifact storage is small, and 1.1.5's first tag run stopped here on "Artifact storage quota
+      # has been hit". The key is the run, so "Re-run failed jobs" of the publish job finds them again.
+      - name: Release files for the publish job
+        if: steps.ver.outputs.publish == 'true'
+        shell: bash
+        run: |
+          mkdir -p handoff
+          cp "dist/T5DR-Online-$VERSION.zip" dist/SHA256SUMS dist/RELEASE_NOTES.md handoff/
+
+      - uses: actions/cache/save@v4
+        if: steps.ver.outputs.publish == 'true'
+        with:
+          path: handoff
+          key: release-files-${{ github.run_id }}
+          enableCrossOsArchive: true
+
+      # Dry runs: the zip as an artifact to download, when there is room (a full quota does not fail the run).
       - uses: actions/upload-artifact@v7
+        if: steps.ver.outputs.publish != 'true'
+        continue-on-error: true
         with:
           name: T5DR-Online-${{ steps.ver.outputs.version }}
           path: |
@@ -361,7 +381,7 @@ jobs:
             dist/RELEASE_NOTES.md
           if-no-files-found: error
           compression-level: 0     # the zip is compressed already
-          retention-days: 30
+          retention-days: 3
 
   publish:
     name: Publish the GitHub Release
@@ -397,7 +417,7 @@ jobs:
       - name: Token for the public repository
         run: |
           if [ -z "$GH_TOKEN" ]; then
-            echo "::error::The secret PUBLIC_RELEASE_TOKEN is missing (docs/RELEASING.md, one-time setup). The zip is kept as this run's artifact; add the secret and re-run this job."
+            echo "::error::The secret PUBLIC_RELEASE_TOKEN is missing (docs/RELEASING.md, one-time setup). The zip stays in this run's cache for 7 days; add the secret and re-run this job."
             exit 1
           fi
           gh api "repos/$GH_REPO" --jq .full_name
@@ -412,10 +432,15 @@ jobs:
             launcher/updater.py
           sparse-checkout-cone-mode: false
 
-      - uses: actions/download-artifact@v8
+      - uses: actions/cache/restore@v4
         with:
-          name: T5DR-Online-${{ needs.build.outputs.version }}
-          path: dist
+          path: handoff
+          key: release-files-${{ github.run_id }}
+          enableCrossOsArchive: true
+          fail-on-cache-miss: true
+
+      - name: Release files from the build job
+        run: mkdir -p dist && mv handoff/* dist/ && ls -l dist
 
       - name: Checksums
         working-directory: dist

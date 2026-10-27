@@ -170,10 +170,10 @@ Job **build** (`windows-latest`, read-only token):
 | guard on the zip | `package_release.py --scan-only` on the zip once more |
 | smoke test | `tools/smoke_release.py`: unpack into a fresh folder; layout, version stamp, bundled Python with a bare `PATH`, `prereqs.py` finds everything inside the folder, clang-cl version, `t5dr.exe` and the starter import only Windows DLLs, every signature is `Valid` (signed releases). Then (informational only) the launcher renders offscreen and `T5DR Online.exe` starts it |
 | notes | `tools/release_notes.py`: the CHANGELOG section + download facts (SHA-256, LLVM/Python versions, ps3recomp pin, commit, run link) |
-| artifact | `T5DR-Online-<version>` (zip, `SHA256SUMS`, `RELEASE_NOTES.md`), kept 30 days |
+| hand-over | tag runs: zip, `SHA256SUMS`, `RELEASE_NOTES.md` in the Actions cache (`release-files-<run id>`, 10 GB of its own; the private repository's artifact storage filled up at 1.1.5); dry runs: the artifact `T5DR-Online-<version>`, 3 days, only when there is room |
 
 Job **publish** (`ubuntu-latest`, environment `release`, `contents: write`),
-only for tag pushes, after approval: owner check again, download the artifact,
+only for tag pushes, after approval: owner check again, restore the files from the cache,
 `sha256sum -c`, the release signature (`tools/release_sign.py ci`: signs `SHA256SUMS` into
 `SHA256SUMS.sig` with the `release` environment's secret, see "Release signature"), then
 `gh release create <tag> <zip> SHA256SUMS [SHA256SUMS.sig] --verify-tag --notes-file RELEASE_NOTES.md
@@ -205,7 +205,7 @@ tkinter, and the launcher is a tkinter program.
   same build -- so merging a tooling change to `main` tests it before the next
   tag.
 
-Both stop after the artifact. A missing CHANGELOG section is only a warning.
+Both stop after the build (an artifact when the storage has room). A missing CHANGELOG section is only a warning.
 
 ## Re-running
 
@@ -213,9 +213,9 @@ Both stop after the artifact. A missing CHANGELOG section is only a warning.
   failed jobs** (owner only). Approve again when it reaches publish. A signed release asks for
   the SignPath approval again.
 - **Publish failed half-way**: **Re-run failed jobs** re-runs only publish,
-  with the same artifact (same bytes, same checksum), and finishes the release.
+  with the same files from the run's cache (same bytes, same checksum), and finishes the release.
 - **Rejected, or not approved in time** (GitHub waits 30 days): re-run the
-  publish job while the artifact exists (30 days), or push the tag again (below).
+  publish job while the cache entry exists (7 days unused), or push the tag again (below).
 - **The code needs a fix and nothing was published yet**: delete the tag,
   fix on `main`, tag again:
 
@@ -447,7 +447,7 @@ anything is published), so add the secret before tagging v1.1.5.
    must print `good signature by key c2acdfbc80f3c4c2`.
 
 If the run stopped at "Release signature" (secret missing or wrong: the message says which), the zip is
-kept as the run's artifact: add or fix the secret (step 3) and click **Re-run failed jobs**.
+kept in the run's cache: add or fix the secret (step 3) and click **Re-run failed jobs**.
 
 Players on 1.1.4 or older update to 1.1.5 as before (their launcher has no key, so it checks the
 SHA-256 sums only); from 1.1.5 on, every update must be signed by this key, or the launcher refuses it

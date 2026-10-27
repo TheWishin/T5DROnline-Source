@@ -138,14 +138,20 @@ run the code they ran before: CODE_VERSION is unchanged.
   did not keep (moved by more than 80 units: a fighter put down moves up to
   ~30 by itself) ends the slide, and five frames of halving between it and the
   last place it kept find the wall to 16 units. No wall within 30,000 units (a
-  second of sliding; most Practice stages are open): the places from before
-  come back. They end 1,100 units apart at the wall.
+  second of sliding): the places from before come back and the status line
+  says `NO WALL THAT WAY`. They end 1,100 units apart at the wall. Checked in
+  Practice on stage 19 (walls about 9,500 units either side of the start: all
+  four wall resets found them in 22-25 frames); on stages 17, 18, 21, 22 and 24
+  a fighter walked 8,000-13,000 units without reaching one.
 - **Facing**: the game keeps each fighter's own facing -- an angle written
   to it is undone by the animation in the next frame -- and a fighter turns
   to the other one when it starts a move (traced: walking off after
   sidesteps). So when a reset leaves a fighter with its back to the other one
-  (the resets that switch sides), it gets a tap toward the other one on its
-  pad two frames later (the dummy on CONTROLLER for that tap).
+  (the resets that switch sides, and a round-start reset after them), it gets
+  a tap toward the other one on its pad two frames later (the dummy on
+  CONTROLLER for that tap): both turned around in the game (P1 with its turn
+  move 0x0373), which also takes them ~300 units forward, so 24 frames later
+  both go back to the places the reset gave them, facing as they now do.
 - **The dummy** follows the game's own Practice menu, TRAINING DUMMY
   (0x1008EFF3, traced by stepping through the menu): 0 stand without
   guarding, 1 stand while guarding, 2 crouch without guarding, 3 crouch while
@@ -165,7 +171,10 @@ run the code they ran before: CODE_VERSION is unchanged.
   *crouches*, *walks* and *sidesteps* are CONTROLLER with the dummy's pad
   written into the game's input ring for P2 (down; forward / back 45 frames
   each; a tap of up or down every 50 frames); a recording records and plays on
-  CONTROLLER the same way.
+  CONTROLLER the same way. Checked in the game: the first jab hit the
+  blocking dummy and the next ones were blocked; the dummy crouched, walked
+  forward and back and sidestepped both ways; a recording (forward, two jabs,
+  back) played once and in a loop.
 
 ## The overlay never changes the game
 

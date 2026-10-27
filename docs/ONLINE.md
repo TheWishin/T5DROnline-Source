@@ -682,7 +682,9 @@ Tests: `lobby/tests/test_casual.py` (the wishes and their checks, coin flips, st
 invites, classic and community rooms -- a community room's turns follow its line also with swapped sides --, swap on a
 rematch from either player, Quick / Ranked / ranked rooms unchanged, the 1.1.4 launcher from git on the new server
 and new launchers on the 1.1.4 server), `lobby/tests/test_tk_casual.py` (the launcher: the choices, the question, the
-match card, Rematch: swap sides).
+match card, Rematch: swap sides), and the real-game e2e scenario `net_casual_choice` (net suite: a challenge with a
+P2 wish and a stage, Rematch: swap sides, both wanting P1 with a stage against Random; the lobby's sides and stage
+against the games' netplay roles and FIGHT START stage, every match with 0 mismatching frames).
 
 ## Spectating
 

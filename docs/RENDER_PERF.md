@@ -3004,7 +3004,10 @@ recording 6.6, the GPU 32-37 ms -- the same arithmetic gives the longer of the t
 `sync check through frame 3599: 0 mismatching` on both sides, the same result hash `d31cd26d2dfc199e`. Lockstep
 pair, RTT 30 ms, 1 % loss, Jin vs Lili on stage 25, host one frame in flight, joiner two: 0 mismatching through
 frame 6599, the same hash `868fd12296ab5236`. Frames in flight change when a frame is recorded, never what the game
-computes.
+computes. With the final build: smoke quick PASS (5 of 5), e2e `net_rollback --short` PASS (84 checks: RTT 20-250,
+loss, jitter, the relay path) and `net_internal_res` PASS (4K against Lowest, a match and a rematch with the same
+hashes; the scenario now marks the step as chosen -- since igpu-114 an unmarked step is Auto/Native, so both games
+had run at Native).
 
 **Ring reuse with two frames in flight.** `RSX_RING_GUARD=1` (patch 0070) reported ~1,800 ring ranges "reused
 while list N still uses them" with two frames in flight -- all of them false: the guard kept one table per ring,
@@ -3027,15 +3030,17 @@ pair and stage, one shader cache folder that grows from empty, 7950X:
 
 Every new stage or pair of fighters brings 15-40 pipelines, 0.1-0.3 s in all and single frames of 50-140 ms on
 this PC -- two to three times that on an i5-2500. `tools/shader_warmup.py` plays them once after BUILD GAME.
-After the warm-up (all 18 stages of the stage select; 17 of 18 fights in the run measured here: the last one had
-Jinpachi, who is locked offline -- the tool now leaves him out), the first fights met **0-3 new pipelines** where
-an empty cache met 14-93 -- Paul vs Law on stage 25: 0, Lili vs Asuka on stage 20: 2 (cold: 93), Lei vs King on
-stage 18: 3; one pair still met 20 (Eddy vs Jack-5 on stage 27, the pair the warm-up had fought there). The warm-up took 5.3 minutes here
-(about 12 s a fight with the boot; P1 presses buttons for 6 s of each, so hit sparks and effects are drawn too --
-with idle fighters for 4 s a warmed stage still met 10). It runs once per built game (`warmup.json` next to the
-cache, keyed to `t5dr.exe`'s size and time stamp); a fight that does not start, a game that stops or the
-12-minute limit end it with a note, never the build. The next game start re-creates the recorded pipelines on a
-background thread at below-normal priority (`[pso-prewarm] 488 pipeline(s) created ahead`).
+After the warm-up -- all 18 stages of the stage select, every fighter of the select screen once (Jinpachi is
+locked offline: in a first run his fight never started, so the tool leaves him out), 18 of 18 fights in **205 s**
+here (about 11 s a fight with the boot; P1 presses buttons for 6 s of each, so hit sparks and effects are drawn
+too -- with idle fighters for 4 s a warmed stage still met 10 new pipelines) -- the first fights met **0-4 new
+pipelines** where an empty cache met 14-93: Paul vs Law on stage 25: 0, Lei vs King on stage 18: 3, Lili vs Asuka
+on stage 20: 4 (cold: 93); one pair still met 20 (Eddy vs Jack-5 on stage 27, the pair the warm-up had fought
+there: what a 14 s fight with more moves draws beyond 6 s of them). It runs once per built game (`warmup.json`
+next to the cache, keyed to `t5dr.exe`'s size and time stamp); a fight that does not start within 2 minutes, a
+game that stops or the 12-minute limit end it with a note, never the build. The next game start re-creates the
+recorded pipelines on a background thread at below-normal priority (`[pso-prewarm] 491 pipeline(s) created
+ahead`).
 
 **The i5-2500's first 30 s.** 304 slow frames from the render translation at a median translation of 0.7 ms
 were not pipelines: the first 45 s after start (intro, title, menus) on this PC had 6 PSO misses with an empty

@@ -978,6 +978,9 @@ def net_internal_res(ctx):
     b = ctx.player("E2E ResLow", char="dragunov")
     a.app.settings["internal_res"] = "4k"
     b.app.settings["internal_res"] = "lowest"
+    # since igpu-114 a step counts only when the player chose it (else Auto on integrated graphics, Native elsewhere)
+    a.app.settings["internal_res_set"] = True
+    b.app.settings["internal_res_set"] = True
     login(ctx, a)
     login(ctx, b)
     a.set_char("lili")

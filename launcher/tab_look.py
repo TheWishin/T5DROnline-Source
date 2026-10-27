@@ -145,7 +145,14 @@ class Look:
             top = self.px(12) + self.caps_h + self.px(8) if title else edge
             lf.configure(text=title, style="Card.TLabelframe", padding=(edge, top, edge, self.inset))
             if title:
-                lf.configure(labelwidget=ttk.Label(lf, text=title.upper(), style="Card.Caps.TLabel"))
+                lbl = ttk.Label(lf, text=title.upper(), style="Card.Caps.TLabel")
+                # (made after the box's content: it takes the box's own extra bindings -- the Settings tab's wheel
+                # scrolling -- and goes to the bottom of the stacking order, so the box's last widget stays last)
+                own = (str(lf), lf.winfo_class(), str(lf.winfo_toplevel()), "all")
+                extra = tuple(tag for tag in lf.bindtags() if tag not in own)
+                lbl.bindtags(extra + lbl.bindtags())
+                lbl.lower()
+                lf.configure(labelwidget=lbl)
         except tk.TclError:
             return
         self.cards.append(lf)

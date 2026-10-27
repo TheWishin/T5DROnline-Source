@@ -37,6 +37,10 @@ part is in the README's status table.
   after 1.1.6 was out), conditionally with the cached ETag and Last-Modified so an unchanged answer is a 304 that
   does not use up GitHub's 60 requests an hour; "Update available" opens by itself after the start -- once per
   session, never during a build, a game or an online match (then when it ends). "Check for updates" stays.
+- Without the launcher's fonts (Bahnschrift, Segoe UI: Wine / Proton, some older Windows 10) nothing is cut off any
+  more (`lobby/t5lobby/theme.py` `width_factor`): a wider stand-in face is drawn smaller by how much wider it is
+  (es / fr / pt-BR were cut off in 1 to 43 places). The cut-off walk no longer skips on such a PC, and
+  `tests/i18n_layout.py --without-font NAME` checks it.
 
 ### Updates and releases
 - An update keeps the new launcher only once it has run for 15 seconds or was closed by hand

@@ -2,6 +2,7 @@
 windows.
 
     python tests/i18n_layout.py [en es ko ...] [--scale 100|133|150]   # list what is cut off
+    python tests/i18n_layout.py --without-font Bahnschrift --without-font "Segoe UI"   # as on Wine / old Windows
 
 tests/test_i18n.py runs the same walk for every language. Nothing is put on the screen: Tk computes no geometry for
 the children of a withdrawn window, so everything is judged from requested sizes and measured texts --
@@ -382,8 +383,9 @@ class Walk:
     screen: what is cut off (problems), the natural width against the window's, texts the catalog lacks and
     English texts left on screen."""
 
-    def __init__(self, lang, scale):
+    def __init__(self, lang, scale, without_fonts=()):
         self.lang, self.scale = lang, scale
+        self.without_fonts = tuple(without_fonts)     # font families hidden from Tk (names starting so)
         self.cut = {}            # (screen, kind, widget, column) -> (needed, available, text)
         self.english = {}        # screen -> [English texts on screen]
         self.screens = []
@@ -405,7 +407,13 @@ class Walk:
         def scaled_style(app):           # the display scaling, before the theme measures anything
             app.tk.call("tk", "scaling", 96.0 / 72.0 * self.scale / 100.0)
             style(app)
-        patches = [mock.patch.object(mod.App, "_style", scaled_style)] + [
+        hidden = self.without_fonts
+        real_families = tkfont.families
+
+        def families(root=None, displayof=None):       # a PC without these faces (Wine / Proton, old Windows 10)
+            return tuple(f for f in real_families(root, displayof) if not f.startswith(hidden))
+        patches = ([mock.patch.object(tkfont, "families", families)] if hidden else []) + [
+            mock.patch.object(mod.App, "_style", scaled_style)] + [
             mock.patch.object(mod.App, n, lambda app: None)
             for n in ("refresh_prereqs", "refresh_inputs", "refresh_game_state")]
         for p in patches:
@@ -788,12 +796,13 @@ def compare(walk, english=NOTHING):
 def main(argv):
     langs = [a for a in argv if a in LANGS] or list(LANGS)
     scales = [int(argv[argv.index("--scale") + 1])] if "--scale" in argv else SCALES
+    hidden = [argv[i + 1] for i, a in enumerate(argv[:-1]) if a == "--without-font"]
     bad = 0
     for scale in scales:
-        english = Walk("en", scale).run()
+        english = Walk("en", scale, hidden).run()
         for lang in langs:
             t0 = time.time()
-            w = english if lang == "en" else Walk(lang, scale).run()
+            w = english if lang == "en" else Walk(lang, scale, hidden).run()
             lines = compare(w, NOTHING if lang == "en" else english) + [f"missing text: {m!r}" for m in w.missing] + [
                 f"{s}: English left: {e}" for s, e in w.english.items() if e] + [f"on screen: {s}" for s in w.shown]
             print(f"{lang} {scale} %: {len(lines)} problems ({time.time() - t0:.1f} s)")

@@ -174,8 +174,10 @@ Found while looking for the 1.1.5 red run (none of it reproduced the red run on
 this PC, with 2 CPUs by affinity and `os.cpu_count()` = 2, a fresh user profile,
 only pycryptodome + Pillow, a 768 KB desktop heap): the launcher's cut-off walk
 (`test_i18n.EveryLanguageRenderTests`) needs its fonts -- with Bahnschrift hidden,
-es, fr and pt-BR "cut off" in 1 to 43 places. It now skips that comparison, with
-the reason, on a PC without Segoe UI or a display face of `theme.DISPLAY_FONTS`.
+es, fr and pt-BR "cut off" in 1 to 43 places. Since then the launcher draws a stand-in
+for a missing face smaller by how much wider it is (`theme.width_factor`), so the walk
+judges every PC again; `tests/test_font_fallback.py` runs it with Bahnschrift and Segoe UI
+hidden (`python tests/i18n_layout.py --without-font Bahnschrift --without-font "Segoe UI"`).
 On 2 CPUs the suite takes ~8 min here, half of it `test_i18n`.
 
 From a shell, no token needed:

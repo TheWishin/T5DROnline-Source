@@ -94,6 +94,27 @@ they work with 1.1.4 launchers as soon as the server is updated.
   step when glslang or spirv-cross is missing) and explains Homebrew Python's refusal of `pip
   install`; the README builds in a virtual environment.
 
+### macOS online: prepared, a test build, off by default
+- **A Mac build can now have the online modules** (netplay, rollback, direct fight, training):
+  `tools/build_game.py --macos-online`. Not proven in sync with a PC yet, so it stays a test build
+  until a Mac-vs-PC match ends with 0 mismatching frames (docs/MACOS_ONLINE_TEST.md, the owner's
+  step list). Without the flag a Mac build is the game alone, offline, as before, and the Online
+  tab says so. A Mac offers rollback only with `T5_MACOS_ROLLBACK=1`: the first matches run in
+  lockstep.
+- `src/` reaches the host only through `src/platform` (the 1.1.2 study's groundwork, finished):
+  BSD sockets, monotonic clocks, POSIX files on macOS; Winsock and the same Win32 calls as before
+  on Windows (the compiled code of `src/` is the same there, apart from the call sites of the new
+  wrappers). The game binary is `t5dr` on a Mac in the Online tab too.
+- `patches/ps3recomp/0078-macos-online.patch`: the square root of a negative number gives a PC's
+  NaN on Apple silicon (the one known difference in the game's math); FPCR is checked like MXCSR
+  on Windows; the lifter's `--hook-slots` lets a Mac intercept the functions the rollback and the
+  unlocks detour without patching code (`src/rollback/hook_slots.txt`); file reads into guest
+  memory go through a host buffer off Windows (the rollback's write watch protects pages there);
+  netplay reads the local pad on the SDL2 backend (it got "no device"). Nothing changes for a PC's
+  game: the same results, the same lifted code.
+- `tests/test_macos_port.py` compiles every `src/` file for arm64 macOS (syntax only, against the
+  runtime's POSIX shim and declaration-only C and C++ headers) on the Windows PC.
+
 ## v1.1.4 (2026-10-21)
 
 **Jinpachi and Random in casual matches, Start skips the intros and replays online, a chime when a match is found, the game's own rank plates, and a faster game.** Both players need 1.1.4

@@ -160,6 +160,11 @@ uint64_t g_check_at = 0;      /* T5_PRACTICE_LOG: the places again 30 frames aft
  * tap toward the other one on its pad (the dummy on CONTROLLER for it). */
 uint64_t g_face_at = 0;       /* the frame to look at the facings */
 int g_nudge[2] = { 0, 0 };    /* frames of the tap still to give, per fighter */
+/* The tap turns the fighter and takes it a step forward (traced: ~300 units); once both
+ * have turned, they go back to the places the reset gave them, as they face now. */
+Place g_target[2];            /* the places of the last reset */
+uint64_t g_replace_at = 0;
+bool g_no_wall = false;      /* the status line says that the last wall reset found no wall */
 
 const char* kModeKey[] = { "game", "block", "crouch", "walk", "step" };
 
@@ -245,6 +250,8 @@ void act(PAction a)
         g_placer.cancel();
         put_place(0, g_start[0]);
         put_place(1, g_start[1]);
+        g_target[0] = g_start[0];
+        g_target[1] = g_start[1];
         note_place("reset round start:");
         g_check_at = g_frame + 30;
         g_face_at = g_frame + 2;
@@ -274,6 +281,7 @@ void act(PAction a)
     default: break;
     }
     g_msg_until = g_frame + 120;
+    g_no_wall = false;
 }
 
 } // namespace
@@ -313,7 +321,10 @@ extern "C" void t5_practice_pads(uint16_t* p1, uint16_t* p2)
         if (c.done) {
             put_place(0, c.out[0]);
             put_place(1, c.out[1]);
+            g_target[0] = c.out[0];
+            g_target[1] = c.out[1];
             note_place(c.wall ? "wall:" : "no wall there, back to:");
+            if (!c.wall) { g_no_wall = true; g_msg_until = g_frame + 120; }
             g_check_at = g_frame + 30;
             g_face_at = g_frame + 2;
         } else {
@@ -329,8 +340,21 @@ extern "C" void t5_practice_pads(uint16_t* p1, uint16_t* p2)
             float d = pl[p].angle - face_toward(pl[p].x, pl[p].z, pl[1 - p].x, pl[1 - p].z);
             while (d > 3.14159265f) d -= 6.28318531f;
             while (d < -3.14159265f) d += 6.28318531f;
-            if (fabsf(d) > 1.2f) { g_nudge[p] = p ? 6 : 2; note(p ? "dummy faces away: a tap toward P1" : "P1 faces away: a tap toward the dummy"); }
+            if (fabsf(d) > 1.2f) {
+                g_nudge[p] = p ? 6 : 2;
+                g_replace_at = g_frame + 24;
+                note(p ? "dummy faces away: a tap toward P1" : "P1 faces away: a tap toward the dummy");
+            }
         }
+    }
+    if (g_replace_at && g_frame == g_replace_at) {   /* turned: back to the reset's places, facing as now */
+        g_replace_at = 0;
+        for (int p = 0; p < 2; p++) {
+            Place t = g_target[p];
+            t.angle = read_place(p).angle;
+            put_place(p, t);
+        }
+        note_place("after the turn, back to:");
     }
     const Sample me = read_fighter(kFighter[0]), dm = read_fighter(kFighter[1]);
     if (!g_prev_hp) g_prev_hp = dm.hp;
@@ -379,6 +403,10 @@ extern "C" int t5_practice_status(char* out, unsigned n, int de)
                  g_rec.pos() / 60.0, g_rec.length(g_rec.slot()) / 60.0);
         return 1;
     default: break;
+    }
+    if (g_frame < g_msg_until && g_no_wall) {
+        snprintf(out, n, "%s", de ? "KEINE WAND IN DIESER RICHTUNG" : "NO WALL THAT WAY");
+        return 1;
     }
     if (g_frame < g_msg_until) {
         snprintf(out, n, "%s %d (%.1fs)  DUMMY: %s", de ? "PLATZ" : "SLOT", slot, g_rec.length(g_rec.slot()) / 60.0, mode);

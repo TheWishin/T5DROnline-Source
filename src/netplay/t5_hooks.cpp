@@ -673,7 +673,7 @@ constexpr uint32_t kRoundTimer = 0x1008F054;                         /* frames l
 np::TrainingRule g_train;
 uint32_t g_train_refills[2], g_train_noted = 0;
 
-void training_reset() { g_train.reset(); }   /* frame 0 and every sync point: the frames are numbered anew */
+void training_reset() { g_train.reset(); g_train_noted = 0; }   /* frame 0 and every sync point: the frames are numbered anew */
 
 /* in[] = frame f's inputs, game memory = the state at f's boundary (restored if it is re-simulated); live: the
  * frame is played for the first time (the log only) */

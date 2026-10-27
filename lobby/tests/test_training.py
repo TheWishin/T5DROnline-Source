@@ -189,6 +189,16 @@ class FightLineTest(unittest.TestCase):
         for bad in ({"training": 1}, {"life": [5, 100]}, {"life": [True, 50]}, {"life": "70|100"}, {"life": [70]}, None):
             self.assertEqual(f(bad), "", bad)
 
+    def test_hud_names_say_the_handicap(self):
+        from t5lobby import match_driver
+        ev = {"players": [{"name": "A_Very_Long_Name_X", "tier": 3}, {"name": "Bob", "tier": 4}],
+              "fight": {"life": [70, 100]}}
+        names, _tiers = match_driver.hud_values(ev)
+        self.assertEqual(names, ["A_Very_Long 70%", "Bob"])
+        self.assertTrue(all(len(n) <= 16 for n in names))
+        ev["fight"] = {}
+        self.assertEqual(match_driver.hud_values(ev)[0], ["A_Very_Long_Name", "Bob"])
+
     def test_ui_texts(self):
         from t5lobby import tk_rules
         self.assertEqual(tk_rules.rules_parts({}), [])

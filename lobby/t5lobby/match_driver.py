@@ -1162,6 +1162,11 @@ def hud_values(ev):
     if s.get("rated") and int(s.get("number") or 1) > 1 and isinstance(wins, list) and len(wins) == 2:
         # a ranked set from game 2 on: the games won so far after each name ("Alice [1]"), 16 characters at most
         names = [f"{n[:12]} [{int(w)}]" for n, w in zip(names, wins)]
+    life = ((ev or {}).get("fight") or {}).get("life")
+    if isinstance(life, list) and len(life) == 2 and all(isinstance(x, int) for x in life) and life != [100, 100]:
+        # the health handicap (docs/ONLINE.md "Training rooms and the health handicap"): the game's bars show health
+        # against each fighter's own (smaller) maximum, so the name says it -- "Alice 70%" (outside the hashed state)
+        names = [n if x == 100 else f"{n[:11]} {x}%" for n, x in zip(names, life)]
     tiers = []
     for p in players:
         t = p.get("tier")

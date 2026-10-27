@@ -103,7 +103,8 @@ T5_DF_RULES="train=1 life=70|100"                    train= / life= for fight li
   `T5_DF_STAGE_WAIT=<frames>` (default 30, was 90): from both fighters
   confirmed to the first stage confirm.
 - Diagnostics: `T5_DF_PROBE=1` (mode changes), `T5_DF_TRACE=1` (every injected
-  press with the cursor state), `T5_DF_LOG`, `T5_DF_DUMP=frames`,
+  press with the cursor state), `T5_DF_LOG`, `T5_DF_DUMP=frames` (`++n`:
+  n frames after every FIGHT START, files tagged `fs<FIGHT START frame>_p<n>`),
   `T5_DF_DUMP_RANGES`, `T5_DF_DUMP_MODES=1`, `T5_DF_WATCH=addr,...`,
   `T5_DF_POKE=frame:addr:width:value`, `T5_DF_SHOT=frames` (needs
   `LD_SURF_DUMP`/`LD_SURF_DUMP_GATE`; `+n` = n frames after the first FIGHT

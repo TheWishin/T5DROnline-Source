@@ -101,13 +101,17 @@ def code_only(text):
     return re.sub(r'"(\\.|[^"\\])*"', '""', text)
 
 
+# the practice tools (practice.cpp) change the game -- offline Practice only, checked by PracticeGateTest
+CHANGES_THE_GAME = ("practice.cpp",)
+
+
 class ReadOnlyTest(unittest.TestCase):
     """The overlay must never change the game: it reads guest memory and nothing else."""
 
     def sources(self):
         out = {}
         for name in sorted(os.listdir(TRAINING)):
-            if name.endswith((".cpp", ".h")):
+            if name.endswith((".cpp", ".h")) and name not in CHANGES_THE_GAME:
                 with open(os.path.join(TRAINING, name), encoding="utf-8") as f:
                     out[name] = code_only(f.read())
         return out
@@ -136,8 +140,10 @@ class ReadOnlyTest(unittest.TestCase):
         allowed = (r"^memcpy\(\s*&v\s*,\s*vm_base\s*\+\s*a\s*,\s*[24]\s*\)$",
                    r"^return\s+vm_base\[a\]$",
                    r"^fwrite\(\s*vm_base\s*\+\s*0x[0-9A-Fa-f]+u?\s*,\s*1\s*,\s*(0x[0-9A-Fa-f]+|\d+)\s*,\s*g_cfg\.trace\s*\)$",
-                   r"^if\s*\(\s*k\s*%\s*r\.every\s*==\s*0\s*\)\s*fwrite\(\s*vm_base\s*\+\s*r\.base\s*,\s*1\s*,\s*r\.len\s*,"
-                   r"\s*g_cfg\.trace\s*\)$")
+                   # T5_TRAINING_TRACE_RANGES: page by page, uncommitted pages as zeros (trace_range)
+                   r"^const\s+bool\s+ok\s*=\s*VirtualQuery\(\s*vm_base\s*\+\s*a\s*,\s*&mi\s*,\s*sizeof\s+mi\s*\)",
+                   r"^fwrite\(\s*ok\s*\?\s*\(const void\*\)\(vm_base\s*\+\s*a\)\s*:\s*\(const void\*\)zero\s*,\s*1\s*,"
+                   r"\s*n\s*,\s*g_cfg\.trace\s*\)$")
         stmts = [x.strip() for x in re.split(r"[;{}]", self.sources()["training.cpp"]) if "vm_base" in x]
         self.assertGreaterEqual(len(stmts), 3)
         for st in stmts:
@@ -149,6 +155,49 @@ class ReadOnlyTest(unittest.TestCase):
         calls = re.findall(r"[^\n]*t5_training_frame\(ctx\);[^\n]*", hooks)
         self.assertEqual(len(calls), 1, calls)
         self.assertIn("!rb::net::bypass()", calls[0])
+
+
+class PracticeGateTest(unittest.TestCase):
+    """The practice tools change the game, so they run only offline, in Practice, in the fight."""
+
+    def setUp(self):
+        with open(os.path.join(TRAINING, "practice.cpp"), encoding="utf-8") as f:
+            self.src = code_only(f.read())
+        with open(os.path.join(ROOT, "src", "netplay", "t5_hooks.cpp"), encoding="utf-8") as f:
+            self.hooks = f.read()
+
+    def test_called_only_offline(self):
+        calls = [ln.strip() for ln in self.hooks.splitlines() if "t5_practice_pads(" in ln and "extern" not in ln]
+        self.assertEqual(calls, ["t5_practice_pads(&m0, &m1);"])
+        body = self.hooks.split("void keyread_tick()")[1].split("\n}\n")[0]
+        self.assertRegex(body, r"if \(g_offline\) \{[^}]*t5_practice_pads\(&m0, &m1\);")
+        # online the ring is written in the same order as before
+        self.assertRegex(body, r"gcall\(kFnPortMask, 0\);\s*if \(!g_offline\) wr16\(kRing \+ slot, m0\);")
+
+    def test_gate(self):
+        gate = re.search(r"bool allowed\(\)\s*\{(.*?)\n\}", self.src, re.S)
+        self.assertIsNotNone(gate)
+        for need in ("g_cfg.on", "g_cfg.offline", "t5_netplay_enabled() == 0", "rd32(kGameType) == kGtPractice",
+                     "rd32(kPhase) == 17"):
+            self.assertIn(need, gate.group(1))
+        body = self.src.split("void t5_practice_pads(")[1]
+        first = body.split("if (!allowed())")[0]
+        self.assertNotRegex(first, r"\*p[12]\s*=|\bput\w*\(", "nothing changes before the gate")
+        for env in ("T5_NET_MODE", "T5_CTL_DIR", "T5_REPLAY_FILE"):
+            with open(os.path.join(TRAINING, "practice.cpp"), encoding="utf-8") as f:
+                self.assertIn(env, f.read())
+
+    def test_no_calls_into_the_game(self):
+        self.assertNotRegex(self.src, r"ppu_guest_call|gcall\s*\(|g_lv2_syscalls|ps3_hle_register")
+
+    def test_guest_writes_only_in_the_put_helpers(self):
+        """Every statement that names vm_base is a read helper or one of the gated put helpers."""
+        stmts = [x.strip() for x in re.split(r"[;{}]", self.src) if "vm_base" in x]
+        allowed = (r"^memcpy\(\s*&v\s*,\s*vm_base\s*\+\s*a\s*,\s*[24]\s*\)$",
+                   r"^return\s+vm_base\[a\]$",
+                   r"^memcpy\(\s*vm_base\s*\+\s*a\s*,\s*&v\s*,\s*4\s*\)$")
+        for st in stmts:
+            self.assertTrue(any(re.match(a, st) for a in allowed), f"unexpected use of guest memory: {st}")
 
 
 class PatchTest(unittest.TestCase):
@@ -214,6 +263,25 @@ class LauncherSettingTest(unittest.TestCase):
         from t5lobby import i18n_de
         for _key, label in self.core.TRAINING_MODES.items():
             self.assertIn(label, i18n_de.MESSAGES)
+        for _key, label in self.core.PRACTICE_DUMMY.items():
+            self.assertIn(label, i18n_de.MESSAGES)
+        self.assertIn(self.core.PRACTICE_HELP, i18n_de.MESSAGES)
+
+    def test_practice_tools(self):
+        env = self.settings().env_overrides()
+        self.assertEqual((env["T5_PRACTICE"], env["T5_PRACTICE_DUMMY"]), ("1", "game"))
+        for key in self.core.PRACTICE_DUMMY:
+            self.assertEqual(self.settings(practice_dummy=key).env_overrides()["T5_PRACTICE_DUMMY"], key)
+        env = self.settings(practice=False, practice_dummy="crouch").env_overrides()
+        self.assertEqual(env["T5_PRACTICE"], "0")
+        self.assertNotIn("T5_PRACTICE_DUMMY", env)
+        # the in-game texts follow the launcher's language even with the overlay off
+        self.assertIn("T5_TRAINING_LANG", self.settings(training="off").env_overrides())
+        path = os.path.join(self.tmp.name, "launcher.json")
+        with open(path, "w") as f:
+            f.write('{"practice": "yes", "practice_dummy": "dance"}')
+        s = self.core.Settings(path)
+        self.assertEqual((s["practice"], s["practice_dummy"]), (True, "game"))
 
 
 class DocsTest(unittest.TestCase):

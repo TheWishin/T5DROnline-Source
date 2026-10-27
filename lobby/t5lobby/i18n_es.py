@@ -538,6 +538,22 @@ MESSAGES = {
         "muestra nítidos, sin el brillo. Solo cambia tu imagen: online, cada jugador puede elegir distinto.",
     "Training overlay": "Overlay de entrenamiento",
     "Also in the other offline modes (Arcade, Versus, ...)": "También en los demás modos offline (Arcade, Versus, ...)",
+    "Practice tools": "Herramientas de práctica",
+    "SELECT combos in Practice (offline only)": "Combinaciones con SELECT en Practice (solo offline)",
+    "Dummy:": "Dummy:",
+    "As set in the game's Practice menu": "Como en el menú Practice del juego",
+    "Blocks after the first hit": "Bloquea tras el primer golpe",
+    "Crouches": "Se agacha",
+    "Walks forward and back": "Camina adelante y atrás",
+    "Sidesteps": "Hace pasos laterales",
+    "In Practice, hold SELECT and press: 3 round start; f+3 / b+3 the dummy against the wall in front "
+    "of / behind you; df+3 / db+3 you against the wall in front of / behind you. 1 records the dummy "
+    "(you play it), 2 plays the recording once, 4 in a loop; tap up / down for slot 1-5, forward / "
+    "back for what the dummy does.":
+        "En Practice, mantén SELECT y pulsa: 3 inicio de ronda; f+3 / b+3 el dummy contra la pared "
+        "delante / detrás de ti; df+3 / db+3 tú contra la pared delante / detrás de ti. 1 graba al dummy "
+        "(lo controlas tú), 2 reproduce la grabación una vez, 4 en bucle; toca arriba / abajo para el "
+        "espacio 1-5, adelante / atrás para lo que hace el dummy.",
     "Also online (only your own inputs, no frame data)": "También online (solo tus inputs, sin datos de frames)",
     "In Practice: your last inputs with how many frames each was held, and after each exchange the "
     "startup of the move and who can act first (+3, -12). F2 in the game switches it.":

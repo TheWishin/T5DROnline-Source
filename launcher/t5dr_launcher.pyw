@@ -582,6 +582,27 @@ class App(tk.Tk):
             "startup of the move and who can act first (+3, -12). F2 in the game switches it.")).pack(
             anchor="w", pady=(4, 0))
 
+        # Practice tools (T5_PRACTICE*, core.PRACTICE_DUMMY, docs/TRAINING.md): position resets, the
+        # dummy's behaviour and 5 recording slots, with SELECT combos in Practice; offline only.
+        pr = ttk.LabelFrame(left, text="  " + t("Practice tools") + "  ", padding=(12, 6))
+        pr.pack(fill="x", pady=(6, 0))
+        self.practice_var = tk.BooleanVar(value=bool(self.settings.get("practice", True)))
+        ttk.Checkbutton(pr, text=t("SELECT combos in Practice (offline only)"), variable=self.practice_var,
+                        command=self.save_settings).pack(anchor="w")
+        drow = ttk.Frame(pr)
+        drow.pack(anchor="w", pady=(4, 0))
+        ttk.Label(drow, text=t("Dummy:")).pack(side="left", padx=(0, 6))
+        self._practice_dummy_labels = {key: t(label) for key, label in core.PRACTICE_DUMMY.items()}
+        cur = self.settings.get("practice_dummy", "game")
+        self.practice_dummy_var = tk.StringVar(
+            value=self._practice_dummy_labels.get(cur, self._practice_dummy_labels["game"]))
+        dbox = ttk.Combobox(drow, state="readonly", width=34, textvariable=self.practice_dummy_var,
+                            values=list(self._practice_dummy_labels.values()))
+        dbox.pack(side="left")
+        dbox.bind("<<ComboboxSelected>>", lambda _e: self.save_settings())
+        ttk.Label(pr, style="Muted.TLabel", wraplength=300, justify="left", text=t(core.PRACTICE_HELP)).pack(
+            anchor="w", pady=(4, 0))
+
         right = ttk.Frame(box)
         right.grid(row=0, column=1, sticky="nwe")
         other = ttk.LabelFrame(right, text="  " + t("Sound and start") + "  ", padding=(12, 6))
@@ -1178,6 +1199,11 @@ class App(tk.Tk):
             self.settings["training"] = self.training_var.get()
             self.settings["training_all"] = bool(self.training_all_var.get())
             self.settings["training_online"] = bool(self.training_online_var.get())
+        if hasattr(self, "practice_var"):
+            self.settings["practice"] = bool(self.practice_var.get())
+            label = self.practice_dummy_var.get()
+            self.settings["practice_dummy"] = next(
+                (k for k, v in self._practice_dummy_labels.items() if v == label), "game")
         if hasattr(self, "router_ports_var"):
             self.settings["router_ports"] = bool(self.router_ports_var.get())
         if hasattr(self, "discord_var"):

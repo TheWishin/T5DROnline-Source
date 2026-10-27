@@ -527,6 +527,20 @@ MESSAGES = {
         "。変わるのは自分の画面だけなので、オンラインでも各プレイヤーが別々に選べます。",
     "Training overlay": "トレーニング表示",
     "Also in the other offline modes (Arcade, Versus, ...)": "他のオフラインモードでも表示（Arcade、Versus など）",
+    "Practice tools": "練習ツール",
+    "SELECT combos in Practice (offline only)": "Practice で SELECT コンビネーション（オフラインのみ）",
+    "Dummy:": "ダミー：",
+    "As set in the game's Practice menu": "ゲームの Practice メニューの設定どおり",
+    "Blocks after the first hit": "最初のヒット後にガード",
+    "Crouches": "しゃがむ",
+    "Walks forward and back": "前後に歩く",
+    "Sidesteps": "横移動する",
+    "In Practice, hold SELECT and press: 3 round start; f+3 / b+3 the dummy against the wall in front "
+    "of / behind you; df+3 / db+3 you against the wall in front of / behind you. 1 records the dummy "
+    "(you play it), 2 plays the recording once, 4 in a loop; tap up / down for slot 1-5, forward / "
+    "back for what the dummy does.":
+        "Practice で SELECT を押しながら：3 でラウンド開始位置、f+3 / b+3 でダミーを前 / 後ろの壁際へ、df+3 / db+3 で自分を前 / 後ろの壁際へ。1 "
+        "でダミーを記録（自分で操作）、2 で記録を1回再生、4 でループ再生。上 / 下を軽く押してスロット1-5、前 / 後ろでダミーの動きを切り替え。",
     "Also online (only your own inputs, no frame data)": "オンラインでも表示（自分の入力のみ、フレームデータなし）",
     "In Practice: your last inputs with how many frames each was held, and after each exchange the "
     "startup of the move and who can act first (+3, -12). F2 in the game switches it.":

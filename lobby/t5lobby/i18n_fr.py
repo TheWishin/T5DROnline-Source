@@ -542,6 +542,22 @@ MESSAGES = {
     "Training overlay": "Overlay d'entraînement",
     "Also in the other offline modes (Arcade, Versus, ...)":
         "Aussi dans les autres modes hors ligne (Arcade, Versus, ...)",
+    "Practice tools": "Outils d'entraînement",
+    "SELECT combos in Practice (offline only)": "Combinaisons avec SELECT en Practice (hors ligne seulement)",
+    "Dummy:": "Mannequin :",
+    "As set in the game's Practice menu": "Comme dans le menu Practice du jeu",
+    "Blocks after the first hit": "Bloque après le premier coup",
+    "Crouches": "S'accroupit",
+    "Walks forward and back": "Avance et recule",
+    "Sidesteps": "Fait des pas de côté",
+    "In Practice, hold SELECT and press: 3 round start; f+3 / b+3 the dummy against the wall in front "
+    "of / behind you; df+3 / db+3 you against the wall in front of / behind you. 1 records the dummy "
+    "(you play it), 2 plays the recording once, 4 in a loop; tap up / down for slot 1-5, forward / "
+    "back for what the dummy does.":
+        "En Practice, maintiens SELECT et appuie : 3 début de round ; f+3 / b+3 le mannequin contre le "
+        "mur devant / derrière toi ; df+3 / db+3 toi contre le mur devant / derrière toi. 1 enregistre le "
+        "mannequin (tu le contrôles), 2 rejoue l'enregistrement une fois, 4 en boucle ; touche haut / bas "
+        "pour l'emplacement 1-5, avant / arrière pour ce que fait le mannequin.",
     "Also online (only your own inputs, no frame data)":
         "Aussi en ligne (seulement tes inputs, sans données de frames)",
     "In Practice: your last inputs with how many frames each was held, and after each exchange the "

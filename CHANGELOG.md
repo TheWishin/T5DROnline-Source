@@ -73,6 +73,10 @@ they work with 1.1.4 launchers as soon as the server is updated.
   defender mashing a jab). Players' report; docs/TRAINING.md.
 - **Frame data: moves with a wind-up show their real startup.** Bryan's f+1+2 (a wind-up, then the attack) showed
   i4; it is i22. A move made of several animations now counts from its first frame.
+- **Frame data: Bryan's taunt (1+3+4) reads i28, hit, +14.** Its +14 was right, but the overlay called it a block
+  and showed no startup (or the one of the move before): the taunt can be cancelled from its first frame, and its
+  stun does no damage. Now it counts as a hit, guarded or not (it cannot be blocked), with its own startup (checked
+  with Bryan and the defender mashing a jab).
 - **Practice tools** (Practice, offline only; Settings -> Practice tools, on by default): hold SELECT and press 3 to
   put both fighters back where the fight started, f+3 / b+3 to put the dummy against the wall in front of / behind
   you, df+3 / db+3 to put yourself against the wall in front of / behind you. SELECT+1 records the dummy (your pad

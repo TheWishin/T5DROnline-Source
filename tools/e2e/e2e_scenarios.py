@@ -4610,3 +4610,152 @@ def cross_build_pair(ctx):
     login(ctx, b)
     rows = _two_matches(ctx, a, b, "cross-build pair", rematches=2)
     ctx.note(f"final hashes: {[r[a.name]['result_file'].get('hash') for r in rows]}")
+
+
+# ---------------------------------------------------------------------------- 1.1.5: sides and stages by choice
+def _casual_wish(ctx, p, side, stage):
+    """Set p's casual wishes in its Online tab the way a player does (docs/ONLINE.md "Sides and stages by choice"):
+    side None (any) / 0 (P1) / 1 (P2), stage "random" or a stage key."""
+    ui = p.tab.casual
+    ui.refresh()
+    ui.side_var.set(list(ui.side_cb.cget("values"))[{None: 0, 0: 1, 1: 2}[side]])
+    names = list(ui.stage_cb.cget("values"))
+    ui.stage_var.set(names[0] if stage == "random" else names[1 + ui.stages.index(stage)])
+    ui.on_change()
+    ctx.pump(0.5)
+    ctx.check(f"{p.name}: wishes set in the launcher (side {side}, stage {stage})",
+              (ui.side, ui.stage) == (side, stage), f"{ui.side}, {ui.stage}")
+
+
+def _casual_challenge(ctx, a, b):
+    """a challenges b in the players list, b accepts in the bar. -> (match id, b's challenge question)."""
+    t = time.time()
+    ctx.wait(lambda: a.action_on("challenge") and b.action_on("challenge"), 30, "both free to challenge")
+    ctx.sleep(1.0)                       # (the wishes went out with the last pump; the challenge comes after them)
+    a.tab.tv_players.selection_set(b.client.me["id"])
+    a.press("challenge")
+    if not ctx.wait(lambda: b.bar_button("Accept") is not None, 20, f"{b.name} gets {a.name}'s challenge"):
+        raise Abort("no challenge")
+    bar = b.tab.bar_text.get()
+    b.click("Accept")
+    if not ctx.wait(lambda: latest(a, "match_start", t) and latest(b, "match_start", t), 60,
+                    "the accepted challenge starts on both PCs"):
+        raise Abort("no match from the challenge")
+    return latest(a, "match_start", t)["match"], bar
+
+
+def _casual_play(ctx, a, b, mid, label):
+    """The real match to its confirmed result, in sync (match_row: both results, the same hash, 0 mismatching
+    frames). -> {name: the parsed game log segment}, read at once (a segment runs to the end of the log)."""
+    if not wait_fight(ctx, mid, (a, b), timeout=150):
+        raise Abort(f"{label}: no fight")
+    wait_results(ctx, mid, (a, b))
+    row = match_row(ctx, mid, (a, b), "confirmed", label)
+    fps_check(ctx, row, (a, b))
+    return {p.name: parse_segment(p.log_segment(mid)) for p in (a, b)}
+
+
+def _casual_sides_stage(ctx, a, b, mid, segs, a_slot, stage, label):
+    """The lobby's sides (match_start slot) against the games' (netplay "connected (host, P1)"), the lobby's stage
+    against the stage both games fought on ("FIGHT START ... id <match>: ..., stage <id>"). -> the lobby's stage."""
+    from e2e_flows import RE_FIGHT
+    from t5lobby import fighters
+    ma, mb = a.matches[mid], b.matches[mid]
+    ctx.check(f"{label}: lobby sides {a.name} P{a_slot + 1}, {b.name} P{2 - a_slot}",
+              (ma.get("slot"), mb.get("slot")) == (a_slot, 1 - a_slot), f"{ma.get('slot')} / {mb.get('slot')}")
+    want = {a.name: ("host" if a_slot == 0 else "join", f"P{a_slot + 1}"),
+            b.name: ("join" if a_slot == 0 else "host", f"P{2 - a_slot}")}
+    got = {n: tuple((s["connected"] or (None, None, None))[:2]) for n, s in segs.items()}
+    ctx.check(f"{label}: the games connected with those sides (a new netplay session)", got == want, str(got))
+    lobby_stage = (ma.get("fight") or {}).get("stage")
+    if stage is not None:
+        ctx.check(f"{label}: match_start stage {stage} on both PCs",
+                  lobby_stage == stage and (mb.get("fight") or {}).get("stage") == stage,
+                  f"{lobby_stage} / {(mb.get('fight') or {}).get('stage')}")
+    st = fighters.table().stage(lobby_stage) or {}
+    fought = {}
+    for n, s in segs.items():
+        for ln in s["fight_start"]:
+            m = RE_FIGHT.search(ln)
+            if m and m.group(3).rstrip(":") == mid:
+                fought[n] = int(m.group(5))
+    ctx.check(f"{label}: both games fought on the lobby's stage ({lobby_stage} = id {st.get('id')})",
+              len(fought) == 2 and all(v == st.get("id") for v in fought.values()), str(fought))
+    return lobby_stage
+
+
+@scenario("net_casual_choice", "6 netcode", game=True, suites=("game", "net"),
+          desc="1.1.5 casual choices with real games: A challenges B wanting P2, both on Aurora Australis (lobby and "
+               "games: A is P2, stage 27); Rematch: swap sides (a new session, A is P1); then B challenges A, both "
+               "want P1 (coin flip), Ghetto Pit against Random (random between the two); every match in sync")
+def net_casual_choice(ctx):
+    if "casual_choice" not in features():
+        raise Skip("no casual choices in this tree (casual-115)")
+    import random as _random
+    from t5lobby import fighters
+    forced = bool(getattr(ctx.run, "stage", None))          # (run.py --stage overrides every stage: no stage checks)
+    game_server(ctx)
+    a = ctx.player("E2E CasA")
+    b = ctx.player("E2E CasB")
+    login(ctx, a)
+    login(ctx, b)
+    if not a.client.casual_ok():
+        raise Skip("the lobby server has no casual choices")
+    ctx.check("the launcher shows the side and stage choices", a.tab.casual.row.winfo_manager() == "grid")
+
+    # 1. A challenges B: A wants P2, both want Aurora Australis (s27)
+    _casual_wish(ctx, a, 1, "s27")
+    _casual_wish(ctx, b, None, "s27")
+    mid, bar = _casual_challenge(ctx, a, b)
+    ctx.check("B's challenge question shows A's wishes", "wants to be P2 on Aurora Australis" in bar, bar)
+    segs = _casual_play(ctx, a, b, mid, "challenge: A wants P2 on Aurora Australis")
+    _casual_sides_stage(ctx, a, b, mid, segs, 1, None if forced else "s27", "challenge")
+    ctx.note(f"match card: {a.tab.match_var.get()!r}")
+
+    # 2. Rematch: swap sides -- A asks, B sees the offer with the sides swapped and says yes
+    t = time.time()
+    if not ctx.wait(lambda: a.bar_button("Rematch: swap sides") is not None, 25,
+                    f"{a.name}: Rematch: swap sides after the casual match"):
+        raise Abort("no Rematch: swap sides")
+    a.click("Rematch: swap sides")
+    ctx.wait(lambda: "with the sides swapped" in b.tab.bar_text.get() and b.bar_button("Rematch") is not None, 25,
+             f"{b.name}: the offer says the sides are swapped")
+    b.click("Rematch")
+    if not ctx.wait(lambda: latest(a, "match_start", t) and latest(b, "match_start", t), 90,
+                    "the swapped rematch starts on both PCs"):
+        raise Abort("no swapped rematch")
+    mid2 = latest(a, "match_start", t)["match"]
+    ctx.check("swapped rematch: a new netplay session, not a rematch inside the running games",
+              not a.matches[mid2].get("cont") and not b.matches[mid2].get("cont"),
+              f"{a.matches[mid2].get('cont')} / {b.matches[mid2].get('cont')}")
+    segs2 = _casual_play(ctx, a, b, mid2, "rematch: swap sides")
+    _casual_sides_stage(ctx, a, b, mid2, segs2, 0, None if forced else "s27", "swapped rematch")
+    for p in (a, b):
+        leave(ctx, p)
+    ctx.sleep(2.0)
+
+    # 3. B challenges A: both want P1 (coin flip); A Ghetto Pit (s20), B Random (random between the two)
+    _casual_wish(ctx, a, 0, "s20")
+    _casual_wish(ctx, b, 0, "random")
+    t = time.time()
+    mid3, bar3 = _casual_challenge(ctx, b, a)
+    ctx.check("A's challenge question shows B's wish", "wants to be P1" in bar3, bar3)
+    segs3 = _casual_play(ctx, a, b, mid3, "both want P1, Ghetto Pit against Random")
+    a_slot = a.matches[mid3].get("slot")
+    ctx.check("coin flip: one of the two is P1, the other P2",
+              a_slot in (0, 1) and b.matches[mid3].get("slot") == 1 - a_slot,
+              f"{a_slot} / {b.matches[mid3].get('slot')}")
+    if a_slot in (0, 1):
+        stage = _casual_sides_stage(ctx, a, b, mid3, segs3, a_slot, None, "coin flip")
+        if not forced:
+            seed = latest(a, "match_start", t)["seed"]
+            wishes = ("s20", fighters.RANDOM) if a_slot == 0 else (fighters.RANDOM, "s20")     # (P1's, P2's)
+            pick = wishes[_random.Random((int(seed) ^ 0x5EED57A6) & 0xFFFFFFFF).randrange(2)]
+            ctx.note(f"coin flip: {a.name} is P{a_slot + 1}; the match seed picks {pick!r}; the stage is {stage}")
+            if pick == "s20":
+                ctx.check("random between the two: the seed picked Ghetto Pit", stage == "s20", stage)
+            else:
+                ctx.check("random between the two: the seed picked Random, a stage from the pool",
+                          stage in fighters.table().stage_pool(old_stages=True), stage)
+    for p in (a, b):
+        leave(ctx, p)

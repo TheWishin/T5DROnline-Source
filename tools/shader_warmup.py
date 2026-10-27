@@ -23,6 +23,12 @@ code 0; the first fights then build their pipelines as before. warmup.json in th
 size and time stamp) makes it run once per build; --force runs it again.
 
 Lines it prints: "[warmup] fight 3 of 18: stage 19, lei vs king" (the launcher's Build tab shows them).
+
+Skip (the Build tab's "Skip warm-up" while this step runs): the launcher creates <out>/logs/warmup.skip
+(SKIP_FILE). Within a quarter of a second the warm-up ends as after its last fight -- the game is asked to quit
+(killed only if it does not within 20 s), warmup.json says "skipped" so the next BUILD GAME of the same game
+does not start it again ("Redo every step" does), and exit code 0: the build ends as built, the game works, and
+the first fights build the shaders that were not warmed.
 """
 import argparse
 import json
@@ -46,6 +52,16 @@ PAD = ["RIGHT", "SQUARE", "", "TRIANGLE", "", "CROSS", "", "RIGHT", "CIRCLE", ""
        "SQUARE TRIANGLE", ""]
 CACHE = os.path.join("scratch", "rsx_shader_cache_v2")
 MARKER = "warmup.json"
+SKIP_FILE = os.path.join("logs", "warmup.skip")     # (launcher/core.py BuildRun.skip_warmup writes the same path)
+STALE_SKIP = 60.0                                   # an older skip file is left over from another run
+
+
+class Skipped(Exception):
+    """The player pressed Skip warm-up."""
+
+
+def skip_requested(path):
+    return bool(path) and os.path.exists(path)
 
 
 def fight_lines(n):
@@ -108,6 +124,15 @@ def warmup(a, out):
         note("only on Windows (the D3D12 renderer's caches)")
         return 0
     lines = fight_lines(a.fights)
+    skip = os.path.join(out, SKIP_FILE)
+    try:
+        if time.time() - os.path.getmtime(skip) > STALE_SKIP:
+            os.remove(skip)                          # (left over: not this build's)
+    except OSError:
+        pass
+    if skip_requested(skip):
+        note("skipped -- the first fights build their shaders instead")
+        return 0
     work = tempfile.mkdtemp(prefix="t5dr-warmup-")
     ctl_dir = os.path.join(work, "ctl")
     status = os.path.join(work, "status.json")
@@ -128,11 +153,15 @@ def warmup(a, out):
          f"(about {max(1, round((20 + len(lines) * (8 + a.fight_seconds)) / 60))} minutes)")
     t_end = time.time() + 60 * a.minutes
     done = 0
+    skipped = False
     with open(log_path, "w", encoding="utf-8", errors="replace") as log:
         p = subprocess.Popen(cmd, env=env, cwd=cwd, stdout=log, stderr=subprocess.STDOUT,
                              creationflags=subprocess.BELOW_NORMAL_PRIORITY_CLASS)
         try:
-            done = play(ctl, status, p, lines, a.fight_seconds, t_end, pad)
+            try:
+                done = play(ctl, status, p, lines, a.fight_seconds, t_end, pad, skip)
+            except Skipped as e:
+                done, skipped = e.args[0], True
             if p.poll() is None:
                 ctl.send("quit")
                 try:
@@ -143,10 +172,18 @@ def warmup(a, out):
             if p.poll() is None:
                 p.kill()
                 p.wait()
-    if done:
+    if done or skipped:
         os.makedirs(cache, exist_ok=True)
         with open(marker, "w", encoding="utf-8") as f:
-            json.dump({"exe": stamp, "fights": done, "of": len(lines), "time": int(time.time())}, f)
+            json.dump({"exe": stamp, "fights": done, "of": len(lines), "time": int(time.time()),
+                       **({"skipped": True} if skipped else {})}, f)
+    try:
+        os.remove(skip)
+    except OSError:
+        pass
+    if skipped:
+        note(f"skipped after {done} of {len(lines)} fights -- the first fights build the rest of their shaders")
+        return 0
     note(f"done: {done} of {len(lines)} fights" + ("" if done == len(lines) else
                                                    " -- the rest build their shaders in the first fights"))
     return 0
@@ -164,10 +201,16 @@ def set_pad(path, buttons):
             time.sleep(0.005)
 
 
-def play(ctl, status, p, lines, fight_seconds, t_end, pad):
-    """Drive the persistent game through `lines`; returns how many fights reached FIGHT START."""
+def play(ctl, status, p, lines, fight_seconds, t_end, pad, skip=None):
+    """Drive the persistent game through `lines`; returns how many fights reached FIGHT START. Raises
+    Skipped(done) as soon as the skip file is there (checked every quarter of a second)."""
     done = 0
     last_match = 0
+
+    def nap(seconds):
+        if skip_requested(skip):
+            raise Skipped(done)
+        time.sleep(seconds)
     for i, (stage, p1, p2, line) in enumerate(lines):
         if time.time() > t_end:
             note("out of time")
@@ -185,7 +228,7 @@ def play(ctl, status, p, lines, fight_seconds, t_end, pad):
                 last_match = int(st.get("match") or 0)
                 fought = True
                 break
-            time.sleep(0.25)
+            nap(0.25)
         if not fought:
             note("this fight did not start -- stopping")
             return done
@@ -195,7 +238,7 @@ def play(ctl, status, p, lines, fight_seconds, t_end, pad):
         while time.time() - t0 < fight_seconds:
             set_pad(pad, PAD[k % len(PAD)])
             k += 1
-            time.sleep(0.25)
+            nap(0.25)
         set_pad(pad, "")
         ctl.send("idle")
         t0 = time.time()
@@ -206,7 +249,7 @@ def play(ctl, status, p, lines, fight_seconds, t_end, pad):
             cs = ctl.state() or {}
             if read_json(status).get("state") == "neutral" and cs.get("state") in ("idle", "error"):
                 break
-            time.sleep(0.25)
+            nap(0.25)
         else:
             note("the game did not come back to the select screen -- stopping")
             return done

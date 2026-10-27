@@ -511,6 +511,8 @@ MESSAGES = {
         "diesem Ordner.",
     "BUILD GAME": "BUILD GAME",
     "Redo every step": "Alle Schritte neu machen",
+    "Skip warm-up": "Aufwärmen überspringen",
+    "Skipping…": "Überspringe…",
     "Keep the PC responsive (slower)": "PC bedienbar halten (langsamer)",
     "Open build.log": "build.log öffnen",
     "Report a problem...": "Problem melden...",

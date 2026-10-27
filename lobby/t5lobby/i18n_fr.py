@@ -485,6 +485,8 @@ MESSAGES = {
         "Appuie sur BUILD GAME. Ça prend quelques minutes ; les données du jeu restent dans ce dossier.",
     "BUILD GAME": "BUILD GAME",
     "Redo every step": "Refaire toutes les étapes",
+    "Skip warm-up": "Passer le préchauffage",
+    "Skipping…": "Passage…",
     "Keep the PC responsive (slower)": "Garder le PC réactif (plus lent)",
     "Open build.log": "Ouvrir build.log",
     "Report a problem...": "Signaler un problème...",

@@ -3129,7 +3129,11 @@ pair and stage, one shader cache folder that grows from empty, 7950X:
 | Bryan vs Xiaoyu, stage 0 | 14 | 88 | 59 ms |
 
 Every new stage or pair of fighters brings 15-40 pipelines, 0.1-0.3 s in all and single frames of 50-140 ms on
-this PC -- two to three times that on an i5-2500. `tools/shader_warmup.py` plays them once after BUILD GAME.
+this PC -- two to three times that on an i5-2500. `tools/shader_warmup.py` plays them once after BUILD GAME. **Skip
+warm-up** on the Build tab (next to the step line while "Shaders" runs) ends it at once: the launcher writes
+`<out>\logs\warmup.skip`, the warm-up asks the game to quit, notes "skipped" in warmup.json (the next BUILD GAME of
+the same game does not start it again; "Redo every step" does) and exits 0 -- the build ends as built and the first
+fights build the rest.
 After the warm-up -- all 18 stages of the stage select, every fighter of the select screen once (Jinpachi is
 locked offline: in a first run his fight never started, so the tool leaves him out), 18 of 18 fights in **205 s**
 here (about 11 s a fight with the boot; P1 presses buttons for 6 s of each, so hit sparks and effects are drawn

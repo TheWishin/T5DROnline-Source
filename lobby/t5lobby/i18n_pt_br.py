@@ -478,6 +478,8 @@ MESSAGES = {
         "Aperte BUILD GAME. Leva alguns minutos; os dados do jogo ficam nesta pasta.",
     "BUILD GAME": "BUILD GAME",
     "Redo every step": "Refazer todas as etapas",
+    "Skip warm-up": "Pular o aquecimento",
+    "Skipping…": "Pulando…",
     "Keep the PC responsive (slower)": "Manter o PC responsivo (mais lento)",
     "Open build.log": "Abrir build.log",
     "Report a problem...": "Relatar um problema...",

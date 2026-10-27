@@ -759,6 +759,23 @@ class BuildRun:
             self.cancelled = True
             kill_tree(self.proc.pid)
 
+    # tools/shader_warmup.py SKIP_FILE: the warm-up looks for it every quarter of a second
+    WARMUP_SKIP = os.path.join("logs", "warmup.skip")
+
+    def skip_warmup(self):
+        """The Build tab's Skip warm-up: the shader warm-up ends at once, the build ends as built (exit code 0,
+        a working game). True when asked."""
+        if not (self.proc and self.proc.poll() is None):
+            return False
+        path = os.path.join(self.out, self.WARMUP_SKIP)
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w") as f:
+                f.write("skip\n")
+        except OSError:
+            return False
+        return True
+
 
 def kill_tree(pid):
     if IS_WIN:

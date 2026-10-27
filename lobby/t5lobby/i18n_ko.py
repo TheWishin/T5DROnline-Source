@@ -469,6 +469,8 @@ MESSAGES = {
         "BUILD GAME을 누르세요. 몇 분 걸리며, 게임 데이터는 이 폴더에 남습니다.",
     "BUILD GAME": "BUILD GAME",
     "Redo every step": "모든 단계 다시 하기",
+    "Skip warm-up": "워밍업 건너뛰기",
+    "Skipping…": "건너뛰는 중…",
     "Keep the PC responsive (slower)": "PC 반응성 유지 (더 느림)",
     "Open build.log": "build.log 열기",
     "Report a problem...": "문제 신고...",

@@ -429,6 +429,8 @@ class App(tk.Tk):
         self.detail = tk.StringVar(value=t("Press BUILD GAME. It takes a few minutes; the game data stays in this folder."))
         ttk.Label(b, textvariable=self.detail, style="Muted.TLabel", wraplength=860,
                   justify="left").grid(row=2, column=0, columnspan=3, sticky="w")
+        # while the shader warm-up runs (the last step): end it; the game is built and works without it
+        self.skip_btn = ttk.Button(b, text=t("Skip warm-up"), command=self.skip_warmup)
         row = ttk.Frame(b)
         row.grid(row=3, column=0, columnspan=3, sticky="we", pady=(8, 2))
         self.build_btn = self.big_button(row, t("BUILD GAME"), self.start_build)
@@ -1021,6 +1023,22 @@ class App(tk.Tk):
         if self.build:
             self.build.cancel()
 
+    def skip_warmup(self):
+        """Skip warm-up (the Shaders step): tools/shader_warmup.py ends, the build finishes as built."""
+        if self.build and self.cur_step == "shaders" and self.build.skip_warmup():
+            self.skip_btn.configure(state="disabled", text=t("Skipping…"))
+            core.log("build: shader warm-up skipped by the player")
+
+    def _show_skip_btn(self, show):
+        try:
+            if show:
+                self.skip_btn.configure(state="normal", text=t("Skip warm-up"))
+                self.skip_btn.grid(row=2, column=2, sticky="e")
+            else:
+                self.skip_btn.grid_remove()
+        except tk.TclError:
+            pass
+
     def _paint_step(self, s):
         st = self.step_state[s]
         style = {"running": "StepRun.TLabel", "done": "StepDone.TLabel", "skip": "StepDone.TLabel",
@@ -1061,9 +1079,12 @@ class App(tk.Tk):
                 self.cur_step, self.sub, self.step_t0 = val, 0.0, time.time()
                 self.step_state[val] = "running"
                 self._paint_step(val)
+                self._show_skip_btn(val == "shaders")
             elif ev == "skip" and val:
                 self.step_state[val] = "skip"
                 self._paint_step(val)
+                if val == "shaders":
+                    self._show_skip_btn(False)            # (already warmed for this build)
             elif ev == "sub":
                 self.sub = val
             elif ev == "error":
@@ -1111,6 +1132,7 @@ class App(tk.Tk):
         self.cur_step = None
         set_big_state(self.build_btn, True)
         self.cancel_btn.configure(state="disabled")
+        self._show_skip_btn(False)
         self.refresh_game_state()
 
     # ------------------------------------------------------------------ play

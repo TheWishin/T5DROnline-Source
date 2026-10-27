@@ -473,6 +473,8 @@ MESSAGES = {
         "BUILD GAME を押してください。数分かかります。ゲームデータはこのフォルダーに残ります。",
     "BUILD GAME": "BUILD GAME",
     "Redo every step": "全ステップをやり直す",
+    "Skip warm-up": "ウォームアップをスキップ",
+    "Skipping…": "スキップ中…",
     "Keep the PC responsive (slower)": "PCの操作性を優先（遅くなります）",
     "Open build.log": "build.log を開く",
     "Report a problem...": "問題を報告...",

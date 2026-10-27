@@ -3129,7 +3129,11 @@ pair and stage, one shader cache folder that grows from empty, 7950X:
 | Bryan vs Xiaoyu, stage 0 | 14 | 88 | 59 ms |
 
 Every new stage or pair of fighters brings 15-40 pipelines, 0.1-0.3 s in all and single frames of 50-140 ms on
-this PC -- two to three times that on an i5-2500. `tools/shader_warmup.py` plays them once after BUILD GAME.
+this PC -- two to three times that on an i5-2500. `tools/shader_warmup.py` plays them once after BUILD GAME. **Skip
+warm-up** on the Build tab (next to the step line while "Shaders" runs) ends it at once: the launcher writes
+`<out>\logs\warmup.skip`, the warm-up asks the game to quit, notes "skipped" in warmup.json (the next BUILD GAME of
+the same game does not start it again; "Redo every step" does) and exits 0 -- the build ends as built and the first
+fights build the rest.
 After the warm-up -- all 18 stages of the stage select, every fighter of the select screen once (Jinpachi is
 locked offline: in a first run his fight never started, so the tool leaves him out), 18 of 18 fights in **205 s**
 here (about 11 s a fight with the boot; P1 presses buttons for 6 s of each, so hit sparks and effects are drawn
@@ -3182,8 +3186,8 @@ is worth a change of its own now.
 
 Owner's 1.1.5 list: more graphics settings for weak graphics cards, each measured, and a "Lowest" preset for old
 cards. **Launcher -> Settings -> Graphics (weak graphics cards)**: Shadows and Effects, each On (default) / Off,
-and two buttons: **Lowest (old graphics cards)** (Internal resolution Lowest; stage blur / glow, shadows and effects
-off) and **Default** (puts them back: Internal resolution as the launcher picks it -- Auto on integrated graphics,
+and two buttons: **Lowest (old graphics cards)** (Internal resolution Lowest; stage blur / glow and shadows off;
+effects stay on -- owner, 1.1.5: the hit effects show what happens in a fight) and **Default** (puts them back: Internal resolution as the launcher picks it -- Auto on integrated graphics,
 else Native --, stage blur / glow Off as since 1.1.4, shadows and effects on). Window, VSync and power saving are
 not touched. Every setting changes only what is drawn: no guest memory, no command the game sees, so the two PCs of
 a match may choose differently (pairs below).

@@ -494,8 +494,19 @@ class Walk:
                                    "quiet_hint": lambda _self: core.lift_quiet_hint("lift", 240)})()
         app._drain_build()
         self.screen("build quiet hint")
-        app.build, app.cur_step = None, None
+        # the shader warm-up (the last step) with its Skip warm-up button next to the step line
         app.step_state["lift"] = "pending"
+        app.step_state["shaders"] = "running"
+        app.cur_step, app.step_t0, app.sub = "shaders", time.time() - 300, 0.44
+        app.build = type("B", (), {"events": __import__("queue").Queue(), "quiet_hint": lambda _self: ""})()
+        app._show_skip_btn(True)
+        app._drain_build()
+        self.screen("build warm-up")
+        app.skip_btn.configure(text=i18n.t("Skipping…"))
+        self.screen("build warm-up skipping")
+        app._show_skip_btn(False)
+        app.build, app.cur_step = None, None
+        app.step_state["shaders"] = "pending"
         app.detail.set(detail)
 
     def _online(self):
@@ -508,6 +519,13 @@ class Walk:
         tab._set_account_view(True)
         tab.on_event({"t": "lobby_state", "players": PLAYERS, "rooms": ROOMS, "queue": {"ranked": 3, "quick": 1}})
         self.screen("online lobby")
+        # the character select grid over the tab (tk_charsel.py), the player's main starred
+        if getattr(tab, "charsel", None) is not None:
+            if isinstance(tab.client.me, dict):
+                tab.client.me.setdefault("main", "devil_jin")
+            tab.charsel.open()
+            self.screen("online character select")
+            tab.charsel.close()
         from t5lobby import fwcheck
         tab.fw_status = fwcheck.Status("blocked", ["game", "launcher"],
                                        paths={"launcher": r"C:\T5DR Online\python\pythonw.exe"})

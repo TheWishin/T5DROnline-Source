@@ -1142,14 +1142,14 @@ colour, rating, W-L):
 | State | The card |
 |---|---|
 | Not logged in | Server, name, then Log in / Create account (password rules checked as you type) / Guest; Host for friends |
-| In the lobby | Ranked match and Quick match, the character, Strict; side and stage for challenges, invites and rooms (1.1.5, a server that has them); the players, rooms (a lock = cannot be joined now) and chat below |
+| In the lobby | Ranked match and Quick match, the character (a button that opens the select grid: Random and every fighter, the chosen one lit, your main starred; arrow keys, Enter, Esc; Cross / A picks, Circle / B closes -- lobby/t5lobby/tk_charsel.py), Strict; side and stage for challenges, invites and rooms (1.1.5, a server that has them); the players, rooms (a lock = cannot be joined now) and chat below |
 | Searching | A turning ring, the time searching, the queues, Stop searching (B) |
 | Match found | Ping bars (green up to 60 ms, yellow up to 120, red above), a 15 s countdown ring, Accept (A) / Decline (B); the opponent is shown once both accepted |
 | In a match | The opponent, ping, input delay, connection, "Your game is running" and where the game is |
 | Result | Win / loss banner, rounds, rating change, promotion / demotion / placement, lag check, Rematch (A) / Next game / Leave (B) / Block |
 | Errors | One line on a red banner: what went wrong and what to do |
 | Friends (a page next to Lobby, Leaderboard, Profile) | Your friends with a dot (green online, yellow in a match, grey ring offline), rank and what they do; Invite to a match / Invite to my room / Remove; Add a friend (account name); REQUESTS with Accept / Decline / Take back |
-| Stats (the last page) | The community's numbers from the lobby server: accounts, players who played, matches, ranked matches, the last 24 hours; every fighter's matches, wins, win rate and share of the picks, All / Ranked / Casual, sorted by a click on a column (grey: fewer than 30 matches). An older server: a line saying it has no stats page yet |
+| Stats (next to the Leaderboard) | The community's numbers from the lobby server: accounts, players who played, matches, ranked matches, the last 24 hours; every fighter's matches, wins, win rate and share of the picks, All / Ranked / Casual, sorted by a click on a column (grey: fewer than 30 matches). An older server: a line saying it has no stats page yet |
 | Invite from a friend | Their badge and name, "invites you to a casual match" (or "to the room ..."), Accept (A) / Decline (B) |
 
 A ranked set's score goes into `OnlineTab.set_var` ("Set 1-0, game 2 of 3"); the match cards show it as a

@@ -511,6 +511,8 @@ MESSAGES = {
         "diesem Ordner.",
     "BUILD GAME": "BUILD GAME",
     "Redo every step": "Alle Schritte neu machen",
+    "Skip warm-up": "Aufwärmen überspringen",
+    "Skipping…": "Überspringe…",
     "Keep the PC responsive (slower)": "PC bedienbar halten (langsamer)",
     "Open build.log": "build.log öffnen",
     "Report a problem...": "Problem melden...",
@@ -2045,6 +2047,10 @@ MESSAGES = {
     "My profile": "Mein Profil",
     "Find an opponent online": "Gegner online finden",
     "Character": "Charakter",
+    "Choose your fighter": "Wähle deinen Kämpfer",
+    "{star} your main: {character}": "{star} dein Main: {character}",
+    "Arrow keys move, Enter picks, Esc closes. With a controller: Cross / A picks, Circle / B closes.":
+        "Pfeiltasten bewegen, Enter wählt, Esc schließt. Mit Controller: Kreuz / A wählt, Kreis / B schließt.",
     "Locked for this ranked set": "Für dieses Ranked-Set gesperrt",
     "Ranked match": "Ranked-Match",
     "Quick match": "Quick Match",
@@ -2527,13 +2533,8 @@ MESSAGES = {
         "Am niedrigsten (alte Grafikkarten)",
     "Default":
         "Standard",
-    "Lowest: Internal resolution Lowest; stage blur / glow, shadows and effects off (so no hit effects "
-    "either). Default puts them back. Only your picture changes: online, both players can choose differently.":
-        "Am niedrigsten: Interne Auflösung „Am niedrigsten“; "
-        "Stage-Unschärfe / Leuchten, Schatten und Effekte aus "
-        "(also auch keine Treffer-Effekte). „Standard“ stellt "
-        "sie wieder her. Nur dein Bild ändert sich: Online "
-        "können beide Spieler verschieden wählen.",
+    "Lowest: Internal resolution Lowest; stage blur / glow and shadows off. Effects stay on: the hit effects show what happens in a fight. Default puts them back. Only your picture changes: online, both players can choose differently.":
+        "Am niedrigsten: Interne Auflösung „Am niedrigsten“; Stage-Unschärfe / Leuchten und Schatten aus. Die Effekte bleiben an: Die Treffer-Effekte zeigen, was im Kampf passiert. „Standard“ stellt sie wieder her. Nur dein Bild ändert sich: Online kann jeder Spieler selbst wählen.",
     # ---- lobby/t5lobby/tk_casual.py
     "Any side": "Seite egal",
     "P1 (left)": "P1 (links)",

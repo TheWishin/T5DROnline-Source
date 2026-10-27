@@ -485,6 +485,8 @@ MESSAGES = {
         "Appuie sur BUILD GAME. Ça prend quelques minutes ; les données du jeu restent dans ce dossier.",
     "BUILD GAME": "BUILD GAME",
     "Redo every step": "Refaire toutes les étapes",
+    "Skip warm-up": "Passer le préchauffage",
+    "Skipping…": "Passage…",
     "Keep the PC responsive (slower)": "Garder le PC réactif (plus lent)",
     "Open build.log": "Ouvrir build.log",
     "Report a problem...": "Signaler un problème...",
@@ -1959,6 +1961,10 @@ MESSAGES = {
     "My profile": "Mon profil",
     "Find an opponent online": "Trouve un adversaire en ligne",
     "Character": "Personnage",
+    "Choose your fighter": "Choisis ton combattant",
+    "{star} your main: {character}": "{star} ton main : {character}",
+    "Arrow keys move, Enter picks, Esc closes. With a controller: Cross / A picks, Circle / B closes.":
+        "Les flèches déplacent, Entrée choisit, Échap ferme. À la manette : Croix / A choisit, Rond / B ferme.",
     "Locked for this ranked set": "Verrouillé pour ce set Ranked",
     "Ranked match": "Match Ranked",
     "Quick match": "Quick Match",
@@ -2458,13 +2464,8 @@ MESSAGES = {
         "Minimal (anciennes cartes graphiques)",
     "Default":
         "Par défaut",
-    "Lowest: Internal resolution Lowest; stage blur / glow, shadows and effects off (so no hit effects "
-    "either). Default puts them back. Only your picture changes: online, both players can choose differently.":
-        "Minimal : résolution interne Minimale ; flou / halo des "
-        "stages, ombres et effets désactivés (donc pas d'effets "
-        "de coups non plus). Par défaut les rétablit. Seule ton "
-        "image change : en ligne, chaque joueur peut choisir "
-        "différemment.",
+    "Lowest: Internal resolution Lowest; stage blur / glow and shadows off. Effects stay on: the hit effects show what happens in a fight. Default puts them back. Only your picture changes: online, both players can choose differently.":
+        "Minimal : résolution interne Minimale ; flou / halo des stages et ombres désactivés. Les effets restent activés : les effets de coups montrent ce qui se passe dans le combat. Par défaut les rétablit. Seule ton image change : en ligne, chaque joueur peut choisir différemment.",
     # ---- lobby/t5lobby/tk_casual.py
     "Any side": "Côté au choix",
     "P1 (left)": "P1 (gauche)",

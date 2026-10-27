@@ -1469,20 +1469,22 @@ class OnlineTab:
     def _on_subtab(self):
         try:
             sel = self.nb.select()
-            tab = self.nb.index(sel) if sel else None      # 0 lobby, 1 leaderboard, 2 profile, 3 friends, 4 tournaments
         except tk.TclError:
             return                                         # (the tabs are being destroyed)
+        # lobby, leaderboard, stats, profile, friends, tournaments (tk_views._build_lobby): compared by page
+        page = next((name for name in ("board", "prof", "friends") if sel and sel == str(getattr(self, name + "_page",
+                                                                                                ""))), None)
         if sel and sel == str(getattr(self, "tours_page", "")):
             self.tours.shown()
         else:
             self.tours.page_shown = False
         if sel and sel == str(getattr(self, "stats_page", "")) and getattr(self, "stats", None) is not None:
             self.stats.shown()                             # the Stats page (tk_stats.py)
-        if tab == 1:
+        if page == "board":
             self.load_leaderboard()
-        elif tab == 2 and self.client and self.profile_name is None:
+        elif page == "prof" and self.client and self.profile_name is None:
             self.show_profile(None)
-        elif tab == 3:
+        elif page == "friends":
             self._fill_friends()
 
     def load_leaderboard(self):
@@ -1529,7 +1531,7 @@ class OnlineTab:
         if not self.client:
             return
         self.profile_name = name
-        self.nb.select(2)
+        self.nb.select(self.prof_page)
 
         def done(p):
             self.view.profile_shown(p)
@@ -2202,6 +2204,9 @@ class OnlineTab:
         plan = {}
         if self.client is None:
             return plan
+        cs = getattr(self, "charsel", None)
+        if cs is not None and cs.is_open():        # the character select grid: pick / close (tk_charsel.py)
+            return cs.pad_plan()
         if self.bar.winfo_manager():               # a question is up: its own buttons answer, nothing else
             return {b: (None, fn) for b, fn in self.bar_pad.items()}
         if str(self.actions["cancel"].cget("state")) == "normal":

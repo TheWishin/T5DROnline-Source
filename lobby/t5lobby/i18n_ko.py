@@ -469,6 +469,8 @@ MESSAGES = {
         "BUILD GAME을 누르세요. 몇 분 걸리며, 게임 데이터는 이 폴더에 남습니다.",
     "BUILD GAME": "BUILD GAME",
     "Redo every step": "모든 단계 다시 하기",
+    "Skip warm-up": "워밍업 건너뛰기",
+    "Skipping…": "건너뛰는 중…",
     "Keep the PC responsive (slower)": "PC 반응성 유지 (더 느림)",
     "Open build.log": "build.log 열기",
     "Report a problem...": "문제 신고...",
@@ -1890,6 +1892,10 @@ MESSAGES = {
     "My profile": "내 프로필",
     "Find an opponent online": "온라인 상대 찾기",
     "Character": "캐릭터",
+    "Choose your fighter": "캐릭터 선택",
+    "{star} your main: {character}": "{star} 메인: {character}",
+    "Arrow keys move, Enter picks, Esc closes. With a controller: Cross / A picks, Circle / B closes.":
+        "방향키로 이동, Enter로 선택, Esc로 닫기. 컨트롤러: × / A 선택, ○ / B 닫기.",
     "Locked for this ranked set": "이 Ranked 세트 동안 고정",
     "Ranked match": "Ranked 매치",
     "Quick match": "Quick Match",
@@ -2362,11 +2368,8 @@ MESSAGES = {
         "최저 (오래된 그래픽 카드)",
     "Default":
         "기본",
-    "Lowest: Internal resolution Lowest; stage blur / glow, shadows and effects off (so no hit effects "
-    "either). Default puts them back. Only your picture changes: online, both players can choose differently.":
-        "최저: 내부 해상도 최저, 스테이지 블러 / 빛 번짐, 그림자, 이펙트 끄기(타격 이펙트도 보이지 "
-        "않음). '기본'으로 되돌립니다. 내 화면만 바뀌므로 온라인에서 두 플레이어가 서로 다르게 골라도 "
-        "됩니다.",
+    "Lowest: Internal resolution Lowest; stage blur / glow and shadows off. Effects stay on: the hit effects show what happens in a fight. Default puts them back. Only your picture changes: online, both players can choose differently.":
+        "최저: 내부 해상도 최저, 스테이지 블러 / 빛 번짐과 그림자 끄기. 이펙트는 켜진 채로 둡니다(타격 이펙트로 대전 상황을 알 수 있음). '기본'으로 되돌립니다. 내 화면만 바뀌므로 온라인에서 두 플레이어가 서로 다르게 골라도 됩니다.",
     # ---- lobby/t5lobby/tk_casual.py
     "Any side": "아무 쪽이나",
     "P1 (left)": "P1 (왼쪽)",

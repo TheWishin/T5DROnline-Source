@@ -25,7 +25,7 @@ import weakref
 import tkinter as tk
 from tkinter import ttk
 
-from . import i18n, proto, ranks, theme, tk_history, tk_rules, tk_stats, tk_tour
+from . import i18n, proto, ranks, theme, tk_charsel, tk_history, tk_rules, tk_stats, tk_tour
 from .i18n import N_, t
 from .lag import describe_event as describe_lag, lagged
 from .rank_art import ART
@@ -568,16 +568,16 @@ class OnlineView:
         prof = ttk.Frame(nb, padding=(0, px(10), 0, 0))
         friends = ttk.Frame(nb, padding=(0, px(10), 0, 0))
         tours = ttk.Frame(nb, padding=(0, px(10), 0, 0))
+        stats = ttk.Frame(nb, padding=(0, px(10), 0, 0))
         nb.add(lobby, text=t("Lobby"))
         nb.add(board, text=t("Leaderboard"))
+        nb.add(stats, text=t("Stats"))              # (next to the leaderboard: the community's numbers)
         nb.add(prof, text=t("Profile"))
-        nb.add(friends, text=t("Friends"))          # (last: the others keep their positions 0, 1, 2)
-        nb.add(tours, text=t("Tournaments"))        # (after Friends: 4)
-        stats = ttk.Frame(nb, padding=(0, px(10), 0, 0))
-        nb.add(stats, text=t("Stats"))              # (after Tournaments: 5)
-        tab.stats_page = stats
-        tab.friends_page = friends
-        tab.tours_page = tours
+        nb.add(friends, text=t("Friends"))
+        nb.add(tours, text=t("Tournaments"))
+        # (pages by name, not by position: tab._on_subtab, show_profile and the tests use these)
+        tab.lobby_page, tab.board_page, tab.stats_page = lobby, board, stats
+        tab.prof_page, tab.friends_page, tab.tours_page = prof, friends, tours
         nb.bind("<<NotebookTabChanged>>", lambda _e: tab._on_subtab())
         self._build_lobby_page(lobby)
         self._build_board_page(board)
@@ -645,14 +645,11 @@ class OnlineView:
         self.room_label.grid(row=1, column=0, sticky="w")
         ttk.Label(top, text=t("Character"), style="Card.Muted.TLabel").grid(row=0, column=1, sticky="e",
                                                                           padx=(0, px(8)))
-        names = [t("Random")] + [x["name"] for x in tab.table.selectable()]
-        cb = ttk.Combobox(top, textvariable=tab.char_var, values=names, state="readonly", width=15,
-                          style="Card.TCombobox")
+        # the fighter: a button that opens the select grid (tk_charsel.py; tab.char_cb stands in for the old list)
+        cb = tk_charsel.build(self, top).button
         cb.grid(row=0, column=2, sticky="e")
         # the health handicap for casual matches, under the character (tk_rules.py)
         tk_rules.build_life_picker(self, top, tab).grid(row=1, column=1, columnspan=2, sticky="e", pady=(px(2), 0))
-        cb.bind("<<ComboboxSelected>>", lambda _e: tab.on_char())
-        tab.char_cb = cb
         self.lock_label = ttk.Label(top, text=t("Locked for this ranked set"), style="Card.Faint.TLabel")
         tab.actions = {}
         tab.action_text = {}

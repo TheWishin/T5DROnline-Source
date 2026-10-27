@@ -103,7 +103,6 @@ Combo g_combo;
 Dummy g_dummy;
 Recorder g_rec;
 Placer g_placer;
-int g_mover = 1;
 Place g_start[2];             /* both places at the first frame of the fight: SELECT+3 goes back there */
 DummyMode g_mode = DummyMode::Game;
 bool g_in_practice = false;
@@ -170,9 +169,10 @@ void act(PAction a)
     case PAction::PlayerWallFront:
     case PAction::PlayerWallBack: {
         Place probe;
-        if (g_placer.start(a, read_place(0), read_place(1), &g_mover, &probe)) {
+        int mover;
+        if (g_placer.start(a, read_place(0), read_place(1), &mover, &probe)) {
             note_place("wall probe from:");
-            put_place(g_mover, probe);
+            put_place(mover, probe);
         }
         break; }
     case PAction::Record: g_rec.toggle_record(); note("record slot %s%d", "", g_rec.slot() + 1); break;
@@ -214,13 +214,16 @@ extern "C" void t5_practice_pads(uint16_t* p1, uint16_t* p2)
         note_place("round start:");
     }
     g_frame++;
-    if (g_placer.pending()) {       /* a wall reset's second frame: the game has put the mover back inside */
-        Place out[2];
-        const bool wall = g_placer.finish(read_place(g_mover), out);
-        put_place(0, out[0]);
-        put_place(1, out[1]);
-        note_place(wall ? "wall:" : "no wall there, back to:");
-        g_check_at = g_frame + 30;
+    if (g_placer.pending()) {       /* a wall reset: the game has run a frame from the mover's last place */
+        const Placer::Cmd c = g_placer.next(read_place(g_placer.mover()));
+        if (c.done) {
+            put_place(0, c.out[0]);
+            put_place(1, c.out[1]);
+            note_place(c.wall ? "wall:" : "no wall there, back to:");
+            g_check_at = g_frame + 30;
+        } else {
+            put_place(g_placer.mover(), c.mover);
+        }
     }
     if (g_check_at && g_frame == g_check_at) { g_check_at = 0; note_place("30 frames later:"); }
     const Sample me = read_fighter(kFighter[0]), dm = read_fighter(kFighter[1]);

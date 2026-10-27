@@ -51,7 +51,7 @@ tested between two real PCs over the internet (AMD/60 Hz vs Intel/240 Hz).
 | Display | Resizable window, borderless fullscreen (Alt+Enter or F11). **Internal resolution** from Lowest (0.5x) over Native (720p) to 1080p, 1440p and 4K, or Auto (the screen's step, at most 1080p on integrated graphics) (launcher Settings, `PS3_INTERNAL_RES`); every step checked in fights, menus, movies and character select. Less GPU work at 1080p and above (1.1.3). On integrated graphics Auto is the default (1.1.4). |
 | Music, sound effects, movies | Work. |
 | Controls | Keyboard, Xbox pads (XInput), DualShock 4 and DualSense over USB and Bluetooth (read directly, no Steam needed), arcade sticks and hitboxes (DirectInput), two local players, buttons set in the launcher (Settings -> Set up controllers) or in `controls.ini`. Short taps are never lost. Tried by a person: an Xbox pad and an arcade stick, every input came through, smooth. **Set up controllers** found no controller at all from 1.1.0 to 1.1.3; it works again (1.1.4). |
-| Training tools | In Practice: an input display (each player's last inputs with how many frames each was held) and frame data after each exchange (startup, and who can act first: `+3`, `-12`), drawn sharp over the picture at any resolution. Launcher Settings -> Training overlay (Off / Inputs / Inputs + frame data, also in the other offline modes, online only your own inputs), F2 switches it in the game. See [docs/TRAINING.md](docs/TRAINING.md). |
+| Training tools | In Practice: an input display (each player's last inputs with how many frames each was held) and frame data after each exchange (startup, and who can act first: `+3`, `-12`), drawn sharp over the picture at any resolution. Launcher Settings -> Training overlay (Off / Inputs / Inputs + frame data, also in the other offline modes, online only your own inputs), F2 switches it in the game. Practice tools (offline): SELECT+3 puts both fighters back to the start or against a wall, the dummy blocks after the first hit / crouches / walks / sidesteps, 5 recording slots for the dummy (Settings -> Practice tools). See [docs/TRAINING.md](docs/TRAINING.md). |
 | Input lag | A jab shows on screen about 35-40 ms after the press in fullscreen (the PS3 on a TV: ~42 ms plus the TV), a frame less than before. In a window add one frame (Windows draws the window). |
 | Saving | Works. The in-game clock shows the real date. |
 | Long sessions | The old memory bug (white screen after a few trips through the title) is fixed. |
@@ -198,6 +198,12 @@ It is game data. Do not share it. To uninstall, delete the whole folder.
   it can also be on in the other offline modes, and online (only your own
   inputs). **F2** in the game switches it. It only reads the game, so it never
   changes a match. More in [docs/TRAINING.md](docs/TRAINING.md).
+- **Settings** -> **Practice tools** (Practice, offline only; default on): hold
+  **SELECT** and press 3 to put both fighters back where the fight started
+  (f+3 / b+3: the dummy against the wall in front of / behind you; df+3 /
+  db+3: you against the wall), 1 / 2 / 4 to record the dummy, play it once or
+  in a loop (5 slots), and tap forward / back for what the dummy does. More in
+  [docs/TRAINING.md](docs/TRAINING.md#practice-tools-115).
 - **Settings** -> **Unlocks** (offline play; all Off by default):
   - **Unlock all stages**: the Tekken 5 stages (the old ones, normally earned
     after about 50 fights, a few Arcade runs) are there in Arcade, VS, Practice

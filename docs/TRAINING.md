@@ -56,7 +56,84 @@ Triangle, 3 = Cross, 4 = Circle; keyboard A S Z X). The display shows the
 pad buttons that were pressed: if the button layout was changed in the game's
 own Options menu, Square still shows as 1 even if it is a kick there.
 
-## It never changes the game
+## Practice tools (1.1.5)
+
+In **Practice**, offline, P1 steers a few practice helpers by holding
+**SELECT** and pressing a button. While SELECT is held -- and afterwards
+until the pad is let go completely -- the game sees nothing of P1's pad, so a
+combo never makes P1 attack, walk or open the menu.
+
+| Combo | What it does |
+|---|---|
+| SELECT + 3 | both fighters back to where the fight started |
+| SELECT + f+3 | the dummy against the wall in front of you, you right in front of it |
+| SELECT + b+3 | the dummy against the wall behind you, you in front of it (you switch sides) |
+| SELECT + df+3 | you against the wall in front of you, the dummy in front of you (you switch sides) |
+| SELECT + db+3 | you against the wall behind you, the dummy in front of you |
+| SELECT + 1 | record the dummy in the current slot: your pad plays the dummy, your own fighter stands; again: stop (at most 20 s) |
+| SELECT + 2 | play the current slot once; again: stop |
+| SELECT + 4 | play the current slot again and again; again: stop |
+| SELECT, tap up / down | the next / previous slot (5 slots) |
+| SELECT, tap forward / back | what the dummy does: as set in the game's Practice menu, blocks after the first hit, crouches, walks forward and back, sidesteps |
+
+f and b are as you see them (f = toward the dummy): standing on the left,
+f+3 puts the dummy against the right wall. A recording is kept as the dummy
+saw it (forward = toward you), so it plays the same from either side. The
+slots live as long as the game runs.
+
+The overlay shows what changed for two seconds under the frame data (`SLOT 2
+(3.4s)  DUMMY: CROUCH`), and `REC 1  2.5s` / `PLAY 1  1.2/3.4s` /
+`LOOP 1 ...` while a slot records or plays -- also with the overlay itself
+Off.
+
+Launcher: **Settings -> Practice tools** (German: *Trainingswerkzeuge*):
+SELECT combos on or off (default on), the dummy's behaviour at the start, a
+short help text. Environment: `T5_PRACTICE=1`, `T5_PRACTICE_DUMMY=game|block|
+crouch|walk|step`, `T5_PRACTICE_LOG=<file>` (one line per action and the
+places of both fighters; `tools/practice_check.py` reads it).
+
+### Offline Practice only
+
+Unlike the overlay, the practice tools change the game: P1's and the dummy's
+pad masks before the game sees them, and the fighters' places. So
+`src/training/practice.cpp` acts only when all of these hold, checked in every
+frame:
+
+- the game was started without netplay: no `T5_NET_MODE`, no `T5_CTL_DIR`,
+  no `T5_REPLAY_FILE`, and `t5_netplay_enabled()` is 0. `t5_hooks.cpp` calls
+  it only from its offline keyread tick (`g_offline`), which a lockstep or
+  rollback session, a replay and a spectated match never run; there the ring
+  is written in exactly the same order as before;
+- the game type is Practice (10 at 0x1008EBAC) and the fight runs (phase 17);
+- `T5_PRACTICE=1`.
+
+`tests/test_training.py` checks these gates in the source. Online matches
+run the code they ran before: CODE_VERSION is unchanged.
+
+### How it works
+
+- **Places** (traced in Practice, `T5_TRAINING_TRACE`): a fighter's place on
+  the floor is x at +0x10 and z at +0x18 of its block (y, +0x14, is 0 on the
+  ground); +0x24 / +0x2C are the root (the place moved by the animation) and
+  +0x30 the angle it faces (it looks along (sin a, cos a)). At the start of
+  the fight P1 stands at (1000, 0) facing -pi/2 and the dummy at (-1000, 0)
+  facing +pi/2. A reset writes x, z, the root moved by the same amount and
+  the angle.
+- **Round start**: the places of the first frame of the fight, kept.
+- **Walls**: the walls are the stage's own collision, so they are found with
+  it, not read from the stage. The fighter that goes to the wall is put far
+  out along the line through both fighters (60,000 units); a game that pushes
+  fighters back inside its walls puts it at the wall. If it is still out there
+  in the next frame it slides instead: 1,100 units past the other fighter, then
+  250 units further each frame, until a frame in which the game moved it --
+  the wall -- or 40,000 units without one (no wall in that direction: the
+  places from before come back). At the wall the other one is put 1,100 units
+  in front of it, both facing each other.
+
+## The overlay never changes the game
+
+(The practice tools above do, in offline Practice only; everything below is
+about the overlay.)
 
 - `src/training/training.cpp` only **reads** guest memory, through three read
   helpers (`rd8/rd16/rd32`); it never stores into it, never calls into the game
@@ -234,15 +311,23 @@ own resolution and stays sharp at any Internal resolution and window size.
   attacking, a slow low -15, a defender pressing in its stun, a press that
   starts nothing, whiff 25, walking and backdashes give nothing, a string, a
   jab mashed after recovery, a sweep that leaves the defender lying, a
-  defender that cannot act for long, a counter hit); the font (every
+  defender that cannot act for long, a counter hit, a hit reaction that sets
+  the idle bit early (Bryan's d+4), a wind-up and attack move (Bryan's f+1+2)
+  and a sidestep into an attack); the practice tools (every SELECT combo
+  from either side, P1 hidden until the pad is neutral, the dummy's
+  behaviours, the five slots, the wall resets' probe and placement); the font (every
   character used has its own glyph, no two letters, digits or arrows alike) and
   the layout (whole pixels, whole font pixels at 1366x768 ... 3840x2160, the
   letterbox of a 16:10 window, alignment, shadows, UTF-8, unpublished lists);
-- checks that `src/training` only reads guest memory and is called only for
-  live frames;
+- checks that the overlay (`training.cpp`, `training_logic.h`) only reads
+  guest memory and is called only for live frames, and that the practice tools
+  (`practice.cpp`) are called only from the offline keyread tick, act only
+  behind their gate (offline, Practice, the fight, `T5_PRACTICE=1`), store
+  only through their one helper and never call into the game;
 - checks that patch 0045 changes `rsx_live_draw.c` by exactly two added lines;
-- checks the launcher setting (default, every choice, the two options, a
-  broken saved value) and that every choice has a German text.
+- checks the launcher settings (default, every choice, the two options, a
+  broken saved value; the practice tools on / off and the dummy's behaviour)
+  and that every choice has a German text.
 
 In the game:
 
@@ -258,6 +343,12 @@ In the game:
   frame-data lines as in the log, German texts with a German Windows; back to
   the title: hidden (`hide phase 0` in the log, nothing on the title screen);
   the test card at 1920 x 1080 (`RSX_OVERLAY_TEST=1`).
+- `python tools/practice_check.py [--root <build> ...]`: Practice through the
+  menu driver with the practice tools on: SELECT+3 after walking away, the four
+  wall resets, the dummy's behaviours, a recording played once and in a loop;
+  PASS = the places in the practice log are where they should be 30 frames
+  after each reset, a wall found for each wall reset, the slot recorded and
+  played.
 - The smoke suite (quick) runs without the overlay, as players with the
   setting Off and every existing test do.
 

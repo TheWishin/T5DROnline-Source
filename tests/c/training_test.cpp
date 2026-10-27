@@ -559,6 +559,44 @@ static void test_recorder()
 
 static bool near(float a, float b, float eps = 0.01f) { return fabsf(a - b) < eps; }
 
+/* A stand-in for the game's wall collision: a square arena |x|, |z| <= w. With
+ * `instant` it brings any fighter outside back to the wall; without, only one
+ * that is at most `reach` past it (a push-out of limited depth). */
+struct Arena {
+    float w = 4000, reach = 400;
+    bool instant = true, walls = true;
+    Place frame(Place p) const
+    {
+        if (!walls) return p;
+        auto clamp1 = [&](float v) {
+            if (fabsf(v) <= w) return v;
+            if (!instant && fabsf(v) > w + reach) return v;
+            return v > 0 ? w : -w;
+        };
+        p.x = clamp1(p.x);
+        p.z = clamp1(p.z);
+        return p;
+    }
+};
+
+/* runs a wall reset against an arena: the result, and how many frames it took */
+static Placer::Cmd place(PAction a, const Place& p1, const Place& dm, const Arena& ar, int* frames)
+{
+    Placer pl;
+    int mover = -1;
+    Place set;
+    Placer::Cmd c;
+    *frames = 0;
+    if (!pl.start(a, p1, dm, &mover, &set)) return c;
+    for (int i = 0; i < 400; i++) {
+        (*frames)++;
+        c = pl.next(ar.frame(set));
+        if (c.done) return c;
+        set = c.mover;
+    }
+    return c;
+}
+
 static void test_placer()
 {
     const float pi2 = 1.5707963f;
@@ -567,7 +605,7 @@ static void test_placer()
     dm.x = -1000; dm.z = 0; dm.angle = pi2;
     CHECK(near(face_toward(p1.x, p1.z, dm.x, dm.z), -pi2));
     CHECK(near(face_toward(dm.x, dm.z, p1.x, p1.z), pi2));
-    /* the dummy against the wall in front of P1: probe far out past the dummy, the wall brings it back */
+    /* the probe goes far out along the line */
     {
         Placer pl;
         int mover = -1;
@@ -576,80 +614,62 @@ static void test_placer()
         CHECK_EQ(mover, 1);
         CHECK(near(probe.x, 1000 - Placer::kProbe) && near(probe.z, 0));
         CHECK(pl.pending());
-        Place now; now.x = -4000; now.z = 30;
-        Place out[2];
-        CHECK(pl.finish(now, out));
-        CHECK(!pl.pending());
-        CHECK(near(out[1].x, -4000) && near(out[1].z, 30));
-        CHECK(near(out[0].x, -4000 + Placer::kGap) && near(out[0].z, 30));
-        CHECK(near(out[0].angle, -pi2) && near(out[1].angle, pi2));
-    }
-    /* P1 against the wall behind it: P1 goes the other way, the dummy in front of it */
-    {
-        Placer pl;
-        int mover = -1;
-        Place probe;
         CHECK(pl.start(PAction::PlayerWallBack, p1, dm, &mover, &probe));
         CHECK_EQ(mover, 0);
         CHECK(near(probe.x, 1000 + Placer::kProbe));
-        Place now; now.x = 3994.5f; now.z = 0;
-        Place out[2];
-        CHECK(pl.finish(now, out));
-        CHECK(near(out[0].x, 3994.5f) && near(out[1].x, 3994.5f - Placer::kGap));
-        CHECK(near(out[0].angle, -pi2) && near(out[1].angle, pi2));
+        CHECK(!pl.start(PAction::ResetRound, p1, dm, &mover, &probe));
+        CHECK(!pl.start(PAction::Record, p1, dm, &mover, &probe));
     }
-    /* the dummy behind P1 and P1 in front of the wall: sides switch */
+    /* every wall reset, the game bringing the fighter back at once and only with a push-out of limited depth */
+    for (int inst = 0; inst < 2; inst++) {
+        Arena ar;
+        ar.instant = inst == 1;
+        const struct { PAction a; int mover; float wall_x, other_x; } cases[] = {
+            { PAction::DummyWallFront, 1, -4000, -4000 + Placer::kGap },
+            { PAction::DummyWallBack, 1, 4000, 4000 - Placer::kGap },
+            { PAction::PlayerWallFront, 0, -4000, -4000 + Placer::kGap },
+            { PAction::PlayerWallBack, 0, 4000, 4000 - Placer::kGap },
+        };
+        for (const auto& k : cases) {
+            int frames = 0;
+            const Placer::Cmd c = place(k.a, p1, dm, ar, &frames);
+            CHECK(c.done && c.wall);
+            CHECK(near(c.out[k.mover].x, k.wall_x) && near(c.out[k.mover].z, 0));
+            CHECK(near(c.out[1 - k.mover].x, k.other_x));
+            /* both face each other */
+            const float want = k.wall_x < 0 ? pi2 : -pi2;
+            CHECK(near(c.out[k.mover].angle, want, 0.001f) && near(c.out[1 - k.mover].angle, -want, 0.001f));
+            if (ar.instant) CHECK_EQ(frames, 1);
+            else CHECK(frames > 1 && frames < 40);
+        }
+    }
+    /* no wall: the places from before, after the slide gave up */
     {
-        Placer pl;
-        int mover = -1;
-        Place probe;
-        CHECK(pl.start(PAction::DummyWallBack, p1, dm, &mover, &probe));
-        CHECK_EQ(mover, 1);
-        CHECK(near(probe.x, 1000 + Placer::kProbe));
-        Place now; now.x = 4000; now.z = 0;
-        Place out[2];
-        CHECK(pl.finish(now, out));
-        CHECK(near(out[1].x, 4000) && near(out[0].x, 4000 - Placer::kGap));
-        CHECK(near(out[0].angle, pi2) && near(out[1].angle, -pi2));
-        Placer pf;
-        CHECK(pf.start(PAction::PlayerWallFront, p1, dm, &mover, &probe));
-        CHECK_EQ(mover, 0);
-        CHECK(near(probe.x, 1000 - Placer::kProbe));
+        Arena ar;
+        ar.walls = false;
+        int frames = 0;
+        const Placer::Cmd c = place(PAction::DummyWallFront, p1, dm, ar, &frames);
+        CHECK(c.done && !c.wall);
+        CHECK(near(c.out[0].x, 1000) && near(c.out[1].x, -1000));
+        CHECK_EQ(frames, Placer::kMaxSteps + 1);
     }
     /* a diagonal line (after sidesteps): the gap is along the line */
     {
         Place a, b;
         a.x = 0; a.z = 0; b.x = -600; b.z = -800;
-        Placer pl;
-        int mover;
-        Place probe;
-        CHECK(pl.start(PAction::DummyWallFront, a, b, &mover, &probe));
-        CHECK(near(probe.x, -0.6f * Placer::kProbe, 1) && near(probe.z, -0.8f * Placer::kProbe, 1));
-        Place now; now.x = -3000; now.z = -4000;
-        Place out[2];
-        CHECK(pl.finish(now, out));
-        CHECK(near(out[0].x, -3000 + 0.6f * Placer::kGap, 0.1f) && near(out[0].z, -4000 + 0.8f * Placer::kGap, 0.1f));
-    }
-    /* no wall: the fighter is still out at the probe -> the places from before */
-    {
-        Placer pl;
-        int mover;
-        Place probe;
-        CHECK(pl.start(PAction::DummyWallFront, p1, dm, &mover, &probe));
-        Place out[2];
-        CHECK(!pl.finish(probe, out));
-        CHECK(near(out[0].x, 1000) && near(out[1].x, -1000));
-        /* other actions are not wall resets */
-        CHECK(!pl.start(PAction::ResetRound, p1, dm, &mover, &probe));
-        CHECK(!pl.start(PAction::Record, p1, dm, &mover, &probe));
+        Arena ar;
+        ar.w = 3000;
+        int frames = 0;
+        const Placer::Cmd c = place(PAction::DummyWallFront, a, b, ar, &frames);
+        CHECK(c.done && c.wall);
+        CHECK(near(c.out[0].x, c.out[1].x + 0.6f * Placer::kGap, 0.1f) && near(c.out[0].z, c.out[1].z + 0.8f * Placer::kGap, 0.1f));
     }
     /* on top of each other: the line is where P1 looks */
     {
-        Place a = p1, b = p1;
         Placer pl;
         int mover;
         Place probe;
-        CHECK(pl.start(PAction::DummyWallFront, a, b, &mover, &probe));
+        CHECK(pl.start(PAction::DummyWallFront, p1, p1, &mover, &probe));
         CHECK(near(probe.x, 1000 - Placer::kProbe, 1) && near(probe.z, 0, 1));
     }
 }

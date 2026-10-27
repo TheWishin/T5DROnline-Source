@@ -3,6 +3,14 @@
 All notable changes, newest first. The project is a test release. Short commit hashes are in parentheses. The state of each
 part is in the README's status table.
 
+## v1.1.7 (not released yet)
+
+### Launcher
+- Fighter pictures in the ranked character select and the profile's main-fighter portrait show again
+  (`lobby/t5lobby/fighter_art.py`, `rank_art.py`): 1.1.5/1.1.6 read them from the game but called `after(func)`
+  instead of `after(0, func)`, so no window heard of it; a second size asked meanwhile is made too. Checked in the
+  real launcher of the release layout with a local lobby.
+
 ## v1.1.6 (2026-10-27)
 
 **Hotfix: the 1.1.5 launcher closed right after it started.** On a PC with the game's package (.pkg) chosen in the

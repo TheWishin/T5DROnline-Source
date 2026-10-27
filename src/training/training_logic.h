@@ -125,6 +125,9 @@ struct Result {
     uint64_t frame = 0;      /* the frame it was settled in */
 };
 
+/* able to act: in a hit reaction only at its cancellable end (see Sample) */
+inline bool acts(const Sample& x) { return x.can_act && (x.cls < 0x10000 || x.end_window); }
+
 class Tracker {
 public:
     /* knockdowns: the defender not able to act this long after the attacker */
@@ -247,8 +250,6 @@ public:
 
 private:
     static bool is_reaction_cls(uint32_t c) { return c == 0 || c >= 0x10000; }
-    /* able to act: in a hit reaction only at its cancellable end (see Sample) */
-    static bool acts(const Sample& x) { return x.can_act && (x.cls < 0x10000 || x.end_window); }
     static bool is_attack_cls(uint32_t c) { return c != 0 && c < 0x10000; }
     struct Move { uint64_t start = 0, first_active = 0; bool live = false, contacted = false; };
     struct Exchange {
@@ -263,6 +264,218 @@ private:
     Move mv_[2];
     Exchange ex_;
     Result last_;
+};
+
+/* ==== Practice tools (offline Practice only; docs/TRAINING.md "Practice tools") ====
+ * Everything below works on the game's pad masks (P1's as read from the pad, the
+ * dummy's as the game will read it) and on Samples; practice.cpp does the reads,
+ * the one write per frame into the input ring and the position writes. */
+enum : uint16_t { kSelect = 0x0100, kStart = 0x0800 };
+
+/* forward/back as the fighter sees it <-> the pad's left/right (an involution) */
+inline uint16_t flip_lr(uint16_t m) { return (uint16_t)((m & ~(kLeft | kRight)) | ((m & kLeft) ? kRight : 0) | ((m & kRight) ? kLeft : 0)); }
+inline uint16_t to_rel(uint16_t m, bool facing_left) { return facing_left ? flip_lr(m) : m; }   /* kRight = forward */
+inline uint16_t from_rel(uint16_t m, bool facing_left) { return facing_left ? flip_lr(m) : m; }
+
+enum class PAction : uint8_t {
+    None,
+    ResetRound,        /* SELECT + 3 */
+    DummyWallFront,    /* SELECT + f+3: the dummy against the wall in front of you */
+    DummyWallBack,     /* SELECT + b+3: the dummy against the wall behind you (you switch sides) */
+    PlayerWallFront,   /* SELECT + df+3: you against the wall in front of you (you switch sides) */
+    PlayerWallBack,    /* SELECT + db+3: you against the wall behind you */
+    Record,            /* SELECT + 1: record into the current slot / stop */
+    Play,              /* SELECT + 2: play the current slot once / stop */
+    Loop,              /* SELECT + 4: play the current slot again and again / stop */
+    SlotNext,          /* SELECT, tap u */
+    SlotPrev,          /* SELECT, tap d */
+    DummyNext,         /* SELECT, tap f: the dummy's behaviour */
+    DummyPrev,         /* SELECT, tap b */
+};
+
+/* P1's SELECT combos. While SELECT is held -- and afterwards until P1's pad is
+ * neutral again -- P1's input is hidden from the game, so a combo never makes
+ * P1 attack, walk or open a menu. Buttons act on their press (with the
+ * direction held then); a direction alone acts when it is released, if no
+ * button was pressed while it was held. */
+class Combo {
+public:
+    /* in: P1's pad mask this frame; facing_left: P1 stands on the right.
+     * Returns the action of this frame; *hide: give the game a neutral P1. */
+    PAction frame(uint16_t in, bool facing_left, bool* hide)
+    {
+        PAction out = PAction::None;
+        const bool sel = (in & kSelect) != 0;
+        const uint16_t press = (uint16_t)(in & ~prev_);
+        const Notation n = notation(in, facing_left);
+        if (sel) {
+            latched_ = true;
+            const uint16_t btn = press & (kSquare | kTriangle | kCross | kCircle);
+            if (btn) {
+                tap_ = 0;
+                if (btn & kCross) {
+                    switch (n.dir) {
+                    case 5: out = PAction::ResetRound; break;
+                    case 6: out = PAction::DummyWallFront; break;
+                    case 4: out = PAction::DummyWallBack; break;
+                    case 3: out = PAction::PlayerWallFront; break;
+                    case 1: out = PAction::PlayerWallBack; break;
+                    default: break;
+                    }
+                } else if (btn & kSquare) out = PAction::Record;
+                else if (btn & kTriangle) out = PAction::Play;
+                else if (btn & kCircle) out = PAction::Loop;
+            } else if (n.dir != dir_) {
+                if (dir_ == 5 && !(in & (kSquare | kTriangle | kCross | kCircle))) tap_ = n.dir;   /* a direction from neutral */
+                else if (n.dir == 5) {                                                            /* released */
+                    switch (tap_) {
+                    case 8: out = PAction::SlotNext; break;
+                    case 2: out = PAction::SlotPrev; break;
+                    case 6: out = PAction::DummyNext; break;
+                    case 4: out = PAction::DummyPrev; break;
+                    default: break;
+                    }
+                    tap_ = 0;
+                } else tap_ = 0;                                                                  /* changed: not a tap */
+            }
+        } else {
+            tap_ = 0;
+            if (latched_ && in == 0) latched_ = false;   /* neutral again: P1 is P1's again */
+        }
+        *hide = sel || latched_;
+        dir_ = n.dir;
+        prev_ = in;
+        return out;
+    }
+    void reset() { *this = Combo{}; }
+
+private:
+    uint16_t prev_ = 0;
+    uint8_t dir_ = 5, tap_ = 0;
+    bool latched_ = false;
+};
+
+/* ---- the dummy's behaviour ------------------------------------------------------ */
+enum class DummyMode : uint8_t {
+    Game,           /* the game's own dummy (Practice menu), nothing injected */
+    BlockAfterHit,  /* stands; from the first hit on it holds back (guards) until it has been idle a while */
+    Crouch,         /* holds down */
+    Walk,           /* walks forward and back */
+    Step,           /* sidesteps, one way and then the other */
+    Count
+};
+
+class Dummy {
+public:
+    static constexpr int kGuardIdle = 30;     /* BlockAfterHit: guards until it could act this many frames in a row */
+    static constexpr int kWalkFrames = 45;    /* Walk: frames each way */
+    static constexpr int kStepEvery = 50;     /* Step: a tap of up or down every this many frames */
+    static constexpr int kStepTap = 2;
+
+    /* The dummy's pad mask for this frame (0 = neutral), from what the dummy did
+     * in the frame that just ran. d: the dummy, prev_hp: its health one frame
+     * earlier. Mode Game returns 0 (practice.cpp then injects nothing). */
+    uint16_t frame(DummyMode m, const Sample& d, int prev_hp)
+    {
+        if (m != mode_) { mode_ = m; t_ = 0; guard_ = false; idle_ = 0; }
+        const uint16_t back = d.right ? kRight : kLeft, fwd = d.right ? kLeft : kRight;
+        uint16_t out = 0;
+        switch (m) {
+        case DummyMode::BlockAfterHit: {
+            const bool hit = d.hp < prev_hp || (d.new_move && d.cls >= 0x10000);
+            if (hit) { guard_ = true; idle_ = 0; }
+            else if (guard_) {
+                idle_ = acts(d) ? idle_ + 1 : 0;
+                if (idle_ >= kGuardIdle) guard_ = false;
+            }
+            out = guard_ ? back : 0;
+            break; }
+        case DummyMode::Crouch: out = kDown; break;
+        case DummyMode::Walk: out = (t_ / kWalkFrames) % 2 ? back : fwd; break;
+        case DummyMode::Step: {
+            const int k = t_ % kStepEvery;
+            if (k < kStepTap) out = (t_ / kStepEvery) % 2 ? kDown : kUp;
+            break; }
+        default: break;
+        }
+        t_++;
+        return out;
+    }
+    bool guarding() const { return guard_; }
+    void reset() { *this = Dummy{}; }
+
+private:
+    DummyMode mode_ = DummyMode::Game;
+    uint32_t t_ = 0;
+    bool guard_ = false;
+    int idle_ = 0;
+};
+
+/* ---- recordings: 5 slots of the dummy's input -------------------------------------
+ * Stored as the dummy sees it (forward = toward the opponent), so a recording
+ * plays the same from either side. */
+class Recorder {
+public:
+    static constexpr int kSlots = 5;
+    static constexpr int kMaxFrames = 60 * 20;   /* 20 s per slot */
+    enum class State : uint8_t { Idle, Recording, Playing, Looping };
+
+    int slot() const { return slot_; }
+    State state() const { return st_; }
+    int length(int s) const { return len_[s]; }
+    int pos() const { return pos_; }
+
+    void select(int delta)
+    {
+        if (st_ != State::Idle) stop();
+        slot_ = ((slot_ + delta) % kSlots + kSlots) % kSlots;
+    }
+    /* SELECT+1: start recording the current slot (its old content goes), or stop */
+    void toggle_record()
+    {
+        if (st_ == State::Recording) { stop(); return; }
+        stop();
+        st_ = State::Recording;
+        len_[slot_] = 0;
+        pos_ = 0;
+    }
+    /* SELECT+2 / SELECT+4: play once / in a loop, or stop. An empty slot does nothing. */
+    void toggle_play(bool loop)
+    {
+        const State want = loop ? State::Looping : State::Playing;
+        if (st_ == want) { stop(); return; }
+        stop();
+        if (!len_[slot_]) return;
+        st_ = want;
+        pos_ = 0;
+    }
+    void stop() { st_ = State::Idle; pos_ = 0; }
+
+    /* Recording: one frame of the recorder's pad (rel: forward = kRight). Stops by itself when the slot is full. */
+    void record(uint16_t rel)
+    {
+        if (st_ != State::Recording) return;
+        data_[slot_][len_[slot_]++] = (uint16_t)(rel & ~(kSelect | kStart));
+        if (len_[slot_] >= kMaxFrames) stop();
+    }
+    /* Playing: the next frame (rel), or false when nothing plays (a single play ends after its last frame) */
+    bool next(uint16_t* rel)
+    {
+        if (st_ != State::Playing && st_ != State::Looping) return false;
+        if (pos_ >= len_[slot_]) {
+            if (st_ == State::Looping && len_[slot_]) pos_ = 0;
+            else { stop(); return false; }
+        }
+        *rel = data_[slot_][pos_++];
+        return true;
+    }
+    void clear_all() { *this = Recorder{}; }
+
+private:
+    uint16_t data_[kSlots][kMaxFrames] = {};
+    int len_[kSlots] = {};
+    int slot_ = 0, pos_ = 0;
+    State st_ = State::Idle;
 };
 
 } // namespace training

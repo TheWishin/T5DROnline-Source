@@ -345,6 +345,175 @@ static void test_special_hit_reaction()
     }
 }
 
+/* ---- practice tools ----------------------------------------------------------------- */
+struct ComboRun { std::vector<PAction> acts; std::vector<bool> hidden; };
+static ComboRun combo(const std::vector<uint16_t>& frames, bool facing_left = false)
+{
+    Combo c;
+    ComboRun r;
+    for (uint16_t m : frames) {
+        bool hide = false;
+        const PAction a = c.frame(m, facing_left, &hide);
+        if (a != PAction::None) r.acts.push_back(a);
+        r.hidden.push_back(hide);
+    }
+    return r;
+}
+
+static void test_combos()
+{
+    /* SELECT, then 3 with the direction held at the press */
+    const struct { uint16_t dir; PAction want; } cases[] = {
+        { 0, PAction::ResetRound }, { kRight, PAction::DummyWallFront }, { kLeft, PAction::DummyWallBack },
+        { kDown | kRight, PAction::PlayerWallFront }, { kDown | kLeft, PAction::PlayerWallBack },
+    };
+    for (const auto& c : cases) {
+        const uint16_t d = c.dir;
+        const ComboRun r = combo({ 0, kSelect, (uint16_t)(kSelect | d), (uint16_t)(kSelect | d | kCross),
+                                   (uint16_t)(kSelect | d | kCross), (uint16_t)(kSelect | d), kSelect, 0, 0 });
+        CHECK_EQ(r.acts.size(), 1);
+        if (r.acts.size() == 1) CHECK(r.acts[0] == c.want);
+        CHECK(!r.hidden[0]);
+        for (int i = 1; i < 7; i++) CHECK(r.hidden[(size_t)i]);
+        CHECK(!r.hidden[7]);
+    }
+    /* on the right side forward is LEFT */
+    {
+        const ComboRun r = combo({ kSelect, kSelect | kLeft, kSelect | kLeft | kCross, 0 }, true);
+        CHECK(r.acts.size() == 1 && r.acts[0] == PAction::DummyWallFront);
+        const ComboRun r2 = combo({ kSelect, kSelect | kDown | kRight, kSelect | kDown | kRight | kCross, 0 }, true);
+        CHECK(r2.acts.size() == 1 && r2.acts[0] == PAction::PlayerWallBack);
+    }
+    /* 1, 2, 4: record, play, loop; the direction does not matter */
+    {
+        const ComboRun r = combo({ kSelect, kSelect | kSquare, kSelect, kSelect | kTriangle, kSelect | kRight,
+                                   kSelect | kRight | kCircle, 0 });
+        CHECK_EQ(r.acts.size(), 3);
+        if (r.acts.size() == 3) { CHECK(r.acts[0] == PAction::Record); CHECK(r.acts[1] == PAction::Play); CHECK(r.acts[2] == PAction::Loop); }
+    }
+    /* direction taps act on release; a tap with a button in between does not */
+    {
+        const ComboRun r = combo({ kSelect, kSelect | kUp, kSelect | kUp, kSelect, kSelect | kDown, kSelect,
+                                   kSelect | kRight, kSelect, kSelect | kLeft, kSelect, 0 });
+        CHECK_EQ(r.acts.size(), 4);
+        if (r.acts.size() == 4) {
+            CHECK(r.acts[0] == PAction::SlotNext); CHECK(r.acts[1] == PAction::SlotPrev);
+            CHECK(r.acts[2] == PAction::DummyNext); CHECK(r.acts[3] == PAction::DummyPrev);
+        }
+        const ComboRun r2 = combo({ kSelect, kSelect | kRight, kSelect | kRight | kCross, kSelect | kRight, kSelect, 0 });
+        CHECK(r2.acts.size() == 1 && r2.acts[0] == PAction::DummyWallFront);
+        /* d, then df, then 3: one action, no slot change */
+        const ComboRun r3 = combo({ kSelect, kSelect | kDown, kSelect | kDown | kRight, kSelect | kDown | kRight | kCross,
+                                    kSelect | kDown, kSelect, 0 });
+        CHECK(r3.acts.size() == 1 && r3.acts[0] == PAction::PlayerWallFront);
+    }
+    /* SELECT let go first: P1 stays hidden until the pad is neutral; without SELECT nothing happens */
+    {
+        const ComboRun r = combo({ kSelect, kSelect | kCross, kCross, kCross, 0, kCross, 0 });
+        CHECK_EQ(r.acts.size(), 1);
+        CHECK(r.hidden[2] && r.hidden[3]);
+        CHECK(!r.hidden[4] && !r.hidden[5]);
+        const ComboRun r2 = combo({ kCross, kRight | kCross, kSquare, kUp, 0 });
+        CHECK_EQ(r2.acts.size(), 0);
+        for (bool h : r2.hidden) CHECK(!h);
+    }
+    CHECK_EQ(flip_lr(kLeft | kSquare), kRight | kSquare);
+    CHECK_EQ(to_rel(kLeft | kDown, true), kRight | kDown);
+    CHECK_EQ(from_rel(kRight, true), kLeft);
+    CHECK_EQ(from_rel(kRight, false), kRight);
+    CHECK_EQ(flip_lr(kLeft | kRight), kLeft | kRight);
+}
+
+static void test_dummy()
+{
+    Sample d;
+    d.hp = 170; d.right = true;
+    Dummy dm;
+    /* Game: nothing injected */
+    CHECK_EQ(dm.frame(DummyMode::Game, d, 170), 0);
+    /* Crouch: down */
+    CHECK_EQ(dm.frame(DummyMode::Crouch, d, 170), kDown);
+    /* BlockAfterHit: neutral until hit, then back (RIGHT for the dummy on the right) until idle 30 frames */
+    CHECK_EQ(dm.frame(DummyMode::BlockAfterHit, d, 170), 0);
+    Sample h = d;
+    h.hp = 160; h.new_move = true; h.cls = 0x10000; h.can_act = false;
+    CHECK_EQ(dm.frame(DummyMode::BlockAfterHit, h, 170), kRight);
+    h.new_move = false;
+    for (int i = 0; i < 20; i++) CHECK_EQ(dm.frame(DummyMode::BlockAfterHit, h, 160), kRight);
+    Sample idle = d;
+    idle.hp = 160;
+    int guarded = 0;
+    for (int i = 0; i < 40; i++) if (dm.frame(DummyMode::BlockAfterHit, idle, 160)) guarded++;
+    CHECK_EQ(guarded, Dummy::kGuardIdle - 1);
+    CHECK(!dm.guarding());
+    /* a block stun in between keeps it guarding */
+    dm.frame(DummyMode::BlockAfterHit, h, 170);
+    for (int i = 0; i < 10; i++) dm.frame(DummyMode::BlockAfterHit, idle, 160);
+    Sample blk = idle; blk.can_act = false;
+    for (int i = 0; i < 15; i++) CHECK_EQ(dm.frame(DummyMode::BlockAfterHit, blk, 160), kRight);
+    for (int i = 0; i < 25; i++) CHECK_EQ(dm.frame(DummyMode::BlockAfterHit, idle, 160), kRight);
+    /* Walk: forward (toward P1 = LEFT on the right side) first, then back */
+    Dummy w;
+    CHECK_EQ(w.frame(DummyMode::Walk, d, 170), kLeft);
+    for (int i = 1; i < Dummy::kWalkFrames; i++) w.frame(DummyMode::Walk, d, 170);
+    CHECK_EQ(w.frame(DummyMode::Walk, d, 170), kRight);
+    /* Step: a short tap of up, nothing, later a tap of down */
+    Dummy s;
+    std::vector<uint16_t> m;
+    for (int i = 0; i < 2 * Dummy::kStepEvery; i++) m.push_back(s.frame(DummyMode::Step, d, 170));
+    CHECK_EQ(m[0], kUp); CHECK_EQ(m[1], kUp); CHECK_EQ(m[2], 0);
+    CHECK_EQ(m[(size_t)Dummy::kStepEvery], kDown); CHECK_EQ(m[(size_t)Dummy::kStepEvery + 2], 0);
+}
+
+static void test_recorder()
+{
+    static Recorder r;     /* 12 KB: not on the stack */
+    r.clear_all();
+    CHECK(r.state() == Recorder::State::Idle);
+    r.toggle_play(false);                                   /* empty slot: nothing */
+    CHECK(r.state() == Recorder::State::Idle);
+    r.toggle_record();
+    for (int i = 0; i < 5; i++) r.record((uint16_t)(i == 2 ? (kRight | kSquare | kSelect) : kDown));
+    r.toggle_record();
+    CHECK(r.state() == Recorder::State::Idle);
+    CHECK_EQ(r.length(0), 5);
+    uint16_t m = 0;
+    r.toggle_play(false);
+    int n = 0;
+    while (r.next(&m)) { if (n == 2) CHECK_EQ(m, kRight | kSquare); else CHECK_EQ(m, kDown); n++; }
+    CHECK_EQ(n, 5);
+    CHECK(r.state() == Recorder::State::Idle);
+    /* loop */
+    r.toggle_play(true);
+    for (int i = 0; i < 12; i++) CHECK(r.next(&m));
+    CHECK(r.state() == Recorder::State::Looping);
+    r.toggle_play(true);
+    CHECK(r.state() == Recorder::State::Idle);
+    /* slots: 5, wrapping both ways; changing the slot stops a playback */
+    r.toggle_play(true);
+    r.select(1);
+    CHECK(r.state() == Recorder::State::Idle);
+    CHECK_EQ(r.slot(), 1);
+    r.select(-2);
+    CHECK_EQ(r.slot(), 4);
+    r.select(1);
+    CHECK_EQ(r.slot(), 0);
+    CHECK_EQ(r.length(1), 0);
+    /* a full slot stops the recording */
+    r.select(3);
+    r.toggle_record();
+    for (int i = 0; i < Recorder::kMaxFrames + 10; i++) r.record(kUp);
+    CHECK(r.state() == Recorder::State::Idle);
+    CHECK_EQ(r.length(3), Recorder::kMaxFrames);
+    CHECK_EQ(r.length(0), 5);
+    /* recording anew replaces the slot */
+    r.select(-3);
+    r.toggle_record();
+    r.record(kLeft);
+    r.toggle_record();
+    CHECK_EQ(r.length(0), 1);
+}
+
 /* ---- font and layout ------------------------------------------------------------ */
 static void test_font()
 {
@@ -458,6 +627,9 @@ int main()
     test_string();
     test_down_and_counter();
     test_special_hit_reaction();
+    test_combos();
+    test_dummy();
+    test_recorder();
     test_font();
     test_layout();
     if (g_fail) {

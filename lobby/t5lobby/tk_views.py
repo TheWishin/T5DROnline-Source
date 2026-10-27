@@ -26,7 +26,7 @@ import tkinter as tk
 import tkinter.font as tkfont
 from tkinter import ttk
 
-from . import i18n, proto, ranks, theme, tk_charsel, tk_history, tk_rules, tk_stats, tk_tour
+from . import fighter_art, fighters, i18n, proto, ranks, theme, tk_charsel, tk_history, tk_rules, tk_stats, tk_tour
 from .i18n import N_, t
 from .lag import describe_event as describe_lag, lagged
 from .rank_art import ART
@@ -622,18 +622,24 @@ class OnlineView:
         card.grid(row=0, column=0, sticky="nsew", padx=(0, px(12)))
         card.columnconfigure(1, weight=1)
         card.rowconfigure(5, weight=1)
-        self.me_badge = theme.Badge(card, size=34)
-        self.me_badge.grid(row=0, column=0, rowspan=3, sticky="nw", padx=(0, px(12)))
+        # the player's hero: the main fighter's portrait (a drawn placeholder until the launcher has one), the
+        # name, the rank plate with the rank, the numbers
+        self.me_portrait = theme.Portrait(card)
+        self.me_portrait.grid(row=0, column=0, rowspan=6, sticky="nw", padx=(0, px(12)))
         self.me_name = ttk.Label(card, text="", style="Card.H2.TLabel")
         self.me_name.grid(row=0, column=1, sticky="w")
-        self.me_rank = ttk.Label(card, text="", style="Card.Bold.TLabel")
-        self.me_rank.grid(row=1, column=1, sticky="w")
+        rank = self.body(card)
+        rank.grid(row=1, column=1, sticky="w", pady=(px(2), 0))
+        self.me_badge = theme.Badge(rank, size=22)
+        self.me_badge.pack(side="left", padx=(0, px(6)))
+        self.me_rank = ttk.Label(rank, text="", style="Card.Bold.TLabel")
+        self.me_rank.pack(side="left")
         self.me_stats = ttk.Label(card, text="", style="Card.Muted.TLabel")
-        self.me_stats.grid(row=2, column=1, sticky="w")
+        self.me_stats.grid(row=2, column=1, sticky="w", pady=(px(2), 0))
         self.me_conn = ttk.Label(card, text="", style="Card.Faint.TLabel")
-        self.me_conn.grid(row=3, column=0, columnspan=2, sticky="w", pady=(px(10), 0))
+        self.me_conn.grid(row=3, column=1, sticky="w", pady=(px(8), 0))
         self.me_main = ttk.Label(card, text="", style="Card.Faint.TLabel")
-        self.me_main.grid(row=4, column=0, columnspan=2, sticky="w")
+        self.me_main.grid(row=4, column=1, sticky="w")
         row = self.body(card)
         row.grid(row=6, column=0, columnspan=2, sticky="we", pady=(px(10), 0))
         tab.b_myprofile = ttk.Button(row, text=t("My profile"), style="Card.Small.TButton",
@@ -901,7 +907,7 @@ class OnlineView:
         page.columnconfigure(0, weight=1)
         page.rowconfigure(1, weight=1)
         acc = ttk.Frame(page)
-        acc.grid(row=0, column=0, sticky="we", pady=(0, px(8)))
+        acc.grid(row=0, column=0, sticky="we", pady=(0, px(6)))
         ttk.Label(acc, text=t("Your account").upper(), style="Caps.TLabel").pack(side="left", padx=(0, px(10)))
         tab.b_blocked = ttk.Button(acc, text=t("Blocked players..."), style="Small.TButton", command=tab.do_blocked)
         tab.b_passwd = ttk.Button(acc, text=t("Change password..."), style="Small.TButton", command=tab.do_passwd)
@@ -918,7 +924,7 @@ class OnlineView:
         ttk.Label(card, textvariable=tab.prof_title, style="Card.H2.TLabel").grid(row=0, column=1, sticky="w")
         # the facts in two columns (half the lines each): the match history below keeps more of the height
         facts = self.body(card)
-        facts.grid(row=1, column=1, sticky="w", pady=(px(2), px(8)))
+        facts.grid(row=1, column=1, sticky="w", pady=(px(2), px(4)))
         cols = [ttk.Label(facts, text="", style="Card.Muted.TLabel", justify="left") for _ in range(2)]
         cols[0].grid(row=0, column=0, sticky="nw")
         cols[1].grid(row=0, column=1, sticky="nw", padx=(px(28), 0))
@@ -1070,7 +1076,7 @@ class OnlineView:
         # the account and match cards folded away (and back): the lists below get their height; a match found, a
         # challenge or an invite unfolds them again by itself
         self.top_hidden = False
-        self.top_btn = ttk.Button(pad, text=FOLD[0], style="Ghost.TButton", width=2, command=self.toggle_top)
+        self.top_btn = ttk.Button(pad, text=f"{FOLD[0]}  {t('Hide')}", style="Ghost.TButton", command=self.toggle_top)
         self.top_btn.pack(side="left", padx=(px(8), 0))
         self.footer = st
         st.bind("<Configure>", self._place_footer, add="+")
@@ -1088,7 +1094,7 @@ class OnlineView:
                 w.grid_remove()
             else:
                 w.grid()
-        self.top_btn.configure(text=FOLD[1] if hide else FOLD[0])
+        self.top_btn.configure(text=f"{FOLD[1]}  {t('Show')}" if hide else f"{FOLD[0]}  {t('Hide')}")
 
     def _place_status(self):
         """The tab's own status line, unless the launcher shows the same line in its status bar."""
@@ -1418,10 +1424,50 @@ class OnlineView:
                                            record=ranks.record_label(rec, draws=True)))
             self.me_main.configure(text=t("Main: {character}", character=tab.table.fighter_name(me["main"]))
                                    if me.get("main") else "")
+        main = None if guest else me.get("main")
+        self._show_portrait(main)
         conn = t("Server ping {ms} ms", ms=f"{c.server_rtt or 0:.0f}")
         if c.tls:
             conn += "  ·  " + t("encrypted")
         self.me_conn.configure(text=conn)
+
+    def _show_portrait(self, key):
+        """The account card's picture of fighter `key`: from the player's own game (fighter_art.py, made once in a
+        thread; the card is drawn again when it is there), the drawn placeholder until then or without it."""
+        tab = self.tab
+        if key == fighters.RANDOM:
+            key = None
+        name = tab.table.fighter_name(key) if key else ""
+        photo = None
+        faces, size = fighter_art.FACES, self.me_portrait.side
+        out = getattr(getattr(getattr(tab, "app", None), "settings", None), "out_dir", None)
+        try:
+            if out:
+                faces.set_folder(fighter_art.folder_for(out))
+            if key and faces.has(size):
+                f = tab.table._f.get(key) if hasattr(tab.table, "_f") else None
+                gid = f.get("id") if isinstance(f, dict) else None
+                photo = faces.image(self.box, gid, size) if isinstance(gid, int) else None
+            elif key and out and not getattr(self, "_portrait_asked", False):
+                self._portrait_asked = True
+                faces.listeners.append(self._portrait_ready)
+                from .tk_tab import _launcher_log
+                faces.prepare([size], out_dir=out, after=self.box.after, log=_launcher_log)
+        except (tk.TclError, RuntimeError, OSError):
+            photo = None
+        self.me_portrait.set(key, name, photo)
+
+    def _portrait_ready(self):
+        try:
+            alive = self.box.winfo_exists()
+        except tk.TclError:
+            alive = False
+        if not alive:
+            fighter_art.FACES.listeners[:] = [f for f in fighter_art.FACES.listeners if f != self._portrait_ready]
+            return
+        if not fighter_art.FACES.has(self.me_portrait.side):
+            self._portrait_asked = False             # (another size was made: ask for this one)
+        self._show_portrait(self.me_portrait.key)
 
     def _update_play(self):
         tab = self.tab

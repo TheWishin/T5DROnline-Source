@@ -2417,4 +2417,7 @@ MESSAGES = {
     "P{n} on {stage}": "P{n}・{stage}",
     "Rematch: swap sides": "Rematch：サイド交代",
     "with the sides swapped": "サイドを交代して",
+    # the fold button right of the Online tab's lists (tk_views.toggle_top)
+    "Hide": "隠す",
+    "Show": "表示",
 }

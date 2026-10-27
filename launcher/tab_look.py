@@ -45,8 +45,10 @@ class Look:
         img = self.th.images.get("frame_Card")
         if img is not None and "CardLF.border" not in st.element_names():
             size = 2 * px(12) + px(48)
-            st.element_create("CardLF.border", "image", img, border=self.inset, sticky="nsew", width=size,
-                              height=size)
+            sh = getattr(self.th, "shadow", 0)          # (the card image's shadow under its bottom edge)
+            st.element_create("CardLF.border", "image", img, border=(self.inset, self.inset, self.inset,
+                                                                     self.inset + sh), sticky="nsew", width=size,
+                              height=size + sh)
         if "CardLF.border" in st.element_names():
             st.layout("Card.TLabelframe", [("CardLF.border", {"sticky": "nsew"})])
         top = px(12)
@@ -159,8 +161,8 @@ class Look:
         self.restyle(lf)
 
     def card_frame(self, f, pad=16):
-        """A plain frame (the Play offline and Replays tabs' content) -> one card; its big title becomes the card's
-        section title in small capitals, like every other card's."""
+        """A plain frame (the Play offline and Replays tabs' content) -> one card; its big title goes on a hero
+        band at the card's top (theme.Band: a warm glow and the accent's slashes, the title in the display face)."""
         try:
             f.configure(style="Card.TFrame", padding=self.px(pad))
         except tk.TclError:
@@ -169,13 +171,26 @@ class Look:
         self.restyle(f)
         for w in f.winfo_children():
             try:
-                if w.winfo_class() == "TLabel" and str(w.cget("style")) == "Card.H1.TLabel":
-                    w.configure(text=str(w.cget("text")).upper(), style="Card.Caps.TLabel")
-                    if w.winfo_manager() == "pack":
-                        w.pack_configure(pady=(0, self.px(6)))
+                if w.winfo_class() == "TLabel" and str(w.cget("style")) == "Card.H1.TLabel"                         and w.winfo_manager() == "pack":
+                    self.hero(f, w)
                     break
             except tk.TclError:
                 pass
+
+    def hero(self, card, label):
+        """`label` (a big title packed in `card`) -> the same title on a hero band in its place (the label stays,
+        hidden: tools and tests read the page's texts from the widgets)."""
+        px, C, fonts = self.px, self.C, self.th.fonts
+        title = str(label.cget("text"))
+        h = px(70)
+        band = self.theme.Band(card, height=70, base=C["surface"], glow=self.theme.mix(C["accent"], C["surface"], 0.7),
+                               reach=640)
+        x = px(22)
+        band.create_text(x, h / 2.0, text=title, anchor="w", fill=C["text"], font=fonts["h1"])
+        band.configure(width=x + fonts["h1"].measure(title) + px(24))
+        band.pack(before=label, fill="x", pady=(0, px(12)))
+        label.pack_forget()
+        return band
 
 
 def labelframes(w):
@@ -222,5 +237,25 @@ def apply(app, keys=("build", "settings", "play", "replays")):
                 box[0].configure(padding=(px(m), px(m), px(m), px(m)))
         for lf in labelframes(tab):
             look.card_labelframe(lf)
+    # every list in the window: zebra rows and the row under the mouse lit (theme.list_look)
+    def lists(w):
+        for c in w.winfo_children():
+            if c.winfo_class() == "Treeview":
+                look.theme.list_look(c)
+            lists(c)
+    lists(app)
+    # the launcher's own tab row: an icon before each name, light on the chosen tab
+    nb = getattr(app, "nb", None)
+    for key, icon in (("build", "build"), ("play", "play"), ("settings", "settings"), ("online", "online"),
+                      ("replays", "replays")):
+        tab = tabs.get(key)
+        if nb is None or tab is None:
+            continue
+        try:
+            on = look.th.icon(icon, look.C["text"])
+            off = look.th.icon(icon, look.C["muted"])
+            nb.tab(tab, image=(off, "selected", on, "active", on), compound="left")
+        except tk.TclError:
+            pass
     app.tab_look = look
     return look

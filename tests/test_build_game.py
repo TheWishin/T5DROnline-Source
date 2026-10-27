@@ -550,6 +550,17 @@ class DepsSeries(unittest.TestCase):
                          b"int a = 42;  /* my work */\n")
         self.assertTrue(os.path.exists(os.path.join(self.deps, "runtime", "b.c")))
 
+    def test_a_git_folder_that_is_no_repository_is_left_alone(self):
+        # deps/.git that is not a repository, inside another one (git would answer for that one: on this PC the
+        # temp folder can be inside C:/T5DROnline's repository) -- never re-prepared, never git apply'd against it
+        self.deps = os.path.join(self.upstream, "deps", "ps3recomp")
+        self.bg.P = self.bg.Paths(os.path.join(self.tmp.name, "out"), self.deps)
+        os.makedirs(os.path.join(self.deps, ".git"))
+        with mock.patch.object(self.bg, "run", lambda *a, **k: self.fail("must not run anything")):
+            out = self.deps_step()
+        self.assertIn("already done", out)
+        self.assertIn("not checked", out)
+
     def test_a_checkout_from_before_the_stamp(self):
         self.prepare(self.old_series)
         os.remove(os.path.join(self.deps, ".git", self.bg.PREPARED_STAMP))

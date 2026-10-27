@@ -436,7 +436,14 @@ def read_prepared_stamp(deps):
 def checkout_state(deps):
     """A developer's git checkout of ps3recomp against this tree's pin and patch series: ('current', None, stamp),
     ('changed', why, stamp), or ('unknown', why, None) for one prepared before this check existed -- then every
-    patch is tried (one that still applies is not in the checkout; why is None when all are in)."""
+    patch is tried (one that still applies is not in the checkout; why is None when all are in). ('foreign', why,
+    None): deps/.git is no repository of its own (git would answer for a repository around it) -- not checked."""
+    try:
+        top = _git_out(deps, "rev-parse", "--show-toplevel").decode("utf-8", "replace").strip()
+    except OSError as e:
+        return "foreign", f"not a git checkout ({e})", None
+    if os.path.normcase(os.path.abspath(top)) != os.path.normcase(os.path.abspath(deps)):
+        return "foreign", f"its .git is not a repository (git sees {top})", None
     stamp = read_prepared_stamp(deps)
     if stamp is not None:
         if stamp.get("commit") == PS3RECOMP_COMMIT and stamp.get("patches") == patch_digest():
@@ -484,7 +491,8 @@ def reprepare_checkout(deps, why, stamp):
         except subprocess.CalledProcessError:
             if os.path.isdir(new):
                 rmtree(new)
-            fail(f"Could not prepare ps3recomp with the current patch series (tools/prepare_ps3recomp.py, see "
+            # (a developer's checkout only -- a release has its vendored copy --, so English, not in the catalogs)
+            raise BuildError(f"Could not prepare ps3recomp with the current patch series (tools/prepare_ps3recomp.py, see "
                  f"above); {deps} is unchanged.")
     pristine = False
     if stamp and not stamp.get("adopted"):
@@ -501,7 +509,7 @@ def reprepare_checkout(deps, why, stamp):
             os.replace(deps, keep)
     except OSError as e:
         rmtree(new)
-        fail(f"Could not move {deps} aside ({e.strerror or e}); close the programs that use files in it and run "
+        raise BuildError(f"Could not move {deps} aside ({e.strerror or e}); close the programs that use files in it and run "
              "the step again.")
     os.replace(new, deps)
     if read_prepared_stamp(deps) is None:
@@ -526,6 +534,8 @@ def step_deps(a):
         state, why, stamp = checkout_state(P.deps)
         if state == "current":
             print("  already done")
+        elif state == "foreign":
+            print(f"  already done ({why}: the patch series is not checked)")
         elif state == "unknown" and why is None:
             note_prepared(P.deps, adopted=True)            # every patch is in: from now on the stamp tells
             print("  already done (every patch of the series is in the checkout)")

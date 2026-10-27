@@ -486,6 +486,47 @@ class PackageFacts(unittest.TestCase):
             q = self.pkg("nodeps", {"TITLE": "T5", "TITLE_ID": bg.TITLE_ID, "APP_VER": "01.01"}, bg.CONTENT_ID)
             self.assertIsNone(bg.package_facts(q))
 
+    def release_tree(self):
+        """A ps3recomp tree whose tools/pkg_extract.py is the release's: package_release's strip_pkg_keys makes the
+        keys a lookup in T5DR_KEYS while it is imported (SystemExit without them)."""
+        tree = os.path.join(self.tmp.name, "release-deps")
+        os.makedirs(os.path.join(tree, "tools"))
+        dst = os.path.join(tree, "tools", "pkg_extract.py")
+        with open(self.mod.__file__, encoding="utf-8") as f:
+            put(dst, f.read())
+        with redirect_stdout(io.StringIO()):
+            load_tool("package_release").strip_pkg_keys(dst)
+        with open(dst, encoding="utf-8") as f:
+            self.assertIn('raise SystemExit(f"package key', f.read())
+        return tree
+
+    def test_release_pkg_extract_without_keys_never_ends_the_launcher(self):
+        # 1.1.5: the launcher closed 2 s after its start -- the Build tab's peek imported the release's
+        # pkg_extract.py with no T5DR_KEYS, and its SystemExit went through `except Exception`.
+        bg = self.core.build_game
+        tree = self.release_tree()
+        with mock.patch.object(bg, "P", bg.Paths(os.path.join(self.tmp.name, "out"), tree)), \
+                mock.patch.dict(os.environ, {}, clear=False), mock.patch.dict(bg._PKG_TOOL, {}, clear=True):
+            os.environ.pop("T5DR_KEYS", None)
+            p = self.pkg("rel", {"TITLE": "T5", "TITLE_ID": bg.TITLE_ID, "VERSION": "01.00"}, bg.CONTENT_ID)
+            self.assertIsNone(bg.package_facts(p))
+            self.assertEqual(self.core.describe_pkg(p)[:2], (True, "ok"))     # the header decides, as before 1.1.5
+            self.assertNotIn("T5DR_KEYS", os.environ)
+
+    def test_release_pkg_extract_reads_the_players_key_file(self):
+        bg = self.core.build_game
+        tree = self.release_tree()
+        out = os.path.join(self.tmp.name, "out")
+        paths = bg.Paths(out, tree)
+        os.makedirs(os.path.dirname(paths.keys))
+        put(paths.keys, "PKG_AES_KEY=%s\nPKG_AES_KEY2=%s\n" % (self.mod.PS3_GPKG_KEY.hex(), self.mod.PSP_PKG_KEY.hex()))
+        with mock.patch.object(bg, "P", paths), mock.patch.dict(os.environ, {}, clear=False), \
+                mock.patch.dict(bg._PKG_TOOL, {}, clear=True):
+            os.environ.pop("T5DR_KEYS", None)
+            p = self.pkg("rel", {"TITLE": "T5", "TITLE_ID": bg.TITLE_ID, "VERSION": "01.00"}, bg.CONTENT_ID)
+            self.assertEqual(bg.package_facts(p)["version"], "01.00")
+            self.assertNotIn("T5DR_KEYS", os.environ)                      # only for the import
+
 
 if __name__ == "__main__":
     unittest.main()

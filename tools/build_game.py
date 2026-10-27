@@ -207,6 +207,15 @@ def _pkg_tool(deps):
     path = os.path.join(deps, "tools", "pkg_extract.py")
     if path not in _PKG_TOOL:
         mod = None
+        # A release's pkg_extract.py reads the package key from T5DR_KEYS while it is imported, and without it
+        # raises SystemExit: in 1.1.5 that closed the launcher right after its start (the Build tab peeks into the
+        # chosen package). So the key file's path for the import, and SystemExit is one more "cannot peek".
+        old = os.environ.get("T5DR_KEYS")
+        if not old:
+            for k in (P.keys, os.path.join(ROOT, "native", "keys", "ps3.keys")):
+                if os.path.exists(k):
+                    os.environ["T5DR_KEYS"] = k
+                    break
         try:
             import importlib.util
             spec = importlib.util.spec_from_file_location("t5dr_pkg_extract", path)
@@ -214,8 +223,13 @@ def _pkg_tool(deps):
             spec.loader.exec_module(mod)
             if not (getattr(mod, "_HAVE_PYCRYPTO", False) and callable(getattr(mod, "_keystream", None))):
                 mod = None
-        except Exception:        # noqa: BLE001 -- no tree, an old one, no pycryptodome: nothing to peek with
+        except (Exception, SystemExit):   # noqa: BLE001 -- no tree, an old one, no keys, no pycryptodome
             mod = None
+        finally:
+            if old:
+                os.environ["T5DR_KEYS"] = old
+            else:
+                os.environ.pop("T5DR_KEYS", None)
         _PKG_TOOL[path] = mod
     return _PKG_TOOL[path]
 

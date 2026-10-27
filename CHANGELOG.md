@@ -3,6 +3,27 @@
 All notable changes, newest first. The project is a test release. Short commit hashes are in parentheses. The state of each
 part is in the README's status table.
 
+## v1.1.6 (2026-10-27)
+
+**Hotfix: the 1.1.5 launcher closed right after it started.** On a PC with the game's package (.pkg) chosen in the
+Build tab, or one found in Downloads, the Desktop or Documents on the first start, the 1.1.5 launcher showed its
+window for about two seconds and closed, also right after the update from 1.1.4. 1.1.5's new check of the package's
+version read inside the package with ps3recomp's `pkg_extract.py`, which in the release zip ends the program when the
+package key is not passed to it; the launcher now passes the key file when there is one and treats a missing key as
+"cannot look inside" (the check then uses the package's header, as before 1.1.5). Nothing else changed.
+
+**Stuck on 1.1.5?** Rename your .pkg file for a moment (for example add `.old` to its name), start the launcher, let
+it update to 1.1.6, then give the file its name back. Or download `T5DR-Online-1.1.6.zip` and copy everything inside
+its folder over your T5DR folder. After the update press **BUILD GAME** once, as the launcher asks.
+
+### Launcher
+- The package check never closes the launcher (`tools/build_game.py` `_pkg_tool`, `launcher/core.py`): the key file's
+  path for `pkg_extract.py`, and its `SystemExit` caught. A test runs the check with the release's `pkg_extract.py`.
+
+### Release workflow
+- The publish job gets the zip through the Actions cache (the private repository's artifact storage was full).
+- CI: the push job may take 30 minutes; the stub step builds `T5DR Online.exe` like the release.
+
 ## v1.1.5 (2026-10-27)
 
 **Train online with a friend, choose your side and stage, see the real ping, and a faster game on weak PCs.**

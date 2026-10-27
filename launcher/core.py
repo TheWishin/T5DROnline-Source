@@ -337,7 +337,7 @@ def _package_facts(path):
     if key not in _FACTS:
         try:
             _FACTS[key] = build_game.package_facts(path)
-        except Exception:      # noqa: BLE001 -- a line under the file chooser must never stop the launcher
+        except (Exception, SystemExit):   # noqa: BLE001 -- a line under the file chooser must never stop the launcher
             _FACTS[key] = None
     return _FACTS[key]
 

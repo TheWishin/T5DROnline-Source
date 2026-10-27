@@ -19,7 +19,9 @@ Styles (the prefix names what the widget sits on, so rounded corners blend into 
 Buttons: "TButton" (secondary), "Accent.TButton" (primary), "Hero.TButton" / "HeroAlt.TButton" (big),
 "Ghost.TButton" (text only), "Small.TButton", "Danger.TButton". Frames: "Card.TFrame", "Tile.TFrame",
 "Err.TFrame", "Note.TFrame". Labels: "", "Muted", "Faint", "H1", "H2", "H3", "Caps", "Big", "Huge",
-"ok", "warn", "error", "Accent", "Mono", "Pill"/"PillAccent"/"PillOk"/"PillBad"/"PillGold".
+"ok", "warn", "error", "Accent", "Mono", "Pill"/"PillAccent"/"PillOk"/"PillBad"/"PillGold". Notebooks: "TNotebook" (a
+page's tabs), "Main.TNotebook" (the launcher's own tab row, a size larger); both draw a hairline under the tab row,
+no box around the pages.
 
 High DPI: fonts are in points (Tk scales them); every pixel size here goes through Theme.px(), which
 follows Tk's scaling (the launcher makes the process DPI-aware before the first window).

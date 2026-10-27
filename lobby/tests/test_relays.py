@@ -433,7 +433,9 @@ def game_link(t_host, t_join, timeout=5.0):
 # ============================================================================== the central server's choice
 class Regional(unittest.TestCase):
     """A central server with two in-process nodes and players behind delay proxies."""
-    rtt = {"main": (60, 60), "usw": (6, 80), "usc": (24, 24)}       # sums: 120, 86, 48
+    # sums: 220, 106, 48 -- far apart: on a busy PC a measured round trip can come out tens of ms long (it once
+    # put the central relay, then 120 ms, ahead of usw at 86)
+    rtt = {"main": (110, 110), "usw": (6, 100), "usc": (24, 24)}
     server_cfg = {"force_relay": True}
     node_cfgs = {"usw": {}, "usc": {}}
 
@@ -445,7 +447,9 @@ class Regional(unittest.TestCase):
         self.nodes = {rid: NodeThread(relay_id=rid, **cfg).start() for rid, cfg in self.node_cfgs.items()}
         self.rj = os.path.join(self.tmp, "relays.json")
         self.write_relays(self.nodes)
-        cfg = dict(relays=self.rj, relay_secret_file=sf, relay_check_seconds=0.2, relay_dead_seconds=1.0)
+        # (dead after 3 s without an answer: with 1 s, a PC busy with other work missed two 0.1 s status answers in
+        # a row now and then, the node was called down and a match went to the central relay)
+        cfg = dict(relays=self.rj, relay_secret_file=sf, relay_check_seconds=0.2, relay_dead_seconds=3.0)
         cfg.update(self.server_cfg)
         self.s = ServerThread(**cfg).start()
         self.clients = []

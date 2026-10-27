@@ -5,6 +5,14 @@ This is a test release. It was tested on one development PC only (Windows 11,
 not tried on this project. Everything else comes from the code, the launcher or
 our QA run on 2026-10-16.
 
+**First try "Check my problem"** (launcher, Play offline tab; on the Build tab after a failed build). It
+looks in this PC's logs and settings for the problems other players had and says how to fix each, in your
+language; nothing is changed or sent. It knows: a game package of another version (v01.01), a damaged or
+incomplete package (also the game's own "data is corrupted" message), unpacking that ran out of memory,
+Windows Firewall blocking `t5dr.exe`, a 2-core processor, an old graphics card (Direct3D 12 resource binding
+tier 1) and Wine / Proton (`launcher/problem_check.py`; `python launcher/problem_check.py --out native`
+prints the same in English).
+
 **Problems? Click "Report a problem"** (launcher, Play offline tab; also in the Build tab
 and in the Online tab after a match). It makes one zip on your Desktop. Send the
 zip to the person who gave you the game, or attach it to an issue at

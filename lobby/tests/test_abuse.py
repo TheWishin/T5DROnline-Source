@@ -802,6 +802,15 @@ class SetAbuseTest(Base):
     def mute_on_relay(c):
         async def stall(msg):
             gs = c._gs
+            real = gs.datagram_received
+
+            def ack_only(data, addr):
+                # Muted from the start: only the relay's bind acknowledgement gets through. (Muted after the bind,
+                # a loaded PC let the peer's first ping in meanwhile; one pong made the server unable to tell who
+                # failed, and the set ended void instead of a loss.)
+                if proto.udp_type(data) == proto.U_RELAY_ACK:
+                    real(data, addr)
+            gs.datagram_received = ack_only
             await gs.relay_bind((c.server_ip, int(msg["udp_port"])))
             gs.datagram_received = lambda data, addr: None   # bound, but answers nothing and reports nothing
         c._nat_relay = stall

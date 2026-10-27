@@ -1455,6 +1455,8 @@ class OnlineTab:
             self.tours.shown()
         else:
             self.tours.page_shown = False
+        if sel and sel == str(getattr(self, "stats_page", "")) and getattr(self, "stats", None) is not None:
+            self.stats.shown()                             # the Stats page (tk_stats.py)
         if tab == 1:
             self.load_leaderboard()
         elif tab == 2 and self.client and self.profile_name is None:
@@ -1562,6 +1564,8 @@ class OnlineTab:
                 self.tv_hist.insert("", "end", values=(when, _word(OUTCOME_WORD, h["result"]), h["opponent"], chars,
                                                        score, delta, st),
                                     tags=(h["result"],) if h.get("result") in ("won", "lost") else ())
+            if getattr(self, "history", None) is not None:
+                self.history.shown(p)                      # results coloured, replays on this PC (tk_history.py)
         self.call(self.client.profile, name, 20, then=done)
 
     # ------------------------------------------------------------------ server events

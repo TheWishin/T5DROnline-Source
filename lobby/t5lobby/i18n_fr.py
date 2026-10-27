@@ -487,6 +487,52 @@ MESSAGES = {
     "Keep the PC responsive (slower)": "Garder le PC réactif (plus lent)",
     "Open build.log": "Ouvrir build.log",
     "Report a problem...": "Signaler un problème...",
+    "Check my problem": "Vérifier mon problème",
+    "Check my problem...": "Vérifier mon problème...",
+    "Looking…": "Recherche…",
+    "No known problem found.": "Aucun problème connu trouvé.",
+    "If something still goes wrong, \"Report a problem...\" makes one zip with your logs to send to whoever helps you.":
+        "Si quelque chose ne va toujours pas, « Signaler un problème... » crée un zip avec vos logs à envoyer à la personne qui vous aide.",
+    "Problem": "Problème",
+    "Note": "Remarque",
+    "Help": "Aide",
+    "The launcher looks in this PC's logs and settings for the problems other players had, and says how to fix them. Nothing is changed and nothing is sent.":
+        "Le launcher cherche dans les logs et les réglages de ce PC les problèmes que d'autres joueurs ont eus, et indique comment les corriger. Rien n'est modifié et rien n'est envoyé.",
+    "Your game package is version {version}": "Votre paquet du jeu est la version {version}",
+    "The port works only with version {supported} of the game: TEKKEN 5 DARK RESURRECTION ONLINE, US PSN (NPUB30009), a .pkg of {size} bytes, with its license {rap}. Version {version} cannot be used, whatever the license. Choose the {supported} package on the Build tab and press BUILD GAME.":
+        "Le port ne fonctionne qu'avec la version {supported} du jeu : TEKKEN 5 DARK RESURRECTION ONLINE, PSN US (NPUB30009), un .pkg de {size} octets, avec sa licence {rap}. La version {version} ne peut pas servir, quelle que soit la licence. Choisissez le paquet {supported} dans l'onglet Compiler et appuyez sur BUILD GAME.",
+    "build.log: the package says version {version}.": "build.log : le paquet indique la version {version}.",
+    "Unpacking the game ran out of memory": "La mémoire a manqué pendant l'extraction du jeu",
+    "Close other programs (browser, games, launchers) and press BUILD GAME again; since 1.1.5 the launcher unpacks the game in small pieces. If it fails again, check that Windows has a page file (System > About > Advanced system settings > Performance > Virtual memory: automatic).":
+        "Fermez les autres programmes (navigateur, jeux, launchers) et appuyez à nouveau sur BUILD GAME ; depuis la 1.1.5, le launcher extrait le jeu en petits morceaux. Si cela échoue encore, vérifiez que Windows a un fichier d'échange (Système > Informations système > Paramètres avancés du système > Performances > Mémoire virtuelle : automatique).",
+    "build.log: the computer ran out of memory while the game data was unpacked.":
+        "build.log : l'ordinateur a manqué de mémoire pendant l'extraction des données du jeu.",
+    "The game package looks damaged or incomplete": "Le paquet du jeu semble endommagé ou incomplet",
+    "Download the package again (it must be {size} bytes), choose it on the Build tab, tick \"Redo every step\" and press BUILD GAME.":
+        "Téléchargez à nouveau le paquet (il doit faire {size} octets), choisissez-le dans l'onglet Compiler, cochez « Refaire toutes les étapes » et appuyez sur BUILD GAME.",
+    "build.log: the package could not be read to the end or not decrypted.":
+        "build.log : le paquet n'a pas pu être lu jusqu'au bout ou déchiffré.",
+    "The game says its data is damaged": "Le jeu signale des données endommagées",
+    "On the Build tab tick \"Redo every step\" and press BUILD GAME: it unpacks the game again. If the message comes back, download the package again (it must be {size} bytes).":
+        "Dans l'onglet Compiler, cochez « Refaire toutes les étapes » et appuyez sur BUILD GAME : le jeu est extrait à nouveau. Si le message revient, téléchargez à nouveau le paquet (il doit faire {size} octets).",
+    "Game log: the game showed the message \"{message}\".": "Log du jeu : le jeu a affiché le message « {message} ».",
+    "Your graphics card is an older model": "Votre carte graphique est un modèle ancien",
+    "{gpu} is a Direct3D 12 card of the oldest kind (resource binding tier 1: GeForce cards with a Fermi chip, among them some GT 730 models, and older Intel graphics). The game's graphics take several times longer on it than on later cards, whatever the processor: fights can stay below 30 frames per second, and a lower Internal resolution helps only a little. Later cards (a GT 730 with a Kepler chip, GTX 750, Radeon HD 7000 and newer) run the game at full speed.":
+        "{gpu} est une carte Direct3D 12 du type le plus ancien (resource binding tier 1 : cartes GeForce à puce Fermi, dont certaines GT 730, et anciens graphiques Intel). Les graphismes du jeu y prennent plusieurs fois plus de temps que sur les cartes plus récentes, quel que soit le processeur : les combats peuvent rester sous 30 images par seconde, et baisser la Résolution interne n'aide que peu. Les cartes plus récentes (une GT 730 à puce Kepler, GTX 750, Radeon HD 7000 et au-delà) font tourner le jeu à pleine vitesse.",
+    "Game log: {gpu}, resource binding tier {tier}.": "Log du jeu : {gpu}, resource binding tier {tier}.",
+    "Your processor has {cores} cores": "Votre processeur a {cores} cœurs",
+    "The game is made for 4 cores; on {cores} it can stay below 60 frames per second in fights (an i3-3240 reached about 20). Close other programs while you play, keep Windows' power plan on Balanced or High performance, and see \"Low frame rate\" in the help.":
+        "Le jeu est fait pour 4 cœurs ; avec {cores}, il peut rester sous 60 images par seconde en combat (un i3-3240 atteignait environ 20). Fermez les autres programmes pendant que vous jouez, laissez le mode d'alimentation de Windows sur Utilisation normale ou Performances élevées, et voyez « Low frame rate » dans l'aide.",
+    "This PC: {cores} cores, {logical} logical processors.": "Ce PC : {cores} cœurs, {logical} processeurs logiques.",
+    "The launcher runs under Wine or Proton": "Le launcher tourne sous Wine ou Proton",
+    "That works, with a few known differences: since 1.1.5 the launcher sets the safe graphics defaults for Wine by itself. A dark blue or black game window (sound playing) means the Proton build does not suit the game: try another one (Proton Experimental, proton-cachyos-slr). See \"Linux and Steam Deck\" in the help.":
+        "Cela fonctionne, avec quelques différences connues : depuis la 1.1.5, le launcher règle lui-même les réglages graphiques sûrs pour Wine. Une fenêtre de jeu bleu foncé ou noire (avec le son) signifie que cette version de Proton ne convient pas au jeu : essayez-en une autre (Proton Experimental, proton-cachyos-slr). Voyez « Linux and Steam Deck » dans l'aide.",
+    "This PC: {wine}.": "Ce PC : {wine}.",
+    "Windows Firewall blocks the game": "Le pare-feu Windows bloque le jeu",
+    "Online matches then often go through a relay (more lag) or do not connect. Open Windows Security > Firewall & network protection > Allow an app through firewall, and allow t5dr.exe (in {folder}) for private and public networks; or remove the block rule for it there.":
+        "Les matchs en ligne passent alors souvent par un relais (plus de lag) ou ne se connectent pas. Ouvrez Sécurité Windows > Pare-feu et protection du réseau > Autoriser une application via le pare-feu, et autorisez t5dr.exe (dans {folder}) pour les réseaux privés et publics, ou supprimez-y la règle qui le bloque.",
+    "Windows Firewall: a block rule or \"Block all incoming connections\" for t5dr.exe.":
+        "Pare-feu Windows : une règle de blocage ou « Bloquer toutes les connexions entrantes » pour t5dr.exe.",
     "Checking the build…": "Vérification de la compilation…",
     "Your name (shown in the game)": "Ton nom (affiché dans le jeu)",
     "PLAY OFFLINE": "JOUER HORS LIGNE",
@@ -1650,6 +1696,24 @@ MESSAGES = {
     "Played {games}: {wins} won, {losses} lost, win rate {rate} %": "Joués {games} : {wins} gagnés, {losses} perdus, {rate} % de victoires",
     "Ranked {games}, {rate} % won": "Ranked {games}, {rate} % gagnés",
     "Casual {games}, {rate} % won": "Amical {games}, {rate} % gagnés",
+    "Stats": "Statistiques",
+    "Community stats": "Statistiques de la communauté",
+    "Accounts": "Comptes",
+    "Matches": "Matchs",
+    "Ranked matches": "Matchs ranked",
+    "Last 24 hours": "Dernières 24 heures",
+    "{matches} matches, {players} players": "{matches} matchs, {players} joueurs",
+    "as of {when}": "au {when}",
+    "All": "Tous",
+    "Fighter": "Combattant",
+    "Wins": "Victoires",
+    "Win rate": "% de victoires",
+    "Picked": "Choisi",
+    "No numbers yet.": "Pas encore de chiffres.",
+    "This lobby server has no stats page yet (it comes with server 1.1.5).":
+        "Ce serveur de lobby n'a pas encore de statistiques (elles arrivent avec le serveur 1.1.5).",
+    "Win rate per match; a mirror match counts as one win and one loss. Grey: fewer than {count} matches, not much to go on yet. Click a column to sort.":
+        "Victoires par match ; un match miroir compte pour une victoire et une défaite. En gris : moins de {count} matchs, encore peu fiable. Cliquez sur une colonne pour trier.",
     "ranked matches {count}": "matchs Ranked {count}",
     "highest rank {rank}": "meilleur rang {rank}",
     "Characters: {list}": "Personnages : {list}",
@@ -2061,6 +2125,14 @@ MESSAGES = {
         "ont laissé.",
     "Save online matches as replays":
         "Enregistrer les matchs en ligne comme replays",
+    "Watch replay": "Voir le replay",
+    "{count} of these matches have a replay on this PC ({mark}). Select one to watch it.":
+        "{count} de ces matchs ont un replay sur ce PC ({mark}). Choisissez-en un pour le voir.",
+    "None of these matches has a replay on this PC (replays are saved on the PC that played, while \"Save online matches as replays\" is on).":
+        "Aucun de ces matchs n'a de replay sur ce PC (les replays sont enregistrés sur le PC qui a joué, tant que « Enregistrer les matchs en ligne comme replays » est activé).",
+    "No replay of this match on this PC.": "Pas de replay de ce match sur ce PC.",
+    "{fighters}, saved on this PC.": "{fighters}, enregistré sur ce PC.",
+    "This replay is no longer on this PC.": "Ce replay n'est plus sur ce PC.",
     "Keep the players' names in replays":
         "Garder les noms des joueurs dans les replays",
     "Rollback":

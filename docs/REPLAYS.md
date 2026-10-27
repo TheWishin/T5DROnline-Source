@@ -80,7 +80,10 @@ the whole time (the tests' worst case; see Tested), a few hundred bytes of it th
 
 **Replays** tab: one row per match (date, the two fighters with this player's first, the result
 from this player's side, the opponent, rollback or lockstep, rematch). **WATCH** starts the game in
-playback mode:
+playback mode (also **Watch replay** under the match history of your own profile on the Online tab
+(1.1.5): a match there that has a replay on this PC is marked with a play sign. The lobby's history and this PC's
+files are matched by the time -- within 15 minutes, the server's clock -- both fighters and, where the replay kept
+it, the opponent's name: `replays.for_history`, `lobby/t5lobby/tk_history.py`):
 
 ```
 T5_NET_MODE=replay  T5_REPLAY_FILE=<file>  T5_REPLAY_MATCH=<k>  T5_REPLAY_RESULT=<verdict.json>

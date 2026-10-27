@@ -753,6 +753,7 @@ Client to server:
 | `relay_rtt` | `rtts {id: ms}` (`relays` cap) | none: the client's UDP round trips to the regional relays; one it could not reach is left out (and never chosen for its matches) |
 | `lobby` | | `lobby_state` now |
 | `leaderboard` | `limit` | `leaderboard {rows}` |
+| `stats` | (feature `stats`, 1.1.5) | `stats {made, accounts, players, matches, ranked, matches_24h, players_24h, fighters [{char, ranked [games, wins, draws], casual [...]}]}`: counted matches only (a mirror match counts one win and one loss), computed at most every 5 minutes for everybody (`STATS_SECONDS`), read-only |
 | `chat` | `text` (200 chars) | `chat` to everyone |
 | `queue` / `unqueue` | `mode: quick\|ranked`, `char`, `strict` (ranked) | `queued {mode, strict}` |
 | `room_create` | `name`, `ranked`; with `private_rooms`: `size` (2..`T5L_ROOM_MAX_SIZE`), `rotation: winner\|queue`, `private: password\|code`, `password`, `hidden` | `room {room, code}` (`code`: the invite code, to the host only) |
@@ -1112,6 +1113,7 @@ colour, rating, W-L):
 | Result | Win / loss banner, rounds, rating change, promotion / demotion / placement, lag check, Rematch (A) / Next game / Leave (B) / Block |
 | Errors | One line on a red banner: what went wrong and what to do |
 | Friends (a page next to Lobby, Leaderboard, Profile) | Your friends with a dot (green online, yellow in a match, grey ring offline), rank and what they do; Invite to a match / Invite to my room / Remove; Add a friend (account name); REQUESTS with Accept / Decline / Take back |
+| Stats (the last page) | The community's numbers from the lobby server: accounts, players who played, matches, ranked matches, the last 24 hours; every fighter's matches, wins, win rate and share of the picks, All / Ranked / Casual, sorted by a click on a column (grey: fewer than 30 matches). An older server: a line saying it has no stats page yet |
 | Invite from a friend | Their badge and name, "invites you to a casual match" (or "to the room ..."), Accept (A) / Decline (B) |
 
 A ranked set's score goes into `OnlineTab.set_var` ("Set 1-0, game 2 of 3"); the match cards show it as a

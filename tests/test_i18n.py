@@ -255,7 +255,8 @@ class CatalogTests(Base):
         self.assertLessEqual(files, {"t5dr_launcher.pyw", "tk_tab.py", "match_driver.py", "handover.py",
                                      "problem_report_ui.py", "controls_ui.py",
                                      "tk_views.py", "tour_text.py", "tk_rooms.py",
-                                     "tk_casual.py", "fighters.py"})     # (1.1.5: SIDES, STAGE_NAMES)
+                                     "tk_casual.py", "fighters.py",     # (1.1.5: SIDES, STAGE_NAMES)
+                                     "tk_stats.py"})
 
 
 class EngineTests(German):

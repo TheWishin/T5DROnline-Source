@@ -113,6 +113,10 @@ MAX_ZIP = 1_000_000_000          # the zip is ~90 MB
 MAX_UNPACKED = 3_000_000_000     # ~250 MB unpacked
 CONFIRM_ENV = "T5DR_UPDATE_CONFIRM"
 CONFIRM_WAIT = 120               # seconds the swap step waits for the new launcher
+# The new launcher tells the swap step it started only after running this long (or when it is closed by hand,
+# App.on_close): one that closes by itself before -- 1.1.5's closed 2 s after its start, and had confirmed after
+# 0.3 s -- gets the old files back from the swap step, which waits CONFIRM_WAIT for it.
+CONFIRM_AFTER_MS = 15000
 NO_CHECK_ENV = "T5DR_NO_UPDATE_CHECK"
 
 # Top-level names of the release folder that are program files (package_release.py's layout, plus
@@ -1082,7 +1086,7 @@ class Updater:
         self.q = queue.Queue()              # callables from the worker threads, run on the Tk thread
         app.after(100, self._pump)
         if os.environ.get(CONFIRM_ENV):
-            app.after(300, confirm_started)       # runs once the main loop is up: the window is there
+            app.after(CONFIRM_AFTER_MS, confirm_started)   # started = ran that long (or closed by hand: on_close)
         self._offered = False           # the offer window was shown once this session
         self._focus_bound = False
         self.button = None

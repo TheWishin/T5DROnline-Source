@@ -12,7 +12,7 @@ here first (0.1.5-preview's first run stopped at the binary check). Steps, in or
   3. ps3recomp at the pin + the patch series, into a fresh folder (prepare_ps3recomp.py)
   4. the player zip, exactly as the workflow builds it (package_release.py --release), which also
      runs tools/check_binaries.py and the zip scan
-  5. the zip's smoke test with a bare PATH (smoke_release.py --no-gui)
+  5. the zip's smoke test with a bare PATH, the launcher started with a package chosen (smoke_release.py)
   6. the repo's unit tests (python -m unittest discover -s tests)
   7. ready for players: the changelog section has a release date in its heading and no HTML comments
      (placeholders, notes for the release; the launcher's update offer shows the notes as plain text,
@@ -138,7 +138,7 @@ def main():
              f'cmd /c ""{VCVARS}" >nul 2>&1 && {subprocess.list2cmdline(pkg)}"', shell=True)
     zipf = os.path.join(dist, f"T5DR-Online-{ver}.zip")
     step("5. zip smoke test (bare PATH)", [py, "tools/smoke_release.py", zipf, "--version", ver,
-                                           "--work", os.path.join(work, "smoke"), "--no-gui"])
+                                           "--work", os.path.join(work, "smoke")])     # with the GUI checks (1.1.5)
     step("6. unit tests", [py, "-m", "unittest", "discover", "-s", "tests"])
     print("\n== 7. ready for players (changelog: release date, no HTML comments; README release lines)", flush=True)
     if leftovers:

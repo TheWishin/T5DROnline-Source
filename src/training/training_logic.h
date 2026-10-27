@@ -397,10 +397,12 @@ inline void turn(float& x, float& z, float d)
 class Placer {
 public:
     static constexpr float kGap = 1100.0f;      /* the distance at the wall: close, in reach of most moves */
-    static constexpr float kStep = 300.0f;      /* the slide: units per frame (18 m/s) */
-    static constexpr int kMaxSteps = 120;       /* 36,000 units without a wall: none there */
-    static constexpr int kRefine = 4;           /* halvings at the wall: within 300 / 16 < 20 units */
-    static constexpr float kKept = 2.0f;        /* the game kept a place: it is still within this */
+    static constexpr float kStep = 500.0f;      /* the slide: units per frame */
+    static constexpr int kMaxSteps = 60;        /* 30,000 units (a second) without a wall: none there */
+    static constexpr int kRefine = 5;           /* halvings at the wall: within 500 / 32 < 16 units */
+    static constexpr float kKept = 80.0f;       /* the game kept a place: it is still within this (traced: a
+                                                 * fighter put down moves up to ~30 units by itself, one put
+                                                 * past a wall hundreds or thousands) */
 
     struct Cmd {
         bool done = false;      /* finished: out[] holds both places (P1, the dummy) */

@@ -123,19 +123,45 @@ run the code they ran before: CODE_VERSION is unchanged.
   from the matrices: a place written to the base alone sprang back or jumped
   (a fighter put 4,000 units away moved another 1,273 in the next frame) and
   an angle written to +0x30 alone was undone. A reset moves and turns all of
-  them alike. At the start of the fight P1 stands at (1000, 0) facing -pi/2
-  and the dummy at (-1000, 0) facing +pi/2.
+  them alike. At the start of the fight the two stand 2,000 units apart
+  facing each other (on stage 20: P1 at (1000, 0) facing -pi/2, the dummy at
+  (-1000, 0) facing +pi/2; other stages turn the pair).
 - **Round start**: the places of the first frame of the fight, kept.
 - **Walls**: the walls are the stage's own collision, so they are found with
   it, not read from the stage. A place past a wall is one the game does not
   keep: it puts the fighter somewhere else inside the stage (traced: a fighter
-  put 60,000 units out along the line came back 2,400 units off the line). So
-  the fighter that goes to the wall slides out along the line through both
-  fighters, from 1,100 units past the other one, 300 units a frame; the first
-  place the game did not keep ends the slide, and four frames of halving
-  between it and the last place it kept find the wall to 20 units. No wall
-  within 36,000 units: the places from before come back. At the wall the other
-  one is put 1,100 units in front of it, both facing each other.
+  put 60,000 units out along the line came back 2,400 units off the line). The
+  game also keeps the two fighters within about 6,300 units of each other (a
+  fighter sliding away alone was held there, on a stage without a wall that
+  near). So both slide along the line through them, 1,100 units apart, the one
+  that goes to the wall in front, 500 units a frame; the first place the game
+  did not keep (moved by more than 80 units: a fighter put down moves up to
+  ~30 by itself) ends the slide, and five frames of halving between it and the
+  last place it kept find the wall to 16 units. No wall within 30,000 units (a
+  second of sliding; most Practice stages are open): the places from before
+  come back. They end 1,100 units apart at the wall.
+- **Facing**: the game keeps each fighter's own facing -- an angle written
+  to it is undone by the animation in the next frame -- and a fighter turns
+  to the other one when it starts a move (traced: walking off after
+  sidesteps). So when a reset leaves a fighter with its back to the other one
+  (the resets that switch sides), it gets a tap toward the other one on its
+  pad two frames later (the dummy on CONTROLLER for that tap).
+- **The dummy** follows the game's own Practice menu, TRAINING DUMMY
+  (0x1008EFF3, traced by stepping through the menu): 0 stand without
+  guarding, 1 stand while guarding, 2 crouch without guarding, 3 crouch while
+  guarding, 4 guard against all attacks, 5 standard auto guard, 6 / 7 quick
+  roll (fore- / background), 8 quick recovery, 9 backward roll, 10
+  CONTROLLER ("control with opponent controller": the dummy plays P2's pad).
+  P2's pad alone does nothing to the dummy otherwise. So a behaviour sets this
+  setting while it is chosen and gives the player's own choice back when it is
+  not (and while the pause menu is open, 0x1008F083 = 0, so the menu shows the
+  player's choice): *blocks after the first hit* is the game's own guard --
+  stand without guarding until the dummy is hit, then guard against all
+  attacks (lows too) until it has been able to act for half a second;
+  *crouches*, *walks* and *sidesteps* are CONTROLLER with the dummy's pad
+  written into the game's input ring for P2 (down; forward / back 45 frames
+  each; a tap of up or down every 50 frames); a recording records and plays on
+  CONTROLLER the same way.
 
 ## The overlay never changes the game
 

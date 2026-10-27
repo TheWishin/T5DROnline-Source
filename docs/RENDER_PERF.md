@@ -3178,3 +3178,98 @@ is worth a change of its own now.
   execution units between two threads, which the stand-in does not reproduce. `PS3_TWO_CORE_OWN=1` (and
   `PS3_TWO_CORE_GAME=own`) against the default on such a PC would settle whether the own core helps there.
 - **The i5-4210M** (2 cores, a laptop: power saving on by itself) sent no game log.
+## Graphics settings for weak graphics cards (1.1.5, patch 0079, branch `graphics-115`)
+
+Owner's 1.1.5 list: more graphics settings for weak graphics cards, each measured, and a "Lowest" preset for old
+cards. **Launcher -> Settings -> Graphics (weak graphics cards)**: Shadows and Effects, each On (default) / Off,
+and two buttons: **Lowest (old graphics cards)** (Internal resolution Lowest; stage blur / glow, shadows and effects
+off) and **Default** (puts them back: Internal resolution as the launcher picks it -- Auto on integrated graphics,
+else Native --, stage blur / glow Off as since 1.1.4, shadows and effects on). Window, VSync and power saving are
+not touched. Every setting changes only what is drawn: no guest memory, no command the game sees, so the two PCs of
+a match may choose differently (pairs below).
+
+| setting | variable | what is not drawn | GPU ms per fight frame, integrated Radeon, Native: on -> off | translation ms per frame: on -> off |
+|---|---|---|---|---|
+| Shadows Off | `PS3_SHADOWS=0` | the 512 x 512 shadow map the game draws from the light every frame (183 of 832 draws on stage 20: both fighters and the stage objects again) and its depth snapshot; every shadow lookup returns "lit" | stage 20: 2.21 / 2.23 -> 1.98 / 1.97 (-11 %); stage 34: 2.62 -> 2.40 (-8 %) | stage 20: 1.66 -> 1.47-1.51 (-10 %); stage 34: 1.50 -> 1.33 (-11 %) |
+| Effects Off | `PS3_EFFECTS=0` | the see-through effects of the 3D scene: hit sparks and the other hit effects (the EWGF lightning too), flames, smoke, mist, haze, sun glare, neon glows, the waterfalls | stage 20: 2.21 / 2.23 -> 1.90 / 1.88 (-15 %); stage 19: 1.83 -> 1.28 (-30 %); stage 34 (the mist): 2.62 -> 0.88 (**-66 %**) | stage 20: 1.66 -> 1.46-1.48 (-11 %); stage 19: 1.84 -> 1.36 (-26 %); stage 34: 1.50 -> 1.32 (-12 %) |
+| Internal resolution Lowest (already there) | `PS3_INTERNAL_RES=lowest` | -- (the 3D scene at half size) | stage 20: 2.21 -> 1.09 (-51 %) | unchanged (1.71) |
+| **Lowest preset** | all of the above | | stage 20: 2.21 / 2.23 -> 0.82 / 0.81 (**-63 %**); stage 34: 2.62 -> 0.41 (**-85 %**) | stage 20: 1.66 -> 1.32 / 1.33 (**-20 %**); stage 34: 1.50 -> 1.20 (-20 %) |
+
+How measured: `tools/fight_bench.py --polite RSX_ADAPTER=radeon PS3_STAGE_BLUR=0 [setting]` (the launcher's
+default stage blur Off is the baseline), Lili vs Asuka, P1 attacking, window fight start +24..42 s, medians of the
+frame log (`gpu_us`: D3D12 timestamps; `xlat_us`: the walker's translation of the frame). Two rounds for stage 20
+(the two values), one for 19 and 34; the PC was quiet (1-5 of 32 logical processors busy with other agents' games,
+2.7-5.1 in round 1). The GPU is this PC's integrated Radeon (the Ryzen 9 7950X's 2 RDNA2 compute units, about a
+UHD 620 / Vega 3 class): the weakest graphics this PC has. **No GT 730 was available**; on the players' GT 730s
+the GPU share of the frame is larger (a Kepler GT 730 2 GB: ~5 ms a frame; the old tier-1 GT 730 4 GB: 32 ms at
+0.5x, see the 1.1.5 notes), so the same percentages are worth more milliseconds there. The game ran at 59.9-60 fps
+in every row: on this PC these settings buy headroom, not frames.
+
+**Where the GPU time goes** (`RSX_GPU_PASSES=2`, new: a timestamp before every draw, the time per pipeline and per
+target, `[gpu-pass] draws per target: ...`; stage 20, Native, integrated Radeon, two 600-frame windows): the 3D
+pass (2048 x 1440, ~610 draws) 1.74-1.92 ms of 2.3-2.5 -- opaque draws 0.96 ms, alpha-blended draws that write
+depth 0.46, see-through effects that do not write depth 0.39 --; the shadow map pass 183
+draws 0.05 ms plus its depth snapshot 0.055 ms (the shadow lookups in the 3D pass ~0.13 ms more); the two display
+buffers (downsample + HUD) 0.2; the present 0.12; the glow buffers 0.1. The CPU side follows the draw count: the
+shadow map is 22 % of the draws, the effects 17 %, and both are skipped before their vertices are fetched, so the
+walker translates 10-26 % less per frame (a tier-1 GT 730 PC with 27 ms of translation would save in proportion,
+if its time per draw is like ours -- not measured).
+
+**Measured and not offered:**
+
+- *Texture detail* (mipmapped textures one level coarser, LOD bias +1): stage 20 GPU 2.21 -> 2.23 ms, translation
+  1.66 -> 1.69: nothing. The game's textures are small (32-256 texels), already bilinear with point mip selection
+  (no trilinear to drop), and Internal resolution Lowest already samples one mip level coarser. Removed again.
+- *Fewer effects* (only the additive ones, a destination factor of one): they are a few mist wisps on stage 34;
+  hit sparks, flames and waterfalls are alpha-blended. Stage 20 2.22, 34 2.61, 19 1.82 ms: nothing. Removed again.
+- *Post effects*: the only ones are the stage blur and glow, already a setting (Off by default since 1.1.4).
+
+### How each switch works
+
+**Shadows Off.** A shadow sampler is a 2D depth texture read with a depth compare (the rule of the PSO's
+`shadow_mask`). With `PS3_SHADOWS=0` the HLSL helper returns what an empty map gives
+-- the far plane, 1.0, compared with the fragment's reference: lit, for the compare Tekken 5 DR uses -- without
+reading the map (`rsx_fp_apply_shadow_compare`, zfunc bit 16, part of the PSO identity like the compare op). The
+binding leaves the unit white and makes no depth snapshot. The map's address is noted at that binding, and every
+later draw into it (its zeta, a pass smaller than the canvas, depth writes on; within 2 s of the last read) returns
+at the top of `sink_end_impl`, before its vertices are fetched. Its clears stay. The log: `[display] shadows: off
+(PS3_SHADOWS) ...`, `[shadows] off: shadow map 0:0xAF0000 (512x512) is not read, its draws are skipped`.
+
+**Effects Off.** A draw into a pass at least as large as the canvas that is not a display buffer (the 3D scene;
+the HUD, the menus' 2D and movies are drawn into the display buffers), with blending on, the depth test on and depth
+writes off, returns at the same place. Stage blur / glow composites (no depth test) and glow buffers are not
+touched (they are Stage blur / glow's). The log: `[display] effects: off (PS3_EFFECTS) ...` and the first skipped
+frame. What it hides, from the stage tour below: every hit spark and hit effect (GitHub #12's EWGF lightning is one
+of them: so Effects is On by default and only the Lowest button the player clicks turns it off, and the hint says
+so), the torches and waterfalls of stage 19, the neon glows of stage 21, the sun glare of stage 20, the haze of
+stage 17, the ground mist of stage 34 (all 18 stages below).
+
+### Checked
+
+- **Same game, different pictures.** Lockstep pairs (`tools/rollback_net_test.py --mode1 off --mode2 off --fight
+  lil,ask,<stage>,2`, host default, joiner Shadows and Effects Off, `T5_NET_SHOT=300,900` with every surface
+  dumped): all 18 stages, 17-34 (+ 5 pairs with only the additive effects off): 0 mismatching frames in every
+  pair. Rollback pairs (the online default, `--mode1 default --mode2 default --rtt 100 --jitter 5 --loss 2`), host
+  default, joiner the Lowest preset (Internal resolution Lowest, shadows and effects off), stages 19 and 34, one
+  whole match each: 0 mismatching frames on both sides (through frame 7,799 / 7,199), the same result hash on
+  both sides (`0c9e26ce073b4f1b` / `8f3adec5c4b4d1bd`), 881 / 879 rollbacks (1,605 / 1,444 frames re-simulated).
+- **The pictures.** The frame-exact pairs show the two pictures of the same game frame side by side: the shadows of
+  the fighters and the stage objects are gone, and with Effects Off the list above.
+  Per stage, what Effects Off hides besides every hit spark: 17 the haze behind the dragon skeleton, 19 the
+  torches and the two waterfalls (the one loss that looks like something is missing), 20 the sun glare, 21 the
+  neon glows of the bowling balls, 24 the lamp and pumpkin glows, 26 the lantern glows, 27 the glow over the sea,
+  29 the steam, 33 the dust and smoke, 34 the ground mist; 18, 22, 23, 25, 28, 30, 31, 32 only the hit sparks
+  and small things. No stage shows a hole or a wrong colour.
+- `tests/test_graphics_settings.py`: the launcher settings (default on, Off sends 0, saved, unknown values, Extra
+  settings win, the presets, the problem report, every catalog), the patch (switches, host pixels only, skipped
+  before the vertices, PSO identity) and `tests/c/graphics_test.c` (the shadow-off HLSL compiles with D3DCompile and
+  differs from the shadow-on program only in the compare's function number). i18n: 0 problems; the layout check at
+  100 / 133 / 150 %: 0 problems in every language.
+- Local evidence: `build/int115/i-runs/` (git-ignored, outside the repository).
+
+### Not done
+
+- Measured on a GT 730: none was available. A GT 730 player's game log with Lowest against default would show it
+  (`[slow-frames]`, GPU busy and the translation median).
+- The tier-1 descriptor path and the translation per draw on old cards are agent C's (speed-115); this patch only
+  removes draws.

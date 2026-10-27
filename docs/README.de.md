@@ -158,6 +158,7 @@ heißen. Im deutschen Launcher heißen sie:
 | Advanced: extra settings | Erweitert: zusätzliche Einstellungen |
 | Mute sound | Ton aus |
 | Stage blur / glow | Stage-Unschärfe / Leuchten |
+| Graphics (weak graphics cards), Shadows, Effects, Lowest (old graphics cards), Default | Grafik (schwache Grafikkarten), Schatten, Effekte, Am niedrigsten (alte Grafikkarten), Standard |
 | Power saving (laptops, handhelds) | Stromsparen (Laptops, Handhelds) |
 | Unlocks, Unlock all stages, Unlock Jinpachi and Random select, Unlock all customization items | Freischaltungen, Alle Stages freischalten, Jinpachi und die Random-Auswahl freischalten, Alle Customize-Items freischalten |
 
@@ -196,6 +197,13 @@ Sprachen gleich.
   lassen die Sonne leuchten (der Schrottplatz). Aus (seit 1.1.4 der Standard,
   einmalig auch für Spieler älterer Versionen) zeigt diese Stages scharf, ohne
   das Leuchten; An sieht aus wie auf der PS3, bei jeder internen Auflösung. Online kann jeder Spieler selbst wählen.
+- **Settings** -> **Graphics (weak graphics cards)** (Grafik, schwache
+  Grafikkarten): Schatten und Effekte, An (Standard) oder Aus. Effekte Aus
+  blendet auch die Treffer-Funken und andere Treffer-Effekte aus (auch den
+  EWGF-Blitz), dazu Flammen, Rauch, Nebel und Wasserfälle. **Am niedrigsten
+  (alte Grafikkarten)** stellt die interne Auflösung auf „Am niedrigsten“ und
+  schaltet Stage-Unschärfe / Leuchten, Schatten und Effekte aus; **Standard**
+  stellt sie wieder her. Online kann jeder Spieler selbst wählen.
 - **Settings** -> **Power saving (laptops, handhelds)** (Stromsparen): Auto
   (Standard) schaltet es ein bei Akkubetrieb, Stromsparmodus oder dem
   Energiesparplan, einem mobilen Prozessor oder integrierter Grafik; mit An und

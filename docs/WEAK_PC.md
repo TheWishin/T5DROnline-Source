@@ -293,6 +293,11 @@ Paste this to a player who reports 40-50 fps:
 >    handhelds) use **Auto** (the default there since 1.1.4), **1080p** or
 >    lower -- never more than your screen. 1440p and 4K need a real graphics
 >    card: a busy built-in GPU also slows the processor.
+>    **An old or weak graphics card** (a GT 730 and the like, 1.1.5 or
+>    newer): Settings -> Graphics -> **Lowest (old graphics cards)** --
+>    the 3D scene at half size, no stage blur, shadows or effects (hit
+>    sparks too). It also leaves the processor less to translate.
+>    **Default** puts it back.
 > 5. **Online:** both games always run at the speed of the slower PC. If
 >    you only see 40-50 fps against one opponent, the slow PC may be theirs.
 > 6. **Do not start the game in "efficiency mode"** or at low priority

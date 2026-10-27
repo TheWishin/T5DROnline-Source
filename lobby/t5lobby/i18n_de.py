@@ -2473,6 +2473,36 @@ MESSAGES = {
     "life is 30 to 100 in steps of 10": "Die Gesundheit ist 30 bis 100 in Zehnerschritten",
     "this server has no training rooms": "Dieser Server hat keine Trainingsräume",
     "this server has no health handicap": "Dieser Server hat kein Gesundheits-Handicap",
+    # Settings -> Graphics (patch 0079)
+    "Graphics (weak graphics cards)":
+        "Grafik (schwache Grafikkarten)",
+    "Shadows":
+        "Schatten",
+    "Effects":
+        "Effekte",
+    "On (default)":
+        "An (Standard)",
+    "Off: no shadows of the fighters and the stage. Saves graphics work and some processor time.":
+        "Aus: keine Schatten der Kämpfer und der Stage. Spart "
+        "Grafikarbeit und etwas Prozessorzeit.",
+    "Off: no hit sparks or other hit effects (also the EWGF lightning), flames, smoke, mist, glows or "
+    "waterfalls. Saves graphics work (the most on misty stages) and some processor time.":
+        "Aus: keine Treffer-Funken und keine anderen "
+        "Treffer-Effekte (auch der EWGF-Blitz fehlt), keine "
+        "Flammen, kein Rauch, Nebel, Leuchten und keine "
+        "Wasserfälle. Spart Grafikarbeit (am "
+        "meisten auf nebligen Stages) und etwas Prozessorzeit.",
+    "Lowest (old graphics cards)":
+        "Am niedrigsten (alte Grafikkarten)",
+    "Default":
+        "Standard",
+    "Lowest: Internal resolution Lowest; stage blur / glow, shadows and effects off (so no hit effects "
+    "either). Default puts them back. Only your picture changes: online, both players can choose differently.":
+        "Am niedrigsten: Interne Auflösung „Am niedrigsten“; "
+        "Stage-Unschärfe / Leuchten, Schatten und Effekte aus "
+        "(also auch keine Treffer-Effekte). „Standard“ stellt "
+        "sie wieder her. Nur dein Bild ändert sich: Online "
+        "können beide Spieler verschieden wählen.",
     # ---- lobby/t5lobby/tk_casual.py
     "Any side": "Seite egal",
     "P1 (left)": "P1 (links)",

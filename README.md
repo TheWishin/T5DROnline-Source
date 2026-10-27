@@ -183,6 +183,12 @@ It is game data. Do not share it. To uninstall, delete the whole folder.
   (the default since 1.1.4, also for players of older versions once) shows
   those stages sharp, without the glow; On looks as on the PS3, at every
   internal resolution. Online, each player can choose their own.
+- **Settings** -> **Graphics (weak graphics cards)**: Shadows and Effects, On
+  (default) or Off. Effects Off also hides the hit sparks and other hit effects
+  (the EWGF lightning too), flames, smoke, mist and waterfalls. **Lowest (old
+  graphics cards)** sets Internal resolution Lowest and switches stage blur /
+  glow, shadows and effects off; **Default** puts them back. Each also leaves
+  the processor less to translate. Online, each player can choose their own.
 - **Settings** -> **Power saving (laptops, handhelds)**: Auto (default) turns
   it on with a battery, battery saver or the Power saver plan, a mobile
   processor or integrated graphics; On and Off decide yourself. The game then

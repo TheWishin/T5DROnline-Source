@@ -2403,6 +2403,37 @@ MESSAGES = {
     "life is 30 to 100 in steps of 10": "la vie va de 30 à 100 par pas de 10",
     "this server has no training rooms": "ce serveur n'a pas de salles d'entraînement",
     "this server has no health handicap": "ce serveur n'a pas de handicap de vie",
+    # Settings -> Graphics (patch 0079)
+    "Graphics (weak graphics cards)":
+        "Graphismes (cartes graphiques faibles)",
+    "Shadows":
+        "Ombres",
+    "Effects":
+        "Effets",
+    "On (default)":
+        "Activé (par défaut)",
+    "Off: no shadows of the fighters and the stage. Saves graphics work and some processor time.":
+        "Désactivé : pas d'ombres des combattants ni du stage. "
+        "Économise du travail graphique et un peu de temps "
+        "processeur.",
+    "Off: no hit sparks or other hit effects (also the EWGF lightning), flames, smoke, mist, glows or "
+    "waterfalls. Saves graphics work (the most on misty stages) and some processor time.":
+        "Désactivé : pas d'étincelles ni d'autres effets de "
+        "coups (pas non plus l'éclair de l'EWGF), de flammes, de "
+        "fumée, de brume, de halos ni de cascades. Économise du "
+        "travail graphique (surtout sur les stages brumeux) et "
+        "un peu de temps processeur.",
+    "Lowest (old graphics cards)":
+        "Minimal (anciennes cartes graphiques)",
+    "Default":
+        "Par défaut",
+    "Lowest: Internal resolution Lowest; stage blur / glow, shadows and effects off (so no hit effects "
+    "either). Default puts them back. Only your picture changes: online, both players can choose differently.":
+        "Minimal : résolution interne Minimale ; flou / halo des "
+        "stages, ombres et effets désactivés (donc pas d'effets "
+        "de coups non plus). Par défaut les rétablit. Seule ton "
+        "image change : en ligne, chaque joueur peut choisir "
+        "différemment.",
     # ---- lobby/t5lobby/tk_casual.py
     "Any side": "Côté au choix",
     "P1 (left)": "P1 (gauche)",

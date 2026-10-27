@@ -1,0 +1,310 @@
+diff --git a/libs/video/rsx_fp_decompiler.c b/libs/video/rsx_fp_decompiler.c
+index ade876d..531c98d 100644
+--- a/libs/video/rsx_fp_decompiler.c
++++ b/libs/video/rsx_fp_decompiler.c
+@@ -1348,6 +1348,10 @@ int rsx_fp_apply_unnorm_scale(char* hlsl, u32 hlsl_size, u32 unnorm_mask,
+  * sites of the selected units change, so every other program stays
+  * byte-identical. Gather + manual compare keeps it independent of the sampler
+  * table (no comparison sampler descriptors needed).
++ *
++ * zfunc bit 16 (PS3_SHADOWS=0, patch 0079): shadows off -- the call returns
++ * what an empty map gives (the texel at the far plane, 1.0, compared with the
++ * reference) and reads no texture.
+  */
+ int rsx_fp_apply_shadow_compare(char* hlsl, u32 hlsl_size, u32 shadow_mask,
+                                 const u32 zfunc[16], u32 linear_mask,
+@@ -1365,6 +1369,7 @@ int rsx_fp_apply_shadow_compare(char* hlsl, u32 hlsl_size, u32 shadow_mask,
+         "    float2 uv = proj ? c.xy / c.w : c.xy;\n"
+         "    float r = proj ? c.z / c.w : c.z;\n"
+         "    if (f & 8) r = saturate(r);\n"   /* fixed-point depth: ref clamps to [0,1] */
++        "    if (f & 16) return (float4)rsx_zcmp(1.0, r, f & 7);\n"   /* shadows off: an empty map */
+         "    f &= 7;\n"
+         "    uint w, h; t.GetDimensions(w, h);\n"
+         "    float2 sz = float2(w, h);\n"
+@@ -1422,7 +1427,7 @@ int rsx_fp_apply_shadow_compare(char* hlsl, u32 hlsl_size, u32 shadow_mask,
+                 if (n0 < 0 || (u32)n0 >= sizeof call) return -1;
+                 char tail[64];
+                 const int n1 = snprintf(tail, sizeof tail, ", %d, %u, %u)", proj,
+-                                        zfunc[u] & 15u, (linear_mask >> u) & 1u);
++                                        zfunc[u] & 31u, (linear_mask >> u) & 1u);
+                 if (n1 < 0 || (u32)n1 >= sizeof tail) return -1;
+                 const u32 new_len = (u32)n0 + alen + (u32)n1;
+                 const u32 old_len = (u32)(end + 1 - at);
+diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
+index 5f2aa48..0637101 100644
+--- a/libs/video/rsx_live_draw.c
++++ b/libs/video/rsx_live_draw.c
+@@ -506,6 +506,27 @@ static float g_ld_res_scale = 1.0f;
+ /* PS3_STAGE_BLUR (patch 0043): 1 = the stages' blur and glow as the game
+  * draws them (default), 0 = off. See ld_guest_view_srv. */
+ static int g_ld_stage_blur = 1;
++/* PS3_SHADOWS (patch 0079, launcher Settings -> Graphics -> Shadows): 1 = the
++ * fighters' and the stage's shadows as the game draws them (default), 0 = off.
++ * Off: every shadow sampler (a depth texture read with a depth compare, the
++ * 512x512 map Tekken 5 DR draws from the light) returns what an empty map
++ * gives -- the compare against the far plane, i.e. lit -- without reading the
++ * map (rsx_fp_apply_shadow_compare, zfunc bit 16: PSO identity), so the map
++ * needs no snapshot, and the draws into the map are skipped
++ * (ld_shadow_caster). Host pixels only. */
++static int g_ld_shadows = 1;
++static struct { u32 location, offset, frame; } g_ld_shadow_maps[4];
++static u32 g_ld_shadow_n;
++static u64 g_ld_shadow_skips;
++/* PS3_EFFECTS (patch 0079): 0 = the see-through effects of the 3D scene are not
++ * drawn -- draws into the full-size 3D pass that blend and test depth but do
++ * not write it: hit sparks, flames, smoke, mist, haze, sun glare, neon glows
++ * and the waterfalls (the stage tour in docs/RENDER_PERF.md "Graphics settings
++ * for weak graphics cards"). Skipped before their vertices are fetched: no
++ * translation either. Only additive ones (a destination factor of one) were
++ * tried as a lighter step: they are a few mist wisps, no gain. */
++static int g_ld_effects = 1;
++static u64 g_ld_effect_skips;
+ /* Patch 0051: the cheaper guest view and present downscale (RSX_GVIEW_FAST=0 /
+  * RSX_PRESENT_FAST=0: patch 0043's / 0038's shaders, for comparisons). */
+ static int g_ld_gview_fast = -1, g_ld_present_fast = -1;
+@@ -2995,10 +3016,10 @@ static void ld_gt_harvest(void)
+  * No CPU wait: results are read once their fence passed. Off by default (a
+  * few hundred timestamps a frame). */
+ enum { GP_LIST = 0, GP_PASS, GP_CLEAR, GP_ZCLEAR, GP_UPLOAD, GP_FEEDBACK, GP_SURFCOPY, GP_GUESTVIEW,
+-       GP_DEPTHSNAP, GP_PRESENT, GP_MOVIE, GP_OTHER, GP_KINDS };
++       GP_DEPTHSNAP, GP_PRESENT, GP_MOVIE, GP_OTHER, GP_DRAW, GP_KINDS };
+ static const char* const k_gp_kind[GP_KINDS] = {
+     "list start", "pass", "clear", "zclear", "upload", "feedback copy", "surface copy", "guest view",
+-    "depth snapshot", "present", "movie", "other" };
++    "depth snapshot", "present", "movie", "other", "draw" };
+ #define GP_CAP 16384u
+ #define GP_LISTS 64u
+ typedef struct { u8 kind, fp16, mrt; u32 a, b; u32 w, h; } gp_label;
+@@ -3018,8 +3039,9 @@ static struct {
+     u64 pend_start[GP_LISTS], pend_n[GP_LISTS], pend_fence[GP_LISTS];
+     u32 pend_head, pend_tail;
+     u32 last_key;                    /* the pass now bound (target | zslot | mrt) */
+-    gp_acc acc[256];
++    gp_acc acc[512];
+     u32 n_acc;
++    int per_draw;                    /* RSX_GPU_PASSES=2 (patch 0079): a timestamp before every draw too */
+     u64 total_ticks, lists, frames0;
+ } g_gp = { -1 };
+ 
+@@ -3051,7 +3073,9 @@ static void ld_gp_init(void)
+     g_gp.ms_per_tick = 1000.0 / (double)freq;
+     g_gp.last_key = ~0u;
+     g_gp.on = 1;
+-    fprintf(stderr, "[gpu-pass] per-pass timestamps on (RSX_GPU_PASSES)\n");
++    g_gp.per_draw = *e == '2';
++    fprintf(stderr, "[gpu-pass] per-pass timestamps on (RSX_GPU_PASSES)%s\n",
++            g_gp.per_draw ? ", and per draw by pipeline (pso key as in RSX_DRAW_CSV)" : "");
+ }
+ static void ld_gp_harvest(void);
+ static void ld_gp_mark(u32 kind, u32 a, u32 b, u32 w, u32 h, int fp16, u32 mrt)
+@@ -3068,7 +3092,7 @@ static void ld_gp_mark(u32 kind, u32 a, u32 b, u32 w, u32 h, int fp16, u32 mrt)
+     g_gp.draws[i] = 0;
+     g_gp.cur = g_gp.head;
+     g_gp.head++;
+-    if (kind != GP_PASS) g_gp.last_key = ~0u;
++    if (kind != GP_PASS && kind != GP_DRAW) g_gp.last_key = ~0u;
+ }
+ static void ld_gp_list_begin(void)
+ {
+@@ -3105,6 +3129,16 @@ static void ld_gp_submitted(int k, u64 fence_value)
+ {
+     if (k >= 0) g_gp.pend_fence[k] = fence_value;
+ }
++/* RSX_GPU_PASSES=2: a mark before each draw, labelled with its pipeline (the
++ * RSX_DRAW_CSV pso_key) and target, so a pass's time splits by what it draws. */
++static u64 live_legacy_pso_key(void);
++static void ld_gp_draw(u32 target)
++{
++    if (g_gp.on <= 0 || !g_gp.open || !g_gp.per_draw) return;
++    const u64 k = live_legacy_pso_key();
++    const surface_t* s = &g.surfaces[target];
++    ld_gp_mark(GP_DRAW, (u32)k, (u32)(k >> 32), s->offset, (s->pw & 0xFFFFu) << 16 | (s->ph & 0xFFFFu), 0, 0);
++}
+ static void ld_gp_note_draw(void)
+ {
+     if (g_gp.on > 0 && g_gp.open) g_gp.draws[g_gp.cur % GP_CAP]++;
+@@ -3141,7 +3175,7 @@ static void ld_gp_harvest(void)
+                     A->fp16 == L->fp16 && A->mrt == L->mrt) break;
+             }
+             if (a == g_gp.n_acc) {
+-                if (g_gp.n_acc >= 256) a = 255;        /* the last slot collects the rest */
++                if (g_gp.n_acc >= 512) a = 511;        /* the last slot collects the rest */
+                 else {
+                     gp_acc* A = &g_gp.acc[g_gp.n_acc++];
+                     memset(A, 0, sizeof *A);
+@@ -3172,7 +3206,7 @@ static void ld_gp_report(u32 frames_now)
+     qsort(g_gp.acc, g_gp.n_acc, sizeof(gp_acc), gp_cmp);
+     fprintf(stderr, "[gpu-pass] %u frames, %.3f ms GPU per frame in %.1f lists; per frame:", frames,
+             (double)g_gp.total_ticks * g_gp.ms_per_tick / frames, (double)g_gp.lists / frames);
+-    for (u32 a = 0; a < g_gp.n_acc && a < 14; a++) {
++    for (u32 a = 0; a < g_gp.n_acc && a < (g_gp.per_draw ? 48u : 14u); a++) {
+         const gp_acc* A = &g_gp.acc[a];
+         const double ms = (double)A->ticks * g_gp.ms_per_tick / frames;
+         if (ms < 0.005) break;
+@@ -3183,11 +3217,30 @@ static void ld_gp_report(u32 frames_now)
+         if (A->kind == GP_PASS && A->b != 0xFFFFFFFFu) fprintf(stderr, " z 0x%08X", A->b);
+         if (A->kind == GP_PASS && A->mrt > 1) fprintf(stderr, " mrt %u", A->mrt);
+         if (A->kind == GP_PRESENT || A->kind == GP_DEPTHSNAP || A->kind == GP_ZCLEAR) fprintf(stderr, " %ux%u", A->w, A->h);
++        if (A->kind == GP_DRAW)
++            fprintf(stderr, " pso %08X%08X on 0x%08X %ux%u", A->b, A->a, A->w, A->h >> 16, A->h & 0xFFFFu);
+         fprintf(stderr, ": %.3f ms (%.1fx", ms, (double)A->n / frames);
+         if (A->draws) fprintf(stderr, ", %.0f draws", (double)A->draws / frames);
+         fprintf(stderr, ")");
+     }
+     fprintf(stderr, "\n");
++    if (g_gp.per_draw) {                 /* every draw, summed per target (the list above stops at 48) */
++        u32 tw[16] = {0}, th[16] = {0}, nt = 0;
++        double tms[16] = {0}, tdr[16] = {0};
++        for (u32 a = 0; a < g_gp.n_acc; a++) {
++            const gp_acc* A = &g_gp.acc[a];
++            if (A->kind != GP_DRAW) continue;
++            u32 k = 0;
++            while (k < nt && (tw[k] != A->w || th[k] != A->h)) k++;
++            if (k == nt) { if (nt == 16) continue; tw[k] = A->w; th[k] = A->h; nt++; }
++            tms[k] += (double)A->ticks * g_gp.ms_per_tick / frames;
++            tdr[k] += (double)A->draws / frames;
++        }
++        fprintf(stderr, "[gpu-pass] draws per target:");
++        for (u32 k = 0; k < nt; k++)
++            fprintf(stderr, " | 0x%08X %ux%u: %.3f ms (%.0f draws)", tw[k], th[k] >> 16, th[k] & 0xFFFFu, tms[k], tdr[k]);
++        fprintf(stderr, "\n");
++    }
+     g_gp.n_acc = 0; g_gp.total_ticks = 0; g_gp.lists = 0; g_gp.frames0 = frames_now;
+ }
+ 
+@@ -6845,7 +6898,7 @@ static ID3D12PipelineState* get_pso(
+                  * reference to [0,1] like GL, so points past the light's far
+                  * plane read as lit. Our snapshot is R32F, which would not
+                  * clamp on its own. */
+-                shadow_func[unit] = zf | ((bf & 1u) ? 0u : 8u);
++                shadow_func[unit] = zf | ((bf & 1u) ? 0u : 8u) | (g_ld_shadows ? 0u : 16u);
+                 const u32 minf = (ut.filter >> 16) & 7u, magf = (ut.filter >> 24) & 7u;
+                 if (magf == 2u || minf == 2u || minf == 4u || minf == 6u)
+                     shadow_linear |= 1u << unit;
+@@ -10142,6 +10195,63 @@ static void ld_post_note(u32 unit, u32 src, u32 target, const char* how)
+             (double)g.surfaces[src].scale, d, g.surfaces[target].w, g.surfaces[target].h, how);
+ }
+ 
++/* PS3_SHADOWS=0 (patch 0079). A shadow sampler: a 2D depth-format unit with a
++ * compare zfunc (NEVER/ALWAYS and alpha kill excluded) -- the same rule as the
++ * PSO's shadow_mask, so the binding and the HLSL agree. */
++static int ld_shadow_sampler(const rsx_dsp_texture* t)
++{
++    const u32 bf = t->format & TEX_FMT_BASE_MASK;
++    const u32 zf = (t->wrap >> 28) & 0xFu;
++    return !t->cubemap && bf >= 0x90u && bf <= 0x93u && zf != 0u && zf < 7u && !(t->control0 & 0x4u);
++}
++static void ld_shadow_note(const rsx_dsp_texture* t)
++{
++    u32 i = 0;
++    for (; i < g_ld_shadow_n; i++)
++        if (g_ld_shadow_maps[i].location == t->location && g_ld_shadow_maps[i].offset == t->offset) break;
++    if (i == g_ld_shadow_n) {
++        if (g_ld_shadow_n < 4) g_ld_shadow_n++;
++        else i = 3;
++        g_ld_shadow_maps[i].location = t->location;
++        g_ld_shadow_maps[i].offset = t->offset;
++        fprintf(stderr, "[shadows] off: shadow map %u:0x%X (%ux%u) is not read, its draws are skipped\n",
++                t->location, t->offset, t->width, t->height);
++    }
++    g_ld_shadow_maps[i].frame = g_ld_frames;
++}
++/* A draw into a shadow map: its zeta is a map a shadow sampler read in the
++ * last 2 s, the pass is smaller than the canvas, and it writes depth (a pass
++ * that only leaves the zeta register there -- depth off -- is drawn). */
++static int ld_shadow_caster(void)
++{
++    if (!g_ld_shadow_n) return 0;
++    rsx_dsp_surface sf;
++    rsx_dsp_get_surface(&g.rsx, &sf);
++    if (sf.clip_w >= g.width && sf.clip_h >= g.height) return 0;
++    for (u32 i = 0; i < g_ld_shadow_n; i++)
++        if (g_ld_shadow_maps[i].location == sf.zeta_location && g_ld_shadow_maps[i].offset == sf.zeta_offset &&
++            g_ld_frames - g_ld_shadow_maps[i].frame <= 120u)
++            return (rsx_dsp_reg(&g.rsx, M_DEPTH_WRITE) & 1u) != 0;
++    return 0;
++}
++/* PS3_EFFECTS=0 (patch 0079): a blended draw that tests depth and does not
++ * write it, into a pass at least as large as the canvas that is not a display
++ * buffer (the 3D scene; the HUD, menus and movies are drawn into the display
++ * buffers and stay). */
++static int ld_effect_draw(void)
++{
++    if (!(rsx_dsp_reg(&g.rsx, M_BLEND_ENABLE) & 1u) || (rsx_dsp_reg(&g.rsx, M_DEPTH_WRITE) & 1u) ||
++        !(rsx_dsp_reg(&g.rsx, M_DEPTH_TEST_ENABLE) & 1u))
++        return 0;
++    rsx_dsp_surface sf;
++    rsx_dsp_get_surface(&g.rsx, &sf);
++    if (sf.clip_w < g.width || sf.clip_h < g.height) return 0;
++    for (u32 b = 0; b < 8; b++) {
++        const display_buffer_t* d = &g.display_buffers[b];
++        if (d->valid && d->location == sf.color_location[0] && d->offset == sf.color_offset[0]) return 0;
++    }
++    return 1;
++}
+ static void sink_end_impl(void* user, const rsx_dispatch* r)
+ {
+     (void)user; (void)r;
+@@ -10186,6 +10296,19 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+             }
+         }
+     }
++    /* PS3_SHADOWS=0 (patch 0079): a draw into a shadow map is not drawn --
++     * before its vertices are fetched, so it costs no translation either. */
++    if (!g_ld_shadows && ld_shadow_caster()) {
++        if (g_ld_shadow_skips++ == 0)
++            fprintf(stderr, "[shadows] off: draws into the shadow map are skipped (frame %u)\n", g_ld_frames);
++        return;
++    }
++    if (!g_ld_effects && ld_effect_draw()) {
++        if (g_ld_effect_skips++ == 0)
++            fprintf(stderr, "[effects] off: see-through effects of the 3D scene are skipped (frame %u)\n",
++                    g_ld_frames);
++        return;
++    }
+     const u32 prim = g.rsx.current_primitive;
+     rsx_vertex_layout_plan used_layout;
+     ld_current_vertex_layout(&used_layout);
+@@ -10711,6 +10834,9 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+                 for (u32 k = 0; k < n_surf_used; k++) if (surf_used[k] == (u32)sampled) seen = 1;
+                 if (!seen && n_surf_used < SRV_TABLE_SIZE) surf_used[n_surf_used++] = (u32)sampled;
+             }
++        } else if (!g_ld_shadows && ld_shadow_sampler(&t)) {
++            /* PS3_SHADOWS=0 (patch 0079): the shader does not read the map */
++            ld_shadow_note(&t);
+         } else {
+             int sampled_depth = -1;
+             const u32 texture_base_fmt =
+@@ -11085,10 +11211,12 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+             LDL->lpVtbl->IASetIndexBuffer(LDL, &ibv);
+             B->ibv = ibv; g_ld_api_set++; g_ld_api_by[14]++; B->ibv_valid = 1;
+         }
++        ld_gp_draw(target);
+         LDL->lpVtbl->DrawIndexedInstanced(
+             LDL, n_tri, 1, ring_ib ? g.ib_used / 4u : 0u, base_vertex, 0);
+         g_ld_api_considered++;
+     } else {
++        ld_gp_draw(target);
+         LDL->lpVtbl->DrawInstanced(LDL, n_tri, 1, (UINT)base_vertex, 0);
+     }
+     ld_gp_note_draw();
+@@ -11658,6 +11786,19 @@ static void ld_display_config(void)
+             g_ld_stage_blur ? (g_ld_res_scale > 1.0f ? "on (filters read guest-size views of scaled targets)"
+                                                      : "on")
+                             : "off (PS3_STAGE_BLUR): filters read one tap, glow composites skipped");
++    /* PS3_SHADOWS=0|off|false|no: no shadows (patch 0079) */
++    e = getenv("PS3_SHADOWS");
++    g_ld_shadows = !(e && (e[0] == '0' || _stricmp(e, "off") == 0 || _stricmp(e, "false") == 0 ||
++                           _stricmp(e, "no") == 0));
++    if (!g_ld_shadows)
++        fprintf(stderr, "[display] shadows: off (PS3_SHADOWS): shadow samplers read an empty map, "
++                        "draws into the map skipped\n");
++    /* PS3_EFFECTS=0|off|false|no: the 3D scene's see-through effects off (patch 0079) */
++    e = getenv("PS3_EFFECTS");
++    g_ld_effects = !(e && (e[0] == '0' || _stricmp(e, "off") == 0 || _stricmp(e, "false") == 0 ||
++                           _stricmp(e, "no") == 0));
++    if (!g_ld_effects)
++        fprintf(stderr, "[display] effects: off (PS3_EFFECTS): see-through effects of the 3D scene skipped\n");
+ }
+ 
+ /* Initial swap-chain size: the window's client area (the window may already

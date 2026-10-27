@@ -2312,6 +2312,30 @@ MESSAGES = {
     "life is 30 to 100 in steps of 10": "체력은 30~100, 10 단위입니다",
     "this server has no training rooms": "이 서버에는 트레이닝 방이 없습니다",
     "this server has no health handicap": "이 서버에는 체력 핸디캡이 없습니다",
+    # Settings -> Graphics (patch 0079)
+    "Graphics (weak graphics cards)":
+        "그래픽 (성능이 낮은 그래픽 카드)",
+    "Shadows":
+        "그림자",
+    "Effects":
+        "이펙트",
+    "On (default)":
+        "켜기 (기본)",
+    "Off: no shadows of the fighters and the stage. Saves graphics work and some processor time.":
+        "끄기: 캐릭터와 스테이지의 그림자를 그리지 않습니다. 그래픽 작업과 약간의 프로세서 시간을 줄입니다.",
+    "Off: no hit sparks or other hit effects (also the EWGF lightning), flames, smoke, mist, glows or "
+    "waterfalls. Saves graphics work (the most on misty stages) and some processor time.":
+        "끄기: 타격 불꽃 등 타격 이펙트(풍신권의 번개도), 불길, 연기, 안개, 빛 번짐, 폭포를 그리지 "
+        "않습니다. 그래픽 작업(안개 낀 스테이지에서 가장 많이)과 약간의 프로세서 시간을 줄입니다.",
+    "Lowest (old graphics cards)":
+        "최저 (오래된 그래픽 카드)",
+    "Default":
+        "기본",
+    "Lowest: Internal resolution Lowest; stage blur / glow, shadows and effects off (so no hit effects "
+    "either). Default puts them back. Only your picture changes: online, both players can choose differently.":
+        "최저: 내부 해상도 최저, 스테이지 블러 / 빛 번짐, 그림자, 이펙트 끄기(타격 이펙트도 보이지 "
+        "않음). '기본'으로 되돌립니다. 내 화면만 바뀌므로 온라인에서 두 플레이어가 서로 다르게 골라도 "
+        "됩니다.",
     # ---- lobby/t5lobby/tk_casual.py
     "Any side": "아무 쪽이나",
     "P1 (left)": "P1 (왼쪽)",

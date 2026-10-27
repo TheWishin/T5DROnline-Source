@@ -560,6 +560,35 @@ class App(tk.Tk):
             "without the glow. Only your picture changes: online, both players can choose differently.")).pack(
             anchor="w", pady=(4, 0))
 
+        # Graphics for weak graphics cards (core.GRAPHICS, ps3recomp patch 0079; docs/RENDER_PERF.md "Graphics
+        # settings for weak graphics cards"): one costly effect each, On (the game's look) or Off, and the
+        # "Lowest" preset (core.LOWEST_PRESET). Picture only, like VSync.
+        gx = ttk.LabelFrame(left, text="  " + t("Graphics (weak graphics cards)") + "  ", padding=(12, 6))
+        gx.pack(fill="x", pady=(6, 0))
+        self.graphics_vars = {}
+        for key, (name, _var, modes, default) in core.GRAPHICS.items():
+            ttk.Label(gx, text=t(name)).pack(anchor="w")
+            row = ttk.Frame(gx)
+            row.pack(anchor="w")
+            var = tk.StringVar(value=self.settings[key] if self.settings[key] in modes else default)
+            self.graphics_vars[key] = var
+            for value, label in modes.items():
+                ttk.Radiobutton(row, text=t(label), value=value, variable=var,
+                                command=self.save_settings).pack(side="left", padx=(0, 14))
+            ttk.Label(gx, style="Muted.TLabel", wraplength=300, justify="left",
+                      text=t(core.GRAPHICS_HINTS[key])).pack(anchor="w", pady=(0, 4))
+        row = ttk.Frame(gx)
+        row.pack(anchor="w", pady=(4, 0))
+        ttk.Button(row, text=t("Lowest (old graphics cards)"),
+                   command=lambda: self._graphics_preset(core.LOWEST_PRESET)).pack(side="left", padx=(0, 8))
+        ttk.Button(row, text=t("Default"),
+                   command=lambda: self._graphics_preset(core.DEFAULT_PRESET)).pack(side="left")
+        ttk.Label(gx, style="Muted.TLabel", wraplength=300, justify="left", text=t(
+            "Lowest: Internal resolution Lowest; stage blur / glow, shadows and effects off (so no hit effects "
+            "either). Default puts them back. Only your picture changes: online, both players can choose "
+            "differently.")).pack(
+            anchor="w", pady=(4, 0))
+
         # Power saving (PS3_LAPTOP, core.POWER_SAVING; docs/RENDER_PERF.md "Laptops, handhelds and 8-core APUs"):
         # less CPU around the same game, so a laptop or handheld keeps its clock and its 60 fps.
         ps = ttk.LabelFrame(left, text="  " + t("Power saving (laptops, handhelds)") + "  ", padding=(12, 6))
@@ -1164,6 +1193,19 @@ class App(tk.Tk):
         if save:
             self.save_settings()
 
+    def _graphics_preset(self, preset):
+        """Settings -> Graphics: Lowest / Default (core.LOWEST_PRESET, core.DEFAULT_PRESET) into the boxes, saved."""
+        if self.readonly:
+            return
+        core.apply_preset(self.settings, preset)
+        self.internal_res_var.set(self.settings.internal_res_choice())
+        if hasattr(self, "stage_blur_var"):
+            self.stage_blur_var.set(self.settings["stage_blur"])
+        for key, var in getattr(self, "graphics_vars", {}).items():
+            var.set(self.settings[key])
+        self._internal_res_changed(save=False)
+        self.save_settings()
+
     def _discord_ready(self):
         """True when this copy has a Discord application id: the release's (lobby/t5lobby/data/discord.json) or a
         developer's own (settings "discord_app_id", T5_DISCORD_APP_ID). Settings shows the Discord box only then."""
@@ -1207,6 +1249,8 @@ class App(tk.Tk):
         self.settings["vsync"] = self.vsync_var.get()
         if hasattr(self, "stage_blur_var"):
             self.settings["stage_blur"] = self.stage_blur_var.get()
+        for key, var in getattr(self, "graphics_vars", {}).items():
+            self.settings[key] = var.get()
         self.settings["input_delay"] = self.input_delay_var.get()
         if hasattr(self, "training_var"):
             self.settings["training"] = self.training_var.get()
@@ -1363,7 +1407,8 @@ class App(tk.Tk):
         out = self.settings.out_dir
         labels = {"display": dict(core.DISPLAY_MODES), "internal_res": core.INTERNAL_RES_LABELS,
                   "vsync": core.VSYNC_MODES, "stage_blur": core.STAGE_BLUR_MODES,
-                  "input_delay": core.INPUT_DELAYS, "power_saving": core.POWER_SAVING}
+                  "input_delay": core.INPUT_DELAYS, "power_saving": core.POWER_SAVING,
+                  **{key: spec[2] for key, spec in core.GRAPHICS.items()}}
         lines = report.settings_lines(self.settings, labels, self.settings.env_overrides(), out)
         info = self.info
         build_problem = True if self.error.get() else None

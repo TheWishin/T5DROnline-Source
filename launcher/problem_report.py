@@ -753,7 +753,8 @@ def _gb(n):
 
 
 GAME_LOG_FACTS = re.compile(r"^\[(?:gpu|display|pacing|cpu|sched|game-dll|netplay|power)\] "
-                            r"(?:adapter|res_scale|window on|display|stage blur|FATAL|CPU budget|built for|mode |lobby match|"
+                            r"(?:adapter|res_scale|window on|display|stage blur|shadows|effects|FATAL|CPU budget|"
+                            r"built for|mode |lobby match|"
                             r"power saving|on AC|on battery|power source|internal resolution|frames in flight|"
                             # patch 0065: where the game's threads run (processors, placement, the three
                             # threads of the frame's critical path)
@@ -921,8 +922,8 @@ def system_text(ctx, now=None, game_log=None):
     return "\n".join(L) + "\n"
 
 
-SETTING_KEYS = ("display", "internal_res", "vsync", "stage_blur", "power_saving", "input_delay", "mute", "background",
-                "low_priority", "unlock_stages", "unlock_items", "unlock_jinpachi")
+SETTING_KEYS = ("display", "internal_res", "vsync", "stage_blur", "shadows", "effects", "power_saving", "input_delay",
+                "mute", "background", "low_priority", "unlock_stages", "unlock_items", "unlock_jinpachi")
 
 
 def settings_lines(settings, labels=None, env_overrides=None, out_dir=None):
@@ -941,6 +942,8 @@ def settings_lines(settings, labels=None, env_overrides=None, out_dir=None):
          f"Internal resolution: {lab('internal_res')}",
          f"VSync: {lab('vsync')}",
          f"Stage blur / glow: {lab('stage_blur')}",
+         f"Shadows: {lab('shadows')}",
+         f"Effects: {lab('effects')}",
          f"Power saving (laptops, handhelds): {lab('power_saving')}",
          f"Online input delay (netcode): {lab('input_delay')}",
          f"Mute sound: {yesno(st.get('mute'))}",

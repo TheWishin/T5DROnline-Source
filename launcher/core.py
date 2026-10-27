@@ -95,6 +95,8 @@ DEFAULTS = {
     "settings_version": 0,     # SETTINGS_VERSION once Settings migrated an older launcher.json
     "vsync": "on",             # on | off (PS3_VSYNC=0): only how pictures reach the screen; the game stays at 60 fps
     "stage_blur": "off",       # on | off (PS3_STAGE_BLUR=0): the blur / glow some stages put on the picture
+    "shadows": "on",           # on | off (PS3_SHADOWS=0): the fighters' and the stage's shadows (GRAPHICS)
+    "effects": "on",           # on | off (PS3_EFFECTS=0): hit sparks, flames, smoke, mist, waterfalls (GRAPHICS)
     "input_delay": "auto",     # online input delay: auto (by ping) | 0 | 1 | 2 frames, T5_RB_NET_DELAY
     "training": "frames",      # training overlay in Practice: off | inputs | frames (inputs + frame data), T5_TRAINING
     "training_all": False,     # ... also in the other offline modes (T5_TRAINING_ALL=1)
@@ -180,6 +182,9 @@ class Settings(dict):
             self["power_saving"] = "auto"
         if not isinstance(self["stage_blur"], str) or self["stage_blur"] not in STAGE_BLUR_MODES:
             self["stage_blur"] = "off"
+        for key, (_name, _env, modes, default) in GRAPHICS.items():
+            if not isinstance(self[key], str) or self[key] not in modes:
+                self[key] = default
         if not isinstance(self["training"], str) or self["training"] not in TRAINING_MODES:
             self["training"] = "frames"
         if not isinstance(self["practice"], bool):
@@ -232,6 +237,9 @@ class Settings(dict):
         env["PS3_LAPTOP"] = {"on": "1", "off": "0"}.get(self["power_saving"], "auto")
         if self["stage_blur"] == "off":
             env["PS3_STAGE_BLUR"] = "0"
+        for key, (_name, var, _modes, _default) in GRAPHICS.items():
+            if self[key] == "off":
+                env[var] = "0"
         if self["display"] == "borderless":
             # the game's own borderless fullscreen (Alt+Enter/F11 toggle it, Esc leaves it first,
             # it follows the monitor), not a restyled window from outside
@@ -1179,6 +1187,54 @@ STAGE_BLUR_MODES = {     # English; t(label) where it is shown
 }
 
 
+# Graphics settings for weak graphics cards (ps3recomp patch 0079, docs/RENDER_PERF.md "Graphics settings
+# for weak graphics cards"): each switches one costly effect off -- the game still simulates every frame
+# the same, only the picture changes, so the two players of an online match may choose differently.
+# On is the game's own look and the default; Off sends the variable as 0.
+#   Shadows (PS3_SHADOWS=0): the shadow map the game draws from the light each frame is not drawn and
+#   not read: no shadows of the fighters and the stage objects; fewer draws to translate too.
+#   Effects (PS3_EFFECTS=0): the see-through effects of the 3D scene are not drawn (blended draws that
+#   test depth but do not write it): hit sparks, flames, smoke, mist, haze, glows and the waterfalls.
+ON_OFF_MODES = {         # English; t(label) where it is shown
+    "on": N_("On (default)"),
+    "off": N_("Off"),
+}
+GRAPHICS = {             # setting: (English name, t(name) where it is shown; variable; choices; default)
+    "shadows": (N_("Shadows"), "PS3_SHADOWS", ON_OFF_MODES, "on"),
+    "effects": (N_("Effects"), "PS3_EFFECTS", ON_OFF_MODES, "on"),
+}
+GRAPHICS_HINTS = {       # English; t(hint) where it is shown
+    "shadows": N_("Off: no shadows of the fighters and the stage. Saves graphics work and some processor time."),
+    "effects": N_("Off: no hit sparks or other hit effects (also the EWGF lightning), flames, smoke, mist, glows "
+                  "or waterfalls. Saves graphics work (the most on misty stages) and some processor time."),
+}
+
+# "Lowest" (Settings -> Graphics): everything a weak or old graphics card can do without -- the 3D scene
+# at half size, no stage blur / glow, every effect above off. "Default" puts these settings back: Internal
+# resolution as the launcher picks it (Auto on integrated graphics, else Native), stage blur / glow Off
+# (the default since 1.1.4), every effect on. The other settings (window, VSync, power saving) stay.
+LOWEST_PRESET = dict({"internal_res": "lowest", "internal_res_set": True, "stage_blur": "off"},
+                     **{key: "off" for key in GRAPHICS})
+DEFAULT_PRESET = dict({"internal_res": "native", "internal_res_set": False, "stage_blur": "off"},
+                      **{key: spec[3] for key, spec in GRAPHICS.items()})
+
+
+def apply_preset(settings, preset):
+    """Put a preset's values into settings (a Settings or dict); -> the keys that changed."""
+    changed = [k for k, v in preset.items() if settings.get(k) != v]
+    settings.update(preset)
+    return changed
+
+
+def preset_in_use(settings):
+    """'lowest' or 'default' when the graphics settings are exactly that preset's, else None."""
+    for name, preset in (("lowest", LOWEST_PRESET), ("default", DEFAULT_PRESET)):
+        if all(settings.get(k) == v for k, v in preset.items() if k != "internal_res_set") and \
+                (name != "default" or not settings.get("internal_res_set")):
+            return name
+    return None
+
+
 # Training overlay (docs/TRAINING.md): the game draws, over its picture, the last inputs of each
 # player with how many frames each was held, and after each exchange the startup of the move and
 # the frame advantage (+3, -12). In Practice; the two options widen it to the other offline modes
@@ -1357,7 +1413,7 @@ def slow_frame_lines(path, limit=64 * 1024 * 1024):
 
 # Settings a line of Extra settings overrides (env_overrides applies them last).
 SETTING_ENV = {"power_saving": "PS3_LAPTOP", "internal_res": "PS3_INTERNAL_RES", "vsync": "PS3_VSYNC",
-               "stage_blur": "PS3_STAGE_BLUR"}
+               "stage_blur": "PS3_STAGE_BLUR", **{key: spec[1] for key, spec in GRAPHICS.items()}}
 
 
 def extra_env_override(settings, key):

@@ -940,6 +940,12 @@ def step_compile(a):
 
 def main():
     global P
+    # First of all: an older Python got through keys/decrypt/unpack and stopped only in the lift (ps3recomp's
+    # elf_parser.py: `int | None`, TypeError) -- the owner's Mac, system python3 3.9.
+    problem = prereqs.python_problem()
+    if problem:
+        print(f"ERROR: {problem}", file=sys.stderr, flush=True)
+        sys.exit(2)
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--pkg", help="the PSN package (.pkg)")
     ap.add_argument("--rap", help="the license (.rap)")

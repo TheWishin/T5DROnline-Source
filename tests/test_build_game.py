@@ -127,6 +127,26 @@ class Arguments(unittest.TestCase):
                 os.chdir(cwd)
         return calls, code, out.getvalue(), err.getvalue()
 
+    def test_an_old_python_stops_before_any_step(self):
+        # The owner's Mac: system python3 3.9 ran keys/decrypt/unpack and failed only in the lift (`int | None`).
+        old = (3, 9, 6, "final", 0)
+        with mock.patch.object(sys, "version_info", old):
+            calls, code, out, err = self.run_main(["--pkg", "a.pkg", "--rap", "b.rap"])
+            calls2, code2, _, err2 = self.run_main(["--code-id"])
+            prereqs = load_tool("prereqs")
+            (py,) = [i for i in prereqs.check() if i["id"] == "python"]
+        self.assertEqual((calls, code, calls2, code2), ([], 2, [], 2))
+        self.assertNotIn("[deps]", out)
+        line = err.strip().splitlines()[-1]
+        self.assertTrue(line.startswith("ERROR: T5DR needs Python 3.10 or newer; this is 3.9 at "), line)
+        self.assertIn(sys.executable, line)
+        self.assertIn("brew install python@3.12 and make the venv with python3.12", line)
+        self.assertIn("this is 3.9", err2)
+        self.assertFalse(py["ok"])                                   # the prerequisites list agrees
+        self.assertEqual(py["detail"], line[len("ERROR: "):])
+        for ok in ((3, 10, 0), (3, 12, 10), (4, 0, 0)):
+            self.assertIsNone(prereqs.python_problem(ok))
+
     def test_default_runs_every_step_in_order(self):
         calls, code, out, _ = self.run_main(["--pkg", "a.pkg", "--rap", "b.rap"])
         self.assertEqual(code, 0)

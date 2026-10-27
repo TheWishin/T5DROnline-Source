@@ -29,6 +29,10 @@ part is in the README's status table.
   differs (or, unnoted, that a patch of the series still applies to) is prepared again; the old tree is kept aside
   unless it is exactly what was prepared. A release's vendored copy is never touched. The preflight's unit tests run
   against the tree the zip is built from.
+- `tools/build_game.py` checks the Python version before any step: with Python older than 3.10 it stops at once with
+  "T5DR needs Python 3.10 or newer; this is X.Y at <path>" and the macOS hint (brew install python@3.12, a venv made
+  with python3.12). A Mac's system python3 3.9 used to get through keys, decrypt and unpack and fail only in the lift.
+  `tools/prereqs.py`'s Python line says the same.
 
 ## v1.1.6 (2026-10-27)
 

@@ -345,7 +345,8 @@ class FallbackTest(unittest.TestCase):
         ca, cb, ta, tb = self.pair()
         self.assertEqual(ta.path, "direct")
         cb.game_playing(tb.match_id)                                       # Bob's game is in the fight
-        self.assertTrue(self.s.wait_for(lambda: self.s.srv.by_name["bob"].match.game_playing[1]))
+        bob = lambda: self.s.srv.by_name["bob"]                            # (either side: the queue's RTT decides)
+        self.assertTrue(self.s.wait_for(lambda: bob().match.game_playing[bob().match.side(bob())]))
         self.assertFalse(ca.nat_fallback(ta.match_id))                     # Alice's "heard nothing": not believed
         m = self.s.call(lambda: self.s.srv.by_name["alice"].match)
         self.assertEqual((m.state, m.path, m.fallback), ("playing", "direct", False))

@@ -3,6 +3,16 @@
 All notable changes, newest first. The project is a test release. Short commit hashes are in parentheses. The state of each
 part is in the README's status table.
 
+## v1.1.7 (not released yet)
+
+### Updates and releases
+- An update keeps the new launcher only once it has run for 15 seconds or was closed by hand
+  (`launcher/updater.py` `CONFIRM_AFTER_MS`, `App.on_close`): a new launcher that closes by itself before -- as
+  1.1.5's did 2 s after its start -- gets the old files back and the old launcher starts again. The confirmation
+  lives in the new launcher, so this guards the updates to 1.1.7 and later (the swap step of 1.1.4-1.1.6 already
+  rolls back a launcher that ends unconfirmed; 1.1.5's confirmed after 0.3 s). The swap step's marker leaves the
+  environment at the start, so nothing the launcher starts in those 15 s inherits it.
+
 ## v1.1.6 (2026-10-27)
 
 **Hotfix: the 1.1.5 launcher closed right after it started.** On a PC with the game's package (.pkg) chosen in the

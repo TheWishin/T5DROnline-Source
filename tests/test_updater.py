@@ -7,6 +7,7 @@ import io
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -838,6 +839,171 @@ class SwapStep(unittest.TestCase):
         self.assertFalse(res["changed"])
         self.assertIn("t5dr.exe", res["error"])
         self.assertEqual(tree(self.install), self.before)
+
+
+# The old release's launcher in ConfirmAfterStart: notes that it was started (the swap step starts it after a
+# rollback) and ends.
+OLD_LAUNCHER = r'''
+import os
+here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+with open(os.path.join(here, "native", "old-launcher-started"), "w") as f:
+    f.write(open(os.path.join(here, "release.json")).read())
+'''
+
+# The new release's launcher: a real Tk main loop with the real Updater of this tree (launcher/updater.py is
+# copied into the new release), App.on_close as t5dr_launcher.App's (it confirms), and one of three ends.
+NEW_LAUNCHER = r'''
+import json, os, sys, tkinter as tk
+here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(here, "launcher"))
+import updater
+MODE = %r
+
+class App(tk.Tk):
+    readonly = True                 # no update check and no report: the test reads the swap step's result
+
+    def on_close(self):             # t5dr_launcher.App.on_close: closed by hand, the update stays
+        updater.confirm_started()
+        self.destroy()
+
+app = App()
+app.withdraw()
+updater.Updater(app, root=here)
+
+def note():                         # what a game or a build started now would inherit
+    with open(os.path.join(here, "native", "new-launcher.json"), "w") as f:
+        json.dump({"env": os.environ.get(updater.CONFIRM_ENV), "pid": os.getpid()}, f)
+
+app.after(1000, note)
+if MODE == "dies":                  # 1.1.5: SystemExit out of a Tk callback 2 s after the start
+    app.after(2000, lambda: sys.exit(1))
+elif MODE == "closed":              # the player closes it after 3 s (WM_DELETE_WINDOW -> on_close)
+    app.after(3000, app.on_close)
+else:                               # runs on, ends by itself later
+    app.after(updater.CONFIRM_AFTER_MS + 2000, app.destroy)
+app.mainloop()
+'''
+
+
+def bundled_python(folder):
+    """folder/python/pythonw.exe that really runs: the venv redirector of this Python plus a pyvenv.cfg (the
+    release's python/ is a whole CPython; this starts in milliseconds and is a few hundred KB). None if this
+    Python has no redirector."""
+    nt = os.path.join(sys.base_prefix, "Lib", "venv", "scripts", "nt")
+    if os.name != "nt" or not os.path.exists(os.path.join(nt, "pythonw.exe")):
+        return None
+    d = os.path.join(folder, "python")
+    shutil.rmtree(d, ignore_errors=True)
+    os.makedirs(d)
+    for exe in ("python.exe", "pythonw.exe"):
+        shutil.copy2(os.path.join(nt, exe), os.path.join(d, exe))
+    with open(os.path.join(d, "pyvenv.cfg"), "w") as f:
+        f.write(f"home = {sys.base_prefix}\ninclude-system-site-packages = false\n")
+    return os.path.join(d, "pythonw.exe")
+
+
+@unittest.skipUnless(os.name == "nt", "the swap step starts pythonw.exe")
+class ConfirmAfterStart(unittest.TestCase):
+    """1.1.5's launcher closed 2 s after its start but had confirmed the update after 0.3 s, so the swap step
+    kept it. Now the new launcher confirms after CONFIRM_AFTER_MS or when closed by hand. Real processes: the
+    swap step (updater.py --apply), the new launcher (a Tk main loop with the real Updater) and, after a
+    rollback, the old launcher -- both started by the swap step from the folder's own python\\pythonw.exe."""
+
+    def setUp(self):
+        try:
+            import tkinter
+            tkinter.Tcl()
+        except Exception as e:      # noqa: BLE001
+            self.skipTest(f"no Tcl/Tk: {e}")
+        self.tmp = tempfile.mkdtemp(prefix="t5dr_confirm_test_")
+        self.install = os.path.join(self.tmp, "T5DR-Online-1.0.0")
+        make_install(self.install)
+        self.sroot = self.install + ".update"
+        self.new = os.path.join(self.sroot, "new", "T5DR-Online-1.0.1")
+        make_new(self.new)
+        if not bundled_python(self.install) or not bundled_python(self.new):
+            shutil.rmtree(self.tmp, ignore_errors=True)
+            self.skipTest("this Python has no venv redirector (Lib/venv/scripts/nt/pythonw.exe)")
+        write(os.path.join(self.install, "launcher", "t5dr_launcher.pyw"), OLD_LAUNCHER)
+        shutil.copy2(os.path.join(ROOT, "launcher", "updater.py"), os.path.join(self.new, "launcher", "updater.py"))
+        self.before = {k: v for k, v in tree(self.install).items() if not k.startswith("native/")}
+
+    def tearDown(self):
+        end = time.time() + 30                 # the launchers the swap step started end by themselves
+        while time.time() < end and updater.processes_under([self.tmp]):
+            time.sleep(0.25)
+        for pid, _ in updater.processes_under([self.tmp]):
+            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True)
+        for _ in range(100):
+            shutil.rmtree(self.tmp, ignore_errors=True)
+            if not os.path.exists(self.tmp):
+                break
+            time.sleep(0.1)
+
+    def update(self, mode):
+        write(os.path.join(self.new, "launcher", "t5dr_launcher.pyw"), NEW_LAUNCHER % mode)
+        staged = {"sroot": self.sroot, "new": self.new}
+        t0 = time.time()
+        proc = updater.start_swap(staged, "1.0.0", "1.0.1", out_dir=os.path.join(self.install, "native"),
+                                  root=self.install, wait_pid=0, python=sys.executable)
+        proc.wait(updater.CONFIRM_WAIT + 60)
+        with open(os.path.join(self.sroot, "swap.log"), encoding="utf-8") as f:
+            log = f.read()
+        with open(os.path.join(self.sroot, "result.json"), encoding="utf-8") as f:
+            return proc.returncode, json.load(f), log, time.time() - t0
+
+    def native(self, name, timeout=20.0):
+        p = os.path.join(self.install, "native", name)
+        end = time.time() + timeout
+        while time.time() < end and not os.path.exists(p):
+            time.sleep(0.1)
+        if not os.path.exists(p):
+            return None
+        time.sleep(0.2)                         # (written at once, but let the writer close it)
+        with open(p, encoding="utf-8") as f:
+            return f.read()
+
+    def test_a_launcher_that_ends_after_2_s_is_rolled_back(self):
+        rc, res, log, _ = self.update("dies")
+        self.assertEqual(rc, 6, log)
+        self.assertFalse(res["ok"])
+        self.assertEqual(res["phase"], "undone", log)
+        self.assertTrue(res["rolled_back"], log)
+        self.assertIn("ended without starting up", log)
+        self.assertEqual({k: v for k, v in tree(self.install).items() if not k.startswith("native/")},
+                         self.before)                                   # the old program files, byte for byte
+        self.assertEqual(json.loads(self.native("old-launcher-started"))["version"], "1.0.0", log)
+        # the marker left the environment at the start: what the launcher started meanwhile does not confirm
+        self.assertIsNone(json.loads(self.native("new-launcher.json"))["env"])
+
+    def test_closed_by_hand_after_3_s_keeps_the_update(self):
+        rc, res, log, secs = self.update("closed")
+        self.assertEqual(rc, 0, log)
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["phase"], "done", log)
+        self.assertIn("the launcher confirmed", log)
+        self.assertLess(secs, updater.CONFIRM_AFTER_MS / 1000, log)      # did not wait for the 15 s
+        self.assertEqual(updater.local_version(self.install), "1.0.1")
+        self.assertFalse(os.path.exists(os.path.join(self.sroot, "backup")))
+        self.assertIsNone(self.native("old-launcher-started", timeout=2))
+
+    def test_a_launcher_that_runs_on_confirms_after_15_s(self):
+        rc, res, log, secs = self.update("runs")
+        self.assertEqual(rc, 0, log)
+        self.assertEqual(res["phase"], "done", log)
+        self.assertIn("the launcher confirmed", log)
+        self.assertGreaterEqual(secs, updater.CONFIRM_AFTER_MS / 1000, log)
+        self.assertEqual(updater.local_version(self.install), "1.0.1")
+        self.assertIsNone(self.native("old-launcher-started", timeout=2))
+
+    def test_the_launcher_confirms_on_close(self):
+        with open(os.path.join(ROOT, "launcher", "t5dr_launcher.pyw"), encoding="utf-8") as f:
+            src = f.read()
+        body = src[src.index("    def on_close(self):"):]
+        body = body[:body.index("\n    def ", 10) if "\n    def " in body[10:] else len(body)]
+        self.assertIn("updater.confirm_started()", body)
+        # before anything that could raise on the way out (the tabs' own on_close, the settings file)
+        self.assertLess(body.index("updater.confirm_started()"), body.index("self.save_settings()"))
 
 
 # --------------------------------------------------------------------------- never while playing

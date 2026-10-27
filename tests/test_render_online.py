@@ -5,8 +5,10 @@ touch.
 * A draw the renderer cannot make (no topology for its primitive type) is named with where the FIFO walker found
   it and the ring words around it, and stamped in the latency log ('Z'), so it can be lined up with rollbacks.
 * The tier-1 path (on by default with resource binding tier 1, RSX_TIER1_PATH=1/0 forces it) changes only host
-  binding work: texture units the fragment program does not sample are not bound, and the main descriptor heaps
-  are set once per command list. Tier 2/3 behaviour is the same as before (the switch is off there).
+  binding work: texture units the fragment program does not sample are not bound, a draw that differs from the one
+  before it only in such units keeps that draw's table, and the main descriptor heaps are set once per command
+  list. Tier 2/3 behaviour is the same as before (the switch is off there).
+* RSX_FX_COUNT=1 (diagnostics, off by default) stamps the effect draws of every present in the latency log ('H').
 * Nothing it adds writes guest memory or the command stream: the two players of a match may differ.
 """
 import os
@@ -28,26 +30,6 @@ class Patch(unittest.TestCase):
     def added(self):
         return "\n".join(ln[1:] for ln in self.patch.splitlines() if ln.startswith("+") and not ln.startswith("+++"))
 
-    def test_vblank_per_frame(self):
-        add = self.added()
-        self.assertIn("void cellGcm_set_vblank_pace(u32 interval_ea)", add)
-        self.assertIn('getenv("PS3_VBLANK_PER_FRAME")', add)
-        # on with a title word, the switch wins either way
-        self.assertIn("vpf = e && *e ? *e != '0' : s_vpf_interval_ea != 0;", add)
-        # the title's interval, clamped to 1..4; a vblank beyond it within 100 ms of the frame's flip request is held
-        self.assertIn("if (iv < 1u) iv = 1u; else if (iv > 4u) iv = 4u;", add)
-        self.assertIn("if (vpf_n >= iv && now - vpf_t < 100) {", add)
-        self.assertIn("InterlockedExchange(&s_vpf_owed, 1);", add)
-        # ... and passed on at the next flip request (pacing kept): the request marks it pending, the pump delivers it
-        self.assertIn("if (s_vpf_owed) GCM_PENDING_SET(1);", add)
-        self.assertIn("if (InterlockedExchange(&s_vpf_owed, 0)) p |= 1;", add)
-
-    def test_the_game_names_its_interval(self):
-        with open(os.path.join(ROOT, "src", "perf", "t5_vblank.cpp"), encoding="utf-8") as f:
-            src = f.read()
-        self.assertIn("constexpr uint32_t kFlipInterval = 0x106D4D9Cu;", src)
-        self.assertIn("cellGcm_set_vblank_pace(kFlipInterval);", src)
-
     def test_only_the_renderer(self):
         files = sorted(set(re.findall(r"^diff --git a/(\S+) ", self.patch, re.M)))
         self.assertEqual(files, ["libs/video/cellGcmSys.c", "libs/video/rsx_live_draw.c"])
@@ -67,6 +49,28 @@ class Patch(unittest.TestCase):
         self.assertEqual(add.count("g_ld_heaps_main = 0;"), 3)   # two list resets, the present's own heap
         self.assertNotIn("SetDescriptorHeaps(LDL, 2, heaps)", add)
 
+    def test_tables_kept_only_for_unsampled_units(self):
+        add = self.added()
+        self.assertIn("if (fp_reads != 0xFFFFu) {", add)   # tier-1 path only
+        # a sampled unit must match exactly; an unsampled one may differ (texture: a guest texture or white only,
+        # and only while no texture descriptor was written since)
+        self.assertIn("srv_same &= slots[u] == prev.srv[u];", add)
+        self.assertIn("srv_same &= ps == SRV_WHITE || (ps >= SRV_TEXTURE_BASE && ps < SRV_VTEX_BASE);", add)
+        self.assertIn("int srv_same = prev.gen == g_ld_srv_gen, smp_same = 1;", add)
+        self.assertIn("tables kept", add)
+
+    def test_effect_counts_off_by_default(self):
+        add = self.added()
+        self.assertIn('getenv("RSX_FX_COUNT")', add)
+        self.assertIn("lat_log('H'", add)   # 'Y' is patch 0080's skipped tick
+        self.assertNotIn("lat_log('Y'", add)
+
+    def test_no_pacing_change(self):
+        # the vblank / flip-completion experiments of this branch are not in the patch (docs/RENDER_PERF.md)
+        add = self.added()
+        for word in ("PS3_VBLANK_PER_FRAME", "PS3_FLIP_DONE_NEEDS_FLIP", "GCM_PENDING_SET", "cellGcm_skip_ticks"):
+            self.assertNotIn(word, add, word)
+
     def test_dropped_draw_notes(self):
         add = self.added()
         self.assertIn('getenv("RSX_PRIM_NOTES")', add)
@@ -80,7 +84,7 @@ class Patch(unittest.TestCase):
 
     def test_binding_work_in_the_gpu_pass_line(self):
         add = self.added()
-        self.assertIn(" | binding per frame: %.0f draws, tables set %.0f", add)
+        self.assertIn(" binding %.0f draws, tables set %.0f", add)
 
     def test_series_order(self):
         names = sorted(n for n in os.listdir(os.path.join(ROOT, "patches", "ps3recomp")) if n.endswith(".patch"))

@@ -325,7 +325,10 @@ For us, in that report (`system.txt`, "How the game ran"):
   card itself is the limit (an old graphics card: resource binding tier 1)`:
   the card, not the resolution (Native or below already); the `[gpu-pass]`
   lines of such a log say which passes take the time -- please keep them for
-  us. `CPU-bound: the game needs X ms ... the render translation Y`: the
+  us. Since patch 0081 they start with the binding work per frame (`per frame:
+  binding 830 draws, tables set ..., descriptor heaps ...`) and the log says
+  `[gpu] tier-1 binding path: on` (RENDER_PERF.md "Online pictures and old
+  graphics cards"). `CPU-bound: the game needs X ms ... the render translation Y`: the
   processor; `CPU and GPU in turn`: one frame in flight
   (`RSX_FRAMES_IN_FLIGHT=1`, or integrated graphics) with a slow GPU.
 - `processors at X GHz on average (Y % of their Z)` well under 100 % on AC

@@ -149,6 +149,13 @@ online features need the lobby server updated; 1.1.4 launchers keep working with
 - **An honest verdict in the game log** (`system.txt`, "How the game ran"): `GPU-bound` names the graphics card,
   `CPU-bound` the processor; a lower resolution is suggested only when it helps. Old graphics cards (Direct3D 12
   resource binding tier 1) log per-pass GPU times (`[gpu-pass]`) for us (patch 0075).
+- **Hit effects vanishing (GitHub #12: the EWGF's lightning):** not caused by rollback, and the renderer drops
+  nothing online (the odd dropped draw of the first rollback tests was gone before 1.1.0). The game itself ends its hit
+  effects after a few frames when its frames take longer than a screen refresh: on a PC that runs it at 30 fps or
+  less (an old graphics card) most of them, at 60 fps online only in a stretch of long frames. Still open; if you see
+  it at 60 fps, send us a clip and the game log.
+- **Old graphics cards (GeForce GT 4xx-7xx with the Fermi chip, resource binding tier 1):** less binding work per
+  draw for the graphics driver, and the game log says how much per frame (for the next player log; patch 0081).
 
 ### Fixes
 - **PS4 / PS5 controllers: L2 and R2 are no longer pressed all the time.** A released trigger counted as held when a

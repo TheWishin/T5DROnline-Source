@@ -74,6 +74,8 @@ FEATURES = ["ranks", "sessions", "recovery", "passwd", "profile", "history", "ch
             "blind_ready", "blocks", "strict", "set_lock", "lag_check", "notices", "ranked_sets", "ingame_pick",
             "nat2", "relays", "friends", "tournaments", "spectate", "game_fallback", "private_rooms"]
 FEATURES += ["casual_choice"]       # 1.1.5: P1 / P2 and the stage by choice in casual matches (casual.py)
+FEATURES.append("stats")       # 1.1.5: the Online tab's stats page (h_stats)
+STATS_SECONDS = 300.0          # the stats page's numbers are computed again at most this often
 FEATURES += ["training", "handicap"]   # 1.1.5: training rooms and the health handicap (matchrules.py)
 REPORT_SOURCES = ("game", "manual", "quit", "crash", "disconnect")
 DAY = 86400.0
@@ -829,6 +831,7 @@ class LobbyServer(SpectateMixin, RoomsMixin, CasualMixin, MatchRulesMixin):
     # ------------------------------------------------------------------ dispatch
     PRE_LOGIN = ("hello", "login", "ping", "logout", "recover")
     HEAVY = frozenset(("leaderboard", "profile", "history", "lobby", "friends"))
+    HEAVY = HEAVY | {"stats"}
     STATE = frozenset(("queue", "unqueue", "room_create", "room_join", "room_leave", "room_lock", "room_kick",
                        "room_line", "room_bar", "set_char", "set_life", "udp_rtt", "perf",
                        "relay_rtt",
@@ -911,7 +914,7 @@ class LobbyServer(SpectateMixin, RoomsMixin, CasualMixin, MatchRulesMixin):
         conn.build_id = bid
         conn.release = proto.clean_text(build.get("release", ""), 32)     # (shown to everybody in the lobby list)
         caps = msg.get("caps")
-        conn.caps = CAPS.intersection(str(c) for c in caps[:16]) if isinstance(caps, list) else frozenset()
+        conn.caps = CAPS.intersection(str(c) for c in caps[:32]) if isinstance(caps, list) else frozenset()  # (1.1.5: 32, a 1.1.5 launcher sends 16)
         conn.helloed = True
         return {"t": "welcome", "server": SERVER_NAME, "proto": proto.PROTO_VERSION,
                 "udp_port": self.udp.port, "udp_port2": self.udp.port2, "build": bid,
@@ -1459,6 +1462,14 @@ class LobbyServer(SpectateMixin, RoomsMixin, CasualMixin, MatchRulesMixin):
         self._set_char(conn.player, msg.get("char"))
 
     # ------------------------------------------------------------------ profiles, history, leaderboard
+    async def h_stats(self, conn, msg):
+        """The stats page (1.1.5, read-only): totals and every fighter's matches and wins, ranked and casual apart.
+        Computed at most every STATS_SECONDS for everybody (the query reads every counted match)."""
+        hit = self.__dict__.get("_stats_cache")
+        if hit is None or time.monotonic() - hit[0] > STATS_SECONDS:
+            hit = self._stats_cache = (time.monotonic(), self.store.community_stats())
+        return dict(hit[1], t="stats")
+
     async def h_profile(self, conn, msg):
         name = str(msg.get("name") or conn.player.name)
         return {"t": "profile", "profile": self._profile(name, int(msg.get("history", 10)), conn.player)}

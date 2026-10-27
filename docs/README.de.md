@@ -50,7 +50,7 @@ Online wurde zwischen zwei echten PCs über das Internet getestet
 | Anzeige | Fenster in jeder Größe, randloses Vollbild (Alt+Enter oder F11). **Interne Auflösung** von Lowest (0,5x) über Native (720p) bis 1080p, 1440p und 4K, oder Auto (die Stufe des Bildschirms, mit integrierter Grafik höchstens 1080p) (Launcher-Einstellungen, `PS3_INTERNAL_RES`); jede Stufe in Kämpfen, Menüs, Videos und Charakterwahl geprüft. Weniger Arbeit für die Grafikkarte ab 1080p (1.1.3). Mit integrierter Grafik ist Auto der Standard (1.1.4). |
 | Musik, Soundeffekte, Videos | Funktionieren. |
 | Steuerung | Tastatur, Xbox-Controller (XInput), DualShock 4 und DualSense über USB und Bluetooth (direkt gelesen, ohne Steam), Arcade-Sticks und Hitboxen (DirectInput), zwei Spieler an einem PC, Knöpfe im Launcher einstellbar (Settings -> Set up controllers) oder in der `controls.ini`. Kurze Taps gehen nie verloren. Von einem Menschen ausprobiert: Xbox-Pad und Arcade-Stick, alle Eingaben kamen an, flüssig. **Set up controllers** fand von 1.1.0 bis 1.1.3 gar keinen Controller; es funktioniert wieder (1.1.4). |
-| Trainings-Werkzeuge | Im Practice-Modus: eine Eingabe-Anzeige (die letzten Eingaben jedes Spielers, jede mit der Zahl der Frames, die sie gehalten wurde) und Framedaten nach jedem Schlagabtausch (Startup und wer zuerst wieder handeln kann: `+3`, `-12`), scharf über das Bild gezeichnet, bei jeder Auflösung. Launcher: Settings -> Trainings-Anzeige (Aus / Eingaben / Eingaben + Framedaten, auch in den anderen Offline-Modi, online nur die eigenen Eingaben), F2 schaltet sie im Spiel um. Siehe [TRAINING.md](TRAINING.md) (englisch). |
+| Trainings-Werkzeuge | Im Practice-Modus: eine Eingabe-Anzeige (die letzten Eingaben jedes Spielers, jede mit der Zahl der Frames, die sie gehalten wurde) und Framedaten nach jedem Schlagabtausch (Startup und wer zuerst wieder handeln kann: `+3`, `-12`), scharf über das Bild gezeichnet, bei jeder Auflösung. Launcher: Settings -> Trainings-Anzeige (Aus / Eingaben / Eingaben + Framedaten, auch in den anderen Offline-Modi, online nur die eigenen Eingaben), F2 schaltet sie im Spiel um. Trainingswerkzeuge (offline): SELECT+3 setzt beide Kämpfer an den Start oder an eine Wand, der Dummy blockt nach dem ersten Treffer / duckt sich / geht / macht Seitschritte, 5 Aufnahmeplätze für den Dummy (Settings -> Trainingswerkzeuge). Siehe [TRAINING.md](TRAINING.md) (englisch). |
 | Speichern | Funktioniert. Die Uhr im Spiel zeigt das echte Datum. |
 | Lange Sitzungen | Der alte Speicherfehler (weißes Bild nach ein paar Besuchen des Titels) ist behoben. |
 | Online-Spiel | Funktioniert auf einem PC und über den öffentlichen Lobby-Server. Rollback-Netcode: 1 Frame Input-Delay bis ~60 ms Ping, darüber 2 (Settings -> Online input delay; Ranked: immer 2), getestet bei 0/50/150 ms Ping mit Paketverlust. Zwischen zwei echten PCs über das Internet gespielt (18.10.2026). Quick- und Ranked-Suche nehmen zuerst Gegner mit niedrigem Ping (geschätzt über den nächsten Relay-Server) und erweitern die Suche, während du wartest. Viele abgebrochene Matches hintereinander machen das offene Spiel nicht mehr kaputt. Einen Online-Kampf kann niemand pausieren. Matches kommen auch zustande, wenn eine Firewall das Spiel blockiert: über das Relay, wenn sonst nichts durchkommt (1.1.3); dort spielt das Spiel wie ein direktes Match bei gleichem Ping, weil der Launcher die Pakete des Spiels sofort weitergibt (1.1.4). |
@@ -158,6 +158,7 @@ heißen. Im deutschen Launcher heißen sie:
 | Advanced: extra settings | Erweitert: zusätzliche Einstellungen |
 | Mute sound | Ton aus |
 | Stage blur / glow | Stage-Unschärfe / Leuchten |
+| Graphics (weak graphics cards), Shadows, Effects, Lowest (old graphics cards), Default | Grafik (schwache Grafikkarten), Schatten, Effekte, Am niedrigsten (alte Grafikkarten), Standard |
 | Power saving (laptops, handhelds) | Stromsparen (Laptops, Handhelds) |
 | Unlocks, Unlock all stages, Unlock Jinpachi and Random select, Unlock all customization items | Freischaltungen, Alle Stages freischalten, Jinpachi und die Random-Auswahl freischalten, Alle Customize-Items freischalten |
 
@@ -196,6 +197,13 @@ Sprachen gleich.
   lassen die Sonne leuchten (der Schrottplatz). Aus (seit 1.1.4 der Standard,
   einmalig auch für Spieler älterer Versionen) zeigt diese Stages scharf, ohne
   das Leuchten; An sieht aus wie auf der PS3, bei jeder internen Auflösung. Online kann jeder Spieler selbst wählen.
+- **Settings** -> **Graphics (weak graphics cards)** (Grafik, schwache
+  Grafikkarten): Schatten und Effekte, An (Standard) oder Aus. Effekte Aus
+  blendet auch die Treffer-Funken und andere Treffer-Effekte aus (auch den
+  EWGF-Blitz), dazu Flammen, Rauch, Nebel und Wasserfälle. **Am niedrigsten
+  (alte Grafikkarten)** stellt die interne Auflösung auf „Am niedrigsten“ und
+  schaltet Stage-Unschärfe / Leuchten, Schatten und Effekte aus; **Standard**
+  stellt sie wieder her. Online kann jeder Spieler selbst wählen.
 - **Settings** -> **Power saving (laptops, handhelds)** (Stromsparen): Auto
   (Standard) schaltet es ein bei Akkubetrieb, Stromsparmodus oder dem
   Energiesparplan, einem mobilen Prozessor oder integrierter Grafik; mit An und
@@ -214,6 +222,12 @@ Sprachen gleich.
   den anderen Offline-Modi und online (dort nur deine eigenen Eingaben). **F2**
   im Spiel schaltet sie um. Sie liest das Spiel nur und ändert nie ein Match.
   Mehr in [TRAINING.md](TRAINING.md) (englisch).
+- **Settings** -> **Trainingswerkzeuge** (Practice-Modus, nur offline; an):
+  **SELECT** halten und 3 drücken setzt beide Kämpfer an den Start zurück
+  (f+3 / b+3: der Dummy an die Wand vor / hinter dir; df+3 / db+3: du an die
+  Wand), 1 / 2 / 4 nimmt den Dummy auf, spielt ihn einmal oder in Schleife ab
+  (5 Plätze), vor / zurück tippen wechselt, was der Dummy tut. Mehr in
+  [TRAINING.md](TRAINING.md#practice-tools-115) (englisch).
 - **Settings** -> **Unlocks** (Freischaltungen, für das Spiel offline; alles
   ist anfangs aus):
   - **Alle Stages freischalten**: Die Tekken-5-Stages (die alten, sonst nach

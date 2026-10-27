@@ -260,10 +260,17 @@ if(T5DR_GAME_DLL)
     target_link_options(t5dr PRIVATE "/DEF:${CMAKE_CURRENT_SOURCE_DIR}/tools/gamedll/t5dr_host.def")
 endif()
 
-# TODO: rollback, netplay, direct fight and perf are written against Win32 (windows.h, Winsock,
-# the vectored exception handler) and are not ported to macOS yet: the macOS build is the game
-# alone, offline.
-if(WIN32)
+# Our own modules (src/: rollback, netplay, direct fight, training, perf) reach the host through
+# src/platform (t5_win.h, t5_plat.h, t5_sock.h): Win32 on Windows, the runtime's POSIX shim and
+# t5_plat_posix.c elsewhere (docs/MACOS.md). On macOS they are built only with
+# T5DR_MACOS_ONLINE (tools/build_game.py --macos-online): online play between a Mac and a PC is
+# not proven in sync yet (docs/MACOS_ONLINE_TEST.md), so the default Mac build stays the game
+# alone, offline, as before.
+option(T5DR_MACOS_ONLINE "macOS: build the online modules (a test build until a Mac-vs-PC match is proven in sync)" OFF)
+if(T5DR_MACOS_ONLINE AND NOT APPLE)
+    message(FATAL_ERROR "T5DR_MACOS_ONLINE is for macOS builds")
+endif()
+if(WIN32 OR T5DR_MACOS_ONLINE)
 # Rollback (our own code, src/rollback/): off unless T5_RB_MODE is set. The
 # netplay layer calls its loop (T5_RB_MODE=net), so it is built in both modes;
 # rb_hooks.cpp reads the lifted table through ppu_game_table in DLL mode.
@@ -290,7 +297,8 @@ set_source_files_properties(${DIRECTFIGHT_SOURCES} PROPERTIES COMPILE_DEFINITION
 
 # Training overlay (our own code, src/training/, docs/TRAINING.md): input display and
 # frame data drawn by the runtime's overlay layer (ps3recomp patch 0045). Off unless
-# T5_TRAINING is set; reads guest memory only, never writes it.
+# T5_TRAINING is set; reads guest memory only, never writes it. The practice tools
+# (practice.cpp) change the game -- in offline Practice only, with T5_PRACTICE=1.
 file(GLOB TRAINING_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/training/*.cpp")
 target_sources(t5dr PRIVATE ${TRAINING_SOURCES})
 set_source_files_properties(${TRAINING_SOURCES} PROPERTIES COMPILE_DEFINITIONS _CRT_SECURE_NO_WARNINGS
@@ -309,7 +317,29 @@ if(T5DR_PGO STREQUAL "gen")
     target_link_options(t5dr PRIVATE /FORCE:MULTIPLE)
     target_sources(t5dr PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/perf/pgo/pgo_crt_shim.c")
 endif()
-endif()   # WIN32: our own modules
+if(APPLE)
+    # The POSIX half of src/platform/t5_plat.h, and the runtime's Win32 shim for t5_win.h.
+    target_sources(t5dr PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/t5_plat_posix.c")
+    target_include_directories(t5dr PRIVATE "${PS3RECOMP_DIR}/runtime/platform")
+    # Entry detours without code patching (rb_detour.cpp): the lifted code must have been
+    # lifted with the hook slots (ppu_lifter.py --hook-slots src/rollback/hook_slots.txt).
+    file(STRINGS "${RECOMP_DIR}/ppu_recomp.h" _hook_slots REGEX "^#define PPU_HOOK_SLOTS ")
+    if(NOT _hook_slots)
+        message(FATAL_ERROR "T5DR_MACOS_ONLINE: ${RECOMP_DIR} was lifted without hook slots -- "
+                            "run tools/build_game.py --macos-online (it lifts again)")
+    endif()
+    set_property(SOURCE ${ROLLBACK_SOURCES} APPEND PROPERTY COMPILE_DEFINITIONS T5DR_HOOK_SLOTS)
+    message(STATUS "macOS online modules: on (${_hook_slots})")
+endif()
+endif()   # WIN32 OR T5DR_MACOS_ONLINE: our own modules
+
+# macOS: no spontaneous fused multiply-add anywhere in t5dr (Apple clang contracts a*b+c by
+# default; the runtime library and the lifted code already say so, this covers the boot harness,
+# the loader, the HLE table and src/). Clang on x86-64 Windows has no FMA to contract into
+# outside the lifted code, which gets -ffp-contract=off above.
+if(APPLE)
+    target_compile_options(t5dr PRIVATE -ffp-contract=off)
+endif()
 
 # The generated NID table includes every module's header.
 file(GLOB LIB_INC_DIRS LIST_DIRECTORIES true "${PS3RECOMP_DIR}/libs/*")
@@ -367,7 +397,7 @@ endif()
 # already required it), and no code is generated differently except that these
 # calls become the instructions they wrap. The lifted code keeps its options
 # (T5DR_LIFTED_ARCH; x86-64-v3 includes cx16).
-if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND CMAKE_SIZEOF_VOID_P EQUAL 8)
+if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND CMAKE_SIZEOF_VOID_P EQUAL 8 AND MSVC)   # (clang-cl: not a Mac's LLVM clang)
     target_compile_options(ps3recomp_runtime PRIVATE /clang:-mcx16)
     get_target_property(_t5dr_srcs t5dr SOURCES)
     if(GAME_SOURCES)

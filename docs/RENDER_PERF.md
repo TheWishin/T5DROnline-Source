@@ -747,6 +747,58 @@ same result hash on both sides in every match. All 70 lockstep pair runs above
 (Native against 1080p / 1440p / 4K, On against Off): 0 mismatching frames. (The
 PC ran 10-19 other games during these runs, at 16-23 fps for the pairs.)
 
+### Hit effects: the EWGF's lightning (GitHub #12, 1.1.5)
+
+Player report (#12, PlusUltraVEN: i3-3240, GeForce GT 730 4 GB = feature
+level 11_0, resource binding tier 1; Lowest 0.5x, Stage blur / glow Off): "the
+electricity effect for the EWGF isn't visible. I'm not sure if this applies to
+other hit effects as well".
+
+**How it was checked.** Kazuya (P1) against Heihachi on stage 20, offline, the
+input scripted per frame (`T5_DF_SCRIPT`: walk forward, then f, n, d, d/f+2
+with 2 on the same frame as d/f -- the Electric -- or one frame later -- the
+plain Wind God Fist), P2 standing (it blocks) or walking forward (it is hit),
+the training overlay's frame data to tell the two apart (`T5_TRAINING_ALL=1`:
+EWGF +5 on block / +26 on hit, WGF -10 / +29, both i11), one picture per attempt
+9-20 frames after the 2 (`T5_DF_SHOT`, attempts every 150 frames, so the same
+offset can be shown for both moves) and a draw CSV of those frames
+(`RSX_DRAW_CSV` gated on the shot). Builds of integration-115; local evidence
+under `build/int115/d-runs/` (git-ignored).
+
+**What the game draws.** The EWGF has its own effect from 9 frames after the
+2 (before the fist lands) for more than 10 frames: blue lightning around the
+fist and the opponent (about ten additive, textured triangle strips a frame:
+a 64 x 64 DXT5 texture times the vertex colour, blended source alpha + one,
+straight onto the 3D target) and a blue-white flash on both fighters (the
+lighting); the orange hit spark of both moves comes on top when it hits. The
+plain WGF has the hit spark and a few arcs a little later. Every one of these
+draws is executed (CSV outcome `execute`), and the pictures show it with Stage
+blur / glow On and Off and at Lowest (0.5x) alike, on the RTX 3090 and on the
+integrated Radeon (Lowest, Off: the same pictures frame for frame, the
+scripted runs being identical): the glow composite that Off
+leaves out is stage 20's sun glow (the 3D pass into two 128 x 128 buffers,
+blurred, added back), drawn every frame whether anything hits or not, not part
+of the effect.
+
+**Other hit effects.** The renderer counts every draw it does not execute
+(`[live-draw] ... drop{fetch degen prim alloc pso ring surface}`): over the
+test matches of the last weeks (hundreds of fights, every fighter, both sides
+mashing) everything stays at 0 except `prim`, a draw whose primitive type has
+no topology here (points, lines, quad strips, polygons), one or two in a whole
+game -- and only in games that re-simulate frames: each of the 59 logs with
+`prim` above 0 is a rollback pair or the rollback test mode; an offline fight
+of 9,000 frames with both sides mashing (Lili vs Dragunov, the pairing of one
+of them) has none. So no hit effect is missing that way; the two draws look
+like something a rollback leaves behind, not an effect. Patch 0076 names them
+when they come (`[live-draw] primitive N (...) not drawn ...: frame, vertices,
+fragment program, texture 0`, the first three per type), for a later look.
+
+**Not reproduced.** The EWGF's lightning renders here at the player's settings.
+The one thing these runs do not cover is his graphics card (Fermi/Kepler GT 730
+at feature level 11_0 with resource binding tier 1; no such card here). The
+next step needs the player: a screenshot or a short video of an EWGF in
+Practice (offline, so rollback cannot skip frames) and that game's log.
+
 ## Laptops, handhelds and 8-core APUs (patch 0047, branch `laptop-perf`)
 
 Two player reports: an HP Omen 15 (2017, i7-7700HQ, GTX 1050/1060 with
@@ -1052,6 +1104,51 @@ like the integrated GPU's memory being paged out by Windows, not anything the
 game draws. `RSX_GVIEW_FAST=0 RSX_PRESENT_FAST=0 RSX_SMALL_TARGETS_NATIVE=0`
 still turns every change of this patch off.
 
+**1.1.5: all four hangs seen here, together (patch 0076).** This PC has lost
+the device on the integrated Radeon four times, every time with the Radeon
+rendering for a screen on the RTX 3090 (`[gpu] display: ... hybrid present`:
+every frame copied from one GPU to the other), and always two runs within two
+minutes: 2026-10-20 03:04 and 03:05 (a rollback pair's joiner near the title,
+frame 227; a fight at its first fight frames, frame 1361) and 2026-10-21 00:38
+and 00:39 (the first two runs of the 1.1.4 iGPU matrix below, frames 1323 and
+1295, 20-30 frames after the fight's first frame). The 14 runs after the
+second pair did not hang, and neither did 8 fresh-folder fight
+starts of the 1.1.5 build (cold pipeline cache, stages 30 and 20, Auto, the
+same hybrid set-up, the PC busy with other agents' games; 55 fps each). What
+the logs of the four have in common:
+
+- DRED: in three of the four the GPU had finished the previous command list and
+  not begun the next one (its only unfinished list stops at op 0, the list's
+  begin marker, `46` = `BEGIN_COMMAND_LIST`, which 1.1.4 printed as "other" and
+  this section read as "its first clear"). Between two of our lists the queue
+  holds only the fence signal and the Present, which with a hybrid present is
+  DXGI's copy to the other GPU; the fourth (near the title) stopped among the
+  list's indexed draws. Nothing points at one of the game's draws.
+- In the 2026-10-21 pair the USB audio device stopped taking sound for 200 ms,
+  twice, at the moment the frames stopped (`audio device lost ... 0x800705B4`):
+  the whole PC stalled. The frame log shows nothing unusual before: the first
+  fight frame took 1.2-1.5 s (20-23 pipelines compiled, as in every
+  fresh-folder run), then about 20 normal frames, GPU 4.5 ms each.
+- No player log or problem report so far has a `device lost` line, and an
+  integrated GPU that drives its own screen (a laptop or mini PC without
+  another GPU) never copies frames between GPUs.
+
+So it is not reproducible and looks like this PC's state at those moments
+(the copy to an RTX 3090 shared with other games, under load), not the
+game. Patch 0076 makes the next one say more, logging only: each command list
+is named before it is submitted (`rsx frame N fence V`; DRED prints the name of
+every list the GPU had not finished, and now prints D3D12's wide names, which
+it showed as `<unnamed>` before), DRED names ops 4 and 46, a wait of one second
+for the GPU (Windows resets a GPU that hangs for two) logs `[gpu] GPU not done
+after 1 s at begin-recording: ...`, and a loss logs `[gpu] state at the loss
+at Present: waiting for the list of frame 1400 (fence 1401); the last list
+submitted: frame 1400 (fence 1401) 0 ms ago; the GPU had finished fence 1399
+(frame 1398) when checked 18 ms ago; the last Present (frame 1401) returned 0 ms
+ago after 0.0 ms; video memory: local 179 MB of a 23554 MB budget, shared 477
+MB of 15164 MB` (from `RSX_TEST_DEVICE_REMOVED=1400` on the RTX 3090). A
+player's hang would then tell whether the GPU stopped inside a list or between
+two, how long after the last Present, and whether its memory was over budget.
+
 ## Late frames shown when ready (patch 0059, branch `weakpc-fps`)
 
 Why some players had 40-50 fps, and whether a Vulkan renderer would help:
@@ -1324,7 +1421,10 @@ median per frame (timestamps); GPU busy and the clock from the fight's
   PC, it seems. The same build then ran 14 times on it without a hang (the 12
   above, Native and Auto on stage 20), four other builds (1.1.3's, two other
   1.1.4 builds, igpu4k's) once each; not reproduced, noted here in case a
-  player reports it.
+  player reports it. (1.1.5: all four hangs of this PC compared, and what
+  patch 0076 logs for the next one: [GPU time on integrated
+  graphics](#gpu-time-on-integrated-graphics-patch-0051-branch-igpu-perf),
+  "1.1.5: all four hangs seen here, together".)
 
 ## Translation CPU (patch 0062, branch `xlat-cpu`)
 
@@ -2885,3 +2985,291 @@ the game's own code meets memory the SPU skinning jobs share. To tell them apart
 each: `RSX_XLAT_OVERLAP=0` (rules the renderer thread out for good), `PS3_COH_LOCAL=0` (every lifted store takes the
 runtime's exact out-of-line check, 0069's fast path off), `RSX_VERTEX_THREADS=0` (no async vertex fetch), and
 `RSX_RING_GUARD=1` once (a `[ring-guard] ... reused` line in the log would prove this section wrong on Proton).
+
+## 2-core mode and slow graphics cards (patch 0075, branch `speed-115`)
+
+Player reports for 1.1.5: an i3-3240 (2 cores / 4 threads, 3.4 GHz) with a GT 730 4 GB and an i5-4210M (2 / 4)
+stay under ~20 fps; an i5-2500 (4 / 4, 3.3 GHz, the same per-core speed) with a GT 730 2 GB reaches 55-60. The
+i3-3240's log (GitHub #12) was read as "game 17 ms + render translation 27 ms on 2 cores", and the `[slow-frames]`
+verdict told the player to lower an Internal resolution that was already 0.5x.
+
+### What the logs really say
+
+| | i3-3240 + GT 730 4 GB, 0.5x | i5-2500 + GT 730 2 GB, Native |
+|---|---|---|
+| graphics card | `feature level 11_0, resource binding tier 1` (the GT 730 with the Fermi chip, GF108) | `resource binding tier 2` (the Kepler GT 730, GK208) |
+| fights | 20 fps (15.6 at 2x: 16x the pixels cost 22 % of the frame rate) | 55-60 fps |
+| median per frame: game / translation / **GPU wait** / present | 22.1-23.5 / 26.6-28.5 / **20.0-20.8** / 5.6-5.7 ms | 10.1-11.0 / 3.4-3.6 / 0.0 / 0.0 ms |
+| GPU busy | **32.2-36.6 ms a frame**, 66 % of the time | 3.6-5.2 ms a frame, 19-31 % |
+| the game thread's processor time | 16.9-17.5 ms a frame | 7.0-9.5 ms a frame |
+| placement | `ideal LP 2 / 0 / 2`: the sound core's ideal processor was the game thread's | 3 cores, all different |
+
+- The "render translation 27 ms" was **20 ms of waiting for the GPU**: with one frame in flight the walker records
+  nothing of a frame until the GPU has finished the one before (patch 0063, "Recording the next frame while the
+  GPU draws"). The translation's own work was ~6.6 ms (the i5-2500: 3.5).
+- The GPU needs 32-37 ms a frame, and that time hardly follows the resolution (0.5x -> 2x, 16x the pixels: 20 ->
+  15.6 fps).
+  It is per-draw cost on the old card -- the Fermi GT 730 has a quarter of the Kepler one's shader units and
+  D3D12 resource binding tier 1 (descriptor tables emulated by the driver) -- not pixels. No card of that kind
+  here to measure on; see "What is left".
+- The frame was game + GPU wait + recording in series: 22 + 20 + 6.6 ms, about 50 ms (20 fps), while the GPU
+  idled a third of the time.
+
+### What changed
+
+| change | why | switch |
+|---|---|---|
+| **Two frames in flight on a dedicated graphics card** (was: only with `RSX_FRAMES_IN_FLIGHT=2`). Integrated graphics keep one: there the overlap made the GPU's passes slower than it saved (0063). `[pacing] frames in flight: N (why)` is always logged | the walker records the next frame while the GPU draws: game + wait + recording becomes the longer of the two | `RSX_FRAMES_IN_FLIGHT=1` / `=2` |
+| **An honest `[slow-frames]` verdict** (below) | a lower resolution is suggested only when it helps | -- |
+| **Per-pass GPU times by default on resource binding tier 1** (`[gpu-pass]` every 600 frames, patch 0051; the problem report keeps the last 4) | the next tier-1 log says which passes take the 32 ms | `RSX_GPU_PASSES=0` / `=1` |
+| **2-core mode** (auto on 2 physical cores or fewer, `[sched] processors: ... 2-core mode`): the ideal processors of the game thread, the translation and the sound core on three different logical processors -- the game thread on its core, the other two on the other core's two (was: the sound core on the game thread's) | the sound core (25-30 % of a processor) preferred the game thread's processor | `PS3_TWO_CORE=0` / `=1` |
+| `PS3_TWO_CORE_OWN=1` (off): the game thread's core for it alone (CPU sets; the other core is also the process's default set, so the driver's and audio's threads stay off it); `PS3_TWO_CORE_GAME=rest|own|any` where the game's helper threads go then | measured slower (below); there for a player with a real 2-core PC to try | -- |
+| **Shader warm-up after BUILD GAME** (`tools/shader_warmup.py`, `build_game.py --warmup`, the launcher's Build tab step "Shaders") | the first fights on every stage stutter while their pipelines are made | `build_game.py` without `--warmup` |
+| **A8R8G8B8 textures without the per-texel decode** (identity remap: a byte rotation per texel) | the intro movie's and the menus' 1280 x 720 texture every other frame: 3.5 -> 0.7 ms (below) | `RSX_TEX_FAST=0`; `RSX_TEX_FAST_CHECK=1` decodes both ways and counts differences |
+| `RSX_RING_GUARD=1` (0070's test hook) keeps one table per frame slot | with two frames in flight it reported reuse that was not there | -- |
+| Test hook `RSX_TEST_SLOW_GPU=<loops>[,<groups>]`: a compute dispatch of fixed length before every present -- a slower graphics card on a fast one (the RTX 3090 here: 1,000,000 loops at 256 groups ~3.5 ms, 6.3 million ~12 ms, 16 million ~32 ms; not linear, calibrate with the GPU busy line) | measuring frames in flight without an old card | off unless set |
+
+### The verdict
+
+`[slow-frames]` ends with one of these when 10 % or more of a 30 s window was slow or late for its vblank (late
+frames count since 0075: a steady 50 fps has no frame over 20.9 ms and got no verdict before):
+
+| verdict | when | the launcher after the game |
+|---|---|---|
+| `GPU-bound: the graphics need X ms a frame -- a lower Internal resolution is what helps` | GPU busy >= 85 % and the resolution above Native, or integrated graphics | "choose a lower Internal resolution" (as before) |
+| `GPU-bound: the graphics card needs X ms a frame at Native (720p) -- Internal resolution Lowest may help a little; the card itself is the limit (...)` | GPU busy >= 85 % at Native | "the graphics card is too slow for this game; Internal resolution Lowest helps a little at most" |
+| `GPU-bound: the graphics card needs X ms a frame at <step> -- the card itself is the limit (an old graphics card: resource binding tier 1), a lower Internal resolution saves little` | GPU busy >= 85 % below Native | the same |
+| `integrated graphics busy N % of the time: ...` | integrated graphics busy >= 50 % (0063, unchanged) | as before |
+| `CPU and GPU in turn: the game needs X ms a frame and the render translation Y, then the frame waits Z ms for the graphics card (...), busy N % of the time with 1 frame in flight` | GPU busy >= 50 % and a median GPU wait of 4 ms or more | "because of the processor ... a lower Internal resolution does not help" |
+| `translation hitches: N slow frames waited for the render translation (median Y ms) -- pipelines (cached for the next start) and textures made at first sight` | most slow frames from the translation, its median under half a frame | -- |
+| `CPU-bound: the game needs X ms a frame and the render translation Y (2 processor cores: 2-core mode); the graphics card is busy N % of the time (resource binding tier T) -- a lower Internal resolution does not help` | everything else | "because of the processor ... close other programs" |
+
+The game part is its average (release -> flip request), the translation its median with the GPU wait taken out.
+Before, "GPU-bound" came whenever half the slow frames had waited for the GPU: the i3-3240's window, 66 % busy at
+0.5x. The problem report's "What the log says about speed" names the card-bound and the CPU-bound windows too.
+
+### Measured
+
+**2-core stand-in.** Two cores / four threads of the 7950X by affinity (`--cpus 0xF000`: logical processors
+12-15), `tools/slow_core.py` taking those four processors for 70 or 78 % of every 4 ms (the game gets what an
+older 2-core CPU would give it), `tools/fight_bench.py --polite` (Lili vs Asuka, stage 20), one run per row,
+other agents' games and builds on the rest of the PC (the "other load" column moves fps by +-3-5):
+
+| slow cores | build / setting | fps | game part ms (median) | translation ms | context switches/s |
+|---|---|---|---|---|---|
+| 70 % | 1.1.5 base | 59.9 / 53.3 | 11.4 / 12.3 | 2.3 / 5.0 | 5,473 / 5,646 |
+| 70 % | the game thread's own core (CPU sets, everything else on the other core; and no spinning) | **40.1** / **42.0** | 12.4 / 11.9 | **7.3** / 7.3 | 3,641 / 4,155 |
+| 70 % | no spinning (vertex worker, ticker) + the ideal processors | 53.0 | 12.2 | 6.9 | 7,475 |
+| 78 % | 1.1.5 base | 40.5 | 16.3 | 8.0 | 4,736 |
+| 78 % | no spinning + the ideal processors | 39.1 | 16.5 | 8.1 | 5,758 |
+| 78 % | ... + no vertex worker (`RSX_VERTEX_THREADS=0`) | **35.8** | 16.0 | **11.9** | 4,002 |
+| 78 % | ... + one SPURS job thread (`SPURS_JOB_THREADS=1`) | 39.6 | 16.4 | 8.0 | 5,733 |
+| 78 % | ... + both | **33.0** | 18.8 | 12.0 | 3,667 |
+
+The game thread on a core of its own put the translation, the renderer thread, the sound core, the skinning and
+the game's helper threads on the other core -- their processor time per frame is three to four times the game
+thread's (the sound core alone 4.2-4.7 ms against the game thread's 3.6-4.0), so they queued and the translation
+tripled. Fewer workers made the translation longer (it decodes the vertices itself), no spinning cost wake-ups
+(+20-30 % context switches) for nothing measurable. So 2-core mode keeps the pools and the spinning as they were
+and changes only the ideal processors (`PS3_TWO_CORE_OWN=1` is there for a player with a real 2-core PC: an Intel
+core with Hyper-Threading may behave differently from this stand-in).
+
+The final 2-core build against 1.1.5's base, two interleaved rounds, slow cores at 70 % (`off` = this build with
+`PS3_TWO_CORE=0`):
+
+| | base | 2-core mode (the ideal processors) | `PS3_TWO_CORE=0` |
+|---|---|---|---|
+| fps, round 1 / 2 | 56.2 / 56.2 | 56.6 / 56.7 | 57.2 / 57.4 |
+| game part median ms | 11.9 / 11.9 | 11.9 / 11.8 | 11.8 / 11.7 |
+| game thread CPU ms a frame | 4.1 / 4.0 | 4.0 / 4.0 | 4.0 / 4.0 |
+
+Within the noise of the PC's load: the ideal processors neither help nor cost on this stand-in. They stay because
+they undo a plain misconfiguration (two busy threads asking for one processor), not for a measured gain.
+
+**Frames in flight with a slower GPU.** `RSX_TEST_SLOW_GPU` on the RTX 3090, the game on 2 cores / 4
+threads with slow cores at 70 % (the game part ~12 ms, the translation ~5 ms), paired runs, one frame in flight
+(`RSX_FRAMES_IN_FLIGHT=1`, 1.1.4's default) against two (1.1.5's default on a dedicated card):
+
+| GPU per frame | one frame in flight: fps | two frames in flight: fps | `[slow-frames]` (two in flight) |
+|---|---|---|---|
+| 13.8 ms (3 rounds, then a 4th pair) | 49.8 / 49.7 / 49.0 / 49.8 | **52.9 / 55.7 / 53.1 / 56.3** | median GPU wait 3.4 ms -> 0.0; translation 8.0 -> 5.0 ms; `CPU-bound: the game needs 11.6 ms a frame and the render translation 4.9 ...` |
+| 33.5-33.8 ms | 26.4 (GPU 90 % busy) | **29.2** (97 % busy) | GPU wait 30.5 -> 23.9 ms; `GPU-bound: the graphics card needs 33.8 ms a frame at Native (720p) -- ...` |
+
++7-13 % at 13.8 ms, +10 % when the GPU alone needs 34 ms. For the i3-3240's frame -- game 22 ms + GPU wait 20 +
+recording 6.6, the GPU 32-37 ms -- the same arithmetic gives the longer of the two, ~35 ms instead of ~50: about
+28 fps instead of 20 (an estimate: the old card itself is not here).
+
+**Same game.** Rollback pair, RTT 150 ms +-5, 3 % loss, Asuka vs Lili on stage 20: the host with two frames in flight
+(the new default), the joiner on 2 cores / 4 threads (`--cpus2 0xF000`: 2-core mode on) with one frame in flight:
+`sync check through frame 3599: 0 mismatching` on both sides, the same result hash `d31cd26d2dfc199e`. Lockstep
+pair, RTT 30 ms, 1 % loss, Jin vs Lili on stage 25, host one frame in flight, joiner two: 0 mismatching through
+frame 6599, the same hash `868fd12296ab5236`. Frames in flight change when a frame is recorded, never what the game
+computes. With the final build: smoke quick PASS (5 of 5), e2e `net_rollback --short` PASS (84 checks: RTT 20-250,
+loss, jitter, the relay path) and `net_internal_res` PASS (4K against Lowest, a match and a rematch with the same
+hashes; the scenario now marks the step as chosen -- since igpu-114 an unmarked step is Auto/Native, so both games
+had run at Native).
+
+**Ring reuse with two frames in flight.** `RSX_RING_GUARD=1` (patch 0070) reported ~1,800 ring ranges "reused
+while list N still uses them" with two frames in flight -- all of them false: the guard kept one table per ring,
+while each frame slot has rings of its own (offset 0 of slot 1's vertex ring is not offset 0 of slot 0's). It now
+keeps one table per slot. With two frames in flight and the slow GPU: 4,331,112 ring ranges checked, **0 reused** before the GPU was
+done with them.
+
+**Shader warm-up.** PSO misses (`RSX_HITCH_LOG=1`: decompile + D3DCompile + driver) in the first fight of a
+pair and stage, one shader cache folder that grows from empty, 7950X:
+
+| fight (cache before it) | PSO misses | ms in all | worst frame's share |
+|---|---|---|---|
+| Lili vs Asuka, stage 20 (empty) | 93 | 1,068 | 136 ms |
+| the same again | 0 | 0 | -- |
+| Kazuya vs Heihachi, stage 33 | 34 | 288 | 92 ms |
+| Law vs Jin, stage 25 | 38 | 197 | 46 ms |
+| Asuka vs Dragunov, stage 31 | 19 | 203 | 71 ms |
+| Paul vs Nina, stage 17 | 21 | 180 | 104 ms |
+| Bryan vs Xiaoyu, stage 0 | 14 | 88 | 59 ms |
+
+Every new stage or pair of fighters brings 15-40 pipelines, 0.1-0.3 s in all and single frames of 50-140 ms on
+this PC -- two to three times that on an i5-2500. `tools/shader_warmup.py` plays them once after BUILD GAME.
+After the warm-up -- all 18 stages of the stage select, every fighter of the select screen once (Jinpachi is
+locked offline: in a first run his fight never started, so the tool leaves him out), 18 of 18 fights in **205 s**
+here (about 11 s a fight with the boot; P1 presses buttons for 6 s of each, so hit sparks and effects are drawn
+too -- with idle fighters for 4 s a warmed stage still met 10 new pipelines) -- the first fights met **0-4 new
+pipelines** where an empty cache met 14-93: Paul vs Law on stage 25: 0, Lei vs King on stage 18: 3, Lili vs Asuka
+on stage 20: 4 (cold: 93); one pair still met 20 (Eddy vs Jack-5 on stage 27, the pair the warm-up had fought
+there: what a 14 s fight with more moves draws beyond 6 s of them). It runs once per built game (`warmup.json`
+next to the cache, keyed to `t5dr.exe`'s size and time stamp); a fight that does not start within 2 minutes, a
+game that stops or the 12-minute limit end it with a note, never the build. The next game start re-creates the
+recorded pipelines on a background thread at below-normal priority (`[pso-prewarm] 491 pipeline(s) created
+ahead`).
+
+**The i5-2500's first 30 s.** 304 slow frames from the render translation at a median translation of 0.7 ms
+were not pipelines: the first 45 s after start (intro, title, menus) on this PC had 6 PSO misses with an empty
+cache (66 ms) and none with a warm one -- and the warm start still had 93 slow translation frames in its first
+30 s window (the cold one 46). What took the time: the intro movie's 1280 x 720 A8R8G8B8 texture, uploaded every
+other frame, 4.0 ms of decoding each (855 such uploads in 45 s). Patch 0075 decodes that kind of texture -- 32-bit A8R8G8B8 with the
+identity remap, the commonest -- as one byte rotation per texel instead of `decode_texel`'s format switch and
+four remap lookups. The first 45 s after start, 2 cores / 4 threads, two rounds:
+
+| build | 1280 x 720 uploads over 0.5 ms | their median | walker CPU per frame, p99 |
+|---|---|---|---|
+| per-texel decode | 855 / 855 | 3.52 / 3.49 ms | 4.51 / 4.11 ms |
+| patch 0075 | 856 / 855 | **0.66 / 0.72 ms** | **1.11 / 1.34 ms** |
+
+`RSX_TEX_FAST_CHECK=1` decoded 833 such levels both ways: 0 different. `RSX_TEX_FAST=0` is the old decode.
+
+**The game thread.** A stack profile of the main thread in a fight on 2 cores / 4 threads (`PS3_HOST_PROF`,
+20 s): 87 % of its samples wait for the flip (the frame's own work is done in 3.5 ms here), and the busy part is
+as flat as in patch 0061's profile -- the hottest lifted function 0.9 % of all samples (`0x36AFB8`), the
+skinning jobs the game thread runs itself while it waits for a job list (`SPURS_JOB_HELP`) 1 %. Nothing on it
+is worth a change of its own now.
+
+### Not done, and what is left
+
+- **The old card's 32-37 ms of GPU time.** Not measurable here (every GPU on this PC is resource binding tier 3).
+  Two candidates, both per draw rather than per pixel: tier 1's emulated descriptor tables (on tier 1 the
+  driver turns every descriptor table the renderer sets -- up to three a draw, ~830 draws -- into the card's
+  fixed binding slots), and the frame's vertices, indices and
+  constants, which live in upload heaps in system memory and are read by a dedicated card over PCIe while it draws
+  (the new `[gpu-pass]` lines say how many MB a frame: here 2.8 MB of vertices, 0.8 of indices, 4.3 of vertex
+  constants -- 8 KB a draw -- and 0.03 of pixel constants: ~470 MB/s at 60 fps, a few ms a frame on a card in a
+  PCIe 2.0 x8 slot, more if it reads them slowly). The `[gpu-pass]` lines of a tier-1 player's next log
+  (on by default there) say which passes take the time; ask the GT 730 player for one fight's log with 1.1.5.
+- **A real 2-core PC.** The stand-in slows every processor alike; an i3's Hyper-Threading shares one core's
+  execution units between two threads, which the stand-in does not reproduce. `PS3_TWO_CORE_OWN=1` (and
+  `PS3_TWO_CORE_GAME=own`) against the default on such a PC would settle whether the own core helps there.
+- **The i5-4210M** (2 cores, a laptop: power saving on by itself) sent no game log.
+## Graphics settings for weak graphics cards (1.1.5, patch 0079, branch `graphics-115`)
+
+Owner's 1.1.5 list: more graphics settings for weak graphics cards, each measured, and a "Lowest" preset for old
+cards. **Launcher -> Settings -> Graphics (weak graphics cards)**: Shadows and Effects, each On (default) / Off,
+and two buttons: **Lowest (old graphics cards)** (Internal resolution Lowest; stage blur / glow, shadows and effects
+off) and **Default** (puts them back: Internal resolution as the launcher picks it -- Auto on integrated graphics,
+else Native --, stage blur / glow Off as since 1.1.4, shadows and effects on). Window, VSync and power saving are
+not touched. Every setting changes only what is drawn: no guest memory, no command the game sees, so the two PCs of
+a match may choose differently (pairs below).
+
+| setting | variable | what is not drawn | GPU ms per fight frame, integrated Radeon, Native: on -> off | translation ms per frame: on -> off |
+|---|---|---|---|---|
+| Shadows Off | `PS3_SHADOWS=0` | the 512 x 512 shadow map the game draws from the light every frame (183 of 832 draws on stage 20: both fighters and the stage objects again) and its depth snapshot; every shadow lookup returns "lit" | stage 20: 2.21 / 2.23 -> 1.98 / 1.97 (-11 %); stage 34: 2.62 -> 2.40 (-8 %) | stage 20: 1.66 -> 1.47-1.51 (-10 %); stage 34: 1.50 -> 1.33 (-11 %) |
+| Effects Off | `PS3_EFFECTS=0` | the see-through effects of the 3D scene: hit sparks and the other hit effects (the EWGF lightning too), flames, smoke, mist, haze, sun glare, neon glows, the waterfalls | stage 20: 2.21 / 2.23 -> 1.90 / 1.88 (-15 %); stage 19: 1.83 -> 1.28 (-30 %); stage 34 (the mist): 2.62 -> 0.88 (**-66 %**) | stage 20: 1.66 -> 1.46-1.48 (-11 %); stage 19: 1.84 -> 1.36 (-26 %); stage 34: 1.50 -> 1.32 (-12 %) |
+| Internal resolution Lowest (already there) | `PS3_INTERNAL_RES=lowest` | -- (the 3D scene at half size) | stage 20: 2.21 -> 1.09 (-51 %) | unchanged (1.71) |
+| **Lowest preset** | all of the above | | stage 20: 2.21 / 2.23 -> 0.82 / 0.81 (**-63 %**); stage 34: 2.62 -> 0.41 (**-85 %**) | stage 20: 1.66 -> 1.32 / 1.33 (**-20 %**); stage 34: 1.50 -> 1.20 (-20 %) |
+
+How measured: `tools/fight_bench.py --polite RSX_ADAPTER=radeon PS3_STAGE_BLUR=0 [setting]` (the launcher's
+default stage blur Off is the baseline), Lili vs Asuka, P1 attacking, window fight start +24..42 s, medians of the
+frame log (`gpu_us`: D3D12 timestamps; `xlat_us`: the walker's translation of the frame). Two rounds for stage 20
+(the two values), one for 19 and 34; the PC was quiet (1-5 of 32 logical processors busy with other agents' games,
+2.7-5.1 in round 1). The GPU is this PC's integrated Radeon (the Ryzen 9 7950X's 2 RDNA2 compute units, about a
+UHD 620 / Vega 3 class): the weakest graphics this PC has. **No GT 730 was available**; on the players' GT 730s
+the GPU share of the frame is larger (a Kepler GT 730 2 GB: ~5 ms a frame; the old tier-1 GT 730 4 GB: 32 ms at
+0.5x, see the 1.1.5 notes), so the same percentages are worth more milliseconds there. The game ran at 59.9-60 fps
+in every row: on this PC these settings buy headroom, not frames.
+
+**Where the GPU time goes** (`RSX_GPU_PASSES=2`, new: a timestamp before every draw, the time per pipeline and per
+target, `[gpu-pass] draws per target: ...`; stage 20, Native, integrated Radeon, two 600-frame windows): the 3D
+pass (2048 x 1440, ~610 draws) 1.74-1.92 ms of 2.3-2.5 -- opaque draws 0.96 ms, alpha-blended draws that write
+depth 0.46, see-through effects that do not write depth 0.39 --; the shadow map pass 183
+draws 0.05 ms plus its depth snapshot 0.055 ms (the shadow lookups in the 3D pass ~0.13 ms more); the two display
+buffers (downsample + HUD) 0.2; the present 0.12; the glow buffers 0.1. The CPU side follows the draw count: the
+shadow map is 22 % of the draws, the effects 17 %, and both are skipped before their vertices are fetched, so the
+walker translates 10-26 % less per frame (a tier-1 GT 730 PC with 27 ms of translation would save in proportion,
+if its time per draw is like ours -- not measured).
+
+**Measured and not offered:**
+
+- *Texture detail* (mipmapped textures one level coarser, LOD bias +1): stage 20 GPU 2.21 -> 2.23 ms, translation
+  1.66 -> 1.69: nothing. The game's textures are small (32-256 texels), already bilinear with point mip selection
+  (no trilinear to drop), and Internal resolution Lowest already samples one mip level coarser. Removed again.
+- *Fewer effects* (only the additive ones, a destination factor of one): they are a few mist wisps on stage 34;
+  hit sparks, flames and waterfalls are alpha-blended. Stage 20 2.22, 34 2.61, 19 1.82 ms: nothing. Removed again.
+- *Post effects*: the only ones are the stage blur and glow, already a setting (Off by default since 1.1.4).
+
+### How each switch works
+
+**Shadows Off.** A shadow sampler is a 2D depth texture read with a depth compare (the rule of the PSO's
+`shadow_mask`). With `PS3_SHADOWS=0` the HLSL helper returns what an empty map gives
+-- the far plane, 1.0, compared with the fragment's reference: lit, for the compare Tekken 5 DR uses -- without
+reading the map (`rsx_fp_apply_shadow_compare`, zfunc bit 16, part of the PSO identity like the compare op). The
+binding leaves the unit white and makes no depth snapshot. The map's address is noted at that binding, and every
+later draw into it (its zeta, a pass smaller than the canvas, depth writes on; within 2 s of the last read) returns
+at the top of `sink_end_impl`, before its vertices are fetched. Its clears stay. The log: `[display] shadows: off
+(PS3_SHADOWS) ...`, `[shadows] off: shadow map 0:0xAF0000 (512x512) is not read, its draws are skipped`.
+
+**Effects Off.** A draw into a pass at least as large as the canvas that is not a display buffer (the 3D scene;
+the HUD, the menus' 2D and movies are drawn into the display buffers), with blending on, the depth test on and depth
+writes off, returns at the same place. Stage blur / glow composites (no depth test) and glow buffers are not
+touched (they are Stage blur / glow's). The log: `[display] effects: off (PS3_EFFECTS) ...` and the first skipped
+frame. What it hides, from the stage tour below: every hit spark and hit effect (GitHub #12's EWGF lightning is one
+of them: so Effects is On by default and only the Lowest button the player clicks turns it off, and the hint says
+so), the torches and waterfalls of stage 19, the neon glows of stage 21, the sun glare of stage 20, the haze of
+stage 17, the ground mist of stage 34 (all 18 stages below).
+
+### Checked
+
+- **Same game, different pictures.** Lockstep pairs (`tools/rollback_net_test.py --mode1 off --mode2 off --fight
+  lil,ask,<stage>,2`, host default, joiner Shadows and Effects Off, `T5_NET_SHOT=300,900` with every surface
+  dumped): all 18 stages, 17-34 (+ 5 pairs with only the additive effects off): 0 mismatching frames in every
+  pair. Rollback pairs (the online default, `--mode1 default --mode2 default --rtt 100 --jitter 5 --loss 2`), host
+  default, joiner the Lowest preset (Internal resolution Lowest, shadows and effects off), stages 19 and 34, one
+  whole match each: 0 mismatching frames on both sides (through frame 7,799 / 7,199), the same result hash on
+  both sides (`0c9e26ce073b4f1b` / `8f3adec5c4b4d1bd`), 881 / 879 rollbacks (1,605 / 1,444 frames re-simulated).
+- **The pictures.** The frame-exact pairs show the two pictures of the same game frame side by side: the shadows of
+  the fighters and the stage objects are gone, and with Effects Off the list above.
+  Per stage, what Effects Off hides besides every hit spark: 17 the haze behind the dragon skeleton, 19 the
+  torches and the two waterfalls (the one loss that looks like something is missing), 20 the sun glare, 21 the
+  neon glows of the bowling balls, 24 the lamp and pumpkin glows, 26 the lantern glows, 27 the glow over the sea,
+  29 the steam, 33 the dust and smoke, 34 the ground mist; 18, 22, 23, 25, 28, 30, 31, 32 only the hit sparks
+  and small things. No stage shows a hole or a wrong colour.
+- `tests/test_graphics_settings.py`: the launcher settings (default on, Off sends 0, saved, unknown values, Extra
+  settings win, the presets, the problem report, every catalog), the patch (switches, host pixels only, skipped
+  before the vertices, PSO identity) and `tests/c/graphics_test.c` (the shadow-off HLSL compiles with D3DCompile and
+  differs from the shadow-on program only in the compare's function number). i18n: 0 problems; the layout check at
+  100 / 133 / 150 %: 0 problems in every language.
+- Local evidence: `build/int115/i-runs/` (git-ignored, outside the repository).
+
+### Not done
+
+- Measured on a GT 730: none was available. A GT 730 player's game log with Lowest against default would show it
+  (`[slow-frames]`, GPU busy and the translation median).
+- The tier-1 descriptor path and the translation per draw on old cards are agent C's (speed-115); this patch only
+  removes draws.

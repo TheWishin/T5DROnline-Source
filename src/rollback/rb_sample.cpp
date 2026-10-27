@@ -14,7 +14,7 @@
  * separately ("S rt" lines; resolve against t5dr.map).
  */
 #define WIN32_LEAN_AND_MEAN
-#include <windows.h>
+#include "../platform/t5_win.h"
 #include <stdio.h>
 #include <string.h>
 #include <atomic>
@@ -27,6 +27,7 @@
 
 namespace rb {
 
+#if defined(_WIN32)   /* SEH, RtlVirtualUnwind, SuspendThread: x64 Windows only (docs/MACOS.md) */
 namespace {
 std::atomic<int> g_on{ 0 };
 HANDLE g_target = nullptr, g_thread = nullptr;
@@ -169,5 +170,13 @@ void sample_stop(const char* tag)
 }
 
 void sample_reset() { g_incl.clear(); g_self.clear(); g_rt.clear(); g_folded.clear(); g_total = 0; }
+
+#else
+/* A port would suspend the thread with thread_suspend/thread_get_state (Mach)
+ * and walk frame pointers; nothing in a match needs it. */
+void sample_start() { static bool told = false; if (!told) { told = true; note("stack sampler: Windows only -- off"); } }
+void sample_stop(const char* tag) { (void)tag; }
+void sample_reset() {}
+#endif
 
 } // namespace rb

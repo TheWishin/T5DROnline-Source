@@ -70,7 +70,7 @@ from . import discord_rpc, fighters, fwcheck, lag, notify, padmap, padnav, proto
 from .buildid import BuildInfo
 from .client import LobbyClient
 from .i18n import N_, stamp, t, translate_message
-from .match_driver import MatchDriver, fps_from_logs, game_supports_pick, game_supports_rules
+from .match_driver import MatchDriver, fps_from_logs, game_files, game_supports_pick, game_supports_rules
 from .proto import DEFAULT_PORT, LobbyError
 from . import theme, tk_casual, tk_rooms, tk_rules, tk_spectate, tk_tour, tk_views, tklist, winfront
 from .ranks import record_label as _record
@@ -253,6 +253,7 @@ class OnlineTab:
         self._relogin_n = 0
         self._login_busy = False         # a login is on its way (no automatic one beside it)
         self._kicked = False             # removed by the server (ban, kick): no automatic login after that
+        self._pending_search = None      # "ranked" / "quick": the launcher's --search, started after the saved login
         self.ask_string = theme.ask_string           # dialogs (tests replace them)
         self.ask_yes_no = theme.ask_yes_no
         self.new_window = tk.Toplevel                # the tab's own windows (tests make hidden ones)
@@ -588,7 +589,7 @@ class OnlineTab:
                 return fn()
             except Exception:   # noqa: BLE001
                 pass
-        return os.path.join(getattr(self.app.settings, "out_dir", "") or os.getcwd(), "build", "cmake", "t5dr.exe")
+        return game_files(getattr(self.app.settings, "out_dir", "") or os.getcwd())[0]
 
     def check_firewall(self, force=False):
         """Read Windows Firewall's rules again (worker thread; at most every FW_CHECK_GAP_S unless forced)."""
@@ -658,6 +659,10 @@ class OnlineTab:
         st = self.app.game_state()
         if not st.get("ok"):
             return None, st.get("text") or t("The game is not built.")
+        if not BuildInfo.has_online(self.app.settings.out_dir):
+            # a macOS build without the online modules (online on a Mac is a test build for now)
+            return None, t("This Mac build has no online play. For a test match: tools/build_game.py --macos-online "
+                           "(docs/MACOS_ONLINE_TEST.md).")
         try:
             rel = "dev"
             try:
@@ -709,8 +714,7 @@ class OnlineTab:
     def _game_can_pick(self):
         """This PC's game picks the characters on its own select screen (in-game select)."""
         out = getattr(self.app.settings, "out_dir", os.getcwd())
-        return game_supports_pick([os.path.join(out, "build", "cmake", "t5dr.exe"),
-                                   os.path.join(out, "build", "cmake", "t5dr_game.dll")])
+        return game_supports_pick(game_files(out))
 
     def _game_has_rules(self):
         """This PC's game can play training rooms (endless health) and the health handicap."""
@@ -781,9 +785,11 @@ class OnlineTab:
             self.on_life()
             if client.recovery_codes:
                 self.show_codes(client.recovery_codes, first=True)
+            self._run_pending_search()
 
         def failed():
             self._login_busy = False
+            self._pending_search = None             # (--search: the player sees why in the status line)
             # Only the server's "no" ends the saved login. A server that cannot be reached (restarting for an
             # update, an outage, no internet) leaves it: it works again once the server is back.
             if mode == "session" and refused.get("auth"):
@@ -850,14 +856,50 @@ class OnlineTab:
             self.name_var.set(s.get("name", self.name_var.get()))
             self.do_login("session", session=s["token"])
 
+    # The launcher's command line --search ranked / --search casual (a desktop shortcut, Steam's launch options;
+    # casual = the Quick match queue): the Online tab opens, logs in with the saved login and starts searching.
+    SEARCH_MODES = {"ranked": "ranked", "casual": "quick", "quick": "quick"}
+
+    def search_on_start(self, mode):
+        """Remember a search to start once the saved login is in (try_saved_login logs in when the tab is shown).
+        Without a saved login for this server, or a game that is not built, only a hint. -> True when the search
+        will start by itself."""
+        mode = self.SEARCH_MODES.get(str(mode or "").strip().lower())
+        if not mode:
+            return False
+        if self.client is not None and self.client.me:
+            self._pending_search = mode
+            self._run_pending_search()
+            return True
+        if not self.app.game_state().get("ok"):
+            self.status(t("Build the game first (Build tab); then the search starts by itself next time."),
+                        error=True)
+            return False
+        if self._saved_session() is None:
+            self.status(t("Log in to start the search. Tick \"Remember me\" when you log in with your account: next "
+                          "time --search logs in and starts searching by itself."))
+            return False
+        self._pending_search = mode
+        return True
+
+    def _run_pending_search(self):
+        mode, self._pending_search = self._pending_search, None
+        me = self.client.me if self.client is not None and self.client.connected else None
+        if not mode or not me:
+            return
+        if mode == "ranked" and me.get("guest", True):
+            self.status(t("Ranked matches need an account: log in with your name and password."), error=True)
+            return
+        if me.get("status") != "idle":
+            return                                  # already searching, in a room or a match
+        self.do_queue(mode)
+
     def _make_driver(self):
         if self.driver is not None:          # a game left from before a lost connection
             self.driver.close()
         out = getattr(self.app.settings, "out_dir", os.getcwd())
-        exe = os.path.join(out, "build", "cmake", "t5dr.exe")
-        dll = os.path.join(out, "build", "cmake", "t5dr_game.dll")
         self.driver = MatchDriver(self.client, self._launch, os.path.join(out, "logs", "online"),
-                                  table=self.table, mode=self.cfg.get("game_mode", "auto"), game_files=[exe, dll],
+                                  table=self.table, mode=self.cfg.get("game_mode", "auto"), game_files=game_files(out),
                                   async_calls=True,
                                   input_delay=(getattr(self.app, "settings", None) or {}).get("input_delay"))
 
@@ -1434,6 +1476,8 @@ class OnlineTab:
             self.tours.shown()
         else:
             self.tours.page_shown = False
+        if sel and sel == str(getattr(self, "stats_page", "")) and getattr(self, "stats", None) is not None:
+            self.stats.shown()                             # the Stats page (tk_stats.py)
         if tab == 1:
             self.load_leaderboard()
         elif tab == 2 and self.client and self.profile_name is None:
@@ -1541,6 +1585,8 @@ class OnlineTab:
                 self.tv_hist.insert("", "end", values=(when, _word(OUTCOME_WORD, h["result"]), h["opponent"], chars,
                                                        score, delta, st),
                                     tags=(h["result"],) if h.get("result") in ("won", "lost") else ())
+            if getattr(self, "history", None) is not None:
+                self.history.shown(p)                      # results coloured, replays on this PC (tk_history.py)
         self.call(self.client.profile, name, 20, then=done)
 
     # ------------------------------------------------------------------ server events

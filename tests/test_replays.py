@@ -16,6 +16,7 @@
 The C++ part needs a Windows C++ compiler and a ps3recomp tree (stb's zlib code, libs/codec); it is skipped
 without them.
 """
+import datetime
 import json
 import os
 import shutil
@@ -91,7 +92,7 @@ def make_file(path, inputs, matches, bars=(), hashes=(), rollback=True, slot=0, 
         header["matches"].append({"n": k, "start": m["start"], "end": m["end"], "p1": m["p1"], "p2": m["p2"],
                                   "stage": m["stage"], "winner": m.get("winner"), "score": list(m.get("score", (0, 0))),
                                   "complete": m.get("winner") is not None, "started": m.get("started", created),
-                                  "names": list(names)})
+                                  "ended": m.get("ended"), "names": list(names)})
     with open(path, "wb") as f:
         f.write(replays.MAGIC + json.dumps(header).encode() + b"\n" + zlib.compress(bytes(b)))
     return header
@@ -279,6 +280,44 @@ class LauncherSideTest(unittest.TestCase):
         self.assertEqual(replays.read_payload(q)["frames"], 32)
 
 
+class HistoryMatchTest(unittest.TestCase):
+    """The Online tab's match history finds its replays (1.1.5): by the lobby's time, both fighters and the
+    opponent's name."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="t5dr-hist")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+
+    @staticmethod
+    def ts(iso):
+        return datetime.datetime.strptime(iso, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc).timestamp()
+
+    def test_found_by_time_fighters_and_name(self):
+        make_file(os.path.join(self.tmp, "a" + replays.EXT), sample_inputs(50),
+                  [{"start": 0, "end": 20, "p1": 9, "p2": 33, "stage": 27, "winner": 0, "score": (2, 1),
+                    "started": "2026-10-19T12:00:00Z", "ended": "2026-10-19T12:03:00Z"},
+                   {"start": 25, "end": 45, "p1": 9, "p2": 33, "stage": 27, "winner": 1, "score": (0, 2),
+                    "started": "2026-10-19T12:04:00Z", "ended": "2026-10-19T12:07:00Z"}], slot=0, names=("Me", "Rival"))
+        make_file(os.path.join(self.tmp, "b" + replays.EXT), sample_inputs(30),
+                  [{"start": 0, "end": 20, "p1": 1, "p2": 9, "stage": 27, "winner": 0, "score": (3, 0),
+                    "started": "2026-10-19T13:00:00Z", "ended": "2026-10-19T13:02:00Z"}], slot=1, names=("Other", "Me"))
+        rows = replays.list_replays(self.tmp)
+        f = replays.for_history
+        e = f(rows, self.ts("2026-10-19T12:07:40Z"), 9, 33, "rival", [0, 2])          # the server's clock: 40 s off
+        self.assertEqual((os.path.basename(e.path), e.index), ("a" + replays.EXT, 2))
+        e = f(rows, self.ts("2026-10-19T12:03:05Z"), 9, 33, "Rival", [2, 1])
+        self.assertEqual(e.index, 1)
+        e = f(rows, self.ts("2026-10-19T13:02:00Z"), 9, 1, "Other", [0, 3])         # this PC was P2 there
+        self.assertEqual(os.path.basename(e.path), "b" + replays.EXT)
+        self.assertIsNone(f(rows, self.ts("2026-10-19T12:07:00Z"), 33, 9, "Rival"))     # the fighters the other way
+        self.assertIsNone(f(rows, self.ts("2026-10-19T12:07:00Z"), 9, 33, "Somebody"))  # another opponent
+        self.assertIsNone(f(rows, self.ts("2026-10-19T14:07:00Z"), 9, 33, "Rival"))     # an hour later: not it
+        self.assertIsNone(f([], self.ts("2026-10-19T12:07:00Z"), 9, 33, "Rival"))
+        # two matches minutes apart: the score decides before the closer time
+        e = f(rows, self.ts("2026-10-19T12:05:00Z"), 9, 33, "Rival", [2, 1])
+        self.assertEqual(e.index, 1)
+
+
 class ReplaysTabTest(unittest.TestCase):
     """The launcher's Replays tab, built for real (not shown): the rows, Watch (the game's environment and the
     verdict it shows afterwards), Delete, in English and German."""
@@ -362,6 +401,36 @@ class ReplaysTabTest(unittest.TestCase):
         tab._poll()
         self.assertIn("identical to the live match (69 checks", tab.verdict.get())
         self.assertIsNone(tab.watching)
+
+    def test_watch_from_the_match_history(self):
+        app = self.launcher("en")
+        started = {}
+
+        class FakeGame:
+            def running(self):
+                return True
+
+            def stop(self):
+                pass
+
+        app.start_game = lambda env=None: (started.update(env), FakeGame())[1]
+        app.game_state = lambda: {"ok": True}
+        tab = app.replays
+        ts = HistoryMatchTest.ts("2026-10-19T12:04:30Z")
+        h = {"time": ts, "you_char": "jin", "opp_char": "lili", "opponent": "Rival", "score": [0, 2]}
+        e = tab.for_history(h, {"jin": 9, "lili": 33})
+        self.assertIsNotNone(e)
+        self.assertEqual(e.index, 2)
+        self.assertIsNone(tab.for_history(dict(h, opp_char="law"), {"jin": 9, "lili": 33, "law": 1}))
+        self.assertIsNone(tab.for_history({"time": "x"}, {}))                    # a damaged row: no replay, no error
+        tab.watch_entry(e)
+        self.assertEqual(app.nb.select(), str(app.tabs["replays"]))
+        self.assertEqual(started["T5_REPLAY_MATCH"], "2")
+        self.assertEqual(tab.tv.selection(), ("0",))
+        tab.watching = None
+        os.remove(self.file)
+        tab.watch_entry(e)                                                       # gone meanwhile: says so
+        self.assertIn("no longer", tab.verdict.get())
 
     def test_german(self):
         from t5lobby import i18n

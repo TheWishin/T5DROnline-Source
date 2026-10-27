@@ -210,6 +210,7 @@ class Entry:
         sc = m.get("score") or [0, 0]
         self.score = (sc[self.slot], sc[1 - self.slot]) if len(sc) == 2 else (0, 0)
         self.rematch = index > 1
+        self.ended = _local_time(m.get("ended"))
 
     @property
     def fighters(self):
@@ -219,6 +220,39 @@ class Entry:
 
     def key(self):
         return (self.when.timestamp() if self.when else 0.0, self.index)
+
+
+HISTORY_WINDOW = 15 * 60        # seconds between the lobby's time of a match and this PC's replay of it, at most
+
+
+def for_history(entries, when, mine=None, theirs=None, opponent=None, score=None, window=HISTORY_WINDOW):
+    """The replay Entry of a match from the lobby's match history (the Online tab's profile, 1.1.5), or None.
+
+    when: the lobby's unix time of the match (its end; the server's clock, so a few minutes off this PC's are fine);
+    mine / theirs: the fighters' ids (fighters.json "id", the replay's own numbers); opponent: the name (only
+    compared when the replay kept names); score: [mine, theirs] (only prefers one of two close candidates). The
+    replay ended (or started) closest to `when` wins."""
+    best = None
+    for e in entries:
+        ref = e.ended or e.when
+        if ref is None:
+            continue
+        try:
+            dt = abs(ref.timestamp() - float(when))
+        except (TypeError, ValueError, OverflowError, OSError):
+            continue
+        if dt > window:
+            continue
+        mine_e, theirs_e = (e.p1, e.p2) if e.slot == 0 else (e.p2, e.p1)
+        if mine is not None and theirs is not None and (mine_e, theirs_e) != (mine, theirs):
+            continue
+        if opponent and e.opponent and e.opponent.lower() != str(opponent).lower():
+            continue
+        off = 0 if (not score or tuple(score) == tuple(e.score)) else 1
+        key = (off, dt)
+        if best is None or key < best[0]:
+            best = (key, e)
+    return best[1] if best else None
 
 
 def list_replays(folder):

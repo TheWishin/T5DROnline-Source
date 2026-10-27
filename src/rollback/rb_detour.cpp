@@ -13,10 +13,22 @@
  * and the detour is not installed. Install on the main thread before the
  * function can run elsewhere (the first 8 bytes are swapped with one aligned
  * store).
+ *
+ * x86-64 only, and only where the process may write its own code
+ * (t5p_code_patching: Windows, Linux; a notarized macOS app may not).
+ *
+ * macOS online builds (T5DR_HOOK_SLOTS, CMake T5DR_MACOS_ONLINE): no code is
+ * patched. The lifter gave every function on src/rollback/hook_slots.txt a
+ * slot (ppu_lifter.py --hook-slots): the function first calls the hook in its
+ * slot, if any, instead of its body, and the body is a function of its own
+ * (func_X__orig, the "original"). detour() stores the hook into the slot.
+ * Every call reaches it -- direct calls, tail calls, the function table --
+ * as every call reaches the patched entry on x86-64. A function that is not
+ * on the list is refused (and noted).
  */
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
-#include <windows.h>
+#include "../platform/t5_win.h"
 #include <stdint.h>
 #include <string.h>
 #include <atomic>
@@ -39,6 +51,17 @@ extern "C" uint64_t ppu_game_table_count;
 #else
 extern "C" const func_entry function_table[];
 extern "C" const uint64_t  function_table_count;
+#endif
+
+#if defined(T5DR_HOOK_SLOTS)
+/* The lifter's slot table (ppu_recomp.h, ppu_lifter.py --hook-slots): same layout as its
+ * ppu_hook_entry. */
+extern "C" {
+struct hook_entry { uint32_t addr; uint32_t slot; void (*orig)(ppu_context*); };
+extern void (*ppu_hook_slots[])(ppu_context*);
+extern const hook_entry ppu_hook_table[];
+extern const uint32_t ppu_hook_count;
+}
 #endif
 
 namespace rb {
@@ -70,26 +93,11 @@ size_t insn_len(const uint8_t* p)
     return 0;
 }
 
-void* alloc_near(const void* target, size_t size)
-{
-    SYSTEM_INFO si; GetSystemInfo(&si);
-    const uintptr_t gran = si.dwAllocationGranularity;
-    const uintptr_t t = (uintptr_t)target;
-    for (uintptr_t d = gran; d < (1ull << 30); d += gran) {
-        for (int s = 0; s < 2; s++) {
-            const uintptr_t a = s ? ((t + d) & ~(gran - 1)) : ((t - d) & ~(gran - 1));
-            void* p = VirtualAlloc((void*)a, size, MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE);
-            if (p) return p;
-        }
-    }
-    return nullptr;
-}
-
 /* one page of relays/trampolines near the code */
 uint8_t* g_pool = nullptr; size_t g_pool_used = 0; constexpr size_t kPool = 0x10000;
 uint8_t* pool_take(const void* near_to, size_t n)
 {
-    if (!g_pool) g_pool = (uint8_t*)alloc_near(near_to, kPool);
+    if (!g_pool) g_pool = (uint8_t*)t5p_exec_alloc_near(near_to, kPool);
     if (!g_pool) return nullptr;
     const intptr_t dist = (intptr_t)((uintptr_t)g_pool - (uintptr_t)near_to);
     if (dist > 0x7FFF0000ll || dist < -0x7FFF0000ll) return nullptr;
@@ -121,6 +129,22 @@ bool detour(uint32_t guest, GuestFn hook, GuestFn* orig)
 {
     GuestFn h = host_of_guest(guest);
     if (!h) { note("detour %08X: no lifted function", guest); return false; }
+#if defined(T5DR_HOOK_SLOTS)
+    for (uint32_t k = 0; k < ppu_hook_count; k++) {
+        const hook_entry& e = ppu_hook_table[k];
+        if (e.addr != guest) continue;
+        if (orig) *orig = e.orig;
+        __atomic_store_n(&ppu_hook_slots[e.slot], hook, __ATOMIC_RELEASE);
+        return true;
+    }
+    note("detour %08X: no hook slot (src/rollback/hook_slots.txt) -- not installed", guest);
+    return false;
+#elif !defined(T5P_X64)
+    (void)hook; (void)orig;
+    note("detour %08X: no code detours on this CPU -- not installed", guest);
+    return false;
+#else
+    if (!t5p_code_patching()) { note("detour %08X: this build may not patch its code -- not installed", guest); return false; }
     uint8_t* code = (uint8_t*)(void*)h;
     size_t moved = 0;
     while (moved < 5) {
@@ -134,22 +158,16 @@ bool detour(uint32_t guest, GuestFn hook, GuestFn* orig)
     put_abs_jmp(relay, (const void*)hook);
     memcpy(tramp, code, moved);
     put_abs_jmp(tramp + moved, code + moved);
-    FlushInstructionCache(GetCurrentProcess(), g_pool, kPool);
+    t5p_icache_flush(g_pool, kPool);
     if (orig) *orig = (GuestFn)(void*)tramp;
 
-    DWORD old = 0;
-    if (!VirtualProtect(code, 16, PAGE_EXECUTE_READWRITE, &old)) { note("detour %08X: VirtualProtect failed", guest); return false; }
     uint8_t patch[8]; memcpy(patch, code, 8);
     patch[0] = 0xE9;
     const int32_t rel = (int32_t)((intptr_t)relay - (intptr_t)(code + 5));
     memcpy(patch + 1, &rel, 4);
-    if (((uintptr_t)code & 7) == 0) {
-        uint64_t v; memcpy(&v, patch, 8);
-        reinterpret_cast<std::atomic<uint64_t>*>(code)->store(v);
-    } else memcpy(code, patch, 8);
-    VirtualProtect(code, 16, old, &old);
-    FlushInstructionCache(GetCurrentProcess(), code, 16);
+    if (!t5p_code_write(code, patch, 8)) { note("detour %08X: VirtualProtect failed", guest); return false; }
     return true;
+#endif
 }
 
 } // namespace rb

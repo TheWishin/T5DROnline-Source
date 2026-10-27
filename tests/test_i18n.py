@@ -255,7 +255,8 @@ class CatalogTests(Base):
         self.assertLessEqual(files, {"t5dr_launcher.pyw", "tk_tab.py", "match_driver.py", "handover.py",
                                      "problem_report_ui.py", "controls_ui.py",
                                      "tk_views.py", "tour_text.py", "tk_rooms.py",
-                                     "tk_casual.py", "fighters.py"})     # (1.1.5: SIDES, STAGE_NAMES)
+                                     "tk_casual.py", "fighters.py",     # (1.1.5: SIDES, STAGE_NAMES)
+                                     "tk_stats.py"})
 
 
 class EngineTests(German):
@@ -1010,12 +1011,12 @@ class RenderTests(Base):
         app.build = type("B", (), {"events": __import__("queue").Queue(),
                                    "quiet_hint": lambda _self: quiet[-1] if quiet else None})()
         app._drain_build()
-        self.assertTrue(app.detail.get().startswith("Schritt 6 von 8: Code übersetzen  —  1:15"), app.detail.get())
+        self.assertTrue(app.detail.get().startswith("Schritt 6 von 9: Code übersetzen  —  1:15"), app.detail.get())
         self.assertNotIn("\n", app.detail.get())
         quiet.append(self.core.lift_quiet_hint("lift", 200))
         app._drain_build()
         first, second = app.detail.get().split("\n")
-        self.assertTrue(first.startswith("Schritt 6 von 8: Code übersetzen"), first)
+        self.assertTrue(first.startswith("Schritt 6 von 9: Code übersetzen"), first)
         self.assertTrue(second.startswith("Der Schritt „Code übersetzen“ hat seit 3 Minuten nichts ausgegeben."), second)
         app.build.events.put(("error", "Choose your license file (.rap) first."))
         app._drain_build()

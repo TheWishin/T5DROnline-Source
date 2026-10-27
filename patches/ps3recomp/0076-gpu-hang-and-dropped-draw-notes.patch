@@ -1,0 +1,278 @@
+diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
+index 5f2aa48..2e3c0d9 100644
+--- a/libs/video/rsx_live_draw.c
++++ b/libs/video/rsx_live_draw.c
+@@ -1240,6 +1240,8 @@ static const char* ld_dred_op_name(D3D12_AUTO_BREADCRUMB_OP op)
+ {
+     switch (op) {
+         case D3D12_AUTO_BREADCRUMB_OP_DRAWINSTANCED: return "DrawInstanced";
++        case (D3D12_AUTO_BREADCRUMB_OP)4: return "DrawIndexedInstanced";       /* patch 0076 */
++        case (D3D12_AUTO_BREADCRUMB_OP)46: return "BeginCommandList";          /* (newer SDKs only) */
+         case D3D12_AUTO_BREADCRUMB_OP_COPYBUFFERREGION: return "CopyBufferRegion";
+         case D3D12_AUTO_BREADCRUMB_OP_COPYTEXTUREREGION: return "CopyTextureRegion";
+         case D3D12_AUTO_BREADCRUMB_OP_COPYRESOURCE: return "CopyResource";
+@@ -1317,6 +1319,13 @@ static void ld_open_info_queue(void)
+             "[d3d-debug] info queue attached (warning/error/corruption)\n");
+ }
+ 
++static void ld_dred_name(char* out, size_t n, const char* a, const wchar_t* w)
++{
++    if (a && a[0]) snprintf(out, n, "%s", a);
++    else if (w && w[0]) snprintf(out, n, "%ls", w);
++    else snprintf(out, n, "<unnamed>");
++}
++
+ static void ld_dump_dred(const char* where, HRESULT trigger_hr)
+ {
+     if (g_ld_dred_dumped++ || !g.dev) return;
+@@ -1348,14 +1357,14 @@ static void ld_dump_dred(const char* where, HRESULT trigger_hr)
+              node = node->pNext, node_index++) {
+             const u32 last = node->pLastBreadcrumbValue
+                 ? *node->pLastBreadcrumbValue : 0;
++            /* SetName gives D3D12 a wide name; DRED fills only the W field
++             * then (1.1.4 logs printed <unnamed> for both). */
++            char ln[96], qn[96];
++            ld_dred_name(ln, sizeof ln, node->pCommandListDebugNameA, node->pCommandListDebugNameW);
++            ld_dred_name(qn, sizeof qn, node->pCommandQueueDebugNameA, node->pCommandQueueDebugNameW);
+             fprintf(stderr,
+                     "[dred] node=%u list=%s queue=%s count=%u last=%u\n",
+-                    node_index,
+-                    node->pCommandListDebugNameA
+-                        ? node->pCommandListDebugNameA : "<unnamed>",
+-                    node->pCommandQueueDebugNameA
+-                        ? node->pCommandQueueDebugNameA : "<unnamed>",
+-                    node->BreadcrumbCount, last);
++                    node_index, ln, qn, node->BreadcrumbCount, last);
+             if (!node->pCommandHistory || !node->BreadcrumbCount) continue;
+             const u32 first = last > 8 ? last - 8 : 0;
+             u32 end = last + 8;
+@@ -2456,6 +2465,93 @@ static void ld_fatal(UINT code, const char* title, const char* text)
+     ExitProcess(code);
+ }
+ 
++/* Patch 0076: what the GPU was doing when it stopped (docs/RENDER_PERF.md "A GPU
++ * hang on the integrated Radeon"). Each command list is named after its frame and
++ * fence value before it is submitted (DRED prints the name of every list the GPU
++ * had not finished), and a wait of a second for the GPU, and the loss itself, log
++ * which list the GPU finished last, how long ago the last list was submitted and
++ * the last Present returned, and the video memory in use. Logging only. */
++static struct {
++    u64 sub_fence[8]; u32 sub_frame[8]; LONGLONG sub_qpc[8];   /* the last submissions */
++    u64 done; LONGLONG done_qpc;          /* the highest completed fence value seen, when */
++    LONGLONG present_qpc0, present_qpc1;  /* the last Present call */
++    u32 present_frame, waits_logged;
++    u64 wait_logged;                      /* fence value the one-second note named */
++    IDXGIAdapter3* adapter;
++} g_ld_gs;
++
++static double ld_gs_ms(LONGLONG from, LONGLONG to)
++{
++    static LONGLONG f;
++    if (!f) { LARGE_INTEGER q; QueryPerformanceFrequency(&q); f = q.QuadPart ? q.QuadPart : 1; }
++    return from && to >= from ? (double)(to - from) * 1000.0 / (double)f : -1.0;
++}
++
++static u32 ld_gs_frame_of(u64 v)
++{
++    for (u32 i = 0; i < 8; i++) if (g_ld_gs.sub_fence[i] == v && v) return g_ld_gs.sub_frame[i];
++    return 0;
++}
++
++static void ld_gs_frame_text(char* out, size_t n, u64 v)
++{
++    const u32 f = ld_gs_frame_of(v);
++    if (f) snprintf(out, n, "frame %u", f);
++    else snprintf(out, n, "an older frame");
++}
++
++static void ld_gs_completed(u64 done)
++{
++    if (done != UINT64_MAX && done > g_ld_gs.done) { g_ld_gs.done = done; g_ld_gs.done_qpc = ld_pf_qpc(); }
++}
++
++/* The fence's completed value, noted for the reports below (begin-recording's check). */
++static u64 ld_gs_fence_done(void)
++{
++    const u64 done = g.fence->lpVtbl->GetCompletedValue(g.fence);
++    ld_gs_completed(done);
++    return done;
++}
++
++/* Called with the list closed, right before ExecuteCommandLists. */
++static void ld_gs_submit(u64 v)
++{
++    wchar_t name[64];
++    swprintf(name, 64, L"rsx frame %u fence %llu", g_ld_frames, (unsigned long long)v);
++    g.list->lpVtbl->SetName(g.list, name);
++    const u32 i = (u32)(v & 7u);
++    g_ld_gs.sub_fence[i] = v; g_ld_gs.sub_frame[i] = g_ld_frames; g_ld_gs.sub_qpc[i] = ld_pf_qpc();
++}
++
++static void ld_gs_report(const char* where, const char* what, u64 waiting_for)
++{
++    const LONGLONG now = ld_pf_qpc();
++    const u64 last = g.fence_value;
++    if (g.fence) (void)ld_gs_fence_done();   /* UINT64_MAX once removed: the last value seen stays */
++    char mem[160] = "unknown";
++    if (g_ld_gs.adapter) {
++        DXGI_QUERY_VIDEO_MEMORY_INFO l = {0}, s = {0};
++        if (SUCCEEDED(g_ld_gs.adapter->lpVtbl->QueryVideoMemoryInfo(g_ld_gs.adapter, 0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &l)) &&
++            SUCCEEDED(g_ld_gs.adapter->lpVtbl->QueryVideoMemoryInfo(g_ld_gs.adapter, 0, DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL, &s)))
++            snprintf(mem, sizeof mem, "local %llu MB of a %llu MB budget, shared %llu MB of %llu MB",
++                     (unsigned long long)(l.CurrentUsage >> 20), (unsigned long long)(l.Budget >> 20),
++                     (unsigned long long)(s.CurrentUsage >> 20), (unsigned long long)(s.Budget >> 20));
++    }
++    char fw[24], fl[24], fd[24];
++    ld_gs_frame_text(fw, sizeof fw, waiting_for);
++    ld_gs_frame_text(fl, sizeof fl, last);
++    ld_gs_frame_text(fd, sizeof fd, g_ld_gs.done);
++    fprintf(stderr,
++            "[gpu] %s at %s: waiting for the list of %s (fence %llu); the last list submitted: %s (fence %llu) "
++            "%.0f ms ago; the GPU had finished fence %llu (%s) when checked %.0f ms ago; the last Present "
++            "(frame %u) returned %.0f ms ago after %.1f ms; video memory: %s\n",
++            what, where, fw, (unsigned long long)waiting_for, fl, (unsigned long long)last,
++            ld_gs_ms(g_ld_gs.sub_qpc[last & 7u], now), (unsigned long long)g_ld_gs.done, fd,
++            ld_gs_ms(g_ld_gs.done_qpc, now), g_ld_gs.present_frame, ld_gs_ms(g_ld_gs.present_qpc1, now),
++            ld_gs_ms(g_ld_gs.present_qpc0, g_ld_gs.present_qpc1), mem);
++    fflush(stderr);
++}
++
+ static const char* ld_hr_text(HRESULT hr)
+ {
+     switch ((unsigned long)hr) {
+@@ -2482,6 +2578,7 @@ static void ld_device_lost(const char* where, HRESULT hr)
+     if (reason == S_OK) reason = hr;
+     fprintf(stderr, "[gpu] device lost at %s: hr=0x%08lX reason=0x%08lX (%s)\n",
+             where, (unsigned long)hr, (unsigned long)reason, ld_hr_text(reason));
++    ld_gs_report(where, "state at the loss", g.fence_value);
+     ld_dump_dred(where, hr);
+     char text[1024];
+     snprintf(text, sizeof text,
+@@ -2498,6 +2595,7 @@ static void ld_device_lost(const char* where, HRESULT hr)
+  * renderer ends with the message above instead of sleeping forever. */
+ static void ld_wait_fence(u64 v, const char* where)
+ {
++    DWORD slice = 1000;   /* patch 0076: a note after one second, before Windows' 2-second TDR */
+     for (;;) {
+         const u64 done = g.fence->lpVtbl->GetCompletedValue(g.fence);
+         if (done == UINT64_MAX) {
+@@ -2505,16 +2603,24 @@ static void ld_wait_fence(u64 v, const char* where)
+             if (r != S_OK) ld_device_lost(where, r);
+             return;
+         }
++        ld_gs_completed(done);
+         if (done >= v) return;
+         const HRESULT hr = g.fence->lpVtbl->SetEventOnCompletion(g.fence, v, g.fence_event);
+         if (FAILED(hr)) {
+             const HRESULT r = g.dev->lpVtbl->GetDeviceRemovedReason(g.dev);
+             ld_device_lost(where, r != S_OK ? r : hr);
+         }
+-        if (WaitForSingleObject(g.fence_event, 2000) == WAIT_TIMEOUT) {
++        if (WaitForSingleObject(g.fence_event, slice) == WAIT_TIMEOUT) {
+             const HRESULT r = g.dev->lpVtbl->GetDeviceRemovedReason(g.dev);
+             if (r != S_OK) ld_device_lost(where, r);
+-            /* still alive: a very slow frame (software adapter); keep waiting */
++            /* still alive: a very slow frame (software adapter) or a GPU Windows
++             * is about to reset; keep waiting */
++            if (g_ld_gs.wait_logged != v && g_ld_gs.waits_logged < 8) {
++                g_ld_gs.wait_logged = v;
++                g_ld_gs.waits_logged++;
++                ld_gs_report(where, "GPU not done after 1 s", v);
++            }
++            slice = 2000;
+         }
+     }
+ }
+@@ -3267,7 +3373,7 @@ static void ld_begin_recording_owned(void)
+         g.n_retired_textures = 0;
+         g_ld_cur = (g_ld_cur + 1) % g_ld_nslots;
+         ld_slot_t* s = &g_ld_slot[g_ld_cur];
+-        if (s->fence && g.fence->lpVtbl->GetCompletedValue(g.fence) < s->fence) {
++        if (s->fence && ld_gs_fence_done() < s->fence) {
+             const LONGLONG w0 = ld_pf_qpc();
+             ld_wait_fence(s->fence, "begin-recording");
+             g_pf.flush_wait_ticks += ld_pf_qpc() - w0;
+@@ -3278,7 +3384,7 @@ static void ld_begin_recording_owned(void)
+         ld_slot_load(g_ld_cur);
+     } else {
+     const u64 v = g.fence_value;
+-    if (g.fence->lpVtbl->GetCompletedValue(g.fence) < v) {
++    if (ld_gs_fence_done() < v) {
+         const LONGLONG w0 = ld_pf_qpc();
+         ld_wait_fence(v, "begin-recording");
+         g_pf.flush_wait_ticks += ld_pf_qpc() - w0;
+@@ -3336,6 +3442,7 @@ static void ld_flush_owned(ld_flush_reason reason)
+         return;
+     }
+     ID3D12CommandList* lists[] = {(ID3D12CommandList*)g.list};
++    ld_gs_submit(g.fence_value + 1);   /* patch 0076: the list's name for DRED */
+     g.queue->lpVtbl->ExecuteCommandLists(g.queue, 1, lists);
+     const u64 v = ++g.fence_value;
+     g_ld_slot[g_ld_cur].fence = v;   /* patch 0063: the slot's last list */
+@@ -9730,6 +9837,25 @@ static void write_topology_indices(u32 prim, u32* indices)
+     }
+ }
+ 
++/* Patch 0076: a draw the renderer has no topology for (points, lines, quad
++ * strips, polygons) only counted as drop{prim}; name the first ones of each
++ * kind, so a missing effect can be told from one the game never drew. */
++static void ld_note_prim_drop(u32 prim)
++{
++    static u32 seen[16];
++    static const char* names[16] = { "?", "points", "lines", "line loop", "line strip", "triangles",
++                                     "triangle strip", "triangle fan", "quads", "quad strip", "polygon" };
++    const u32 k = prim < 16 ? prim : 0;
++    if (seen[k]++ >= 3) return;
++    rsx_dsp_texture t0;
++    rsx_dsp_get_texture(&g.rsx, 0, &t0);
++    fprintf(stderr, "[live-draw] primitive %u (%s) not drawn (no topology for it here): frame %u, %u vertices, "
++                    "fragment program 0x%08X, texture 0 %s0x%X fmt 0x%02X %ux%u\n",
++            prim, names[k] ? names[k] : "?", g_ld_frames, dc.n_source_refs ? dc.n_source_refs : dc.n_verts,
++            rsx_dsp_reg(&g.rsx, 0x08E4u), t0.enabled ? "" : "(off) ", t0.offset, t0.format & 0xFFu,
++            t0.width, t0.height);
++}
++
+ /* ---------------------------------------------------------------------------
+  * Stage blur and glow at every internal resolution (patch 0043, PS3_STAGE_BLUR).
+  *
+@@ -10207,7 +10333,7 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+         const int r = ld_vjob_submit(prim, &used_layout, &n_tri, &draw_vb_bytes);
+         if (r <= 0) {
+             if (r == 0) g_ld_stats.group_drop_fetch++;
+-            else if (r == -1) g_ld_stats.group_drop_primitive++;
++            else if (r == -1) { g_ld_stats.group_drop_primitive++; ld_note_prim_drop(prim); }
+             else if (r == -2) g_ld_stats.group_drop_degenerate++;
+             else { live_draw_csv_emit(prim, n_tri, "drop_vbring_oversize"); g_ld_stats.group_drop_ring++; }
+             return;
+@@ -10238,6 +10364,7 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+      * vertex references to share one fetched and uploaded payload. */
+     if (!rsx_vertex_topology_plan(prim, dc.refs_remapped, &indexed)) {
+         g_ld_stats.group_drop_primitive++;
++        ld_note_prim_drop(prim);
+         return;
+     }
+     n_tri = indexed
+@@ -12202,6 +12329,11 @@ int rsx_live_draw_init(void* hwnd, u32 width, u32 height,
+             (void**)&g_ld_profile.adapter);
+     }
+ #endif
++    {   /* patch 0076: video memory in the GPU-wait and device-loss notes */
++        LUID luid = {0};
++        g.dev->lpVtbl->GetAdapterLuid(g.dev, &luid);
++        factory->lpVtbl->EnumAdapterByLuid(factory, luid, &IID_IDXGIAdapter3, (void**)&g_ld_gs.adapter);
++    }
+     ld_open_info_queue();
+     D3D12_COMMAND_QUEUE_DESC qd = {0};
+     g.dev->lpVtbl->CreateCommandQueue(g.dev, &qd, &IID_ID3D12CommandQueue, (void**)&g.queue);
+@@ -13479,9 +13611,11 @@ static void ld_present_body(u32 buffer_id, int display_synced)
+         host_sched_trace(HS_EV_PRESENT0, g_ld_frames + 1u);
+         ld_pacing_check();
+         ld_test_display_wait();
++        g_ld_gs.present_qpc0 = ld_pf_qpc();
+         const HRESULT present_hr = g.swap->lpVtbl->Present(
+             g.swap, g_ld_lock_mode ? 0u : g_ld_present_interval,
+             (g_ldp.fs_exclusive || g_ld_lock_mode) ? (g_ld_present_flags & ~(UINT)DXGI_PRESENT_ALLOW_TEARING) : g_ld_present_flags);
++        g_ld_gs.present_qpc1 = ld_pf_qpc(); g_ld_gs.present_frame = g_ld_frames + 1u;   /* patch 0076 */
+         g_pf.present_call_ticks += ld_pf_qpc() - pf_present_flushed;
+         ld_test_device_removed();
+         if (SUCCEEDED(present_hr)) {

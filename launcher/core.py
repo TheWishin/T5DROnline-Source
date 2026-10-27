@@ -95,10 +95,14 @@ DEFAULTS = {
     "settings_version": 0,     # SETTINGS_VERSION once Settings migrated an older launcher.json
     "vsync": "on",             # on | off (PS3_VSYNC=0): only how pictures reach the screen; the game stays at 60 fps
     "stage_blur": "off",       # on | off (PS3_STAGE_BLUR=0): the blur / glow some stages put on the picture
+    "shadows": "on",           # on | off (PS3_SHADOWS=0): the fighters' and the stage's shadows (GRAPHICS)
+    "effects": "on",           # on | off (PS3_EFFECTS=0): hit sparks, flames, smoke, mist, waterfalls (GRAPHICS)
     "input_delay": "auto",     # online input delay: auto (by ping) | 0 | 1 | 2 frames, T5_RB_NET_DELAY
     "training": "frames",      # training overlay in Practice: off | inputs | frames (inputs + frame data), T5_TRAINING
     "training_all": False,     # ... also in the other offline modes (T5_TRAINING_ALL=1)
     "training_online": False,  # ... also online, this PC's own inputs only (T5_TRAINING_ONLINE=1)
+    "practice": True,          # practice tools in Practice (offline): SELECT combos, dummy, recordings, T5_PRACTICE
+    "practice_dummy": "game",  # the dummy's behaviour at the start: game | block | crouch | walk | step, T5_PRACTICE_DUMMY
     "router_ports": True,      # online: forward the game's port on the router for a match (PCP / NAT-PMP / UPnP)
     "language": "auto",        # auto (the Windows language) | en | de | es | ko | ja | pt-BR | fr -- applies at start
     "discord_presence": False, # online: show the lobby / search / match in Discord (Rich Presence, docs/ONLINE.md)
@@ -178,8 +182,15 @@ class Settings(dict):
             self["power_saving"] = "auto"
         if not isinstance(self["stage_blur"], str) or self["stage_blur"] not in STAGE_BLUR_MODES:
             self["stage_blur"] = "off"
+        for key, (_name, _env, modes, default) in GRAPHICS.items():
+            if not isinstance(self[key], str) or self[key] not in modes:
+                self[key] = default
         if not isinstance(self["training"], str) or self["training"] not in TRAINING_MODES:
             self["training"] = "frames"
+        if not isinstance(self["practice"], bool):
+            self["practice"] = True
+        if not isinstance(self["practice_dummy"], str) or self["practice_dummy"] not in PRACTICE_DUMMY:
+            self["practice_dummy"] = "game"
 
     def save(self):
         try:
@@ -226,6 +237,9 @@ class Settings(dict):
         env["PS3_LAPTOP"] = {"on": "1", "off": "0"}.get(self["power_saving"], "auto")
         if self["stage_blur"] == "off":
             env["PS3_STAGE_BLUR"] = "0"
+        for key, (_name, var, _modes, _default) in GRAPHICS.items():
+            if self[key] == "off":
+                env[var] = "0"
         if self["display"] == "borderless":
             # the game's own borderless fullscreen (Alt+Enter/F11 toggle it, Esc leaves it first,
             # it follows the monitor), not a restyled window from outside
@@ -246,6 +260,12 @@ class Settings(dict):
                 if self["training_online"]:
                     env["T5_TRAINING_ONLINE"] = "1"
                 env["T5_TRAINING_LANG"] = i18n.resolve(self["language"]) if I18N else "en"
+        # Practice tools (docs/TRAINING.md "Practice tools"): offline Practice only -- the game never uses
+        # them online, in a replay or while spectating, whatever this says.
+        env["T5_PRACTICE"] = "1" if self["practice"] else "0"
+        if self["practice"]:
+            env["T5_PRACTICE_DUMMY"] = self["practice_dummy"] if self["practice_dummy"] in PRACTICE_DUMMY else "game"
+            env.setdefault("T5_TRAINING_LANG", i18n.resolve(self["language"]) if I18N else "en")
         # Unlocks count offline only: a game started for online play answers as a fresh save does,
         # whatever it is given (both PCs must build the same select screens and stage lists); online, Jinpachi
         # and the random cell come with the match kind instead (T5_NET_UNLOCKS from the lobby's match event).
@@ -278,6 +298,20 @@ def describe_pkg(path):
     size = os.path.getsize(path)
     if cid is None:
         return False, "error", t("This is not a PS3 package (.pkg).")
+    # What is inside (PARAM.SFO and the program's header, read from the package in well under a second): a v01.01
+    # package names itself like the supported one would, and the build used to blame the .rap for it.
+    facts = _package_facts(path)
+    if facts and facts["title_id"] == build_game.TITLE_ID:
+        ver, prog = facts["version"], facts["program"]
+        ver = build_game.OTHER_VERSIONS.get(prog, ver) if ver in ("?", build_game.TITLE_VERSION) else ver
+        if ver not in ("?", build_game.TITLE_VERSION):
+            return False, "error", t("{id}  ({size} bytes) -- version {version} of the game. The port supports only "
+                                     "version {supported}; the build will refuse this package.", id=cid,
+                                     size=f"{size:,}", version=ver, supported=build_game.TITLE_VERSION)
+        if prog and prog not in build_game.CONTENT_IDS:
+            return True, "warn", t("{id}  ({size} bytes) -- its program has content ID {program}, not the supported "
+                                   "one ({supported}). The build will most likely refuse it.", id=cid,
+                                   size=f"{size:,}", program=prog, supported=build_game.CONTENT_ID)
     if cid in build_game.CONTENT_IDS:
         return True, "ok", t("{id}  ({size} bytes) -- the supported version", id=cid, size=f"{size:,}")
     if build_game.TITLE_ID in cid:
@@ -286,6 +320,26 @@ def describe_pkg(path):
                                supported=build_game.CONTENT_ID)
     return True, "warn", t("{id}  ({size} bytes) -- not Tekken 5 DR Online ({title_id}).", id=cid, size=f"{size:,}",
                            title_id=build_game.TITLE_ID)
+
+
+_FACTS = {}
+
+
+def _package_facts(path):
+    """build_game.package_facts(path), once per file (path, size, time): the Build tab asks on every change."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    if cloud_only(path):
+        return None                         # (reading inside it would download 600 MB)
+    key = (os.path.abspath(path), st.st_size, st.st_mtime)
+    if key not in _FACTS:
+        try:
+            _FACTS[key] = build_game.package_facts(path)
+        except Exception:      # noqa: BLE001 -- a line under the file chooser must never stop the launcher
+            _FACTS[key] = None
+    return _FACTS[key]
 
 
 def describe_rap(path, pkg=None):
@@ -457,7 +511,7 @@ def game_exe(out):
 
 def game_state(out):
     """What the Play tab shows: dict(built, ok, text, needs_rebuild, elf_sha1)."""
-    exe = os.path.join(out, "build", "cmake", "t5dr.exe")
+    exe = game_exe(out)     # t5dr.exe; t5dr on macOS
     elf = os.path.join(out, "game", "EBOOT.elf")
     stamp = os.path.join(out, "build", "t5dr_build.json")
     st = dict(built=False, ok=False, needs_rebuild=False, elf_sha1=None, text="")
@@ -498,15 +552,24 @@ def game_state(out):
 STEP_TITLES = {          # English; t(STEP_TITLES[step]) where it is shown
     "deps": N_("Recompiler"), "keys": N_("Key data"), "decrypt": N_("Check & decrypt"), "unpack": N_("Unpack"),
     "vfs": N_("Game files"), "lift": N_("Translate code"), "spu": N_("Sound core"), "compile": N_("Compile"),
+    "shaders": N_("Shaders"),     # 1.1.5: tools/shader_warmup.py (build_game.py --warmup)
 }
 # Rough share of the total time per step (measured on a 16-core PC; see docs/RELEASE.md).
-STEP_WEIGHT = {"deps": 1, "keys": 1, "decrypt": 2, "unpack": 12, "vfs": 1, "lift": 40, "spu": 8, "compile": 35}
+STEP_WEIGHT = {"deps": 1, "keys": 1, "decrypt": 2, "unpack": 12, "vfs": 1, "lift": 40, "spu": 8, "compile": 35,
+               "shaders": 10}
 RE_STEP = re.compile(r"^\[(\w+)\]\s*$")
 RE_NINJA = re.compile(r"^\[(\d+)/(\d+)\]")
 RE_FUNCS = re.compile(r"(\d+)/(\d+) functions")
+RE_WARMUP = re.compile(r"^\[warmup\] fight (\d+) of (\d+)")
 # The lift step printed nothing for this long: the Build tab says so. The lifter itself prints at least every ~30 s
 # while it works (ps3recomp patch 0048: "... still lifting: 3 chunks left, elapsed 1.5m").
 LIFT_QUIET_S = 180
+# Any step that printed nothing for this long (seconds) gets a hint naming it and the program it started last (GitHub
+# #27: a BUILD GAME seemed stuck all night). Generous: the compile step prints when a file is done, and the slowest
+# file takes 1-2 minutes on a slow PC (tools/build_game_dll.py); the unpack prints every 64 MB (patch 0074).
+QUIET_S = {"deps": 300, "keys": 120, "decrypt": 120, "unpack": 180, "vfs": 120, "lift": LIFT_QUIET_S, "spu": 300,
+           "compile": 600, "shaders": 300}     # (the warm-up prints a line per fight, ~10 s each)
+RE_TOKEN = re.compile(r'"[^"]*"|\S+')
 
 
 def build_line_events(step, line):
@@ -523,6 +586,9 @@ def build_line_events(step, line):
     elif step == "compile" and RE_NINJA.match(line):
         n, d = map(int, RE_NINJA.match(line).groups())
         events.append(("sub", n / max(d, 1)))
+    elif step == "shaders" and RE_WARMUP.match(line):
+        n, d = map(int, RE_WARMUP.match(line).groups())
+        events.append(("sub", (n - 1) / max(d, 1)))
     elif step == "lift" and RE_FUNCS.search(line):
         n, d = map(int, RE_FUNCS.search(line).groups())
         # the lifter reports twice (translate, then write): weight 70/30. Its other lines (the heartbeat, notices
@@ -539,6 +605,54 @@ def lift_quiet_hint(step, quiet_s):
     return t("The translation step has printed nothing for {minutes} minutes. On a slow or busy PC it may still be "
              "working. If nothing changes, close other programs, press Cancel and then BUILD GAME again; build.log "
              "has the details.", minutes=int(quiet_s // 60))
+
+
+def started_tool(line):
+    """The program a "  > <command>" line of build_game.py starts (the script for a Python tool), else None."""
+    if not line.startswith("  > "):
+        return None
+    words = [w.strip('"') for w in RE_TOKEN.findall(line[4:])]
+    for w in words:
+        if w.lower().endswith((".py", ".pyw")):
+            return os.path.basename(w)
+    return os.path.basename(words[0]) if words else None
+
+
+def step_title(step):
+    """t(STEP_TITLES[step]) with the texts written out (tests/test_i18n.py keeps t(variable) out of this file)."""
+    return {"deps": t("Recompiler"), "keys": t("Key data"), "decrypt": t("Check & decrypt"), "unpack": t("Unpack"),
+            "vfs": t("Game files"), "lift": t("Translate code"), "spu": t("Sound core"),
+            "compile": t("Compile"), "shaders": t("Shaders")}.get(step, step)
+
+
+def step_quiet_hint(step, quiet_s, tool=None):
+    """The Build tab's hint once a step has printed nothing for QUIET_S[step] seconds, else None. The translation
+    step keeps its own words (lift_quiet_hint)."""
+    if step == "lift":
+        hint = lift_quiet_hint(step, quiet_s)
+    elif step in QUIET_S and quiet_s >= QUIET_S[step]:
+        hint = t("The step \"{title}\" has printed nothing for {minutes} minutes. On a slow or busy PC it may still be "
+                 "working. If nothing changes, press Cancel and then BUILD GAME again; build.log has the details.",
+                 title=step_title(step), minutes=int(quiet_s // 60))
+    else:
+        return None
+    if hint and tool:
+        hint += " " + t("Last program started: {tool}.", tool=tool)
+    return hint
+
+
+ES_CONTINUOUS, ES_SYSTEM_REQUIRED = 0x80000000, 0x00000001
+
+
+def keep_awake(on):
+    """While BUILD GAME runs, Windows does not go to sleep (the screen may still turn off): a build left alone on a PC
+    that sleeps after 15-30 minutes stopped there until morning. Per thread: the build's reading thread asks."""
+    if not IS_WIN:
+        return
+    try:
+        ctypes.windll.kernel32.SetThreadExecutionState(ES_CONTINUOUS | (ES_SYSTEM_REQUIRED if on else 0))
+    except (AttributeError, OSError):
+        pass
 
 
 class BuildRun:
@@ -562,8 +676,11 @@ class BuildRun:
             cmd.append("--force")
         if steps:
             cmd += ["--steps"] + list(steps)
+        # 1.1.5: the shader warm-up after the build (once per built game; it never fails the build)
+        cmd.append("--warmup")
         self.cmd = cmd
         self.step = None                        # the step build_game.py is in
+        self.tool = None                        # the program it started last ("  > ..." lines)
         self.last_output = time.monotonic()     # when it last printed a line
         self._quiet_noted = False               # the quiet hint went to the log view in this quiet stretch
         self._log = None                        # build.log while the build runs
@@ -585,6 +702,13 @@ class BuildRun:
         threading.Thread(target=self._pump, daemon=True).start()
 
     def _pump(self):
+        keep_awake(True)
+        try:
+            self._read()
+        finally:
+            keep_awake(False)
+
+    def _read(self):
         with open(self.log_path, "w", encoding="utf-8", errors="replace") as log:
             with self._log_lock:
                 log.write(f"# T5DR Online build log, {datetime.datetime.now():%Y-%m-%d %H:%M:%S}, "
@@ -597,7 +721,11 @@ class BuildRun:
                     log.flush()
                     self.last_output = time.monotonic()
                     self._quiet_noted = False
+                    step = self.step
                     self.step, events = build_line_events(self.step, line)
+                    if self.step != step:
+                        self.tool = None
+                    self.tool = started_tool(line) or self.tool
                 for ev in events:
                     self.events.put(ev)
             code = self.proc.wait()
@@ -607,14 +735,16 @@ class BuildRun:
         self.events.put(("end", -1 if self.cancelled else code))
 
     def quiet_hint(self, now=None):
-        """lift_quiet_hint() for this build (the Build tab asks on every tick). The first time in a quiet stretch
-        it also goes to the log view and build.log as a "[launcher] ..." line."""
+        """step_quiet_hint() for this build (the Build tab asks on every tick). The first time in a quiet stretch
+        it also goes to the log view, build.log and launcher.log as a "[launcher] ..." line."""
         now = time.monotonic() if now is None else now
         with self._log_lock:
-            hint = lift_quiet_hint(self.step, now - self.last_output)
+            hint = step_quiet_hint(self.step, now - self.last_output, self.tool)
             if hint and not self._quiet_noted:
                 self._quiet_noted = True
                 line = "[launcher] " + hint
+                log(f"build: step {self.step} printed nothing for {int(now - self.last_output)} s"
+                    + (f" ({self.tool})" if self.tool else ""))
                 self.events.put(("line", line))
                 if self._log is not None:
                     try:
@@ -640,8 +770,9 @@ def kill_tree(pid):
 
 # --------------------------------------------------------------------------- game process
 
-def explain_exit(code, lines):
-    """One plain sentence for the Play tab when the game ended on its own; None when it closed normally."""
+def explain_exit(code, lines, dialogs=()):
+    """One plain sentence for the Play tab when the game ended on its own; None when it closed normally. `dialogs`:
+    the game's own message boxes (GameRun.dialogs); one after which the game stops explains the end."""
     text = "\n".join(lines[-80:])
     if code == 12 or "[gpu] device lost" in text:
         return t("The graphics card stopped working for the game (the driver crashed, was reset or updated). "
@@ -663,12 +794,68 @@ def explain_exit(code, lines):
         # character select after a match ends itself; the next match starts a fresh one.
         return t("The game could not get back to character select after the last match and closed itself. "
                  "It starts again for your next match.")
+    fatal = [d for d in dialogs if dialog_info(d)[0]]
+    if fatal:
+        return dialog_message(fatal[-1])
     crashed = "[CRASH]" in text or "[STACKOVERFLOW]" in text
     if code == 0 and not crashed:
         return None
     if crashed:
         return t("The game stopped after a crash (exit code {code}). The game log has the details.", code=code)
     return t("The game stopped (exit code {code}). The game log has the details.", code=code)
+
+
+# The game's own message boxes (cellMsgDialog). The runtime answers them by itself and only prints their text, between
+# a line "[DIALOG] <first line>" and a line of "=" signs; the player saw nothing of it ("The installed game data is
+# corrupted. Ending game." left a silent black screen). The launcher shows each one with what to do.
+DIALOG_START = "[DIALOG] "
+DIALOG_MAX_LINES = 8          # a longer one is cut there (another thread's output in between, a missing end line)
+
+
+class DialogScan:
+    """Feed it the game log line by line; feed() returns the text of a dialog when its last line has come, else None."""
+
+    def __init__(self):
+        self.lines = None
+
+    def feed(self, line):
+        line = line.rstrip("\r\n")
+        if line.startswith(DIALOG_START):
+            done = self.finish()                       # (an unfinished one before it ends here)
+            self.lines = [line[len(DIALOG_START):]]
+            return done
+        if self.lines is None:
+            return None
+        if line.startswith("=====") or line.startswith("[cellMsgDialog]"):
+            return self.finish()
+        self.lines.append(line)
+        return self.finish() if len(self.lines) >= DIALOG_MAX_LINES else None
+
+    def finish(self):
+        text = "\n".join(l.strip() for l in (self.lines or []) if l.strip())
+        self.lines = None
+        return text or None
+
+
+def dialog_info(text):
+    """(fatal: the game stops after it, the sentence for the player) for a dialog the game showed. The texts are the
+    US game's own (English); the ones seen in game logs so far have their own advice."""
+    low = " ".join((text or "").lower().split())
+    if "game data is corrupted" in low:      # "The installed game data is corrupted. Ending game. ..."
+        return True, t("Your built game data is probably damaged. Open the Build tab, tick \"Redo every step\" and "
+                       "press BUILD GAME. If the message comes back, download the package again: it must be exactly "
+                       "{size} bytes.", size=f"{build_game.PKG_SIZE:,}")
+    if "unable to save" in low:              # "Unable to save Play Data. Cancel Play Data save?"
+        return False, t("The game could not write its save, so progress may be lost. Check that the disk is not full "
+                        "and that no antivirus blocks the folder native\\gamedata.")
+    if "unable to load" in low:              # "Unable to load Play Data."
+        return False, t("The game could not read its save. If it happens every time, click Report a problem.")
+    return False, t("If the game does not go on, click Report a problem.")
+
+
+def dialog_message(text):
+    """The Play tab's sentence for a dialog: the game's own words (English, as the game has them) and what to do."""
+    return t("The game shows: \"{text}\" {advice}", text=" ".join((text or "").split()), advice=dialog_info(text)[1])
 
 
 UNLOCK_ENV = ("T5_UNLOCK_STAGES", "T5_UNLOCK_ITEMS", "T5_UNLOCK_JINPACHI")
@@ -748,6 +935,8 @@ class GameRun:
         self.log_path = None
         self.fps = None
         self.last_lines = []
+        self.dialogs = []          # the texts of the game's own message boxes, oldest first (DialogScan; the last 20)
+        self.dialog_count = 0      # how many it showed in all
         self.started = None
 
     def start(self, extra_env=None, monitor_point=None):
@@ -777,6 +966,13 @@ class GameRun:
                 pass
         self.log_path = os.path.join(logs, f"game-{datetime.datetime.now():%Y%m%d-%H%M%S}.log")
         logf = open(self.log_path, "w", encoding="utf-8", errors="replace")
+        wine = run_game.under_wine()
+        if wine:
+            # first line of the game log (and launcher.log): Wine / Proton and the two defaults it gets there
+            note = run_game.wine_note(wine, env)
+            logf.write(note + "\n")
+            logf.flush()
+            log(note)
         si = None
         if IS_WIN and env_over.get("PS3_WINDOW_BACKGROUND"):
             # Also ask for minimized through STARTUPINFO. On its own this does NOT keep the
@@ -804,15 +1000,24 @@ class GameRun:
             kill_tree(self.proc.pid)
 
     def _tail(self):
+        scan = DialogScan()
         with open(self.log_path, encoding="utf-8", errors="replace") as f:
             while True:
                 line = f.readline()
                 if not line:
                     if not self.running():
+                        line = scan.finish()           # a dialog the game's end cut short
+                        if line:
+                            self.dialogs = (self.dialogs + [line])[-20:]
+                            self.dialog_count += 1
                         break
                     time.sleep(0.25)
                     continue
                 line = line.rstrip()
+                dialog = scan.feed(line)
+                if dialog:
+                    self.dialogs = (self.dialogs + [dialog])[-20:]
+                    self.dialog_count += 1
                 if line.startswith("[fps]"):
                     try:
                         self.fps = float(line.split()[1])
@@ -982,6 +1187,54 @@ STAGE_BLUR_MODES = {     # English; t(label) where it is shown
 }
 
 
+# Graphics settings for weak graphics cards (ps3recomp patch 0079, docs/RENDER_PERF.md "Graphics settings
+# for weak graphics cards"): each switches one costly effect off -- the game still simulates every frame
+# the same, only the picture changes, so the two players of an online match may choose differently.
+# On is the game's own look and the default; Off sends the variable as 0.
+#   Shadows (PS3_SHADOWS=0): the shadow map the game draws from the light each frame is not drawn and
+#   not read: no shadows of the fighters and the stage objects; fewer draws to translate too.
+#   Effects (PS3_EFFECTS=0): the see-through effects of the 3D scene are not drawn (blended draws that
+#   test depth but do not write it): hit sparks, flames, smoke, mist, haze, glows and the waterfalls.
+ON_OFF_MODES = {         # English; t(label) where it is shown
+    "on": N_("On (default)"),
+    "off": N_("Off"),
+}
+GRAPHICS = {             # setting: (English name, t(name) where it is shown; variable; choices; default)
+    "shadows": (N_("Shadows"), "PS3_SHADOWS", ON_OFF_MODES, "on"),
+    "effects": (N_("Effects"), "PS3_EFFECTS", ON_OFF_MODES, "on"),
+}
+GRAPHICS_HINTS = {       # English; t(hint) where it is shown
+    "shadows": N_("Off: no shadows of the fighters and the stage. Saves graphics work and some processor time."),
+    "effects": N_("Off: no hit sparks or other hit effects (also the EWGF lightning), flames, smoke, mist, glows "
+                  "or waterfalls. Saves graphics work (the most on misty stages) and some processor time."),
+}
+
+# "Lowest" (Settings -> Graphics): everything a weak or old graphics card can do without -- the 3D scene
+# at half size, no stage blur / glow, every effect above off. "Default" puts these settings back: Internal
+# resolution as the launcher picks it (Auto on integrated graphics, else Native), stage blur / glow Off
+# (the default since 1.1.4), every effect on. The other settings (window, VSync, power saving) stay.
+LOWEST_PRESET = dict({"internal_res": "lowest", "internal_res_set": True, "stage_blur": "off"},
+                     **{key: "off" for key in GRAPHICS})
+DEFAULT_PRESET = dict({"internal_res": "native", "internal_res_set": False, "stage_blur": "off"},
+                      **{key: spec[3] for key, spec in GRAPHICS.items()})
+
+
+def apply_preset(settings, preset):
+    """Put a preset's values into settings (a Settings or dict); -> the keys that changed."""
+    changed = [k for k, v in preset.items() if settings.get(k) != v]
+    settings.update(preset)
+    return changed
+
+
+def preset_in_use(settings):
+    """'lowest' or 'default' when the graphics settings are exactly that preset's, else None."""
+    for name, preset in (("lowest", LOWEST_PRESET), ("default", DEFAULT_PRESET)):
+        if all(settings.get(k) == v for k, v in preset.items() if k != "internal_res_set") and \
+                (name != "default" or not settings.get("internal_res_set")):
+            return name
+    return None
+
+
 # Training overlay (docs/TRAINING.md): the game draws, over its picture, the last inputs of each
 # player with how many frames each was held, and after each exchange the startup of the move and
 # the frame advantage (+3, -12). In Practice; the two options widen it to the other offline modes
@@ -992,6 +1245,22 @@ TRAINING_MODES = {       # English; t(label) where it is shown
     "inputs": N_("Inputs"),
     "frames": N_("Inputs + frame data"),
 }
+
+# Practice tools (docs/TRAINING.md "Practice tools"): in Practice, offline only, P1 holds SELECT and
+# presses 3 for a position reset (with f / b / df / db: against a wall), 1 / 2 / 4 to record the
+# dummy, play it once or in a loop (5 slots, tap up / down), and taps forward / back to change what
+# the dummy does. The game type, netplay, replays and spectating are checked by the game itself.
+PRACTICE_DUMMY = {       # English; t(label) where it is shown -- the dummy's behaviour at the start
+    "game": N_("As set in the game's Practice menu"),
+    "block": N_("Blocks after the first hit"),
+    "crouch": N_("Crouches"),
+    "walk": N_("Walks forward and back"),
+    "step": N_("Sidesteps"),
+}
+PRACTICE_HELP = N_(
+    "In Practice, hold SELECT and press: 3 round start; f+3 / b+3 the dummy against the wall in front of / "
+    "behind you; df+3 / db+3 you against the wall in front of / behind you. 1 records the dummy (you play it), "
+    "2 plays the recording once, 4 in a loop; tap up / down for slot 1-5, forward / back for what the dummy does.")
 
 
 def internal_res_for_screen(width, height):
@@ -1057,25 +1326,42 @@ def igpu_res_text(step, better):
 
 
 # [slow-frames] (ps3recomp patches 0047, 0059, 0063) ends with a verdict when a 30 s window was GPU-bound, or the
-# integrated graphics were busy enough to slow the processor as well.
+# integrated graphics were busy enough to slow the processor as well. Patch 0075 made it honest: "GPU-bound: the
+# graphics need" (a lower Internal resolution helps: the GPU near 100 % busy above Native, or integrated graphics)
+# only then; "GPU-bound: the graphics card needs ... at <step>" (the card itself is the limit at Native or below),
+# "CPU and GPU in turn" and "CPU-bound" otherwise -- an i3-3240 with an old GT 730 was told to lower a resolution
+# that was already 0.5x (docs/RENDER_PERF.md "2-core mode and slow graphics cards").
 SLOW_GPU_BOUND = re.compile(r"^\[slow-frames\].*\| GPU-bound: the graphics need ([0-9.]+) ms a frame")
 SLOW_IGPU_BUSY = re.compile(r"^\[slow-frames\].*\| integrated graphics busy ([0-9]+) % of the time")
+SLOW_CARD_BOUND = re.compile(r"^\[slow-frames\].*\| GPU-bound: the graphics card needs ([0-9.]+) ms a frame")
+SLOW_CPU_BOUND = re.compile(r"^\[slow-frames\].*\| (?:CPU-bound|CPU and GPU in turn): the game needs ([0-9.]+) ms a "
+                            r"frame and the render translation ([0-9.]+)")
 
 
 def speed_hint(lines):
-    """One sentence for the Play tab after a game, from its [slow-frames] lines: the graphics were the limit."""
-    gpu = igpu = 0
+    """One sentence for the Play tab after a game, from its [slow-frames] lines: what was the limit."""
+    gpu = igpu = card = cpu = 0
     for line in lines:
         if SLOW_GPU_BOUND.match(line):
             gpu += 1
         elif SLOW_IGPU_BUSY.match(line):
             igpu += 1
+        elif SLOW_CARD_BOUND.match(line):
+            card += 1
+        elif SLOW_CPU_BOUND.match(line):
+            cpu += 1
     if gpu:
         return t("Fights were slower than 60 fps because of the graphics (GPU-bound): choose a lower "
                  "Internal resolution in Settings.")
     if igpu:
         return t("Fights were slower than 60 fps: the integrated graphics were busy and slowed the processor "
                  "too. A lower Internal resolution in Settings helps.")
+    if card and card >= cpu:
+        return t("Fights were slower than 60 fps because of the graphics card: it is too slow for this game. "
+                 "Internal resolution Lowest helps a little at most.")
+    if cpu or card:
+        return t("Fights were slower than 60 fps because of the processor: close other programs while you play. "
+                 "A lower Internal resolution does not help.")
     return None
 
 
@@ -1127,7 +1413,7 @@ def slow_frame_lines(path, limit=64 * 1024 * 1024):
 
 # Settings a line of Extra settings overrides (env_overrides applies them last).
 SETTING_ENV = {"power_saving": "PS3_LAPTOP", "internal_res": "PS3_INTERNAL_RES", "vsync": "PS3_VSYNC",
-               "stage_blur": "PS3_STAGE_BLUR"}
+               "stage_blur": "PS3_STAGE_BLUR", **{key: spec[1] for key, spec in GRAPHICS.items()}}
 
 
 def extra_env_override(settings, key):

@@ -66,9 +66,12 @@
  *   T5_NET_TRACE=1   log semaphore / syscall traffic per thread and allocations.
  */
 #define WIN32_LEAN_AND_MEAN
-#include <windows.h>
+#include "../platform/t5_win.h"
+#if defined(_WIN32)
 #include <bcrypt.h>
+#endif
 #include <stdlib.h>
+#include <ctype.h>
 #include <atomic>
 #include <cstdio>
 #include <cstring>
@@ -91,6 +94,7 @@ extern "C" uint32_t t5_df_mode_cur(void);  /* src/directfight/df_fight.cpp: the 
 extern "C" uint32_t t5_df_mode_next(void); /* src/directfight/df_fight.cpp: the mode the manager was asked for (14 = none) */
 extern "C" void t5_df_window_closed(void);   /* src/directfight/df_fight.cpp: state.json "quit" (persistent game) */
 extern "C" void t5_training_frame(ppu_context* ctx);   /* src/training/training.cpp: the training overlay */
+extern "C" void t5_practice_pads(uint16_t* p1, uint16_t* p2);   /* src/training/practice.cpp: offline Practice only */
 /* ps3recomp patch 0035 (boot_main.cpp, rsx_null_backend.c): the game window was closed; Esc asks twice */
 extern "C" void ps3_set_window_closed_handler(void (*fn)(void));
 extern "C" void ps3_set_window_close_guard(int (*fn)(void));
@@ -727,9 +731,13 @@ void keyread_tick()
     gcall(kFnPadUpdate);                         /* 0x8F3A4: cellPadGetInfo/GetData, port states */
     if (rd32(kRingResetFlag)) gcall(kFnRingReset);
     const uint32_t slot = (rd32(kRingWriteIdx) & 15) * 2;
-    const uint16_t m0 = (uint16_t)gcall(kFnPortMask, 0);
-    wr16(kRing + slot, m0);
-    const uint16_t m1 = (uint16_t)gcall(kFnPortMask, 1);
+    uint16_t m0 = (uint16_t)gcall(kFnPortMask, 0);
+    if (!g_offline) wr16(kRing + slot, m0);
+    uint16_t m1 = (uint16_t)gcall(kFnPortMask, 1);
+    if (g_offline) {   /* offline only (never netplay, a replay or spectating): the practice tools, in Practice */
+        t5_practice_pads(&m0, &m1);
+        wr16(kRing + slot, m0);
+    }
     wr16(kRing + 0x20 + slot, m1);
     gcall(kFnRingAdvance);                       /* 0x12071C: write index++ */
     gcall(kFnTickTail);                          /* 0x13F91C */
@@ -741,7 +749,7 @@ bool sem_idle(int id)
 {
     const np_sys_semaphore_info& s = g_sys_semaphores[id - 1];
     if (!s.active) return true;
-    return *(volatile int32_t*)&s.value == 0 && *(volatile int32_t*)&s.waiters > 0;
+    return T5P_PEEK_I32(&s.value) == 0 && T5P_PEEK_I32(&s.waiters) > 0;
 }
 
 bool workers_idle()
@@ -765,8 +773,8 @@ bool keyread_parked()
     if (!kr || kr > 256 || !g_swallow.load() || g_kr_posting.load() != 0 || !g_kr_in_wait.load()) return false;
     const np_sys_semaphore_info& s = g_sys_semaphores[kr - 1];
     if (!s.active) return false;
-    const int32_t v = *(volatile const int32_t*)&s.value;
-    const int32_t w = *(volatile const int32_t*)&s.waiters;
+    const int32_t v = T5P_PEEK_I32(&s.value);
+    const int32_t w = T5P_PEEK_I32(&s.waiters);
     return v == 0 && w > 0 && g_kr_in_wait.load();
 }
 
@@ -913,7 +921,7 @@ bool geom_idle()
     g_geom_sem = id;
     const np_sys_semaphore_info& s = g_sys_semaphores[id - 1];
     if (!s.active) return true;
-    return *(volatile int32_t*)&s.value == 0 && *(volatile int32_t*)&s.waiters > 0;
+    return T5P_PEEK_I32(&s.value) == 0 && T5P_PEEK_I32(&s.waiters) > 0;
 }
 /* (its request list may hold the next frame's first requests: queued, not taken) */
 bool draw_idle() { return rd64(kDrawMgr + 0xA8) == 0; }
@@ -1018,7 +1026,7 @@ void write_result(const char* winner, unsigned w1, unsigned w2, const char* reas
         fputs(buf, fp);
         fclose(fp);
         /* the launcher may have the old file open this very moment (Windows refuses the replace then) */
-        for (int i = 0; i < 50 && !MoveFileExA(tmp.c_str(), g_result_file.c_str(), MOVEFILE_REPLACE_EXISTING); i++) Sleep(2);
+        for (int i = 0; i < 50 && !t5p_replace_file(tmp.c_str(), g_result_file.c_str()); i++) Sleep(2);
     }
 }
 
@@ -1124,7 +1132,7 @@ void end_session(const char* reason, bool from_network_thread = false)
     np::note("the session cannot go on (%s): the game closes (exit code %d)", reason, code);
     np::bye();
     fflush(stdout); fflush(stderr);
-    TerminateProcess(GetCurrentProcess(), (UINT)code);
+    t5p_exit_now((unsigned)code);
 }
 
 /* ---- the player closed the game window (Alt+F4, the X button, Esc) ----------
@@ -1154,7 +1162,7 @@ void on_window_closed()
     }
     t5_df_window_closed();
     fflush(stdout); fflush(stderr);
-    TerminateProcess(GetCurrentProcess(), online ? 7u : 0u);
+    t5p_exit_now(online ? 7u : 0u);
 }
 /* Esc closes the game only on a second press while a session is set up. */
 int close_guard() { return np::enabled() && np::mode() != np::Mode::Local && !g_offline ? 1 : 0; }
@@ -1298,7 +1306,11 @@ void offline_seed()
         g_offline_fixed = seed;
     } else {
         LARGE_INTEGER q; QueryPerformanceCounter(&q);
+#if defined(_WIN32)
         BCryptGenRandom(nullptr, (PUCHAR)&seed, sizeof seed, BCRYPT_USE_SYSTEM_PREFERRED_RNG);   /* (bcrypt: linked already) */
+#else
+        arc4random_buf(&seed, sizeof seed);
+#endif
         seed ^= (uint32_t)q.QuadPart ^ (uint32_t)(q.QuadPart >> 32) ^ (GetCurrentProcessId() * 0x9E3779B9u);
         if (!seed) seed = 0x2545F491u;
     }
@@ -1405,7 +1417,7 @@ void replay_end(const char* why)
     if (keep) return;
     np::note("replay: %s -- the game closes", why);
     fflush(stdout); fflush(stderr);
-    TerminateProcess(GetCurrentProcess(), 0);
+    t5p_exit_now(0);
 }
 
 /* The playback's frame wait (main thread, once the lockstep runs): the end, the
@@ -1541,7 +1553,7 @@ void on_frame_start(ppu_context* ctx)
             const np_sys_semaphore_info& ks = g_sys_semaphores[(rd32(kKeyreadSemPtr) - 1) & 0xFF];
             np::note("main loop frame %u: keyread wakes stopped (keyread %s; tokens %d, waiters %d)%s", g_boot_frames,
                      parked ? "parked" : in_wait ? "flagged in its wait, but released" : "in a tick",
-                     *(volatile const int32_t*)&ks.value, *(volatile const int32_t*)&ks.waiters,
+                     T5P_PEEK_I32(&ks.value), T5P_PEEK_I32(&ks.waiters),
                      in_wait && !parked ? " -- the old rule would have taken over here (the boot race)" : "");
             return;
         }

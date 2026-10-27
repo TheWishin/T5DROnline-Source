@@ -66,6 +66,21 @@ they work with 1.1.4 launchers as soon as the server is updated.
   overlap -- checked with a deliberately slowed renderer and a memory check, everything stayed in order. Still open;
   if you see it, add `RSX_RING_GUARD=1` under Extra settings for one evening and send us the game log.
 
+### Training
+- **Frame data: moves whose hit reaction looked free too early show the right number.** Bryan's d+4 showed -17 on
+  hit; it is +3 (and -13 on block). Some hit reactions set the game's "idle" flag long before the defender can do
+  anything; the overlay now waits for the end of the reaction there, as the game itself does (checked with the
+  defender mashing a jab). Players' report; docs/TRAINING.md.
+- **Frame data: moves with a wind-up show their real startup.** Bryan's f+1+2 (a wind-up, then the attack) showed
+  i4; it is i22. A move made of several animations now counts from its first frame.
+- **Practice tools** (Practice, offline only; Settings -> Practice tools, on by default): hold SELECT and press 3 to
+  put both fighters back where the fight started, f+3 / b+3 to put the dummy against the wall in front of / behind
+  you, df+3 / db+3 to put yourself against the wall in front of / behind you. SELECT+1 records the dummy (your pad
+  plays it), SELECT+2 plays the recording once, SELECT+4 in a loop; 5 slots (tap up / down with SELECT). Tap
+  forward / back with SELECT for what the dummy does: as set in the game's menu, blocks after the first hit,
+  crouches, walks forward and back, sidesteps. Never in online matches, replays or spectating; online matches are
+  unchanged. Player requests; docs/TRAINING.md "Practice tools".
+
 ### macOS (Apple silicon), offline -- build from source (by n0madic, thank you)
 - The game builds and plays on macOS 13+ (arm64): `python3 tools/build_game.py --pkg ... --rap ...`
   then `python3 tools/run_game.py`. Metal draws, SDL2 plays the sound and reads the keyboard.
@@ -100,6 +115,27 @@ they work with 1.1.4 launchers as soon as the server is updated.
 - `tools/build_game.py` builds on macOS only (CMake `-DT5DR_REQUIRE_SHADERS=ON` stops the configure
   step when glslang or spirv-cross is missing) and explains Homebrew Python's refusal of `pip
   install`; the README builds in a virtual environment.
+
+### macOS online: prepared, a test build, off by default
+- **A Mac build can now have the online modules** (netplay, rollback, direct fight, training):
+  `tools/build_game.py --macos-online`. Not proven in sync with a PC yet, so it stays a test build
+  until a Mac-vs-PC match ends with 0 mismatching frames (docs/MACOS_ONLINE_TEST.md, the owner's
+  step list). Without the flag a Mac build is the game alone, offline, as before, and the Online
+  tab says so. A Mac offers rollback only with `T5_MACOS_ROLLBACK=1`: the first matches run in
+  lockstep.
+- `src/` reaches the host only through `src/platform` (the 1.1.2 study's groundwork, finished):
+  BSD sockets, monotonic clocks, POSIX files on macOS; Winsock and the same Win32 calls as before
+  on Windows (the compiled code of `src/` is the same there, apart from the call sites of the new
+  wrappers). The game binary is `t5dr` on a Mac in the Online tab too.
+- `patches/ps3recomp/0078-macos-online.patch`: the square root of a negative number gives a PC's
+  NaN on Apple silicon (the one known difference in the game's math); FPCR is checked like MXCSR
+  on Windows; the lifter's `--hook-slots` lets a Mac intercept the functions the rollback and the
+  unlocks detour without patching code (`src/rollback/hook_slots.txt`); file reads into guest
+  memory go through a host buffer off Windows (the rollback's write watch protects pages there);
+  netplay reads the local pad on the SDL2 backend (it got "no device"). Nothing changes for a PC's
+  game: the same results, the same lifted code.
+- `tests/test_macos_port.py` compiles every `src/` file for arm64 macOS (syntax only, against the
+  runtime's POSIX shim and declaration-only C and C++ headers) on the Windows PC.
 
 ## v1.1.4 (2026-10-21)
 

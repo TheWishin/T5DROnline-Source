@@ -34,7 +34,7 @@
  * T5_COSTUME_SAVE2 for P2.
  */
 #define WIN32_LEAN_AND_MEAN
-#include <windows.h>
+#include "../platform/t5_win.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string>
@@ -200,6 +200,28 @@ int item_char_of(int side, uint32_t* objp)
 
 } // namespace
 
+extern int g_models[2];   /* df_fight.cpp: the model each side fights with (set at FIGHT START, before costume_apply) */
+
+namespace {
+/* 1.1.4's open question (docs/DIRECTFIGHT.md "Custom costumes online", Open): a side that fights with the same
+ * model as in this game's previous fight keeps the fighter the game has loaded unless the game went through the
+ * title in between, so a new block on that side does not show. Logged only, so a player's log says it at once. */
+int g_last_model[2] = { -1, -1 };
+uint32_t g_last_match[2];
+uint64_t g_last_block[2];
+void reuse_note(uint32_t f, int s, uint32_t match, uint64_t hb)
+{
+    if (g_last_model[s] >= 0 && g_last_model[s] == g_models[s] && g_last_block[s] != hb)
+        note("frame %u: costumes: P%d has the same model (0x%X) as in match %u of this game but another block "
+             "(%016llX, was %016llX): without a visit to the title since, the game keeps the fighter it loaded "
+             "and shows that match's look", f, s + 1, g_models[s], g_last_match[s], (unsigned long long)hb,
+             (unsigned long long)g_last_block[s]);
+    g_last_model[s] = g_models[s];
+    g_last_match[s] = match;
+    g_last_block[s] = hb;
+}
+} // namespace
+
 /* Start of a session (or an offline fight): this PC's table, handed to netplay once per session. A replay
  * has no table of its own: its blocks come from the file. */
 void costume_session(uint32_t f, CostumeMode m)
@@ -279,6 +301,7 @@ void costume_apply(uint32_t f, CostumeMode m, uint32_t match)
         memcpy(vm_base + dst, src, costume::kBlock);     /* big-endian bytes, as in the save */
         memcpy(g_written_blocks + s * costume::kBlock, src, costume::kBlock);
         h = costume::fnv64(src, costume::kBlock, h);
+        reuse_note(f, s, match, costume::fnv64(src, costume::kBlock));
         char b[160];
         snprintf(b, sizeof b, "%sP%d item char %d (fighter 0x%08X): %s", s ? ", " : "", s + 1, c, obj, why);
         line += b;

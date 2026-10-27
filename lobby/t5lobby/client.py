@@ -1529,6 +1529,16 @@ class LobbyClient(TourCalls, SpectateClientMixin):
     def leaderboard(self, limit=20, offset=0):
         return self._call({"t": "leaderboard", "limit": limit, "offset": offset})["rows"]
 
+    @property
+    def has_stats(self):
+        """The server has the stats page's request (1.1.5)."""
+        return "stats" in ((self.welcome or {}).get("features") or ())
+
+    def stats(self):
+        """The stats page: {made, accounts, players, matches, ranked, matches_24h, players_24h, fighters: [{char,
+        ranked: [games, wins, draws], casual: [...]}]} (server.lobby h_stats)."""
+        return self._call({"t": "stats"})
+
     def refresh(self):
         return self._call({"t": "lobby"})
 

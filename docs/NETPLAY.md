@@ -582,6 +582,13 @@ mismatching frames, the next fight started by itself, Leave room during a fight 
 `spectate_training`: a spectator from the start plays both fights identical (82 hashes compared, 0
 different).
 
+No KO from damage (2026-10-27, after the owner's "Nie KO"; both players mashing every 1-6 frames with motion
+inputs -- electrics, hellsweeps, qcf/hcb --, a SELECT hold every 2400 frames): rollback with the joiner stuttering,
+P1 at 30 % (run nk1, 521 rollbacks on one side) and both at 10 % = 14.5 health (nk3, 526 rollbacks; health taken to
+0 and set back to 1.0 17 times live), lockstep with P2 at 30 % (nk2; set back 4 times) -- 9 of 9 fights ended by the
+give-up and by nothing else, 0 mismatching frames, the same result hash on both PCs; the 8 replays they recorded
+play back identical.
+
 ## Skipping intros and replays online (branch skip-114, 1.1.4)
 
 Owner's request: "replays should be skippable, and the intro at match start" -- the replay after a

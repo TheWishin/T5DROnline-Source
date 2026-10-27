@@ -699,8 +699,10 @@ void training_rule(uint32_t f, const np::PadInput in[2], bool live)
         if (!live) continue;
         if (a.refilled[p]) g_train_refills[p]++;
         if (a.saved[p]) g_train_saves[p]++;
-        if (a.gave_up[p]) np::note("frame %u: training: P%d held SELECT for %u frames -- gives up (KO)", f, p + 1,
-                                   np::TrainingRule::kGiveUpFrames);
+        if (a.gave_up[p])
+            np::note("frame %u: training: P%d held SELECT for %u frames -- gives up (KO); this session so far: health "
+                     "refilled %u x / %u x, kept from 0 (no KO) %u x / %u x", f, p + 1, np::TrainingRule::kGiveUpFrames,
+                     g_train_refills[0], g_train_refills[1], g_train_saves[0], g_train_saves[1]);
     }
     if (live && st.fighting && f >= g_train_noted + 1800) {   /* every ~30 s of fighting */
         g_train_noted = f;

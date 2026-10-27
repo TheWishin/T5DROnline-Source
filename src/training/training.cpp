@@ -26,6 +26,8 @@
  *                        is logged with its QPC time (match it with PS3_FRAMELOG)
  *   T5_TRAINING_TRACE    file: the fight block (0x1008E000, 16 KB) and the input
  *                        ring of every live frame (research)
+ *   T5_TRAINING_TRACE_RANGES  "addr:len[:every],..." (hex; every in frames): more
+ *                        guest ranges for that trace, page by page (research)
  * F2 (while the game window has the focus) cycles off / inputs / inputs and
  * frame data for this session.
  */

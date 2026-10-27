@@ -49,7 +49,8 @@ result, and when it is shown or hidden; the tests read it),
 `T5_TRAINING_STATS=1` (the hook's CPU time every 600 fight frames),
 `T5_TRAINING_AB=<n>` (cost measurement: everything off in every other block of
 n fight frames, see "Cost"), `T5_TRAINING_TRACE=<file>` (research: the fight
-block of every live frame, see below).
+block of every live frame, see below; `T5_TRAINING_TRACE_RANGES=addr:len[:every],...`
+adds more guest ranges, hex, every n frames).
 
 Button numbers are the game's default button setting (1 = Square, 2 =
 Triangle, 3 = Cross, 4 = Circle; keyboard A S Z X). The display shows the

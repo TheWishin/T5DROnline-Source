@@ -1929,7 +1929,7 @@ GetTickCount, timeouts, "going on" in src/netplay, src/rollback, src/directfight
 | `t5_hooks.cpp ensure_keyread_parked` | 5 s, then the take-over is postponed a frame | no: an offset before lockstep frame 0, which the fight-loaded sync point evens out (as for a persistent vs a fresh game) | unchanged |
 | `netplay_core.cpp` handshake, `begin_frame`, `scene_barrier`, tick thread | `T5_NET_CONNECT_TIMEOUT`, `T5_NET_START_TIMEOUT`, `T5_NET_TIMEOUT` | no: they end the session (`no_peer`, `start_timeout`, `peer_stalled`, `peer_timeout`), never play on | the peer's loading no longer counts as a stall |
 | `t5_hooks.cpp flush_result` | the result waits up to 3 s for the deciding frame's hash comparison | no: what is reported, not the game | unchanged |
-| `rb_net.cpp` time sync, early rollback | sleeps, when a rollback runs | no: pacing only | unchanged |
+| `rb_net.cpp` time sync, early rollback | sleeps, when a rollback runs | no: pacing only | a correction skips one vblank tick in the runtime (patch 0080, docs/ROLLBACK.md section 34) instead of sleeping on GetTickCount64 |
 | `df_fight.cpp` pick clock (30 s), Select = random | this player's own pick | no: decided on one PC and sent to the other | unchanged |
 
 **What was tested** (this PC, 32 logical processors, other agents' games running; two games of

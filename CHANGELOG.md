@@ -27,6 +27,13 @@ online features need the lobby server updated; 1.1.4 launchers keep working with
 - **Ping and connection before you accept.** The found-match card, a challenge and a friend's invite show the ping
   (estimated, or measured in your last match together) and whether the match will most likely be a direct connection
   or go through a relay server. In all seven languages.
+- **Fewer hitches in rollback fights.** When one game ran a little ahead, the correction that lets the other catch
+  up used to freeze the picture for up to three refreshes -- or for none and then again a moment later; it now holds
+  one picture for exactly one refresh, and only when needed (1-3 times a match instead of 5-16). While a rollback
+  fight runs, frames also get 2 ms more room before the screen's refresh, so a frame that had to correct a prediction
+  is less often late. On this PC at 60 / 120 / 180 ms ping: 50 / 67 / 62 pictures shown twice per player and match
+  before, 38 / 40 / 36 now (most of the rest is first-time shader work, which the shader warm-up after BUILD GAME
+  removes). Input to screen: ~1-2 ms more. Both games stay in step as before.
 - **Smoother far matches.** Above 150 ms ping both games now get 3 frames of input delay (4 above 250 ms) instead of 2,
   so the rollback corrects less and the characters jump less. Ranked and casual alike; a server setting
   (`T5L_PING_DELAYS`).

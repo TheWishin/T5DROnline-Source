@@ -6,7 +6,8 @@
 Reads a PS3_LATENCY_LOG (ps3recomp patch 0034; rollback events from
 src/rollback/rb_net.cpp): P presents, C the display's vblank clock (DWM),
 N boundaries (frame, re-simulated, early, fighting), M / Q a rollback's start
-and end, S time-sync sleeps, T waits for the peer's input. Over the frames
+and end, S time-sync corrections (Y: the tick a correction skipped, patch 0080),
+T waits for the peer's input. Over the frames
 of the fight (N lines with the fighting flag):
 
   - present-to-present intervals: p50 / p95 / p99 / max;
@@ -109,7 +110,7 @@ def analyze(path, over, hz, span_mode="flag"):
             continue
         kinds, depth = set(), 0
         for t, k, x in ev[bisect.bisect_right(T, a):bisect.bisect_right(T, b)]:
-            if k == "S":
+            if k in ("S", "Y"):   # Y: a vblank tick the runtime skipped for a correction (patch 0080)
                 kinds.add("sleep")
             elif k == "T":
                 kinds.add("stall")

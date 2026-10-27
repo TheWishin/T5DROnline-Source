@@ -2305,4 +2305,34 @@ MESSAGES = {
         "{name} ({rank}) lädt dich in den privaten Raum „{room}“ ein",
     "“{room}” is private. Its password:": "„{room}“ ist privat. Sein Passwort:",
     "this server has no private rooms": "Dieser Server hat keine privaten Räume",
+    # Settings -> Graphics (patch 0079)
+    "Graphics (weak graphics cards)":
+        "Grafik (schwache Grafikkarten)",
+    "Shadows":
+        "Schatten",
+    "Effects":
+        "Effekte",
+    "On (default)":
+        "An (Standard)",
+    "Off: no shadows of the fighters and the stage. Saves graphics work and some processor time.":
+        "Aus: keine Schatten der Kämpfer und der Stage. Spart "
+        "Grafikarbeit und etwas Prozessorzeit.",
+    "Off: no hit sparks or other hit effects (also the EWGF lightning), flames, smoke, mist, glows or "
+    "waterfalls. Saves graphics work (the most on misty stages) and some processor time.":
+        "Aus: keine Treffer-Funken und keine anderen "
+        "Treffer-Effekte (auch der EWGF-Blitz fehlt), keine "
+        "Flammen, kein Rauch, Nebel, Leuchten und keine "
+        "Wasserfälle. Spart Grafikarbeit (am "
+        "meisten auf nebligen Stages) und etwas Prozessorzeit.",
+    "Lowest (old graphics cards)":
+        "Am niedrigsten (alte Grafikkarten)",
+    "Default":
+        "Standard",
+    "Lowest: Internal resolution Lowest; stage blur / glow, shadows and effects off (so no hit effects "
+    "either). Default puts them back. Only your picture changes: online, both players can choose differently.":
+        "Am niedrigsten: Interne Auflösung „Am niedrigsten“; "
+        "Stage-Unschärfe / Leuchten, Schatten und Effekte aus "
+        "(also auch keine Treffer-Effekte). „Standard“ stellt "
+        "sie wieder her. Nur dein Bild ändert sich: Online "
+        "können beide Spieler verschieden wählen.",
 }

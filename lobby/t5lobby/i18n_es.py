@@ -2209,4 +2209,35 @@ MESSAGES = {
     "{name} ({rank}) invites you to the private room “{room}”": "{name} ({rank}) te invita a la sala privada “{room}”",
     "“{room}” is private. Its password:": "“{room}” es privada. Su contraseña:",
     "this server has no private rooms": "este servidor no tiene salas privadas",
+    # Settings -> Graphics (patch 0079)
+    "Graphics (weak graphics cards)":
+        "Gráficos (tarjetas gráficas débiles)",
+    "Shadows":
+        "Sombras",
+    "Effects":
+        "Efectos",
+    "On (default)":
+        "Activado (predeterminado)",
+    "Off: no shadows of the fighters and the stage. Saves graphics work and some processor time.":
+        "Desactivado: sin sombras de los luchadores ni del "
+        "escenario. Ahorra trabajo gráfico y algo de tiempo de "
+        "procesador.",
+    "Off: no hit sparks or other hit effects (also the EWGF lightning), flames, smoke, mist, glows or "
+    "waterfalls. Saves graphics work (the most on misty stages) and some processor time.":
+        "Desactivado: sin chispas de golpe ni otros efectos de "
+        "golpe (tampoco el rayo del EWGF), llamas, humo, niebla, "
+        "brillos ni cascadas. Ahorra trabajo gráfico (sobre todo "
+        "en escenarios con niebla) y algo de tiempo de "
+        "procesador.",
+    "Lowest (old graphics cards)":
+        "Mínimo (tarjetas gráficas antiguas)",
+    "Default":
+        "Predeterminado",
+    "Lowest: Internal resolution Lowest; stage blur / glow, shadows and effects off (so no hit effects "
+    "either). Default puts them back. Only your picture changes: online, both players can choose differently.":
+        "Mínimo: resolución interna Mínima; desenfoque / brillo "
+        "de escenarios, sombras y efectos desactivados (así que "
+        "tampoco efectos de golpe). Predeterminado los "
+        "restablece. Solo cambia tu imagen: en línea, cada "
+        "jugador puede elegir distinto.",
 }

@@ -2182,4 +2182,28 @@ MESSAGES = {
     "{name} ({rank}) invites you to the private room “{room}”": "{name}（{rank}）さんから非公開ルーム「{room}」への招待",
     "“{room}” is private. Its password:": "「{room}」は非公開です。パスワード：",
     "this server has no private rooms": "このサーバーには非公開ルームがありません",
+    # Settings -> Graphics (patch 0079)
+    "Graphics (weak graphics cards)":
+        "グラフィック（性能の低いグラフィックカード向け）",
+    "Shadows":
+        "影",
+    "Effects":
+        "エフェクト",
+    "On (default)":
+        "オン（標準）",
+    "Off: no shadows of the fighters and the stage. Saves graphics work and some processor time.":
+        "オフ：キャラクターとステージの影を描きません。グラフィックの負荷と少しのプロセッサー時間を減らします。",
+    "Off: no hit sparks or other hit effects (also the EWGF lightning), flames, smoke, mist, glows or "
+    "waterfalls. Saves graphics work (the most on misty stages) and some processor time.":
+        "オフ：ヒット時の火花などのヒットエフェクト（風神拳の稲妻も）、炎、煙、霧、光彩、滝を描きません。グラフィックの負"
+        "荷（霧のステージで特に）と少しのプロセッサー時間を減らします。",
+    "Lowest (old graphics cards)":
+        "最低（古いグラフィックカード）",
+    "Default":
+        "標準",
+    "Lowest: Internal resolution Lowest; stage blur / glow, shadows and effects off (so no hit effects "
+    "either). Default puts them back. Only your picture changes: online, both players can choose differently.":
+        "最低：内部解像度を「最低」にし、ステージのぼかし / 光彩、影、エフェクトをオフにします（ヒットエフェクトも表示"
+        "されません）。「標準」で元に戻ります。変わるのは自分の画面だけなので、オンラインでも各プレイヤーが別々に選べます"
+        "。",
 }

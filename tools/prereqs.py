@@ -119,6 +119,20 @@ def cmake_ninja():
     return cm, nj
 
 
+MIN_PYTHON = (3, 10)      # ps3recomp's tools use 3.10 syntax (`int | None`): 3.9 fails only in the lift step
+
+
+def python_problem(version_info=None, executable=None):
+    """None when this Python is new enough, else the sentence that says what to do (build_game.py stops with it
+    before any step; the Python line below shows it)."""
+    v = tuple(version_info or sys.version_info)
+    if v[:2] >= MIN_PYTHON:
+        return None
+    return (f"T5DR needs Python {MIN_PYTHON[0]}.{MIN_PYTHON[1]} or newer; this is {v[0]}.{v[1]} at "
+            f"{executable or sys.executable}. On macOS: brew install python@3.12 and make the venv with python3.12 "
+            "(python3.12 -m venv .venv).")
+
+
 def python_crypto():
     try:
         import Crypto.Cipher.AES  # noqa: F401  (pycryptodome)
@@ -144,8 +158,8 @@ def check():
     def add(id_, name, ok, detail, needed_for, install=None):
         items.append(dict(id=id_, name=name, ok=bool(ok), detail=detail, needed_for=needed_for, install=install))
 
-    add("python", "Python 3.10+", sys.version_info >= (3, 10),
-        f"{sys.version.split()[0]} at {sys.executable}", "all steps")
+    add("python", "Python 3.10+", python_problem() is None,                  # (MIN_PYTHON)
+        python_problem() or f"{sys.version.split()[0]} at {sys.executable}", "all steps")
     add("pycryptodome", "pycryptodome (Python AES)", python_crypto(),
         "installed" if python_crypto() else "missing -- pip install pycryptodome", "unpack, decrypt")
     src = ps3recomp_source()

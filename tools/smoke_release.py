@@ -17,9 +17,12 @@ Checks (each one is printed; exit 1 if any fails):
              (static C runtime: no Visual C++ redistributable needed)
   signature  (when release.json lists signed files) Windows reports every signature as Valid
   launcher   (GUI) the launcher renders every tab offscreen and exits (--screenshots mode)
-  starter    (GUI) T5DR Online.exe starts the launcher from the bundled Python; it is still
-             running after a few seconds, and is then closed
-Nothing here needs the game. --no-gui skips the two GUI checks.
+  starter    (GUI) T5DR Online.exe starts the launcher from the bundled Python, with a package
+             chosen (a stand-in .pkg header in launcher.json: the Build tab reads it at once); it is
+             still running after --starter-seconds (15), and is then closed. 1.1.5's launcher closed
+             2 s after its start with a package chosen -- this check had run without one, for 6 s
+Nothing here needs the game. --no-gui skips the two GUI checks; --gui-checks starter runs only the
+starter check (the release workflow requires it: it needs Tk to start, not a desktop to paint on).
 """
 import argparse
 import json
@@ -125,6 +128,15 @@ def run(cmd, timeout=120, **kw):
         return -1, f"timed out after {timeout} s\n{e.stdout or ''}{e.stderr or ''}"
 
 
+def _log_tail(root, n=15):
+    """The end of the unpacked folder's launcher.log (why a launcher closed)."""
+    try:
+        with open(os.path.join(root, "launcher.log"), encoding="utf-8", errors="replace") as f:
+            return "".join(f.readlines()[-n:]).rstrip()
+    except OSError:
+        return "(no launcher.log)"
+
+
 def launcher_processes(folder):
     """PIDs of pythonw.exe processes started from this folder's python/."""
     exe = os.path.join(folder, "python", "pythonw.exe").replace("'", "''")
@@ -140,7 +152,9 @@ def main():
     ap.add_argument("--version", required=True)
     ap.add_argument("--work", help="folder to unpack into (emptied first; default: next to the zip)")
     ap.add_argument("--no-gui", action="store_true", help="skip the launcher and starter checks")
-    ap.add_argument("--starter-seconds", type=int, default=6)
+    ap.add_argument("--gui-checks", choices=("all", "starter", "launcher"), default="all",
+                    help="which GUI checks run (default all; --no-gui: none)")
+    ap.add_argument("--starter-seconds", type=int, default=15)
     a = ap.parse_args()
     version = a.version[1:] if a.version[:1] in ("v", "V") else a.version
     name = f"T5DR-Online-{version}"
@@ -226,6 +240,10 @@ def main():
         check("runtime: netplay and direct fight compiled in", False, str(e))
 
     if not a.no_gui:
+        # The launchers started here neither ask GitHub for an update (an offer window, a network that may be
+        # down) nor read this PC's online login (%APPDATA%\T5DROnline): what they check is the start itself.
+        env = dict(env, T5DR_NO_UPDATE_CHECK="1", T5_ONLINE_DIR=os.path.join(work, "online"))
+    if not a.no_gui and a.gui_checks in ("all", "launcher"):
         shots = os.path.join(work, "shots")
         t0 = time.time()
         rc, out = run([pyw, "-B", os.path.join(root, "launcher", "t5dr_launcher.pyw"), "--screenshots", shots],
@@ -235,6 +253,20 @@ def main():
               f"exit {rc} after {time.time() - t0:.0f} s, {len(pngs)} tab image(s) in {shots}"
               + (f"\n{out.strip()[-500:]}" if rc else ""))
 
+    if not a.no_gui and a.gui_checks in ("all", "starter"):
+        # A package chosen, as every player has one: a retail .pkg header (no content) with the supported
+        # content ID. The launcher's Build tab reads it right away (its header, then a peek inside with
+        # ps3recomp's pkg_extract.py, which in the zip has no keys).
+        fake_pkg = os.path.join(work, "stand-in", "UP0700-NPUB30009_00-UPDATE0000010000.pkg")
+        os.makedirs(os.path.dirname(fake_pkg), exist_ok=True)
+        hdr = bytearray(0xC0)
+        hdr[0:4] = b"\x7fPKG"
+        struct.pack_into(">HH", hdr, 4, 0x8000, 1)               # finalized (retail), PS3
+        hdr[0x30:0x30 + 36] = b"UP0700-NPUB30009_00-UPDATE0000010000"
+        with open(fake_pkg, "wb") as f:
+            f.write(bytes(hdr))
+        with open(os.path.join(root, "launcher.json"), "w", encoding="utf-8") as f:
+            json.dump({"pkg": fake_pkg, "rap": ""}, f)
         before = set(launcher_processes(root))
         p = subprocess.Popen([os.path.join(root, "T5DR Online.exe")], cwd=root, env=env)
         try:
@@ -244,8 +276,9 @@ def main():
             rc = "hung"
         time.sleep(a.starter_seconds)
         pids = [x for x in launcher_processes(root) if x not in before]
-        check("starter: launcher running", rc == 0 and pids,
-              f"starter exit {rc}, launcher pid(s) {pids} alive after {a.starter_seconds} s")
+        check("starter: launcher running (a package chosen)", rc == 0 and pids,
+              f"starter exit {rc}, launcher pid(s) {pids} alive after {a.starter_seconds} s"
+              + ("" if pids else chr(10) + _log_tail(root)))
         for pid in pids:
             subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True)
         time.sleep(1)

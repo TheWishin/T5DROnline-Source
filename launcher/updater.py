@@ -32,9 +32,10 @@ r"""Updates: the launcher offers new releases and installs them itself, like Tek
    the new ones in. The player's files are never moved: native\ (unpacked game, build, saves, logs),
    launcher.json, launcher.log and anything else that is not a program file. No script file is
    involved (virus scanners flag .bat/.cmd/.ps1 in game downloads; the zip carries none).
-6. Restart: the new launcher starts and confirms (T5DR_UPDATE_CONFIRM). If anything fails -- a move,
-   the check of the new files, or the new launcher ends without confirming -- the old files go back
-   and the old launcher starts and says why.
+6. Restart: the new launcher starts and confirms (T5DR_UPDATE_CONFIRM) once it has run for
+   CONFIRM_AFTER_MS (15 s), or when the player closes it before. If anything fails -- a move, the
+   check of the new files, or the new launcher ends by itself without confirming (1.1.5's closed 2 s
+   after its start) -- the old files go back and the old launcher starts and says why.
 7. Rebuild: when the new version changes the game code (build_game.code_id()), the Play tab says
    "Build the game once (about 2 minutes)" and its button becomes BUILD GAME (core.game_state).
 
@@ -113,6 +114,12 @@ MAX_ZIP = 1_000_000_000          # the zip is ~90 MB
 MAX_UNPACKED = 3_000_000_000     # ~250 MB unpacked
 CONFIRM_ENV = "T5DR_UPDATE_CONFIRM"
 CONFIRM_WAIT = 120               # seconds the swap step waits for the new launcher
+# The new launcher tells the swap step it started only after running this long (or when it is closed by hand,
+# App.on_close): one that ends by itself before -- 1.1.5's closed 2 s after its start, and had confirmed after
+# 0.3 s -- gets the old files back from the swap step, which waits CONFIRM_WAIT for it. The swap step is the OLD
+# release's (its runner copy), the wait here is the NEW launcher's: this guards updates TO 1.1.7 and later
+# (the swap step of 1.1.4..1.1.6 already rolls back a launcher that ends without confirming).
+CONFIRM_AFTER_MS = 15000
 NO_CHECK_ENV = "T5DR_NO_UPDATE_CHECK"
 
 # Top-level names of the release folder that are program files (package_release.py's layout, plus
@@ -987,9 +994,25 @@ def apply_plan(plan_path, confirm_wait=CONFIRM_WAIT, list_processes=None):
         logf.close()
 
 
+_confirm_marker = None
+
+
+def take_confirm_marker():
+    """At the launcher's start: the swap step's marker when it started this launcher (else None). It leaves
+    the environment at once, so nothing the launcher starts in the meantime (the game, a build) inherits it."""
+    global _confirm_marker
+    marker = os.environ.pop(CONFIRM_ENV, None)
+    if marker:
+        _confirm_marker = marker
+    return _confirm_marker
+
+
 def confirm_started():
-    """Called by a launcher started by the swap step: tells it the new launcher is up."""
-    marker = os.environ.pop(CONFIRM_ENV, None)   # not inherited by the game
+    """Called by a launcher started by the swap step (CONFIRM_AFTER_MS after its start, or when it is closed
+    by hand): tells the swap step the new launcher is up, so the update stays."""
+    global _confirm_marker
+    marker = os.environ.pop(CONFIRM_ENV, None) or _confirm_marker
+    _confirm_marker = None
     if marker and os.path.basename(marker) == "confirm":
         try:
             with open(marker, "w") as f:
@@ -1081,8 +1104,8 @@ class Updater:
         self.readonly = bool(getattr(app, "readonly", False))
         self.q = queue.Queue()              # callables from the worker threads, run on the Tk thread
         app.after(100, self._pump)
-        if os.environ.get(CONFIRM_ENV):
-            app.after(300, confirm_started)       # runs once the main loop is up: the window is there
+        if take_confirm_marker():
+            app.after(CONFIRM_AFTER_MS, confirm_started)   # started = ran that long (or closed by hand: on_close)
         self._offered = False           # the offer window was shown once this session
         self._focus_bound = False
         self.button = None

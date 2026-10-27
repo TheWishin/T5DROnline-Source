@@ -5,6 +5,7 @@ wrong game."""
 import argparse
 import io
 import os
+import shutil
 import struct
 import subprocess
 import sys
@@ -126,6 +127,26 @@ class Arguments(unittest.TestCase):
                 os.chdir(cwd)
         return calls, code, out.getvalue(), err.getvalue()
 
+    def test_an_old_python_stops_before_any_step(self):
+        # The owner's Mac: system python3 3.9 ran keys/decrypt/unpack and failed only in the lift (`int | None`).
+        old = (3, 9, 6, "final", 0)
+        with mock.patch.object(sys, "version_info", old):
+            calls, code, out, err = self.run_main(["--pkg", "a.pkg", "--rap", "b.rap"])
+            calls2, code2, _, err2 = self.run_main(["--code-id"])
+            prereqs = load_tool("prereqs")
+            (py,) = [i for i in prereqs.check() if i["id"] == "python"]
+        self.assertEqual((calls, code, calls2, code2), ([], 2, [], 2))
+        self.assertNotIn("[deps]", out)
+        line = err.strip().splitlines()[-1]
+        self.assertTrue(line.startswith("ERROR: T5DR needs Python 3.10 or newer; this is 3.9 at "), line)
+        self.assertIn(sys.executable, line)
+        self.assertIn("brew install python@3.12 and make the venv with python3.12", line)
+        self.assertIn("this is 3.9", err2)
+        self.assertFalse(py["ok"])                                   # the prerequisites list agrees
+        self.assertEqual(py["detail"], line[len("ERROR: "):])
+        for ok in ((3, 10, 0), (3, 12, 10), (4, 0, 0)):
+            self.assertIsNone(prereqs.python_problem(ok))
+
     def test_default_runs_every_step_in_order(self):
         calls, code, out, _ = self.run_main(["--pkg", "a.pkg", "--rap", "b.rap"])
         self.assertEqual(code, 0)
@@ -228,6 +249,19 @@ class Steps(unittest.TestCase):
              mock.patch.object(self.bg.prereqs, "python_crypto", lambda: True):
             self.bg.step_deps(self.args(force=True))
         self.assertTrue(os.path.exists(os.path.join(self.deps, ".t5dr-vendored.json")))
+
+    def test_vendored_copy_with_git_files_is_never_prepared_again(self):
+        # A release's copy (it may carry .git files) whose stamp names another series: an error, nothing touched --
+        # the developer-checkout path (re-prepare) is never taken for it.
+        os.makedirs(os.path.join(self.deps, ".git"))
+        put(os.path.join(self.deps, ".t5dr-vendored.json"), '{"commit": "%s", "patches": "stale"}'
+            % self.bg.PS3RECOMP_COMMIT)
+        mkput(os.path.join(self.deps, "runtime", "x.c"), "release\n")
+        with mock.patch.object(self.bg, "run", lambda *a, **k: self.fail("must not run anything")), \
+             mock.patch.object(self.bg, "reprepare_checkout", lambda *a, **k: self.fail("must not re-prepare")), \
+             mock.patch.object(self.bg.prereqs, "python_crypto", lambda: True):
+            self.assertBuildError(lambda: self.bg.step_deps(self.args()), "does not match this version")
+        self.assertEqual(get(os.path.join(self.deps, "runtime", "x.c")).replace(b"\r", b""), b"release\n")
 
     def test_rmtree_removes_read_only_files(self):
         d = os.path.join(self.tmp.name, "checkout", ".git", "objects", "pack")
@@ -416,6 +450,129 @@ def fake_self(content_id):
     npd = b"NPD\0" + struct.pack(">II", 3, 2) + bytes(4) + content_id.encode().ljust(0x30, b"\0")
     b[0x120:0x1B0] = struct.pack(">IIQ", 3, 0x90, 0) + npd.ljust(0x80, b"\0")
     return bytes(b)
+
+
+def mkput(path, data):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    put(path, data)
+
+
+def git(cwd, *args):
+    subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "core.autocrlf=false", *args],
+                   cwd=cwd, check=True, capture_output=True)
+
+
+@unittest.skipUnless(shutil.which("git"), "needs git")
+class DepsSeries(unittest.TestCase):
+    """The deps step with a developer's git checkout, for real: git, tools/prepare_ps3recomp.py, a small upstream
+    repository standing in for ps3recomp at the pin, and a patch series that grows. 1.1.6: the main checkout's
+    deps lacked 0071-0081 and the step said "already done"."""
+
+    def setUp(self):
+        self.bg = load_tool("build_game")
+        self.tmp = tempfile.TemporaryDirectory(prefix="t5dr_deps_")
+        self.addCleanup(self.tmp.cleanup)
+        t = self.tmp.name
+        self.upstream = os.path.join(t, "upstream")
+        os.makedirs(self.upstream)
+        git(self.upstream, "init", "-q", "-b", "main")
+        mkput(os.path.join(self.upstream, "runtime", "a.c"), "int a = 1;\n")
+        git(self.upstream, "add", "-A")
+        git(self.upstream, "commit", "-q", "-m", "pin")
+        pin = subprocess.run(["git", "rev-parse", "--short=7", "HEAD"], cwd=self.upstream, capture_output=True,
+                             text=True, check=True).stdout.strip()
+        # the series: 0001 changes a.c, 0002 (added later) adds b.c
+        self.p1 = "--- a/runtime/a.c\n+++ b/runtime/a.c\n@@ -1 +1 @@\n-int a = 1;\n+int a = 2;\n"
+        self.p2 = "--- /dev/null\n+++ b/runtime/b.c\n@@ -0,0 +1 @@\n+int b = 2;\n"
+        self.old_series = os.path.join(t, "patches-old")
+        self.series = os.path.join(t, "patches")
+        mkput(os.path.join(self.old_series, "0001-a.patch"), self.p1)
+        mkput(os.path.join(self.series, "0001-a.patch"), self.p1)
+        mkput(os.path.join(self.series, "0002-b.patch"), self.p2)
+        self.deps = os.path.join(t, "deps", "ps3recomp")
+        self.bg.P = self.bg.Paths(os.path.join(t, "out"), self.deps)
+        for name, value in (("PATCH_DIR", self.series), ("PS3RECOMP_COMMIT", pin), ("PS3RECOMP_BRANCH", "main"),
+                            ("PS3RECOMP_URL", os.path.join(t, "nowhere"))):     # never the network
+            p = mock.patch.object(self.bg, name, value)
+            p.start()
+            self.addCleanup(p.stop)
+        p = mock.patch.object(self.bg.prereqs, "python_crypto", lambda: True)
+        p.start()
+        self.addCleanup(p.stop)
+        self.pin = pin
+
+    def prepare(self, patches):
+        """A checkout made the way developers make one: tools/prepare_ps3recomp.py (stamped)."""
+        r = subprocess.run([sys.executable, os.path.join(ROOT, "tools", "prepare_ps3recomp.py"), "--dest", self.deps,
+                            "--source", self.upstream, "--commit", self.pin, "--patches", patches],
+                           capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def deps_step(self):
+        out = io.StringIO()
+        with redirect_stdout(out):
+            self.bg.step_deps(argparse.Namespace(pkg=None, rap=None, force=False))
+        return out.getvalue()
+
+    def olds(self):
+        return [n for n in os.listdir(os.path.dirname(self.deps)) if n.startswith("ps3recomp.old-")]
+
+    def test_current_series_is_already_done(self):
+        self.prepare(self.series)
+        with mock.patch.object(self.bg, "run", lambda *a, **k: self.fail("must not run anything")):
+            self.assertIn("already done", self.deps_step())
+
+    def test_a_new_patch_prepares_the_checkout_again(self):
+        self.prepare(self.old_series)
+        self.assertFalse(os.path.exists(os.path.join(self.deps, "runtime", "b.c")))
+        out = self.deps_step()
+        self.assertNotIn("already done", out)
+        self.assertIn("new 0002-b.patch", out)
+        self.assertEqual(get(os.path.join(self.deps, "runtime", "b.c")).replace(b"\r\n", b"\n"), b"int b = 2;\n")
+        self.assertEqual(get(os.path.join(self.deps, "runtime", "a.c")).replace(b"\r\n", b"\n"), b"int a = 2;\n")
+        self.assertEqual(self.olds(), [])                       # untouched by hand: the old tree is gone
+        self.assertEqual(self.bg.read_prepared_stamp(self.deps)["series"], ["0001-a.patch", "0002-b.patch"])
+        self.assertIn("already done", self.deps_step())          # and now it is current
+
+    def test_an_edited_patch_counts_too(self):
+        self.prepare(self.series)
+        mkput(os.path.join(self.series, "0002-b.patch"), self.p2.replace("int b = 2;", "int b = 3;"))
+        self.assertIn("edited", self.deps_step())
+        self.assertEqual(get(os.path.join(self.deps, "runtime", "b.c")).replace(b"\r\n", b"\n"), b"int b = 3;\n")
+
+    def test_changes_of_your_own_are_kept_aside(self):
+        self.prepare(self.old_series)
+        mkput(os.path.join(self.deps, "runtime", "a.c"), "int a = 42;  /* my work */\n")
+        out = self.deps_step()
+        (old,) = self.olds()
+        self.assertIn(old, out)
+        self.assertEqual(get(os.path.join(os.path.dirname(self.deps), old, "runtime", "a.c")).replace(b"\r", b""),
+                         b"int a = 42;  /* my work */\n")
+        self.assertTrue(os.path.exists(os.path.join(self.deps, "runtime", "b.c")))
+
+    def test_a_git_folder_that_is_no_repository_is_left_alone(self):
+        # deps/.git that is not a repository, inside another one (git would answer for that one: on this PC the
+        # temp folder can be inside C:/T5DROnline's repository) -- never re-prepared, never git apply'd against it
+        self.deps = os.path.join(self.upstream, "deps", "ps3recomp")
+        self.bg.P = self.bg.Paths(os.path.join(self.tmp.name, "out"), self.deps)
+        os.makedirs(os.path.join(self.deps, ".git"))
+        with mock.patch.object(self.bg, "run", lambda *a, **k: self.fail("must not run anything")):
+            out = self.deps_step()
+        self.assertIn("already done", out)
+        self.assertIn("not checked", out)
+
+    def test_a_checkout_from_before_the_stamp(self):
+        self.prepare(self.old_series)
+        os.remove(os.path.join(self.deps, ".git", self.bg.PREPARED_STAMP))
+        out = self.deps_step()
+        self.assertIn("patches missing (at least): 0002-b.patch", out)
+        self.assertTrue(os.path.exists(os.path.join(self.deps, "runtime", "b.c")))
+        self.assertEqual(len(self.olds()), 1)                    # no stamp: it may hold changes, kept
+        # one with every patch in is taken as it is, and stamped
+        os.remove(os.path.join(self.deps, ".git", self.bg.PREPARED_STAMP))
+        with mock.patch.object(self.bg, "run", lambda *a, **k: self.fail("must not run anything")):
+            self.assertIn("every patch of the series is in", self.deps_step())
+            self.assertIn("already done", self.deps_step())
 
 
 class PackageFacts(unittest.TestCase):

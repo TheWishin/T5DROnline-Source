@@ -3,6 +3,45 @@
 All notable changes, newest first. The project is a test release. Short commit hashes are in parentheses. The state of each
 part is in the README's status table.
 
+## v1.1.7 (not released yet)
+
+### Updates and releases
+- An update keeps the new launcher only once it has run for 15 seconds or was closed by hand
+  (`launcher/updater.py` `CONFIRM_AFTER_MS`, `App.on_close`): a new launcher that closes by itself before -- as
+  1.1.5's did 2 s after its start -- gets the old files back and the old launcher starts again. The confirmation
+  lives in the new launcher, so this guards the updates to 1.1.7 and later (the swap step of 1.1.4-1.1.6 already
+  rolls back a launcher that ends unconfirmed; 1.1.5's confirmed after 0.3 s). The swap step's marker leaves the
+  environment at the start, so nothing the launcher starts in those 15 s inherits it.
+- The release smoke test starts the launcher from the zip with a package chosen (a stand-in .pkg header) and
+  requires it alive after 15 s (`tools/smoke_release.py`); the preflight runs it with the GUI checks, the release
+  workflow requires this starter check (it was informational). On a PC without a package around, the old check
+  passed 1.1.5's zip; this one fails it and passes 1.1.6's.
+- `tools/update_drill.py`: the update a player makes, for real, from an older release zip with a real package, to a
+  release by its tag (a pre-release too) or to a local zip; `--close-after`, `--expect rollback`
+  (docs/RELEASING.md "Update drill").
+- The release order is mandatory (docs/RELEASING.md): PREFLIGHT OK with the GUI checks, CI green, tag, the draft
+  published as a pre-release (the workflow now makes every draft one), update drills from the last two releases
+  with a real package, then marked latest, then the lobby's release notice. Never a tag on a red or skipped check.
+
+### Developer tools
+- `tools/build_game.py`'s deps step no longer says "already done" for a ps3recomp checkout with an older patch series:
+  `tools/prepare_ps3recomp.py` notes the series it applied (`.git/t5dr-prepared.json`), and a checkout whose series
+  differs (or, unnoted, that a patch of the series still applies to) is prepared again; the old tree is kept aside
+  unless it is exactly what was prepared. A release's vendored copy is never touched. The preflight's unit tests run
+  against the tree the zip is built from.
+- `tools/build_game.py` checks the Python version before any step: with Python older than 3.10 it stops at once with
+  "T5DR needs Python 3.10 or newer; this is X.Y at <path>" and the macOS hint (brew install python@3.12, a venv made
+  with python3.12). A Mac's system python3 3.9 used to get through keys, decrypt and unpack and fail only in the lift.
+  `tools/prereqs.py`'s Python line says the same.
+- CI, Monday "runtime" job: ps3recomp patch 0083 (test shims, `tests/sync_stress` only) lets `sync_stress` and
+  `test_cond_semantics` link again (hooks of patches 0063 and later they do not link). Nothing built for players
+  changes; the code ID does (it covers every patch), so 1.1.7 asks for one build anyway.
+- CI, push job: `tests/ci_unittest.py` prints the time per module and why tests were skipped, annotates each failure
+  at once, and runs the tests in a child process so a test process that dies is named (exit code, the running test).
+  The launcher's cut-off walk skips its comparison, with the reason, on a PC without the launcher's fonts (Segoe UI,
+  Bahnschrift): without Bahnschrift es/fr/pt-BR "cut off" where no player's Windows does. (The push job's red run did
+  not reproduce here; docs/CI.md lists what was tried.)
+
 ## v1.1.6 (2026-10-27)
 
 **Hotfix: the 1.1.5 launcher closed right after it started.** On a PC with the game's package (.pkg) chosen in the

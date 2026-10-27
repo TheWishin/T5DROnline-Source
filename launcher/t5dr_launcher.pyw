@@ -1581,6 +1581,7 @@ class App(tk.Tk):
             return                              # unsaved button changes: the person chose to stay
         if self.build:
             self.build.cancel()
+        updater.confirm_started()          # closed by hand (or restarting): it did start, the update stays
         self.save_settings()
         self.nb.unbind("<<NotebookTabChanged>>")          # (destroying the tabs would fire it with none selected)
         self.online.on_close()

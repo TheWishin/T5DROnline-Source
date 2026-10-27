@@ -40,6 +40,7 @@ from t5lobby import i18n, i18n_de, i18n_known, lag   # noqa: E402
 
 try:
     import tkinter as tk
+    import tkinter.font as tkfont
     from tkinter import filedialog, messagebox, simpledialog
     from t5lobby import dialogs
 except ImportError:      # pragma: no cover
@@ -1025,6 +1026,35 @@ class RenderTests(Base):
         self.assertEqual(i18n.missing(), [])
 
 
+_LAYOUT_FONTS = []
+
+
+def layout_font_problem():
+    """Why the cut-off check cannot judge this PC's layout, or None. The launcher's widths are made for its fonts:
+    Segoe UI for text and a condensed display face for titles, tabs and big buttons (Bahnschrift on Windows 10
+    1709 and later, theme.DISPLAY_FONTS). Without one, Tk falls back to wider faces and es/fr/pt-BR "cut off"
+    where no player's Windows does (checked with Bahnschrift hidden: 1 to 43 places per language) -- a PC or CI
+    runner without the fonts, not a fault of the layout."""
+    if not _LAYOUT_FONTS:
+        from t5lobby import theme
+        try:
+            r = tk.Tk()
+            try:
+                fams = set(tkfont.families(r))
+            finally:
+                r.destroy()
+        except tk.TclError as e:
+            _LAYOUT_FONTS.append(f"no display: {e}")
+            return _LAYOUT_FONTS[0]
+        missing = [what for what, names in (("a text font (" + ", ".join(theme.TEXT_FONTS) + ")", theme.TEXT_FONTS),
+                                            ("a display font (" + ", ".join(theme.DISPLAY_FONTS) + ")",
+                                             theme.DISPLAY_FONTS))
+                   if not theme.pick(fams, names)]
+        _LAYOUT_FONTS.append(("the launcher's fonts are not installed here: " + "; ".join(missing)
+                              + " -- cut-off not judged") if missing else None)
+    return _LAYOUT_FONTS[0]
+
+
 @unittest.skipIf(tk is None, "no tkinter")
 class EveryLanguageRenderTests(Base):
     """The launcher, the Online tab's screens, the Controls, report and update windows, built (withdrawn) in each
@@ -1052,11 +1082,15 @@ class EveryLanguageRenderTests(Base):
                 self.assertEqual(walk.missing, [], "texts shown that the catalog does not have")
                 self.assertEqual({s: e for s, e in walk.english.items() if e}, {}, "English texts still on screen")
                 self.assertGreaterEqual(len(walk.screens), 20)
+                if layout_font_problem():
+                    self.skipTest(layout_font_problem())
                 self.assertEqual(i18n_layout.compare(walk, base), [],
                                  f"cut off in {lang} at {scale} % (python tests/i18n_layout.py {lang})")
 
     def test_english_cuts_nothing_off(self):
         import i18n_layout
+        if layout_font_problem():
+            self.skipTest(layout_font_problem())
         for scale in i18n_layout.SCALES:
             with self.subTest(scale=scale):
                 self.assertEqual(i18n_layout.compare(self.baseline(scale)), [],

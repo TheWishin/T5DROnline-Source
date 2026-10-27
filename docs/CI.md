@@ -49,7 +49,8 @@ and Pillow for the smoke suite's frame checks):
 - `test_build_game.py` -- pins, the output layout (`--out`, defaults inside
   ignored folders), the code ID, argument parsing and step order, one
   `ERROR:` line and exit 2 on a build error, the `deps` step's commands
-  (patches in name order) and its vendored-copy check, `.rap`/`.pkg`
+  (patches in name order), its vendored-copy check, and with real git a
+  developer's checkout prepared again when the patch series changed, `.rap`/`.pkg`
   validation, `PARAM.SFO` parsing, another title or another version refused.
 - `test_lift_spu_jobs.py` -- the job fingerprint against the runtime's own
   (see the FNV note below), the job table, guest reads from a synthetic ELF,
@@ -105,7 +106,13 @@ real time windows, which is why it is not in the per-push tier.
    the HLE NID table, the exports for `t5dr_game.dll`, the link).
 4. `PS3RECOMP_BUILD_TESTS=ON`: `sync_stress` and the condition-variable
    tests (ctest). `fiber_switch` is left out: it does not link on Windows at
-   the pin, with or without our patches.
+   the pin, with or without our patches. Patch 0083 gives the two programs
+   stand-ins for the hooks our patches call from the sync sources and that
+   live in files they do not link (`host_sched_main_wait_begin/end` from 0063,
+   `cellSpurs_queue_wait_help/done`, `ppu_fp_thread_init`); before it they did
+   not link (the Monday run was red from 0063 on). It touches only
+   `tests/sync_stress`, so it changes nothing that is built for players --
+   but, like every patch, the code ID (`patch_digest`).
 5. `tests/run_ps3recomp_tests.py`: ps3recomp's self-contained native tests,
    compiled straight from source with clang-cl and run. `spu_float` is
    `test_spu_float_neon.c` (patch 0003's SSE4.1 SPU float ops, bit-exact
@@ -149,7 +156,29 @@ exit code, time and last output lines; plus one `::notice` with the runner's
 CPUs/memory and the timings. GitHub keeps 10 error annotations per step, so
 the tools mute the `::error::` lines they print on purpose while tests drive
 them into error paths (`[muted] ::error::...` in the log); without that the
-real failure was pushed out of the list. From a shell, no token needed:
+real failure was pushed out of the list.
+
+Since 1.1.7 (the push job was red from the 1.1.5 merge on, after 9.5-11 min, with
+nothing anyone could read) `tests/ci_unittest.py` also:
+
+- writes each failure's annotation the moment it fails (a later crash cannot lose it);
+- prints the time per module at the end, slowest first, and names the slowest in the notice;
+- lists why tests were skipped (one `::warning`): a runner that lacks something a
+  test needs -- a font, a compiler, a display -- says so;
+- runs the tests in a child process: if that one dies (an interpreter abort, an
+  access violation, a test ending its own process), an `::error` "unittest
+  process died" names the exit code, the test that was running and the modules
+  done so far; faulthandler prints the Python stacks into the log.
+
+Found while looking for the 1.1.5 red run (none of it reproduced the red run on
+this PC, with 2 CPUs by affinity and `os.cpu_count()` = 2, a fresh user profile,
+only pycryptodome + Pillow, a 768 KB desktop heap): the launcher's cut-off walk
+(`test_i18n.EveryLanguageRenderTests`) needs its fonts -- with Bahnschrift hidden,
+es, fr and pt-BR "cut off" in 1 to 43 places. It now skips that comparison, with
+the reason, on a PC without Segoe UI or a display face of `theme.DISPLAY_FONTS`.
+On 2 CPUs the suite takes ~8 min here, half of it `test_i18n`.
+
+From a shell, no token needed:
 
     curl -s https://api.github.com/repos/TheWishin/T5DROnline/actions/runs?branch=<branch>
     curl -s https://api.github.com/repos/TheWishin/T5DROnline/actions/runs/<run>/jobs

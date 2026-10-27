@@ -279,6 +279,13 @@ The downloaded zip did not match the published checksum. Nothing was changed.
 Try again; if it keeps happening, download the zip from the releases page and
 update by hand (README, "Updating").
 
+**"... is not signed with the project's release key" / "... failed the signature check"**
+From 1.1.5 on the launcher installs only updates signed with the project's
+release key (`SHA256SUMS.sig`). This message means the release on GitHub was
+not made by the project's release process, so the launcher refused it and
+changed nothing. Do not install it by hand either; report it on the project's
+GitHub page or Discord and wait for the next release.
+
 **"Not enough free disk space."** The update needs about 600 MB free on the
 drive of the launcher's folder for a moment (download, unpacked copy). Free
 some space and try again.

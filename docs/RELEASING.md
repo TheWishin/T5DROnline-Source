@@ -117,7 +117,8 @@ job asks for `contents: write` itself; the build job only reads.
    docs/README.de.md names the version. Tag only when it prints `PREFLIGHT OK`. (0.1.5-preview's first run failed on the runner at the
    binary check; the preflight finds that in ~4 minutes locally.)
 
-5. **Push `main`** and wait for CI to be green.
+5. **Push `main`** and wait for CI to be green. Once: the secret `T5DR_RELEASE_SIGNING_KEY` must exist in
+   the `release` environment ("Release signature", owner steps), or the run stops before publishing.
 
 6. **Tag and push the tag:**
 
@@ -133,7 +134,7 @@ job asks for `contents: write` itself; the build job only reads.
    **Publish release** only when it is clean (owner's rule, 2026-10-18). If a scanner flags it:
    leave the draft, report the detection names, fix, tag a new version.
 
-8. **Check the release page**: the zip and `SHA256SUMS` are attached, the notes
+8. **Check the release page**: the zip, `SHA256SUMS` and `SHA256SUMS.sig` are attached, the notes
    are right, the pre-release badge is there for a suffixed version.
 
 **What players' launchers do with it** (`launcher/updater.py`, README "Updating"): launchers with the
@@ -144,8 +145,8 @@ offer what it returns. That endpoint never returns drafts or pre-releases, so:
 - a suffixed version (`-preview`, `-rc1`) is a GitHub pre-release and is **not** offered by the
   launcher (players get it by hand); only a plain `vX.Y.Z` reaches everyone;
 - the launcher needs the two assets exactly as the workflow names them, `T5DR-Online-<version>.zip`
-  and `SHA256SUMS` (and, from the release that ships the owner's public key on, `SHA256SUMS.sig`: see
-  "Release signature"), and refuses a zip whose SHA-256 differs from `SHA256SUMS` or from GitHub's own
+  and `SHA256SUMS` (and, from 1.1.5 on, `SHA256SUMS.sig` signed by the project's key: see
+  "Release signature"; an unsigned or wrongly signed release is refused), and refuses a zip whose SHA-256 differs from `SHA256SUMS` or from GitHub's own
   digest; never replace a published zip (release a new version);
 - the release notes' "Code ID" line tells the launcher whether players must build the game once
   after the update (it says so in the offer).
@@ -375,7 +376,7 @@ needs: far fewer than the 43), and signing (see "Code signing").
 
 ## Release signature (what the launcher's self-update trusts)
 
-**Why.** The launcher installs updates by itself. Up to 1.1.1 it checked the zip against `SHA256SUMS` and
+**Why.** The launcher installs updates by itself. Up to 1.1.4 it checked the zip against `SHA256SUMS` and
 GitHub's digest -- but those come from the same release as the zip. Whoever can change the public
 repository's releases (a stolen `PUBLIC_RELEASE_TOKEN`, which may write them; a hijacked GitHub login; a
 tampered workflow run) could publish a zip with a matching `SHA256SUMS`, and every launcher would offer
@@ -388,53 +389,79 @@ is a secret of the Dev repository's **`release` environment** only: the build jo
 `release` environment only runs for `v*` tags. The public key ships in the launcher
 (`RELEASE_PUBLIC_KEYS` in `launcher/updater.py`). A launcher that has a key refuses any update without a
 valid signature by it -- also an old, genuinely signed release re-published under a newer version.
-Launchers up to 1.1.1 ignore the extra file and update as before.
+Launchers up to 1.1.4 have no key: they ignore the extra file and update as before.
 
 **The workflow** (`tools/release_sign.py ci`, publish job, before anything is published):
 
 | `RELEASE_PUBLIC_KEYS` in this release | secret `T5DR_RELEASE_SIGNING_KEY` | result |
 |---|---|---|
-| empty | missing | not signed (as up to 1.1.1); a notice in the log |
+| empty | missing | not signed (as up to 1.1.4); a notice in the log |
 | has a key | present, its public key is in the list | signed: `SHA256SUMS.sig` is uploaded with the zip |
 | has a key | missing | **the run stops**: launchers with the key would refuse this release |
 | empty, or without the secret's public key | present | **the run stops**: this release's launcher could not check the next update |
 
-### Owner steps (once, about 10 minutes, on the PC)
+### The project's key (made 2026-10-27)
 
-1. Make the key, **outside** the repository (the tool refuses a path inside it and never overwrites a
-   file):
+| | |
+|---|---|
+| public key (in `RELEASE_PUBLIC_KEYS` of `launcher/updater.py` from 1.1.5 on) | `b47cc1692fbdb91cb7e13a98edd56e99ceea307e693a151b05688ca8f9e67425` |
+| key id (in the publish log and in `SHA256SUMS.sig`) | `c2acdfbc80f3c4c2` |
+| private key (64 hex digits, one line) | only in `C:\T5DROnline\keys\release_signing_private.key` on the owner's PC (the `keys\` folder is git-ignored) |
 
-       python tools/release_sign.py keygen --out "%USERPROFILE%\t5dr-release-key.txt"
+The private key was never committed, printed or logged. From the release that ships this public key on
+(**1.1.5**), a release run without the secret below **stops** at the step "Release signature" (before
+anything is published), so add the secret before tagging v1.1.5.
 
-   It prints the **public key** (64 hex digits) and its key id. The file holds the **private key**
-   (64 hex digits). Never commit it, never paste it into a chat or an issue.
-2. Keep one offline copy of the private key: open the file, copy the line into your password manager
-   (or onto a USB stick in a drawer). Without it no future update can be signed with this key (see
-   "Losing or changing the key").
-3. GitHub -> **T5DROnline-Dev** -> Settings -> **Environments** -> `release` -> **Environment secrets** ->
-   **Add environment secret**: name `T5DR_RELEASE_SIGNING_KEY`, value = the 64 hex digits from the file.
-   (An *environment* secret, not a repository secret: only the publish job, which runs in `release` and
-   only for `v*` tags, can read it.)
-4. Delete the file: `del "%USERPROFILE%\t5dr-release-key.txt"`.
-5. Put the public key into the launcher and commit it on `main` (or tell the main session the public
-   key; it is not secret):
+### Owner steps (once, about 5 minutes, on the PC)
 
-       python tools/release_sign.py add-public-key <the public key>
-       git commit -am "Release signature: the owner's public key"
+1. Check that the file belongs to the key in the launcher (prints the public key and key id only, never
+   the private key), in `C:\T5DROnline`:
 
-6. Release as always (1.1.2 is the first with the key). The publish job's log says
-   `signed SHA256SUMS of 1.1.2 with release key <id>`, and the draft has a third file, `SHA256SUMS.sig`.
-   Check it before publishing: download `SHA256SUMS` and `SHA256SUMS.sig` from the draft, then
-   `python tools/release_sign.py verify --version 1.1.2 --sums SHA256SUMS --sig SHA256SUMS.sig` must
-   print `good signature`.
+       python tools\release_sign.py public-key --key-file C:\T5DROnline\keys\release_signing_private.key
 
-Players on 1.1.1 or older update to 1.1.2 as before (they do not check signatures); from 1.1.2 on, every
-update must be signed.
+   It must print `b47cc169...7425  (key id c2acdfbc80f3c4c2)`, the same key as in `launcher/updater.py`.
+2. Copy the private key: `notepad C:\T5DROnline\keys\release_signing_private.key`, click into the one line
+   of 64 characters (0-9, a-f), **Ctrl+A**, **Ctrl+C**, close Notepad without saving. Never paste it into a
+   chat, an issue, a commit or a log.
+3. In the browser: **github.com/TheWishin/T5DROnline-Dev** -> **Settings** -> (left) **Environments** ->
+   **release** -> section **Environment secrets** -> **Add environment secret**:
+   - **Name**: `T5DR_RELEASE_SIGNING_KEY` (exactly this)
+   - **Value**: **Ctrl+V** (the 64 characters; a line break at the end does no harm)
+   - **Add secret**.
+
+   An *environment* secret of `release`, not a repository secret (Settings -> Secrets and variables ->
+   Actions): only the publish job, which runs in `release` and only for `v*` tags, can read it; the build
+   job and pull requests never see it. If **release** is not in the list, do "One-time setup" step 3
+   first. GitHub shows the secret's name afterwards, never its value.
+4. Keep one offline copy of the private key: paste the same line into your password manager (or save it
+   on a USB stick kept in a drawer). Without a copy no future update can be signed with this key (see
+   "Losing or changing the key"). Then you may delete the file (`del
+   C:\T5DROnline\keys\release_signing_private.key`); the release workflow only needs the secret.
+5. Release 1.1.5 as always. The publish job's log says
+   `signed SHA256SUMS of 1.1.5 with release key c2acdfbc80f3c4c2`, and the draft has a third file,
+   `SHA256SUMS.sig`. Check it before publishing: download `SHA256SUMS` and `SHA256SUMS.sig` from the
+   draft into one folder, then in `C:\T5DROnline`
+
+       python tools\release_sign.py verify --version 1.1.5 --sums <folder>\SHA256SUMS --sig <folder>\SHA256SUMS.sig
+
+   must print `good signature by key c2acdfbc80f3c4c2`.
+
+If the run stopped at "Release signature" (secret missing or wrong: the message says which), the zip is
+kept as the run's artifact: add or fix the secret (step 3) and click **Re-run failed jobs**.
+
+Players on 1.1.4 or older update to 1.1.5 as before (their launcher has no key, so it checks the
+SHA-256 sums only); from 1.1.5 on, every update must be signed by this key, or the launcher refuses it
+with "not signed with the project's release key" / "failed the signature check" and changes nothing.
+
+**A new key later** (only for "Losing or changing the key"): `python tools\release_sign.py keygen --out
+C:\T5DROnline\keys\<new name>.key` (refuses a path inside the repository and never overwrites a file;
+prints only the public key), then `python tools\release_sign.py add-public-key <public key>` and commit
+`launcher/updater.py`; the secret as in steps 2-4.
 
 ### Losing or changing the key
 
-- **Lost** (no copy of the private key): launchers from 1.1.2 on can no longer update themselves. Make a
-  new key (steps 1-5, replace the secret, put the new public key in), release, and tell players to
+- **Lost** (no copy of the private key): launchers from 1.1.5 on can no longer update themselves. Make a
+  new key ("A new key later" above: new public key into the launcher, steps 2-4 for the secret), release, and tell players to
   download that release by hand once.
 - **A planned change**: make a new key, add its public key **next to** the old one (`add-public-key`),
   release that version still signed with the **old** key; then replace the secret with the new key,

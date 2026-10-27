@@ -877,6 +877,20 @@ MESSAGES = {
     "{supported}.":
         "이 사본은 다른 버전의 게임입니다: '{title}' 버전 {version}, 콘텐츠 ID {id} (프로그램 SHA-1 {sha}...). 이 포트"
         "는 {game}, 콘텐츠 ID {supported}만 지원합니다.",
+    # 1.1.5: the package's version, read before the build (tools/build_game.py, launcher/core.py)
+    "This package is version {version} of the game (program content ID {id}). The port supports only version "
+    "{supported}: {game}, content ID {cid}, {size} bytes. This version cannot be used, whatever the license "
+    "(.rap).":
+        "이 패키지는 게임 버전 {version}입니다 (프로그램 콘텐츠 ID {id}). 이 포트는 버전 {supported}만 "
+        "지원합니다: {game}, 콘텐츠 ID {cid}, {size}바이트. 이 버전은 어떤 라이선스(.rap)로도 쓸 수 없습니다.",
+    "{id}  ({size} bytes) -- version {version} of the game. The port supports only version {supported}; the "
+    "build will refuse this package.":
+        "{id}  ({size}바이트) -- 게임 버전 {version}입니다. 이 포트는 버전 {supported}만 지원하므로 빌드에서 이 "
+        "패키지는 거부됩니다.",
+    "{id}  ({size} bytes) -- its program has content ID {program}, not the supported one ({supported}). The "
+    "build will most likely refuse it.":
+        "{id}  ({size}바이트) -- 프로그램의 콘텐츠 ID가 {program}로, 지원되는 ID({supported})가 아닙니다. "
+        "빌드에서 거부될 가능성이 큽니다.",
     "The license (.rap) does not belong to this package. Use the .rap whose name matches "
     "the package's content ID ({id}).":
         "라이선스(.rap)가 이 패키지의 것이 아닙니다. 이름이 패키지의 콘텐츠 ID({id})와 맞는 .rap를 쓰세요.",

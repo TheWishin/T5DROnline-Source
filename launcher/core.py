@@ -278,6 +278,20 @@ def describe_pkg(path):
     size = os.path.getsize(path)
     if cid is None:
         return False, "error", t("This is not a PS3 package (.pkg).")
+    # What is inside (PARAM.SFO and the program's header, read from the package in well under a second): a v01.01
+    # package names itself like the supported one would, and the build used to blame the .rap for it.
+    facts = _package_facts(path)
+    if facts and facts["title_id"] == build_game.TITLE_ID:
+        ver, prog = facts["version"], facts["program"]
+        ver = build_game.OTHER_VERSIONS.get(prog, ver) if ver in ("?", build_game.TITLE_VERSION) else ver
+        if ver not in ("?", build_game.TITLE_VERSION):
+            return False, "error", t("{id}  ({size} bytes) -- version {version} of the game. The port supports only "
+                                     "version {supported}; the build will refuse this package.", id=cid,
+                                     size=f"{size:,}", version=ver, supported=build_game.TITLE_VERSION)
+        if prog and prog not in build_game.CONTENT_IDS:
+            return True, "warn", t("{id}  ({size} bytes) -- its program has content ID {program}, not the supported "
+                                   "one ({supported}). The build will most likely refuse it.", id=cid,
+                                   size=f"{size:,}", program=prog, supported=build_game.CONTENT_ID)
     if cid in build_game.CONTENT_IDS:
         return True, "ok", t("{id}  ({size} bytes) -- the supported version", id=cid, size=f"{size:,}")
     if build_game.TITLE_ID in cid:
@@ -286,6 +300,26 @@ def describe_pkg(path):
                                supported=build_game.CONTENT_ID)
     return True, "warn", t("{id}  ({size} bytes) -- not Tekken 5 DR Online ({title_id}).", id=cid, size=f"{size:,}",
                            title_id=build_game.TITLE_ID)
+
+
+_FACTS = {}
+
+
+def _package_facts(path):
+    """build_game.package_facts(path), once per file (path, size, time): the Build tab asks on every change."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    if cloud_only(path):
+        return None                         # (reading inside it would download 600 MB)
+    key = (os.path.abspath(path), st.st_size, st.st_mtime)
+    if key not in _FACTS:
+        try:
+            _FACTS[key] = build_game.package_facts(path)
+        except Exception:      # noqa: BLE001 -- a line under the file chooser must never stop the launcher
+            _FACTS[key] = None
+    return _FACTS[key]
 
 
 def describe_rap(path, pkg=None):

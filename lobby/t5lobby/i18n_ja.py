@@ -886,6 +886,21 @@ MESSAGES = {
     "{supported}.":
         "このコピーは別バージョンのゲームです：「{title}」バージョン {version}、コンテンツID {id}（プログラム SHA-1 "
         "{sha}...）。この移植版が対応しているのは {game}、コンテンツID {supported} だけです。",
+    # 1.1.5: the package's version, read before the build (tools/build_game.py, launcher/core.py)
+    "This package is version {version} of the game (program content ID {id}). The port supports only version "
+    "{supported}: {game}, content ID {cid}, {size} bytes. This version cannot be used, whatever the license "
+    "(.rap).":
+        "このパッケージはゲームのバージョン {version} です（プログラムのコンテンツID "
+        "{id}）。この移植版が対応しているのはバージョン {supported} だけです：{game}、コンテンツID {cid}、{size} "
+        "バイト。このバージョンは、どのライセンス（.rap）でも使えません。",
+    "{id}  ({size} bytes) -- version {version} of the game. The port supports only version {supported}; the "
+    "build will refuse this package.":
+        "{id}  ({size} バイト) -- ゲームのバージョン {version} です。この移植版はバージョン {supported} "
+        "だけに対応しています。ビルドはこのパッケージを拒否します。",
+    "{id}  ({size} bytes) -- its program has content ID {program}, not the supported one ({supported}). The "
+    "build will most likely refuse it.":
+        "{id}  ({size} バイト) -- このプログラムのコンテンツIDは {program} "
+        "で、対応するもの（{supported}）ではありません。ビルドはほぼ確実に拒否します。",
     "The license (.rap) does not belong to this package. Use the .rap whose name matches "
     "the package's content ID ({id}).":
         "ライセンス（.rap）がこのパッケージのものではありません。名前がパッケージのコンテンツID（{id}）と一致する "

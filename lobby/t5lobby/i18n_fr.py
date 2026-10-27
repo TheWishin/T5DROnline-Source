@@ -913,6 +913,21 @@ MESSAGES = {
     "{supported}.":
         "Cette copie est une autre version du jeu : « {title} » version {version}, content ID {id} (SHA-1 du "
         "programme {sha}...). Le portage ne prend en charge que {game}, content ID {supported}.",
+    # 1.1.5: the package's version, read before the build (tools/build_game.py, launcher/core.py)
+    "This package is version {version} of the game (program content ID {id}). The port supports only version "
+    "{supported}: {game}, content ID {cid}, {size} bytes. This version cannot be used, whatever the license "
+    "(.rap).":
+        "Ce paquet est la version {version} du jeu (content ID du programme {id}). Le port ne prend en charge "
+        "que la version {supported} : {game}, content ID {cid}, {size} octets. Cette version est inutilisable, "
+        "quelle que soit la licence (.rap).",
+    "{id}  ({size} bytes) -- version {version} of the game. The port supports only version {supported}; the "
+    "build will refuse this package.":
+        "{id}  ({size} octets) -- version {version} du jeu. Le port ne prend en charge que la version "
+        "{supported} ; la compilation refusera ce paquet.",
+    "{id}  ({size} bytes) -- its program has content ID {program}, not the supported one ({supported}). The "
+    "build will most likely refuse it.":
+        "{id}  ({size} octets) -- son programme a le content ID {program}, pas celui pris en charge "
+        "({supported}). La compilation le refusera très probablement.",
     "The license (.rap) does not belong to this package. Use the .rap whose name matches "
     "the package's content ID ({id}).":
         "La licence (.rap) ne correspond pas à ce paquet. Utilise le .rap dont le nom correspond au content ID du "

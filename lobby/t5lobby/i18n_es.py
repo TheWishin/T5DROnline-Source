@@ -484,6 +484,53 @@ MESSAGES = {
     "Keep the PC responsive (slower)": "Mantener la PC usable (más lento)",
     "Open build.log": "Abrir build.log",
     "Report a problem...": "Reportar un problema...",
+    "Check my problem": "Revisar mi problema",
+    "Check my problem...": "Revisar mi problema...",
+    "Looking…": "Buscando…",
+    "No known problem found.": "No se encontró ningún problema conocido.",
+    "If something still goes wrong, \"Report a problem...\" makes one zip with your logs to send to whoever helps you.":
+        "Si algo sigue fallando, «Reportar un problema...» crea un zip con tus logs para enviarlo a quien te ayude.",
+    "Problem": "Problema",
+    "Note": "Nota",
+    "Help": "Ayuda",
+    "The launcher looks in this PC's logs and settings for the problems other players had, and says how to fix them. Nothing is changed and nothing is sent.":
+        "El launcher busca en los logs y ajustes de este PC los problemas que tuvieron otros jugadores y te dice cómo arreglarlos. No se cambia nada y no se envía nada.",
+    "Your game package is version {version}": "Tu paquete del juego es la versión {version}",
+    "The port works only with version {supported} of the game: TEKKEN 5 DARK RESURRECTION ONLINE, US PSN (NPUB30009), a .pkg of {size} bytes, with its license {rap}. Version {version} cannot be used, whatever the license. Choose the {supported} package on the Build tab and press BUILD GAME.":
+        "El port solo funciona con la versión {supported} del juego: TEKKEN 5 DARK RESURRECTION ONLINE, PSN de EE. UU. (NPUB30009), un .pkg de {size} bytes, con su licencia {rap}. La versión {version} no sirve con ninguna licencia. Elige el paquete {supported} en la pestaña Compilar y pulsa BUILD GAME.",
+    "build.log: the package says version {version}.": "build.log: el paquete indica la versión {version}.",
+    "Unpacking the game ran out of memory": "Al desempaquetar el juego se acabó la memoria",
+    "Close other programs (browser, games, launchers) and press BUILD GAME again; since 1.1.5 the launcher unpacks the game in small pieces. If it fails again, check that Windows has a page file (System > About > Advanced system settings > Performance > Virtual memory: automatic).":
+        "Cierra otros programas (navegador, juegos, launchers) y pulsa BUILD GAME de nuevo; desde la 1.1.5 el launcher desempaqueta el juego en trozos pequeños. Si vuelve a fallar, comprueba que Windows tenga archivo de paginación (Sistema > Información > Configuración avanzada del sistema > Rendimiento > Memoria virtual: automática).",
+    "build.log: the computer ran out of memory while the game data was unpacked.":
+        "build.log: el equipo se quedó sin memoria al desempaquetar los datos del juego.",
+    "The game package looks damaged or incomplete": "El paquete del juego parece dañado o incompleto",
+    "Download the package again (it must be {size} bytes), choose it on the Build tab, tick \"Redo every step\" and press BUILD GAME.":
+        "Descarga el paquete de nuevo (debe tener {size} bytes), elígelo en la pestaña Compilar, marca «Rehacer todos los pasos» y pulsa BUILD GAME.",
+    "build.log: the package could not be read to the end or not decrypted.":
+        "build.log: el paquete no se pudo leer hasta el final o no se pudo descifrar.",
+    "The game says its data is damaged": "El juego dice que sus datos están dañados",
+    "On the Build tab tick \"Redo every step\" and press BUILD GAME: it unpacks the game again. If the message comes back, download the package again (it must be {size} bytes).":
+        "En la pestaña Compilar marca «Rehacer todos los pasos» y pulsa BUILD GAME: el juego se desempaqueta de nuevo. Si el mensaje vuelve, descarga el paquete otra vez (debe tener {size} bytes).",
+    "Game log: the game showed the message \"{message}\".": "Log del juego: el juego mostró el mensaje «{message}».",
+    "Your graphics card is an older model": "Tu tarjeta gráfica es un modelo antiguo",
+    "{gpu} is a Direct3D 12 card of the oldest kind (resource binding tier 1: GeForce cards with a Fermi chip, among them some GT 730 models, and older Intel graphics). The game's graphics take several times longer on it than on later cards, whatever the processor: fights can stay below 30 frames per second, and a lower Internal resolution helps only a little. Later cards (a GT 730 with a Kepler chip, GTX 750, Radeon HD 7000 and newer) run the game at full speed.":
+        "{gpu} es una tarjeta Direct3D 12 del tipo más antiguo (resource binding tier 1: GeForce con chip Fermi, entre ellas algunas GT 730, y gráficos Intel antiguos). Los gráficos del juego tardan varias veces más en ella que en tarjetas posteriores, sea cual sea el procesador: los combates pueden quedarse por debajo de 30 fotogramas por segundo, y bajar la Resolución interna ayuda poco. Las tarjetas posteriores (una GT 730 con chip Kepler, GTX 750, Radeon HD 7000 y más nuevas) mueven el juego a velocidad completa.",
+    "Game log: {gpu}, resource binding tier {tier}.": "Log del juego: {gpu}, resource binding tier {tier}.",
+    "Your processor has {cores} cores": "Tu procesador tiene {cores} núcleos",
+    "The game is made for 4 cores; on {cores} it can stay below 60 frames per second in fights (an i3-3240 reached about 20). Close other programs while you play, keep Windows' power plan on Balanced or High performance, and see \"Low frame rate\" in the help.":
+        "El juego está hecho para 4 núcleos; con {cores} puede quedarse por debajo de 60 fotogramas por segundo en los combates (un i3-3240 llegaba a unos 20). Cierra otros programas mientras juegas, deja el plan de energía de Windows en Equilibrado o Alto rendimiento y mira «Low frame rate» en la ayuda.",
+    "This PC: {cores} cores, {logical} logical processors.":
+        "Este PC: {cores} núcleos, {logical} procesadores lógicos.",
+    "The launcher runs under Wine or Proton": "El launcher se ejecuta con Wine o Proton",
+    "That works, with a few known differences: since 1.1.5 the launcher sets the safe graphics defaults for Wine by itself. A dark blue or black game window (sound playing) means the Proton build does not suit the game: try another one (Proton Experimental, proton-cachyos-slr). See \"Linux and Steam Deck\" in the help.":
+        "Funciona, con algunas diferencias conocidas: desde la 1.1.5 el launcher pone él mismo los ajustes gráficos seguros para Wine. Una ventana del juego azul oscuro o negra (con sonido) significa que esa versión de Proton no va bien con el juego: prueba otra (Proton Experimental, proton-cachyos-slr). Mira «Linux and Steam Deck» en la ayuda.",
+    "This PC: {wine}.": "Este PC: {wine}.",
+    "Windows Firewall blocks the game": "El Firewall de Windows bloquea el juego",
+    "Online matches then often go through a relay (more lag) or do not connect. Open Windows Security > Firewall & network protection > Allow an app through firewall, and allow t5dr.exe (in {folder}) for private and public networks; or remove the block rule for it there.":
+        "Entonces las partidas online suelen ir por un relay (más lag) o no conectan. Abre Seguridad de Windows > Firewall y protección de red > Permitir una aplicación a través del firewall y permite t5dr.exe (en {folder}) para redes privadas y públicas, o quita allí la regla que lo bloquea.",
+    "Windows Firewall: a block rule or \"Block all incoming connections\" for t5dr.exe.":
+        "Firewall de Windows: una regla de bloqueo o «Bloquear todas las conexiones entrantes» para t5dr.exe.",
     "Checking the build…": "Revisando la compilación…",
     "Your name (shown in the game)": "Tu nombre (se ve en el juego)",
     "PLAY OFFLINE": "JUGAR OFFLINE",
@@ -538,6 +585,22 @@ MESSAGES = {
         "muestra nítidos, sin el brillo. Solo cambia tu imagen: online, cada jugador puede elegir distinto.",
     "Training overlay": "Overlay de entrenamiento",
     "Also in the other offline modes (Arcade, Versus, ...)": "También en los demás modos offline (Arcade, Versus, ...)",
+    "Practice tools": "Herramientas de práctica",
+    "SELECT combos in Practice (offline only)": "Combinaciones con SELECT en Practice (solo offline)",
+    "Dummy:": "Dummy:",
+    "As set in the game's Practice menu": "Como en el menú Practice del juego",
+    "Blocks after the first hit": "Bloquea tras el primer golpe",
+    "Crouches": "Se agacha",
+    "Walks forward and back": "Camina adelante y atrás",
+    "Sidesteps": "Hace pasos laterales",
+    "In Practice, hold SELECT and press: 3 round start; f+3 / b+3 the dummy against the wall in front "
+    "of / behind you; df+3 / db+3 you against the wall in front of / behind you. 1 records the dummy "
+    "(you play it), 2 plays the recording once, 4 in a loop; tap up / down for slot 1-5, forward / "
+    "back for what the dummy does.":
+        "En Practice, mantén SELECT y pulsa: 3 inicio de ronda; f+3 / b+3 el dummy contra la pared "
+        "delante / detrás de ti; df+3 / db+3 tú contra la pared delante / detrás de ti. 1 graba al dummy "
+        "(lo controlas tú), 2 reproduce la grabación una vez, 4 en bucle; toca arriba / abajo para el "
+        "espacio 1-5, adelante / atrás para lo que hace el dummy.",
     "Also online (only your own inputs, no frame data)": "También online (solo tus inputs, sin datos de frames)",
     "In Practice: your last inputs with how many frames each was held, and after each exchange the "
     "startup of the move and who can act first (+3, -12). F2 in the game switches it.":
@@ -725,6 +788,10 @@ MESSAGES = {
     "OK": "OK",
     # ---- lobby/t5lobby/fighters.py
     "Random": "Aleatorio",
+    "Scrapyard": "Desguace",
+    "Industrial yard": "Zona industrial",
+    "Stage {number}": "Escenario {number}",
+    "Tekken 5 stage {number}": "Escenario {number} de Tekken 5",
     # ---- lobby/t5lobby/handover.py
     "direct connection": "conexión directa",
     "local network": "red local",
@@ -908,6 +975,51 @@ MESSAGES = {
     "{supported}.":
         "Esta copia es otra versión del juego: “{title}” versión {version}, content ID {id} (SHA-1 del programa "
         "{sha}...). El port solo admite {game}, content ID {supported}.",
+    # 1.1.5: the package's version, read before the build (tools/build_game.py, launcher/core.py)
+    "This package is version {version} of the game (program content ID {id}). The port supports only version "
+    "{supported}: {game}, content ID {cid}, {size} bytes. This version cannot be used, whatever the license "
+    "(.rap).":
+        "Este paquete es la versión {version} del juego (content ID del programa {id}). El port solo admite la "
+        "versión {supported}: {game}, content ID {cid}, {size} bytes. Esta versión no se puede usar, sea cual "
+        "sea la licencia (.rap).",
+    "{id}  ({size} bytes) -- version {version} of the game. The port supports only version {supported}; the "
+    "build will refuse this package.":
+        "{id}  ({size} bytes) -- versión {version} del juego. El port solo admite la versión {supported}; la "
+        "compilación rechazará este paquete.",
+    "{id}  ({size} bytes) -- its program has content ID {program}, not the supported one ({supported}). The "
+    "build will most likely refuse it.":
+        "{id}  ({size} bytes) -- su programa tiene el content ID {program}, no el compatible ({supported}). Lo "
+        "más probable es que la compilación lo rechace.",
+    # 1.1.5: the game's own message boxes (launcher/core.py dialog_info, dialog_message)
+    "The game shows: \"{text}\" {advice}": "El juego muestra: “{text}” {advice}",
+    "Your built game data is probably damaged. Open the Build tab, tick \"Redo every step\" and press BUILD "
+    "GAME. If the message comes back, download the package again: it must be exactly {size} bytes.":
+        "Los datos del juego compilado probablemente están dañados. Abre la pestaña Compilar, marca “Rehacer "
+        "todos los pasos” y presiona BUILD GAME. Si el mensaje vuelve, descarga el paquete de nuevo: debe tener "
+        "exactamente {size} bytes.",
+    "The game could not write its save, so progress may be lost. Check that the disk is not full and that no "
+    "antivirus blocks the folder native\\gamedata.":
+        "El juego no pudo escribir su partida guardada, así que el progreso puede perderse. Revisa que el disco "
+        "no esté lleno y que ningún antivirus bloquee la carpeta native\\gamedata.",
+    "The game could not read its save. If it happens every time, click Report a problem.":
+        "El juego no pudo leer su partida guardada. Si pasa siempre, haz clic en “Reportar un problema...”.",
+    "If the game does not go on, click Report a problem.":
+        "Si el juego no sigue, haz clic en “Reportar un problema...”.",
+    # 1.1.5: the launcher's --search ranked|casual (lobby/t5lobby/tk_tab.py search_on_start)
+    "Build the game first (Build tab); then the search starts by itself next time.":
+        "Compila primero el juego (pestaña Compilar); la próxima vez la búsqueda empezará sola.",
+    "Log in to start the search. Tick \"Remember me\" when you log in with your account: next time --search "
+    "logs in and starts searching by itself.":
+        "Inicia sesión para empezar la búsqueda. Marca “Recordarme” al iniciar sesión con tu cuenta: la próxima "
+        "vez, --search inicia sesión y empieza a buscar solo.",
+    "Ranked matches need an account: log in with your name and password.":
+        "Las partidas Ranked necesitan una cuenta: inicia sesión con tu nombre y contraseña.",
+    # 1.1.5: a build step that prints nothing for long (launcher/core.py step_quiet_hint)
+    "The step \"{title}\" has printed nothing for {minutes} minutes. On a slow or busy PC it may still be "
+    "working. If nothing changes, press Cancel and then BUILD GAME again; build.log has the details.":
+        "El paso “{title}” no ha mostrado nada en {minutes} minutos. En una PC lenta u ocupada puede seguir "
+        "trabajando. Si nada cambia, pulsa Cancelar y luego BUILD GAME otra vez; build.log tiene los detalles.",
+    "Last program started: {tool}.": "Último programa iniciado: {tool}.",
     "The license (.rap) does not belong to this package. Use the .rap whose name matches "
     "the package's content ID ({id}).":
         "La licencia (.rap) no pertenece a este paquete. Usa el .rap cuyo nombre coincide con el content ID del "
@@ -1586,6 +1698,24 @@ MESSAGES = {
     "Played {games}: {wins} won, {losses} lost, win rate {rate} %": "Jugadas {games}: {wins} ganadas, {losses} perdidas, {rate} % de victorias",
     "Ranked {games}, {rate} % won": "Ranked {games}, {rate} % ganadas",
     "Casual {games}, {rate} % won": "Casual {games}, {rate} % ganadas",
+    "Stats": "Estadísticas",
+    "Community stats": "Estadísticas de la comunidad",
+    "Accounts": "Cuentas",
+    "Matches": "Partidas",
+    "Ranked matches": "Partidas ranked",
+    "Last 24 hours": "Últimas 24 horas",
+    "{matches} matches, {players} players": "{matches} partidas, {players} jugadores",
+    "as of {when}": "a las {when}",
+    "All": "Todas",
+    "Fighter": "Peleador",
+    "Wins": "Victorias",
+    "Win rate": "% de victorias",
+    "Picked": "Elegido",
+    "No numbers yet.": "Todavía no hay cifras.",
+    "This lobby server has no stats page yet (it comes with server 1.1.5).":
+        "Este servidor de lobby aún no tiene estadísticas (llegan con el servidor 1.1.5).",
+    "Win rate per match; a mirror match counts as one win and one loss. Grey: fewer than {count} matches, not much to go on yet. Click a column to sort.":
+        "Victorias por partida; una partida espejo cuenta como una victoria y una derrota. En gris: menos de {count} partidas, todavía poco fiable. Haz clic en una columna para ordenar.",
     "ranked matches {count}": "partidas Ranked {count}",
     "highest rank {rank}": "rango máximo {rank}",
     "Characters: {list}": "Personajes: {list}",
@@ -1855,6 +1985,12 @@ MESSAGES = {
     "Opponent hidden": "Rival oculto",
     "Name and side are shown once you both accept.": "El nombre y el lado se muestran cuando ambos acepten.",
     "(estimated before you connect)": "(estimado antes de conectar)",
+    "(measured in your last match together)": "(medido en la última partida que jugaron juntos)",
+    "ping {ms} ms (measured in your last match together)":
+        "ping de {ms} ms (medido en la última partida que jugaron juntos)",
+    "probably a direct connection": "probablemente una conexión directa",
+    "probably over the local network": "probablemente por la red local",
+    "probably through a relay server": "probablemente a través de un servidor relay",
     "Accepted. Waiting for your opponent...": "Aceptado. Esperando a tu rival...",
     "Match ready": "Partida lista",
     "Connecting the two games...": "Conectando los dos juegos...",
@@ -1982,6 +2118,14 @@ MESSAGES = {
         "ellas quedaron.",
     "Save online matches as replays":
         "Guardar las partidas online como replays",
+    "Watch replay": "Ver replay",
+    "{count} of these matches have a replay on this PC ({mark}). Select one to watch it.":
+        "{count} de estas partidas tienen replay en este PC ({mark}). Elige una para verla.",
+    "None of these matches has a replay on this PC (replays are saved on the PC that played, while \"Save online matches as replays\" is on).":
+        "Ninguna de estas partidas tiene replay en este PC (los replays se guardan en el PC que jugó, mientras «Guardar las partidas online como replays» está activado).",
+    "No replay of this match on this PC.": "No hay replay de esta partida en este PC.",
+    "{fighters}, saved on this PC.": "{fighters}, guardado en este PC.",
+    "This replay is no longer on this PC.": "Este replay ya no está en este PC.",
     "Keep the players' names in replays":
         "Guardar los nombres de los jugadores en los replays",
     "Rollback":
@@ -2240,4 +2384,19 @@ MESSAGES = {
         "tampoco efectos de golpe). Predeterminado los "
         "restablece. Solo cambia tu imagen: en línea, cada "
         "jugador puede elegir distinto.",
+    # ---- lobby/t5lobby/tk_casual.py
+    "Any side": "Cualquier lado",
+    "P1 (left)": "P1 (izquierda)",
+    "P2 (right)": "P2 (derecha)",
+    "Challenges, invites, rooms:": "Desafíos, invitaciones, salas:",
+    "Random stage": "Escenario aleatorio",
+    "wants to be P{n} on {stage}": "quiere ser P{n} en {stage}",
+    "wants to be P{n}": "quiere ser P{n}",
+    "wants to play on {stage}": "quiere jugar en {stage}",
+    "You both wanted P{n}: a coin flip made you P{m}.": "Los dos queríais ser P{n}: a cara o cruz, te tocó P{m}.",
+    "Your opponent wanted another stage: a coin flip chose {stage}.":
+        "Tu rival quería otro escenario: a cara o cruz salió {stage}.",
+    "P{n} on {stage}": "P{n} en {stage}",
+    "Rematch: swap sides": "Rematch: cambiar de lado",
+    "with the sides swapped": "con los lados cambiados",
 }

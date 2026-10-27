@@ -475,6 +475,51 @@ MESSAGES = {
     "Keep the PC responsive (slower)": "PCの操作性を優先（遅くなります）",
     "Open build.log": "build.log を開く",
     "Report a problem...": "問題を報告...",
+    "Check my problem": "問題をチェック",
+    "Check my problem...": "問題をチェック...",
+    "Looking…": "確認中…",
+    "No known problem found.": "既知の問題は見つかりませんでした。",
+    "If something still goes wrong, \"Report a problem...\" makes one zip with your logs to send to whoever helps you.":
+        "それでも問題が続く場合は、「問題を報告...」でログをまとめたzipを作り、手伝ってくれる人に送ってください。",
+    "Problem": "問題",
+    "Note": "注意",
+    "Help": "ヘルプ",
+    "The launcher looks in this PC's logs and settings for the problems other players had, and says how to fix them. Nothing is changed and nothing is sent.":
+        "ランチャーがこのPCのログと設定から、他のプレイヤーに起きた問題を探し、直し方を表示します。何も変更せず、何も送信しません。",
+    "Your game package is version {version}": "ゲームのパッケージがバージョン{version}です",
+    "The port works only with version {supported} of the game: TEKKEN 5 DARK RESURRECTION ONLINE, US PSN (NPUB30009), a .pkg of {size} bytes, with its license {rap}. Version {version} cannot be used, whatever the license. Choose the {supported} package on the Build tab and press BUILD GAME.":
+        "このポートはゲームのバージョン{supported}でのみ動作します：TEKKEN 5 DARK RESURRECTION ONLINE、北米PSN（NPUB30009）、{size}バイトの.pkgとそのライセンス{rap}。バージョン{version}はどのライセンスでも使えません。ビルドタブで{supported}のパッケージを選び、BUILD GAMEを押してください。",
+    "build.log: the package says version {version}.": "build.log：パッケージのバージョンは{version}です。",
+    "Unpacking the game ran out of memory": "ゲームの展開中にメモリが不足しました",
+    "Close other programs (browser, games, launchers) and press BUILD GAME again; since 1.1.5 the launcher unpacks the game in small pieces. If it fails again, check that Windows has a page file (System > About > Advanced system settings > Performance > Virtual memory: automatic).":
+        "他のプログラム（ブラウザー、ゲーム、ランチャー）を閉じて、もう一度BUILD GAMEを押してください。1.1.5からランチャーはゲームを小さな単位で展開します。それでも失敗する場合は、Windowsにページファイルがあるか確認してください（システム > バージョン情報 > システムの詳細設定 > パフォーマンス > 仮想メモリ：自動）。",
+    "build.log: the computer ran out of memory while the game data was unpacked.":
+        "build.log：ゲームデータの展開中にメモリが足りなくなりました。",
+    "The game package looks damaged or incomplete": "ゲームのパッケージが壊れているか不完全です",
+    "Download the package again (it must be {size} bytes), choose it on the Build tab, tick \"Redo every step\" and press BUILD GAME.":
+        "パッケージをもう一度ダウンロードし（{size}バイトである必要があります）、ビルドタブで選んで「全ステップをやり直す」にチェックを入れ、BUILD GAMEを押してください。",
+    "build.log: the package could not be read to the end or not decrypted.": "build.log：パッケージを最後まで読めなかったか、復号できませんでした。",
+    "The game says its data is damaged": "ゲームがデータの破損を報告しています",
+    "On the Build tab tick \"Redo every step\" and press BUILD GAME: it unpacks the game again. If the message comes back, download the package again (it must be {size} bytes).":
+        "ビルドタブで「全ステップをやり直す」にチェックを入れてBUILD GAMEを押すと、ゲームが展開し直されます。それでもメッセージが出る場合は、パッケージをもう一度ダウンロードしてください（{size}バイトである必要があります）。",
+    "Game log: the game showed the message \"{message}\".": "ゲームログ：ゲームが「{message}」というメッセージを表示しました。",
+    "Your graphics card is an older model": "グラフィックカードが古いモデルです",
+    "{gpu} is a Direct3D 12 card of the oldest kind (resource binding tier 1: GeForce cards with a Fermi chip, among them some GT 730 models, and older Intel graphics). The game's graphics take several times longer on it than on later cards, whatever the processor: fights can stay below 30 frames per second, and a lower Internal resolution helps only a little. Later cards (a GT 730 with a Kepler chip, GTX 750, Radeon HD 7000 and newer) run the game at full speed.":
+        "{gpu}は最も古い種類のDirect3D 12カードです（resource binding tier 1：Fermiチップの GeForce、一部のGT 730を含む、および古いIntelグラフィックス）。プロセッサーに関係なく、ゲームのグラフィックスは新しいカードの数倍の時間がかかります。対戦が30フレーム毎秒を下回ることがあり、内部解像度を下げてもあまり効果はありません。それ以降のカード（KeplerチップのGT 730、GTX 750、Radeon HD 7000以降）ならフルスピードで動きます。",
+    "Game log: {gpu}, resource binding tier {tier}.": "ゲームログ：{gpu}、resource binding tier {tier}。",
+    "Your processor has {cores} cores": "プロセッサーのコア数は{cores}です",
+    "The game is made for 4 cores; on {cores} it can stay below 60 frames per second in fights (an i3-3240 reached about 20). Close other programs while you play, keep Windows' power plan on Balanced or High performance, and see \"Low frame rate\" in the help.":
+        "このゲームは4コア向けです。{cores}コアでは対戦中に60フレーム毎秒を下回ることがあります（i3-3240では約20）。プレイ中は他のプログラムを閉じ、Windowsの電源プランを「バランス」か「高パフォーマンス」にして、ヘルプの「Low frame rate」を見てください。",
+    "This PC: {cores} cores, {logical} logical processors.": "このPC：{cores}コア、論理プロセッサー{logical}個。",
+    "The launcher runs under Wine or Proton": "ランチャーがWineまたはProtonで動いています",
+    "That works, with a few known differences: since 1.1.5 the launcher sets the safe graphics defaults for Wine by itself. A dark blue or black game window (sound playing) means the Proton build does not suit the game: try another one (Proton Experimental, proton-cachyos-slr). See \"Linux and Steam Deck\" in the help.":
+        "動作しますが、いくつか既知の違いがあります。1.1.5からランチャーがWine向けの安全なグラフィックス設定を自動で使います。ゲーム画面が濃い青や黒のまま（音は出る）なら、そのProtonビルドはゲームに合っていません。別のもの（Proton Experimental、proton-cachyos-slr）を試してください。ヘルプの「Linux and Steam Deck」を見てください。",
+    "This PC: {wine}.": "このPC：{wine}。",
+    "Windows Firewall blocks the game": "Windowsファイアウォールがゲームをブロックしています",
+    "Online matches then often go through a relay (more lag) or do not connect. Open Windows Security > Firewall & network protection > Allow an app through firewall, and allow t5dr.exe (in {folder}) for private and public networks; or remove the block rule for it there.":
+        "その場合、オンライン対戦はリレー経由（遅延が増える）になるか、つながりません。Windows セキュリティ > ファイアウォールとネットワーク保護 > ファイアウォールによるアプリケーションの許可 を開き、t5dr.exe（{folder}内）をプライベートとパブリックのネットワークで許可するか、そこにあるブロックのルールを削除してください。",
+    "Windows Firewall: a block rule or \"Block all incoming connections\" for t5dr.exe.":
+        "Windowsファイアウォール：t5dr.exeのブロックルール、または「すべての着信接続をブロック」。",
     "Checking the build…": "ビルドを確認中…",
     "Your name (shown in the game)": "名前（ゲーム内に表示）",
     "PLAY OFFLINE": "オフラインプレイ",
@@ -527,6 +572,20 @@ MESSAGES = {
         "。変わるのは自分の画面だけなので、オンラインでも各プレイヤーが別々に選べます。",
     "Training overlay": "トレーニング表示",
     "Also in the other offline modes (Arcade, Versus, ...)": "他のオフラインモードでも表示（Arcade、Versus など）",
+    "Practice tools": "練習ツール",
+    "SELECT combos in Practice (offline only)": "Practice で SELECT コンビネーション（オフラインのみ）",
+    "Dummy:": "ダミー：",
+    "As set in the game's Practice menu": "ゲームの Practice メニューの設定どおり",
+    "Blocks after the first hit": "最初のヒット後にガード",
+    "Crouches": "しゃがむ",
+    "Walks forward and back": "前後に歩く",
+    "Sidesteps": "横移動する",
+    "In Practice, hold SELECT and press: 3 round start; f+3 / b+3 the dummy against the wall in front "
+    "of / behind you; df+3 / db+3 you against the wall in front of / behind you. 1 records the dummy "
+    "(you play it), 2 plays the recording once, 4 in a loop; tap up / down for slot 1-5, forward / "
+    "back for what the dummy does.":
+        "Practice で SELECT を押しながら：3 でラウンド開始位置、f+3 / b+3 でダミーを前 / 後ろの壁際へ、df+3 / db+3 で自分を前 / 後ろの壁際へ。1 "
+        "でダミーを記録（自分で操作）、2 で記録を1回再生、4 でループ再生。上 / 下を軽く押してスロット1-5、前 / 後ろでダミーの動きを切り替え。",
     "Also online (only your own inputs, no frame data)": "オンラインでも表示（自分の入力のみ、フレームデータなし）",
     "In Practice: your last inputs with how many frames each was held, and after each exchange the "
     "startup of the move and who can act first (+3, -12). F2 in the game switches it.":
@@ -712,6 +771,10 @@ MESSAGES = {
     "OK": "OK",
     # ---- lobby/t5lobby/fighters.py
     "Random": "ランダム",
+    "Scrapyard": "スクラップ置き場",
+    "Industrial yard": "工業地帯",
+    "Stage {number}": "ステージ {number}",
+    "Tekken 5 stage {number}": "Tekken 5 ステージ {number}",
     # ---- lobby/t5lobby/handover.py
     "direct connection": "直接接続",
     "local network": "ローカルネットワーク",
@@ -886,6 +949,52 @@ MESSAGES = {
     "{supported}.":
         "このコピーは別バージョンのゲームです：「{title}」バージョン {version}、コンテンツID {id}（プログラム SHA-1 "
         "{sha}...）。この移植版が対応しているのは {game}、コンテンツID {supported} だけです。",
+    # 1.1.5: the package's version, read before the build (tools/build_game.py, launcher/core.py)
+    "This package is version {version} of the game (program content ID {id}). The port supports only version "
+    "{supported}: {game}, content ID {cid}, {size} bytes. This version cannot be used, whatever the license "
+    "(.rap).":
+        "このパッケージはゲームのバージョン {version} です（プログラムのコンテンツID "
+        "{id}）。この移植版が対応しているのはバージョン {supported} だけです：{game}、コンテンツID {cid}、{size} "
+        "バイト。このバージョンは、どのライセンス（.rap）でも使えません。",
+    "{id}  ({size} bytes) -- version {version} of the game. The port supports only version {supported}; the "
+    "build will refuse this package.":
+        "{id}  ({size} バイト) -- ゲームのバージョン {version} です。この移植版はバージョン {supported} "
+        "だけに対応しています。ビルドはこのパッケージを拒否します。",
+    "{id}  ({size} bytes) -- its program has content ID {program}, not the supported one ({supported}). The "
+    "build will most likely refuse it.":
+        "{id}  ({size} バイト) -- このプログラムのコンテンツIDは {program} "
+        "で、対応するもの（{supported}）ではありません。ビルドはほぼ確実に拒否します。",
+    # 1.1.5: the game's own message boxes (launcher/core.py dialog_info, dialog_message)
+    "The game shows: \"{text}\" {advice}": "ゲームのメッセージ：「{text}」 {advice}",
+    "Your built game data is probably damaged. Open the Build tab, tick \"Redo every step\" and press BUILD "
+    "GAME. If the message comes back, download the package again: it must be exactly {size} bytes.":
+        "ビルドしたゲームデータが壊れている可能性があります。ビルドタブを開き、「全ステップをやり直す」にチェック"
+        "を入れて BUILD GAME を押してください。それでもこのメッセージが出る場合は、パッケージをダウンロードし直し"
+        "てください（ちょうど {size} バイトのはずです）。",
+    "The game could not write its save, so progress may be lost. Check that the disk is not full and that no "
+    "antivirus blocks the folder native\\gamedata.":
+        "ゲームがセーブデータを書き込めませんでした。進行状況が失われる可能性があります。ディスクの空き容量と、ウ"
+        "イルス対策ソフトが native\\gamedata フォルダーをブロックしていないか確認してください。",
+    "The game could not read its save. If it happens every time, click Report a problem.":
+        "ゲームがセーブデータを読み込めませんでした。毎回起きる場合は「問題を報告...」をクリックしてください。",
+    "If the game does not go on, click Report a problem.":
+        "ゲームが先に進まない場合は「問題を報告...」をクリックしてください。",
+    # 1.1.5: the launcher's --search ranked|casual (lobby/t5lobby/tk_tab.py search_on_start)
+    "Build the game first (Build tab); then the search starts by itself next time.":
+        "先にゲームをビルドしてください（ビルドタブ）。次回からは検索が自動で始まります。",
+    "Log in to start the search. Tick \"Remember me\" when you log in with your account: next time --search "
+    "logs in and starts searching by itself.":
+        "検索を始めるにはログインしてください。アカウントでログインするときに「ログイン状態を保持」にチェックを入"
+        "れておくと、次回からは --search で自動的にログインして検索が始まります。",
+    "Ranked matches need an account: log in with your name and password.":
+        "Ranked 対戦にはアカウントが必要です。名前とパスワードでログインしてください。",
+    # 1.1.5: a build step that prints nothing for long (launcher/core.py step_quiet_hint)
+    "The step \"{title}\" has printed nothing for {minutes} minutes. On a slow or busy PC it may still be "
+    "working. If nothing changes, press Cancel and then BUILD GAME again; build.log has the details.":
+        "「{title}」ステップが {minutes} 分間何も出力していません。遅いPCや負荷の高いPCではまだ処理中の場合があり"
+        "ます。変化がなければキャンセルを押してからもう一度 BUILD GAME を押してください。詳細は build.log "
+        "にあります。",
+    "Last program started: {tool}.": "最後に起動したプログラム：{tool}",
     "The license (.rap) does not belong to this package. Use the .rap whose name matches "
     "the package's content ID ({id}).":
         "ライセンス（.rap）がこのパッケージのものではありません。名前がパッケージのコンテンツID（{id}）と一致する "
@@ -1565,6 +1674,23 @@ MESSAGES = {
     "Played {games}: {wins} won, {losses} lost, win rate {rate} %": "対戦 {games}：{wins}勝 {losses}敗、勝率 {rate} %",
     "Ranked {games}, {rate} % won": "Ranked {games}、勝率 {rate} %",
     "Casual {games}, {rate} % won": "カジュアル {games}、勝率 {rate} %",
+    "Stats": "統計",
+    "Community stats": "コミュニティ統計",
+    "Accounts": "アカウント",
+    "Matches": "対戦数",
+    "Ranked matches": "Ranked対戦",
+    "Last 24 hours": "直近24時間",
+    "{matches} matches, {players} players": "{matches}対戦、{players}人",
+    "as of {when}": "{when} 時点",
+    "All": "すべて",
+    "Fighter": "キャラクター",
+    "Wins": "勝利",
+    "Win rate": "勝率",
+    "Picked": "使用率",
+    "No numbers yet.": "まだデータがありません。",
+    "This lobby server has no stats page yet (it comes with server 1.1.5).": "このロビーサーバーにはまだ統計がありません（サーバー1.1.5で追加されます）。",
+    "Win rate per match; a mirror match counts as one win and one loss. Grey: fewer than {count} matches, not much to go on yet. Click a column to sort.":
+        "勝率は対戦ごと。同キャラ対戦は1勝1敗として数えます。灰色：対戦数が{count}未満で、まだ参考程度です。列をクリックで並べ替え。",
     "ranked matches {count}": "Ranked 対戦 {count}",
     "highest rank {rank}": "最高段位 {rank}",
     "Characters: {list}": "キャラクター：{list}",
@@ -1836,6 +1962,11 @@ MESSAGES = {
     "Opponent hidden": "相手は非公開",
     "Name and side are shown once you both accept.": "お互いが受けると名前とサイドが表示されます。",
     "(estimated before you connect)": "（接続前の推定）",
+    "(measured in your last match together)": "（前回の対戦で測定）",
+    "ping {ms} ms (measured in your last match together)": "Ping {ms}ms（前回の対戦で測定）",
+    "probably a direct connection": "おそらく直接接続",
+    "probably over the local network": "おそらくローカルネットワーク経由",
+    "probably through a relay server": "おそらく中継サーバー経由",
     "Accepted. Waiting for your opponent...": "受けました。相手を待っています...",
     "Match ready": "対戦準備完了",
     "Connecting the two games...": "2つのゲームを接続中...",
@@ -1965,6 +2096,14 @@ MESSAGES = {
         "再戦は同じセッションのそれ以前の対戦の後に再生されます：その対戦が残した状態から始まるためです。",
     "Save online matches as replays":
         "オンライン対戦をリプレイとして保存する",
+    "Watch replay": "リプレイを見る",
+    "{count} of these matches have a replay on this PC ({mark}). Select one to watch it.":
+        "このうち{count}件の対戦はこのPCにリプレイがあります（{mark}）。選ぶと見られます。",
+    "None of these matches has a replay on this PC (replays are saved on the PC that played, while \"Save online matches as replays\" is on).":
+        "このPCにはどの対戦のリプレイもありません（リプレイは「オンライン対戦をリプレイとして保存する」がオンの間、対戦したPCに保存されます）。",
+    "No replay of this match on this PC.": "この対戦のリプレイはこのPCにありません。",
+    "{fighters}, saved on this PC.": "{fighters}、このPCに保存済み。",
+    "This replay is no longer on this PC.": "このリプレイはもうこのPCにありません。",
     "Keep the players' names in replays":
         "リプレイにプレイヤー名を残す",
     "Rollback":
@@ -2206,4 +2345,18 @@ MESSAGES = {
         "最低：内部解像度を「最低」にし、ステージのぼかし / 光彩、影、エフェクトをオフにします（ヒットエフェクトも表示"
         "されません）。「標準」で元に戻ります。変わるのは自分の画面だけなので、オンラインでも各プレイヤーが別々に選べます"
         "。",
+    # ---- lobby/t5lobby/tk_casual.py
+    "Any side": "どちらでも",
+    "P1 (left)": "P1（左）",
+    "P2 (right)": "P2（右）",
+    "Challenges, invites, rooms:": "対戦申し込み・招待・ルーム：",
+    "Random stage": "ランダムステージ",
+    "wants to be P{n} on {stage}": "P{n}・{stage} を希望",
+    "wants to be P{n}": "P{n} を希望",
+    "wants to play on {stage}": "{stage} を希望",
+    "You both wanted P{n}: a coin flip made you P{m}.": "お互い P{n} を希望したため、コイントスであなたは P{m} になりました。",
+    "Your opponent wanted another stage: a coin flip chose {stage}.": "相手は別のステージを希望しました。コイントスで {stage} に決まりました。",
+    "P{n} on {stage}": "P{n}・{stage}",
+    "Rematch: swap sides": "Rematch：サイド交代",
+    "with the sides swapped": "サイドを交代して",
 }

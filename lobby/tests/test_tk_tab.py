@@ -353,6 +353,33 @@ class TkTabTest(TkBase):
             self.assertNotIn('"token"', f.read())
         self.tab = tab2
 
+    def test_search_from_the_command_line(self):
+        """The launcher's --search ranked / casual: with a saved login the tab logs in and searches by itself;
+        without one it only says what to do (and searches nothing)."""
+        tab = self.tab
+        tab.server_var.set(self.s.addr)
+        self.assertFalse(tab.search_on_start("ranked"))                  # no saved login yet: a hint
+        self.assertIn("Remember me", tab.status_var.get())
+        self.assertFalse(tab.search_on_start("upside-down"))             # not a search: nothing
+        tab.name_var.set("Searcher")
+        tab.pw_var.set("secret-pw1")
+        tab.ask_string = lambda *a, **k: "secret-pw1"
+        tab.do_login("register")
+        self.pump(lambda: tab.codes_window is not None)
+        tab.codes_window.destroy()
+        tab.on_close()
+        for mode, queue in (("ranked", "ranked"), ("casual", "quick")):
+            tab2 = OnlineTab(self.root, self.app)
+            tab2._build_info = lambda: (BUILD, None)
+            tab2.new_window = hidden_window
+            self.tab = tab2
+            self.assertTrue(tab2.search_on_start(mode))
+            tab2.on_show()                                              # (the launcher selects the tab)
+            self.pump(lambda: "Searching for an opponent" in tab2.status_var.get())
+            self.assertEqual(tab2.cfg.get("last_search"), queue)
+            self.pump(lambda: self.s.call(lambda: self.s.srv.by_name["searcher"].status) == "queue")
+            tab2.on_close()
+
     def test_no_password_to_a_public_server_without_tls(self):
         from unittest import mock
         tab = self.tab

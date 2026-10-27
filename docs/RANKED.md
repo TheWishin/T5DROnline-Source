@@ -198,6 +198,13 @@ ping as before, and quick takes the nearest opponent. Nobody waits for ever beca
 near: once the "any ping" time has passed, any opponent goes (before 1.1.2 ranked stopped at 400 ms
 and never paired two players further apart; quick paired anybody at once). The strict range, the
 block list and the cooldown are unchanged and still apply however long the search takes.
+
+**Measured pairs (1.1.5).** The estimate is the worst the two can get. Two players who played each
+other in the last 7 days (`T5L_PAIR_PING_DAYS`; the server keeps it in memory) count with the ping
+measured then -- usually the direct path, often much shorter: two neighbours far from every relay
+(300 ms through the servers, 35 ms direct) are paired at once instead of after 11 s, and quick takes
+such a neighbour before an unknown player whose estimate is lower. The ready check, a challenge and an
+invite show that ping and the path the two most likely get (docs/ONLINE.md, step 5).
 Rooms may be ranked (`T5L_RANKED_ROOMS=0` turns that off: then only the queue
 gives ranked matches). Challenges are always casual.
 
@@ -228,7 +235,10 @@ its stage select; names are known for two stages so far). Not offered: Jinpachi
 (no cursor cell in Versus) and Panda (reached through Kuma's cell with another
 button, unverified). Rounds: first to 3 (`T5L_ROUNDS`), like Tekken 6 online.
 The stage is always resolved by the server: the game's own random pick happens
-before lockstep starts and would differ between the two PCs.
+before lockstep starts and would differ between the two PCs. Ranked and Quick
+draw it at random; in a casual match the players chose each other for
+(challenge, invite, room) their stage wishes count (1.1.5, docs/ONLINE.md
+"Sides and stages by choice").
 
 **The Tekken 5 stages** (1.1.2): `data/fighters.json` also lists the old
 stages of Tekken 5, keys `t5s01`..`t5s15` ("t5": the game's stage ids 0-13 and
@@ -837,8 +847,9 @@ What a stick (or hitbox) player needs, and where it stands:
   (`suggest_delay`: same PC / LAN 2, 40 ms ping 3, 100 ms 5) for the lockstep
   fallback. With rollback (the default) the game picks its own: 1 frame up to
   ~60 ms round trip, 2 above, or the setting both players chose; ranked
-  matches always use the server's `T5L_RANKED_INPUT_DELAY` (default 2) --
-  docs/NETPLAY.md "Input delay".
+  matches always use the server's `T5L_RANKED_INPUT_DELAY` (default 2), and
+  above 150 ms measured ping every match gets at least 3 frames, 4 above
+  250 ms (1.1.5, `T5L_PING_DELAYS`) -- docs/NETPLAY.md "Input delay".
 - **Display latency** -- play in the game window at native size or "Borderless
   fullscreen" (Settings tab) on the monitor's native refresh; turn on the TV's
   game mode; cable instead of Wi-Fi for the match; close other heavy programs
@@ -882,6 +893,8 @@ New `T5L_*` variables (all in `server/config.py`):
 | `T5L_INGAME_PICK` | 30 | seconds to pick on the game's own select screen when both clients can (`fight.pick`); 0 = the launchers' characters |
 | `T5L_OLD_STAGES` | 0 | 1 = a match's stage may also be one of the Tekken 5 stages (`t5s01`..`t5s15`) when both clients announce `old_stages` |
 | `T5L_RANKED_INPUT_DELAY` | 2 | rollback input delay of ranked matches, frames, the same for everybody (`-1`: the players' own settings) |
+| `T5L_PING_DELAYS` | `150:3,250:4` | 1.1.5: rollback input delay of far matches (ranked or not), at least 3 frames above 150 ms measured ping, 4 above 250 ms (the higher of this and `T5L_RANKED_INPUT_DELAY`); `""` = off |
+| `T5L_PAIR_PING_DAYS` | 7 | 1.1.5: the ping two players measured in their last match is their estimate for this long (queues, ready check, challenges) |
 | `T5L_READY_TIMEOUT` | 15 | seconds to accept a found match (was 20) |
 | `T5L_BLIND_READY` | 1 | a queue match shows only the ping until both accepted (for clients that ask); 0 = names at once |
 | `T5L_STRICT_RANGE` | 150 | rating points a strict ranked search stays within |

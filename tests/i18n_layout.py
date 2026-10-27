@@ -25,6 +25,7 @@ import os
 import sys
 import tempfile
 import time
+import types
 from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -238,6 +239,14 @@ class Client:
 
     def private_rooms_ok(self):
         return True
+
+    def casual_ok(self):
+        return True
+
+    def casual_stages(self):
+        """Every stage, the Tekken 5 ones too: the widest names the casual stage choice can get (tk_casual.py)."""
+        from t5lobby import fighters
+        return fighters.table().stage_pool(old_stages=True)
 
     def __init__(self):
         self.me = {"id": "p1", "name": "Me", "guest": False, "rating": 1500, "record": [3, 2, 0], "status": "idle",
@@ -537,6 +546,21 @@ class Walk:
         self.screen("online leaderboard")
         tab.show_profile("Me")
         self.screen("online profile")
+        # the match history with replays on this PC (tk_history.py): the play mark, the count, one selected
+        rp = getattr(self.app, "replays", None)
+        if rp is not None and getattr(tab, "history", None) is not None:
+            class _E:
+                fighters = "Roger Jr. vs Armor King"
+            had = rp.for_history
+            rp.for_history = lambda h, ids: _E() if h["result"] in ("won", "lost") else None
+            tab.show_profile("Me")
+            self.screen("online profile, replays")
+            first = tab.tv_hist.get_children()[:1]
+            tab.tv_hist.selection_set(first)
+            self.screen("online profile, a replay selected")
+            tab.tv_hist.selection_set(tab.tv_hist.get_children()[2:3])
+            self.screen("online profile, no replay of it")
+            rp.for_history = had
         tab.nb.select(tab.friends_page)
         tab.on_event({"t": "friends"})
         self.screen("online friends")
@@ -612,6 +636,18 @@ class Walk:
         self.screen("online tournaments, not a host")
         tab.tours.can_create = True
         tab.tours.render_list()
+        # the Stats page (tk_stats.py): big totals, every fighter with the longest numbers a column gets
+        tab.nb.select(tab.stats_page)
+        self.app.update()                     # (showing the page asks the server: this fake one has no stats)
+        keys = [f["key"] for f in tab.table.fighters]
+        tab.stats.data = {"made": time.time(), "accounts": 1234567, "players": 1234567, "matches": 12345678,
+                          "ranked": 12345678, "matches_24h": 123456, "players_24h": 123456,
+                          "fighters": [{"char": k, "ranked": [123456, 99999, 9], "casual": [1234567, 999999, 9]}
+                                       for k in keys]}
+        for mode in ("all", "ranked", "casual"):
+            tab.stats.mode_var.set(mode)
+            tab.stats.fill()
+            self.screen(f"online stats ({mode})")
 
     def _windows(self, d):
         """The Controls window (fake controllers), the problem report and the update offer: windows of their own,
@@ -646,6 +682,27 @@ class Walk:
                                     issues_url="https://example.org/issues", log=lambda m: None, visible=False)
         self.screen("report window", rd.top)
         rd.close()
+        # 'Check my problem' with every finding it has (problem_check.py), and with none
+        import problem_check as pcheck
+        import problem_check_ui as check_ui
+        os.makedirs(os.path.join(d, "logs"), exist_ok=True)
+        with open(os.path.join(d, "build.log"), "w", encoding="utf-8") as f:
+            f.write("PARAM.SFO: T / NPUB30009 / version 01.01\n# exit code 2\n")
+        with open(os.path.join(d, "logs", "game-1.log"), "w", encoding="utf-8") as f:
+            f.write("[DIALOG] The installed game data is corrupted.\n[gpu] adapter: NVIDIA GeForce GT 730 (vendor 10DE, "
+                    "4096 MB, feature level 11_0, resource binding tier 1, dedicated)\n")
+        blocked = lambda exe: types.SimpleNamespace(state="blocked", blocked=["game"])      # noqa: E731
+        facts = {"cores": 2, "logical": 4, "wine": "Wine 9.0 (Proton)"}
+        found = pcheck.check_build(d) + pcheck.check_game_log(d) + pcheck.check_firewall(d, blocked)
+        found += pcheck.check_pc(facts)
+        for name, items in (("check window", found), ("check window, nothing found", [])):
+            cd = check_ui.CheckDialog(app, d, report=lambda: None, visible=False, facts=facts, fw=blocked)
+            cd.findings, cd.error = items, None
+            cd.show()
+            self.screen(name, cd.top)
+            cd.close()
+        for p in (os.path.join(d, "build.log"), os.path.join(d, "logs", "game-1.log")):
+            os.remove(p)
         import updater
         up = updater.Updater(app)
         cancel_timers(app)

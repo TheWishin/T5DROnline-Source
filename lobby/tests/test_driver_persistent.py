@@ -204,5 +204,113 @@ class PersistentFallbackTest(unittest.TestCase):
         self.assertEqual(len(self.launched), 1)
 
 
+class SetEndTest(unittest.TestCase):
+    """1.1.5: the 20 s stall after a rematch with no next match. The set is over: the persistent game lets its session go
+    at once (a BYE while the way to the other game is open), once; a game whose last session is still running out gets
+    until its T5_NET_TIMEOUT to take a command before it counts as not answering."""
+
+    def setUp(self):
+        self.d = tempfile.mkdtemp(prefix="drvset")
+        self.launched = []
+        self.saved = match_driver.CTL_ACK_SECONDS, match_driver.CTL_ACK_BOOT_SECONDS, match_driver.CTL_ACK_SESSION_MARGIN
+        match_driver.CTL_ACK_SECONDS = match_driver.CTL_ACK_BOOT_SECONDS = 0.2
+        match_driver.CTL_ACK_SESSION_MARGIN = 0.0
+        self.log = os.path.join(self.d, "game.log")
+        open(self.log, "w").close()
+
+    def tearDown(self):
+        match_driver.CTL_ACK_SECONDS, match_driver.CTL_ACK_BOOT_SECONDS, match_driver.CTL_ACK_SESSION_MARGIN = self.saved
+        shutil.rmtree(self.d, ignore_errors=True)
+
+    def launch(self, env):
+        g = FakeGame(env)
+        g.log_path = self.log
+        self.launched.append(g)
+        return g
+
+    def say(self, *lines):
+        with open(self.log, "a") as f:
+            f.write("".join(ln + "\n" for ln in lines))
+
+    def cmd(self):
+        with open(os.path.join(self.d, "ctl", "cmd.json")) as f:
+            return json.load(f)
+
+    def taken(self, seq):
+        with open(os.path.join(self.d, "ctl", "state.json"), "w") as f:
+            json.dump({"ctl": 1, "seq": seq, "state": "fight"}, f)
+
+    def played(self):
+        drv = MatchDriver(FakeClient(), self.launch, self.d, mode="persistent")
+        drv.on_event(start_event("m1"))
+        self.taken(1)
+        drv.poll()
+        self.say("[netplay] connected (host, P1), delay 2, peer 1.2.3.4:5")
+        drv.ticket = None                         # (the match is over: _finished)
+        return drv
+
+    def test_the_set_ends_the_session_once(self):
+        drv = self.played()
+        drv.on_event({"t": "set_end", "set": "s1", "reason": "declined", "by": "opponent"})
+        self.assertEqual((self.cmd()["cmd"], self.cmd()["seq"]), ("idle", 2))
+        drv.on_event({"t": "set_end", "set": "s1", "reason": "declined"})
+        drv.on_event({"t": "match_found", "match": "m2"})           # a new opponent: no second reset
+        self.assertEqual(self.cmd()["seq"], 2)
+        drv.on_event(start_event("m2"))
+        self.assertEqual((self.cmd()["cmd"], self.cmd()["seq"]), ("fight", 3))
+        self.taken(3)
+        drv.poll()
+        drv.ticket = None
+        drv.on_event({"t": "match_found", "match": "m3"})           # after a fight: the reset again
+        self.assertEqual((self.cmd()["cmd"], self.cmd()["seq"]), ("idle", 4))
+
+    def test_not_while_a_match_runs_or_is_set_up(self):
+        drv = self.played()
+        drv.ticket = object()                    # a match being played
+        drv.on_event({"t": "set_end", "set": "s1", "reason": "left", "by": "opponent"})
+        self.assertEqual(self.cmd()["cmd"], "fight")
+        drv.ticket = None
+        drv.client.match = {"match": "m2"}       # a new match found already (its match_found resets the game)
+        drv.on_event({"t": "set_end", "set": "s1", "reason": "left"})
+        self.assertEqual(self.cmd()["cmd"], "fight")
+        process = MatchDriver(FakeClient(), self.launch, self.d, mode="process")
+        process.on_event({"t": "set_end", "set": "s1", "reason": "declined"})     # (nothing to let go)
+
+    def test_a_session_running_out_gets_its_timeout(self):
+        drv = self.played()
+        drv.session_ticket.timeout = 0.6          # T5_NET_TIMEOUT
+        drv.on_event({"t": "match_found", "match": "m2"})
+        drv.on_event(start_event("m2"))
+        time.sleep(0.35)
+        drv.poll()                                # 0.2 s gone, the old session still runs: wait
+        self.assertEqual(drv.mode, "persistent")
+        self.say("[netplay] peer lost (peer_timeout): nothing from the opponent's game for 1 s",
+                 "[netplay] session 1 ends (peer_timeout): 10 packets in, 10 out, 0 mismatching frame(s)")
+        drv.poll()                                # just ended: the command comes next
+        self.assertEqual(drv.mode, "persistent")
+        time.sleep(0.3)
+        drv.poll()                                # ... but it did not: one process per opponent
+        self.assertEqual(drv.mode, "process")
+        self.assertEqual(len(self.launched), 2)
+
+    def test_a_game_whose_session_ended_gets_the_usual_time(self):
+        drv = self.played()
+        self.say("[netplay] session 1 ends (idle): 10 packets in, 10 out, 0 mismatching frame(s)")
+        drv.on_event({"t": "match_found", "match": "m2"})
+        drv.on_event(start_event("m2"))
+        time.sleep(0.3)
+        drv.poll()
+        self.assertEqual(drv.mode, "process")
+
+    def test_the_log_says_when_a_session_ends(self):
+        g = GameLog(None)
+        g.line("[netplay] connected (host, P1), delay 2, peer 1.2.3.4:5")
+        self.assertFalse(g.session_over)
+        g.line("[netplay] session 3 ends (peer_timeout): 11028 packets in, 12373 out, 0 mismatching frame(s)")
+        self.assertTrue(g.session_over)
+        g.line("[netplay] session 4 set up (handshake running); the keyread thread stays parked")
+        self.assertFalse(g.session_over)
+
+
 if __name__ == "__main__":
     unittest.main()

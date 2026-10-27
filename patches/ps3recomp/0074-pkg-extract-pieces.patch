@@ -1,0 +1,67 @@
+diff --git a/tools/pkg_extract.py b/tools/pkg_extract.py
+index df0731d..48613ab 100644
+--- a/tools/pkg_extract.py
++++ b/tools/pkg_extract.py
+@@ -133,6 +133,33 @@ def out_path(outd, name):
+     return os.path.join(outd, *parts)
+ 
+ 
++# Each file is decrypted and written in pieces of this size. In one piece, a ~600 MB file (Tekken 5 DR's
++# T55DATA1.BIN) needed several GB at once -- the counters, the keystream, the raw bytes, two big integers and the
++# result -- and stopped with MemoryError on a PC with little free memory. A multiple of the 16-byte AES block.
++PIECE = 16 << 20
++# A file this big says how far it is every PROGRESS bytes, so a long unpack is never silent.
++PROGRESS = 64 << 20
++
++
++def write_item(decrypt_range, k, fo, fs, op, nm=""):
++    """Decrypt the `fs` bytes at `fo` piece by piece into `op`: the same bytes as decrypt_range(k, fo, fs) in one
++    call. -> (the first bytes, how many bytes were written; fewer than fs when the package is cut short)."""
++    head, done = b"", 0
++    with open(op, "wb") as out:
++        while done < fs:
++            n = min(PIECE, fs - done)
++            piece = decrypt_range(k, fo + done, n)
++            if not done:
++                head = piece[:16]
++            out.write(piece)
++            done += len(piece)
++            if len(piece) < n:
++                break
++            if fs > PROGRESS and done < fs and done % PROGRESS == 0:
++                print(f"    ... {nm}: {done >> 20} of {fs >> 20} MB", flush=True)
++    return head, done
++
++
+ def main():
+     inp, outd = sys.argv[1], sys.argv[2]
+     only = None
+@@ -208,17 +235,24 @@ def main():
+         return
+ 
+     os.makedirs(outd, exist_ok=True)
++    short = []
+     for nm, fo, fs, k in names:
+         if only and os.path.basename(nm) != only:
+             continue
+         if fs <= 0:
+             continue
+-        blob = decrypt_range(k, fo, fs)
+         op = out_path(outd, nm)
+         os.makedirs(os.path.dirname(op), exist_ok=True)
+-        open(op, "wb").write(blob)
+-        tag = "  <-- SELF" if blob[:4] == b"SCE\x00" else ""
+-        print(f"  {nm}  ({fs} bytes){tag}")
++        head, got = write_item(decrypt_range, k, fo, fs, op, nm)
++        tag = "  <-- SELF" if head[:4] == b"SCE\x00" else ""
++        print(f"  {nm}  ({fs} bytes){tag}", flush=True)
++        if got < fs:
++            short.append((nm, got, fs))
++    if short:
++        # The same bytes as before are on disk; what is missing was never in the file (a download cut short).
++        for nm, got, fs in short:
++            print(f"  {nm}: only {got} of {fs} bytes are in the package", flush=True)
++        sys.exit(f"the package is cut short: {len(short)} file(s) incomplete -- download it again")
+ 
+ 
+ if __name__ == "__main__":

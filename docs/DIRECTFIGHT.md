@@ -1266,7 +1266,14 @@ the per-side model words 0x10098E90, 0x104235E4/0x1042360C[side] and
 0x104257D4[side] at FIGHT START or at the stage panel changed nothing, and the
 fighter object's +0x42 crashes the game. In a player's log: two `fighters: ...
 (model 0xNN)` lines in a row with the same model on a side, the second
-`costumes written` naming a different block (another hash) for it.
+`costumes written` naming a different block (another hash) for it. Since 1.1.5
+the game says so itself, right after `costumes written`: `costumes: P2 has the
+same model (0x25) as in match 1 of this game but another block (..., was ...):
+without a visit to the title since, the game keeps the fighter it loaded and
+shows that match's look` (a `to the title for a fresh select screen` line
+between the two matches means the game loaded the fighter again). Still open
+for 1.1.5: no player log with white costumes has arrived; with one, this line
+(or its absence) tells whether the reuse above is the cause.
 
 **Spectators** (docs/SPECTATE.md "Custom costumes in the stream"): the live stream's MATCH records are the
 replay's matches with the blocks, so a spectator's game writes them at its FIGHT START like a replay (`custom

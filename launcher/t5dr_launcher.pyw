@@ -27,6 +27,8 @@ import online  # noqa: E402
 from core import N_, t  # noqa: E402  (English text in, the player's language out; lobby/t5lobby/i18n.py)
 import problem_report as report  # noqa: E402
 import problem_report_ui as report_ui  # noqa: E402
+import problem_check_ui  # noqa: E402
+import tab_look  # noqa: E402
 import replays  # noqa: E402
 import replays_ui  # noqa: E402
 import updater  # noqa: E402
@@ -182,11 +184,17 @@ class App(tk.Tk):
         self.step_t0 = None
         self.cur_step = None
         self._run_shown = False        # the Play tab shows "Running ..." (the game's end is explained once)
+        self._dialogs_seen = 0         # the game's own message boxes already shown (GameRun.dialog_count)
+        self._dialog_text = ""         # the Play tab's sentence about the last one
+        self._dialog_box = False       # a message box about one came up for this game (once per game)
         self.sub = 0.0
         self._last_status = None
         if not offscreen:
             core.log(f"launcher {self.info.get('version', '?')} started, Python {sys.version.split()[0]}, "
                      f"output {self.settings.out_dir}")
+            wine = core.run_game.under_wine()
+            if wine:          # (Linux / Steam Deck: the game gets two defaults there, tools/run_game.py WINE_ENV)
+                core.log(core.run_game.wine_note(wine))
             gone = replays.prune(self.settings.replay_dir)       # the newest replays.DEFAULT_KEEP files stay
             if gone:
                 core.log(f"replays: {gone} old replay file(s) deleted (the newest {replays.DEFAULT_KEEP} are kept)")
@@ -328,6 +336,7 @@ class App(tk.Tk):
         self._settings_tab(self.tabs["settings"])
         self.online = online.OnlineTab(self.tabs["online"], self)
         self.replays = replays_ui.ReplaysTab(self.tabs["replays"], self)
+        tab_look.apply(self)                          # Build, Play offline, Settings: the Online tab's cards
         self.nb.bind("<<NotebookTabChanged>>", self._on_tab)
         self.status = tk.StringVar(value="")
         self.status.trace_add("write", self._log_status)
@@ -440,6 +449,9 @@ class App(tk.Tk):
         self.error_lbl = tk.Label(b, textvariable=self.error, fg=COLORS["error"], wraplength=860, justify="left",
                                   font=(core.ui_family(), 10, "bold"))
         self.error_lbl.grid(row=4, column=0, columnspan=3, sticky="w")
+        # after a failed build: 'Check my problem' (problem_check_ui.py) under the message
+        self.check_btn = ttk.Button(b, text=t("Check my problem..."), command=self.check_problem)
+        self.error.trace_add("write", lambda *_a: self._show_check_btn())
 
         # log
         tab.rowconfigure(3, weight=1)
@@ -494,6 +506,7 @@ class App(tk.Tk):
                    command=lambda: core.open_path(os.path.join(self.settings.out_dir, "gamedata"))).pack(
             side="left", padx=8)
         ttk.Button(links, text=t("Report a problem..."), command=self.report_problem).pack(side="left")
+        ttk.Button(links, text=t("Check my problem..."), command=self.check_problem).pack(side="left", padx=8)
         ttk.Label(box, style="Muted.TLabel", wraplength=820, justify="left", text=t(
             "The game opens in its own window (DirectX 12). Keyboard and Xbox-style controllers both work; "
             "see Settings for the keys. Esc closes the game. START skips the intro movie.")).pack(
@@ -609,6 +622,27 @@ class App(tk.Tk):
         ttk.Label(tr, style="Muted.TLabel", wraplength=300, justify="left", text=t(
             "In Practice: your last inputs with how many frames each was held, and after each exchange the "
             "startup of the move and who can act first (+3, -12). F2 in the game switches it.")).pack(
+            anchor="w", pady=(4, 0))
+
+        # Practice tools (T5_PRACTICE*, core.PRACTICE_DUMMY, docs/TRAINING.md): position resets, the
+        # dummy's behaviour and 5 recording slots, with SELECT combos in Practice; offline only.
+        pr = ttk.LabelFrame(left, text="  " + t("Practice tools") + "  ", padding=(12, 6))
+        pr.pack(fill="x", pady=(6, 0))
+        self.practice_var = tk.BooleanVar(value=bool(self.settings.get("practice", True)))
+        ttk.Checkbutton(pr, text=t("SELECT combos in Practice (offline only)"), variable=self.practice_var,
+                        command=self.save_settings).pack(anchor="w")
+        drow = ttk.Frame(pr)
+        drow.pack(anchor="w", pady=(4, 0))
+        ttk.Label(drow, text=t("Dummy:")).pack(side="left", padx=(0, 6))
+        self._practice_dummy_labels = {key: t(label) for key, label in core.PRACTICE_DUMMY.items()}
+        cur = self.settings.get("practice_dummy", "game")
+        self.practice_dummy_var = tk.StringVar(
+            value=self._practice_dummy_labels.get(cur, self._practice_dummy_labels["game"]))
+        dbox = ttk.Combobox(drow, state="readonly", width=34, textvariable=self.practice_dummy_var,
+                            values=list(self._practice_dummy_labels.values()))
+        dbox.pack(side="left")
+        dbox.bind("<<ComboboxSelected>>", lambda _e: self.save_settings())
+        ttk.Label(pr, style="Muted.TLabel", wraplength=300, justify="left", text=t(core.PRACTICE_HELP)).pack(
             anchor="w", pady=(4, 0))
 
         right = ttk.Frame(box)
@@ -1222,6 +1256,11 @@ class App(tk.Tk):
             self.settings["training"] = self.training_var.get()
             self.settings["training_all"] = bool(self.training_all_var.get())
             self.settings["training_online"] = bool(self.training_online_var.get())
+        if hasattr(self, "practice_var"):
+            self.settings["practice"] = bool(self.practice_var.get())
+            label = self.practice_dummy_var.get()
+            self.settings["practice_dummy"] = next(
+                (k for k, v in self._practice_dummy_labels.items() if v == label), "game")
         if hasattr(self, "router_ports_var"):
             self.settings["router_ports"] = bool(self.router_ports_var.get())
         if hasattr(self, "discord_var"):
@@ -1259,6 +1298,7 @@ class App(tk.Tk):
             dialogs.show_error(APP_TITLE, t("Could not start the game:\n{error}", error=e), parent=self)
             return None
         self.game = g
+        self._dialogs_seen, self._dialog_text, self._dialog_box = 0, "", False
         core.log(f"game started: process {pid}, log {os.path.basename(g.log_path)}, settings give "
                  f"{', '.join(f'{k}={v}' for k, v in sorted(self.settings.env_overrides().items())) or 'nothing'}, "
                  f"asked for by the launcher: {', '.join(sorted(env or {})) or 'nothing'}")
@@ -1275,6 +1315,17 @@ class App(tk.Tk):
 
     def play(self):
         self.start_game()
+
+    def search_on_start(self, mode):
+        """--search ranked|casual: the Online tab, logged in with the saved login, searching (README "Start a search
+        from a shortcut"). Without a saved login the tab only says what to do."""
+        if self.readonly:
+            return
+        core.log(f"command line: --search {mode}")
+        start = getattr(self.online, "search_on_start", None)
+        if start is not None:
+            start(mode)                     # before the tab is shown: showing it logs in with the saved login
+        self.nb.select(self.tabs["online"])
 
     def _hwnd(self):
         try:
@@ -1325,6 +1376,21 @@ class App(tk.Tk):
             core.log("status: " + t)
 
     # ------------------------------------------------------------------ report a problem
+    def _show_check_btn(self):
+        try:
+            if self.error.get():
+                self.check_btn.grid(row=5, column=0, sticky="w", pady=(4, 0))
+            else:
+                self.check_btn.grid_remove()
+        except tk.TclError:
+            pass
+
+    def check_problem(self):
+        """The 'Check my problem' window (problem_check_ui.py): the known cases in this PC's logs, with the fix."""
+        if self.readonly:
+            return None
+        return problem_check_ui.open_for(self)
+
     def report_problem(self):
         """Open the 'Report a problem' window (Build and Play tab, and the Online tab after a match).
         Everything the zip needs from the launcher is read here, on the Tk thread; the window's worker
@@ -1393,14 +1459,17 @@ class App(tk.Tk):
         if self.build:
             self._drain_build()
         if self.game:
+            self._game_dialogs()
             if self.game.running():
                 el = int(time.time() - self.game.started)
                 fps = f"{self.game.fps:.0f} fps" if self.game.fps else t("starting…")
-                self.run_var.set(t("Running — {elapsed} — {fps}", elapsed=core.clock(el), fps=fps))
+                self.run_var.set(t("Running — {elapsed} — {fps}", elapsed=core.clock(el), fps=fps)
+                                 + ("\n" + self._dialog_text if self._dialog_text else ""))
                 self._run_shown = True
             elif self._run_shown:
                 self._run_shown = False
-                why = core.explain_exit(self.game.proc.returncode, self.game.last_lines)
+                why = core.explain_exit(self.game.proc.returncode, self.game.last_lines,
+                                        getattr(self.game, "dialogs", ()))
                 # patch 0063: the game log's [slow-frames] verdicts -- the graphics were the limit
                 speed = self._speed_notes()
                 core.log(f"game ended: exit code {self.game.proc.returncode}" + (", explained to the player"
@@ -1410,6 +1479,32 @@ class App(tk.Tk):
                                  (t("The game closed.") + (" " + speed if speed else "")))
                 self._update_play_buttons()
         self.after(150, self._tick)
+
+    def _game_dialogs(self):
+        """The game's own message boxes (core.DialogScan): the runtime answers them by itself, so the player would see
+        nothing but a still or black screen. Each new one goes to the Play tab, the status line and launcher.log; one
+        after which the game stops ("The installed game data is corrupted. Ending game.") also brings the launcher
+        forward with a message box."""
+        g = self.game
+        count, shown = getattr(g, "dialog_count", 0), getattr(g, "dialogs", ())    # (tests' stand-in games: none)
+        if count <= self._dialogs_seen or not shown:
+            return
+        self._dialogs_seen = count
+        text = shown[-1]
+        fatal, _advice = core.dialog_info(text)
+        self._dialog_text = core.dialog_message(text)
+        core.log("game dialog: " + " | ".join(text.splitlines()) + (" (the game stops after it)" if fatal else ""))
+        self.status.set(self._dialog_text)
+        if fatal and not self.readonly and not self._dialog_box:
+            self._dialog_box = True
+            def show(msg=self._dialog_text):
+                try:
+                    from t5lobby import winfront
+                    winfront.raise_window(self)
+                except Exception:      # noqa: BLE001 -- the box comes anyway
+                    pass
+                dialogs.show_error(APP_TITLE, msg, parent=self)
+            self.after(0, show)
 
     def _selected_tab(self):
         """Key of the selected tab ('build', 'play', 'settings', 'online', 'replays'), or None when no tab is selected: Tk
@@ -1567,7 +1662,10 @@ def main():
     ap.add_argument("--low-priority", action="store_true", help="(testing) build at below-normal priority")
     ap.add_argument("--play-seconds", type=int, default=0, help="(testing, with --screenshots) run the game this long")
     ap.add_argument("--force", action="store_true", help="(testing) tick 'Redo every step'")
-    a = ap.parse_args()
+    ap.add_argument("--search", metavar="ranked|casual",
+                    help="open the Online tab, log in with the saved login and start searching: ranked, or casual "
+                         "(Quick match). Without a saved login the tab opens with a hint")
+    a, unknown = ap.parse_known_args()      # (an unknown option from an old shortcut must not stop the launcher)
     enable_dpi_awareness()
     app = App(offscreen=bool(a.screenshots))
     if a.low_priority:
@@ -1578,9 +1676,30 @@ def main():
         screenshots(app, a.screenshots, a.prefix, a.build_steps, a.play_seconds)
     elif a.build_steps:
         app.after(800, lambda: app.start_build(a.build_steps))
+    if unknown:
+        core.log(f"command line: ignored {' '.join(unknown)}")
+    if a.search and not a.screenshots:
+        if a.search.strip().lower() in ("ranked", "casual"):
+            app.after(300, lambda: app.search_on_start(a.search.strip().lower()))
+        else:
+            core.log(f"command line: --search {a.search} is neither ranked nor casual, ignored")
     app.mainloop()
     if app.restart_requested:
-        subprocess.Popen([sys.executable] + sys.argv, cwd=os.getcwd())
+        # (without --search: a restart after an update or a language change must not start searching again)
+        subprocess.Popen([sys.executable] + without_search(sys.argv), cwd=os.getcwd())
+
+
+def without_search(argv):
+    """argv without "--search X" / "--search=X"."""
+    out, skip = [], False
+    for x in argv:
+        if skip:
+            skip = False
+        elif x == "--search":
+            skip = True
+        elif not x.startswith("--search="):
+            out.append(x)
+    return out
 
 
 if __name__ == "__main__":

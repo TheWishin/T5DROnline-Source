@@ -471,6 +471,51 @@ MESSAGES = {
     "Keep the PC responsive (slower)": "PC 반응성 유지 (더 느림)",
     "Open build.log": "build.log 열기",
     "Report a problem...": "문제 신고...",
+    "Check my problem": "내 문제 확인",
+    "Check my problem...": "내 문제 확인...",
+    "Looking…": "확인 중…",
+    "No known problem found.": "알려진 문제를 찾지 못했습니다.",
+    "If something still goes wrong, \"Report a problem...\" makes one zip with your logs to send to whoever helps you.":
+        "그래도 문제가 있으면 \"문제 신고...\"로 로그를 담은 zip을 만들어 도와주는 사람에게 보내세요.",
+    "Problem": "문제",
+    "Note": "참고",
+    "Help": "도움말",
+    "The launcher looks in this PC's logs and settings for the problems other players had, and says how to fix them. Nothing is changed and nothing is sent.":
+        "런처가 이 PC의 로그와 설정에서 다른 플레이어들이 겪었던 문제를 찾아 해결 방법을 알려 줍니다. 아무것도 바꾸지 않고 아무것도 보내지 않습니다.",
+    "Your game package is version {version}": "게임 패키지가 버전 {version}입니다",
+    "The port works only with version {supported} of the game: TEKKEN 5 DARK RESURRECTION ONLINE, US PSN (NPUB30009), a .pkg of {size} bytes, with its license {rap}. Version {version} cannot be used, whatever the license. Choose the {supported} package on the Build tab and press BUILD GAME.":
+        "이 포트는 게임 버전 {supported}에서만 동작합니다: TEKKEN 5 DARK RESURRECTION ONLINE, 북미 PSN(NPUB30009), {size}바이트의 .pkg와 그 라이선스 {rap}. 버전 {version}은 어떤 라이선스로도 쓸 수 없습니다. 빌드 탭에서 {supported} 패키지를 선택하고 BUILD GAME을 누르세요.",
+    "build.log: the package says version {version}.": "build.log: 패키지 버전이 {version}입니다.",
+    "Unpacking the game ran out of memory": "게임 압축 해제 중 메모리가 부족했습니다",
+    "Close other programs (browser, games, launchers) and press BUILD GAME again; since 1.1.5 the launcher unpacks the game in small pieces. If it fails again, check that Windows has a page file (System > About > Advanced system settings > Performance > Virtual memory: automatic).":
+        "다른 프로그램(브라우저, 게임, 런처)을 닫고 BUILD GAME을 다시 누르세요. 1.1.5부터 런처는 게임을 작은 조각으로 풉니다. 다시 실패하면 Windows에 페이지 파일이 있는지 확인하세요(시스템 > 정보 > 고급 시스템 설정 > 성능 > 가상 메모리: 자동).",
+    "build.log: the computer ran out of memory while the game data was unpacked.":
+        "build.log: 게임 데이터를 푸는 동안 메모리가 부족했습니다.",
+    "The game package looks damaged or incomplete": "게임 패키지가 손상되었거나 불완전합니다",
+    "Download the package again (it must be {size} bytes), choose it on the Build tab, tick \"Redo every step\" and press BUILD GAME.":
+        "패키지를 다시 내려받고({size}바이트여야 합니다) 빌드 탭에서 선택한 뒤 \"모든 단계 다시 하기\"를 체크하고 BUILD GAME을 누르세요.",
+    "build.log: the package could not be read to the end or not decrypted.": "build.log: 패키지를 끝까지 읽지 못했거나 복호화하지 못했습니다.",
+    "The game says its data is damaged": "게임이 데이터 손상을 알립니다",
+    "On the Build tab tick \"Redo every step\" and press BUILD GAME: it unpacks the game again. If the message comes back, download the package again (it must be {size} bytes).":
+        "빌드 탭에서 \"모든 단계 다시 하기\"를 체크하고 BUILD GAME을 누르면 게임을 다시 풉니다. 메시지가 다시 나오면 패키지를 다시 내려받으세요({size}바이트여야 합니다).",
+    "Game log: the game showed the message \"{message}\".": "게임 로그: 게임이 \"{message}\" 메시지를 표시했습니다.",
+    "Your graphics card is an older model": "그래픽 카드가 오래된 모델입니다",
+    "{gpu} is a Direct3D 12 card of the oldest kind (resource binding tier 1: GeForce cards with a Fermi chip, among them some GT 730 models, and older Intel graphics). The game's graphics take several times longer on it than on later cards, whatever the processor: fights can stay below 30 frames per second, and a lower Internal resolution helps only a little. Later cards (a GT 730 with a Kepler chip, GTX 750, Radeon HD 7000 and newer) run the game at full speed.":
+        "{gpu}은(는) 가장 오래된 종류의 Direct3D 12 카드입니다(resource binding tier 1: Fermi 칩의 GeForce, 일부 GT 730 포함, 그리고 오래된 Intel 그래픽). 프로세서와 상관없이 게임 그래픽이 이후 카드보다 몇 배 오래 걸립니다. 대전이 초당 30프레임 아래로 떨어질 수 있고, 내부 해상도를 낮춰도 효과가 적습니다. 이후 카드(Kepler 칩의 GT 730, GTX 750, Radeon HD 7000 이상)는 게임을 최고 속도로 돌립니다.",
+    "Game log: {gpu}, resource binding tier {tier}.": "게임 로그: {gpu}, resource binding tier {tier}.",
+    "Your processor has {cores} cores": "프로세서 코어가 {cores}개입니다",
+    "The game is made for 4 cores; on {cores} it can stay below 60 frames per second in fights (an i3-3240 reached about 20). Close other programs while you play, keep Windows' power plan on Balanced or High performance, and see \"Low frame rate\" in the help.":
+        "이 게임은 4코어용입니다. {cores}코어에서는 대전 중 초당 60프레임 아래로 떨어질 수 있습니다(i3-3240은 약 20). 플레이 중에는 다른 프로그램을 닫고, Windows 전원 관리 옵션을 균형 조정 또는 고성능으로 두고, 도움말의 \"Low frame rate\"를 보세요.",
+    "This PC: {cores} cores, {logical} logical processors.": "이 PC: 코어 {cores}개, 논리 프로세서 {logical}개.",
+    "The launcher runs under Wine or Proton": "런처가 Wine 또는 Proton에서 실행 중입니다",
+    "That works, with a few known differences: since 1.1.5 the launcher sets the safe graphics defaults for Wine by itself. A dark blue or black game window (sound playing) means the Proton build does not suit the game: try another one (Proton Experimental, proton-cachyos-slr). See \"Linux and Steam Deck\" in the help.":
+        "동작하지만 몇 가지 알려진 차이가 있습니다. 1.1.5부터 런처가 Wine용 안전한 그래픽 기본값을 직접 설정합니다. 게임 창이 짙은 파란색이나 검은색이면(소리는 남) 그 Proton 빌드가 게임과 맞지 않는 것이니 다른 것(Proton Experimental, proton-cachyos-slr)을 써 보세요. 도움말의 \"Linux and Steam Deck\"을 보세요.",
+    "This PC: {wine}.": "이 PC: {wine}.",
+    "Windows Firewall blocks the game": "Windows 방화벽이 게임을 차단합니다",
+    "Online matches then often go through a relay (more lag) or do not connect. Open Windows Security > Firewall & network protection > Allow an app through firewall, and allow t5dr.exe (in {folder}) for private and public networks; or remove the block rule for it there.":
+        "그러면 온라인 매치가 자주 릴레이를 거치거나(지연 증가) 연결되지 않습니다. Windows 보안 > 방화벽 및 네트워크 보호 > 방화벽을 통해 앱 허용을 열고 t5dr.exe({folder} 안)를 개인 및 공용 네트워크에서 허용하거나, 그곳의 차단 규칙을 지우세요.",
+    "Windows Firewall: a block rule or \"Block all incoming connections\" for t5dr.exe.":
+        "Windows 방화벽: t5dr.exe에 대한 차단 규칙 또는 \"들어오는 연결 모두 차단\".",
     "Checking the build…": "빌드 확인 중…",
     "Your name (shown in the game)": "내 이름 (게임에 표시)",
     "PLAY OFFLINE": "오프라인 플레이",
@@ -523,6 +568,20 @@ MESSAGES = {
         "화면만 바뀌므로 온라인에서 두 플레이어가 서로 다르게 골라도 됩니다.",
     "Training overlay": "트레이닝 오버레이",
     "Also in the other offline modes (Arcade, Versus, ...)": "다른 오프라인 모드에서도 (Arcade, Versus, ...)",
+    "Practice tools": "연습 도구",
+    "SELECT combos in Practice (offline only)": "Practice에서 SELECT 조합 (오프라인 전용)",
+    "Dummy:": "더미:",
+    "As set in the game's Practice menu": "게임의 Practice 메뉴 설정대로",
+    "Blocks after the first hit": "첫 히트 후 가드",
+    "Crouches": "앉기",
+    "Walks forward and back": "앞뒤로 걷기",
+    "Sidesteps": "횡이동",
+    "In Practice, hold SELECT and press: 3 round start; f+3 / b+3 the dummy against the wall in front "
+    "of / behind you; df+3 / db+3 you against the wall in front of / behind you. 1 records the dummy "
+    "(you play it), 2 plays the recording once, 4 in a loop; tap up / down for slot 1-5, forward / "
+    "back for what the dummy does.":
+        "Practice에서 SELECT를 누른 채: 3 라운드 시작 위치; f+3 / b+3 더미를 앞 / 뒤 벽으로; df+3 / db+3 나를 앞 / 뒤 벽으로. 1 더미 녹화 "
+        "(직접 조작), 2 녹화를 한 번 재생, 4 반복 재생; 위 / 아래를 짧게 눌러 슬롯 1-5, 앞 / 뒤로 더미 동작 변경.",
     "Also online (only your own inputs, no frame data)": "온라인에서도 (내 입력만, 프레임 데이터 없음)",
     "In Practice: your last inputs with how many frames each was held, and after each exchange the "
     "startup of the move and who can act first (+3, -12). F2 in the game switches it.":
@@ -704,6 +763,10 @@ MESSAGES = {
     "OK": "확인",
     # ---- lobby/t5lobby/fighters.py
     "Random": "랜덤",
+    "Scrapyard": "고철 처리장",
+    "Industrial yard": "공업 지대",
+    "Stage {number}": "스테이지 {number}",
+    "Tekken 5 stage {number}": "Tekken 5 스테이지 {number}",
     # ---- lobby/t5lobby/handover.py
     "direct connection": "직접 연결",
     "local network": "로컬 네트워크",
@@ -877,6 +940,49 @@ MESSAGES = {
     "{supported}.":
         "이 사본은 다른 버전의 게임입니다: '{title}' 버전 {version}, 콘텐츠 ID {id} (프로그램 SHA-1 {sha}...). 이 포트"
         "는 {game}, 콘텐츠 ID {supported}만 지원합니다.",
+    # 1.1.5: the package's version, read before the build (tools/build_game.py, launcher/core.py)
+    "This package is version {version} of the game (program content ID {id}). The port supports only version "
+    "{supported}: {game}, content ID {cid}, {size} bytes. This version cannot be used, whatever the license "
+    "(.rap).":
+        "이 패키지는 게임 버전 {version}입니다 (프로그램 콘텐츠 ID {id}). 이 포트는 버전 {supported}만 "
+        "지원합니다: {game}, 콘텐츠 ID {cid}, {size}바이트. 이 버전은 어떤 라이선스(.rap)로도 쓸 수 없습니다.",
+    "{id}  ({size} bytes) -- version {version} of the game. The port supports only version {supported}; the "
+    "build will refuse this package.":
+        "{id}  ({size}바이트) -- 게임 버전 {version}입니다. 이 포트는 버전 {supported}만 지원하므로 빌드에서 이 "
+        "패키지는 거부됩니다.",
+    "{id}  ({size} bytes) -- its program has content ID {program}, not the supported one ({supported}). The "
+    "build will most likely refuse it.":
+        "{id}  ({size}바이트) -- 프로그램의 콘텐츠 ID가 {program}로, 지원되는 ID({supported})가 아닙니다. "
+        "빌드에서 거부될 가능성이 큽니다.",
+    # 1.1.5: the game's own message boxes (launcher/core.py dialog_info, dialog_message)
+    "The game shows: \"{text}\" {advice}": "게임 메시지: '{text}' {advice}",
+    "Your built game data is probably damaged. Open the Build tab, tick \"Redo every step\" and press BUILD "
+    "GAME. If the message comes back, download the package again: it must be exactly {size} bytes.":
+        "빌드한 게임 데이터가 손상된 것 같습니다. 빌드 탭을 열고 '모든 단계 다시 하기'를 체크한 뒤 BUILD GAME을 "
+        "누르세요. 메시지가 다시 나오면 패키지를 다시 다운로드하세요: 정확히 {size}바이트여야 합니다.",
+    "The game could not write its save, so progress may be lost. Check that the disk is not full and that no "
+    "antivirus blocks the folder native\\gamedata.":
+        "게임이 세이브를 쓰지 못해 진행 상황이 사라질 수 있습니다. 디스크가 가득 차지 않았는지, 백신이 "
+        "native\\gamedata 폴더를 막고 있지 않은지 확인하세요.",
+    "The game could not read its save. If it happens every time, click Report a problem.":
+        "게임이 세이브를 읽지 못했습니다. 매번 이러면 '문제 신고...'를 클릭하세요.",
+    "If the game does not go on, click Report a problem.": "게임이 진행되지 않으면 '문제 신고...'를 클릭하세요.",
+    # 1.1.5: the launcher's --search ranked|casual (lobby/t5lobby/tk_tab.py search_on_start)
+    "Build the game first (Build tab); then the search starts by itself next time.":
+        "먼저 게임을 빌드하세요 (빌드 탭). 다음부터는 검색이 자동으로 시작됩니다.",
+    "Log in to start the search. Tick \"Remember me\" when you log in with your account: next time --search "
+    "logs in and starts searching by itself.":
+        "검색을 시작하려면 로그인하세요. 계정으로 로그인할 때 '로그인 유지'를 체크하면 다음부터 --search가 "
+        "자동으로 로그인하고 검색을 시작합니다.",
+    "Ranked matches need an account: log in with your name and password.":
+        "Ranked 매치는 계정이 필요합니다: 이름과 비밀번호로 로그인하세요.",
+    # 1.1.5: a build step that prints nothing for long (launcher/core.py step_quiet_hint)
+    "The step \"{title}\" has printed nothing for {minutes} minutes. On a slow or busy PC it may still be "
+    "working. If nothing changes, press Cancel and then BUILD GAME again; build.log has the details.":
+        "'{title}' 단계가 {minutes}분 동안 아무것도 출력하지 않았습니다. 느리거나 바쁜 PC에서는 아직 작업 중일 "
+        "수 있습니다. 변화가 없으면 취소를 누른 뒤 BUILD GAME을 다시 누르세요. 자세한 내용은 build.log에 "
+        "있습니다.",
+    "Last program started: {tool}.": "마지막으로 시작된 프로그램: {tool}",
     "The license (.rap) does not belong to this package. Use the .rap whose name matches "
     "the package's content ID ({id}).":
         "라이선스(.rap)가 이 패키지의 것이 아닙니다. 이름이 패키지의 콘텐츠 ID({id})와 맞는 .rap를 쓰세요.",
@@ -1545,6 +1651,23 @@ MESSAGES = {
     "Played {games}: {wins} won, {losses} lost, win rate {rate} %": "플레이 {games}: {wins}승 {losses}패, 승률 {rate} %",
     "Ranked {games}, {rate} % won": "Ranked {games}, 승률 {rate} %",
     "Casual {games}, {rate} % won": "일반 {games}, 승률 {rate} %",
+    "Stats": "통계",
+    "Community stats": "커뮤니티 통계",
+    "Accounts": "계정",
+    "Matches": "매치",
+    "Ranked matches": "Ranked 매치",
+    "Last 24 hours": "최근 24시간",
+    "{matches} matches, {players} players": "매치 {matches}, 플레이어 {players}명",
+    "as of {when}": "{when} 기준",
+    "All": "전체",
+    "Fighter": "캐릭터",
+    "Wins": "승리",
+    "Win rate": "승률",
+    "Picked": "선택률",
+    "No numbers yet.": "아직 데이터가 없습니다.",
+    "This lobby server has no stats page yet (it comes with server 1.1.5).": "이 로비 서버에는 아직 통계가 없습니다(서버 1.1.5부터 제공).",
+    "Win rate per match; a mirror match counts as one win and one loss. Grey: fewer than {count} matches, not much to go on yet. Click a column to sort.":
+        "승률은 매치 기준이며, 동캐 대전은 1승 1패로 셉니다. 회색: 매치가 {count}회 미만이라 아직 참고용입니다. 열을 클릭하면 정렬됩니다.",
     "ranked matches {count}": "Ranked 매치 {count}",
     "highest rank {rank}": "최고 랭크 {rank}",
     "Characters: {list}": "캐릭터: {list}",
@@ -1809,6 +1932,11 @@ MESSAGES = {
     "Opponent hidden": "상대 비공개",
     "Name and side are shown once you both accept.": "둘 다 수락하면 이름과 위치가 공개됩니다.",
     "(estimated before you connect)": "(연결 전 추정치)",
+    "(measured in your last match together)": "(지난 대전에서 측정)",
+    "ping {ms} ms (measured in your last match together)": "핑 {ms}ms (지난 대전에서 측정)",
+    "probably a direct connection": "아마 직접 연결",
+    "probably over the local network": "아마 로컬 네트워크 경유",
+    "probably through a relay server": "아마 릴레이 서버 경유",
     "Accepted. Waiting for your opponent...": "수락했습니다. 상대를 기다리는 중...",
     "Match ready": "매치 준비 완료",
     "Connecting the two games...": "두 게임을 연결하는 중...",
@@ -1935,6 +2063,14 @@ MESSAGES = {
         "상태에서 시작하기 때문입니다.",
     "Save online matches as replays":
         "온라인 대전을 리플레이로 저장",
+    "Watch replay": "리플레이 보기",
+    "{count} of these matches have a replay on this PC ({mark}). Select one to watch it.":
+        "이 중 {count}개의 매치는 이 PC에 리플레이가 있습니다({mark}). 선택하면 볼 수 있습니다.",
+    "None of these matches has a replay on this PC (replays are saved on the PC that played, while \"Save online matches as replays\" is on).":
+        "이 PC에는 이 매치들의 리플레이가 없습니다(리플레이는 \"온라인 대전을 리플레이로 저장\"이 켜져 있을 때 플레이한 PC에 저장됩니다).",
+    "No replay of this match on this PC.": "이 PC에 이 매치의 리플레이가 없습니다.",
+    "{fighters}, saved on this PC.": "{fighters}, 이 PC에 저장됨.",
+    "This replay is no longer on this PC.": "이 리플레이는 더 이상 이 PC에 없습니다.",
     "Keep the players' names in replays":
         "리플레이에 플레이어 이름 남기기",
     "Rollback":
@@ -2176,4 +2312,18 @@ MESSAGES = {
         "최저: 내부 해상도 최저, 스테이지 블러 / 빛 번짐, 그림자, 이펙트 끄기(타격 이펙트도 보이지 "
         "않음). '기본'으로 되돌립니다. 내 화면만 바뀌므로 온라인에서 두 플레이어가 서로 다르게 골라도 "
         "됩니다.",
+    # ---- lobby/t5lobby/tk_casual.py
+    "Any side": "아무 쪽이나",
+    "P1 (left)": "P1 (왼쪽)",
+    "P2 (right)": "P2 (오른쪽)",
+    "Challenges, invites, rooms:": "도전, 초대, 방:",
+    "Random stage": "랜덤 스테이지",
+    "wants to be P{n} on {stage}": "P{n}, {stage} 희망",
+    "wants to be P{n}": "P{n} 희망",
+    "wants to play on {stage}": "{stage} 희망",
+    "You both wanted P{n}: a coin flip made you P{m}.": "둘 다 P{n}을(를) 원해서 동전 던지기로 P{m}이(가) 되었습니다.",
+    "Your opponent wanted another stage: a coin flip chose {stage}.": "상대가 다른 스테이지를 원해서 동전 던지기로 {stage}(으)로 정해졌습니다.",
+    "P{n} on {stage}": "P{n}, {stage}",
+    "Rematch: swap sides": "Rematch: 사이드 교체",
+    "with the sides swapped": "사이드를 바꿔서",
 }

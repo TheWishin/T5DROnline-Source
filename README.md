@@ -51,7 +51,7 @@ tested between two real PCs over the internet (AMD/60 Hz vs Intel/240 Hz).
 | Display | Resizable window, borderless fullscreen (Alt+Enter or F11). **Internal resolution** from Lowest (0.5x) over Native (720p) to 1080p, 1440p and 4K, or Auto (the screen's step, at most 1080p on integrated graphics) (launcher Settings, `PS3_INTERNAL_RES`); every step checked in fights, menus, movies and character select. Less GPU work at 1080p and above (1.1.3). On integrated graphics Auto is the default (1.1.4). |
 | Music, sound effects, movies | Work. |
 | Controls | Keyboard, Xbox pads (XInput), DualShock 4 and DualSense over USB and Bluetooth (read directly, no Steam needed), arcade sticks and hitboxes (DirectInput), two local players, buttons set in the launcher (Settings -> Set up controllers) or in `controls.ini`. Short taps are never lost. Tried by a person: an Xbox pad and an arcade stick, every input came through, smooth. **Set up controllers** found no controller at all from 1.1.0 to 1.1.3; it works again (1.1.4). |
-| Training tools | In Practice: an input display (each player's last inputs with how many frames each was held) and frame data after each exchange (startup, and who can act first: `+3`, `-12`), drawn sharp over the picture at any resolution. Launcher Settings -> Training overlay (Off / Inputs / Inputs + frame data, also in the other offline modes, online only your own inputs), F2 switches it in the game. See [docs/TRAINING.md](docs/TRAINING.md). |
+| Training tools | In Practice: an input display (each player's last inputs with how many frames each was held) and frame data after each exchange (startup, and who can act first: `+3`, `-12`), drawn sharp over the picture at any resolution. Launcher Settings -> Training overlay (Off / Inputs / Inputs + frame data, also in the other offline modes, online only your own inputs), F2 switches it in the game. Practice tools (offline): SELECT+3 puts both fighters back to the start or against a wall, the dummy blocks after the first hit / crouches / walks / sidesteps, 5 recording slots for the dummy (Settings -> Practice tools). See [docs/TRAINING.md](docs/TRAINING.md). |
 | Input lag | A jab shows on screen about 35-40 ms after the press in fullscreen (the PS3 on a TV: ~42 ms plus the TV), a frame less than before. In a window add one frame (Windows draws the window). |
 | Saving | Works. The in-game clock shows the real date. |
 | Long sessions | The old memory bug (white screen after a few trips through the title) is fixed. |
@@ -198,6 +198,12 @@ It is game data. Do not share it. To uninstall, delete the whole folder.
   it can also be on in the other offline modes, and online (only your own
   inputs). **F2** in the game switches it. It only reads the game, so it never
   changes a match. More in [docs/TRAINING.md](docs/TRAINING.md).
+- **Settings** -> **Practice tools** (Practice, offline only; default on): hold
+  **SELECT** and press 3 to put both fighters back where the fight started
+  (f+3 / b+3: the dummy against the wall in front of / behind you; df+3 /
+  db+3: you against the wall), 1 / 2 / 4 to record the dummy, play it once or
+  in a loop (5 slots), and tap forward / back for what the dummy does. More in
+  [docs/TRAINING.md](docs/TRAINING.md#practice-tools-115).
 - **Settings** -> **Unlocks** (offline play; all Off by default):
   - **Unlock all stages**: the Tekken 5 stages (the old ones, normally earned
     after about 50 fights, a few Arcade runs) are there in Arcade, VS, Practice
@@ -382,6 +388,22 @@ Good to know:
   are casual. See [docs/ONLINE.md](docs/ONLINE.md) "Rooms".
 - More in [docs/ONLINE.md](docs/ONLINE.md) and [docs/RANKED.md](docs/RANKED.md).
 
+### Start a search from a shortcut
+
+From 1.1.5, `T5DR Online.exe --search ranked` opens the launcher on the Online
+tab, logs in and starts a ranked search. `--search casual` starts a quick
+match instead. This works only with a saved login: log in once with your
+account and **Remember me** ticked. Without a saved login, the tab opens and
+tells you to log in. Then click the search button yourself.
+
+- **Desktop shortcut:** right-click `T5DR Online.exe` -> **Show more options**
+  -> **Create shortcut** (Windows 11). Open the shortcut's **Properties** and
+  add ` --search ranked` at the end of **Target**, after the closing quote:
+  `"C:\Games\T5DR\T5DR Online.exe" --search ranked`
+- **Steam** (as a non-Steam game): add `T5DR Online.exe` with **Games -> Add a
+  Non-Steam Game to My Library**, then **Properties -> Launch options**:
+  `--search casual`
+
 ### Spectating
 
 A friend in a match, any room's match or a tournament set can be watched live:
@@ -481,7 +503,9 @@ NPUB30009 version 01.00. The builder refuses everything else.
 not provide the package or the license and cannot help to get them.
 
 **Does it run on Linux or macOS?** macOS on Apple silicon: yes, offline, built from source
-(see "Building on macOS"). No release zip, launcher or online play there yet. Linux: no.
+(see "Building on macOS"). No release zip, launcher or online play there yet. Linux: not
+supported, but players run the Windows release under Proton or Wine; what they found is in
+[docs/TROUBLESHOOTING.md "Linux and Steam Deck"](docs/TROUBLESHOOTING.md#linux-and-steam-deck-wine-proton).
 
 **Does it run on Windows on ARM (Snapdragon laptops)?** Not tested. Windows 11
 should run it through its x64 emulation, more slowly; Windows 10 on ARM cannot.

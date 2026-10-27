@@ -25,7 +25,7 @@ import weakref
 import tkinter as tk
 from tkinter import ttk
 
-from . import i18n, proto, ranks, theme, tk_tour
+from . import i18n, proto, ranks, theme, tk_history, tk_stats, tk_tour
 from .i18n import N_, t
 from .lag import describe_event as describe_lag, lagged
 from .rank_art import ART
@@ -37,6 +37,29 @@ HEADINGS = {"player": N_("Player"), "rank": N_("Rank"), "rating": N_("Rating"), 
             "owner": N_("Owner"), "state": N_("State"), "place": N_("Place"), "when": N_("When"),
             "result": N_("Result"), "opponent": N_("Opponent"), "chars": N_("Characters"), "score": N_("Score"),
             "request": N_("Request")}
+# the Stats page (tk_stats.py)
+HEADINGS.update(fighter=N_("Fighter"), matches=N_("Matches"), wins=N_("Wins"), winrate=N_("Win rate"),
+                share=N_("Picked"))
+
+# The path two players will most likely get (the server's `ping.path`, 1.1.5): shown before a match is accepted
+PING_PATH_TEXT = {"direct": N_("probably a direct connection"), "lan": N_("probably over the local network"),
+                  "relay": N_("probably through a relay server")}
+
+
+def ping_text(ping):
+    """A `ping` (match_found, challenged, invited; LobbyClient.ping_info) as one line for the bar: the number, whether it
+    is an estimate or measured in the last match of the two, and the path the two will most likely get."""
+    if not isinstance(ping, dict) or not ping.get("known") or not isinstance(ping.get("ms"), (int, float)):
+        return t("ping not known yet")
+    if ping.get("kind") == "measured":
+        text = t("ping {ms} ms (measured in your last match together)", ms=f"{ping['ms']:.0f}")
+    else:
+        # (the server's estimate: the best relay path for the two; the real ping is measured after both accept)
+        text = t("ping about {ms} ms (estimated; measured directly once you both accept)", ms=f"{ping['ms']:.0f}")
+    if ping.get("path") in PING_PATH_TEXT:
+        text += ", " + t(PING_PATH_TEXT[ping["path"]])
+    return text
+
 
 # What the player can do about an error: words to look for in the message (lower case; the English words of the
 # server's / client's message and the German ones of its translation, i18n_known.py), and the tip. The tips are in
@@ -550,14 +573,19 @@ class OnlineView:
         nb.add(prof, text=t("Profile"))
         nb.add(friends, text=t("Friends"))          # (last: the others keep their positions 0, 1, 2)
         nb.add(tours, text=t("Tournaments"))        # (after Friends: 4)
+        stats = ttk.Frame(nb, padding=(0, px(10), 0, 0))
+        nb.add(stats, text=t("Stats"))              # (after Tournaments: 5)
+        tab.stats_page = stats
         tab.friends_page = friends
         tab.tours_page = tours
         nb.bind("<<NotebookTabChanged>>", lambda _e: tab._on_subtab())
         self._build_lobby_page(lobby)
         self._build_board_page(board)
         self._build_profile_page(prof)
+        tk_history.attach(self)                      # the match history's Watch replay (tk_history.py)
         self._build_friends_page(friends)
         tk_tour.build_page(self, tours)              # tournaments: list, bracket (tk_tour.py)
+        tk_stats.build_page(self, stats)             # the community's numbers, every fighter (tk_stats.py)
         return scr
 
     def _build_profile(self, scr):
@@ -641,6 +669,10 @@ class OnlineView:
         tab.strict_check = ttk.Checkbutton(f, text=t("Strict (ranked: +-150 rating)"), variable=tab.strict_var,
                                            command=tab._save_cfg, style="Card.TCheckbutton")
         tab.strict_check.grid(row=3, column=0, sticky="w", pady=(px(6), 0))
+        # side and stage for challenges, invites and rooms (tk_casual.py), right of Strict: the card keeps its height
+        row = tab.casual.build(f, px)
+        row.grid(row=3, column=0, columnspan=2, sticky="e", pady=(px(6), 0))
+        row.grid_remove()                    # (shown after a login on a server that has them)
         self.wrap(ttk.Label(f, textvariable=tab.hint_var, style="Card.Faint.TLabel", justify="left"),
                   card, 40).grid(row=4, column=0, columnspan=2, sticky="w", pady=(px(6), 0))
         return f
@@ -1109,6 +1141,7 @@ class OnlineView:
             self.room_label.configure(text=text)
         elif kind == "challenged":
             self.challenger = ev.get("from")
+            self.challenge_ev = ev
         elif kind == "match_found":
             self.revealed = None
             self.rematch_pending = False
@@ -1498,25 +1531,40 @@ class OnlineView:
                                                                                   sticky="w", pady=(px(8), 0))
             ttk.Label(left, text=t("Name and side are shown once you both accept."),
                       style="Card.Muted.TLabel").grid(row=2, column=0, columnspan=2, sticky="w")
-        ping = m.get("ping") or {}
-        ms = ping.get("ms") if ping.get("known") else None
-        prow = self.body(left)
-        prow.grid(row=3, column=0, columnspan=2, sticky="w", pady=(px(10), 0))
-        bars = theme.PingBars(prow)
-        bars.set(ms)
-        bars.pack(side="left", padx=(0, px(10)))
-        ttk.Label(prow, text=f"~{ms:.0f} ms" if ms is not None else "? ms", style="Card.Num.TLabel",
-                  foreground=theme.ping_color(ms)).pack(side="left")
-        ttk.Label(prow, text="  " + theme.ping_word(ms), style="Card.Bold.TLabel").pack(side="left")
-        if ms is not None:
-            ttk.Label(prow, text="  " + t("(estimated before you connect)"), style="Card.Faint.TLabel").pack(
-                side="left")
+        self._ping_row(left, self._card_ping(m, "opponent"), 3)
         if tab.ready_sent:
             ttk.Label(left, text=t("Accepted. Waiting for your opponent..."), style="Card.Accent.TLabel").grid(
                 row=4, column=0, columnspan=2, sticky="w", pady=(px(8), 0))
         self.ring = theme.CountdownRing(v, size=92, width=8)
         self.ring.grid(row=0, column=1, sticky="ne", padx=(px(12), 0))
         self._update_ring()
+
+    def _card_ping(self, ev, who):
+        """The ping of a found match / challenge / invite: the server's (1.1.5), else the client's own estimate."""
+        fn = getattr(self.tab.client, "ping_info", None)
+        return fn(ev, who) if fn is not None else (ev or {}).get("ping")
+
+    def _ping_row(self, parent, ping, row):
+        """The ping before a match is accepted: bars, "~85 ms" (estimated) or "85 ms" (measured in the two players'
+        last match), a word for it, and the path the two will most likely get (direct / relay)."""
+        px = self.px
+        ping = ping if isinstance(ping, dict) else {}
+        ms = ping.get("ms") if ping.get("known") and isinstance(ping.get("ms"), (int, float)) else None
+        measured = ping.get("kind") == "measured"
+        prow = self.body(parent)
+        prow.grid(row=row, column=0, columnspan=2, sticky="w", pady=(px(10), 0))
+        bars = theme.PingBars(prow)
+        bars.set(ms)
+        bars.pack(side="left", padx=(0, px(10)))
+        text = "? ms" if ms is None else f"{ms:.0f} ms" if measured else f"~{ms:.0f} ms"
+        ttk.Label(prow, text=text, style="Card.Num.TLabel", foreground=theme.ping_color(ms)).pack(side="left")
+        ttk.Label(prow, text="  " + theme.ping_word(ms), style="Card.Bold.TLabel").pack(side="left")
+        if ms is not None:
+            note = t("(measured in your last match together)") if measured else t("(estimated before you connect)")
+            ttk.Label(prow, text="  " + note, style="Card.Faint.TLabel").pack(side="left")
+        if ping.get("path") in PING_PATH_TEXT:
+            ttk.Label(prow, text="  ·  " + t(PING_PATH_TEXT[ping["path"]]), style="Card.Faint.TLabel").pack(
+                side="left")
 
     def _update_ring(self):
         tab = self.tab
@@ -1561,6 +1609,9 @@ class OnlineView:
             self._opponent_row(left, ch, 1)
         ttk.Label(left, text=t("wants to play you. Accept to start the match."), style="Card.TLabel").grid(
             row=3, column=0, columnspan=2, sticky="w", pady=(px(10), 0))
+        ev = getattr(self, "challenge_ev", None)
+        if ev is not None and ev.get("challenge") == self.tab.challenge:
+            self._ping_row(left, self._card_ping(ev, "from"), 4)        # (1.1.5: before the answer)
 
     def _visual_invite(self, v):
         """A friend invites this player: their badge and name, and to what (a casual match, or their room)."""
@@ -1583,6 +1634,8 @@ class OnlineView:
             text = t("invites you to a casual match. Accept to start it.")
         ttk.Label(left, text=text, style="Card.TLabel").grid(row=3, column=0, columnspan=2, sticky="w",
                                                               pady=(px(10), 0))
+        if inv and (inv.get("room") or {}).get("size", 2) <= 2:    # (1.1.5; a bigger room: others play there too)
+            self._ping_row(left, self._card_ping(inv, "from"), 4)
 
     # --- the result
     def _outcome(self):

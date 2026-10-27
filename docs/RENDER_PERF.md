@@ -747,6 +747,58 @@ same result hash on both sides in every match. All 70 lockstep pair runs above
 (Native against 1080p / 1440p / 4K, On against Off): 0 mismatching frames. (The
 PC ran 10-19 other games during these runs, at 16-23 fps for the pairs.)
 
+### Hit effects: the EWGF's lightning (GitHub #12, 1.1.5)
+
+Player report (#12, PlusUltraVEN: i3-3240, GeForce GT 730 4 GB = feature
+level 11_0, resource binding tier 1; Lowest 0.5x, Stage blur / glow Off): "the
+electricity effect for the EWGF isn't visible. I'm not sure if this applies to
+other hit effects as well".
+
+**How it was checked.** Kazuya (P1) against Heihachi on stage 20, offline, the
+input scripted per frame (`T5_DF_SCRIPT`: walk forward, then f, n, d, d/f+2
+with 2 on the same frame as d/f -- the Electric -- or one frame later -- the
+plain Wind God Fist), P2 standing (it blocks) or walking forward (it is hit),
+the training overlay's frame data to tell the two apart (`T5_TRAINING_ALL=1`:
+EWGF +5 on block / +26 on hit, WGF -10 / +29, both i11), one picture per attempt
+9-20 frames after the 2 (`T5_DF_SHOT`, attempts every 150 frames, so the same
+offset can be shown for both moves) and a draw CSV of those frames
+(`RSX_DRAW_CSV` gated on the shot). Builds of integration-115; local evidence
+under `build/int115/d-runs/` (git-ignored).
+
+**What the game draws.** The EWGF has its own effect from 9 frames after the
+2 (before the fist lands) for more than 10 frames: blue lightning around the
+fist and the opponent (about ten additive, textured triangle strips a frame:
+a 64 x 64 DXT5 texture times the vertex colour, blended source alpha + one,
+straight onto the 3D target) and a blue-white flash on both fighters (the
+lighting); the orange hit spark of both moves comes on top when it hits. The
+plain WGF has the hit spark and a few arcs a little later. Every one of these
+draws is executed (CSV outcome `execute`), and the pictures show it with Stage
+blur / glow On and Off and at Lowest (0.5x) alike, on the RTX 3090 and on the
+integrated Radeon (Lowest, Off: the same pictures frame for frame, the
+scripted runs being identical): the glow composite that Off
+leaves out is stage 20's sun glow (the 3D pass into two 128 x 128 buffers,
+blurred, added back), drawn every frame whether anything hits or not, not part
+of the effect.
+
+**Other hit effects.** The renderer counts every draw it does not execute
+(`[live-draw] ... drop{fetch degen prim alloc pso ring surface}`): over the
+test matches of the last weeks (hundreds of fights, every fighter, both sides
+mashing) everything stays at 0 except `prim`, a draw whose primitive type has
+no topology here (points, lines, quad strips, polygons), one or two in a whole
+game -- and only in games that re-simulate frames: each of the 59 logs with
+`prim` above 0 is a rollback pair or the rollback test mode; an offline fight
+of 9,000 frames with both sides mashing (Lili vs Dragunov, the pairing of one
+of them) has none. So no hit effect is missing that way; the two draws look
+like something a rollback leaves behind, not an effect. Patch 0076 names them
+when they come (`[live-draw] primitive N (...) not drawn ...: frame, vertices,
+fragment program, texture 0`, the first three per type), for a later look.
+
+**Not reproduced.** The EWGF's lightning renders here at the player's settings.
+The one thing these runs do not cover is his graphics card (Fermi/Kepler GT 730
+at feature level 11_0 with resource binding tier 1; no such card here). The
+next step needs the player: a screenshot or a short video of an EWGF in
+Practice (offline, so rollback cannot skip frames) and that game's log.
+
 ## Laptops, handhelds and 8-core APUs (patch 0047, branch `laptop-perf`)
 
 Two player reports: an HP Omen 15 (2017, i7-7700HQ, GTX 1050/1060 with
@@ -1052,6 +1104,51 @@ like the integrated GPU's memory being paged out by Windows, not anything the
 game draws. `RSX_GVIEW_FAST=0 RSX_PRESENT_FAST=0 RSX_SMALL_TARGETS_NATIVE=0`
 still turns every change of this patch off.
 
+**1.1.5: all four hangs seen here, together (patch 0076).** This PC has lost
+the device on the integrated Radeon four times, every time with the Radeon
+rendering for a screen on the RTX 3090 (`[gpu] display: ... hybrid present`:
+every frame copied from one GPU to the other), and always two runs within two
+minutes: 2026-10-20 03:04 and 03:05 (a rollback pair's joiner near the title,
+frame 227; a fight at its first fight frames, frame 1361) and 2026-10-21 00:38
+and 00:39 (the first two runs of the 1.1.4 iGPU matrix below, frames 1323 and
+1295, 20-30 frames after the fight's first frame). The 14 runs after the
+second pair did not hang, and neither did 8 fresh-folder fight
+starts of the 1.1.5 build (cold pipeline cache, stages 30 and 20, Auto, the
+same hybrid set-up, the PC busy with other agents' games; 55 fps each). What
+the logs of the four have in common:
+
+- DRED: in three of the four the GPU had finished the previous command list and
+  not begun the next one (its only unfinished list stops at op 0, the list's
+  begin marker, `46` = `BEGIN_COMMAND_LIST`, which 1.1.4 printed as "other" and
+  this section read as "its first clear"). Between two of our lists the queue
+  holds only the fence signal and the Present, which with a hybrid present is
+  DXGI's copy to the other GPU; the fourth (near the title) stopped among the
+  list's indexed draws. Nothing points at one of the game's draws.
+- In the 2026-10-21 pair the USB audio device stopped taking sound for 200 ms,
+  twice, at the moment the frames stopped (`audio device lost ... 0x800705B4`):
+  the whole PC stalled. The frame log shows nothing unusual before: the first
+  fight frame took 1.2-1.5 s (20-23 pipelines compiled, as in every
+  fresh-folder run), then about 20 normal frames, GPU 4.5 ms each.
+- No player log or problem report so far has a `device lost` line, and an
+  integrated GPU that drives its own screen (a laptop or mini PC without
+  another GPU) never copies frames between GPUs.
+
+So it is not reproducible and looks like this PC's state at those moments
+(the copy to an RTX 3090 shared with other games, under load), not the
+game. Patch 0076 makes the next one say more, logging only: each command list
+is named before it is submitted (`rsx frame N fence V`; DRED prints the name of
+every list the GPU had not finished, and now prints D3D12's wide names, which
+it showed as `<unnamed>` before), DRED names ops 4 and 46, a wait of one second
+for the GPU (Windows resets a GPU that hangs for two) logs `[gpu] GPU not done
+after 1 s at begin-recording: ...`, and a loss logs `[gpu] state at the loss
+at Present: waiting for the list of frame 1400 (fence 1401); the last list
+submitted: frame 1400 (fence 1401) 0 ms ago; the GPU had finished fence 1399
+(frame 1398) when checked 18 ms ago; the last Present (frame 1401) returned 0 ms
+ago after 0.0 ms; video memory: local 179 MB of a 23554 MB budget, shared 477
+MB of 15164 MB` (from `RSX_TEST_DEVICE_REMOVED=1400` on the RTX 3090). A
+player's hang would then tell whether the GPU stopped inside a list or between
+two, how long after the last Present, and whether its memory was over budget.
+
 ## Late frames shown when ready (patch 0059, branch `weakpc-fps`)
 
 Why some players had 40-50 fps, and whether a Vulkan renderer would help:
@@ -1324,7 +1421,10 @@ median per frame (timestamps); GPU busy and the clock from the fight's
   PC, it seems. The same build then ran 14 times on it without a hang (the 12
   above, Native and Auto on stage 20), four other builds (1.1.3's, two other
   1.1.4 builds, igpu4k's) once each; not reproduced, noted here in case a
-  player reports it.
+  player reports it. (1.1.5: all four hangs of this PC compared, and what
+  patch 0076 logs for the next one: [GPU time on integrated
+  graphics](#gpu-time-on-integrated-graphics-patch-0051-branch-igpu-perf),
+  "1.1.5: all four hangs seen here, together".)
 
 ## Translation CPU (patch 0062, branch `xlat-cpu`)
 

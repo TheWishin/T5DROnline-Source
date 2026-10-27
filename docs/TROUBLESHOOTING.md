@@ -5,6 +5,14 @@ This is a test release. It was tested on one development PC only (Windows 11,
 not tried on this project. Everything else comes from the code, the launcher or
 our QA run on 2026-10-16.
 
+**First try "Check my problem"** (launcher, Play offline tab; on the Build tab after a failed build). It
+looks in this PC's logs and settings for the problems other players had and says how to fix each, in your
+language; nothing is changed or sent. It knows: a game package of another version (v01.01), a damaged or
+incomplete package (also the game's own "data is corrupted" message), unpacking that ran out of memory,
+Windows Firewall blocking `t5dr.exe`, a 2-core processor, an old graphics card (Direct3D 12 resource binding
+tier 1) and Wine / Proton (`launcher/problem_check.py`; `python launcher/problem_check.py --out native`
+prints the same in English).
+
 **Problems? Click "Report a problem"** (launcher, Play offline tab; also in the Build tab
 and in the Online tab after a match). It makes one zip on your Desktop. Send the
 zip to the person who gave you the game, or attach it to an issue at
@@ -24,6 +32,7 @@ Contents:
 - [Controllers and keyboard](#controllers-and-keyboard)
 - [Online play](#online-play)
 - [Windows versions and other PCs](#windows-versions-and-other-pcs)
+- [Linux and Steam Deck (Wine, Proton)](#linux-and-steam-deck-wine-proton)
 - [Low frame rate](#low-frame-rate) -- also [Game speeds up or slows down on a laptop or handheld](#game-speeds-up-or-slows-down-on-a-laptop-or-handheld)
 - [White screen or crash after a few minutes](#white-screen-or-crash-after-a-few-minutes)
 - [Saves](#saves)
@@ -76,6 +85,18 @@ shows the content ID and size.
 - Yellow warning "Tekken 5 DR, but not the supported package": the right game,
   a different version. There is no workaround. The port supports only this one
   version today.
+
+### "This package is version 01.01 of the game"
+
+From 1.1.5 the launcher reads the package's own version (its `PARAM.SFO`)
+and the content ID of the program inside it. It does this when you choose
+the `.pkg`, and BUILD GAME checks again before it decrypts anything. Version
+01.01 of the package (program content ID
+`UP0700-NPUB30009_00-0000000000000000`) does not work with the port. No
+`.rap` changes that. Launchers before 1.1.5 said "The license (.rap) does
+not belong to this package" for it. That was misleading: the license was not
+the problem, the version was. The port needs version 01.00, see
+["This copy is a different version of the game"](#this-copy-is-a-different-version-of-the-game).
 
 ### "This package is ... The port needs ..."
 
@@ -134,6 +155,24 @@ Tick **Keep the PC responsive (slower)** before you start. Close other programs.
 The build takes about 90 seconds on a fast 16-core PC. On slower PCs we expect
 minutes (an estimate). It runs once. **Cancel** is safe: BUILD GAME continues
 where it stopped.
+
+### The build seems stuck (no new lines for minutes)
+
+From 1.1.5, every step has a time limit. When a step prints nothing for
+longer than that (2 to 10 minutes, depending on the step), a second line
+under the progress bar says so. It names the step and the program the step
+started last, for example `Last program started: pkg_extract.py`. The same
+line goes into `native\build.log` and `launcher.log`.
+
+- Wait a little first. On a slow PC a step can take a while.
+- If nothing changes, press **Cancel**, then **BUILD GAME** again. The build
+  continues where it stopped.
+- If it stops at the same place again, click **Report a problem...** and send
+  the zip. The line with the program's name tells us where it hangs.
+
+While the build runs, the launcher keeps Windows from going to sleep. The
+screen can still turn off. Before 1.1.5, a PC that went to sleep during the
+build also paused the build until it woke up.
 
 ### The build stops at "Translate code"
 
@@ -322,6 +361,25 @@ The first seconds can be black while the game loads. If it stays black:
   renderer instead of the graphics card. It is slow, but shows whether the
   card or its driver is the problem. `RSX_ADAPTER=1` (or part of a name, like
   `RSX_ADAPTER=Intel`) picks another graphics chip.
+
+### "The game shows: ..." (the game's own messages)
+
+The game sometimes shows a message box of its own, as it did on a PS3. The
+port answers it by itself, so the game window may show only a still or
+black picture. From 1.1.5 the launcher shows the message on the Play offline
+tab and in the status bar, with what to do:
+
+- **"The installed game data is corrupted. Ending game."** The game stops
+  after it. The launcher comes to the front with a message. Open the Build
+  tab, tick **Redo every step** and press **BUILD GAME**. If the message comes
+  back, download the package again. It must be exactly **619,430,240 bytes**.
+- **"Unable to save Play Data."** The game could not write its save. Check
+  free disk space, and check that no antivirus blocks `native\gamedata`
+  (Windows Security: "Controlled folder access").
+- **"Unable to load Play Data."** The game could not read its save. If it
+  happens every time, click **Report a problem**.
+
+Every message is also written to `launcher.log` (`game dialog: ...`).
 
 ### "The graphics card stopped working for the game"
 
@@ -886,6 +944,32 @@ result bar can show how many frames behind a match was.
   run there.
 - **Virtual machines and remote desktop**: usually no Direct3D 12 graphics
   card; the game says "Direct3D 12 not available".
+
+## Linux and Steam Deck (Wine, Proton)
+
+Linux is not supported, and we have no Linux PC to test on. Some players run
+the Windows release under Proton (Steam) or Wine anyway. This is what they
+found:
+
+- **From 1.1.5 the launcher detects Wine** and starts the game with
+  `RSX_VERTEX_THREADS=0` and `PS3_LWM_FAST=0`. A player on GE-Proton 11-11
+  with an RX 9060 XT found what goes wrong without them: stages flash black,
+  stage geometry jumps for about a second, and the fighters' bodies are
+  drawn wrong. Your own value wins. For example, Settings -> "Advanced: extra
+  settings" -> `RSX_VERTEX_THREADS=2` turns the vertex workers back on to
+  compare. The first line of the game log (`native\logs\game-*.log`) and a
+  line in `launcher.log` show what was detected, for example
+  `[wine] Wine 10.0 Proton: GE-Proton10-11 on Linux 6.17 -- RSX_VERTEX_THREADS=0, PS3_LWM_FAST=0`.
+  Only the name of the Proton folder goes into the logs, not its path.
+- **Dark blue screen, sound plays** (GitHub #26, CachyOS): with the default
+  Proton-GE the game showed only a dark blue screen. With **proton-cachyos-slr**
+  it worked. If you see this, try another Proton build: in Steam, open the
+  game's **Properties -> Compatibility**, tick "Force the use of a specific
+  Steam Play compatibility tool" and pick proton-cachyos-slr (on CachyOS),
+  Proton Experimental or another GE-Proton release. **(untested)**: one
+  player's report.
+- A problem report (**Report a problem**) works there too. In an issue, say
+  which Proton or Wine build you used and which ones you tried.
 
 ## Low frame rate
 

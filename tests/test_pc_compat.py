@@ -47,6 +47,8 @@ class Folders(unittest.TestCase):
     @unittest.skipUnless(os.name == "nt", "Windows known folders")
     def test_known_folder_desktop(self):
         p = core.known_folder(core.KNOWN_FOLDERS["Desktop"])
+        if p is None and not os.path.isdir(os.path.join(os.environ.get("USERPROFILE", ""), "Desktop")):
+            self.skipTest("this user profile has no Desktop folder (Windows then has no path for it)")
         self.assertTrue(p and os.path.isabs(p), p)
 
     def test_find_candidates_unicode_names_and_cloud_only_files(self):

@@ -156,7 +156,29 @@ exit code, time and last output lines; plus one `::notice` with the runner's
 CPUs/memory and the timings. GitHub keeps 10 error annotations per step, so
 the tools mute the `::error::` lines they print on purpose while tests drive
 them into error paths (`[muted] ::error::...` in the log); without that the
-real failure was pushed out of the list. From a shell, no token needed:
+real failure was pushed out of the list.
+
+Since 1.1.7 (the push job was red from the 1.1.5 merge on, after 9.5-11 min, with
+nothing anyone could read) `tests/ci_unittest.py` also:
+
+- writes each failure's annotation the moment it fails (a later crash cannot lose it);
+- prints the time per module at the end, slowest first, and names the slowest in the notice;
+- lists why tests were skipped (one `::warning`): a runner that lacks something a
+  test needs -- a font, a compiler, a display -- says so;
+- runs the tests in a child process: if that one dies (an interpreter abort, an
+  access violation, a test ending its own process), an `::error` "unittest
+  process died" names the exit code, the test that was running and the modules
+  done so far; faulthandler prints the Python stacks into the log.
+
+Found while looking for the 1.1.5 red run (none of it reproduced the red run on
+this PC, with 2 CPUs by affinity and `os.cpu_count()` = 2, a fresh user profile,
+only pycryptodome + Pillow, a 768 KB desktop heap): the launcher's cut-off walk
+(`test_i18n.EveryLanguageRenderTests`) needs its fonts -- with Bahnschrift hidden,
+es, fr and pt-BR "cut off" in 1 to 43 places. It now skips that comparison, with
+the reason, on a PC without Segoe UI or a display face of `theme.DISPLAY_FONTS`.
+On 2 CPUs the suite takes ~8 min here, half of it `test_i18n`.
+
+From a shell, no token needed:
 
     curl -s https://api.github.com/repos/TheWishin/T5DROnline/actions/runs?branch=<branch>
     curl -s https://api.github.com/repos/TheWishin/T5DROnline/actions/runs/<run>/jobs

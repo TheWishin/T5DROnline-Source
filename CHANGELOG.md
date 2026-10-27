@@ -36,6 +36,11 @@ part is in the README's status table.
 - CI, Monday "runtime" job: ps3recomp patch 0083 (test shims, `tests/sync_stress` only) lets `sync_stress` and
   `test_cond_semantics` link again (hooks of patches 0063 and later they do not link). Nothing built for players
   changes; the code ID does (it covers every patch), so 1.1.7 asks for one build anyway.
+- CI, push job: `tests/ci_unittest.py` prints the time per module and why tests were skipped, annotates each failure
+  at once, and runs the tests in a child process so a test process that dies is named (exit code, the running test).
+  The launcher's cut-off walk skips its comparison, with the reason, on a PC without the launcher's fonts (Segoe UI,
+  Bahnschrift): without Bahnschrift es/fr/pt-BR "cut off" where no player's Windows does. (The push job's red run did
+  not reproduce here; docs/CI.md lists what was tried.)
 
 ## v1.1.6 (2026-10-27)
 

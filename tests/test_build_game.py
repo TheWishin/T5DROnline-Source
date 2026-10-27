@@ -43,7 +43,10 @@ class Pins(unittest.TestCase):
         int(bg.CODE_END, 16)
 
     def test_every_step_has_a_function(self):
-        self.assertEqual(self.bg.STEPS, ["deps", "keys", "decrypt", "unpack", "vfs", "lift", "spu", "compile"])
+        self.assertEqual(self.bg.STEPS, ["deps", "keys", "decrypt", "unpack", "vfs", "lift", "spu", "compile",
+                                         "shaders"])
+        # 1.1.5: the shader warm-up runs only when asked (--warmup, the launcher; or named in --steps)
+        self.assertEqual(self.bg.DEFAULT_STEPS, self.bg.STEPS[:-1])
         for s in self.bg.STEPS:
             self.assertTrue(callable(getattr(self.bg, "step_" + s, None)), s)
 
@@ -126,11 +129,18 @@ class Arguments(unittest.TestCase):
     def test_default_runs_every_step_in_order(self):
         calls, code, out, _ = self.run_main(["--pkg", "a.pkg", "--rap", "b.rap"])
         self.assertEqual(code, 0)
-        self.assertEqual([s for s, _ in calls], load_tool("build_game").STEPS)
+        self.assertEqual([s for s, _ in calls], load_tool("build_game").DEFAULT_STEPS)
         a = calls[0][1]
         self.assertEqual((a.pkg, a.rap, a.force), ("a.pkg", "b.rap", False))
         self.assertIn("[deps]", out)
         self.assertIn("[done]", out)
+
+    def test_warmup_adds_the_shader_step(self):
+        calls, code, _, _ = self.run_main(["--pkg", "a.pkg", "--rap", "b.rap", "--warmup"])
+        self.assertEqual(code, 0)
+        self.assertEqual([s for s, _ in calls], load_tool("build_game").STEPS)
+        calls, code, _, _ = self.run_main(["--steps", "compile", "--warmup"])
+        self.assertEqual([s for s, _ in calls], ["compile", "shaders"])
 
     def test_steps_run_in_pipeline_order_not_argv_order(self):
         calls, code, _, _ = self.run_main(["--steps", "compile", "deps", "spu", "--force"])

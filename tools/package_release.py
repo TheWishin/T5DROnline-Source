@@ -87,6 +87,7 @@ OUR_FILES = [
     "tools/build_game.py", "tools/run_game.py", "tools/make_keys.py", "tools/unself.py", "tools/prereqs.py",
     "tools/build_game_dll.py", "tools/lift_spu_jobs.py", "tools/gamedll/t5dr_game_dll.c", "tools/gamedll/t5dr_host.def",
     "tools/gamedll/ucrt_min.def", "tools/gamedll/t5dr_lifted.proftext", "tools/profile_check.py",
+    "tools/shader_warmup.py",      # 1.1.5: build_game.py --warmup (the launcher's BUILD GAME)
     "launcher/t5dr_launcher.pyw", "launcher/core.py", "launcher/online.py", "launcher/updater.py",
     "launcher/release_sig.py",
     "launcher/problem_report.py", "launcher/problem_report_ui.py",

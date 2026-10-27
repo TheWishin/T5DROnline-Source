@@ -62,7 +62,10 @@ ELF_SHA1 = "be80165b84e30b6334baa6d6331b9db4ffd5a6a4"
 PKG_SIZE = 619430240
 CODE_END = "0x3C7100"   # end of .lib.stub; past it is .rodata
 
-STEPS = ["deps", "keys", "decrypt", "unpack", "vfs", "lift", "spu", "compile"]
+STEPS = ["deps", "keys", "decrypt", "unpack", "vfs", "lift", "spu", "compile", "shaders"]
+# "shaders" (1.1.5, tools/shader_warmup.py) runs only with --warmup (the launcher passes it) or when named in
+# --steps: it starts the built game for a few minutes, which a developer's or CI build does not want.
+DEFAULT_STEPS = [s for s in STEPS if s != "shaders"]
 
 
 class Paths:
@@ -696,6 +699,27 @@ def compile_unix(a):
     print(f"\nbuilt {P.exe}")
 
 
+def step_shaders(a):
+    """1.1.5: the shader warm-up (tools/shader_warmup.py). Never fails the build: whatever happens, the first
+    fights build the rest of their shaders as before."""
+    if not os.path.exists(P.exe):
+        print("  no built game -- skipped")
+        return
+    cmd = [PY, os.path.join(ROOT, "tools", "shader_warmup.py"), "--out", P.out]
+    if a.force:
+        cmd.append("--force")
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                                encoding="utf-8", errors="replace")
+        for line in proc.stdout:
+            line = line.rstrip()
+            # "already done" on its own line: the launcher marks the step as skipped
+            print("  already done" if line.endswith("] already done for this build") else line, flush=True)
+        proc.wait(timeout=60)
+    except Exception as e:  # noqa: BLE001 -- never fail the build over the warm-up
+        print(f"  shader warm-up skipped: {e}", flush=True)
+
+
 def step_compile(a):
     if sys.platform == "darwin":
         return compile_unix(a)
@@ -744,7 +768,10 @@ def main():
     ap.add_argument("--rap", help="the license (.rap)")
     ap.add_argument("--out", default=ROOT, help="output root for game/, build/, keys/ (default: the repository)")
     ap.add_argument("--deps", help="ps3recomp checkout to use (default: deps/ps3recomp)")
-    ap.add_argument("--steps", nargs="+", choices=STEPS, default=STEPS)
+    ap.add_argument("--steps", nargs="+", choices=STEPS, default=DEFAULT_STEPS)
+    ap.add_argument("--warmup", action="store_true",
+                    help="after the build, play a few hidden fights once so the first real ones do not stutter "
+                         "(tools/shader_warmup.py; never fails the build)")
     ap.add_argument("--force", action="store_true", help="redo steps whose output exists")
     ap.add_argument("--code-id", action="store_true", help="print the code ID of this version and exit")
     ap.add_argument("--full-compile", action="store_true",
@@ -753,6 +780,8 @@ def main():
     if a.code_id:
         print(code_id())
         return
+    if a.warmup and "shaders" not in a.steps:
+        a.steps = list(a.steps) + ["shaders"]
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")

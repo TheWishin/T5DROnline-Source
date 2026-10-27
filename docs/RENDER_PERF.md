@@ -2985,3 +2985,196 @@ the game's own code meets memory the SPU skinning jobs share. To tell them apart
 each: `RSX_XLAT_OVERLAP=0` (rules the renderer thread out for good), `PS3_COH_LOCAL=0` (every lifted store takes the
 runtime's exact out-of-line check, 0069's fast path off), `RSX_VERTEX_THREADS=0` (no async vertex fetch), and
 `RSX_RING_GUARD=1` once (a `[ring-guard] ... reused` line in the log would prove this section wrong on Proton).
+
+## 2-core mode and slow graphics cards (patch 0075, branch `speed-115`)
+
+Player reports for 1.1.5: an i3-3240 (2 cores / 4 threads, 3.4 GHz) with a GT 730 4 GB and an i5-4210M (2 / 4)
+stay under ~20 fps; an i5-2500 (4 / 4, 3.3 GHz, the same per-core speed) with a GT 730 2 GB reaches 55-60. The
+i3-3240's log (GitHub #12) was read as "game 17 ms + render translation 27 ms on 2 cores", and the `[slow-frames]`
+verdict told the player to lower an Internal resolution that was already 0.5x.
+
+### What the logs really say
+
+| | i3-3240 + GT 730 4 GB, 0.5x | i5-2500 + GT 730 2 GB, Native |
+|---|---|---|
+| graphics card | `feature level 11_0, resource binding tier 1` (the GT 730 with the Fermi chip, GF108) | `resource binding tier 2` (the Kepler GT 730, GK208) |
+| fights | 20 fps (15.6 at 2x: 16x the pixels cost 22 % of the frame rate) | 55-60 fps |
+| median per frame: game / translation / **GPU wait** / present | 22.1-23.5 / 26.6-28.5 / **20.0-20.8** / 5.6-5.7 ms | 10.1-11.0 / 3.4-3.6 / 0.0 / 0.0 ms |
+| GPU busy | **32.2-36.6 ms a frame**, 66 % of the time | 3.6-5.2 ms a frame, 19-31 % |
+| the game thread's processor time | 16.9-17.5 ms a frame | 7.0-9.5 ms a frame |
+| placement | `ideal LP 2 / 0 / 2`: the sound core's ideal processor was the game thread's | 3 cores, all different |
+
+- The "render translation 27 ms" was **20 ms of waiting for the GPU**: with one frame in flight the walker records
+  nothing of a frame until the GPU has finished the one before (patch 0063, "Recording the next frame while the
+  GPU draws"). The translation's own work was ~6.6 ms (the i5-2500: 3.5).
+- The GPU needs 32-37 ms a frame, and that time hardly follows the resolution (0.5x -> 2x, 16x the pixels: 20 ->
+  15.6 fps).
+  It is per-draw cost on the old card -- the Fermi GT 730 has a quarter of the Kepler one's shader units and
+  D3D12 resource binding tier 1 (descriptor tables emulated by the driver) -- not pixels. No card of that kind
+  here to measure on; see "What is left".
+- The frame was game + GPU wait + recording in series: 22 + 20 + 6.6 ms, about 50 ms (20 fps), while the GPU
+  idled a third of the time.
+
+### What changed
+
+| change | why | switch |
+|---|---|---|
+| **Two frames in flight on a dedicated graphics card** (was: only with `RSX_FRAMES_IN_FLIGHT=2`). Integrated graphics keep one: there the overlap made the GPU's passes slower than it saved (0063). `[pacing] frames in flight: N (why)` is always logged | the walker records the next frame while the GPU draws: game + wait + recording becomes the longer of the two | `RSX_FRAMES_IN_FLIGHT=1` / `=2` |
+| **An honest `[slow-frames]` verdict** (below) | a lower resolution is suggested only when it helps | -- |
+| **Per-pass GPU times by default on resource binding tier 1** (`[gpu-pass]` every 600 frames, patch 0051; the problem report keeps the last 4) | the next tier-1 log says which passes take the 32 ms | `RSX_GPU_PASSES=0` / `=1` |
+| **2-core mode** (auto on 2 physical cores or fewer, `[sched] processors: ... 2-core mode`): the ideal processors of the game thread, the translation and the sound core on three different logical processors -- the game thread on its core, the other two on the other core's two (was: the sound core on the game thread's) | the sound core (25-30 % of a processor) preferred the game thread's processor | `PS3_TWO_CORE=0` / `=1` |
+| `PS3_TWO_CORE_OWN=1` (off): the game thread's core for it alone (CPU sets; the other core is also the process's default set, so the driver's and audio's threads stay off it); `PS3_TWO_CORE_GAME=rest|own|any` where the game's helper threads go then | measured slower (below); there for a player with a real 2-core PC to try | -- |
+| **Shader warm-up after BUILD GAME** (`tools/shader_warmup.py`, `build_game.py --warmup`, the launcher's Build tab step "Shaders") | the first fights on every stage stutter while their pipelines are made | `build_game.py` without `--warmup` |
+| **A8R8G8B8 textures without the per-texel decode** (identity remap: a byte rotation per texel) | the intro movie's and the menus' 1280 x 720 texture every other frame: 3.5 -> 0.7 ms (below) | `RSX_TEX_FAST=0`; `RSX_TEX_FAST_CHECK=1` decodes both ways and counts differences |
+| `RSX_RING_GUARD=1` (0070's test hook) keeps one table per frame slot | with two frames in flight it reported reuse that was not there | -- |
+| Test hook `RSX_TEST_SLOW_GPU=<loops>[,<groups>]`: a compute dispatch of fixed length before every present -- a slower graphics card on a fast one (the RTX 3090 here: 1,000,000 loops at 256 groups ~3.5 ms, 6.3 million ~12 ms, 16 million ~32 ms; not linear, calibrate with the GPU busy line) | measuring frames in flight without an old card | off unless set |
+
+### The verdict
+
+`[slow-frames]` ends with one of these when 10 % or more of a 30 s window was slow or late for its vblank (late
+frames count since 0075: a steady 50 fps has no frame over 20.9 ms and got no verdict before):
+
+| verdict | when | the launcher after the game |
+|---|---|---|
+| `GPU-bound: the graphics need X ms a frame -- a lower Internal resolution is what helps` | GPU busy >= 85 % and the resolution above Native, or integrated graphics | "choose a lower Internal resolution" (as before) |
+| `GPU-bound: the graphics card needs X ms a frame at Native (720p) -- Internal resolution Lowest may help a little; the card itself is the limit (...)` | GPU busy >= 85 % at Native | "the graphics card is too slow for this game; Internal resolution Lowest helps a little at most" |
+| `GPU-bound: the graphics card needs X ms a frame at <step> -- the card itself is the limit (an old graphics card: resource binding tier 1), a lower Internal resolution saves little` | GPU busy >= 85 % below Native | the same |
+| `integrated graphics busy N % of the time: ...` | integrated graphics busy >= 50 % (0063, unchanged) | as before |
+| `CPU and GPU in turn: the game needs X ms a frame and the render translation Y, then the frame waits Z ms for the graphics card (...), busy N % of the time with 1 frame in flight` | GPU busy >= 50 % and a median GPU wait of 4 ms or more | "because of the processor ... a lower Internal resolution does not help" |
+| `translation hitches: N slow frames waited for the render translation (median Y ms) -- pipelines (cached for the next start) and textures made at first sight` | most slow frames from the translation, its median under half a frame | -- |
+| `CPU-bound: the game needs X ms a frame and the render translation Y (2 processor cores: 2-core mode); the graphics card is busy N % of the time (resource binding tier T) -- a lower Internal resolution does not help` | everything else | "because of the processor ... close other programs" |
+
+The game part is its average (release -> flip request), the translation its median with the GPU wait taken out.
+Before, "GPU-bound" came whenever half the slow frames had waited for the GPU: the i3-3240's window, 66 % busy at
+0.5x. The problem report's "What the log says about speed" names the card-bound and the CPU-bound windows too.
+
+### Measured
+
+**2-core stand-in.** Two cores / four threads of the 7950X by affinity (`--cpus 0xF000`: logical processors
+12-15), `tools/slow_core.py` taking those four processors for 70 or 78 % of every 4 ms (the game gets what an
+older 2-core CPU would give it), `tools/fight_bench.py --polite` (Lili vs Asuka, stage 20), one run per row,
+other agents' games and builds on the rest of the PC (the "other load" column moves fps by +-3-5):
+
+| slow cores | build / setting | fps | game part ms (median) | translation ms | context switches/s |
+|---|---|---|---|---|---|
+| 70 % | 1.1.5 base | 59.9 / 53.3 | 11.4 / 12.3 | 2.3 / 5.0 | 5,473 / 5,646 |
+| 70 % | the game thread's own core (CPU sets, everything else on the other core; and no spinning) | **40.1** / **42.0** | 12.4 / 11.9 | **7.3** / 7.3 | 3,641 / 4,155 |
+| 70 % | no spinning (vertex worker, ticker) + the ideal processors | 53.0 | 12.2 | 6.9 | 7,475 |
+| 78 % | 1.1.5 base | 40.5 | 16.3 | 8.0 | 4,736 |
+| 78 % | no spinning + the ideal processors | 39.1 | 16.5 | 8.1 | 5,758 |
+| 78 % | ... + no vertex worker (`RSX_VERTEX_THREADS=0`) | **35.8** | 16.0 | **11.9** | 4,002 |
+| 78 % | ... + one SPURS job thread (`SPURS_JOB_THREADS=1`) | 39.6 | 16.4 | 8.0 | 5,733 |
+| 78 % | ... + both | **33.0** | 18.8 | 12.0 | 3,667 |
+
+The game thread on a core of its own put the translation, the renderer thread, the sound core, the skinning and
+the game's helper threads on the other core -- their processor time per frame is three to four times the game
+thread's (the sound core alone 4.2-4.7 ms against the game thread's 3.6-4.0), so they queued and the translation
+tripled. Fewer workers made the translation longer (it decodes the vertices itself), no spinning cost wake-ups
+(+20-30 % context switches) for nothing measurable. So 2-core mode keeps the pools and the spinning as they were
+and changes only the ideal processors (`PS3_TWO_CORE_OWN=1` is there for a player with a real 2-core PC: an Intel
+core with Hyper-Threading may behave differently from this stand-in).
+
+The final 2-core build against 1.1.5's base, two interleaved rounds, slow cores at 70 % (`off` = this build with
+`PS3_TWO_CORE=0`):
+
+| | base | 2-core mode (the ideal processors) | `PS3_TWO_CORE=0` |
+|---|---|---|---|
+| fps, round 1 / 2 | 56.2 / 56.2 | 56.6 / 56.7 | 57.2 / 57.4 |
+| game part median ms | 11.9 / 11.9 | 11.9 / 11.8 | 11.8 / 11.7 |
+| game thread CPU ms a frame | 4.1 / 4.0 | 4.0 / 4.0 | 4.0 / 4.0 |
+
+Within the noise of the PC's load: the ideal processors neither help nor cost on this stand-in. They stay because
+they undo a plain misconfiguration (two busy threads asking for one processor), not for a measured gain.
+
+**Frames in flight with a slower GPU.** `RSX_TEST_SLOW_GPU` on the RTX 3090, the game on 2 cores / 4
+threads with slow cores at 70 % (the game part ~12 ms, the translation ~5 ms), paired runs, one frame in flight
+(`RSX_FRAMES_IN_FLIGHT=1`, 1.1.4's default) against two (1.1.5's default on a dedicated card):
+
+| GPU per frame | one frame in flight: fps | two frames in flight: fps | `[slow-frames]` (two in flight) |
+|---|---|---|---|
+| 13.8 ms (3 rounds, then a 4th pair) | 49.8 / 49.7 / 49.0 / 49.8 | **52.9 / 55.7 / 53.1 / 56.3** | median GPU wait 3.4 ms -> 0.0; translation 8.0 -> 5.0 ms; `CPU-bound: the game needs 11.6 ms a frame and the render translation 4.9 ...` |
+| 33.5-33.8 ms | 26.4 (GPU 90 % busy) | **29.2** (97 % busy) | GPU wait 30.5 -> 23.9 ms; `GPU-bound: the graphics card needs 33.8 ms a frame at Native (720p) -- ...` |
+
++7-13 % at 13.8 ms, +10 % when the GPU alone needs 34 ms. For the i3-3240's frame -- game 22 ms + GPU wait 20 +
+recording 6.6, the GPU 32-37 ms -- the same arithmetic gives the longer of the two, ~35 ms instead of ~50: about
+28 fps instead of 20 (an estimate: the old card itself is not here).
+
+**Same game.** Rollback pair, RTT 150 ms +-5, 3 % loss, Asuka vs Lili on stage 20: the host with two frames in flight
+(the new default), the joiner on 2 cores / 4 threads (`--cpus2 0xF000`: 2-core mode on) with one frame in flight:
+`sync check through frame 3599: 0 mismatching` on both sides, the same result hash `d31cd26d2dfc199e`. Lockstep
+pair, RTT 30 ms, 1 % loss, Jin vs Lili on stage 25, host one frame in flight, joiner two: 0 mismatching through
+frame 6599, the same hash `868fd12296ab5236`. Frames in flight change when a frame is recorded, never what the game
+computes. With the final build: smoke quick PASS (5 of 5), e2e `net_rollback --short` PASS (84 checks: RTT 20-250,
+loss, jitter, the relay path) and `net_internal_res` PASS (4K against Lowest, a match and a rematch with the same
+hashes; the scenario now marks the step as chosen -- since igpu-114 an unmarked step is Auto/Native, so both games
+had run at Native).
+
+**Ring reuse with two frames in flight.** `RSX_RING_GUARD=1` (patch 0070) reported ~1,800 ring ranges "reused
+while list N still uses them" with two frames in flight -- all of them false: the guard kept one table per ring,
+while each frame slot has rings of its own (offset 0 of slot 1's vertex ring is not offset 0 of slot 0's). It now
+keeps one table per slot. With two frames in flight and the slow GPU: 4,331,112 ring ranges checked, **0 reused** before the GPU was
+done with them.
+
+**Shader warm-up.** PSO misses (`RSX_HITCH_LOG=1`: decompile + D3DCompile + driver) in the first fight of a
+pair and stage, one shader cache folder that grows from empty, 7950X:
+
+| fight (cache before it) | PSO misses | ms in all | worst frame's share |
+|---|---|---|---|
+| Lili vs Asuka, stage 20 (empty) | 93 | 1,068 | 136 ms |
+| the same again | 0 | 0 | -- |
+| Kazuya vs Heihachi, stage 33 | 34 | 288 | 92 ms |
+| Law vs Jin, stage 25 | 38 | 197 | 46 ms |
+| Asuka vs Dragunov, stage 31 | 19 | 203 | 71 ms |
+| Paul vs Nina, stage 17 | 21 | 180 | 104 ms |
+| Bryan vs Xiaoyu, stage 0 | 14 | 88 | 59 ms |
+
+Every new stage or pair of fighters brings 15-40 pipelines, 0.1-0.3 s in all and single frames of 50-140 ms on
+this PC -- two to three times that on an i5-2500. `tools/shader_warmup.py` plays them once after BUILD GAME.
+After the warm-up -- all 18 stages of the stage select, every fighter of the select screen once (Jinpachi is
+locked offline: in a first run his fight never started, so the tool leaves him out), 18 of 18 fights in **205 s**
+here (about 11 s a fight with the boot; P1 presses buttons for 6 s of each, so hit sparks and effects are drawn
+too -- with idle fighters for 4 s a warmed stage still met 10 new pipelines) -- the first fights met **0-4 new
+pipelines** where an empty cache met 14-93: Paul vs Law on stage 25: 0, Lei vs King on stage 18: 3, Lili vs Asuka
+on stage 20: 4 (cold: 93); one pair still met 20 (Eddy vs Jack-5 on stage 27, the pair the warm-up had fought
+there: what a 14 s fight with more moves draws beyond 6 s of them). It runs once per built game (`warmup.json`
+next to the cache, keyed to `t5dr.exe`'s size and time stamp); a fight that does not start within 2 minutes, a
+game that stops or the 12-minute limit end it with a note, never the build. The next game start re-creates the
+recorded pipelines on a background thread at below-normal priority (`[pso-prewarm] 491 pipeline(s) created
+ahead`).
+
+**The i5-2500's first 30 s.** 304 slow frames from the render translation at a median translation of 0.7 ms
+were not pipelines: the first 45 s after start (intro, title, menus) on this PC had 6 PSO misses with an empty
+cache (66 ms) and none with a warm one -- and the warm start still had 93 slow translation frames in its first
+30 s window (the cold one 46). What took the time: the intro movie's 1280 x 720 A8R8G8B8 texture, uploaded every
+other frame, 4.0 ms of decoding each (855 such uploads in 45 s). Patch 0075 decodes that kind of texture -- 32-bit A8R8G8B8 with the
+identity remap, the commonest -- as one byte rotation per texel instead of `decode_texel`'s format switch and
+four remap lookups. The first 45 s after start, 2 cores / 4 threads, two rounds:
+
+| build | 1280 x 720 uploads over 0.5 ms | their median | walker CPU per frame, p99 |
+|---|---|---|---|
+| per-texel decode | 855 / 855 | 3.52 / 3.49 ms | 4.51 / 4.11 ms |
+| patch 0075 | 856 / 855 | **0.66 / 0.72 ms** | **1.11 / 1.34 ms** |
+
+`RSX_TEX_FAST_CHECK=1` decoded 833 such levels both ways: 0 different. `RSX_TEX_FAST=0` is the old decode.
+
+**The game thread.** A stack profile of the main thread in a fight on 2 cores / 4 threads (`PS3_HOST_PROF`,
+20 s): 87 % of its samples wait for the flip (the frame's own work is done in 3.5 ms here), and the busy part is
+as flat as in patch 0061's profile -- the hottest lifted function 0.9 % of all samples (`0x36AFB8`), the
+skinning jobs the game thread runs itself while it waits for a job list (`SPURS_JOB_HELP`) 1 %. Nothing on it
+is worth a change of its own now.
+
+### Not done, and what is left
+
+- **The old card's 32-37 ms of GPU time.** Not measurable here (every GPU on this PC is resource binding tier 3).
+  Two candidates, both per draw rather than per pixel: tier 1's emulated descriptor tables (on tier 1 the
+  driver turns every descriptor table the renderer sets -- up to three a draw, ~830 draws -- into the card's
+  fixed binding slots), and the frame's vertices, indices and
+  constants, which live in upload heaps in system memory and are read by a dedicated card over PCIe while it draws
+  (the new `[gpu-pass]` lines say how many MB a frame: here 2.8 MB of vertices, 0.8 of indices, 4.3 of vertex
+  constants -- 8 KB a draw -- and 0.03 of pixel constants: ~470 MB/s at 60 fps, a few ms a frame on a card in a
+  PCIe 2.0 x8 slot, more if it reads them slowly). The `[gpu-pass]` lines of a tier-1 player's next log
+  (on by default there) say which passes take the time; ask the GT 730 player for one fight's log with 1.1.5.
+- **A real 2-core PC.** The stand-in slows every processor alike; an i3's Hyper-Threading shares one core's
+  execution units between two threads, which the stand-in does not reproduce. `PS3_TWO_CORE_OWN=1` (and
+  `PS3_TWO_CORE_GAME=own`) against the default on such a PC would settle whether the own core helps there.
+- **The i5-4210M** (2 cores, a laptop: power saving on by itself) sent no game log.

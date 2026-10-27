@@ -111,7 +111,7 @@ CHECK_INTERVAL = 3600            # how old a cached answer may be to stand in wh
 START_CHECK_MS = 2000            # the check after the launcher's start (1.1.7: every start asks GitHub, conditionally)
 FREE_POLL_MS = 2000              # a found update waits for the build / game / match to end, looking this often
 CACHE_FILE = "update-check.json"
-CACHE_FORMAT = 2                 # 2: releases carry "sig" (1.1.2); an older cache is asked again
+CACHE_FORMAT = 3                 # 2: releases carry "sig" (1.1.2); 3: notes reflowed (1.1.7); older: asked again
 TIMEOUT = 15
 MAX_SUMS = 64 * 1024
 MAX_SIG = 4096
@@ -273,24 +273,48 @@ def open_url(url, headers=None, kind="download", timeout=TIMEOUT):
 
 # --------------------------------------------------------------------------- the release
 
+LIST_ITEM = re.compile(r"^(\s*)([-*+]|\d+[.)])\s+")
+
+
 def notes_summary(body, max_lines=40, max_chars=3000):
-    """The release notes as plain text, without the download facts after the '---' line."""
+    """The release notes as plain text, without the download facts after the '---' line. The CHANGELOG wraps its
+    lines at 120 characters; here every paragraph and every list item is one line again, which the window wraps at
+    its own width (1.1.6's update window kept the hard breaks: lines broke in the middle). Headings, list items and
+    the blank lines between paragraphs stay. `max_lines`: headings, paragraphs and list items."""
     text = str(body or "").replace("\r\n", "\n")
     text = re.split(r"\n\s*-{3,}\s*\n", "\n" + text, maxsplit=1)[0]
-    out = []
+    out = []                  # "" (a blank line), a heading, a paragraph or a list item -- one line each
+    going = False             # the last line is a paragraph or a list item that the next text line continues
     for line in text.split("\n"):
         s = line.rstrip()
         s = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", s)          # [text](link) -> text
         s = re.sub(r"(\*\*|__)(.+?)\1", r"\2", s)
         s = s.replace("`", "")
-        h = re.match(r"^\s*#{1,6}\s+(.*)$", s)
-        if h:
-            s = h.group(1).strip()
+        if not s.strip():
             if out and out[-1]:
                 out.append("")
-        s = re.sub(r"^(\s*)[-*+]\s+", lambda m: m.group(1) + "• ", s)
-        if s or (out and out[-1]):
-            out.append(s)
+            going = False
+            continue
+        h = re.match(r"^\s*#{1,6}\s+(.*)$", s)
+        if h:
+            if out and out[-1]:
+                out.append("")
+            out.append(h.group(1).strip())
+            going = False
+            continue
+        item = LIST_ITEM.match(s)
+        if item:
+            if going and out and not out[-1].lstrip().startswith(("• ",)) and not re.match(r"\s*\d+[.)] ", out[-1]):
+                out.append("")                    # (a list right after a paragraph: a blank line between)
+            mark = "•" if item.group(2) in "-*+" else item.group(2)
+            out.append(item.group(1) + mark + " " + s[item.end():].strip())
+            going = True
+            continue
+        if going and out:
+            out[-1] += " " + s.strip()            # the paragraph or list item goes on
+        else:
+            out.append(s.strip())
+            going = True
     while out and not out[-1]:
         out.pop()
     cut = len(out) > max_lines
@@ -1303,6 +1327,11 @@ class Updater:
         ttk.Label(box, wraplength=560, justify="left", text=text, style=style).pack(anchor="w", pady=(4, 6))
         notes = tk.Text(box, height=12, wrap="word", relief="flat", font=(ui_family(), 9), padx=8, pady=6)
         notes.insert("1.0", rel.get("notes") or t("(no release notes)"))
+        # a list item's wrapped lines start under its text, not under the bullet
+        notes.tag_configure("item", lmargin1=0, lmargin2=14)
+        for n, line in enumerate(notes.get("1.0", "end-1c").split("\n"), start=1):
+            if re.match(r"\s*(•|\d+[.)]) ", line):
+                notes.tag_add("item", f"{n}.0", f"{n}.end")
         notes.configure(state="disabled")
         notes.pack(fill="both", expand=True)
         self.progress = ttk.Progressbar(box, maximum=1000)

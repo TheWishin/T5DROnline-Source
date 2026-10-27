@@ -45,6 +45,10 @@ part is in the README's status table.
   Japanese at 100 % and 150 %): the choices move to a line of their own when both do not fit
   (`lobby/t5lobby/tk_views.py`). The cut-off walk (`tests/i18n_layout.py`) now also reports widgets of one grid
   row that overlap.
+- The update window shows the release notes as flowing paragraphs (`launcher/updater.py` `notes_summary`): the
+  CHANGELOG's line breaks at 120 characters made lines break in the middle; paragraphs and list items are one line
+  each now, wrapped by the window, with the lists and headings kept. A cached answer of an older launcher is asked
+  again once.
 
 ### Updates and releases
 - An update keeps the new launcher only once it has run for 15 seconds or was closed by hand

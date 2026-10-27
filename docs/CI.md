@@ -26,7 +26,7 @@ be started from there at any time. The release workflow is separate
 
 Three jobs run in parallel.
 
-### `checks` -- game-data guard + Python tests (about 2 min)
+### `checks` -- game-data guard + Python tests (about 5-10 min, limit 30)
 
 | Step | Catches |
 |---|---|

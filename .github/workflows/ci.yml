@@ -9,7 +9,7 @@
 # This repository is private, and a private repository has a monthly budget of
 # runner minutes in which a Windows minute counts double. So the jobs come in
 # two tiers:
-#   every push (and by hand):  checks   -- guard + patch series + tool tests, about 2 min
+#   every push (and by hand):  checks   -- guard + patch series + tool tests, about 5-10 min
 #   pull requests, by hand and Mondays:  lobby, runtime  -- the long ones
 # A pull request's head commit therefore gets all three (`checks` from the push,
 # which a pull request does not repeat; `lobby` and `runtime` from the pull
@@ -39,7 +39,7 @@ jobs:
     name: Game-data guard + Python tests
     if: github.event_name != 'pull_request'
     runs-on: windows-latest
-    timeout-minutes: 10
+    timeout-minutes: 30     # 1.1.5: ~1000 tool tests; a 2-core runner needs more than 10 min
     steps:
       - uses: actions/checkout@v7
         with:
@@ -233,8 +233,9 @@ jobs:
       - name: Build the launcher stub (T5DR Online.exe)
         run: |
           New-Item -ItemType Directory -Force build/stub | Out-Null
-          & $env:CLANG_CL /nologo /O2 /GS- launcher/stub/t5dr_stub.c /Fobuild/stub/stub.obj "/Febuild/stub/T5DR Online.exe" `
-            /link /SUBSYSTEM:WINDOWS /ENTRY:start /NODEFAULTLIB kernel32.lib user32.lib
+          # The clang-cl fallback of package_release.py's stub build (an ordinary wWinMain program, static CRT).
+          & $env:CLANG_CL /nologo /O2 /MT launcher/stub/t5dr_stub.c /Fobuild/stub/stub.obj "/Febuild/stub/T5DR Online.exe" `
+            /link /SUBSYSTEM:WINDOWS kernel32.lib user32.lib
           if ($LASTEXITCODE) { exit 1 }
 
       # Informational: whether the runner can open a D3D12 device and window

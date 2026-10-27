@@ -545,10 +545,10 @@ private room, the rule checked match by match), e2e `private_room_turns` (three 
 training and the health handicap".)
 
 **Training room.** Create room -> **Training room: endless health, nothing counted**. Its fights are
-practice with a friend, like Tekken 8's practice lobby: health refills a second after the last hit, no round
-timer, no rating, no record, no history, no blame -- whatever ends a fight (a player holding SELECT for a
-second, a 100 % combo, a player leaving or closing the game, a lost connection) finishes the match with the
-status `training`. A fight is one round; when it ends both launchers go back to the select screen by
+practice with a friend, like Tekken 8's practice lobby: damage never KOs, health refills a second after the
+last hit, no round timer, no rating, no record, no history, no blame -- whatever ends a fight (a player holding
+SELECT for a second to give up, a player leaving or closing the game, a lost connection) finishes the match with
+the status `training`. A fight is one round; when it ends both launchers go back to the select screen by
 themselves (an automatic rematch in the running games, only after a fight that ended in the game: the
 result has no `reason`), which is also how the two pick other fighters. **Leave room** works any time in a
 training room, during its fight too (elsewhere only between matches): the match ends without a result

@@ -36,6 +36,16 @@ they work with 1.1.4 launchers as soon as the server is updated.
   Players with a 1.1.4 launcher can still be challenged and invited as before. In all seven languages. Every
   stage has its name (Western Gate, Ghetto Pit, Wolves' Den, ... and the Tekken 5 stages' own names), checked in a
   fight on each of them; the names stay English in every language, as players know them.
+- **Training rooms: practice with a friend online.** **Create room -> Training room**: you and a friend fight
+  with endless health like in Tekken 8's practice lobby -- no hit and no combo ever KOs, health refills a second
+  after the last hit, no round timer, and nothing is counted (no rating, record, history or penalty). Hold SELECT
+  for a second to end the fight: both games go back to the character select by themselves, so this is also how you
+  pick other fighters. **Leave room** works at any time, during a fight too. Both players need 1.1.5; rollback,
+  replays and spectating work as in any match. In all seven languages.
+- **Health handicap for casual matches.** **My health (casual)** on the Play online tab: 100 % down to 30 % in steps
+  of 10, for quick matches, challenges, invites and rooms (ranked and tournament matches are always 100 %). Both
+  players see both values before they accept and on the match card, and in the fight the name under the health
+  bar says it ("Alice 70%"). Only between two 1.1.5 players. In all seven languages.
 - **Ping and connection before you accept.** The found-match card, a challenge and a friend's invite show the ping
   (estimated, or measured in your last match together) and whether the match will most likely be a direct connection
   or go through a relay server. In all seven languages.

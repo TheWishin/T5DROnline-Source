@@ -5,10 +5,10 @@ Both change what the two games simulate, so the games must agree on them: they t
 latch at FIGHT START (src/netplay/match_rules.h). The server decides them once per match, at create_match, from the
 room (training) and the players' own settings (life), so match_found, match_start and every rematch of it agree.
 
-* Training room: a room whose matches are fought with endless health and no round timer (Tekken 8's practice
-  lobby). Nothing is rated, recorded or blamed: whatever ends the fight (a player holding SELECT to give up, a
-  100 % combo, a player leaving, a lost connection) finishes the match as `training` (no winner, no history, no
-  strike). One round: the fight ends at its first KO, and the players' launchers go back to the select screen with
+* Training room: a room whose matches are fought with endless health (damage never KOs) and no round timer
+  (Tekken 8's practice lobby). Nothing is rated, recorded or blamed: whatever ends the fight (a player holding SELECT
+  to give up, a player leaving, a lost connection) finishes the match as `training` (no winner, no history, no
+  strike). One round: the give-up's KO ends the fight, and the players' launchers go back to the select screen with
   a rematch. Only launchers that announce the `match_rules` cap (their game can run it) may create or join one, or be
   invited into one.
 * Health handicap: each player picks their own health in percent (`set_life`, 30-100 in steps of 10) for casual

@@ -53,7 +53,8 @@ class RuleModel(unittest.TestCase):
         out = r.stdout[-3000:] + r.stderr[-2000:]
         self.assertEqual(r.returncode, 0, out)
         self.assertRegex(r.stdout, r"(?m)^PASS \d+ checks$", out)
-        for part in ("rules ok", "refill ok", "give-up ok", "symmetry ok", "lockstep ok", "rollback ok", "replay ok"):
+        for part in ("rules ok", "refill ok", "no-KO ok", "give-up ok", "symmetry ok", "lockstep ok", "rollback ok",
+                     "replay ok"):
             self.assertIn(part, r.stdout)
 
 

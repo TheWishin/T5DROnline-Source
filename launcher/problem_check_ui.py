@@ -125,7 +125,7 @@ class CheckDialog:
     def _finding(self, i, f):
         title, found, fix = f.text(t)
         card = ttk.Frame(self.list, style="Card.TFrame" if self.themed else "TFrame",
-                         padding=0 if self.themed else (0, 4))
+                         padding=(14, 10) if self.themed else (0, 4))
         card.grid(row=i, column=0, sticky="we", pady=(0, 8))
         card.columnconfigure(0, weight=1)
         pre = "Card." if self.themed else ""

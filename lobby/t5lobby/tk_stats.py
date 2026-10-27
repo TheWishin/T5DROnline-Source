@@ -74,7 +74,7 @@ class StatsPage:
             tile.grid(row=0, column=i, sticky="nsew", padx=(0 if i == 0 else px(4), 0 if i == 4 else px(4)))
             ttk.Label(tile, text=t(label).upper(), style="Tile.Caps.TLabel").pack(anchor="w")
             v = self.tile_vars[key] = tk.StringVar(value="-")
-            ttk.Label(tile, textvariable=v, style="Tile.Big.TLabel").pack(anchor="w")
+            ttk.Label(tile, textvariable=v, style="Tile.H2.TLabel").pack(anchor="w")
         self.day_sub = tk.StringVar(value="")                 # (the last tile: matches big, players below)
         ttk.Label(tile, textvariable=self.day_sub, style="Tile.Faint.TLabel").pack(anchor="w")
 
@@ -100,6 +100,7 @@ class StatsPage:
             self.tv.heading(c, command=lambda s=sort: self.sort_by(s))
             if c != "fighter":
                 self.tv.column(c, anchor="e")
+                self.tv.heading(c, anchor="e")
         self.tv.tag_configure("few", foreground=C["faint"])
 
     # ------------------------------------------------------------------ data

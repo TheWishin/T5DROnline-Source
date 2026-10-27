@@ -41,7 +41,8 @@ RAP_NAME = "UP0700-NPUB30009_00-UPDATE0000010000.rap"
 OTHER_PROGRAMS = {"UP0700-NPUB30009_00-0000000000000000": "01.01"}     # (tools/build_game.py OTHER_VERSIONS)
 
 RE_SFO = re.compile(r"PARAM\.SFO: .*? / (\S+) / version (\S+)")
-RE_VERSION_FAIL = re.compile(r"This (?:package|copy) is (?:a different )?version (\d\d\.\d\d)|\"[^\"]*\" version (\d\d\.\d\d)")
+RE_VERSION_FAIL = re.compile(r"This (?:package|copy) is (?:a different )?version (\d\d\.\d\d)"
+                             r"|\"[^\"]*\" version (\d\d\.\d\d)")
 RE_PROGRAM_ID = re.compile(r"(UP0700-NPUB30009_00-\d{16})")
 RE_PKG_SHORT = re.compile(r"the download is incomplete|Decrypting the game program failed", re.I)
 RE_MEMORY = re.compile(r"\bMemoryError\b|Unable to allocate|out of memory", re.I)

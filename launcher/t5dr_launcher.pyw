@@ -28,6 +28,7 @@ from core import N_, t  # noqa: E402  (English text in, the player's language ou
 import problem_report as report  # noqa: E402
 import problem_report_ui as report_ui  # noqa: E402
 import problem_check_ui  # noqa: E402
+import tab_look  # noqa: E402
 import replays  # noqa: E402
 import replays_ui  # noqa: E402
 import updater  # noqa: E402
@@ -329,6 +330,7 @@ class App(tk.Tk):
         self._settings_tab(self.tabs["settings"])
         self.online = online.OnlineTab(self.tabs["online"], self)
         self.replays = replays_ui.ReplaysTab(self.tabs["replays"], self)
+        tab_look.apply(self)                          # Build, Play offline, Settings: the Online tab's cards
         self.nb.bind("<<NotebookTabChanged>>", self._on_tab)
         self.status = tk.StringVar(value="")
         self.status.trace_add("write", self._log_status)

@@ -90,7 +90,7 @@ OUR_FILES = [
     "launcher/t5dr_launcher.pyw", "launcher/core.py", "launcher/online.py", "launcher/updater.py",
     "launcher/release_sig.py",
     "launcher/problem_report.py", "launcher/problem_report_ui.py",
-    "launcher/problem_check.py", "launcher/problem_check_ui.py",
+    "launcher/problem_check.py", "launcher/problem_check_ui.py", "launcher/tab_look.py",
     "launcher/controls_ui.py", "launcher/controls_edit.py", "launcher/stub/t5dr_stub.c",
     "launcher/replays.py", "launcher/replays_ui.py",
     "docs/RELEASE.md",

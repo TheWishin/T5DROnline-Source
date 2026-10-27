@@ -907,7 +907,7 @@ class OnlineView:
         page.columnconfigure(0, weight=1)
         page.rowconfigure(1, weight=1)
         acc = ttk.Frame(page)
-        acc.grid(row=0, column=0, sticky="we", pady=(0, px(8)))
+        acc.grid(row=0, column=0, sticky="we", pady=(0, px(6)))
         ttk.Label(acc, text=t("Your account").upper(), style="Caps.TLabel").pack(side="left", padx=(0, px(10)))
         tab.b_blocked = ttk.Button(acc, text=t("Blocked players..."), style="Small.TButton", command=tab.do_blocked)
         tab.b_passwd = ttk.Button(acc, text=t("Change password..."), style="Small.TButton", command=tab.do_passwd)
@@ -924,7 +924,7 @@ class OnlineView:
         ttk.Label(card, textvariable=tab.prof_title, style="Card.H2.TLabel").grid(row=0, column=1, sticky="w")
         # the facts in two columns (half the lines each): the match history below keeps more of the height
         facts = self.body(card)
-        facts.grid(row=1, column=1, sticky="w", pady=(px(2), px(8)))
+        facts.grid(row=1, column=1, sticky="w", pady=(px(2), px(4)))
         cols = [ttk.Label(facts, text="", style="Card.Muted.TLabel", justify="left") for _ in range(2)]
         cols[0].grid(row=0, column=0, sticky="nw")
         cols[1].grid(row=0, column=1, sticky="nw", padx=(px(28), 0))

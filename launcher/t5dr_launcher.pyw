@@ -322,11 +322,11 @@ class App(tk.Tk):
             # Check for updates on the right
             # a band drawn by the theme (a warm glow, the accent's slashes) with the name and the build on it
             px, th = self.px, self.theme.apply(self)
-            head = self.theme.Band(self, height=60)
+            head = self.theme.Band(self, height=52)
             head.pack(fill="x")
             head.pack_propagate(False)
             first, last = name.rsplit(" ", 1)
-            h, x, m = px(60), px(18), px(28)
+            h, x, m = px(52), px(18), px(26)
             self.theme.draw_mark(head, x, (h - m) / 2.0, m)
             x += m + px(10)
             for text, font, col in ((first + " ", th.fonts["brand"], self.theme.C["text"]),

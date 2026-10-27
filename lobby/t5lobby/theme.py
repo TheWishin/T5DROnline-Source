@@ -512,8 +512,8 @@ class Theme:
             heavy = "normal" if semi != cjk else "bold"
         spec = {
             "body": (ui, 10, "normal"), "small": (ui, 9, "normal"), "bold": (semi, 10, heavy),
-            "button": (semi, 10, heavy), "tab": (disp, 12, heavy), "maintab": (disp, 14, heavy),
-            "h1": (disp, 22, heavy), "h2": (disp, 16, heavy), "h3": (disp, 13, heavy),
+            "button": (semi, 10, heavy), "tab": (disp, 12, heavy), "maintab": (disp, 13, heavy),
+            "h1": (disp, 22, heavy), "h2": (disp, 15, heavy), "h3": (disp, 13, heavy),
             "caps": (caps, 9, heavy), "hero": (disp, 16, heavy), "big": (disp, 28, heavy),
             "huge": (disp, 32, heavy), "num": (disp, 14, heavy), "mono": (mono, 10, "normal"),
             "code": (mono, 14, "normal"), "brand": (disp, 20, heavy),
@@ -972,7 +972,7 @@ class Theme:
         st.configure("TNotebook", background=C["bg"], borderwidth=0, bordercolor=C["line"], lightcolor=C["bg"],
                      darkcolor=C["bg"], tabmargins=(0, 0, 0, 0), tabposition="nw")
         st.configure("TNotebook.Tab", background=C["bg"], foreground=C["muted"], font=f["tab"],
-                     padding=(px(14), px(7), px(14), px(7)), focuscolor=C["accent"], borderwidth=0)
+                     padding=(px(14), px(5), px(14), px(6)), focuscolor=C["accent"], borderwidth=0)
         st.map("TNotebook.Tab", foreground=[("selected", C["text"]), ("active", C["text"])],
                background=[("selected", C["bg"])], expand=[("selected", (0, 0, 0, 0))])
         # no box around the pages: one hairline under the tab row, the selected tab's accent bar standing on it
@@ -986,7 +986,7 @@ class Theme:
         st.configure("Main.TNotebook", background=C["bg"], borderwidth=0, tabmargins=(0, 0, 0, 0), tabposition="nw")
         st.layout("Main.TNotebook.Tab", st.layout("TNotebook.Tab"))
         st.configure("Main.TNotebook.Tab", background=C["bg"], foreground=C["muted"], font=f["maintab"],
-                     padding=(px(18), px(8), px(18), px(7)), focuscolor=C["accent"], borderwidth=0)
+                     padding=(px(16), px(5), px(18), px(5)), focuscolor=C["accent"], borderwidth=0)
         st.map("Main.TNotebook.Tab", foreground=[("selected", C["text"]), ("active", C["text"])],
                background=[("selected", C["bg"])], expand=[("selected", (0, 0, 0, 0))])
 

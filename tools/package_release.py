@@ -112,6 +112,8 @@ OUR_OPTIONAL_FILES = ["CHANGELOG.md", "docs/TROUBLESHOOTING.md", "docs/README.de
 # so a staged tree without it builds a runtime with no online play at all (the host build does not fail).
 OUR_GLOBS = ["patches/ps3recomp/*.patch", "tools/gamedll/include/*.h", "lobby/t5lobby/*.py",
              "lobby/t5lobby/data/*.json", "lobby/t5lobby/server/*.py",
+             # freely licensed fonts the launcher loads for itself (theme.load_fonts), each with its licence file
+             "lobby/t5lobby/fonts/*.ttf", "lobby/t5lobby/fonts/*.otf", "lobby/t5lobby/fonts/*.txt",
              "src/*/*.cpp", "src/*/*.h", "src/*/*.c", "src/*/*.manifest", "src/*/*.rc.in", "src/*/*/*.c"]
 
 # ps3recomp: only what tools/build_game.py and CMakeLists.txt use.

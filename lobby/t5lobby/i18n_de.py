@@ -2016,6 +2016,10 @@ MESSAGES = {
     "My profile": "Mein Profil",
     "Find an opponent online": "Gegner online finden",
     "Character": "Charakter",
+    "Choose your fighter": "Wähle deinen Kämpfer",
+    "{star} your main: {character}": "{star} dein Main: {character}",
+    "Arrow keys move, Enter picks, Esc closes. With a controller: Cross / A picks, Circle / B closes.":
+        "Pfeiltasten bewegen, Enter wählt, Esc schließt. Mit Controller: Kreuz / A wählt, Kreis / B schließt.",
     "Locked for this ranked set": "Für dieses Ranked-Set gesperrt",
     "Ranked match": "Ranked-Match",
     "Quick match": "Quick Match",

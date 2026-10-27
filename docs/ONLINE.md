@@ -1142,7 +1142,7 @@ colour, rating, W-L):
 | State | The card |
 |---|---|
 | Not logged in | Server, name, then Log in / Create account (password rules checked as you type) / Guest; Host for friends |
-| In the lobby | Ranked match and Quick match, the character, Strict; side and stage for challenges, invites and rooms (1.1.5, a server that has them); the players, rooms (a lock = cannot be joined now) and chat below |
+| In the lobby | Ranked match and Quick match, the character (a button that opens the select grid: Random and every fighter, the chosen one lit, your main starred; arrow keys, Enter, Esc; Cross / A picks, Circle / B closes -- lobby/t5lobby/tk_charsel.py), Strict; side and stage for challenges, invites and rooms (1.1.5, a server that has them); the players, rooms (a lock = cannot be joined now) and chat below |
 | Searching | A turning ring, the time searching, the queues, Stop searching (B) |
 | Match found | Ping bars (green up to 60 ms, yellow up to 120, red above), a 15 s countdown ring, Accept (A) / Decline (B); the opponent is shown once both accepted |
 | In a match | The opponent, ping, input delay, connection, "Your game is running" and where the game is |

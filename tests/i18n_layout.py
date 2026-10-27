@@ -519,6 +519,13 @@ class Walk:
         tab._set_account_view(True)
         tab.on_event({"t": "lobby_state", "players": PLAYERS, "rooms": ROOMS, "queue": {"ranked": 3, "quick": 1}})
         self.screen("online lobby")
+        # the character select grid over the tab (tk_charsel.py), the player's main starred
+        if getattr(tab, "charsel", None) is not None:
+            if isinstance(tab.client.me, dict):
+                tab.client.me.setdefault("main", "devil_jin")
+            tab.charsel.open()
+            self.screen("online character select")
+            tab.charsel.close()
         from t5lobby import fwcheck
         tab.fw_status = fwcheck.Status("blocked", ["game", "launcher"],
                                        paths={"launcher": r"C:\T5DR Online\python\pythonw.exe"})

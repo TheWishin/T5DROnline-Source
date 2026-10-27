@@ -1930,6 +1930,10 @@ MESSAGES = {
     "My profile": "Mon profil",
     "Find an opponent online": "Trouve un adversaire en ligne",
     "Character": "Personnage",
+    "Choose your fighter": "Choisis ton combattant",
+    "{star} your main: {character}": "{star} ton main : {character}",
+    "Arrow keys move, Enter picks, Esc closes. With a controller: Cross / A picks, Circle / B closes.":
+        "Les flèches déplacent, Entrée choisit, Échap ferme. À la manette : Croix / A choisit, Rond / B ferme.",
     "Locked for this ranked set": "Verrouillé pour ce set Ranked",
     "Ranked match": "Match Ranked",
     "Quick match": "Quick Match",

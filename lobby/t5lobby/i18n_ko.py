@@ -1861,6 +1861,10 @@ MESSAGES = {
     "My profile": "내 프로필",
     "Find an opponent online": "온라인 상대 찾기",
     "Character": "캐릭터",
+    "Choose your fighter": "캐릭터 선택",
+    "{star} your main: {character}": "{star} 메인: {character}",
+    "Arrow keys move, Enter picks, Esc closes. With a controller: Cross / A picks, Circle / B closes.":
+        "방향키로 이동, Enter로 선택, Esc로 닫기. 컨트롤러: × / A 선택, ○ / B 닫기.",
     "Locked for this ranked set": "이 Ranked 세트 동안 고정",
     "Ranked match": "Ranked 매치",
     "Quick match": "Quick Match",

@@ -1896,6 +1896,10 @@ MESSAGES = {
     "My profile": "Meu perfil",
     "Find an opponent online": "Encontre um oponente online",
     "Character": "Personagem",
+    "Choose your fighter": "Escolha seu lutador",
+    "{star} your main: {character}": "{star} seu main: {character}",
+    "Arrow keys move, Enter picks, Esc closes. With a controller: Cross / A picks, Circle / B closes.":
+        "As setas movem, Enter escolhe, Esc fecha. Com controle: X / A escolhe, Círculo / B fecha.",
     "Locked for this ranked set": "Fixo neste set Ranked",
     "Ranked match": "Partida Ranked",
     "Quick match": "Quick Match",

@@ -1889,6 +1889,10 @@ MESSAGES = {
     "My profile": "マイプロフィール",
     "Find an opponent online": "オンラインで対戦相手を探す",
     "Character": "キャラクター",
+    "Choose your fighter": "キャラクターを選ぶ",
+    "{star} your main: {character}": "{star} メイン：{character}",
+    "Arrow keys move, Enter picks, Esc closes. With a controller: Cross / A picks, Circle / B closes.":
+        "矢印キーで移動、Enterで決定、Escで閉じる。コントローラー：× / Aで決定、○ / Bで閉じる。",
     "Locked for this ranked set": "この Ranked セット中は固定",
     "Ranked match": "Ranked 対戦",
     "Quick match": "Quick Match",

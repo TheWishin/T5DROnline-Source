@@ -1007,7 +1007,8 @@ Settings (environment variables; command-line flags `--host --port --udp-port
 | `T5L_FRIEND_REQUEST_DAYS` / `T5L_FRIEND_RETRY_DAYS` / `T5L_INVITE_SECONDS` | `14` / `7` / `60` | an unanswered request runs out; a declined one may be repeated after; an invite waits |
 | `T5L_INVITE_RETRY_SECONDS` | `30` | after a declined (or taken-back) invite or challenge, the same player asks the same player again only after this (0 = off) |
 | `T5L_FRIEND_REQUESTS_ADDRESS` | `60` | friend requests per 24 h from one internet address, all its accounts together (0 = no limit) |
-| `T5L_LAG_TOLERANCE` / `T5L_LAG_WAIT` | `1` / `6` | post-game lag check: extra frames allowed, seconds to wait for the second report |
+| `T5L_LAG_TOLERANCE` / `T5L_LAG_WAIT` / `T5L_LAG_WAIT_SHARE` | `1` / `6` / `0.05` | post-game lag check: extra frames allowed, seconds to wait for the second report, the share of the match a game may wait for the other's inputs before the verdict is `slow` (1.1.5; 0 = off) |
+| `T5L_REMATCH_DIRECT` | `1` | 1.1.5: a rematch after a match on the relay tries the direct path again (docs/NETPLAY.md "Rematches after the relay"); `0` = stay on the relay |
 | `T5L_ACCEPT_ONESIDED` | `1` | count a lone result report when the other player left |
 | `T5L_LOG_LEVEL` | `INFO` | |
 | `T5L_LOG_FILE`, `T5L_LOG_MAX_MB`, `T5L_LOG_BACKUPS` | , `10`, `5` | also log to a file, rotated (Windows hosts) |

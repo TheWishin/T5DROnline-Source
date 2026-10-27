@@ -50,8 +50,8 @@ T5_DF_RULES="train=1 life=70|100"                    train= / life= for fight li
 - `p1color`, `p2color`: 1 or 2. Kept for old lines; it changes nothing: the
   second confirm it picks the button of is the handicap bar (see "Character
   select in the game"). The costume is the button that confirms the character.
-- `train=1` (key=value, 1.1.5): a training room's fight -- endless health, no round timer, a player who
-  holds SELECT for a second gives up (KO); one round (`rounds` is forced to 1). `life=<P1>|<P2>`: each side's
+- `train=1` (key=value, 1.1.5): a training room's fight -- endless health (damage never KOs), no round timer, a
+  player who holds SELECT for a second gives up (KO); one round (`rounds` is forced to 1). `life=<P1>|<P2>`: each side's
   health in percent (the health handicap, 10-100). Both are part of what the two PCs simulate: the driver
   writes the handicap into the battle config at the game mode's first frame (below) and latches both at
   FIGHT START; netplay's training rule acts on every frame after that (docs/NETPLAY.md "Online training and
@@ -111,6 +111,9 @@ T5_DF_RULES="train=1 life=70|100"                    train= / life= for fight li
   `T5_DF_STARTVS=N` (the title-to-select jump alone), `T5_DF_FIND=frame:text,...`
   (log every address of that text, ASCII and UTF-16BE, in guest memory at
   that frame), `T5_DF_FRESH_LOG`, `T5_DF_FRESH_AT`, `T5_DF_GUARD`,
+  `T5_DF_WATCHPOINT=addr,...` + `T5_DF_WATCHPOINT_AT=frame` (x64 debug registers on the main thread: every
+  write to those words with the new value and the lifted writer; the writer's name is only as exact as the
+  host-to-guest map of the optimised game code),
   `T5_DF_STUCK_SECONDS` (persistent game, "After a session ends"),
   `T5_DF_SELECT_STUCK_SECONDS`, `T5_DF_READER_GUARD=0` ("Select stall after a fight").
 

@@ -13,6 +13,9 @@
  *   rules       pack/unpack, clamps, "no rules" packs to 0 (older replays)
  *   refill      health refills to the maximum after kRefillFrames frames without damage, not before; a
  *               handicapped maximum (72.5) is what it refills to; the timer is held while fighting
+ *   no-KO       a combo that never stops (a hit every few frames, 400 frames) on a fighter at 30 % health: the
+ *               health goes to 0 again and again and is set back to the floor before the KO check, nobody is KO'd
+ *               (without the rule the same combo KOs); a give-up still KOs in the middle of it
  *   give-up     SELECT held kGiveUpFrames frames sets that player's health to 0 (the KO), a shorter hold does
  *               nothing, letting go starts the count again, a sync point clears the counts
  *   symmetry    the rule treats both slots alike: step(swap(state), swap(in)) == swap(step(state, in))
@@ -75,7 +78,7 @@ static void apply_rule(TrainingRule& r, uint32_t f, Game& g, const PadInput in[2
 {
     if (!on) return;
     TrainingRule::State st;
-    st.fighting = g.fighting && g.hp[0] > 0 && g.hp[1] > 0;
+    st.fighting = g.fighting;   /* round state 5, not decided: a fighter at 0 is still fighting until the KO check */
     for (int p = 0; p < 2; p++) { st.f[p].hp = g.hp[p]; st.f[p].max = g.max[p]; }
     const TrainingRule::Action a = r.step(f, st, in);
     if (a.hold_timer) g.timer = TrainingRule::kRoundTimer;
@@ -123,6 +126,42 @@ static void test_refill()
     CHECK(refilled_at == 1 + TrainingRule::kRefillFrames, "refilled at frame %u", refilled_at);
     CHECK(g.hp[1] == g.max[1], "refilled to the handicapped maximum");
     printf("refill ok\n");
+}
+
+static void test_no_ko()
+{
+    for (int with_rule = 0; with_rule < 2; with_rule++) {
+        TrainingRule r;
+        Game g;
+        g.max[1] = (43 << 16) | 0x8000; g.hp[1] = g.max[1];      /* P2 at 30 %: 43.5 */
+        uint32_t floors = 0, f = 0;
+        for (; f < 400 && g.fighting; f++) {
+            PadInput in[2] = { pad(kAttack), pad(0) };            /* P1 attacks whenever P2 can be hit */
+            const int32_t before = g.hp[1];
+            apply_rule(r, f, g, in, with_rule != 0);
+            if (before == 0 && g.hp[1] == TrainingRule::kFloor) floors++;
+            CHECK(g.timer == TrainingRule::kRoundTimer || !with_rule, "timer held");
+            g.run(in);
+        }
+        if (with_rule) {
+            CHECK(g.fighting && !g.ko && f == 400, "no KO from damage (frame %u)", f);
+            CHECK(floors > 5, "the health went to 0 and came back to the floor %u times", floors);
+        } else {
+            CHECK(g.ko && f < 400, "without the rule the combo KOs");
+        }
+    }
+    {   /* the give-up in the middle of the combo: that KO stays */
+        TrainingRule r;
+        Game g;
+        uint32_t f = 0;
+        for (; f < 400 && g.fighting; f++) {
+            PadInput in[2] = { pad(kAttack), pad(f >= 100 && f < 200 ? kSelect : 0) };
+            apply_rule(r, f, g, in);
+            g.run(in);
+        }
+        CHECK(g.ko && g.hp[1] == 0 && f == 100 + TrainingRule::kGiveUpFrames, "the give-up KOs during the combo (%u)", f);
+    }
+    printf("no-KO ok\n");
 }
 
 static void test_give_up()
@@ -190,7 +229,7 @@ static std::vector<PadInput> script(int p, uint32_t n, unsigned seed)
     std::vector<PadInput> v(n, np::kNeutral);
     unsigned x = seed;
     auto rnd = [&]() { x = x * 1103515245u + 12345u; return (x >> 8) & 0xFFFF; };
-    for (uint32_t f = 0; f < n; f++) v[f].buttons = f % 300 < 200 && rnd() % 4 == 0 ? kAttack : 0;
+    for (uint32_t f = 0; f < n; f++) v[f].buttons = (f < 1500 || f % 300 < 200) && rnd() % 4 == 0 ? kAttack : 0;
     for (uint32_t f = 0; f < n; f++) {
         if (rnd() % 1200 == 0) for (uint32_t k = 0; k < 70 && f + k < n; k++) v[f + k].buttons |= kSelect;
         if (rnd() % 200 == 0) for (uint32_t k = 0; k < 40 && f + k < n; k++) v[f + k].buttons |= kSelect;   /* too short */
@@ -310,6 +349,7 @@ int main()
 {
     test_rules();
     test_refill();
+    test_no_ko();
     test_give_up();
     test_symmetry();
     test_netplay();

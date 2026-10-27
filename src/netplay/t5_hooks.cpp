@@ -675,7 +675,7 @@ constexpr uint32_t kFighter0 = 0x10090030, kFighterStride = 0x8D0;   /* the figh
 constexpr uint32_t kFtHealth = 0x6BC, kFtHealthMax = 0x6C0;          /* 16.16 fixed point */
 constexpr uint32_t kRoundTimer = 0x1008F054;                         /* frames left in the round */
 np::TrainingRule g_train;
-uint32_t g_train_refills[2], g_train_noted = 0;
+uint32_t g_train_refills[2], g_train_saves[2], g_train_noted = 0;
 
 void training_reset() { g_train.reset(); g_train_noted = 0; }   /* frame 0 and every sync point: the frames are numbered anew */
 
@@ -698,12 +698,14 @@ void training_rule(uint32_t f, const np::PadInput in[2], bool live)
         wr32(kFighter0 + (uint32_t)p * kFighterStride + kFtHealth, (uint32_t)a.hp[p]);
         if (!live) continue;
         if (a.refilled[p]) g_train_refills[p]++;
+        if (a.saved[p]) g_train_saves[p]++;
         if (a.gave_up[p]) np::note("frame %u: training: P%d held SELECT for %u frames -- gives up (KO)", f, p + 1,
                                    np::TrainingRule::kGiveUpFrames);
     }
     if (live && st.fighting && f >= g_train_noted + 1800) {   /* every ~30 s of fighting */
         g_train_noted = f;
-        np::note("frame %u: training: health refilled %u x (P1), %u x (P2) so far", f, g_train_refills[0], g_train_refills[1]);
+        np::note("frame %u: training: health refilled %u x (P1), %u x (P2), kept from 0 (no KO) %u x / %u x so far", f,
+                 g_train_refills[0], g_train_refills[1], g_train_saves[0], g_train_saves[1]);
     }
 }
 

@@ -21,12 +21,17 @@
  * alike, after the inputs are final for that run):
  *   - only while the round is fought (round state 5, the match not decided);
  *   - the round timer (0x1008F054, frames) is held at 60 s: no time-out;
+ *   - damage never KOs (the owner, 2026-10-27: "Nie KO"): a fighter whose health a hit took to 0 gets kFloor
+ *     (1.0) back at the next boundary. The game clamps health at 0 when a hit lands and decides the KO in the
+ *     frame after it, from the health it finds then (probe ko1: 3.0 - 7 -> 0 seen at boundary 1816, MATCH OVER at
+ *     1817; probe p6: 0 written at a boundary, KO decided in that frame) -- so the boundary between the hit and
+ *     the KO check always comes first, however long the combo; the next hit takes the 1.0 again;
  *   - a fighter's health refills to its maximum once it has taken no damage for kRefillFrames frames (one second
  *     after the last hit of a combo, whether the fighter stands, blocks or lies on the ground); a stream of hits
- *     keeps it down, as in a real fight;
- *   - a player who holds SELECT for kGiveUpFrames frames gives up: their health goes to 0 and the game KOs them
- *     in the next frame (probe p6), which ends the training fight (1 round) like any match: both games go back to
- *     the select screen, the lobby records nothing.
+ *     keeps it low (down to kFloor), never at 0;
+ *   - a player who holds SELECT for kGiveUpFrames frames gives up: their health goes to 0 at the boundary and the
+ *     game KOs them in that frame (probe p6) -- the one KO a training fight has, wanted: it ends the fight (1
+ *     round) like any match, both games go back to the select screen, the lobby records nothing.
  * The counters behind the last two (health and frames without damage, frames SELECT held) live here, one entry per
  * frame (frame
  * number mod kHist, tagged with the frame), each computed from its predecessor's entry -- the same scheme as the
@@ -81,6 +86,7 @@ struct TrainingRule {
     static constexpr uint32_t kGiveUpFrames = 60;    /* SELECT held this long: that player gives up */
     static constexpr uint32_t kRefillFrames = 60;    /* no damage this long: health back to the maximum */
     static constexpr uint32_t kRoundTimer = 60 * 60; /* the round timer held at 60 s (frames) */
+    static constexpr int32_t kFloor = 1 << 16;      /* 1.0: what a fighter at 0 gets back (damage never KOs) */
 
     struct Fighter {
         int32_t hp = 0, max = 0;   /* 16.16 fixed point, as in the fighter block */
@@ -95,6 +101,7 @@ struct TrainingRule {
         bool hold_timer = false;
         bool gave_up[2] = { false, false };     /* (for the log: this frame's give-up) */
         bool refilled[2] = { false, false };
+        bool saved[2] = { false, false };       /* (for the log: health 0 from damage, set back to kFloor) */
     };
 
     uint32_t tag[kHist];               /* frame + 1 of the entry (0 = empty) */
@@ -127,6 +134,11 @@ struct TrainingRule {
         for (int p = 0; p < 2; p++) {
             if (held[p][i] >= kGiveUpFrames) {
                 if (s.f[p].hp != 0) { a.set_hp[p] = true; a.hp[p] = 0; a.gave_up[p] = held[p][i] == kGiveUpFrames; }
+            } else if (s.f[p].hp <= 0 && s.f[p].max > 0) {
+                /* a hit took it to 0: back to the floor before the game's KO check of this frame reads it */
+                a.set_hp[p] = true;
+                a.hp[p] = s.f[p].max < kFloor ? s.f[p].max : kFloor;
+                a.saved[p] = true;
             } else if (quiet[p][i] >= kRefillFrames && s.f[p].max > 0 && s.f[p].hp < s.f[p].max) {
                 a.set_hp[p] = true;
                 a.hp[p] = s.f[p].max;

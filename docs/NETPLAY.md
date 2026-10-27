@@ -510,16 +510,17 @@ Two match rules that change what the game simulates, so both PCs must apply them
 (`src/netplay/match_rules.h`, the lobby's side in docs/ONLINE.md "Training rooms and the health handicap"):
 
 - **Training** (a training room's fights, `train=1` on the fight line): endless health like Tekken 8's
-  practice lobby, no round timer, nothing counted. A player who holds SELECT for a second gives up: their
-  health goes to 0 and the game KOs them at the next frame, which ends the fight (training fights have one
-  round); both launchers then go back to the select screen by themselves (a rematch), so this is also how
-  two friends pick other fighters.
+  practice lobby -- damage never KOs, not even in the longest combo --, no round timer, nothing counted. A
+  player who holds SELECT for a second gives up: their health goes to 0 and the game KOs them, which ends the
+  fight (training fights have one round; this is their only KO); both launchers then go back to the select
+  screen by themselves (a rematch), so this is also how two friends pick other fighters.
 - **Health handicap** (`life=P1|P2`, percent): the game's own VS handicap. The battle config holds each
   side's percent (0x1008EBF4 / 0x1008EBF8, 100 after the select screen's handicap bar); the game mode's
   set-up turns it into the fighters' maximum health (fighter block +0x6C0, 16.16 fixed point: 145.0 at 100 %,
   72.5 at 50 %, 108.75 at 75 %) and their health at each round start (+0x6BC). The direct-fight driver writes
-  both words at the game mode's first frame, before that set-up runs, on both PCs alike. The bars show the
-  smaller maximum as a shorter bar.
+  both words at the game mode's first frame, before that set-up runs, on both PCs alike. The bars show health
+  against each fighter's own maximum (both look full at a round's start), so the launchers put the percent after
+  the name under the bar ("Alice 70%").
 
 **The training rule** (`np::TrainingRule`, called by `training_rule()` in `t5_hooks.cpp` right after the
 no-pause rule): on the game state at the boundary of every frame that runs -- live, re-simulated by the
@@ -527,9 +528,15 @@ rollback loop, played back from a replay or a live stream -- after that run's in
 
 - only while the round is fought (round state 0x1009322C = 5, the decided byte 0);
 - the round timer (0x1008F054, frames) is held at 3600 (60 s): no time-out;
+- **damage never KOs** (owner, 2026-10-27): a fighter whose health a hit took to 0 gets 1.0 back at the next
+  boundary. That is always in time: the game clamps health at 0 when a hit lands and decides the KO in the frame
+  after it, from the health it finds then (probe ko1: P2 at 3.0, a 7-point hit -> 0 at boundary 1816, MATCH OVER
+  only at 1817; probe p6: 0 written at a boundary is KO'd in that frame). The next hit takes the 1.0 again, so a
+  combo that never stops keeps the fighter at the floor, never at 0;
 - a fighter's health goes back to its maximum once it has taken no damage for 60 frames: a second after the
-  last hit of a combo, standing, blocking or on the ground; a stream of hits keeps it down as in a real fight;
-- SELECT held 60 frames (in that player's input of those frames, the exchanged one) sets their health to 0.
+  last hit of a combo, standing, blocking or on the ground;
+- SELECT held 60 frames (in that player's input of those frames, the exchanged one) sets their health to 0 --
+  that KO, the give-up, is the one a training fight has.
 
 Found by probes of the running game (offline, `T5_DF_WATCH` / `T5_DF_POKE`, build/int115/h-runs): health and
 maximum per fighter block, the timer counting 3600 down from round state 5, the handicap words read at the

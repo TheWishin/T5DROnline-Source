@@ -46,6 +46,15 @@ they work with 1.1.4 launchers as soon as the server is updated.
   hit; it is +3 (and -13 on block). Some hit reactions set the game's "idle" flag long before the defender can do
   anything; the overlay now waits for the end of the reaction there, as the game itself does (checked with the
   defender mashing a jab). Players' report; docs/TRAINING.md.
+- **Frame data: moves with a wind-up show their real startup.** Bryan's f+1+2 (a wind-up, then the attack) showed
+  i4; it is i22. A move made of several animations now counts from its first frame.
+- **Practice tools** (Practice, offline only; Settings -> Practice tools, on by default): hold SELECT and press 3 to
+  put both fighters back where the fight started, f+3 / b+3 to put the dummy against the wall in front of / behind
+  you, df+3 / db+3 to put yourself against the wall in front of / behind you. SELECT+1 records the dummy (your pad
+  plays it), SELECT+2 plays the recording once, SELECT+4 in a loop; 5 slots (tap up / down with SELECT). Tap
+  forward / back with SELECT for what the dummy does: as set in the game's menu, blocks after the first hit,
+  crouches, walks forward and back, sidesteps. Never in online matches, replays or spectating; online matches are
+  unchanged. Player requests; docs/TRAINING.md "Practice tools".
 
 ### macOS (Apple silicon), offline -- build from source (by n0madic, thank you)
 - The game builds and plays on macOS 13+ (arm64): `python3 tools/build_game.py --pkg ... --rap ...`

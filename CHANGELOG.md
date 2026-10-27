@@ -41,6 +41,10 @@ part is in the README's status table.
   more (`lobby/t5lobby/theme.py` `width_factor`): a wider stand-in face is drawn smaller by how much wider it is
   (es / fr / pt-BR were cut off in 1 to 43 places). The cut-off walk no longer skips on such a PC, and
   `tests/i18n_layout.py --without-font NAME` checks it.
+- Online tab: "Strict (ranked: +-150 rating)" and the side / stage choices no longer run into each other (German,
+  Japanese at 100 % and 150 %): the choices move to a line of their own when both do not fit
+  (`lobby/t5lobby/tk_views.py`). The cut-off walk (`tests/i18n_layout.py`) now also reports widgets of one grid
+  row that overlap.
 
 ### Updates and releases
 - An update keeps the new launcher only once it has run for 15 seconds or was closed by hand

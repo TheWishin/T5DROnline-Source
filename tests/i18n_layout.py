@@ -161,9 +161,42 @@ def problems(root, slack=2):
                     bb = w.bbox(item)
                     if bb and cw and ch and (bb[0] < -slack or bb[2] > cw + slack):
                         out.append(("canvas", str(w), str(item), bb[2] - bb[0], cw, w.itemcget(item, "text")))
+        overlaps(w)
         for c in w.winfo_children():
             if c.winfo_class() != "Toplevel":
                 walk(c)
+
+    def overlaps(master):
+        """Two widgets in one grid row whose columns overlap -- one at the left, one at the right of the same cells,
+        like 1.1.6's "Strict (ranked ...)" and the casual side / stage row: together they need more than the row
+        has (the master's width; withdrawn, its requested width, which on screen it only ever exceeds)."""
+        try:
+            slaves = [s for s in master.grid_slaves() if s.winfo_manager() == "grid"]
+        except tk.TclError:
+            return
+        if len(slaves) < 2:
+            return
+        cells = []
+        for s in slaves:
+            try:
+                g = s.grid_info()
+                pad = g.get("padx", 0)
+                pad = sum(int(str(p)) for p in (pad if isinstance(pad, (tuple, list)) else str(pad).split()))
+                cells.append((int(g["row"]), int(g["column"]), int(g["column"]) + int(g["columnspan"]) - 1,
+                              str(g.get("sticky", "")), s.winfo_reqwidth() + pad, s))
+            except (tk.TclError, ValueError, KeyError):
+                pass
+        have = max(master.winfo_width(), master.winfo_reqwidth())
+        for i, (ra, a0, a1, sa, wa, a) in enumerate(cells):
+            for rb, b0, b1, sb, wb, b in cells[i + 1:]:
+                if ra != rb or a1 < b0 or b1 < a0:
+                    continue
+                if ("w" in sa and "e" in sa) or ("w" in sb and "e" in sb):
+                    continue              # (one fills the cells: a background, not a neighbour)
+                if wa + wb > have + slack:
+                    out.append(("overlap", str(master), f"row {ra}", wa + wb, have,
+                                f"{_text(a) if a.winfo_class().endswith(('Label', 'Button', 'Checkbutton')) else a.winfo_class()}"
+                                f" + {_text(b) if b.winfo_class().endswith(('Label', 'Button', 'Checkbutton')) else b.winfo_class()}"))
     walk(root)
     return out
 

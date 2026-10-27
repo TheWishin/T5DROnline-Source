@@ -20,7 +20,7 @@
  */
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
-#include <windows.h>
+#include "../platform/t5_win.h"
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -181,7 +181,7 @@ LARGE_INTEGER g_qpf, g_last, g_resim_t0;
  * the wall-clock noise of other processes on the machine. */
 ULONG64 g_cyc_last = 0, g_cyc_resim0 = 0, g_cyc_normal = 0;
 uint32_t g_cyc_normal_n = 0;
-ULONG64 cycles_now() { ULONG64 c = 0; QueryThreadCycleTime(GetCurrentThread(), &c); return c; }
+ULONG64 cycles_now() { return t5p_thread_cycles(); }
 bool g_inited = false;
 double g_resim_ms_total = 0, g_commit_ms_total = 0, g_restore_ms_total = 0;
 uint32_t g_commit_n = 0, g_restore_pages_total = 0;

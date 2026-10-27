@@ -2468,3 +2468,125 @@ audio (muted) -- no FAIL; tests/ 433 OK (2 skipped).
   there since section 32's fix 3). `T5_RB_KTRACE` and
   `T5_RB_WFT_ADDRS=1` show who writes what; the rule from section 32 applies:
   a thread the boundary does not drain must not have its memory restored.
+
+# rollback-smooth-115 -- what the player sees at 60, 120 and 180 ms (1.1.5)
+
+Owner's wish (2026-10-27): online fights as smooth as GGPO in the emulators
+players compare us with. Code: `src/rollback/rb_net.cpp` (`ts_correct`, the
+display margin in `start` / `session_reset`), ps3recomp patch 0080
+(`runtime/ppu/tests/boot_main.cpp`: `cellGcm_skip_ticks`,
+`cellGcm_display_margin_min_ms`), `tools/rollback_frame_times.py` (Y lines).
+
+## 34. Pictures shown twice, by cause; time sync; the display margin
+
+**How it was measured.** `tools/rollback_net_test.py --fight 26,33,20,2
+--delay 6 --mode1 default --mode2 default --matches 1 --cpus1 0xFF0000 --cpus2
+0xFF000000 --latlog --polite` on this PC through the proxy at RTT 60 / jitter
++-5 / 1 % loss, RTT 120 / +-8 / 2 % and RTT 180 / +-10 / 3 % with
+`T5_RB_NET_DELAY=3` (the lobby's floor above 150 ms); input delay otherwise by
+ping (1 at 60, 2 at 120). The metric is what the player sees: a picture shown
+for two refreshes or more of the 59.95 Hz display (the presents on the DWM
+vblank grid, P and C lines), while the match is fought, per side and match
+(~4 230 presents), put down to what happened between the two presents: a
+time-sync correction (S / Y), a rollback (M), a wait for the peer (T), the
+walker taking more than 8 ms from the flip request to translated (shader and
+pipeline work: the games of these runs are killed at the end, so their shader
+cache never grows -- ~18 of the ~22 are the 320 ms stall at the first round's
+"Fight!"), or nothing logged ("other": the display lock's 1 % of late frames,
+the machine). Before = integration-115 d990280. Quiet PC (3-5 of 32 processors
+busy). Every pair: 0 mismatching frames, the same result hash on both sides.
+
+| RTT, build | pairs | pictures shown twice, per side and match | of them: time sync | rollback | shader work | other | time-sync corrections while fighting, per side and match (refreshes each correction cost, all runs) | present-to-present p99 ms | rollbacks per side, ms each |
+|---|---|---|---|---|---|---|---|---|---|
+| 60, before | 3 | 50 | 6.0 | 1.3 | 22 | 21.0 | 5.2 (0: 17, 1: 2, 2: 8, 3: 2, -1: 2) | 19.3 | 135, 1.37 |
+| 60, after | 3 | **38** | 1.0 | 0.7 | 23 | 13.0 | 1.0 (1: 6) | 19.0 | 114, 1.31 |
+| 120, before | 4 | 67 | 13.5 | 15.4 | 20 | 18.4 | 12.4 (0: 64, 1: 14, 2: 16, 3: 5) | 20.7 | 566, 2.75 |
+| 120, after | 4 | **40** | 3.5 | 4.9 | 22 | 9.1 | 2.6 (1: 18, 2: 1, 3: 1, 4: 1) | 19.9 | 568, 2.74 |
+| 180, before | 3 | 62 | 12.0 | 13.8 | 24 | 12.0 | 10.2 (0: 33, 1: 16, 2: 11, 3: 1) | 21.1 | 570, 3.79 |
+| 180, after | 3 | **36** | 2.7 | 6.0 | 22 | 5.2 | 2.7 (1: 14, 2: 2) | 20.6 | 571, 3.69 |
+| 60, tick skip only | 1 | 44 | 2.0 | 0.5 | 22 | 20.0 | 2.0 (1: 4) | 18.9 | 138, 1.31 |
+| 120, tick skip only | 1 | 50 | 1.0 | 14.5 | 20 | 14.5 | 1.0 (1: 2) | 19.8 | 570, 2.74 |
+| 180, tick skip only | 3 | 58 | 3.7 | 19.2 | 23 | 12.0 | 3.5 (1: 21) | 20.9 | 570, 3.75 |
+| 120, posts swallowed (rejected) | 1 | 118 | 77.0 | 9.5 | 20 | 12.0 | 39.0 (2: 78) | 36.7 | 570, 2.70 |
+
+One more 120 ms pair of the final build is not in the table: its display lock
+went off three times ("display period out of range", a DWM clock glitch of this
+PC's display; patch 0047) and the 59.94 Hz clock beat against the 59.95 Hz
+display -- 116 pictures shown twice, 72 of them "other", 0.5 from time sync.
+Base runs had such glitches too, shorter.
+
+What the rest says: the rollbacks themselves are cheap enough here (a 3-frame
+rollback 3.7 ms, ~95 % of them run early, in the time the frame waits for its
+tick); waits for the peer while fighting 0-1 per side and match; sounds as before (~20 per match
+start late by the rollback's depth, 1 from a mispredicted frame plays on, no
+doubled start); input loss is covered by the resend of every input the peer has
+not acknowledged (at least 8) in every packet, so a lost packet costs the
+frame's input one more frame, nothing more.
+
+**Time sync (what hurt most, after the shaders).** A correction slept at the
+boundary for its frames' time with `np::rb_wait_remote`, whose clock is
+GetTickCount64 -- 15.6 ms steps: a "1 frame" sleep lasted anything from ~0 to
+~31 ms. And a frame that starts late makes the runtime hold the next tick for
+it (PS3_LATE_FLIP, patch 0059) and then go on from where the frame ended, so
+what a sleep cost depended on where in the frame it ended: 55-65 % of the
+corrections changed nothing (the same side corrected again 10 frames later), a
+third cost two or three refreshes. On one PC (both games on one display clock)
+that was 5-16 corrections per side and match, 6-14 pictures shown twice.
+
+Swallowing the frame semaphore's next post instead (rejected) cost exactly two
+refreshes every time: the late-flip logic held the next tick for a frame that
+could not come, then fired two. So the runtime does it (patch 0080,
+`cellGcm_skip_ticks(n)`): the next n ticks that would complete a flip are
+skipped -- no vblank, no flip completion, no handlers --, the picture on the
+screen stays one refresh longer, the game's next frame starts one tick later,
+and the ticks after it stay on the display's grid. One refresh is the least a
+60 Hz display allows for giving a frame up; a stretched frame is no cheaper
+(the game is paced by the display, so a few ms more on a frame either still
+make its refresh -- no frame given up -- or miss it).
+
+The estimate: after a correction the window starts again once the correction
+has reached both estimates -- this side's at once, the peer's report of it a
+round trip later (`g_ts_hold` = the frame + ticks + round trip in frames + 2),
+then a full window (20 frames) -- so a correction is not repeated before its
+effect could be seen. One tick per correction; a side 2.5 frames or more ahead
+(the peer loaded later) gives up to four at once (one per window had the host
+stalling at the prediction window through the intro: 29-36 short waits). From
+1 frame of advantage, as before (`T5_RB_NET_TS_MIN`). Now 1-3 corrections per
+side and match while fighting, each one refresh. `T5_RB_NET_TS_MODE=sleep` is
+the old way.
+
+**The display margin.** The display lock (patch 0034) puts the tick the 99th
+percentile of what the last 4 s of frames cost (tick to present) + 1.5 ms
+before the display's vblank, and lowers it by 1 ms a second; so by design ~1 %
+of frames come too late for their refresh. A frame that re-simulates costs 3-4
+ms more, and at 120-180 ms the rollbacks made 14-15 such late frames per side
+and match, the rest ("other") 12-18. While the rollback loop runs against a
+peer (`start`, host or joiner; not replays) the margin is now at least 3.5 ms
+(`T5_RB_NET_DISPLAY_MARGIN`; patch 0080 `cellGcm_display_margin_min_ms`; back
+to the runtime's own at `session_reset`): rollback 15.4 -> 4.9 (120) and
+13.8 -> 6.0 (180), other 18.4 -> 9.1 and 12.0 -> 5.2. The price is the lead:
+the tick comes earlier before the display's vblank, so from the pad to the
+screen ~1-2 ms more (the lead's 60-s notes, mean: 9.9 -> 12.1 ms at 60,
+11.4 -> 12.5 at 120, 13.0 -> 13.2 at 180) -- beside 1-3 frames of input delay.
+
+**Correctness** (final build, all through the proxy): the pairs above, 0
+mismatching frames each; a session of two matches at 180 ms with both sides
+mashing (`--mash`) and the joiner suspended 60 ms every 0.2-0.6 s
+(`--stutter 60`: 3 267 / 301 rollbacks, 305 corrections on the host), 0
+mismatching through frame 10 799, the same result hashes; a lockstep pair
+(`--mode1 off --mode2 off`) at 120 ms, 0 mismatching; a pair of this build
+(host) against d990280 (joiner) at 120 ms, 0 mismatching, the same result hash
+(the protocol and the simulation did not change: each side's time sync is its
+own); both replays of a 120 ms pair played back identical to the live match
+(`tools/replay_play.py`). Timing only: CODE_VERSION stays 7.
+
+**What is left.** The biggest single cause in these runs is shader work (~22
+pictures per side and match, one 320 ms stall at the first "Fight!") -- the
+shader cache warm-up after BUILD GAME (speed-115) is the answer for players;
+runs that kill their games never fill the cache. Then late frames of the
+machine and of the display lock's p99 design (5-13 per side and match). The
+time sync gives frames up only when this side really is ahead; on two PCs whose
+displays differ (59.94 against 60.00 Hz) one side gains a frame every ~17 s
+and gives it up then, one refresh each time. Input delay is not changed by
+this branch (1 / 2 by ping, the lobby's 3 above 150 ms, 4 above 250 ms); the
+3-frame rollbacks at 180 ms are what 3 frames of delay leave.

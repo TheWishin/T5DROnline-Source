@@ -102,7 +102,7 @@ class LobbyClient(TourCalls, SpectateClientMixin):
                  reconnect=60.0, plain_passwords=False, blind_ready=False, ingame_pick=False, sets=False,
                  port_mapping=False, nat2=True, relay_bridge=True, relays=True, friends=True, old_stages=True,
                  tournaments=False, spectate=False, live_dir=None, watch_dir=None, test_inbound=None,
-                 private_rooms=True):
+                 private_rooms=True, match_rules=False):
         """server: "host[:port]". build: BuildInfo. on_event: optional callable(event) run on the
         client thread (use the `events` queue from a UI). game_port: local UDP port for the game
         (0 = any free one; set it when the player forwarded a port on the router).
@@ -146,7 +146,10 @@ class LobbyClient(TourCalls, SpectateClientMixin):
         game"). None: T5_NET_TEST_INBOUND from the environment; "" off.
         private_rooms: rooms for more than two players who take turns, rooms locked with a password or an invite
         code, hidden rooms (docs/ONLINE.md "Rooms"); False behaves like a 1.1.2 client (the server then lists no
-        locked room for it)."""
+        locked room for it).
+        match_rules: this player's game can play training rooms (endless health) and the health handicap
+        (docs/ONLINE.md "Training rooms and the health handicap"; the cap "match_rules"). Off by default:
+        the launcher turns it on when its game build has them (match_driver.game_supports_rules)."""
         self.host, self.port = proto.parse_hostport(server)
         self.build = build
         self.on_event = on_event
@@ -170,6 +173,9 @@ class LobbyClient(TourCalls, SpectateClientMixin):
         self.invites = {}            # invite id -> the `invited` event: invites waiting for this player's answer
         self.invite_waits = {}       # friend's name (lower case) -> monotonic time this player may invite them again
         self.private_rooms = private_rooms
+        self.match_rules = match_rules
+        self.life = 100              # this player's health handicap (set_life), as the server confirmed it
+        self.casual_prefs = None     # (side None/0/1, stage key or "random"): casual wishes, sent after every login
         self.my_room = None          # this player's room as its members see it (the last `room` message)
         self.room_code = None        # its invite code, when this launcher knows it (never sent to anyone but the server)
 
@@ -207,6 +213,7 @@ class LobbyClient(TourCalls, SpectateClientMixin):
         self.relay_bridge = relay_bridge
         self.relays = relays
         self.relay_rtts = {}         # regional relay id -> ms, as last measured and reported
+        self.peer_pings = {}         # (lower-case name, guest) -> (ms, path, monotonic): measured in a match (ping_to)
         self.tournaments = tournaments
         self._mapper = None          # portmap.GamePortMapper (port_mapping=True)
         self._router_factory = None  # tests / NAT simulator: a fake router for the mapper
@@ -311,7 +318,9 @@ class LobbyClient(TourCalls, SpectateClientMixin):
                                                 + (["spectate"] if self.spectate else [])
                                                 + (["private_rooms"] if self.private_rooms else [])
                                                 + (["game_fallback"] if self._can_fallback() else [])
-                                                + ["boss_chars"]})
+                                                + ["boss_chars", "lag_wait"]
+                                                # (last: a server reads a client's first 16 caps)
+                                                + (["match_rules"] if self.match_rules else [])})
         except LobbyError:
             # Refused (version) or no answer (e.g. TLS on one side only): leave nothing half open.
             closing, self._closing = self._closing, True
@@ -407,6 +416,7 @@ class LobbyClient(TourCalls, SpectateClientMixin):
                 self.me = r["you"]
                 self._start_keepalive()
                 await self._spec_after_login()
+                await self._casual_after_login()
                 self._emit({"t": "reconnected"})
                 return
         finally:
@@ -659,6 +669,7 @@ class LobbyClient(TourCalls, SpectateClientMixin):
         await self._nat_relay(msg)
 
     async def _on_match_start(self, msg):
+        self._remember_peer_ping(msg)
         gs = self._gs
         if msg.get("continue") and self.match and self.match["match"] == msg["match"] and \
                 self.match.get("state") != "playing":
@@ -1011,6 +1022,66 @@ class LobbyClient(TourCalls, SpectateClientMixin):
         await self._safe(self._send({"t": "relay_rtt", "rtts": rtts}))
         self._emit({"t": "relay_rtts", "rtts": dict(rtts)})
 
+    # ================================================================ ping to another player (1.1.5)
+    PEER_PINGS_MAX = 500
+
+    @staticmethod
+    def _peer_key(p):
+        return (str(p.get("name") or "").lower(), bool(p.get("guest")))
+
+    def _remember_peer_ping(self, msg):
+        """match_start: the ping to this opponent was just measured (the lobby list shows it without "~" from now on)."""
+        opp, ms = msg.get("opponent"), msg.get("rtt_ms")
+        if not isinstance(opp, dict) or not opp.get("name") or isinstance(ms, bool) or not isinstance(ms, (int, float)):
+            return
+        if not 0 <= ms < 5000:
+            return
+        key = self._peer_key(opp)
+        self.peer_pings.pop(key, None)
+        self.peer_pings[key] = (float(ms), msg.get("path") if msg.get("path") in ("direct", "lan", "relay") else None,
+                                time.monotonic())
+        while len(self.peer_pings) > self.PEER_PINGS_MAX:
+            del self.peer_pings[next(iter(self.peer_pings))]
+
+    def ping_to(self, p):
+        """The ping to another player of the lobby list (a `players` entry): (ms, measured) -- measured in a match
+        with them since this launcher started, else the server's estimate made here: the smaller of the way through
+        the lobby server (both round trips to it) and the best regional relay both measured (the list's `relays`,
+        servers from 1.1.5). (None, False) for this player or when nothing is known."""
+        if not isinstance(p, dict) or (self.me and p.get("id") == self.me.get("id")):
+            return None, False
+        seen = self.peer_pings.get(self._peer_key(p))
+        if seen is not None:
+            return seen[0], True
+        est = None
+        if isinstance(p.get("rtt"), (int, float)):
+            est = p["rtt"] + (self.server_rtt or 0.0)
+        theirs = p.get("relays") if isinstance(p.get("relays"), dict) else {}
+        for rid, mine in (self.relay_rtts or {}).items():
+            other = theirs.get(rid)
+            if isinstance(other, (int, float)) and not isinstance(other, bool) and (est is None or mine + other < est):
+                est = mine + other
+        return est, False
+
+    def ping_info(self, ev, who="from"):
+        """The `ping` of a challenge / invite / found match (the server's, 1.1.5) -- or, from an older server, the same
+        shape made here from the lobby list: {ms, kind "estimate" | "measured", known[, path]}; None when unknown."""
+        ping = ev.get("ping") if isinstance(ev, dict) else None
+        if isinstance(ping, dict) and isinstance(ping.get("ms"), (int, float)):
+            return ping
+        other = (ev or {}).get(who) if isinstance(ev, dict) else None
+        if not isinstance(other, dict):
+            return None
+        entry = self._pmap.get(other.get("id")) or other
+        ms, measured = self.ping_to(entry)
+        if ms is None:
+            return None
+        out = {"ms": round(ms), "kind": "measured" if measured else "estimate", "known": True}
+        seen = self.peer_pings.get(self._peer_key(entry))
+        if measured and seen and seen[1]:
+            out["path"] = seen[1]
+        return out
+
     # ================================================================ public API (any thread)
     def _call(self, msg, timeout=None):
         return self._run(self._request(msg, timeout), (timeout or self.request_timeout) + 2)
@@ -1042,6 +1113,7 @@ class LobbyClient(TourCalls, SpectateClientMixin):
         if self.nat2:
             self._tasks.append(asyncio.ensure_future(self._clock_sync()))
         await self._spec_after_login()
+        await self._casual_after_login()
         return self.me
 
     async def _clock_sync(self, n=3):
@@ -1278,12 +1350,17 @@ class LobbyClient(TourCalls, SpectateClientMixin):
         return self._call({"t": "unqueue"})
 
     def create_room(self, name=None, ranked=False, size=2, rotation="winner", private=None, password=None,
-                    hidden=False):
+                    hidden=False, training=False):
         """A room. size 2 = a classic room; 3.. = a community room whose members take turns (rotation "winner":
         winner stays, "queue": everyone in turn). private "password" (with `password`) or "code" (the server makes
         an invite code: .room_code, the reply's "code"); hidden: not in the room list. -> the room (a member's view).
         The password goes to the server only, over this connection; nothing here keeps or logs it."""
         msg = {"t": "room_create", "name": name, "ranked": ranked}
+        if training:
+            # a training room (docs/ONLINE.md "Training rooms and the health handicap"): endless health, no result
+            if not self.training_ok():
+                raise LobbyError(proto.E_NOT_ALLOWED, "this server has no training rooms")
+            msg["training"] = True
         if size != 2 or private or hidden:
             if not self.private_rooms_ok():
                 raise LobbyError(proto.E_NOT_ALLOWED, "this server has no private rooms")
@@ -1347,18 +1424,68 @@ class LobbyClient(TourCalls, SpectateClientMixin):
         """Community rooms: back=False sits out (stay in the room, skip your turns), True puts you back in line."""
         return self._call({"t": "room_line", "in": bool(back)})["room"]
 
+    def _rules_ok(self, cap):
+        w = self.welcome or {}
+        return bool(self.match_rules and cap in (w.get("features") or ()) and "match_rules" in (w.get("caps") or ()))
+
+    def training_ok(self):
+        """Can this player create and join training rooms (the server has them, this client's game can play them)?"""
+        return self._rules_ok("training")
+
+    def handicap_ok(self):
+        """Can this player set a health handicap for casual matches?"""
+        return self._rules_ok("handicap")
+
+    def set_life(self, life):
+        """The health this player fights with in casual matches, in percent (30-100 in steps of 10; 100 = none).
+        Ranked and tournament matches are always 100 %. -> the value the server took."""
+        if not self.handicap_ok():
+            raise LobbyError(proto.E_NOT_ALLOWED, "this server has no health handicap")
+        r = self._call({"t": "set_life", "life": int(life)})
+        self.life = int(r.get("life", life))
+        return self.life
+
     def private_rooms_ok(self):
         """Does the server have private and community rooms (and this client asked for them)?"""
         w = self.welcome or {}
         return bool(self.private_rooms and "private_rooms" in (w.get("features") or ())
                     and "private_rooms" in (w.get("caps") or ()))
 
-    def rematch(self, match_id=None, accept=True, keep=False):
+    def rematch(self, match_id=None, accept=True, keep=False, swap=False):
         """Rooms: rematch() starts the next match in the room. After any other match: the finished
-        match's id; keep=True when this player's game still runs connected to the opponent's."""
+        match's id; keep=True when this player's game still runs connected to the opponent's; swap=True: P1 and
+        P2 the other way round (casual matches by choice, match_start "casual"; a server without it ignores it)."""
         if match_id is None:
             return self._call({"t": "rematch"})
-        return self._call({"t": "rematch", "match": match_id, "accept": bool(accept), "keep": bool(keep)})
+        msg = {"t": "rematch", "match": match_id, "accept": bool(accept), "keep": bool(keep)}
+        if swap:
+            msg["swap"] = True
+        return self._call(msg)
+
+    # ------------------------------------------------------------------ casual choices (server/casual.py)
+    def casual_ok(self):
+        """Does the server take side and stage wishes for casual matches?"""
+        return "casual_choice" in ((self.welcome or {}).get("features") or ())
+
+    def casual_stages(self):
+        """The stage keys this launcher may offer (the server's list; the stage select's on an older server)."""
+        got = ((self.welcome or {}).get("casual") or {}).get("stages")
+        return list(got) if isinstance(got, list) else []
+
+    def set_casual_prefs(self, side=None, stage="random"):
+        """This player's wishes for casual matches (challenges, invites, rooms): side 0 = P1, 1 = P2, None = any;
+        stage a key of casual_stages() or "random". Kept and sent again after every login; nothing on a server
+        without them."""
+        self.casual_prefs = (side if side in (0, 1) else None, str(stage or "random"))
+        if self.connected and self.me and self.casual_ok():
+            self._fire({"t": "casual_prefs", "side": self.casual_prefs[0], "stage": self.casual_prefs[1]})
+
+    async def _casual_after_login(self):
+        if self.casual_prefs is not None and self.casual_ok():
+            side, stage = self.casual_prefs
+            if stage not in self.casual_stages():
+                stage = "random"                 # (a stage this server does not offer, e.g. a Tekken 5 one)
+            await self._safe(self._send({"t": "casual_prefs", "side": side, "stage": stage}))
 
     def challenge(self, player_id):
         return self._call({"t": "challenge", "player": player_id})["challenge"]
@@ -1401,6 +1528,16 @@ class LobbyClient(TourCalls, SpectateClientMixin):
 
     def leaderboard(self, limit=20, offset=0):
         return self._call({"t": "leaderboard", "limit": limit, "offset": offset})["rows"]
+
+    @property
+    def has_stats(self):
+        """The server has the stats page's request (1.1.5)."""
+        return "stats" in ((self.welcome or {}).get("features") or ())
+
+    def stats(self):
+        """The stats page: {made, accounts, players, matches, ranked, matches_24h, players_24h, fighters: [{char,
+        ranked: [games, wins, draws], casual: [...]}]} (server.lobby h_stats)."""
+        return self._call({"t": "stats"})
 
     def refresh(self):
         return self._call({"t": "lobby"})

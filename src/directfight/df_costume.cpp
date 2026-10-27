@@ -34,7 +34,7 @@
  * T5_COSTUME_SAVE2 for P2.
  */
 #define WIN32_LEAN_AND_MEAN
-#include <windows.h>
+#include "../platform/t5_win.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string>
@@ -200,6 +200,74 @@ int item_char_of(int side, uint32_t* objp)
 
 } // namespace
 
+extern int g_models[2];   /* df_fight.cpp: the model each side fights with (set at FIGHT START, before costume_apply) */
+
+namespace {
+/* 1.1.4's open question (docs/DIRECTFIGHT.md "Custom costumes online", Open): a side that fights with the same
+ * model as in this game's previous fight keeps the fighter the game has loaded unless the game went through the
+ * title in between, so a new block on that side does not show. Logged only, so a player's log says it at once. */
+int g_last_model[2] = { -1, -1 };
+uint32_t g_last_match[2];
+uint64_t g_last_block[2];
+void reuse_note(uint32_t f, int s, uint32_t match, uint64_t hb)
+{
+    if (g_last_model[s] >= 0 && g_last_model[s] == g_models[s] && g_last_block[s] != hb)
+        note("frame %u: costumes: P%d has the same model (0x%X) as in match %u of this game but another block "
+             "(%016llX, was %016llX): without a visit to the title since, the game keeps the fighter it loaded "
+             "and shows that match's look", f, s + 1, g_models[s], g_last_match[s], (unsigned long long)hb,
+             (unsigned long long)g_last_block[s]);
+    g_last_model[s] = g_models[s];
+    g_last_match[s] = match;
+    g_last_block[s] = hb;
+}
+/* What a side's fighter wears from its block (diagnostics: a player's log then says what the picture should show).
+ * The block holds the character's three costumes; the fighter wears costume k, the one whose model the game's table
+ * gives it (0x10052F04: costume k of item character c is models[k]). "nothing worn, customized: costume N" names
+ * the customized costumes when the worn one is not (the confirm button, or a mirror's rule, picks the costume). */
+std::string worn_text(const uint8_t* blk, int c, int model)
+{
+    int k = -1;
+    if (c >= 0 && c < costume::kChars) {
+        const uint32_t e = kCharModels + 12 * (uint32_t)c;
+        const uint32_t arr = rd32(e), cnt = rd16(e + 4);
+        for (uint32_t i = 0; i < cnt && i < 3; i++)
+            if (in_data(arr + 4 * i, 4) && (int)rd32(arr + 4 * i) == model) { k = (int)i; break; }
+    }
+    char b[160];
+    if (k < 0) { snprintf(b, sizeof b, "model 0x%X is none of item character %d's costumes", model, c); return b; }
+    auto worn = [&](int j, std::string& out) {
+        const uint8_t* cs = blk + j * costume::kCostume;
+        bool any = false;
+        char t[64];
+        out.clear();
+        for (int i = 0; i < 4; i++) {
+            const uint16_t w = costume::be16(cs + 0x40 + 2 * i);
+            snprintf(t, sizeof t, "%s%s", i ? "," : "parts ", w == 0xFFFF || w == 0 ? "-" : "");
+            out += t;
+            if (w != 0xFFFF && w) { snprintf(t, sizeof t, "%02X", w); out += t; any = true; }
+        }
+        for (int i = 0; i < 3; i++) {
+            const uint8_t w = cs[0x54 + i];
+            snprintf(t, sizeof t, "%s", i ? "," : " colours ");
+            out += t;
+            if (w == 0xFF) out += "-";
+            else { snprintf(t, sizeof t, "%u", w); out += t; any = true; }
+        }
+        return any;
+    };
+    std::string w;
+    if (worn(k, w)) { snprintf(b, sizeof b, "costume %d (model 0x%X): %s", k + 1, model, w.c_str()); return b; }
+    std::string others;
+    for (int j = 0; j < 3; j++) {
+        std::string x;
+        if (j != k && worn(j, x)) { snprintf(b, sizeof b, "%s%d", others.empty() ? "" : "+", j + 1); others += b; }
+    }
+    snprintf(b, sizeof b, "costume %d (model 0x%X): nothing worn%s%s", k + 1, model,
+             others.empty() ? "" : ", customized: costume ", others.c_str());
+    return b;
+}
+} // namespace
+
 /* Start of a session (or an offline fight): this PC's table, handed to netplay once per session. A replay
  * has no table of its own: its blocks come from the file. */
 void costume_session(uint32_t f, CostumeMode m)
@@ -250,6 +318,24 @@ void costume_apply(uint32_t f, CostumeMode m, uint32_t match)
         }
         peer.resize(n);
         wires[1 - me] = peer;
+        /* what the opponent sent (once per table: a player's log then says which characters the other side has
+         * customized, as the own table's line does) */
+        static uint64_t s_peer_logged = 0;
+        const uint64_t ph = costume::fnv64(peer.data(), peer.size());
+        if (n && ph != s_peer_logged) {
+            s_peer_logged = ph;
+            costume::Table t;
+            std::string what;
+            char b[48];
+            if (!costume::from_wire(peer.data(), peer.size(), t)) what = "not a valid table";
+            else if (!t.count()) what = "nothing customized";
+            else {
+                snprintf(b, sizeof b, "%d character(s) customized:", t.count());
+                what = b;
+                for (int c = 0; c < costume::kChars; c++) if (t.have[c]) { snprintf(b, sizeof b, " %02X", c); what += b; }
+            }
+            note("frame %u: costumes: the opponent's table %u bytes (%s)", f, n, what.c_str());
+        }
     } else if (m == CostumeMode::Offline) {
         std::string why2;
         wires[0] = g_local_wire;
@@ -257,7 +343,7 @@ void costume_apply(uint32_t f, CostumeMode m, uint32_t match)
     }
     static const uint8_t kZero[costume::kBlock] = {};
     uint64_t h = costume::fnv64(nullptr, 0);
-    std::string line;
+    std::string line, worn;
     for (int s = 0; s < 2; s++) {
         uint32_t obj = 0;
         const int c = item_char_of(s, &obj);
@@ -279,13 +365,17 @@ void costume_apply(uint32_t f, CostumeMode m, uint32_t match)
         memcpy(vm_base + dst, src, costume::kBlock);     /* big-endian bytes, as in the save */
         memcpy(g_written_blocks + s * costume::kBlock, src, costume::kBlock);
         h = costume::fnv64(src, costume::kBlock, h);
+        reuse_note(f, s, match, costume::fnv64(src, costume::kBlock));
         char b[160];
         snprintf(b, sizeof b, "%sP%d item char %d (fighter 0x%08X): %s", s ? ", " : "", s + 1, c, obj, why);
         line += b;
+        snprintf(b, sizeof b, "%sP%d ", s ? "; " : "", s + 1);
+        worn += b + (src == kZero ? std::string("default") : worn_text(src, c, g_models[s]));
     }
     g_written_hash = h;
     g_written = true;
     note("frame %u: costumes written: %s; blocks hash %016llX", f, line.c_str(), (unsigned long long)h);
+    note("frame %u: costumes worn: %s", f, worn.c_str());
 }
 
 const unsigned char* costume_written() { return g_written ? g_written_blocks : nullptr; }

@@ -43,7 +43,10 @@ class Pins(unittest.TestCase):
         int(bg.CODE_END, 16)
 
     def test_every_step_has_a_function(self):
-        self.assertEqual(self.bg.STEPS, ["deps", "keys", "decrypt", "unpack", "vfs", "lift", "spu", "compile"])
+        self.assertEqual(self.bg.STEPS, ["deps", "keys", "decrypt", "unpack", "vfs", "lift", "spu", "compile",
+                                         "shaders"])
+        # 1.1.5: the shader warm-up runs only when asked (--warmup, the launcher; or named in --steps)
+        self.assertEqual(self.bg.DEFAULT_STEPS, self.bg.STEPS[:-1])
         for s in self.bg.STEPS:
             self.assertTrue(callable(getattr(self.bg, "step_" + s, None)), s)
 
@@ -126,11 +129,18 @@ class Arguments(unittest.TestCase):
     def test_default_runs_every_step_in_order(self):
         calls, code, out, _ = self.run_main(["--pkg", "a.pkg", "--rap", "b.rap"])
         self.assertEqual(code, 0)
-        self.assertEqual([s for s, _ in calls], load_tool("build_game").STEPS)
+        self.assertEqual([s for s, _ in calls], load_tool("build_game").DEFAULT_STEPS)
         a = calls[0][1]
         self.assertEqual((a.pkg, a.rap, a.force), ("a.pkg", "b.rap", False))
         self.assertIn("[deps]", out)
         self.assertIn("[done]", out)
+
+    def test_warmup_adds_the_shader_step(self):
+        calls, code, _, _ = self.run_main(["--pkg", "a.pkg", "--rap", "b.rap", "--warmup"])
+        self.assertEqual(code, 0)
+        self.assertEqual([s for s, _ in calls], load_tool("build_game").STEPS)
+        calls, code, _, _ = self.run_main(["--steps", "compile", "--warmup"])
+        self.assertEqual([s for s, _ in calls], ["compile", "shaders"])
 
     def test_steps_run_in_pipeline_order_not_argv_order(self):
         calls, code, _, _ = self.run_main(["--steps", "compile", "deps", "spu", "--force"])
@@ -336,6 +346,145 @@ class Steps(unittest.TestCase):
         p = os.path.join(self.tmp.name, "f")
         put(p, b"abc")
         self.assertEqual(self.bg.sha1(p), "a9993e364706816aba3e25717850c26c9cd0d89d")
+
+    # -- another version (1.1.5: two players' v01.01 packages got ".rap does not belong") --
+
+    def stage_version(self, sfo, program):
+        rap = self.stage_package(self.bg.TITLE_ID)
+        put(os.path.join(self.bg.P.pkg_dir, "PARAM.SFO"), make_sfo(sfo))
+        put(os.path.join(self.bg.P.pkg_dir, "USRDIR", "EBOOT.BIN"), fake_self(program))
+        return rap
+
+    def test_decrypt_refuses_v0101_before_decrypting(self):
+        rap = self.stage_version({"TITLE": "T5", "TITLE_ID": self.bg.TITLE_ID, "APP_VER": "01.01", "VERSION": "01.00"},
+                                 "UP0700-NPUB30009_00-0000000000000000")
+        with mock.patch.object(self.bg, "run", lambda *a, **k: self.fail("must not decrypt")):
+            self.assertBuildError(lambda: self.bg.step_decrypt(self.args(rap=rap)),
+                                  "This package is version 01.01 of the game (program content ID "
+                                  "UP0700-NPUB30009_00-0000000000000000). The port supports only version 01.00")
+
+    def test_decrypt_knows_the_v0101_program(self):
+        # PARAM.SFO without APP_VER, but the program is the one of v01.01: the version message, not the .rap one
+        rap = self.stage_version({"TITLE": "T5", "TITLE_ID": self.bg.TITLE_ID, "VERSION": "01.00"},
+                                 "UP0700-NPUB30009_00-0000000000000000")
+        with mock.patch.object(self.bg, "run", lambda *a, **k: self.fail("must not decrypt")):
+            self.assertBuildError(lambda: self.bg.step_decrypt(self.args(rap=rap)), "version 01.01 of the game")
+
+    def test_wrong_rap_names_the_programs_content_id(self):
+        cid = "UP0700-NPUB30009_00-0000000000010000"
+        rap = self.stage_version({"TITLE": "T5", "TITLE_ID": self.bg.TITLE_ID, "VERSION": "01.00"}, cid)
+
+        def wrong_rap(cmd, **kw):
+            raise subprocess.CalledProcessError(1, cmd, output="metadata did not decrypt (wrong .rap for this package?)")
+        with mock.patch.object(self.bg, "run", wrong_rap):
+            self.assertBuildError(lambda: self.bg.step_decrypt(self.args(rap=rap)),
+                                  f"does not belong to this package. Use the .rap whose name matches the package's "
+                                  f"content ID ({cid}).")
+
+    def test_self_content_id(self):
+        self.assertEqual(self.bg.self_content_id(fake_self("UP0000-TEST00000_00-0000000000000001")),
+                         "UP0000-TEST00000_00-0000000000000001")
+        self.assertIsNone(self.bg.self_content_id(b"SCE\0" + bytes(0x100)))     # no NPD header
+        self.assertIsNone(self.bg.self_content_id(b"\x7fELF" + bytes(0x100)))
+        self.assertIsNone(self.bg.self_content_id(b"SCE\0"))                    # cut short
+        p = os.path.join(self.tmp.name, "EBOOT.BIN")
+        put(p, fake_self(self.bg.CONTENT_ID))
+        self.assertEqual(self.bg.self_content_id(p), self.bg.CONTENT_ID)
+        self.assertEqual(self.bg.sfo_version({"VERSION": "01.00"}), "01.00")
+        self.assertEqual(self.bg.sfo_version({"APP_VER": "01.01", "VERSION": "01.00"}), "01.01")
+        self.assertEqual(self.bg.sfo_version({}), "?")
+
+    def test_unpack_names_a_package_cut_short(self):
+        pkg = self.fake_pkg(0x1000)
+
+        def cut(cmd, **kw):
+            raise subprocess.CalledProcessError(1, cmd, output="  X: only 5 of 9 bytes are in the package\n"
+                                                "the package is cut short: 1 file(s) incomplete -- download it again")
+        with mock.patch.object(self.bg, "run", cut):
+            self.assertBuildError(lambda: self.bg.step_unpack(self.args(pkg=pkg)),
+                                  "The package is 4,096 bytes, the supported one is 619,430,240 bytes: the download "
+                                  "is incomplete")
+
+
+def fake_self(content_id):
+    """The start of a PS3 program (SELF) with an NPDRM header naming `content_id`, behind another supplemental
+    header, where unself.py and build_game.self_content_id find it."""
+    b = bytearray(0x1000)                                         # (program_kind: shorter is "damaged")
+    b[0:4] = b"SCE\0"
+    struct.pack_into(">QQ", b, 0x58, 0x100, 0x20 + 0x90)          # supplemental headers: offset, size
+    b[0x100:0x120] = struct.pack(">IIQ", 1, 0x20, 1) + bytes(0x10)
+    npd = b"NPD\0" + struct.pack(">II", 3, 2) + bytes(4) + content_id.encode().ljust(0x30, b"\0")
+    b[0x120:0x1B0] = struct.pack(">IIQ", 3, 0x90, 0) + npd.ljust(0x80, b"\0")
+    return bytes(b)
+
+
+class PackageFacts(unittest.TestCase):
+    """The Build tab reads PARAM.SFO and the program's content ID straight from the chosen package (build_game.
+    package_facts, with ps3recomp's pkg_extract.py keystream): a v01.01 package is red before anything is built."""
+
+    @classmethod
+    def setUpClass(cls):
+        import test_pkg_pieces
+        cls.mod = test_pkg_pieces.load("def _keystream(", "tools/pkg_extract.py and pycryptodome")
+        cls.make_pkg = staticmethod(test_pkg_pieces.make_pkg)
+        cls.tree = os.path.dirname(os.path.dirname(cls.mod.__file__))
+        for sub in ("tools", "lobby", "launcher"):
+            d = os.path.join(ROOT, sub)
+            if d not in sys.path:
+                sys.path.insert(0, d)
+        import core
+        cls.core = core
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        bg = self.core.build_game
+        p = mock.patch.object(bg, "P", bg.Paths(self.tmp.name, self.tree))
+        p.start()
+        self.addCleanup(p.stop)
+
+    def pkg(self, name, sfo, program, cid=None, rev=0x8000):
+        path = os.path.join(self.tmp.name, name + ".pkg")
+        self.make_pkg(self.mod, path, [("PARAM.SFO", make_sfo(sfo)), ("USRDIR/EBOOT.BIN", fake_self(program)),
+                                       ("USRDIR/T55DATA1.BIN", bytes(5000))], rev=rev)
+        with open(path, "r+b") as f:                       # the content ID in the package's own header
+            f.seek(0x30)
+            f.write((cid or self.core.build_game.CONTENT_ID).encode().ljust(0x24, b"\0"))
+        return path
+
+    def test_facts(self):
+        bg = self.core.build_game
+        p = self.pkg("ok", {"TITLE": "T5", "TITLE_ID": bg.TITLE_ID, "VERSION": "01.00"}, bg.CONTENT_ID)
+        self.assertEqual(bg.package_facts(p), {"title": "T5", "title_id": bg.TITLE_ID, "version": "01.00",
+                                               "program": bg.CONTENT_ID})
+        self.assertEqual(self.core.describe_pkg(p)[:2], (True, "ok"))
+
+    def test_v0101_is_red(self):
+        bg = self.core.build_game
+        for sfo in ({"TITLE": "T5", "TITLE_ID": bg.TITLE_ID, "APP_VER": "01.01", "VERSION": "01.00"},
+                    {"TITLE": "T5", "TITLE_ID": bg.TITLE_ID, "VERSION": "01.00"}):
+            p = self.pkg("v0101-%d" % len(sfo), sfo, "UP0700-NPUB30009_00-0000000000000000")
+            ok, level, text = self.core.describe_pkg(p)
+            self.assertEqual((ok, level), (False, "error"), text)
+            self.assertIn("version 01.01 of the game", text)
+
+    def test_unknown_program_warns(self):
+        bg = self.core.build_game
+        p = self.pkg("other", {"TITLE": "T5", "TITLE_ID": bg.TITLE_ID, "VERSION": "01.00"},
+                     "UP0700-NPUB30009_00-0000000000020000")
+        ok, level, text = self.core.describe_pkg(p)
+        self.assertEqual(level, "warn", text)
+        self.assertIn("UP0700-NPUB30009_00-0000000000020000", text)
+
+    def test_unreadable_inside_falls_back_to_the_header(self):
+        bg = self.core.build_game
+        p = self.pkg("debug", {"TITLE": "T5", "TITLE_ID": bg.TITLE_ID, "APP_VER": "01.01"},
+                     "UP0700-NPUB30009_00-0000000000000000", rev=0)
+        self.assertIsNone(bg.package_facts(p))                     # a debug package: not read this way
+        self.assertEqual(self.core.describe_pkg(p)[:2], (True, "ok"))    # the header's content ID decides, as before
+        with mock.patch.object(bg, "P", bg.Paths(self.tmp.name, os.path.join(self.tmp.name, "nothing"))):
+            q = self.pkg("nodeps", {"TITLE": "T5", "TITLE_ID": bg.TITLE_ID, "APP_VER": "01.01"}, bg.CONTENT_ID)
+            self.assertIsNone(bg.package_facts(q))
 
 
 if __name__ == "__main__":

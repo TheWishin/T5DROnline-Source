@@ -19,7 +19,7 @@
  *   T5_DF_LOG=path         frame log (default df_frames.log in the cwd)
  */
 #define WIN32_LEAN_AND_MEAN
-#include <windows.h>
+#include "../platform/t5_win.h"
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -197,6 +197,7 @@ df_lv2_fn g_orig_wait = nullptr;
 std::atomic<bool> g_installed{ false };
 bool g_probe = false, g_dump_modes = false;
 std::vector<uint32_t> g_dump_frames;
+std::vector<uint32_t> g_dump_every;   /* T5_DF_DUMP "++n" entries: n frames after every FIGHT START (tag fs<FIGHT START frame>) */
 uint32_t g_mgr = 0;            /* tcb_mode_manager_t object */
 uint32_t g_last_cur = ~0u, g_last_next = ~0u, g_last_obj = 0;
 uint32_t g_mode_changes = 0;
@@ -224,7 +225,7 @@ bool sem_parked(uint32_t id)
 {
     if (id == 0 || id > 64) return false;
     const df_sys_semaphore_info& m = g_sys_semaphores[id - 1];
-    return m.active && *(volatile const int32_t*)&m.value == 0 && *(volatile const int32_t*)&m.waiters > 0;
+    return m.active && T5P_PEEK_I32(&m.value) == 0 && T5P_PEEK_I32(&m.waiters) > 0;
 }
 
 /* A reset or leave that waits too long (df_fight.cpp stuck_check): what the
@@ -437,16 +438,15 @@ LONG CALLBACK guard_veh(EXCEPTION_POINTERS* ep)
     DWORD old;
     VirtualProtect(vm_base + (ea & ~0xFFFu), 0x1000, PAGE_READWRITE, &old);
     uint32_t off = 0;
-    const uint32_t top = rb::guest_of_host((uintptr_t)ep->ContextRecord->Rip, &off);
-    HMODULE mod = nullptr; char mname[MAX_PATH] = "?";
-    if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                           (LPCSTR)ep->ContextRecord->Rip, &mod) && mod)
-        GetModuleFileNameA(mod, mname, sizeof mname);
-    const char* base = strrchr(mname, 0x5C);   /* the last backslash */
+    const uintptr_t pc = (uintptr_t)T5P_CTX_PC(ep->ContextRecord);
+    const uint32_t top = rb::guest_of_host(pc, &off);
+    uintptr_t mod = 0; char mname[MAX_PATH] = "?";
+    t5p_module_of((const void*)pc, mname, sizeof mname, &mod);
+    const char* base = strrchr(mname, T5P_SEP[0]);   /* the last path separator */
     if (g_guard_hits++ < 32)
         note("frame %u: GUARD write to 0x%08X by host thread %lu at %s+0x%llX (lifted %s%06X+0x%X) <- %s", g_frame.load(), ea,
              (unsigned long)GetCurrentThreadId(), base ? base + 1 : mname,
-             (unsigned long long)(ep->ContextRecord->Rip - (uintptr_t)mod), top ? "func_" : "none ", top, off,
+             (unsigned long long)(pc - mod), top ? "func_" : "none ", top, off,
              rb::guest_backtrace(12).c_str());
     return EXCEPTION_CONTINUE_EXECUTION;
 }
@@ -464,6 +464,72 @@ void guard_arm(uint32_t f)
     }
 }
 
+/* T5_DF_WATCHPOINT=addr,... (hex, up to 4 guest words), T5_DF_WATCHPOINT_AT=<frame>: x86-64 debug registers
+ * on the main thread from that frame on; every write to one of the words is logged with the writer (the lifted
+ * function after the store, its lifted callers) and the new value. Found who writes a fighter's health (training:
+ * damage never KOs, docs/NETPLAY.md "Online training and the health handicap"). Windows x64 only. */
+std::vector<uint32_t> g_wp_addr;
+uint32_t g_wp_at = UINT32_MAX;
+bool g_wp_armed = false;
+std::atomic<int> g_wp_hits{ 0 };
+#if defined(_WIN32) && defined(T5P_X64)
+LONG CALLBACK wp_veh(EXCEPTION_POINTERS* ep)
+{
+    const EXCEPTION_RECORD* er = ep->ExceptionRecord;
+    CONTEXT* c = ep->ContextRecord;
+    if (er->ExceptionCode != EXCEPTION_SINGLE_STEP || !g_wp_armed) return EXCEPTION_CONTINUE_SEARCH;
+    const DWORD64 d6 = c->Dr6;
+    int which = -1;
+    for (int i = 0; i < 4; i++) if (d6 & (1ull << i)) which = i;
+    if (which < 0 || which >= (int)g_wp_addr.size()) return EXCEPTION_CONTINUE_SEARCH;
+    c->Dr6 = 0;
+    const uintptr_t pc = (uintptr_t)T5P_CTX_PC(c);
+    uint32_t off = 0;
+    const uint32_t top = rb::guest_of_host(pc, &off);
+    if (g_wp_hits++ < 400)
+        note("frame %u: WATCH [0x%08X] = 0x%08X by lifted %s%06X+0x%X <- %s", g_frame.load(), g_wp_addr[which],
+             rd32(g_wp_addr[which] & ~3u), top ? "func_" : "none ", top, off, rb::guest_backtrace(8).c_str());
+    return EXCEPTION_CONTINUE_EXECUTION;
+}
+/* the debug registers of another thread: suspended, its context set, resumed (a thread cannot set its own) */
+DWORD WINAPI wp_setter(void* arg)
+{
+    const DWORD tid = (DWORD)(uintptr_t)arg;
+    HANDLE h = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_SET_CONTEXT, FALSE, tid);
+    if (!h) return 1;
+    SuspendThread(h);
+    CONTEXT c = {};
+    c.ContextFlags = CONTEXT_DEBUG_REGISTERS;
+    DWORD r = 2;
+    if (GetThreadContext(h, &c)) {
+        DWORD64* dr[4] = { &c.Dr0, &c.Dr1, &c.Dr2, &c.Dr3 };
+        DWORD64 d7 = 0;
+        for (size_t i = 0; i < g_wp_addr.size() && i < 4; i++) {
+            *dr[i] = (DWORD64)(uintptr_t)(vm_base + (g_wp_addr[i] & ~3u));
+            d7 |= (1ull << (2 * i)) | (1ull << (16 + 4 * i)) | (3ull << (18 + 4 * i));   /* local, on write, 4 bytes */
+        }
+        c.Dr7 = d7;
+        c.ContextFlags = CONTEXT_DEBUG_REGISTERS;
+        r = SetThreadContext(h, &c) ? 0 : 3;
+    }
+    ResumeThread(h);
+    CloseHandle(h);
+    return r;
+}
+void wp_arm(uint32_t f)
+{
+    (void)rb::guest_of_host(0, nullptr);   /* build the lifted-function map now, not in the handler */
+    AddVectoredExceptionHandler(1, wp_veh);
+    g_wp_armed = true;
+    HANDLE t = CreateThread(nullptr, 0, wp_setter, (void*)(uintptr_t)GetCurrentThreadId(), 0, nullptr);
+    DWORD r = 9;
+    if (t) { WaitForSingleObject(t, 5000); GetExitCodeThread(t, &r); CloseHandle(t); }
+    note("frame %u: watchpoints armed on the main thread (%zu): %s", f, g_wp_addr.size(), r == 0 ? "ok" : "FAILED");
+}
+#else
+void wp_arm(uint32_t f) { note("frame %u: T5_DF_WATCHPOINT needs Windows x64", f); g_wp_armed = true; }
+#endif
+
 void on_frame(ppu_context* ctx)
 {
     (void)ctx;
@@ -480,6 +546,7 @@ void on_frame(ppu_context* ctx)
     find_manager(f);
     if (!g_guards.empty() && !g_guard_armed &&
         (f == g_guard_at || (g_guard_at == UINT32_MAX && g_mgr && rd32(g_mgr + kModeReq) == 1))) guard_arm(f);
+    if (!g_wp_addr.empty() && !g_wp_armed && f >= g_wp_at) wp_arm(f);
     if (g_probe) probe(f);
     fight_on_frame(f);
     for (auto& w : g_watch) {
@@ -498,6 +565,11 @@ void on_frame(ppu_context* ctx)
     shot(f);
     find_text(f);
     for (uint32_t d : g_dump_frames) if (d == f) dump_memory(f, "f");
+    if (g_fight_frame) for (uint32_t d : g_dump_every) if (g_fight_frame + d == f) {
+        char tag[32];
+        snprintf(tag, sizeof tag, "fs%06u_p%u", g_fight_frame, d);
+        dump_memory(f, tag);
+    }
     QueryPerformanceCounter(&t1); QueryPerformanceFrequency(&fq);
     const double ms = 1000.0 * (double)(t1.QuadPart - t0.QuadPart) / (double)fq.QuadPart;
     static int slow = 0;
@@ -624,9 +696,11 @@ struct Register {
         if (s1 && *s1) { g_script[0] = parse_script(s1); g_scripted[0] = true; }
         if (s2 && *s2) { g_script[1] = parse_script(s2); g_scripted[1] = true; }
         if (dm) for (const char* p = dm; *p;) {
+            const bool every = p[0] == '+' && p[1] == '+';
+            if (every) p += 2;
             char* e; unsigned long v = strtoul(p, &e, 10);
             if (e == p) break;
-            g_dump_frames.push_back((uint32_t)v);
+            (every ? g_dump_every : g_dump_frames).push_back((uint32_t)v);
             p = e; while (*p == ',') p++;
         }
         if (const char* pk = getenv("T5_DF_POKE")) for (const char* p = pk; *p;) {
@@ -653,6 +727,14 @@ struct Register {
             while (*p == ',' || *p == ' ') p++;
         }
         if (const char* ga = getenv("T5_DF_GUARD_AT")) g_guard_at = (uint32_t)atoi(ga);
+        if (const char* w = getenv("T5_DF_WATCHPOINT")) for (const char* p = w; *p && g_wp_addr.size() < 4;) {
+            char* e; const uint32_t a = (uint32_t)strtoul(p, &e, 16);
+            if (e == p) break;
+            g_wp_addr.push_back(a);
+            p = e; while (*p == ',' || *p == ' ') p++;
+        }
+        if (const char* wa = getenv("T5_DF_WATCHPOINT_AT")) g_wp_at = (uint32_t)atoi(wa);
+        else if (!g_wp_addr.empty()) g_wp_at = 0;
         if (const char* fd = getenv("T5_DF_FIND")) {
             std::string s = fd, item;
             for (size_t i = 0; i <= s.size(); i++) {

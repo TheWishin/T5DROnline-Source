@@ -70,6 +70,8 @@ class Config:
     strike_limit: int = 3           # T5L_STRIKE_LIMIT: voids caused within 24 h before they count as losses
     pair_cap: int = 10              # T5L_PAIR_CAP: ranked matches per pair of accounts per 24 h that count
     rematch_window: float = 20.0    # T5L_REMATCH_WINDOW: seconds to agree on a rematch
+    rematch_direct: bool = True     # T5L_REMATCH_DIRECT: a rematch after a match on the relay tries the direct path again
+                                    # (a new connection) instead of continuing on the relay; a second failure keeps it
     # ranked sets (docs/RANKED.md "Ranked sets"): first to this many games wins the set, rated once at its end;
     # 1 = every ranked game is rated on its own (the old way, and always with clients that do not announce "sets")
     ranked_set_wins: int = 2        # T5L_RANKED_SET_WINS
@@ -93,6 +95,12 @@ class Config:
                                     # (when both clients announce "old_stages"; docs/RANKED.md "Characters and stages")
     ranked_input_delay: int = 2     # T5L_RANKED_INPUT_DELAY: rollback input delay of ranked matches, frames (fixed: the
                                     # players' own setting -- auto / 0 / 1 / 2 -- applies to other matches; -1 = theirs)
+    # 1.1.5 smoother high-ping matches (docs/NETPLAY.md "Input delay"): at least this rollback input delay when the
+    # measured round trip is above a threshold, "ms:frames" pairs ("150:3,250:4": 3 frames above 150 ms, 4 above
+    # 250 ms); both PCs get it in match_start (ranked too: the higher of the two). "" = off
+    ping_delays: str = "150:3,250:4"  # T5L_PING_DELAYS
+    pair_ping_days: float = 7.0     # T5L_PAIR_PING_DAYS: the measured ping of two players who played counts this long for
+                                    # their next estimate (matchmaking, the ping shown before a match; memory only)
     # community tournaments (docs/TOURNAMENTS.md)
     tour_organizers: str = "any"    # T5L_TOUR_ORGANIZERS: who may create one: any (every account), none, or a comma list
                                     # of account names
@@ -152,6 +160,8 @@ class Config:
                                     # the same player asks the same player again only after this (0 = off)
     lag_tolerance: float = 1.0      # T5L_LAG_TOLERANCE: extra frames of waiting before the lag check says "more than the ping explains"
     lag_wait: float = 6.0           # T5L_LAG_WAIT: seconds to wait for the second player's lag report
+    lag_wait_share: float = 0.05    # T5L_LAG_WAIT_SHARE: a game that waited this share of the match time for the other's
+                                    # inputs (3 s or more): the lag check says "this match lagged" (0 = off)
     # PC speed (docs/RANKED.md "Slow PCs"): lockstep plays at the slower PC's speed
     min_fps: float = 40.0           # T5L_MIN_FPS: a PC whose last match ran slower stays out of ranked (0 = off)
     warn_fps: float = 55.0          # T5L_WARN_FPS: below this both players are warned at match found (0 = off)

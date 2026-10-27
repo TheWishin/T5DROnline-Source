@@ -111,7 +111,7 @@ class DriverSourceTest(unittest.TestCase):
         # nothing to load: the reader idle and every loader thread parked (a starved decoder is still working)
         self.assertIn("busy == 0 && q == 0 && sem_parked(rd32(kReader)) && sem_parked(rd32(kDecoderSemPtr))", body)
         self.assertIn("sem_parked(rd32(kAsyncSemPtr))", body)
-        self.assertIn("TerminateProcess(GetCurrentProcess(), 6)", body)
+        self.assertIn("t5p_exit_now(6)", body)          # TerminateProcess(self) on Windows (src/platform/t5_plat.h)
         self.assertIn("f - g_sl_frame < limit * kStuckMinFps", body)
         self.assertRegex(self.src, r"void stuck_check\(uint32_t f\)\s*\{\s*select_load_check\(f\);")
 

@@ -49,14 +49,138 @@ result, and when it is shown or hidden; the tests read it),
 `T5_TRAINING_STATS=1` (the hook's CPU time every 600 fight frames),
 `T5_TRAINING_AB=<n>` (cost measurement: everything off in every other block of
 n fight frames, see "Cost"), `T5_TRAINING_TRACE=<file>` (research: the fight
-block of every live frame, see below).
+block of every live frame, see below; `T5_TRAINING_TRACE_RANGES=addr:len[:every],...`
+adds more guest ranges, hex, every n frames).
 
 Button numbers are the game's default button setting (1 = Square, 2 =
 Triangle, 3 = Cross, 4 = Circle; keyboard A S Z X). The display shows the
 pad buttons that were pressed: if the button layout was changed in the game's
 own Options menu, Square still shows as 1 even if it is a kick there.
 
-## It never changes the game
+## Practice tools (1.1.5)
+
+In **Practice**, offline, P1 steers a few practice helpers by holding
+**SELECT** and pressing a button. While SELECT is held -- and afterwards
+until the pad is let go completely -- the game sees nothing of P1's pad, so a
+combo never makes P1 attack, walk or open the menu.
+
+| Combo | What it does |
+|---|---|
+| SELECT + 3 | both fighters back to where the fight started |
+| SELECT + f+3 | the dummy against the wall in front of you, you right in front of it |
+| SELECT + b+3 | the dummy against the wall behind you, you in front of it (you switch sides) |
+| SELECT + df+3 | you against the wall in front of you, the dummy in front of you (you switch sides) |
+| SELECT + db+3 | you against the wall behind you, the dummy in front of you |
+| SELECT + 1 | record the dummy in the current slot: your pad plays the dummy, your own fighter stands; again: stop (at most 20 s) |
+| SELECT + 2 | play the current slot once; again: stop |
+| SELECT + 4 | play the current slot again and again; again: stop |
+| SELECT, tap up / down | the next / previous slot (5 slots) |
+| SELECT, tap forward / back | what the dummy does: as set in the game's Practice menu, blocks after the first hit, crouches, walks forward and back, sidesteps |
+
+f and b are as you see them (f = toward the dummy): standing on the left,
+f+3 puts the dummy against the right wall. A recording is kept as the dummy
+saw it (forward = toward you), so it plays the same from either side. The
+slots live as long as the game runs.
+
+The overlay shows what changed for two seconds under the frame data (`SLOT 2
+(3.4s)  DUMMY: CROUCH`), and `REC 1  2.5s` / `PLAY 1  1.2/3.4s` /
+`LOOP 1 ...` while a slot records or plays -- also with the overlay itself
+Off.
+
+Launcher: **Settings -> Practice tools** (German: *Trainingswerkzeuge*):
+SELECT combos on or off (default on), the dummy's behaviour at the start, a
+short help text. Environment: `T5_PRACTICE=1`, `T5_PRACTICE_DUMMY=game|block|
+crouch|walk|step`, `T5_PRACTICE_LOG=<file>` (one line per action and the
+places of both fighters; `tools/practice_check.py` reads it).
+
+### Offline Practice only
+
+Unlike the overlay, the practice tools change the game: P1's and the dummy's
+pad masks before the game sees them, and the fighters' places. So
+`src/training/practice.cpp` acts only when all of these hold, checked in every
+frame:
+
+- the game was started without netplay: no `T5_NET_MODE`, no `T5_CTL_DIR`,
+  no `T5_REPLAY_FILE`, and `t5_netplay_enabled()` is 0. `t5_hooks.cpp` calls
+  it only from its offline keyread tick (`g_offline`), which a lockstep or
+  rollback session, a replay and a spectated match never run; there the ring
+  is written in exactly the same order as before;
+- the game type is Practice (10 at 0x1008EBAC) and the fight runs (phase 17);
+- `T5_PRACTICE=1`.
+
+`tests/test_training.py` checks these gates in the source. Online matches
+run the code they ran before: CODE_VERSION is unchanged.
+
+### How it works
+
+- **Places** (traced in Practice, `T5_TRAINING_TRACE`): a fighter's place on
+  the floor is x at +0x10 and z at +0x18 of its block (y, +0x14, is 0 on the
+  ground) and the angle it faces at +0x30 (it looks along (sin a, cos a)).
+  The root -- the place moved by the animation -- is at +0x24 / +0x2C with
+  its angle at +0x84, and three 4x4 world matrices of the root (this frame and
+  the two before) at +0x700, +0x740 and +0x780: rows 0-2 the rotation (row 2
+  the facing direction), row 3 the position. The game takes the root's motion
+  from the matrices: a place written to the base alone sprang back or jumped
+  (a fighter put 4,000 units away moved another 1,273 in the next frame) and
+  an angle written to +0x30 alone was undone. A reset moves and turns all of
+  them alike. At the start of the fight the two stand 2,000 units apart
+  facing each other (on stage 20: P1 at (1000, 0) facing -pi/2, the dummy at
+  (-1000, 0) facing +pi/2; other stages turn the pair).
+- **Round start**: the places of the first frame of the fight, kept.
+- **Walls**: the walls are the stage's own collision, so they are found with
+  it, not read from the stage. A place past a wall is one the game does not
+  keep: it puts the fighter somewhere else inside the stage (traced: a fighter
+  put 60,000 units out along the line came back 2,400 units off the line). The
+  game also keeps the two fighters within about 6,300 units of each other (a
+  fighter sliding away alone was held there, on a stage without a wall that
+  near). So both slide along the line through them, 1,100 units apart, the one
+  that goes to the wall in front, 500 units a frame; the first place the game
+  did not keep (moved by more than 80 units: a fighter put down moves up to
+  ~30 by itself) ends the slide, and five frames of halving between it and the
+  last place it kept find the wall to 16 units. No wall within 30,000 units (a
+  second of sliding): the places from before come back and the status line
+  says `NO WALL THAT WAY`. They end 1,100 units apart at the wall. Checked in
+  Practice on stage 19 (walls about 9,500 units either side of the start) and
+  stage 20 (about 8,600): all four wall resets found them in 20-25 frames
+  (`tools/practice_check.py`); on stages 17, 18, 21, 22 and 24 a fighter
+  walked 8,000-13,000 units without reaching one.
+- **Facing**: the game keeps each fighter's own facing -- an angle written
+  to it is undone by the animation in the next frame -- and a fighter turns
+  to the other one when it starts a move (traced: walking off after
+  sidesteps). So when a reset leaves a fighter with its back to the other one
+  (the resets that switch sides, and a round-start reset after them), it gets
+  a tap toward the other one on its pad two frames later (the dummy on
+  CONTROLLER for that tap): both turned around in the game (P1 with its turn
+  move 0x0373), which also takes them ~300 units forward, so 24 frames later
+  both go back to the places the reset gave them, facing as they now do.
+- **The dummy** follows the game's own Practice menu, TRAINING DUMMY
+  (0x1008EFF3, traced by stepping through the menu): 0 stand without
+  guarding, 1 stand while guarding, 2 crouch without guarding, 3 crouch while
+  guarding, 4 guard against all attacks, 5 standard auto guard, 6 / 7 quick
+  roll (fore- / background), 8 quick recovery, 9 backward roll, 10
+  CONTROLLER ("control with opponent controller": the dummy plays P2's pad).
+  P2's pad alone does nothing to the dummy otherwise. That byte is what the
+  menu shows; when the menu closes the game copies it to 0x1008EC63 and
+  0x1008EC67, and the dummy acts on those (traced: 9 and 9 after "backward
+  roll", 10 and 10 after CONTROLLER, and then the dummy walked and jabbed
+  with P2's pad; with only 0x1008EFF3 written it stood still). So a behaviour
+  writes all three while it is chosen and gives the player's own choice back
+  when it is not (and while the pause menu is open, 0x1008F083 = 0, so the
+  menu shows the player's choice): *blocks after the first hit* is the game's own guard --
+  stand without guarding until the dummy is hit, then guard against all
+  attacks (lows too) until it has been able to act for half a second;
+  *crouches*, *walks* and *sidesteps* are CONTROLLER with the dummy's pad
+  written into the game's input ring for P2 (down; forward / back 45 frames
+  each; a tap of up or down every 50 frames); a recording records and plays on
+  CONTROLLER the same way. Checked in the game: the first jab hit the
+  blocking dummy and the next ones were blocked; the dummy crouched, walked
+  forward and back and sidestepped both ways; a recording (forward, two jabs,
+  back) played once and in a loop.
+
+## The overlay never changes the game
+
+(The practice tools above do, in offline Practice only; everything below is
+about the overlay.)
 
 - `src/training/training.cpp` only **reads** guest memory, through three read
   helpers (`rd8/rd16/rd32`); it never stores into it, never calls into the game
@@ -132,7 +256,7 @@ overlay reads:
 | +0x1D2 | 1 = the fighter stands on the right side (forward is LEFT) |
 | +0x20C | bit 24: a new move (animation) started this frame |
 | +0x214 | bits 16-17: the move's attack is active this frame |
-| +0x21C, +0x220 | **can act**: +0x220 low byte 1 and either +0x220 bit 24 (the cancellable end of a move, of a block or a hit reaction) or +0x21C bit 0 (idle, walking, crouching) |
+| +0x21C, +0x220 | **can act**: +0x220 low byte 1 and either +0x220 bit 24 (the cancellable end of a move, of a block or a hit reaction) or +0x21C bit 0 (idle, walking, crouching). In a hit reaction (+0x15C >= 0x10000) only bit 24 counts (see below) |
 | +0x6BC | health (i16) |
 | +0x6D6 | the pad input the fighter read this frame (the game's mask: up 0x1000, right 0x2000, down 0x4000, left 0x8000, Triangle 0x10, Circle 0x20, Cross 0x40, Square 0x80); the CPU's inputs (Practice dummy, Arcade) show here too |
 
@@ -169,6 +293,30 @@ attacking, defender idle or pressing), whiffs 25 frames. Other values the
 traces gave: Jin d+4 i16, -15 on block, -4 on hit; a throw i12 (knockdown).
 In Practice Lili's jab against the dummy: i10, +4 on hit; her d+4 i16,
 knockdown.
+
+**Hit reactions that look free too early (1.1.5).** Players saw Bryan's d+4
+at -17 on hit. Traced in local lockstep (Bryan vs Jin): Jin's reaction to it
+(+0x168 0x0307) sets the idle bit (+0x21C bit 0, +0x220 = 1) nine frames
+in, while its cancellable end (+0x220 bit 24) comes at 29 and the standing
+move at 30; a jab Jin mashed from the hit on came out only at 30. Every
+other reaction traced (blocks, jab and kick hits, juggle hits, P1 and P2)
+turns able to act with bit 24 itself. So inside a hit reaction the tracker
+now counts bit 24 only: Bryan's d+4 is i15, **-13 on block, +3 on hit**,
+both checked with the defender mashing a jab.
+
+**Bryan's taunt (1+3+4).** Players saw it at +14 on hit. Traced the same way
+(Jin walking into it, Jin guarding, Bryan or Jin mashing a jab): the +14 is
+right, but the overlay called it a block and gave no startup (or the one of
+the move before). The taunt is an animation in which Bryan can act from its
+first frame -- it is cancellable: a jab pressed in its last active frame
+starts in the next one -- so it never looked like a move of its own; its
+attack is active 28 frames in. Jin's reaction is a stun (+0x15C 0x10000,
+the hit counter of a combo, a guard has 0) for 0 damage, the same whether he
+guards or not, and he can act again 15 frames after it began (a jab he
+mashed started one frame later). Bryan's jab started 14 frames before Jin's.
+Now an attack that comes out of such an animation is a move from the frame
+that animation began, a hit reaction counts as a hit without damage, and an
+older move no longer lends its startup: **i28, hit, +14**, guarded or not.
 
 These are the game's own mechanics (who can start a move first). Published
 frame data for other Tekken games often says "+1 / +8" for a jab; the numbers
@@ -223,15 +371,23 @@ own resolution and stays sharp at any Internal resolution and window size.
   attacking, a slow low -15, a defender pressing in its stun, a press that
   starts nothing, whiff 25, walking and backdashes give nothing, a string, a
   jab mashed after recovery, a sweep that leaves the defender lying, a
-  defender that cannot act for long, a counter hit); the font (every
+  defender that cannot act for long, a counter hit, a hit reaction that sets
+  the idle bit early (Bryan's d+4), a wind-up and attack move (Bryan's f+1+2)
+  and a sidestep into an attack); the practice tools (every SELECT combo
+  from either side, P1 hidden until the pad is neutral, the dummy's
+  behaviours, the five slots, the wall resets' probe and placement); the font (every
   character used has its own glyph, no two letters, digits or arrows alike) and
   the layout (whole pixels, whole font pixels at 1366x768 ... 3840x2160, the
   letterbox of a 16:10 window, alignment, shadows, UTF-8, unpublished lists);
-- checks that `src/training` only reads guest memory and is called only for
-  live frames;
+- checks that the overlay (`training.cpp`, `training_logic.h`) only reads
+  guest memory and is called only for live frames, and that the practice tools
+  (`practice.cpp`) are called only from the offline keyread tick, act only
+  behind their gate (offline, Practice, the fight, `T5_PRACTICE=1`), store
+  only through their one helper and never call into the game;
 - checks that patch 0045 changes `rsx_live_draw.c` by exactly two added lines;
-- checks the launcher setting (default, every choice, the two options, a
-  broken saved value) and that every choice has a German text.
+- checks the launcher settings (default, every choice, the two options, a
+  broken saved value; the practice tools on / off and the dummy's behaviour)
+  and that every choice has a German text.
 
 In the game:
 
@@ -247,6 +403,14 @@ In the game:
   frame-data lines as in the log, German texts with a German Windows; back to
   the title: hidden (`hide phase 0` in the log, nothing on the title screen);
   the test card at 1920 x 1080 (`RSX_OVERLAY_TEST=1`).
+- `python tools/practice_check.py [--root <build> ...]`: Practice through the
+  menu driver with the practice tools on: SELECT+3 after walking away, the four
+  wall resets, the dummy's behaviours, a recording played once and in a loop;
+  PASS = the places in the practice log are where they should be 30 frames
+  after each reset, a wall found for each wall reset, the slot recorded and
+  played (1.1.5 final build: PASS on stage 20 -- all four walls, every reset
+  in place, the dummy's settings back afterwards; `tools/training_check.py`
+  PASS as before, 25 results).
 - The smoke suite (quick) runs without the overlay, as players with the
   setting Off and every existing test do.
 

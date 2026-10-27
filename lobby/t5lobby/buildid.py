@@ -54,6 +54,18 @@ class BuildInfo:
         return BuildInfo(str(build.get("elf", "")), str(build.get("code", "")),
                          str(build.get("release", "")), int(build.get("net", 0))).build_id
 
+    @staticmethod
+    def has_online(out):
+        """Does the game built in `out` have the online modules (netplay, rollback, direct fight)? A Windows
+        build always has them; a macOS build only when built with tools/build_game.py --macos-online, which
+        records "online": true in <out>/build/t5dr_build.json (docs/MACOS_ONLINE_TEST.md). An unreadable
+        stamp answers True: from_out_dir() reports that problem."""
+        try:
+            with open(os.path.join(out, "build", "t5dr_build.json"), encoding="utf-8") as f:
+                return json.load(f).get("online", True) is not False
+        except (OSError, ValueError):
+            return True
+
     @classmethod
     def from_out_dir(cls, out, release="dev"):
         """From a build made by tools/build_game.py: <out>/game/EBOOT.elf and

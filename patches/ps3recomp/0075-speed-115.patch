@@ -1,0 +1,732 @@
+diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
+index 5f2aa48..98853d5 100644
+--- a/libs/video/rsx_live_draw.c
++++ b/libs/video/rsx_live_draw.c
+@@ -90,6 +90,7 @@ void rsx_pf_stamp(int slot) { (void)slot; }
+ void rsx_pf_guest_flip(void) {}
+ void rsx_live_draw_wait_totals(long long* g, long long* p) { *g = 0; *p = 0; }
+ double rsx_live_draw_gpu_ms(void) { return -1.0; }
++void rsx_live_draw_gpu_info(int* uma, unsigned* tier, int* fif) { *uma = -1; *tier = 0; *fif = 1; }
+ int  rsx_live_draw_display_hybrid(void) { return -1; }
+ /* The ticker (boot_main.cpp) publishes its next tick here for the D3D12 present; nothing reads it
+  * without that engine. */
+@@ -510,6 +511,10 @@ static int g_ld_stage_blur = 1;
+  * RSX_PRESENT_FAST=0: patch 0043's / 0038's shaders, for comparisons). */
+ static int g_ld_gview_fast = -1, g_ld_present_fast = -1;
+ static unsigned g_ld_vendor;      /* the render adapter's PCI vendor id (ld_create_device) */
++/* Patch 0075: what ld_create_device found -- integrated (UMA) or not (-1 unknown), and the resource
++ * binding tier (0 unknown): the frames-in-flight default and the [slow-frames] verdict read them. */
++static int g_ld_gpu_uma = -1;
++static unsigned g_ld_bind_tier;
+ /* 2 = bilinear pairs (AMD: bit-identical to the loop, measured), 1 = unrolled
+  * loads (bit-identical everywhere), 0 = patch 0043's loop */
+ static int ld_gview_fast(void)
+@@ -2326,13 +2331,22 @@ static ld_slot_t g_ld_slot[LD_SLOTS_MAX];
+ static u32 g_ld_nslots = 1, g_ld_cur = 0;
+ static u64 g_ld_vb_cap, g_ld_ib_cap;  /* per slot (half the old ring each with 2 slots) */
+ static u64 g_ld_overlap_waits;         /* begin-recording waits for a slot (frames) */
++/* Patch 0075: two frames in flight by default on a dedicated graphics card. A player's i3-3240 with an
++ * old GT 730 (resource binding tier 1): GPU busy 32-36 ms a frame, and with one slot the walker waited
++ * 20 ms of every frame for it before recording -- the "render translation 27 ms" of that log was 20 ms
++ * of that wait. Recording the next frame while the GPU draws turns game + wait + recording into the
++ * longer of the two (docs/RENDER_PERF.md "2-core mode and slow graphics cards"). On integrated
++ * graphics one slot stays (one memory: the overlap made the GPU slower, 0063). */
++static const char* g_ld_fif_why = "";
+ static int ld_frames_in_flight_cfg(void)
+ {
+     static int v = -1;
+     if (v < 0) {
+         const char* e = getenv("RSX_FRAMES_IN_FLIGHT");
+-        v = e && *e == '2' ? 2 : 1;   /* default 1: on integrated graphics 2 was slower (RENDER_PERF.md) */
+-        { const char* a = getenv("RSX_ASYNC_PRESENT"); if (a && *a == '0') v = 1; }
++        if (e && (*e == '1' || *e == '2')) { v = *e - '0'; g_ld_fif_why = "RSX_FRAMES_IN_FLIGHT"; }
++        else if (g_ld_gpu_uma == 0) { v = 2; g_ld_fif_why = "a dedicated graphics card"; }
++        else { v = 1; g_ld_fif_why = g_ld_gpu_uma > 0 ? "integrated graphics" : "graphics not known yet"; }
++        { const char* a = getenv("RSX_ASYNC_PRESENT"); if (a && *a == '0') { v = 1; g_ld_fif_why = "RSX_ASYNC_PRESENT=0"; } }
+     }
+     return v;
+ }
+@@ -2372,7 +2386,8 @@ static void ld_slots_init(const D3D12_HEAP_PROPERTIES* hp, D3D12_RESOURCE_DESC*
+     s0->srv_heap = g.srv_heap; s0->smp_heap = g.smp_heap;
+     g_ld_nslots = 1; g_ld_cur = 0;
+     if (ld_frames_in_flight_cfg() < 2) {
+-        return;   /* the default: no line */
++        fprintf(stderr, "[pacing] frames in flight: 1 (%s)\n", g_ld_fif_why);   /* patch 0075: always a line */
++        return;
+     }
+     ld_slot_t* s1 = &g_ld_slot[1];
+     D3D12_RANGE rr = {0, 0};
+@@ -2403,8 +2418,8 @@ static void ld_slots_init(const D3D12_HEAP_PROPERTIES* hp, D3D12_RESOURCE_DESC*
+         return;   /* the half-size vertex/index rings of slot 0 stay: still far above a frame's use */
+     }
+     g_ld_nslots = 2;
+-    fprintf(stderr, "[pacing] frames in flight: 2 (the next frame is recorded while the GPU draws this one; "
+-                    "RSX_FRAMES_IN_FLIGHT)\n");
++    fprintf(stderr, "[pacing] frames in flight: 2 (%s: the next frame is recorded while the GPU draws this one; "
++                    "RSX_FRAMES_IN_FLIGHT=1 = one)\n", g_ld_fif_why);
+ }
+ 
+ /* Present latency (RSX_PRESENT_MODE, RSX_FRAME_LATENCY). The swap chain is a
+@@ -2676,6 +2691,8 @@ static int ld_create_device(IDXGIFactory4* factory)
+                     && arch.UMA && !(d.Flags & DXGI_ADAPTER_FLAG_SOFTWARE);
+     snprintf(g_ld_gpu_name, sizeof g_ld_gpu_name, "%s", name);
+     g_ld_vendor = (unsigned)d.VendorId;
++    g_ld_gpu_uma = uma || (d.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) ? 1 : 0;   /* (a software adapter: as UMA) */
++    g_ld_bind_tier = (unsigned)o.ResourceBindingTier;
+     fprintf(stderr, "[gpu] adapter: %s (vendor %04X, %llu MB, feature level %u_%u, resource binding tier %u, "
+                     "heap tier %u, %s) -- %s\n",
+             name, (unsigned)d.VendorId, (unsigned long long)(d.DedicatedVideoMemory >> 20),
+@@ -2744,6 +2761,14 @@ double rsx_live_draw_gpu_ms(void)
+     ld_gt_harvest();
+     return (double)g_gt.done_ticks * g_gt.us_per_tick / 1000.0;
+ }
++/* Patch 0075: for the [slow-frames] verdict (boot_main.cpp) -- integrated graphics (1), dedicated (0)
++ * or not known (-1), the resource binding tier (0 = not known) and the frames in flight. */
++void rsx_live_draw_gpu_info(int* uma, unsigned* tier, int* fif)
++{
++    *uma = g_ld_gpu_uma;
++    *tier = g_ld_bind_tier;
++    *fif = (int)g_ld_nslots;
++}
+ void rsx_live_draw_wait_totals(long long* gpu_wait_ticks, long long* present_ticks)
+ {
+     *gpu_wait_ticks = (long long)g_pf.flush_wait_ticks;          /* the CPU waiting for GPU fences */
+@@ -3023,12 +3048,15 @@ static struct {
+     u64 total_ticks, lists, frames0;
+ } g_gp = { -1 };
+ 
++static u64 g_ld_up[5], g_ld_up_frames;   /* patch 0075: upload-heap bytes per frame (sink_flip) */
+ static void ld_gp_init(void)
+ {
+     if (g_gp.on >= 0) return;
+     g_gp.on = 0;
+     const char* e = getenv("RSX_GPU_PASSES");
+-    if (!(e && *e && *e != '0')) return;
++    /* Patch 0075: on by default with resource binding tier 1 (an old card such as a Fermi GT 730: GPU time that
++     * did not follow the resolution -- the next log says which passes take it). */
++    if (!(e && *e ? *e != '0' : g_ld_bind_tier == 1)) return;
+     UINT64 freq = 0;
+     if (!g.queue || FAILED(g.queue->lpVtbl->GetTimestampFrequency(g.queue, &freq)) || !freq) return;
+     D3D12_QUERY_HEAP_DESC qd = {0};
+@@ -3051,7 +3079,8 @@ static void ld_gp_init(void)
+     g_gp.ms_per_tick = 1000.0 / (double)freq;
+     g_gp.last_key = ~0u;
+     g_gp.on = 1;
+-    fprintf(stderr, "[gpu-pass] per-pass timestamps on (RSX_GPU_PASSES)\n");
++    fprintf(stderr, "[gpu-pass] per-pass timestamps on (RSX_GPU_PASSES%s)\n",
++            e && *e ? "" : "; on by default with resource binding tier 1");
+ }
+ static void ld_gp_harvest(void);
+ static void ld_gp_mark(u32 kind, u32 a, u32 b, u32 w, u32 h, int fp16, u32 mrt)
+@@ -3187,6 +3216,15 @@ static void ld_gp_report(u32 frames_now)
+         if (A->draws) fprintf(stderr, ", %.0f draws", (double)A->draws / frames);
+         fprintf(stderr, ")");
+     }
++    /* patch 0075: the frame's vertices, indices and constants live in upload heaps (system memory): a
++     * dedicated card reads them over PCIe while it draws -- a candidate for an old card's GPU time */
++    if (g_ld_up_frames)
++        fprintf(stderr, " | read from system memory per frame: vertices %.2f MB, indices %.2f, vertex constants %.2f, "
++                        "pixel constants %.2f, texture uploads %.2f",
++                g_ld_up[0] / 1048576.0 / g_ld_up_frames, g_ld_up[1] / 1048576.0 / g_ld_up_frames,
++                g_ld_up[2] / 1048576.0 / g_ld_up_frames, g_ld_up[3] / 1048576.0 / g_ld_up_frames,
++                g_ld_up[4] / 1048576.0 / g_ld_up_frames);
++    memset(g_ld_up, 0, sizeof g_ld_up); g_ld_up_frames = 0;
+     fprintf(stderr, "\n");
+     g_gp.n_acc = 0; g_gp.total_ticks = 0; g_gp.lists = 0; g_gp.frames0 = frames_now;
+ }
+@@ -3205,7 +3243,7 @@ static int ld_async_present(void)
+  * hand out memory a queued frame still reads (docs/RENDER_PERF.md "Ring reuse"). */
+ enum { LDG_VB, LDG_IB, LDG_CB, LDG_PSCB, LDG_UPLOAD, LDG_N };
+ static int g_ldg_on = -1;
+-static u64* g_ldg_blk[LDG_N];
++static u64* g_ldg_blk[LD_SLOTS_MAX][LDG_N];   /* patch 0075: per frame slot (each slot has its own rings) */
+ static u64 g_ldg_checked, g_ldg_early;
+ static void ld_ring_guard(int ring, u64 off, u64 len)
+ {
+@@ -3216,16 +3254,19 @@ static void ld_ring_guard(int ring, u64 off, u64 len)
+         g_ldg_on = e && *e == '1';
+         if (g_ldg_on) {
+             const u64 cap[LDG_N] = { VERT_BUFFER_SIZE, INDEX_BUFFER_SIZE, CB_RING_BYTES, PS_CB_RING_BYTES, UPLOAD_SIZE };
+-            for (int i = 0; i < LDG_N; i++) g_ldg_blk[i] = (u64*)calloc((size_t)(cap[i] >> shift[i]) + 2, sizeof(u64));
++            for (int k = 0; k < LD_SLOTS_MAX; k++)
++                for (int i = 0; i < LDG_N; i++)
++                    g_ldg_blk[k][i] = (u64*)calloc((size_t)(cap[i] >> shift[i]) + 2, sizeof(u64));
+             fprintf(stderr, "[ring-guard] on: ring memory reuse is checked against the GPU fence (test hook)\n");
+         }
+     }
+-    if (!g_ldg_on || !len || !g_ldg_blk[ring]) return;
++    u64* const blk = g_ldg_on ? g_ldg_blk[g_ld_cur < LD_SLOTS_MAX ? g_ld_cur : 0][ring] : NULL;
++    if (!g_ldg_on || !len || !blk) return;
+     const u64 cur = g.fence_value + 1;           /* what the list being recorded will signal */
+     const u64 done = g.fence->lpVtbl->GetCompletedValue(g.fence);
+     g_ldg_checked++;
+     for (u64 b = off >> shift[ring]; b <= (off + len - 1) >> shift[ring]; b++) {
+-        const u64 last = g_ldg_blk[ring][b];
++        const u64 last = blk[b];
+         if (last && last != cur && last > done) {
+             if (g_ldg_early++ < 12)
+                 fprintf(stderr, "[ring-guard] %s ring bytes 0x%llX+%llu reused while list %llu still uses them "
+@@ -3236,7 +3277,7 @@ static void ld_ring_guard(int ring, u64 off, u64 len)
+             break;
+         }
+     }
+-    for (u64 b = off >> shift[ring]; b <= (off + len - 1) >> shift[ring]; b++) g_ldg_blk[ring][b] = cur;
++    for (u64 b = off >> shift[ring]; b <= (off + len - 1) >> shift[ring]; b++) blk[b] = cur;
+ }
+ 
+ static void ld_begin_recording_owned(void);
+@@ -3516,6 +3557,47 @@ static void decode_texel(u32 base_fmt, const u8* p, u32 remap, u8 d[4])
+     d[3] = remap_comp(s, remap, 0);
+ }
+ 
++/* Patch 0075: the commonest texture -- 32-bit A8R8G8B8 with the identity remap (0xAAE4) -- without the
++ * per-texel decode_texel (a format switch and four remap lookups a texel): RGBA is the guest's ARGB word
++ * rotated by one byte. The same bytes come out (RSX_TEX_FAST_CHECK=1 decodes every such level both ways
++ * and counts differences). The game's intro movie and the menus' movie backgrounds upload a 1280 x 720
++ * texture of this kind every other frame: 4 ms of the translation on the 7950X each, the i5-2500 log's
++ * "render translation" slow frames in its first 30 s. RSX_TEX_FAST=0: the per-texel decode. */
++static int ld_tex_fast_on(void)
++{
++    static int v = -1;
++    if (v < 0) { const char* e = getenv("RSX_TEX_FAST"); v = !(e && *e == '0'); }
++    return v;
++}
++static int ld_tex_fast_check(void)
++{
++    static int v = -1;
++    if (v < 0) { const char* e = getenv("RSX_TEX_FAST_CHECK"); v = e && *e == '1'; }
++    return v;
++}
++static u64 g_ld_tex_fast_levels, g_ld_tex_fast_diffs;
++static void decode_argb8_identity(const u8* src, u32 pitch, u32 w, u32 h, int linear, u32 lw, u32 lh, u8* dst)
++{
++    u32* out = (u32*)dst;
++    for (u32 y = 0; y < h; y++) {
++        u32* o = out + (size_t)y * w;
++        if (linear) {
++            const u8* row = src + (size_t)y * pitch;
++            for (u32 x = 0; x < w; x++) {
++                u32 v;
++                memcpy(&v, row + (size_t)x * 4, 4);
++                o[x] = (v >> 8) | (v << 24);
++            }
++        } else {
++            for (u32 x = 0; x < w; x++) {
++                u32 v;
++                memcpy(&v, src + (size_t)morton_index(x, y, lw, lh) * 4, 4);
++                o[x] = (v >> 8) | (v << 24);
++            }
++        }
++    }
++}
++
+ typedef struct { u32 w, h; const u8* data; u32 row_bytes, rows; } tex_level_t;
+ 
+ /* ---------------------------------------------------------------------------
+@@ -4104,14 +4186,30 @@ static ID3D12Resource* decode_guest_texture(const rsx_dsp_texture* t, u32 remap)
+               }
+               pdn++;
+           } }
+-        for (u32 y = 0; y < mh; y++)
+-            for (u32 x = 0; x < mw; x++) {
+-                const u8* pixel = linear
+-                    ? level_src + (size_t)y * pitch + (size_t)x * texel_size
+-                    : level_src + (size_t)morton_index(x, y, lw, lh) * texel_size;
+-                decode_texel(base_fmt, pixel, remap,
+-                             rgba[n] + ((size_t)y * mw + x) * 4);
+-            }
++        const int fast = base_fmt == TEX_FMT_A8R8G8B8 && texel_size == 4 && (remap & 0xFFFFu) == 0xAAE4u &&
++                         ld_tex_fast_on();   /* patch 0075 */
++        if (fast)
++            decode_argb8_identity(level_src, pitch, mw, mh, linear, lw, lh, rgba[n]);
++        u8* check = fast && ld_tex_fast_check() ? (u8*)malloc((size_t)mw * mh * 4) : NULL;
++        u8* slow_dst = fast ? check : rgba[n];
++        if (slow_dst) {
++            for (u32 y = 0; y < mh; y++)
++                for (u32 x = 0; x < mw; x++) {
++                    const u8* pixel = linear
++                        ? level_src + (size_t)y * pitch + (size_t)x * texel_size
++                        : level_src + (size_t)morton_index(x, y, lw, lh) * texel_size;
++                    decode_texel(base_fmt, pixel, remap,
++                                 slow_dst + ((size_t)y * mw + x) * 4);
++                }
++        }
++        if (check) {
++            g_ld_tex_fast_levels++;
++            if (memcmp(check, rgba[n], (size_t)mw * mh * 4)) g_ld_tex_fast_diffs++;
++            if ((g_ld_tex_fast_levels & 63u) == 1u)
++                fprintf(stderr, "[tex-fast] check: %llu levels decoded both ways, %llu different\n",
++                        (unsigned long long)g_ld_tex_fast_levels, (unsigned long long)g_ld_tex_fast_diffs);
++            free(check);
++        }
+         /* LD_TEXRGBA_DUMP=1: the DECODED level-0 RGBA, with a non-black count
+          * and the remap that produced it.
+          *
+@@ -11291,6 +11389,121 @@ static void sink_clear_impl(void* user, const rsx_dispatch* r, u32 mask)
+     }
+ }
+ 
++/* Patch 0075 test hook: RSX_TEST_SLOW_GPU=<loops>[,<groups>] -- a slower graphics card on a fast one.
++ * Every frame gets one compute dispatch before its present: <groups> x 64 threads (default 256) each
++ * running <loops> dependent multiply-adds, i.e. a fixed amount of GPU time that the frame's own work
++ * waits behind (the GPU busy line shows how much; the RTX 3090 here: ~1 ms per 100,000 loops at
++ * 256 groups). Nothing is ever written (the store is behind a condition that is never true), the
++ * frame's pictures stay the same. Test only (docs/RENDER_PERF.md "2-core mode and slow graphics
++ * cards": one or two frames in flight with a GPU slower than the game). */
++static int g_ld_sg_cfg = -1;
++static u32 g_ld_sg_groups;
++static ID3D12RootSignature* g_ld_sg_rs;
++static ID3D12PipelineState* g_ld_sg_pso;
++static ID3D12Resource* g_ld_sg_buf;
++static ID3D12DescriptorHeap* g_ld_sg_heap;   /* one UAV, CPU side; copied into the frame's SRV ring */
++static void ld_slow_gpu_init(void)
++{
++    g_ld_sg_cfg = 0;
++    const char* e = getenv("RSX_TEST_SLOW_GPU");
++    if (!e || !*e || atoi(e) <= 0) return;
++    char loops[16];
++    snprintf(loops, sizeof loops, "%d", atoi(e));
++    const char* c = strchr(e, ',');
++    g_ld_sg_groups = c && atoi(c + 1) > 0 ? (u32)atoi(c + 1) : 256u;
++    static const char src[] =
++        "RWByteAddressBuffer o : register(u0);\n"
++        "[numthreads(64, 1, 1)]\n"
++        "void main(uint3 id : SV_DispatchThreadID) {\n"
++        "    float x = (float)id.x * 1e-7f;\n"
++        "    [loop] for (uint i = 0; i < LOOPS; i++) x = mad(x, 0.9999999f, 1e-7f);\n"
++        "    if (x == 12345.678f) o.Store(0, asuint(x));\n"
++        "}\n";
++    const D3D_SHADER_MACRO defs[] = { { "LOOPS", loops }, { NULL, NULL } };
++    ID3DBlob* cs = NULL; ID3DBlob* err = NULL;
++    if (FAILED(D3DCompile(src, sizeof src - 1, "slow_gpu", defs, NULL, "main", "cs_5_0", 0, 0, &cs, &err))) {
++        fprintf(stderr, "[test] RSX_TEST_SLOW_GPU: shader failed: %s\n",
++                err ? (const char*)err->lpVtbl->GetBufferPointer(err) : "?");
++        if (err) err->lpVtbl->Release(err);
++        return;
++    }
++    if (err) err->lpVtbl->Release(err);
++    D3D12_DESCRIPTOR_RANGE range = {0};
++    range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
++    range.NumDescriptors = 1;
++    D3D12_ROOT_PARAMETER rp = {0};
++    rp.ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
++    rp.DescriptorTable.NumDescriptorRanges = 1;
++    rp.DescriptorTable.pDescriptorRanges = &range;
++    rp.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
++    D3D12_ROOT_SIGNATURE_DESC rsd = {0};
++    rsd.NumParameters = 1; rsd.pParameters = &rp;
++    ID3DBlob* sig = NULL;
++    int ok = SUCCEEDED(D3D12SerializeRootSignature(&rsd, D3D_ROOT_SIGNATURE_VERSION_1, &sig, NULL)) &&
++             SUCCEEDED(g.dev->lpVtbl->CreateRootSignature(g.dev, 0, sig->lpVtbl->GetBufferPointer(sig),
++                           sig->lpVtbl->GetBufferSize(sig), &IID_ID3D12RootSignature, (void**)&g_ld_sg_rs));
++    if (sig) sig->lpVtbl->Release(sig);
++    if (ok) {
++        D3D12_COMPUTE_PIPELINE_STATE_DESC pd = {0};
++        pd.pRootSignature = g_ld_sg_rs;
++        pd.CS.pShaderBytecode = cs->lpVtbl->GetBufferPointer(cs);
++        pd.CS.BytecodeLength = cs->lpVtbl->GetBufferSize(cs);
++        ok = SUCCEEDED(g.dev->lpVtbl->CreateComputePipelineState(g.dev, &pd, &IID_ID3D12PipelineState,
++                                                                 (void**)&g_ld_sg_pso));
++    }
++    cs->lpVtbl->Release(cs);
++    if (ok) {
++        D3D12_HEAP_PROPERTIES hp = {0};
++        hp.Type = D3D12_HEAP_TYPE_DEFAULT;
++        D3D12_RESOURCE_DESC bd = {0};
++        bd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
++        bd.Width = 256; bd.Height = 1; bd.DepthOrArraySize = 1; bd.MipLevels = 1;
++        bd.SampleDesc.Count = 1; bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
++        bd.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
++        ok = SUCCEEDED(g.dev->lpVtbl->CreateCommittedResource(g.dev, &hp, D3D12_HEAP_FLAG_NONE, &bd,
++                           D3D12_RESOURCE_STATE_UNORDERED_ACCESS, NULL, &IID_ID3D12Resource, (void**)&g_ld_sg_buf));
++    }
++    if (ok) {
++        D3D12_DESCRIPTOR_HEAP_DESC hd = {0};
++        hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV; hd.NumDescriptors = 1;
++        ok = SUCCEEDED(g.dev->lpVtbl->CreateDescriptorHeap(g.dev, &hd, &IID_ID3D12DescriptorHeap,
++                                                           (void**)&g_ld_sg_heap));
++    }
++    if (ok) {
++        D3D12_UNORDERED_ACCESS_VIEW_DESC ud = {0};
++        ud.Format = DXGI_FORMAT_R32_TYPELESS;
++        ud.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
++        ud.Buffer.NumElements = 64;
++        ud.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
++        D3D12_CPU_DESCRIPTOR_HANDLE h;
++        g_ld_sg_heap->lpVtbl->GetCPUDescriptorHandleForHeapStart(g_ld_sg_heap, &h);
++        g.dev->lpVtbl->CreateUnorderedAccessView(g.dev, g_ld_sg_buf, NULL, &ud, h);
++    }
++    if (!ok) { fprintf(stderr, "[test] RSX_TEST_SLOW_GPU: setup failed\n"); return; }
++    g_ld_sg_cfg = 1;
++    fprintf(stderr, "[test] RSX_TEST_SLOW_GPU: %s loops x %u groups of 64 threads of GPU work every frame "
++                    "(a slower graphics card)\n", loops, g_ld_sg_groups);
++}
++static void ld_slow_gpu_frame(void)
++{
++    if (g_ld_sg_cfg < 0) ld_slow_gpu_init();
++    if (g_ld_sg_cfg <= 0 || g.srv_ring_used >= SRV_RING_TABLES) return;
++    const u32 base = g.srv_ring_used++ * SRV_TABLE_SIZE;
++    D3D12_CPU_DESCRIPTOR_HANDLE dst = ld_heap_cpu(g.srv_heap, &g_hs_srv), src;
++    dst.ptr += (size_t)base * g.srv_step;
++    g_ld_sg_heap->lpVtbl->GetCPUDescriptorHandleForHeapStart(g_ld_sg_heap, &src);
++    g.dev->lpVtbl->CopyDescriptorsSimple(g.dev, 1, dst, src, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
++    D3D12_GPU_DESCRIPTOR_HANDLE gpu = ld_heap_gpu(g.srv_heap, &g_hs_srv);
++    gpu.ptr += (u64)base * g.srv_step;
++    ld_bound_invalidate();   /* the dispatch records its own state */
++    ID3D12DescriptorHeap* heaps[] = {g.srv_heap, g.smp_heap};
++    LDL->lpVtbl->SetDescriptorHeaps(LDL, 2, heaps);
++    LDL->lpVtbl->SetPipelineState(LDL, g_ld_sg_pso);
++    LDL->lpVtbl->SetComputeRootSignature(LDL, g_ld_sg_rs);
++    LDL->lpVtbl->SetComputeRootDescriptorTable(LDL, 0, gpu);
++    LDL->lpVtbl->Dispatch(LDL, g_ld_sg_groups, 1, 1);
++}
++
+ static void sink_flip(void* user, const rsx_dispatch* r, u32 arg)
+ {
+     ld_begin_recording();
+@@ -14554,10 +14767,25 @@ static void ld_xo_ab(void)
+     }
+ }
+ 
++/* Patch 0075: the frame's end on the walker, before its present is recorded -- the slow-GPU test hook's
++ * dispatch, and what the GPU reads from the upload heaps for this frame ([gpu-pass] line). */
++static void ld_frame_end_extras(void)
++{
++    if (g_ld_sg_cfg) {   /* RSX_TEST_SLOW_GPU (test hook) */
++        ld_begin_recording();
++        ld_slow_gpu_frame();
++    }
++    if (g_gp.on > 0) {
++        g_ld_up[0] += g.vb_used; g_ld_up[1] += g.ib_used; g_ld_up[2] += g.cb_used; g_ld_up[3] += g.ps_cb_used;
++        g_ld_up[4] += g.upload_used; g_ld_up_frames++;
++    }
++}
++
+ void rsx_live_draw_present(u32 buffer_id)
+ {
+     if (!g.ready) return;
+     g_xo_last_async = 0;
++    ld_frame_end_extras();
+     if (!g_xo_on) { ld_present_body(buffer_id, 0); return; }
+     ld_vjob_drain();                  /* the frame's last guest-memory reads: before its flip completes */
+     ld_display_sync();                /* resize / fullscreen switch: here, on the window's thread (it
+diff --git a/libs/video/rsx_live_draw.h b/libs/video/rsx_live_draw.h
+index c78f6a0..97d720b 100644
+--- a/libs/video/rsx_live_draw.h
++++ b/libs/video/rsx_live_draw.h
+@@ -242,6 +242,9 @@ void rsx_pf_guest_flip(void);
+ void rsx_live_draw_wait_totals(long long* gpu_wait_ticks, long long* present_ticks);
+ /* Patch 0063: GPU time of all finished command lists (ms, timestamps); < 0 = off. */
+ double rsx_live_draw_gpu_ms(void);
++/* Patch 0075: integrated graphics (1) / dedicated (0) / unknown (-1), the resource binding tier
++ * (0 unknown) and the frames in flight -- for the [slow-frames] verdict. */
++void rsx_live_draw_gpu_info(int* uma, unsigned* tier, int* fif);
+ int  rsx_live_draw_display_hybrid(void);
+ 
+ #ifdef __cplusplus
+diff --git a/runtime/platform/host_sched.c b/runtime/platform/host_sched.c
+index f49fd6e..5d9aaa6 100644
+--- a/runtime/platform/host_sched.c
++++ b/runtime/platform/host_sched.c
+@@ -56,6 +56,16 @@
+  *                             RSX_VERTEX_THREADS [3 from 24, else 1 (2 from 8
+  *                             before patch 0047)], PS3_SCHED_SUBMS) -- see
+  *                             host_sched_cpus() and host_sched_plan.h
++ *   PS3_TWO_CORE=1|0|auto     2-core mode (patch 0075, host_sched_plan.h
++ *                             hsp_two_core) [auto: on with 2 physical cores
++ *                             or fewer]: the ideal processors of the game
++ *                             thread, the translation and the sound core on
++ *                             three different logical processors
++ *   PS3_TWO_CORE_OWN=1        and the game thread's core for it alone (CPU
++ *                             sets) [0: measured slower on a stand-in]
++ *   PS3_TWO_CORE_GAME=rest|own|any  the game's helper threads then: with the
++ *                             other threads / on the game thread's core /
++ *                             anywhere [rest]
+  *   PS3_LAPTOP=1|0|auto       power saving (patch 0047, host_sched.h) [auto:
+  *                             on with a battery, battery saver, the Power
+  *                             saver plan, a mobile processor or integrated
+@@ -244,6 +254,7 @@ int host_sched_vertex_spin(void)
+     hsp_pools(&p, host_sched_cpus(), 1, host_sched_laptop());
+     return p.vertex_spin;
+ }
++int host_sched_two_core(void) { return 0; }   /* patch 0075: Windows only */
+ void    host_sched_trace_(int kind, uint32_t arg) { (void)kind; (void)arg; }
+ void    host_sched_trace_tid(int kind, uint32_t arg, uint32_t tid) { (void)kind; (void)arg; (void)tid; }
+ void host_sched_trace_tag(uint32_t tid) { (void)tid; }
+@@ -488,6 +499,12 @@ int host_sched_cores(void)
+  * thread in host_sched_thread_start. */
+ static INIT_ONCE s_plan_once = INIT_ONCE_STATIC_INIT;
+ static hsp_plan  s_plan;
++#ifndef HS_TWO_OWN_DEFAULT
++#define HS_TWO_OWN_DEFAULT 0       /* patch 0075: PS3_TWO_CORE_OWN, the game thread's core by CPU sets */
++#endif
++#ifndef HS_TWO_GAME_DEFAULT
++#define HS_TWO_GAME_DEFAULT 0      /* patch 0075: the game's helper threads with the workers */
++#endif
+ static int       s_plan_budget = 0;        /* PS3_CPUS, 0 = from the plan */
+ 
+ /* An LP mask for a PS3_SCHED_CPUS spec ("all"/empty = 0 = no limit). */
+@@ -520,6 +537,19 @@ static BOOL CALLBACK hs_plan_once(PINIT_ONCE once, PVOID param, PVOID* ctx)
+     s_plan_budget = e && atoi(e) > 0 ? atoi(e) : 0;
+     hsp_make(s_tab, s_ncpu, allowed, s_plan_budget, host_sched_laptop(), &s_plan);
+     if (s_plan_budget) s_plan.small = host_sched_cores() <= HSP_SMALL_CORES;
++    /* patch 0075: 2-core mode (host_sched_plan.h hsp_two_core). PS3_TWO_CORE=1 on, 0 off, auto (or
++     * unset) on 2 physical cores or fewer; PS3_TWO_CORE_GAME=rest|own|any: where the game's helper
++     * threads go when the game thread has a core of its own. */
++    {
++        const char* t = getenv("PS3_TWO_CORE");
++        const int mode = t && *t == '1' ? 1 : t && *t == '0' ? 0 : -1;
++        const char* g = getenv("PS3_TWO_CORE_GAME");
++        const int game_own = g && !strcmp(g, "own") ? 1 : g && !strcmp(g, "any") ? 2 : HS_TWO_GAME_DEFAULT;
++        const char* o = getenv("PS3_TWO_CORE_OWN");
++        const int own_sets = o && *o ? *o == '1' : HS_TWO_OWN_DEFAULT;
++        hsp_two_core(s_tab, s_ncpu, mode, s_plan_budget, s_plan_budget ? host_sched_cores() : 0,
++                     host_sched_laptop(), own_sets, game_own, &s_plan);
++    }
+     return TRUE;
+ }
+ static const hsp_plan* hs_plan(void)
+@@ -527,6 +557,7 @@ static const hsp_plan* hs_plan(void)
+     InitOnceExecuteOnce(&s_plan_once, hs_plan_once, NULL, NULL);
+     return &s_plan;
+ }
++int host_sched_two_core(void) { return hs_plan()->two_core; }
+ 
+ /* The pools' defaults. Power saving may switch on after the plan was made
+  * (integrated graphics are found by the renderer), so the pool part is
+@@ -692,8 +723,9 @@ static void hs_plan_log(void)
+                  p->groups, p->hot, hsp_mask_text(p->group, m1, sizeof m1), p->hot_cores, why);
+     } else
+         snprintf(groups, sizeof groups, "%d cache groups, none of %d+ cores", p->groups, HSP_HOT_MIN_CORES);
+-    fprintf(stderr, "[sched] processors: %d logical, %d cores (of %d), %s%s; %s; %s\n",
+-            p->lps, p->cores, s_ncpu, p->smt ? "SMT" : "no SMT", p->small ? ", small" : "", kinds, groups);
++    fprintf(stderr, "[sched] processors: %d logical, %d cores (of %d), %s%s%s; %s; %s\n",
++            p->lps, p->cores, s_ncpu, p->smt ? "SMT" : "no SMT", p->small ? ", small" : "",
++            p->two_core ? ", 2-core mode (PS3_TWO_CORE)" : "", kinds, groups);
+     const hsp_plan q = hs_pools_now();
+     char pr[5][16];
+     if (!s_place) {
+@@ -702,6 +734,20 @@ static void hs_plan_log(void)
+         return;
+     }
+     char crit[96], ideal[96];
++    if (p->own_core) {   /* patch 0075 */
++        fprintf(stderr, "[sched] placement: 2-core mode, the game thread on its own core (LP %s), ideal LP %d; "
++                        "translation, sound core and workers on LP %s, ideal LP %d / %d; game's other threads %s\n",
++                hsp_mask_text(p->own, m1, sizeof m1), p->ideal[HSP_MAIN], hsp_mask_text(p->rest, m2, sizeof m2),
++                p->ideal[HSP_TICKER], p->ideal[HSP_SPU],
++                p->set[HSP_GAME] == p->own ? "on the game thread's core" : p->set[HSP_GAME] ? "with the workers" : "anywhere");
++        fprintf(stderr, "[sched] placement: SPURS %d at a time, vertex workers %d (idle spin %d); priorities: game %s, "
++                        "translation %s, sound %s, workers %s/%s\n",
++                q.spurs_threads, q.vertex_threads, q.vertex_spin,
++                hs_prio_text(s_prio[HS_ROLE_MAIN], pr[0], 16), hs_prio_text(s_prio[HS_ROLE_TICKER], pr[1], 16),
++                hs_prio_text(s_prio[HS_ROLE_SPU], pr[2], 16),
++                hs_prio_text(s_prio[HS_ROLE_SPURS], pr[3], 16), hs_prio_text(s_prio[HS_ROLE_VERTEX], pr[4], 16));
++        return;
++    }
+     if (p->set[HSP_MAIN])
+         snprintf(crit, sizeof crit, "on LP %s (%s)", hsp_mask_text(p->set[HSP_MAIN], m1, sizeof m1),
+                  p->hybrid ? "P-cores" : "one cache group");
+@@ -871,7 +917,17 @@ static BOOL CALLBACK hs_init_once(PINIT_ONCE once, PVOID param, PVOID* ctx)
+       ULONG n = hs_cpus(spec, ids);
+       if (n && p_SetProcessDefaultCpuSets)
+           fprintf(stderr, "[sched] process CPU set %s (%lu logical processors): %s\n", spec,
+-                  (unsigned long)n, p_SetProcessDefaultCpuSets(GetCurrentProcess(), ids, n) ? "ok" : "FAILED"); }
++                  (unsigned long)n, p_SetProcessDefaultCpuSets(GetCurrentProcess(), ids, n) ? "ok" : "FAILED");
++      /* patch 0075: 2-core mode with the game thread on a core of its own -- every thread the runtime
++       * does not place (the graphics driver's, the audio device's, the loaders) defaults to the other
++       * core. PS3_SCHED_CPUS (above) wins. */
++      else if (s_place && hs_plan()->own_core && p_SetProcessDefaultCpuSets) {
++          char m[64];
++          n = hs_mask_ids(hs_plan()->rest, ids);
++          if (n) fprintf(stderr, "[sched] process CPU set LP %s (2-core mode: the game thread's core kept free): %s\n",
++                         hsp_mask_text(hs_plan()->rest, m, sizeof m),
++                         p_SetProcessDefaultCpuSets(GetCurrentProcess(), ids, n) ? "ok" : "FAILED");
++      } }
+ 
+     fprintf(stderr, "[sched] CPU budget: %d logical processors, %d cores (affinity mask; PS3_CPUS); "
+             "sub-ms sleeps: %s\n", host_sched_cpus(), host_sched_cores(),
+diff --git a/runtime/platform/host_sched.h b/runtime/platform/host_sched.h
+index 13e6c14..d5a0939 100644
+--- a/runtime/platform/host_sched.h
++++ b/runtime/platform/host_sched.h
+@@ -85,6 +85,10 @@ int host_sched_cores(void);
+ int host_sched_default_threads(int role);
+ /* PAUSEs an idle vertex-fetch worker spins before it sleeps (RSX_VERTEX_SPIN wins). */
+ int host_sched_vertex_spin(void);
++/* Patch 0075: 2-core mode (host_sched_plan.h hsp_two_core; PS3_TWO_CORE=1/0, auto on 2 physical
++ * cores or fewer): the ideal processors split over the two cores; PS3_TWO_CORE_OWN=1 also gives
++ * the game thread a core of its own (measured slower on a stand-in: off by default). */
++int host_sched_two_core(void);
+ 
+ /* ---- power saving / laptop mode (patch 0047) ------------------------------------
+  * The same game at the same 60 fps with less CPU around it, so a laptop's or
+diff --git a/runtime/platform/host_sched_plan.h b/runtime/platform/host_sched_plan.h
+index d991aab..b4a03bb 100644
+--- a/runtime/platform/host_sched_plan.h
++++ b/runtime/platform/host_sched_plan.h
+@@ -93,6 +93,10 @@ typedef struct {
+     int pool_lps, pool_cores;      /* logical processors / cores the pools size from */
+     int spurs_threads;             /* jobs of a list at once, the chain walker included */
+     int vertex_threads, vertex_spin;
++    /* patch 0075: 2-core mode (hsp_two_core) */
++    int two_core;                  /* 2 physical cores or fewer: fewer workers, no spinning */
++    int own_core;                  /* the game thread has a core to itself (2 cores with SMT) */
++    uint64_t own, rest;            /* that core's logical processors; everything else's */
+ } hsp_plan;
+ 
+ static inline int hsp_popcount64(uint64_t m)
+@@ -319,6 +323,72 @@ static inline void hsp_pools(hsp_plan* p, int budget, int budget_cores, int lapt
+     if (laptop) { p->vertex_threads = 1; p->vertex_spin = 300; }
+ }
+ 
++/* ---- 2-core mode (t5dr patch 0075) ------------------------------------------------
++ * Players with 2 physical cores (i3-3240, i5-4210M: 2 cores / 4 threads) stayed under
++ * ~20 fps where a 4-core i5-2500 of the same per-core speed reached 55-60. The plan
++ * was: the game thread on a core of its own (no busy helper on its Hyper-Threading
++ * sibling), fewer workers, no spinning. Measured on a 2-core / 4-thread stand-in
++ * (2 cores of the 7950X by affinity, tools/slow_core.py taking 70-78 % of them;
++ * docs/RENDER_PERF.md "2-core mode and slow graphics cards"): the game thread's
++ * own core cost 21-33 % fps (everything else -- translation, renderer, sound core,
++ * skinning, the game's helper threads -- on one core: the translation 2.3 -> 7.3
++ * ms), the translation decoding its own vertices (no vertex worker) 12 %, with one
++ * SPURS job thread too 18 %; no spinning alone changed nothing measurable (20-30 %
++ * more context switches instead). So
++ * with 2 cores or fewer (mode < 0 = auto) or when asked (mode 1) the pools stay as
++ * hsp_pools sizes them and, with SMT, only the ideal processors change: the game
++ * thread on the best-ranked core (not processor 0's), the translation and the
++ * sound core on the two logical processors of the other one (hsp_make's three
++ * cores wrapped round with 2 and put the sound core on the game thread's
++ * processor). own_sets (PS3_TWO_CORE_OWN=1, for a player to try on a real 2-core
++ * PC) adds the CPU sets: the game thread's core for it alone -- both logical
++ * processors -- and the other core for every other thread of the frame; host_sched.c
++ * then makes that core the process's default CPU set too (the driver's, the audio
++ * device's and the loaders' threads). game_own: where the game's helper threads
++ * (guest PPU threads below lv2 priority 1002: the draw request managers the game
++ * thread hands the frame to and waits for) go then -- 0 the other core, 1 the game
++ * thread's core, 2 anywhere. */
++static inline void hsp_two_core(const hsp_cpu* c, int n, int mode, int budget, int budget_cores, int laptop,
++                                int own_sets, int game_own, hsp_plan* p)
++{
++    p->two_core = p->own_core = 0;
++    p->own = p->rest = 0;
++    const int cores = budget > 0 ? (budget_cores > 0 ? budget_cores : budget) : p->cores;
++    if (mode == 0 || (mode < 0 && cores > 2)) { hsp_pools(p, budget, budget_cores, laptop); return; }
++    p->two_core = 1;
++    /* the cores need a real 2-core table with SMT in the mask (PS3_CPUS alone sizes the pools only) */
++    if (c && n > 0 && p->cores == 2 && p->smt && !p->hybrid) {
++        int r[2];
++        const int nr = hsp_rank(c, n, p->all, r, 2);
++        uint64_t own = 0;
++        if (nr == 2)
++            for (int i = 0; i < n; i++)
++                if (hsp_allowed(&c[i], p->all) && c[i].core == c[r[0]].core) own |= 1ull << c[i].lp;
++        const uint64_t rest = p->all & ~own;
++        if (own && rest) {
++            p->own = own; p->rest = rest;
++            /* ideal processors: the game thread on its core, the translation and the sound core on the
++             * two logical processors of the other one -- never the sound core on the game thread's
++             * processor (hsp_make's third core wraps round to the first with 2 cores) */
++            p->ideal[HSP_MAIN] = c[r[0]].lp;
++            int a = -1, b = -1;
++            for (int i = 0; i < n; i++) {
++                if (!hsp_allowed(&c[i], rest)) continue;
++                if (a < 0) a = c[i].lp; else if (b < 0) b = c[i].lp;
++            }
++            p->ideal[HSP_TICKER] = a;
++            p->ideal[HSP_SPU] = b >= 0 ? b : a;
++            if (own_sets) {
++                p->own_core = 1;
++                p->set[HSP_MAIN] = own;
++                p->set[HSP_TICKER] = p->set[HSP_SPU] = p->set[HSP_SPURS] = p->set[HSP_VERTEX] = rest;
++                p->set[HSP_GAME] = game_own == 1 ? own : game_own == 2 ? 0 : rest;
++            }
++        }
++    }
++    hsp_pools(p, budget, budget_cores, laptop);
++}
++
+ /* "0-3,8,10-11" for a processor mask. */
+ static inline const char* hsp_mask_text(uint64_t m, char* out, unsigned n)
+ {
+diff --git a/runtime/ppu/tests/boot_main.cpp b/runtime/ppu/tests/boot_main.cpp
+index dd99ded..d87e89f 100644
+--- a/runtime/ppu/tests/boot_main.cpp
++++ b/runtime/ppu/tests/boot_main.cpp
+@@ -466,6 +466,9 @@ extern "C" unsigned ppu_boot_frames_presented(void) { return (unsigned)g_frames_
+  * while the GPU was >= 85 % busy is a GPU frame too (DXGI's queue was full). */
+ extern "C" void rsx_live_draw_wait_totals(long long* gpu_wait_ticks, long long* present_ticks);
+ extern "C" double rsx_live_draw_gpu_ms(void);
++extern "C" void rsx_live_draw_gpu_info(int* uma, unsigned* tier, int* fif);   /* patch 0075 */
++extern "C" float rsx_internal_res_scale(void);
++extern "C" const char* rsx_internal_res_label(void);
+ /* Patch 0067: presents handed to the renderer's present thread (rsx_live_draw.h) */
+ extern "C" unsigned rsx_live_draw_present_async(void);
+ extern "C" void rsx_live_draw_xo_info(long long* end_qpc, unsigned* done, long long* wait_ticks);
+@@ -612,15 +615,62 @@ struct SlowFrames {
+                 snprintf(gpu_txt, sizeof gpu_txt, "; GPU busy %.1f ms a frame (%.0f %% of the time%s)",
+                          (gms - gpu_ms0) / fr, busy * 100.0, igpu ? ", integrated graphics" : "");
+             host_sched_clock_text(clk, sizeof clk);
+-            const int slowish = slow * 10 >= frames && slow >= 10;
+-            if (slowish && (busy >= 0.85 || n_gpu * 2 >= slow))
++            /* patch 0075: frames late for their vblank count too -- a steady 50 fps has no frame over
++             * 1.25 periods (20.9 ms) and got no verdict at all */
++            const int slowish = (slow + n_late) * 10 >= frames && slow + n_late >= 10;
++            /* Patch 0075: an honest verdict. A lower Internal resolution is suggested only when the GPU
++             * is near 100 % busy and the resolution is above Native (or the graphics are integrated: one
++             * power budget). An i3-3240 with an old GT 730 (resource binding tier 1) read "GPU-bound ...
++             * a lower Internal resolution is what helps" at 0.5x with the GPU 66 % busy -- its GPU time
++             * did not follow the resolution (16x fewer pixels: +30 % fps), and most of the frame was
++             * the game's own work on 2 cores, then a wait for the GPU (one frame in flight). Now:
++             * "GPU-bound: the graphics card needs ..." (the card itself is the limit: at Native Lowest may
++             * still help a little, below Native it saves little), "CPU and GPU in turn"
++             * (frames wait for the GPU, which is not near 100 % busy) or "CPU-bound", each with the
++             * game part and the render translation (its processor time: the GPU wait taken out) and
++             * the GPU's resource binding tier. */
++            int g_uma = -1, g_fif = 1; unsigned g_tier = 0;
++            rsx_live_draw_gpu_info(&g_uma, &g_tier, &g_fif);
++            const double gpf = busy >= 0 ? (gms - gpu_ms0) / fr : 0.0;
++            const double m_xlat = median(c_xlat, n), m_wait = median(c_gpu, n);
++            const double xl_cpu = m_xlat > m_wait ? m_xlat - m_wait : 0.0;
++            const double gpart = n_gpart ? game_sum / n_gpart : median(c_game, n);
++            char tier[96] = "";
++            if (g_tier == 1) snprintf(tier, sizeof tier, " (an old graphics card: resource binding tier 1)");
++            else if (g_tier) snprintf(tier, sizeof tier, " (resource binding tier %u)", g_tier);
++            const float rscale = rsx_internal_res_scale();
++            if (slowish && busy >= 0.85 && (igpu || rscale > 1.01f))
+                 snprintf(verdict, sizeof verdict, " | GPU-bound: the graphics need %.1f ms a frame%s -- a lower "
+-                         "Internal resolution is what helps", busy >= 0 ? (gms - gpu_ms0) / fr : 0.0,
+-                         igpu ? " (integrated graphics)" : "");
++                         "Internal resolution is what helps", gpf, igpu ? " (integrated graphics)" : "");
++            else if (slowish && busy >= 0.85 && rscale > 0.99f)
++                snprintf(verdict, sizeof verdict, " | GPU-bound: the graphics card needs %.1f ms a frame at %s -- "
++                         "Internal resolution Lowest may help a little; the card itself is the limit%s", gpf,
++                         rsx_internal_res_label(), tier);
++            else if (slowish && busy >= 0.85)
++                snprintf(verdict, sizeof verdict, " | GPU-bound: the graphics card needs %.1f ms a frame at %s -- "
++                         "the card itself is the limit%s, a lower Internal resolution saves little", gpf,
++                         rsx_internal_res_label(), tier);
+             else if (slowish && igpu && busy >= 0.5)
+                 snprintf(verdict, sizeof verdict, " | integrated graphics busy %.0f %% of the time: they share the "
+                          "processor's power and memory, so a lower Internal resolution also speeds up the game's "
+                          "own work", busy * 100.0);
++            else if (slowish && busy >= 0.5 && m_wait >= 4.0)
++                snprintf(verdict, sizeof verdict, " | CPU and GPU in turn: the game needs %.1f ms a frame and the "
++                         "render translation %.1f, then the frame waits %.1f ms for the graphics card%s, busy %.0f %% "
++                         "of the time with %d frame%s in flight", gpart, xl_cpu, m_wait, tier, busy * 100.0, g_fif,
++                         g_fif == 1 ? "" : "s");
++            else if (slowish && n_xlat > n_game + n_gpu && xl_cpu * 2.0 < per_ms)
++                /* most slow frames waited for the translation, whose median is small: hitches, not a slow PC
++                 * (the i5-2500's first 30 s: 304 such frames at a median of 0.7 ms) */
++                snprintf(verdict, sizeof verdict, " | translation hitches: %u slow frames waited for the render "
++                         "translation (median %.1f ms) -- pipelines (cached for the next start) and textures made "
++                         "at first sight", n_xlat, xl_cpu);
++            else if (slowish)
++                snprintf(verdict, sizeof verdict, " | CPU-bound: the game needs %.1f ms a frame and the render "
++                         "translation %.1f%s; the graphics card is busy %.0f %% of the time%s -- a lower Internal "
++                         "resolution does not help", gpart, xl_cpu,
++                         host_sched_two_core() ? " (2 processor cores: 2-core mode)" : "",
++                         busy >= 0 ? busy * 100.0 : 0.0, tier);
+             for (int k = 0; k < HS_WAIT_KINDS; k++) mw0[k] = mw[k];
+             mcpu0 = mcpu; mcpu_ok = cpu_ok;
+             gpu_ms0 = gms; game_sum = 0; n_gpart = 0;

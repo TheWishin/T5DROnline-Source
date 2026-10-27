@@ -19,7 +19,9 @@
  *       bit 1 hash, bit 2 complete); i32 p1, p2, b1, b2, m1, m2, stage, rounds, pick,
  *       winner (-1: none), score1, score2; u64 hash; str name1, name2 (u16 length + bytes);
  *       format 3: u32 costume flags (bit 0: the blocks follow), then 2 x 0x108 bytes -- the custom
- *       costume blocks the driver wrote for P1 and P2 at FIGHT START
+ *       costume blocks the driver wrote for P1 and P2 at FIGHT START;
+ *       format 5: u32 rules (bit 0 a training fight, bits 8-15 / 16-23 P1's / P2's health in percent,
+ *       0 = 100; src/netplay/match_rules.h)
  *   u32 sync points, each: u32 kind, frame, continued at, seed, flags (bit 0 counters);
  *       u64 frame clock; u32 counters[3]
  *   u32 hashes, each: u32 frame, u64 hash
@@ -28,7 +30,7 @@
  */
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
-#include <windows.h>
+#include "../platform/t5_win.h"
 
 #include <algorithm>
 #include <atomic>
@@ -41,9 +43,11 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include "replay.h"
+#include "match_rules.h"   /* format 5: a match's rules word */
 
 extern "C" int t5_unlock_online_open(void);   /* src/directfight/df_unlock.cpp: T5_NET_UNLOCKS=open of this session */
 unsigned char* rp_zlib_compress(const unsigned char* data, int len, int* out_len);     /* replay_zlib.cpp */
@@ -52,9 +56,10 @@ unsigned char* rp_zlib_decompress(const unsigned char* data, int len, int* out_l
 namespace rp {
 namespace {
 
-constexpr uint32_t kVersion = 4;   /* 2: the last frame the recording game ran (after the hash interval);
+constexpr uint32_t kVersion = 5;   /* 2: the last frame the recording game ran (after the hash interval);
                                     3: each match's custom costume blocks;
-                                    4: header flags bit 1 (select seed per match) and bit 2 (unlocks open) */
+                                    4: header flags bit 1 (select seed per match) and bit 2 (unlocks open);
+                                    5: each match's rules word (online training, the health handicap) */
 constexpr uint32_t kFlagRollback = 1, kFlagSelectMix = 2, kFlagUnlocksOpen = 4;
 constexpr uint32_t kCostumeBlock = 0x108;
 constexpr int kMaxDelay = 30;      /* netplay_core.cpp kMaxDelay: the input delay a session can have */
@@ -92,9 +97,16 @@ void note(const char* fmt, ...)
 
 std::string utc_now()
 {
+#if defined(_WIN32)
     SYSTEMTIME st; GetSystemTime(&st);
     char b[40];
     snprintf(b, sizeof b, "%04u-%02u-%02uT%02u:%02u:%02uZ", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+#else
+    const time_t now = time(nullptr);
+    struct tm u; gmtime_r(&now, &u);
+    char b[40];
+    snprintf(b, sizeof b, "%04d-%02d-%02dT%02d:%02d:%02dZ", u.tm_year + 1900, u.tm_mon + 1, u.tm_mday, u.tm_hour, u.tm_min, u.tm_sec);
+#endif
     return b;
 }
 
@@ -136,6 +148,7 @@ void put_match(std::vector<uint8_t>& b, const Match& m)
     putstr(b, m.ft.names[0]); putstr(b, m.ft.names[1]);
     put32(b, m.ft.costumes ? 1u : 0u);     /* format 3: the custom costume blocks (both sides) */
     if (m.ft.costumes) for (int s = 0; s < 2; s++) b.insert(b.end(), m.ft.cos[s], m.ft.cos[s] + kCostumeBlock);
+    put32(b, m.ft.rules);                  /* format 5: the match's rules (training, health handicap) */
 }
 
 void put_barrier(std::vector<uint8_t>& b, const Barrier& x)
@@ -235,6 +248,7 @@ Match get_match(Reader& r, uint32_t ver)
     m.ft.names[0] = r.str(); m.ft.names[1] = r.str();
     if (ver >= 3 && (r.u32() & 1))         /* format 3: the custom costume blocks the match was fought in */
         m.ft.costumes = r.bytes(m.ft.cos[0], kCostumeBlock) && r.bytes(m.ft.cos[1], kCostumeBlock);
+    if (ver >= 5) m.ft.rules = r.u32();    /* format 5: training, health handicap (older files: none) */
     return m;
 }
 
@@ -336,6 +350,12 @@ std::string to_json(const Data& d, bool names, uint32_t frames)
                  !m.have_result || m.winner < 0 ? "null" : m.winner == 0 ? "0" : "1", m.score[0], m.score[1], m.frames, m.desync,
                  m.complete ? "true" : "false");
         j += b;
+        if (m.ft.rules) {   /* format 5: a training fight, the health handicap (match_rules.h) */
+            const np::MatchRules ru = np::MatchRules::unpack(m.ft.rules);
+            snprintf(b, sizeof b, ", \"training\": %s, \"life\": [%d, %d]", ru.training ? "true" : "false", ru.life[0],
+                     ru.life[1]);
+            j += b;
+        }
         if (m.have_hash) { snprintf(b, sizeof b, ", \"hash\": \"%016llx\"", (unsigned long long)m.hash); j += b; }
         if (!m.reason.empty()) j += ", \"reason\": " + jstr(m.reason);
         j += ", \"started\": " + jstr(m.started) + ", \"ended\": " + (m.ended.empty() ? std::string("null") : jstr(m.ended));
@@ -364,7 +384,7 @@ struct Store : InputSource {
     bool names = true;
     /* the live stream (T5_REPLAY_LIVE): records appended by the writer thread */
     std::string live_path;
-    HANDLE live_h = INVALID_HANDLE_VALUE;          /* g_live_mu */
+    intptr_t live_h = -1;                          /* g_live_mu (t5p_* file handle) */
     uint32_t live_n = 0, live_last = 0;            /* g_live_mu: inputs / last frame written */
     np::PadInput live_prev[2] = { np::kNeutral, np::kNeutral };
     uint64_t live_bytes = 0;
@@ -455,7 +475,7 @@ void write_store(const std::shared_ptr<Store>& st, uint32_t seq)
         ok = (fclose(fp) == 0) && ok;
     }
     free(z);
-    if (ok) for (int i = 0; i < 50 && !MoveFileExA(tmp.c_str(), st->path.c_str(), MOVEFILE_REPLACE_EXISTING); i++) Sleep(2);
+    if (ok) for (int i = 0; i < 50 && !t5p_replace_file(tmp.c_str(), st->path.c_str()); i++) Sleep(2);
     QueryPerformanceCounter(&q1); QueryPerformanceFrequency(&qf);
     note("%s %s: %zu matches, %u frames, %zu bytes (inputs and hashes %zu -> %d compressed), %.1f ms", ok ? "written" : "COULD NOT WRITE",
          st->path.c_str(), d.matches.size(), n, (size_t)(sizeof kMagic - 1) + json.size() + (size_t)zlen, bin.size(), zlen,
@@ -512,9 +532,14 @@ void live_queue_locked(Store& st, uint8_t type, const std::vector<uint8_t>& payl
 
 uint64_t unix_ms()
 {
+#if defined(_WIN32)
     FILETIME ft; GetSystemTimeAsFileTime(&ft);
     const uint64_t t = ((uint64_t)ft.dwHighDateTime << 32) | ft.dwLowDateTime;
     return t / 10000 - 11644473600000ull;
+#else
+    struct timespec ts; clock_gettime(CLOCK_REALTIME, &ts);
+    return (uint64_t)ts.tv_sec * 1000ull + (uint64_t)ts.tv_nsec / 1000000ull;
+#endif
 }
 
 /* Append what is new to the live file: the queued records, the inputs since the last
@@ -523,7 +548,7 @@ void live_append(const std::shared_ptr<Store>& st, const char* end_why)
 {
     Rec& r = R();
     std::lock_guard<std::mutex> lk(g_live_mu);
-    if (st->live_h == INVALID_HANDLE_VALUE) return;
+    if (st->live_h == -1) return;
     std::vector<uint8_t> out;
     uint32_t n, last;
     bool started;
@@ -544,8 +569,8 @@ void live_append(const std::shared_ptr<Store>& st, const char* end_why)
          * session at all is ended by the server (spectating.py _spec_tick). */
         note("live stream %s: the session ended before the handshake (%s): nothing to send", st->live_path.c_str(),
              end_why);
-        CloseHandle(st->live_h);
-        st->live_h = INVALID_HANDLE_VALUE;
+        t5p_close(st->live_h);
+        st->live_h = -1;
         return;
     }
     while (n > st->live_n) {
@@ -573,11 +598,10 @@ void live_append(const std::shared_ptr<Store>& st, const char* end_why)
     }
     if (end_why) { std::vector<uint8_t> b; putstr(b, end_why); live_rec(out, L_END, b); }
     if (!out.empty()) {
-        DWORD wr = 0;
-        if (!WriteFile(st->live_h, out.data(), (DWORD)out.size(), &wr, nullptr) || wr != out.size()) {
-            note("live stream %s: cannot write (error %lu) -- no more live data", st->live_path.c_str(), GetLastError());
-            CloseHandle(st->live_h);
-            st->live_h = INVALID_HANDLE_VALUE;
+        if (t5p_write(st->live_h, out.data(), (unsigned long)out.size()) != (long)out.size()) {
+            note("live stream %s: cannot write (error %lu) -- no more live data", st->live_path.c_str(), t5p_os_error());
+            t5p_close(st->live_h);
+            st->live_h = -1;
             return;
         }
         st->live_bytes += out.size();
@@ -585,8 +609,8 @@ void live_append(const std::shared_ptr<Store>& st, const char* end_why)
     if (end_why) {
         note("live stream %s ended (%s): %llu bytes, %u frames", st->live_path.c_str(), end_why, (unsigned long long)st->live_bytes,
              st->live_n);
-        CloseHandle(st->live_h);
-        st->live_h = INVALID_HANDLE_VALUE;
+        t5p_close(st->live_h);
+        st->live_h = -1;
     }
 }
 
@@ -665,7 +689,7 @@ struct Play {
     /* a live stream (spectating): the file grows while it plays */
     bool live = false, live_end = false, have_session = false, buffering = true;
     bool session_new = false;                  /* the SESSION came after the netplay core was set up: tell it */
-    HANDLE lh = INVALID_HANDLE_VALUE;
+    intptr_t lh = -1;                          /* t5p_* file handle */
     std::vector<uint8_t> lbuf;                 /* bytes read, not yet a whole record */
     np::PadInput lprev[2] = { np::kNeutral, np::kNeutral };
     uint64_t lbytes = 0;
@@ -811,12 +835,12 @@ bool live_record(Play& p, uint8_t type, const uint8_t* b, uint32_t n)
 /* read what the file got since the last call; true if it grew */
 bool live_poll(Play& p)
 {
-    if (p.lh == INVALID_HANDLE_VALUE) return false;
+    if (p.lh == -1) return false;
     uint8_t buf[65536];
     bool grew = false;
     for (;;) {
-        DWORD got = 0;
-        if (!ReadFile(p.lh, buf, sizeof buf, &got, nullptr) || got == 0) break;
+        const long got = t5p_read(p.lh, buf, sizeof buf);
+        if (got <= 0) break;
         p.lbuf.insert(p.lbuf.end(), buf, buf + got);
         p.lbytes += got;
         grew = true;
@@ -880,7 +904,7 @@ void write_status(Play& p, uint32_t pf, bool force)
     if (FILE* fp = fopen(tmp.c_str(), "wb")) {
         fputs(b, fp);
         fclose(fp);
-        MoveFileExA(tmp.c_str(), p.status_path.c_str(), MOVEFILE_REPLACE_EXISTING);
+        t5p_replace_file(tmp.c_str(), p.status_path.c_str());
     }
 }
 
@@ -977,7 +1001,14 @@ void rec_session_begin(int slot, const char* build, uint32_t session_seed)
     st->d.session_seed = session_seed;
     st->d.unlocks_open = t5_unlock_online_open() != 0;   /* (a persistent game: set from the session's command before) */
     st->d.created = utc_now();
+#if defined(_WIN32)
     SYSTEMTIME tm; GetLocalTime(&tm);
+#else
+    struct { unsigned wYear, wMonth, wDay, wHour, wMinute, wSecond; } tm;
+    { const time_t now = time(nullptr); struct tm l; localtime_r(&now, &l);
+      tm = { (unsigned)l.tm_year + 1900u, (unsigned)l.tm_mon + 1u, (unsigned)l.tm_mday, (unsigned)l.tm_hour, (unsigned)l.tm_min,
+             (unsigned)l.tm_sec }; }
+#endif
     LARGE_INTEGER q; QueryPerformanceCounter(&q);
     const uint32_t tag = (uint32_t)(q.QuadPart ^ (q.QuadPart >> 20) ^ GetCurrentProcessId()) & 0xFFFF;
     char name[96];
@@ -985,27 +1016,25 @@ void rec_session_begin(int slot, const char* build, uint32_t session_seed)
              tm.wSecond, tag);
     if (dir) {
         st->path = dir;
-        if (!st->path.empty() && st->path.back() != '\\' && st->path.back() != '/') st->path += '\\';
+        if (!st->path.empty() && st->path.back() != '\\' && st->path.back() != '/') st->path += T5P_SEP[0];
         st->path += name;
     }
     if (live) {
         /* (a game started again for the same match -- process mode's relay fallback -- may find the old process
          * still letting go of this file for a moment: a sharing violation is tried again, 2 s at most) */
         for (int k = 0;; k++) {
-            st->live_h = CreateFileA(live, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr, CREATE_ALWAYS,
-                                     FILE_ATTRIBUTE_NORMAL, nullptr);
-            if (st->live_h != INVALID_HANDLE_VALUE || GetLastError() != ERROR_SHARING_VIOLATION || k >= 40) break;
+            int busy = 0;
+            st->live_h = t5p_create_write_shared(live, &busy);
+            if (st->live_h != -1 || !busy || k >= 40) break;
             Sleep(50);
         }
-        DWORD wr = 0;
-        if (st->live_h != INVALID_HANDLE_VALUE &&
-            WriteFile(st->live_h, kLiveMagic, (DWORD)(sizeof kLiveMagic - 1), &wr, nullptr) && wr == sizeof kLiveMagic - 1) {
+        if (st->live_h != -1 && t5p_write(st->live_h, kLiveMagic, sizeof kLiveMagic - 1) == (long)(sizeof kLiveMagic - 1)) {
             st->live_path = live;
-            st->live_bytes = wr;
+            st->live_bytes = sizeof kLiveMagic - 1;
         } else {
-            note("live stream %s: cannot create it (error %lu)", live, GetLastError());
-            if (st->live_h != INVALID_HANDLE_VALUE) CloseHandle(st->live_h);
-            st->live_h = INVALID_HANDLE_VALUE;
+            note("live stream %s: cannot create it (error %lu)", live, t5p_os_error());
+            if (st->live_h != -1) t5p_close(st->live_h);
+            st->live_h = -1;
             if (!dir) return;
         }
     }
@@ -1233,9 +1262,8 @@ bool live_load(const char* path)
 {
     Play& p = P();
     p.live = true;
-    p.lh = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
-                       FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (p.lh == INVALID_HANDLE_VALUE) { p.error = "the live data cannot be opened"; return false; }
+    p.lh = t5p_open_read_shared(path);
+    if (p.lh == -1) { p.error = "the live data cannot be opened"; return false; }
     if (const char* b = env("T5_REPLAY_LIVE_BUFFER")) { const int v = atoi(b); if (v >= 0 && v <= 3600) p.buffer = (uint32_t)v; }
     if (const char* t = env("T5_REPLAY_LIVE_TIMEOUT")) { const int v = atoi(t); if (v >= 5 && v <= 3600) p.timeout_s = (uint32_t)v; }
     if (const char* st = env("T5_REPLAY_STATUS")) p.status_path = st;
@@ -1425,6 +1453,11 @@ void play_fight(const Fight& ft, uint32_t match)
     Play& p = P();
     if (match < 1 || match > p.d.matches.size()) return;
     const Fight& rec = p.d.matches[match - 1].ft;
+    if (ft.rules != rec.rules) {
+        p.model_bad++;
+        note("match %u: FIGHT START with rules 0x%X, the recording had 0x%X (training / health handicap)", match, ft.rules,
+             rec.rules);
+    }
     if (ft.model[0] != rec.model[0] || ft.model[1] != rec.model[1] || ft.stage != rec.stage) {
         p.model_bad++;
         note("match %u: FIGHT START with models 0x%X / 0x%X on stage %d, the recording had 0x%X / 0x%X on stage %d", match,
@@ -1459,6 +1492,12 @@ bool play_fight_line(uint32_t match, std::string* line)
     snprintf(b, sizeof b, "%d,%d,%d,%d buttons=%d|%d", f.chr[0], f.chr[1], f.stage, f.rounds, f.btn[0], f.btn[1]);
     *line = b;
     if (f.pick > 0) *line += " pick=" + std::to_string(f.pick);
+    if (f.rules) {   /* format 5: the match's rules, as the lobby's line had them (match_rules.h) */
+        const np::MatchRules ru = np::MatchRules::unpack(f.rules);
+        if (ru.training) *line += " train=1";
+        if (ru.life[0] != 100 || ru.life[1] != 100)
+            *line += " life=" + std::to_string(ru.life[0]) + "|" + std::to_string(ru.life[1]);
+    }
     if (!f.names[0].empty() || !f.names[1].empty()) {
         auto enc = [](const std::string& s) {
             std::string o;
@@ -1567,7 +1606,7 @@ void play_finish(const char* why)
         if (FILE* fp = fopen(tmp.c_str(), "wb")) {
             fputs(out.c_str(), fp);
             fclose(fp);
-            for (int i = 0; i < 50 && !MoveFileExA(tmp.c_str(), p.result_path.c_str(), MOVEFILE_REPLACE_EXISTING); i++) Sleep(2);
+            for (int i = 0; i < 50 && !t5p_replace_file(tmp.c_str(), p.result_path.c_str()); i++) Sleep(2);
         }
     }
 }
@@ -1575,11 +1614,11 @@ void play_finish(const char* why)
 /* ---- the direct-fight driver's side (df_fight.cpp) ----------------------------- */
 extern "C" void t5_replay_fight_start(unsigned match, const int chr[2], const int btn[2], const int model[2], int stage,
                                       int rounds, int pick, const char* name1, const char* name2,
-                                      const unsigned char* costumes)
+                                      const unsigned char* costumes, unsigned rules)
 {
     Fight ft;
     for (int i = 0; i < 2; i++) { ft.chr[i] = chr[i]; ft.btn[i] = btn[i]; ft.model[i] = model[i]; }
-    ft.stage = stage; ft.rounds = rounds; ft.pick = pick;
+    ft.stage = stage; ft.rounds = rounds; ft.pick = pick; ft.rules = rules;
     ft.names[0] = name1 ? name1 : ""; ft.names[1] = name2 ? name2 : "";
     if (costumes) { ft.costumes = true; memcpy(ft.cos[0], costumes, kCostumeBlock); memcpy(ft.cos[1], costumes + kCostumeBlock, kCostumeBlock); }
     if (playing()) play_fight(ft, match);
@@ -1616,7 +1655,7 @@ void play_fail(const char* path, const char* why)
     if (FILE* fp = fopen(tmp.c_str(), "wb")) {
         fputs(out.c_str(), fp);
         fclose(fp);
-        MoveFileExA(tmp.c_str(), rf, MOVEFILE_REPLACE_EXISTING);
+        t5p_replace_file(tmp.c_str(), rf);
     }
 }
 

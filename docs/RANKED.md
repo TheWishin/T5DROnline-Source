@@ -198,6 +198,13 @@ ping as before, and quick takes the nearest opponent. Nobody waits for ever beca
 near: once the "any ping" time has passed, any opponent goes (before 1.1.2 ranked stopped at 400 ms
 and never paired two players further apart; quick paired anybody at once). The strict range, the
 block list and the cooldown are unchanged and still apply however long the search takes.
+
+**Measured pairs (1.1.5).** The estimate is the worst the two can get. Two players who played each
+other in the last 7 days (`T5L_PAIR_PING_DAYS`; the server keeps it in memory) count with the ping
+measured then -- usually the direct path, often much shorter: two neighbours far from every relay
+(300 ms through the servers, 35 ms direct) are paired at once instead of after 11 s, and quick takes
+such a neighbour before an unknown player whose estimate is lower. The ready check, a challenge and an
+invite show that ping and the path the two most likely get (docs/ONLINE.md, step 5).
 Rooms may be ranked (`T5L_RANKED_ROOMS=0` turns that off: then only the queue
 gives ranked matches). Challenges are always casual.
 
@@ -224,11 +231,14 @@ both PCs get the same, and sends `fight: {p1, p2, stage, rounds}` in
 
 Keys ("jin", "s20") are stable; the ids in `lobby/t5lobby/data/fighters.json`
 are the game's own (character ids 0-35 in the game's order, stage ids 17-34 of
-its stage select; names are known for two stages so far). Not offered: Jinpachi
-(no cursor cell in Versus) and Panda (reached through Kuma's cell with another
-button, unverified). Rounds: first to 3 (`T5L_ROUNDS`), like Tekken 6 online.
+its stage select, each with its name: docs/DIRECTFIGHT.md "Stage ids"). Not
+offered: Jinpachi (no cursor cell in Versus) and Panda (reached through Kuma's
+cell with another button, unverified). Rounds: first to 3 (`T5L_ROUNDS`), like Tekken 6 online.
 The stage is always resolved by the server: the game's own random pick happens
-before lockstep starts and would differ between the two PCs.
+before lockstep starts and would differ between the two PCs. Ranked and Quick
+draw it at random; in a casual match the players chose each other for
+(challenge, invite, room) their stage wishes count (1.1.5, docs/ONLINE.md
+"Sides and stages by choice").
 
 **The Tekken 5 stages** (1.1.2): `data/fighters.json` also lists the old
 stages of Tekken 5, keys `t5s01`..`t5s15` ("t5": the game's stage ids 0-13 and
@@ -507,7 +517,10 @@ the launcher, `lobby/tools/ranked_session.py` and the tests.
    a new connection (`match_start` with `continue: true`); each launcher writes
    the next `T5_FIGHT` line to its game's `T5_FIGHT_FILE` and the same game
    process plays it (characters can be changed in the launcher between
-   matches). Otherwise a new connection and a new game.
+   matches). Otherwise a new connection and a new game -- also after a match on
+   the relay (1.1.5): that rematch tries the direct path again, and only a
+   second failure keeps the session on the relay (docs/NETPLAY.md "Rematches
+   after the relay").
 
 Two ways to run the game, picked automatically (`game_mode` in online.json
 forces one):
@@ -759,6 +772,23 @@ made the other game wait ("Your PC was the slow one (41 fps)"). Otherwise it is 
 If only one game reports, the lobby waits `T5L_LAG_WAIT` (6 s) and then sends what it has. If
 neither reports, it says there is nothing to compare.
 
+**Long waits (1.1.5).** Z is an average per frame, so a match whose games stood still a third of
+the time still read "about what the ping explains": production 2026-10-21, direct 97 ms, delay 5,
+the games waited 92 s and 94.8 s over 10,192 frames, 39.8 fps on 60 fps PCs -- "It was 5.6, ok".
+Now a game that waited `T5L_LAG_WAIT_SHARE` (5 %) of the match time or more (at least 3 s), or ran
+below 85 % of its PC's own speed, makes the verdict `slow`:
+
+> This match lagged: the games waited 95 s for each other's inputs. A wired connection and no
+> uploads during matches help.
+
+(With a slow PC to blame, its sentence replaces the tip.) The match time is the frames at the speed
+the game really ran. For reference, 1.1.4's matches waited about 0.5 s a minute direct (p90 2.4 s)
+and 1.1 s a minute on the relay (p90 4.7 s): 5 % flags the worst tenth or so. The server log line
+and the stored check (`assess.why`) say "network: the games waited 92 s / 95 s of 256 s (37 %) for
+each other's inputs", plus which game waited more when one waited clearly longer (1.25 times and
+2 s). `slow` counts as lag for **Leave: too laggy** like "more lag". A 1.1.4 launcher (no
+`lag_wait` cap) gets `more_lag` for it, and so its own sentences and the leave button.
+
 This extends the slow-PC check from "Slow PCs" below. That one warns before the match; this one
 reports after it.
 
@@ -766,7 +796,7 @@ reports after it.
 too laggy**. Either player may leave without penalty. The set ends, the opponent is told, and the
 rating does not change: the game that was just played keeps its result, and leaving adds no
 forfeit and no strike. In a ranked set (best of 3) it makes the whole set void; the server lets a
-player out for free only after a lag check whose verdict was "more lag" (any other leave is a loss). **Nothing ends by itself.** A bad check does not void the game, undo a
+player out for free only after a lag check whose verdict was "more lag" or "slow" (any other leave is a loss). **Nothing ends by itself.** A bad check does not void the game, undo a
 rating, or end the set. The players can still rematch. The server keeps the numbers with the
 match record (`matches.lag`, JSON) so an admin can look.
 
@@ -817,8 +847,9 @@ What a stick (or hitbox) player needs, and where it stands:
   (`suggest_delay`: same PC / LAN 2, 40 ms ping 3, 100 ms 5) for the lockstep
   fallback. With rollback (the default) the game picks its own: 1 frame up to
   ~60 ms round trip, 2 above, or the setting both players chose; ranked
-  matches always use the server's `T5L_RANKED_INPUT_DELAY` (default 2) --
-  docs/NETPLAY.md "Input delay".
+  matches always use the server's `T5L_RANKED_INPUT_DELAY` (default 2), and
+  above 150 ms measured ping every match gets at least 3 frames, 4 above
+  250 ms (1.1.5, `T5L_PING_DELAYS`) -- docs/NETPLAY.md "Input delay".
 - **Display latency** -- play in the game window at native size or "Borderless
   fullscreen" (Settings tab) on the monitor's native refresh; turn on the TV's
   game mode; cable instead of Wi-Fi for the match; close other heavy programs
@@ -854,6 +885,7 @@ New `T5L_*` variables (all in `server/config.py`):
 | `T5L_STRIKE_LIMIT` | 3 | blamed voids per 24 h before they count as losses |
 | `T5L_PAIR_CAP` | 10 | ranked matches per pair of accounts per 24 h |
 | `T5L_REMATCH_WINDOW` | 20 | seconds to agree on a rematch |
+| `T5L_REMATCH_DIRECT` | 1 | 1.1.5: a rematch after a match on the relay is a new connection that tries the direct path again; a second failure keeps the relay (docs/NETPLAY.md "Rematches after the relay"); 0 = stay on the relay |
 | `T5L_RANKED_SET_WINS` | 2 | games to win a ranked set (2 = best of 3), rated once at its end; 1 = every ranked game rated on its own (as before) |
 | `T5L_SET_NEXT_SECONDS` | 6 | countdown from a game's result to the set's next game |
 | `T5L_SET_REPLAYS` | 2 | games without a winner (desync, draw, too short) played again per set; one more and the set is void |
@@ -862,6 +894,8 @@ New `T5L_*` variables (all in `server/config.py`):
 | `T5L_INGAME_PICK` | 30 | seconds to pick on the game's own select screen when both clients can (`fight.pick`); 0 = the launchers' characters |
 | `T5L_OLD_STAGES` | 0 | 1 = a match's stage may also be one of the Tekken 5 stages (`t5s01`..`t5s15`) when both clients announce `old_stages` |
 | `T5L_RANKED_INPUT_DELAY` | 2 | rollback input delay of ranked matches, frames, the same for everybody (`-1`: the players' own settings) |
+| `T5L_PING_DELAYS` | `150:3,250:4` | 1.1.5: rollback input delay of far matches (ranked or not), at least 3 frames above 150 ms measured ping, 4 above 250 ms (the higher of this and `T5L_RANKED_INPUT_DELAY`); `""` = off |
+| `T5L_PAIR_PING_DAYS` | 7 | 1.1.5: the ping two players measured in their last match is their estimate for this long (queues, ready check, challenges) |
 | `T5L_READY_TIMEOUT` | 15 | seconds to accept a found match (was 20) |
 | `T5L_BLIND_READY` | 1 | a queue match shows only the ping until both accepted (for clients that ask); 0 = names at once |
 | `T5L_STRICT_RANGE` | 150 | rating points a strict ranked search stays within |
@@ -870,6 +904,7 @@ New `T5L_*` variables (all in `server/config.py`):
 | `T5L_MAX_FRIENDS`, `T5L_FRIEND_REQUESTS_DAY`, `T5L_FRIEND_PENDING`, `T5L_FRIEND_REQUEST_DAYS`, `T5L_FRIEND_RETRY_DAYS`, `T5L_INVITE_SECONDS`, `T5L_INVITE_RETRY_SECONDS`, `T5L_FRIEND_REQUESTS_ADDRESS` | 100, 20, 30, 14, 7, 60, 30, 60 | friends and invites (docs/ONLINE.md "Friends and invites") |
 | `T5L_LAG_TOLERANCE` | 1 | extra frames of waiting before the lag check says "more than the ping explains" |
 | `T5L_LAG_WAIT` | 6 | seconds the lag check waits for the second player's report |
+| `T5L_LAG_WAIT_SHARE` | 0.05 | 1.1.5: a game that waited this share of the match time (3 s or more) for the other's inputs makes the verdict `slow` ("Long waits" above); 0 = off |
 | `T5L_MIN_FPS` | 40 | a PC whose last match ran slower may not play ranked (0 = off) |
 | `T5L_WARN_FPS` | 55 | below this both players are told at match found (0 = off) |
 | `T5L_MAX_MATCH_SECONDS` | 420 | a lone result counts against an opponent who is online only after this long since the start |

@@ -27,6 +27,8 @@ import online  # noqa: E402
 from core import N_, t  # noqa: E402  (English text in, the player's language out; lobby/t5lobby/i18n.py)
 import problem_report as report  # noqa: E402
 import problem_report_ui as report_ui  # noqa: E402
+import problem_check_ui  # noqa: E402
+import tab_look  # noqa: E402
 import replays  # noqa: E402
 import replays_ui  # noqa: E402
 import updater  # noqa: E402
@@ -182,11 +184,17 @@ class App(tk.Tk):
         self.step_t0 = None
         self.cur_step = None
         self._run_shown = False        # the Play tab shows "Running ..." (the game's end is explained once)
+        self._dialogs_seen = 0         # the game's own message boxes already shown (GameRun.dialog_count)
+        self._dialog_text = ""         # the Play tab's sentence about the last one
+        self._dialog_box = False       # a message box about one came up for this game (once per game)
         self.sub = 0.0
         self._last_status = None
         if not offscreen:
             core.log(f"launcher {self.info.get('version', '?')} started, Python {sys.version.split()[0]}, "
                      f"output {self.settings.out_dir}")
+            wine = core.run_game.under_wine()
+            if wine:          # (Linux / Steam Deck: the game gets two defaults there, tools/run_game.py WINE_ENV)
+                core.log(core.run_game.wine_note(wine))
             gone = replays.prune(self.settings.replay_dir)       # the newest replays.DEFAULT_KEEP files stay
             if gone:
                 core.log(f"replays: {gone} old replay file(s) deleted (the newest {replays.DEFAULT_KEEP} are kept)")
@@ -271,10 +279,11 @@ class App(tk.Tk):
         f = th.fonts
         px = th.px
         self.option_add("*Text.Font", f["mono"])
-        st.configure("Step.TLabel", font=f["body"], foreground=C["faint"], padding=(px(6), px(2)))
-        st.configure("StepRun.TLabel", font=f["bold"], foreground=C["accent_hi"], padding=(px(6), px(2)))
-        st.configure("StepDone.TLabel", font=f["body"], foreground=C["ok"], padding=(px(6), px(2)))
-        st.configure("StepFail.TLabel", font=f["bold"], foreground=C["bad"], padding=(px(6), px(2)))
+        # (5 px apart: the nine steps are the Build tab's widest row, in Spanish)
+        st.configure("Step.TLabel", font=f["body"], foreground=C["faint"], padding=(px(5), px(2)))
+        st.configure("StepRun.TLabel", font=f["bold"], foreground=C["accent_hi"], padding=(px(5), px(2)))
+        st.configure("StepDone.TLabel", font=f["body"], foreground=C["ok"], padding=(px(5), px(2)))
+        st.configure("StepFail.TLabel", font=f["bold"], foreground=C["bad"], padding=(px(5), px(2)))
         # the same window at any DPI (fonts grow with it), never larger than the screen
         sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
         self.minsize(min(px(900), sw - 40), min(px(680), sh - 80))
@@ -305,16 +314,39 @@ class App(tk.Tk):
 
     # ------------------------------------------------------------------ layout
     def _layout(self):
-        head = ttk.Frame(self, padding=(16, 12, 16, 4))
-        head.pack(fill="x")
-        if getattr(self, "theme", None) is not None:
-            self.theme.Mark(head, size=30).pack(side="left", padx=(0, 10))
-        ttk.Label(head, text="Tekken 5: Dark Resurrection Online", style="H1.TLabel").pack(side="left")
-        ttk.Label(head, style="Muted.TLabel",
-                  text="   " + t("native Windows build  ·  launcher {version}",
-                                 version=self.info.get("version", "?"))).pack(side="left")
+        dark = getattr(self, "theme", None) is not None
+        name = "Tekken 5: Dark Resurrection Online"
+        sub = t("native Windows build  ·  launcher {version}", version=self.info.get("version", "?"))
+        if dark:
+            # one slim bar: the mark, the name with "Online" in the accent colour, the build in small capitals, and
+            # Check for updates on the right
+            # a band drawn by the theme (a warm glow, the accent's slashes) with the name and the build on it
+            px, th = self.px, self.theme.apply(self)
+            head = self.theme.Band(self, height=52)
+            head.pack(fill="x")
+            head.pack_propagate(False)
+            first, last = name.rsplit(" ", 1)
+            h, x, m = px(52), px(18), px(26)
+            self.theme.draw_mark(head, x, (h - m) / 2.0, m)
+            x += m + px(10)
+            for text, font, col in ((first + " ", th.fonts["brand"], self.theme.C["text"]),
+                                    (last, th.fonts["brand"], self.theme.C["accent_hi"]),
+                                    (sub.upper(), th.fonts["caps"], self.theme.C["muted"])):
+                if font is th.fonts["caps"]:
+                    x += px(16)
+                head.create_text(x, h / 2.0 + (px(2) if font is th.fonts["caps"] else 0), text=text, anchor="w",
+                                 fill=col, font=font)
+                x += font.measure(text)
+            head.configure(width=x + px(24))
+        else:
+            head = ttk.Frame(self, padding=(16, 12, 16, 4))
+            head.pack(fill="x")
+            ttk.Label(head, text=name, style="H1.TLabel").pack(side="left")
+            ttk.Label(head, style="Muted.TLabel", text="   " + sub).pack(side="left")
         self.updater = updater.attach(self, head)     # "Check for updates", the offer, the update itself
-        self.nb = ttk.Notebook(self)
+        if dark and getattr(self.updater, "button", None) is not None:
+            self.updater.button.pack_configure(padx=(0, self.px(16)))
+        self.nb = ttk.Notebook(self, style="Main.TNotebook") if dark else ttk.Notebook(self)
         self.nb.pack(fill="both", expand=True, padx=12, pady=(4, 0))
         self.tabs = {}
         for key, label in (("build", t("Build")), ("play", t("Play offline")), ("settings", t("Settings")),
@@ -328,6 +360,7 @@ class App(tk.Tk):
         self._settings_tab(self.tabs["settings"])
         self.online = online.OnlineTab(self.tabs["online"], self)
         self.replays = replays_ui.ReplaysTab(self.tabs["replays"], self)
+        tab_look.apply(self)                          # Build, Play offline, Settings: the Online tab's cards
         self.nb.bind("<<NotebookTabChanged>>", self._on_tab)
         self.status = tk.StringVar(value="")
         self.status.trace_add("write", self._log_status)
@@ -420,6 +453,8 @@ class App(tk.Tk):
         self.detail = tk.StringVar(value=t("Press BUILD GAME. It takes a few minutes; the game data stays in this folder."))
         ttk.Label(b, textvariable=self.detail, style="Muted.TLabel", wraplength=860,
                   justify="left").grid(row=2, column=0, columnspan=3, sticky="w")
+        # while the shader warm-up runs (the last step): end it; the game is built and works without it
+        self.skip_btn = ttk.Button(b, text=t("Skip warm-up"), command=self.skip_warmup)
         row = ttk.Frame(b)
         row.grid(row=3, column=0, columnspan=3, sticky="we", pady=(8, 2))
         self.build_btn = self.big_button(row, t("BUILD GAME"), self.start_build)
@@ -440,6 +475,9 @@ class App(tk.Tk):
         self.error_lbl = tk.Label(b, textvariable=self.error, fg=COLORS["error"], wraplength=860, justify="left",
                                   font=(core.ui_family(), 10, "bold"))
         self.error_lbl.grid(row=4, column=0, columnspan=3, sticky="w")
+        # after a failed build: 'Check my problem' (problem_check_ui.py) under the message
+        self.check_btn = ttk.Button(b, text=t("Check my problem..."), command=self.check_problem)
+        self.error.trace_add("write", lambda *_a: self._show_check_btn())
 
         # log
         tab.rowconfigure(3, weight=1)
@@ -455,7 +493,8 @@ class App(tk.Tk):
             sb = ttk.Scrollbar(self.log.frame, orient="vertical", command=self.log.yview)
             sb.pack(side="right", fill="y", before=self.log._w)   # (str(self.log) is its frame)
             self.log.configure(yscrollcommand=sb.set)
-            self.log.frame.configure(bg=COLORS["log_bg"])
+            self.log.frame.configure(bg=COLORS["log_bg"], highlightthickness=1,      # (framed like the cards)
+                                     highlightbackground=self.theme.C["line"], highlightcolor=self.theme.C["line"])
 
     def _play_tab(self, tab):
         box = ttk.Frame(tab, padding=24)
@@ -494,6 +533,7 @@ class App(tk.Tk):
                    command=lambda: core.open_path(os.path.join(self.settings.out_dir, "gamedata"))).pack(
             side="left", padx=8)
         ttk.Button(links, text=t("Report a problem..."), command=self.report_problem).pack(side="left")
+        ttk.Button(links, text=t("Check my problem..."), command=self.check_problem).pack(side="left", padx=8)
         ttk.Label(box, style="Muted.TLabel", wraplength=820, justify="left", text=t(
             "The game opens in its own window (DirectX 12). Keyboard and Xbox-style controllers both work; "
             "see Settings for the keys. Esc closes the game. START skips the intro movie.")).pack(
@@ -547,6 +587,35 @@ class App(tk.Tk):
             "without the glow. Only your picture changes: online, both players can choose differently.")).pack(
             anchor="w", pady=(4, 0))
 
+        # Graphics for weak graphics cards (core.GRAPHICS, ps3recomp patch 0079; docs/RENDER_PERF.md "Graphics
+        # settings for weak graphics cards"): one costly effect each, On (the game's look) or Off, and the
+        # "Lowest" preset (core.LOWEST_PRESET). Picture only, like VSync.
+        gx = ttk.LabelFrame(left, text="  " + t("Graphics (weak graphics cards)") + "  ", padding=(12, 6))
+        gx.pack(fill="x", pady=(6, 0))
+        self.graphics_vars = {}
+        for key, (name, _var, modes, default) in core.GRAPHICS.items():
+            ttk.Label(gx, text=t(name)).pack(anchor="w")
+            row = ttk.Frame(gx)
+            row.pack(anchor="w")
+            var = tk.StringVar(value=self.settings[key] if self.settings[key] in modes else default)
+            self.graphics_vars[key] = var
+            for value, label in modes.items():
+                ttk.Radiobutton(row, text=t(label), value=value, variable=var,
+                                command=self.save_settings).pack(side="left", padx=(0, 14))
+            ttk.Label(gx, style="Muted.TLabel", wraplength=300, justify="left",
+                      text=t(core.GRAPHICS_HINTS[key])).pack(anchor="w", pady=(0, 4))
+        row = ttk.Frame(gx)
+        row.pack(anchor="w", pady=(4, 0))
+        ttk.Button(row, text=t("Lowest (old graphics cards)"),
+                   command=lambda: self._graphics_preset(core.LOWEST_PRESET)).pack(side="left", padx=(0, 8))
+        ttk.Button(row, text=t("Default"),
+                   command=lambda: self._graphics_preset(core.DEFAULT_PRESET)).pack(side="left")
+        ttk.Label(gx, style="Muted.TLabel", wraplength=300, justify="left", text=t(
+            "Lowest: Internal resolution Lowest; stage blur / glow and shadows off. Effects stay on: the hit "
+            "effects show what happens in a fight. Default puts them back. Only your picture changes: online, "
+            "both players can choose differently.")).pack(
+            anchor="w", pady=(4, 0))
+
         # Power saving (PS3_LAPTOP, core.POWER_SAVING; docs/RENDER_PERF.md "Laptops, handhelds and 8-core APUs"):
         # less CPU around the same game, so a laptop or handheld keeps its clock and its 60 fps.
         ps = ttk.LabelFrame(left, text="  " + t("Power saving (laptops, handhelds)") + "  ", padding=(12, 6))
@@ -580,6 +649,27 @@ class App(tk.Tk):
         ttk.Label(tr, style="Muted.TLabel", wraplength=300, justify="left", text=t(
             "In Practice: your last inputs with how many frames each was held, and after each exchange the "
             "startup of the move and who can act first (+3, -12). F2 in the game switches it.")).pack(
+            anchor="w", pady=(4, 0))
+
+        # Practice tools (T5_PRACTICE*, core.PRACTICE_DUMMY, docs/TRAINING.md): position resets, the
+        # dummy's behaviour and 5 recording slots, with SELECT combos in Practice; offline only.
+        pr = ttk.LabelFrame(left, text="  " + t("Practice tools") + "  ", padding=(12, 6))
+        pr.pack(fill="x", pady=(6, 0))
+        self.practice_var = tk.BooleanVar(value=bool(self.settings.get("practice", True)))
+        ttk.Checkbutton(pr, text=t("SELECT combos in Practice (offline only)"), variable=self.practice_var,
+                        command=self.save_settings).pack(anchor="w")
+        drow = ttk.Frame(pr)
+        drow.pack(anchor="w", pady=(4, 0))
+        ttk.Label(drow, text=t("Dummy:")).pack(side="left", padx=(0, 6))
+        self._practice_dummy_labels = {key: t(label) for key, label in core.PRACTICE_DUMMY.items()}
+        cur = self.settings.get("practice_dummy", "game")
+        self.practice_dummy_var = tk.StringVar(
+            value=self._practice_dummy_labels.get(cur, self._practice_dummy_labels["game"]))
+        dbox = ttk.Combobox(drow, state="readonly", width=34, textvariable=self.practice_dummy_var,
+                            values=list(self._practice_dummy_labels.values()))
+        dbox.pack(side="left")
+        dbox.bind("<<ComboboxSelected>>", lambda _e: self.save_settings())
+        ttk.Label(pr, style="Muted.TLabel", wraplength=300, justify="left", text=t(core.PRACTICE_HELP)).pack(
             anchor="w", pady=(4, 0))
 
         right = ttk.Frame(box)
@@ -958,6 +1048,22 @@ class App(tk.Tk):
         if self.build:
             self.build.cancel()
 
+    def skip_warmup(self):
+        """Skip warm-up (the Shaders step): tools/shader_warmup.py ends, the build finishes as built."""
+        if self.build and self.cur_step == "shaders" and self.build.skip_warmup():
+            self.skip_btn.configure(state="disabled", text=t("Skipping…"))
+            core.log("build: shader warm-up skipped by the player")
+
+    def _show_skip_btn(self, show):
+        try:
+            if show:
+                self.skip_btn.configure(state="normal", text=t("Skip warm-up"))
+                self.skip_btn.grid(row=2, column=2, sticky="e")
+            else:
+                self.skip_btn.grid_remove()
+        except tk.TclError:
+            pass
+
     def _paint_step(self, s):
         st = self.step_state[s]
         style = {"running": "StepRun.TLabel", "done": "StepDone.TLabel", "skip": "StepDone.TLabel",
@@ -998,9 +1104,12 @@ class App(tk.Tk):
                 self.cur_step, self.sub, self.step_t0 = val, 0.0, time.time()
                 self.step_state[val] = "running"
                 self._paint_step(val)
+                self._show_skip_btn(val == "shaders")
             elif ev == "skip" and val:
                 self.step_state[val] = "skip"
                 self._paint_step(val)
+                if val == "shaders":
+                    self._show_skip_btn(False)            # (already warmed for this build)
             elif ev == "sub":
                 self.sub = val
             elif ev == "error":
@@ -1048,6 +1157,7 @@ class App(tk.Tk):
         self.cur_step = None
         set_big_state(self.build_btn, True)
         self.cancel_btn.configure(state="disabled")
+        self._show_skip_btn(False)
         self.refresh_game_state()
 
     # ------------------------------------------------------------------ play
@@ -1130,6 +1240,19 @@ class App(tk.Tk):
         if save:
             self.save_settings()
 
+    def _graphics_preset(self, preset):
+        """Settings -> Graphics: Lowest / Default (core.LOWEST_PRESET, core.DEFAULT_PRESET) into the boxes, saved."""
+        if self.readonly:
+            return
+        core.apply_preset(self.settings, preset)
+        self.internal_res_var.set(self.settings.internal_res_choice())
+        if hasattr(self, "stage_blur_var"):
+            self.stage_blur_var.set(self.settings["stage_blur"])
+        for key, var in getattr(self, "graphics_vars", {}).items():
+            var.set(self.settings[key])
+        self._internal_res_changed(save=False)
+        self.save_settings()
+
     def _discord_ready(self):
         """True when this copy has a Discord application id: the release's (lobby/t5lobby/data/discord.json) or a
         developer's own (settings "discord_app_id", T5_DISCORD_APP_ID). Settings shows the Discord box only then."""
@@ -1173,11 +1296,18 @@ class App(tk.Tk):
         self.settings["vsync"] = self.vsync_var.get()
         if hasattr(self, "stage_blur_var"):
             self.settings["stage_blur"] = self.stage_blur_var.get()
+        for key, var in getattr(self, "graphics_vars", {}).items():
+            self.settings[key] = var.get()
         self.settings["input_delay"] = self.input_delay_var.get()
         if hasattr(self, "training_var"):
             self.settings["training"] = self.training_var.get()
             self.settings["training_all"] = bool(self.training_all_var.get())
             self.settings["training_online"] = bool(self.training_online_var.get())
+        if hasattr(self, "practice_var"):
+            self.settings["practice"] = bool(self.practice_var.get())
+            label = self.practice_dummy_var.get()
+            self.settings["practice_dummy"] = next(
+                (k for k, v in self._practice_dummy_labels.items() if v == label), "game")
         if hasattr(self, "router_ports_var"):
             self.settings["router_ports"] = bool(self.router_ports_var.get())
         if hasattr(self, "discord_var"):
@@ -1215,6 +1345,7 @@ class App(tk.Tk):
             dialogs.show_error(APP_TITLE, t("Could not start the game:\n{error}", error=e), parent=self)
             return None
         self.game = g
+        self._dialogs_seen, self._dialog_text, self._dialog_box = 0, "", False
         core.log(f"game started: process {pid}, log {os.path.basename(g.log_path)}, settings give "
                  f"{', '.join(f'{k}={v}' for k, v in sorted(self.settings.env_overrides().items())) or 'nothing'}, "
                  f"asked for by the launcher: {', '.join(sorted(env or {})) or 'nothing'}")
@@ -1231,6 +1362,17 @@ class App(tk.Tk):
 
     def play(self):
         self.start_game()
+
+    def search_on_start(self, mode):
+        """--search ranked|casual: the Online tab, logged in with the saved login, searching (README "Start a search
+        from a shortcut"). Without a saved login the tab only says what to do."""
+        if self.readonly:
+            return
+        core.log(f"command line: --search {mode}")
+        start = getattr(self.online, "search_on_start", None)
+        if start is not None:
+            start(mode)                     # before the tab is shown: showing it logs in with the saved login
+        self.nb.select(self.tabs["online"])
 
     def _hwnd(self):
         try:
@@ -1281,6 +1423,21 @@ class App(tk.Tk):
             core.log("status: " + t)
 
     # ------------------------------------------------------------------ report a problem
+    def _show_check_btn(self):
+        try:
+            if self.error.get():
+                self.check_btn.grid(row=5, column=0, sticky="w", pady=(4, 0))
+            else:
+                self.check_btn.grid_remove()
+        except tk.TclError:
+            pass
+
+    def check_problem(self):
+        """The 'Check my problem' window (problem_check_ui.py): the known cases in this PC's logs, with the fix."""
+        if self.readonly:
+            return None
+        return problem_check_ui.open_for(self)
+
     def report_problem(self):
         """Open the 'Report a problem' window (Build and Play tab, and the Online tab after a match).
         Everything the zip needs from the launcher is read here, on the Tk thread; the window's worker
@@ -1297,7 +1454,8 @@ class App(tk.Tk):
         out = self.settings.out_dir
         labels = {"display": dict(core.DISPLAY_MODES), "internal_res": core.INTERNAL_RES_LABELS,
                   "vsync": core.VSYNC_MODES, "stage_blur": core.STAGE_BLUR_MODES,
-                  "input_delay": core.INPUT_DELAYS, "power_saving": core.POWER_SAVING}
+                  "input_delay": core.INPUT_DELAYS, "power_saving": core.POWER_SAVING,
+                  **{key: spec[2] for key, spec in core.GRAPHICS.items()}}
         lines = report.settings_lines(self.settings, labels, self.settings.env_overrides(), out)
         info = self.info
         build_problem = True if self.error.get() else None
@@ -1348,14 +1506,17 @@ class App(tk.Tk):
         if self.build:
             self._drain_build()
         if self.game:
+            self._game_dialogs()
             if self.game.running():
                 el = int(time.time() - self.game.started)
                 fps = f"{self.game.fps:.0f} fps" if self.game.fps else t("starting…")
-                self.run_var.set(t("Running — {elapsed} — {fps}", elapsed=core.clock(el), fps=fps))
+                self.run_var.set(t("Running — {elapsed} — {fps}", elapsed=core.clock(el), fps=fps)
+                                 + ("\n" + self._dialog_text if self._dialog_text else ""))
                 self._run_shown = True
             elif self._run_shown:
                 self._run_shown = False
-                why = core.explain_exit(self.game.proc.returncode, self.game.last_lines)
+                why = core.explain_exit(self.game.proc.returncode, self.game.last_lines,
+                                        getattr(self.game, "dialogs", ()))
                 # patch 0063: the game log's [slow-frames] verdicts -- the graphics were the limit
                 speed = self._speed_notes()
                 core.log(f"game ended: exit code {self.game.proc.returncode}" + (", explained to the player"
@@ -1365,6 +1526,32 @@ class App(tk.Tk):
                                  (t("The game closed.") + (" " + speed if speed else "")))
                 self._update_play_buttons()
         self.after(150, self._tick)
+
+    def _game_dialogs(self):
+        """The game's own message boxes (core.DialogScan): the runtime answers them by itself, so the player would see
+        nothing but a still or black screen. Each new one goes to the Play tab, the status line and launcher.log; one
+        after which the game stops ("The installed game data is corrupted. Ending game.") also brings the launcher
+        forward with a message box."""
+        g = self.game
+        count, shown = getattr(g, "dialog_count", 0), getattr(g, "dialogs", ())    # (tests' stand-in games: none)
+        if count <= self._dialogs_seen or not shown:
+            return
+        self._dialogs_seen = count
+        text = shown[-1]
+        fatal, _advice = core.dialog_info(text)
+        self._dialog_text = core.dialog_message(text)
+        core.log("game dialog: " + " | ".join(text.splitlines()) + (" (the game stops after it)" if fatal else ""))
+        self.status.set(self._dialog_text)
+        if fatal and not self.readonly and not self._dialog_box:
+            self._dialog_box = True
+            def show(msg=self._dialog_text):
+                try:
+                    from t5lobby import winfront
+                    winfront.raise_window(self)
+                except Exception:      # noqa: BLE001 -- the box comes anyway
+                    pass
+                dialogs.show_error(APP_TITLE, msg, parent=self)
+            self.after(0, show)
 
     def _selected_tab(self):
         """Key of the selected tab ('build', 'play', 'settings', 'online', 'replays'), or None when no tab is selected: Tk
@@ -1522,7 +1709,10 @@ def main():
     ap.add_argument("--low-priority", action="store_true", help="(testing) build at below-normal priority")
     ap.add_argument("--play-seconds", type=int, default=0, help="(testing, with --screenshots) run the game this long")
     ap.add_argument("--force", action="store_true", help="(testing) tick 'Redo every step'")
-    a = ap.parse_args()
+    ap.add_argument("--search", metavar="ranked|casual",
+                    help="open the Online tab, log in with the saved login and start searching: ranked, or casual "
+                         "(Quick match). Without a saved login the tab opens with a hint")
+    a, unknown = ap.parse_known_args()      # (an unknown option from an old shortcut must not stop the launcher)
     enable_dpi_awareness()
     app = App(offscreen=bool(a.screenshots))
     if a.low_priority:
@@ -1533,9 +1723,30 @@ def main():
         screenshots(app, a.screenshots, a.prefix, a.build_steps, a.play_seconds)
     elif a.build_steps:
         app.after(800, lambda: app.start_build(a.build_steps))
+    if unknown:
+        core.log(f"command line: ignored {' '.join(unknown)}")
+    if a.search and not a.screenshots:
+        if a.search.strip().lower() in ("ranked", "casual"):
+            app.after(300, lambda: app.search_on_start(a.search.strip().lower()))
+        else:
+            core.log(f"command line: --search {a.search} is neither ranked nor casual, ignored")
     app.mainloop()
     if app.restart_requested:
-        subprocess.Popen([sys.executable] + sys.argv, cwd=os.getcwd())
+        # (without --search: a restart after an update or a language change must not start searching again)
+        subprocess.Popen([sys.executable] + without_search(sys.argv), cwd=os.getcwd())
+
+
+def without_search(argv):
+    """argv without "--search X" / "--search=X"."""
+    out, skip = [], False
+    for x in argv:
+        if skip:
+            skip = False
+        elif x == "--search":
+            skip = True
+        elif not x.startswith("--search="):
+            out.append(x)
+    return out
 
 
 if __name__ == "__main__":

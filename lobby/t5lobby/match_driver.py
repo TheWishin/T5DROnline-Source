@@ -70,7 +70,19 @@ from .handover import MatchTicket, match_unlocks, read_result_file
 from .i18n import N_, t, translate_message
 
 CTL_MARKER = b"T5_CTL_DIR"
+# The game in a build output: <out>/build/cmake/t5dr.exe on Windows, t5dr on macOS (tools/run_game.py starts the
+# same file), plus the game DLL a release build has beside it.
+GAME_EXE = "t5dr.exe" if os.name == "nt" else "t5dr"
+
+
+def game_files(out):
+    """The game's binaries in a build output (what the capability markers are looked for in)."""
+    d = os.path.join(out, "build", "cmake")
+    return [os.path.join(d, GAME_EXE), os.path.join(d, "t5dr_game.dll")]
+
+
 PICK_MARKER = b"T5_DF_PICK"     # a game build with the in-game select (src/directfight, docs/DIRECTFIGHT.md)
+RULES_MARKER = b"T5_DF_RULES"   # a game build with training rooms and the health handicap (src/netplay/match_rules.h)
 
 RE_SYNC = re.compile(r"\[netplay\] sync check through frame (\d+): (\d+) mismatching")
 RE_DESYNC = re.compile(r"\[netplay\] DESYNC at frame (\d+)")
@@ -87,8 +99,9 @@ RE_SPEED = re.compile(r"\[netplay\] speed: [\d.]+ fps, this PC ([\d.]+) fps")
 RE_WAIT = re.compile(r"\[netplay\] speed: ([\d.]+) fps, this PC ([\d.]+) fps without the waits for the peer "
                      r"\(waited ([\d.]+) s of ([\d.]+) s\)")
 RE_FPS = re.compile(r"^\[fps\] ([\d.]+) ")
-# a persistent game starts a netplay session per opponent (src/netplay/t5_hooks.cpp)
+# a persistent game starts a netplay session per opponent (src/netplay/t5_hooks.cpp) ... and ends it
 RE_SESSION = re.compile(r"\[netplay\] session (\d+) set up")
+RE_SESSION_END = re.compile(r"\[netplay\] session (\d+) ends")
 # A game on the direct path that has waited this long for its opponent with nothing at all arriving on its port
 # (the launchers' punch got through, so the opponent is there: a firewall drops what comes for the game) moves the
 # match onto the relay (LobbyClient.nat_fallback; docs/NETPLAY.md "When Windows Firewall blocks the game"); the
@@ -98,6 +111,11 @@ FALLBACK_WAIT_SECONDS = 20.0
 # how long a game may take to take a control command (persistent mode): a running one, a booting one
 CTL_ACK_SECONDS = 10.0
 CTL_ACK_BOOT_SECONDS = 90.0
+# ... and a running one whose last netplay session has not ended yet: it may stand at a frame waiting for an opponent
+# that is gone without a word (the path closed: a relay, a router), until its T5_NET_TIMEOUT ends that session -- then
+# it takes the command. That long more (plus this margin) before it counts as not answering (1.1.5: a match found in
+# those seconds sent the game to one process per opponent; e2e net_relay_rematch).
+CTL_ACK_SESSION_MARGIN = 5.0
 
 # Why a game could not finish its match (result file "reason", netplay log), for the player.
 REASON_TEXT = {         # English; word(REASON_TEXT, key) where it is shown
@@ -145,6 +163,7 @@ class GameLog:
         self.peer_lost = 0
         self.session_lost = 0        # peer_lost in the current netplay session (persistent game: one per opponent)
         self.sessions = 0
+        self.session_over = False    # the current netplay session ended ("session N ends": by itself, or "idle")
         self.lost_reason = None      # "peer lost (<reason>)"
         self.fail_reason = None      # "cannot connect (<reason>)"
         self.fail_nothing = False    # ... and not one packet arrived on the game's port: a firewall blocking the game?
@@ -208,11 +227,15 @@ class GameLog:
             # a new opponent in a persistent game: what the last session saw no longer applies
             self.sessions = int(m.group(1))
             self.connected = False
+            self.session_over = False
             self.session_lost = 0
             self.build_mismatch = False
             self.fail_reason = None
             self.fail_nothing = False
             self.nothing_s = 0
+            return
+        if RE_SESSION_END.search(ln):
+            self.session_over = True
             return
         m = RE_LOST.search(ln)
         if m:
@@ -332,6 +355,27 @@ def game_supports_pick(paths):
     return _has_marker(paths, PICK_MARKER)
 
 
+def game_supports_rules(paths):
+    """Can this game build play training rooms (endless health) and the health handicap (train= / life= on the
+    fight line; docs/ONLINE.md "Training rooms and the health handicap")?"""
+    return _has_marker(paths, RULES_MARKER)
+
+
+def fight_rules(fight):
+    """The fight line's rules from match_start's `fight`: " train=1" for a training room's match, " life=P1|P2" for
+    the health handicap (both games must write the same: the server sends them only when both can)."""
+    out = ""
+    if not isinstance(fight, dict):
+        return out
+    if fight.get("training") is True:
+        out += " train=1"
+    life = fight.get("life")
+    if (isinstance(life, list) and len(life) == 2 and all(isinstance(x, int) and not isinstance(x, bool)
+                                                           and 10 <= x <= 100 for x in life) and life != [100, 100]):
+        out += f" life={life[0]}|{life[1]}"
+    return out
+
+
 def _has_marker(paths, marker):
     key = [marker]
     for p in paths:
@@ -425,6 +469,8 @@ class MatchDriver:
         self.rematch_sent = set()    # finished matches this side already answered a rematch for
         self.last_fps = None         # this PC's sustained speed in its last match (reported to the lobby)
         self.ctl_wait = None         # (seq, sent at, booting) of a control command the game has not taken yet
+        self.released = False        # persistent game: "idle" sent since its last "fight" (its session is let go)
+        self.ctl_alive_seen = None   # when the game's last session was last seen still running while a command waited
         self.ctl_failures = 0        # persistent games that died or did not answer
         self.need_session = None     # persistent game, a new session: its netplay session number (lines before it
                                      # in the log -- the last session's "peer lost" -- are not this match's)
@@ -516,7 +562,8 @@ class MatchDriver:
             if isinstance(b, list) and len(b) == 2 and all(isinstance(x, int) and 0 <= x <= 4 for x in b) and any(b):
                 # a ranked set's next game: the costumes its first game picked in the game
                 line += f" buttons={b[0]}|{b[1]}"
-        return line
+        # a training room's match (endless health), the health handicap: both games simulate them
+        return line + fight_rules(fight)
 
     def _write_fight_file(self, line, mid=None, ev=None):
         # match=<id>: the game puts it into this match's result file (older builds ignore it);
@@ -564,6 +611,8 @@ class MatchDriver:
                     self.rematch(ev["match"], True)
             elif ev.get("state") == "declined":
                 self.status(t("Your opponent does not want a rematch."))
+        elif kind == "set_end":
+            self._set_over()
         elif kind == "disconnected":
             self.ticket = None
 
@@ -572,9 +621,25 @@ class MatchDriver:
         if self.game is None:
             return
         if self.mode == "persistent" and self.game_running():
-            self.ctl.send("idle")
+            if not self.released:            # (_set_over sent it already: a second reset could hit a mode change)
+                self.released = True
+                self.ctl.send("idle")
             return
         self.stop_game()
+
+    def _set_over(self):
+        """The games in a row with this opponent are over (declined, the rematch window ran out, a player left):
+        no rematch can continue the running session. A persistent game lets it go now -- a BYE to the other game
+        while the way between them is still open, and back to a fresh select screen -- instead of when the next
+        match is found. Before (1.1.4), both games kept the session; when its path closed (a relay after the rematch
+        window, a router) they stood waiting for each other's input until T5_NET_TIMEOUT, and a match found in
+        those seconds was not taken in time (1.1.5, the 20 s stall)."""
+        if self.mode != "persistent" or self.ctl is None or self.released or not self.game_running():
+            return
+        if self.ticket is not None or getattr(self.client, "match", None) is not None:
+            return                           # (a match is set up or played: its own flow decides)
+        self.released = True
+        self.ctl.send("idle")
 
     def _start(self, ev):
         ticket = ev.get("ticket")
@@ -677,6 +742,8 @@ class MatchDriver:
     def _send_fight(self, mid, env, rematch=False, booting=False):
         seq = self.ctl.send("fight", match=mid, env=env, rematch=rematch)
         self.ctl_wait = (seq, time.monotonic(), booting)
+        self.ctl_alive_seen = None
+        self.released = False
 
     def _watch_ctl(self):
         """Persistent mode: the game must take each command. One that does not (or a game that died
@@ -695,6 +762,15 @@ class MatchDriver:
                 return
             if time.monotonic() - w[1] < (CTL_ACK_BOOT_SECONDS if w[2] else CTL_ACK_SECONDS):
                 return
+            if not w[2]:
+                now = time.monotonic()
+                grace = self._session_grace()
+                if grace > 0:
+                    self.ctl_alive_seen = now
+                    if now - w[1] < CTL_ACK_SECONDS + grace:
+                        return               # (its last session still runs out: it takes the command after that)
+                elif self.ctl_alive_seen is not None and now - self.ctl_alive_seen < CTL_ACK_SECONDS:
+                    return                   # (that session just ended: the command is next)
             self.ctl_wait = None
             self.ctl_failures = 2
         elif w is not None and self.game is not None and not self.game_running():
@@ -711,6 +787,24 @@ class MatchDriver:
         self.stop_game()
         if ev is not None and isinstance(ticket, MatchTicket) and not self.reported:
             self._start(dict(ev, ticket=ticket))
+
+    def _session_grace(self):
+        """Seconds more a running game gets for a control command while its last netplay session has not ended: it
+        may stand waiting for an opponent that is gone without a word until T5_NET_TIMEOUT ends that session (see
+        CTL_ACK_SESSION_MARGIN). 0 when its log says that session is over (or there never was one)."""
+        g = self.glog
+        if g is None:
+            return 0.0
+        g.poll()
+        if g.sessions <= 0 and not g.connected:
+            return 0.0
+        if self.need_session is not None and g.sessions >= self.need_session:
+            return 0.0                       # (the new session is set up: the command was taken)
+        if g.session_over or g.session_lost > 0:
+            return 0.0
+        timeout = getattr(self.session_ticket, "timeout", None)
+        timeout = timeout if isinstance(timeout, (int, float)) and 0 < timeout <= 120 else 20
+        return float(timeout) + CTL_ACK_SESSION_MARGIN
 
     def _send_lag(self, mid):
         """Report this match's lag numbers (the lobby shows both players the comparison)."""
@@ -740,9 +834,17 @@ class MatchDriver:
             self.note("set_next", match=ev["match"], set=s)
         elif ev.get("rematch_window") and self.auto_rematch > 0:
             self.rematch(ev["match"], True)
+        elif ev.get("status") == "training":
+            # a training room's fight (docs/ONLINE.md "Training rooms and the health handicap"): ended in the game (a
+            # give-up, a KO -- no reason): both launchers go on at once, back to the select screen together. A player
+            # left or quit, or the connection broke: this game's session ends too (the other game would play on)
+            if ev.get("reason") is None and ev.get("rematch_window") and self.connected_game():
+                self.rematch(ev["match"], True)
+            else:
+                self._release_game()
 
-    def rematch(self, match_id=None, accept=True):
-        """Offer / accept (or decline) a rematch against the last opponent."""
+    def rematch(self, match_id=None, accept=True, swap=False):
+        """Offer / accept (or decline) a rematch against the last opponent (swap: P1 and P2 the other way round)."""
         mid = match_id or (self.last or {}).get("match")
         if not mid or mid in self.rematch_sent:
             return
@@ -750,7 +852,10 @@ class MatchDriver:
         keep = accept and self.connected_game()
         if accept and self.auto_rematch > 0:
             self.auto_rematch -= 1
-        self._call(self.client.rematch, mid, accept, keep)
+        if swap:
+            self._call(self.client.rematch, mid, accept, keep, True)
+        else:
+            self._call(self.client.rematch, mid, accept, keep)
         if not accept and self.mode == "process":
             self.stop_game()
 
@@ -1135,6 +1240,11 @@ def hud_values(ev):
     if s.get("rated") and int(s.get("number") or 1) > 1 and isinstance(wins, list) and len(wins) == 2:
         # a ranked set from game 2 on: the games won so far after each name ("Alice [1]"), 16 characters at most
         names = [f"{n[:12]} [{int(w)}]" for n, w in zip(names, wins)]
+    life = ((ev or {}).get("fight") or {}).get("life")
+    if isinstance(life, list) and len(life) == 2 and all(isinstance(x, int) for x in life) and life != [100, 100]:
+        # the health handicap (docs/ONLINE.md "Training rooms and the health handicap"): the game's bars show health
+        # against each fighter's own (smaller) maximum, so the name says it -- "Alice 70%" (outside the hashed state)
+        names = [n if x == 100 else f"{n[:11]} {x}%" for n, x in zip(names, life)]
     tiers = []
     for p in players:
         t = p.get("tier")

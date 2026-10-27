@@ -169,6 +169,11 @@ SERVER = (
     N_("the room picks the next match by itself"),
     N_("the room's host removed that player from this room"),
     N_("only the room's players can watch its match"),
+    # training rooms and the health handicap (server/matchrules.py, 1.1.5)
+    N_("training rooms need a newer launcher; update it"),
+    N_("training rooms are casual (unranked)"),
+    N_("the health handicap needs a newer launcher; update it"),
+    N_("life is 30 to 100 in steps of 10"),
 )
 
 # lobby/t5lobby/server/tournaments.py: errors answering a tournament request (docs/TOURNAMENTS.md)
@@ -233,6 +238,8 @@ CLIENT = (
     N_("closed"),
     N_("the server sent a malformed match id"),
     N_("this server has no private rooms"),     # (client.py create_room: a new launcher, an older server)
+    N_("this server has no training rooms"),    # (client.py create_room / set_life: an older server)
+    N_("this server has no health handicap"),
 )
 
 # tools/build_game.py: the sentence after "ERROR:" in the build log, shown in the Build tab
@@ -247,6 +254,9 @@ BUILD_TOOL = (
     N_("This package is \"{title}\" ({id}). The port needs {game}."),
     N_("This copy is a different version of the game: \"{title}\" version {version}, content ID {id} (program "
        "SHA-1 {sha}...). The port supports only {game}, content ID {supported}."),
+    N_("This package is version {version} of the game (program content ID {id}). The port supports only version "
+       "{supported}: {game}, content ID {cid}, {size} bytes. This version cannot be used, whatever the license "
+       "(.rap)."),
     N_("The license (.rap) does not belong to this package. Use the .rap whose name matches the package's content "
        "ID ({id})."),
     N_("Decrypting the game program failed (see the log above). Tick \"Redo every step\" and press BUILD GAME "
@@ -267,6 +277,13 @@ BUILD_TOOL = (
     N_("clang-cl (LLVM 16 or newer) was not found. Install LLVM or the Visual Studio component 'C++ Clang tools "
        "for Windows'."),
     N_("CMake and Ninja were not found. Install the Visual Studio component 'C++ CMake tools for Windows'."),
+    N_("CMake and Ninja were not found. On macOS: brew install cmake ninja sdl2 glslang spirv-cross"),
+    N_("glslang and spirv-cross were not found; the game's shaders need them. "
+       "On macOS: brew install glslang spirv-cross"),
+    N_("Building the game is supported on Windows and macOS only."),
+    N_("This Python refuses pip install (PEP 668; Homebrew's does). Use a virtual environment: "
+       "python3 -m venv .venv && .venv/bin/pip install pycryptodome, then run the tools with "
+       ".venv/bin/python."),
     N_("expected 1 SPU image, found {count}"),
     N_("step '{step}' failed: a tool exited with code {code} -- the lines above say why."),
     N_("cancelled"),

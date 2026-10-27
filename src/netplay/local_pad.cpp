@@ -9,7 +9,7 @@
  */
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
-#include <windows.h>
+#include "../platform/t5_win.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -53,7 +53,7 @@ std::string read_controls_ini()
     char exe[MAX_PATH * 2];
     const DWORD n = GetModuleFileNameA(nullptr, exe, (DWORD)sizeof exe);
     if (n && n < sizeof exe) {
-        if (char* slash = strrchr(exe, '\\')) {
+        if (char* slash = strrchr(exe, T5P_SEP[0])) {
             slash[1] = 0;
             std::string p = std::string(exe) + "controls.ini";
             if (slurp(p.c_str(), &text)) return text;

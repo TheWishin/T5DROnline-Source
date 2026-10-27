@@ -295,7 +295,7 @@ class InviteTest(NotifyMixin, TkBase):
         tab.codes_window.destroy()
         self.pump(lambda: tab.client.friend_list is not None)
         self.other = client(self.s, "Rival", password="rival-pw1", register=True, auto_ready=True)
-        tab.nb.select(3)
+        tab.nb.select(tab.friends_page)
         tab.friend_name_var.set("Rival")
         self.pump(lambda: str(tab.friend_actions["add"].cget("state")) == "normal")
         tab.friend_actions["add"].invoke()

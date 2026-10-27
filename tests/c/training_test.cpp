@@ -96,7 +96,7 @@ struct Timeline {
     {
         f[(size_t)start].new_move = true;
         for (int t = start; t < act && t < (int)f.size(); t++) { f[(size_t)t].can_act = false; f[(size_t)t].cls = cls; }
-        if (act < (int)f.size()) f[(size_t)act].cls = cls;
+        if (act < (int)f.size()) { f[(size_t)act].cls = cls; f[(size_t)act].end_window = true; }
     }
     void active(int from, int to) { for (int t = from; t <= to; t++) f[(size_t)t].active = true; }
     void damage(int at, int d) { for (int t = at; t < (int)f.size(); t++) f[(size_t)t].hp -= d; }
@@ -279,6 +279,492 @@ static void test_down_and_counter()
     if (!r2.results.empty()) { CHECK(r2.results[0].kind == Kind::Counter); CHECK_EQ(r2.results[0].adv, 11); }
 }
 
+/* Moves whose hit reaction sets the idle flag early (traced: Bryan d+4 vs Jin,
+ * local lockstep, docs/TRAINING.md): the defender's reaction 0x0307 reads
+ * "can act" (+0x21C bit 0) 9 frames in, but its cancellable end (+0x220 bit
+ * 24) comes at 29 and a jab pressed from then on starts at 30. The game's own
+ * answer is +3 on hit; the overlay used to say -17. */
+static void test_special_hit_reaction()
+{
+    /* d+4 starts at 10, active at 24 (i15), Bryan can act from 51 */
+    auto attacker = [](Timeline& a) { a.move(10, 9, 51); a.active(24, 24); };
+    /* the reaction: 9 damage, class 0x10000 from 25, the idle flag from 34, the end at 54, standing at 55 */
+    auto reaction = [](Timeline& d) {
+        d.damage(24, 9);
+        d.move(25, 0x10000, 54);
+        for (int t = 34; t < 54; t++) d.f[(size_t)t].can_act = true;
+        for (int t = 54; t < 56; t++) d.f[(size_t)t].cls = 0x10000;
+        d.f[55].new_move = true;
+        d.f[55].cls = 0;
+    };
+    {
+        Timeline a(160), d(160);
+        attacker(a);
+        reaction(d);
+        const Run r = run(a, d);
+        CHECK_EQ(r.results.size(), 1);
+        if (r.results.size() == 1) {
+            CHECK(r.results[0].kind == Kind::Hit);
+            CHECK_EQ(r.results[0].startup, 15);
+            CHECK_EQ(r.results[0].adv, 3);
+        }
+    }
+    /* the defender mashing a jab from the hit on: the game opens its window early
+     * (bit 24 without the low byte at 50, both at 55) and the jab starts at 56 */
+    {
+        Timeline a(160), d(160);
+        attacker(a);
+        d.damage(24, 9);
+        d.move(25, 0x10000, 55);
+        for (int t = 34; t < 55; t++) d.f[(size_t)t].can_act = true;
+        for (int t = 26; t < 56; t += 2) d.input(t, t, kSquare);
+        d.move(56, 7, 80);
+        const Run r = run(a, d);
+        CHECK(!r.results.empty());
+        if (!r.results.empty()) { CHECK(r.results[0].kind == Kind::Hit); CHECK_EQ(r.results[0].adv, 4); }
+    }
+    /* the same move on block: a guard reaction (class 0) that can act from 37 -> -14 */
+    {
+        Timeline a(160), d(160);
+        attacker(a);
+        d.move(25, 0, 37);
+        const Run r = run(a, d);
+        CHECK_EQ(r.results.size(), 1);
+        if (r.results.size() == 1) { CHECK(r.results[0].kind == Kind::Block); CHECK_EQ(r.results[0].adv, -14); }
+    }
+    /* a hit reaction whose idle flag comes with its end (every other reaction traced) is unchanged */
+    {
+        Timeline a(80), d(80);
+        a.move(10, 7, 35); a.active(19, 19);
+        d.damage(19, 7); d.move(20, 0x10000, 44);
+        d.f[44].end_window = false;            /* idle flag only, after the reaction: class 0 there */
+        d.f[44].cls = 0;
+        const Run r = run(a, d);
+        CHECK_EQ(r.results.size(), 1);
+        if (r.results.size() == 1) CHECK_EQ(r.results[0].adv, 9);
+    }
+}
+
+/* A move of two animations (traced: Bryan's f+1+2 vs Jin, local lockstep): a wind-up
+ * without active frames from 10, the attack animation from 28, active at 31 -> i22, not i4.
+ * A second move started with a new button press still starts anew (SS into an attack). */
+static void test_two_animation_move()
+{
+    {
+        Timeline a(140), d(140);
+        a.move(10, 0, 28);
+        a.input(10, 10, kRight | kSquare | kTriangle);
+        a.move(28, 0x16, 53); a.active(31, 33);
+        d.move(32, 0, 56);
+        const Run r = run(a, d);
+        CHECK_EQ(r.results.size(), 1);
+        if (r.results.size() == 1) { CHECK_EQ(r.results[0].startup, 22); CHECK(r.results[0].kind == Kind::Block); CHECK_EQ(r.results[0].adv, 3); }
+    }
+    {
+        Timeline a(140), d(140);
+        a.move(10, 0, 30);                      /* a sidestep ... */
+        a.input(10, 11, kUp);
+        a.input(19, 19, kTriangle);             /* ... and 2 pressed during it */
+        a.move(20, 7, 45); a.active(29, 29);
+        d.move(30, 0, 48);
+        const Run r = run(a, d);
+        CHECK_EQ(r.results.size(), 1);
+        if (r.results.size() == 1) CHECK_EQ(r.results[0].startup, 10);
+    }
+}
+
+/* Bryan's taunt 1+3+4 (traced in local lockstep, Bryan vs Jin): an animation in which
+ * Bryan can act from its first frame (it is cancellable; a jab pressed in its last
+ * active frame starts in the next one), active 28 frames in; Jin's reaction is a stun
+ * (class 0x10000, no damage) whether he guards or walks into it, able to act again 15
+ * frames after it began -- a jab mashed by Jin starts one frame later. So i28, hit,
+ * +14 (the jab race: Bryan's jab starts 14 frames before Jin's). A jab Bryan whiffed
+ * before must not lend the taunt its startup. */
+static void test_cancellable_taunt()
+{
+    auto taunt = [](Timeline& a) {
+        a.move(5, 6, 30); a.active(12, 12);     /* a jab into the air first: i8 */
+        a.f[40].new_move = true;                /* the taunt: able to act all along ... */
+        a.active(67, 69);                       /* ... active from its 28th frame */
+        a.f[71].can_act = false;                /* one frame between it and its end pose */
+        a.f[72].new_move = true;
+    };
+    {
+        Timeline a(160), d(160);
+        taunt(a);
+        d.move(68, 0x10000, 83);                /* the stun: no damage */
+        d.f[108].new_move = true;               /* standing again */
+        const Run r = run(a, d);
+        CHECK_EQ(r.results.size(), 2);
+        if (r.results.size() == 2) {
+            CHECK(r.results[0].kind == Kind::Whiff);
+            CHECK_EQ(r.results[0].startup, 8);
+            CHECK(r.results[1].kind == Kind::Hit);
+            CHECK_EQ(r.results[1].startup, 28);
+            CHECK_EQ(r.results[1].adv, 14);
+        }
+    }
+    /* Jin mashing a jab from the stun on: the window opens early (bit 24 alone at 79),
+     * both at 83, his jab starts at 84 -> the same +14 */
+    {
+        Timeline a(160), d(160);
+        taunt(a);
+        d.move(68, 0x10000, 83);
+        for (int t = 79; t < 83; t++) d.f[(size_t)t].cls = 0x10000;
+        for (int t = 69; t <= 83; t += 2) d.input(t, t, kSquare);
+        d.move(84, 7, 110); d.active(93, 93);
+        const Run r = run(a, d);
+        CHECK(r.results.size() >= 2);
+        if (r.results.size() >= 2) {
+            CHECK(r.results[1].kind == Kind::Hit);
+            CHECK_EQ(r.results[1].startup, 28);
+            CHECK_EQ(r.results[1].adv, 14);
+        }
+    }
+    /* a guard reaction (class 0) without damage stays a block */
+    {
+        Timeline a(160), d(160);
+        taunt(a);
+        d.move(68, 0, 83);
+        const Run r = run(a, d);
+        CHECK_EQ(r.results.size(), 2);
+        if (r.results.size() == 2) { CHECK(r.results[1].kind == Kind::Block); CHECK_EQ(r.results[1].adv, 14); }
+    }
+}
+
+/* ---- practice tools ----------------------------------------------------------------- */
+struct ComboRun { std::vector<PAction> acts; std::vector<bool> hidden; };
+static ComboRun combo(const std::vector<uint16_t>& frames, bool facing_left = false)
+{
+    Combo c;
+    ComboRun r;
+    for (uint16_t m : frames) {
+        bool hide = false;
+        const PAction a = c.frame(m, facing_left, &hide);
+        if (a != PAction::None) r.acts.push_back(a);
+        r.hidden.push_back(hide);
+    }
+    return r;
+}
+
+static void test_combos()
+{
+    /* SELECT, then 3 with the direction held at the press */
+    const struct { uint16_t dir; PAction want; } cases[] = {
+        { 0, PAction::ResetRound }, { kRight, PAction::DummyWallFront }, { kLeft, PAction::DummyWallBack },
+        { kDown | kRight, PAction::PlayerWallFront }, { kDown | kLeft, PAction::PlayerWallBack },
+    };
+    for (const auto& c : cases) {
+        const uint16_t d = c.dir;
+        const ComboRun r = combo({ 0, kSelect, (uint16_t)(kSelect | d), (uint16_t)(kSelect | d | kCross),
+                                   (uint16_t)(kSelect | d | kCross), (uint16_t)(kSelect | d), kSelect, 0, 0 });
+        CHECK_EQ(r.acts.size(), 1);
+        if (r.acts.size() == 1) CHECK(r.acts[0] == c.want);
+        CHECK(!r.hidden[0]);
+        for (int i = 1; i < 7; i++) CHECK(r.hidden[(size_t)i]);
+        CHECK(!r.hidden[7]);
+    }
+    /* on the right side forward is LEFT */
+    {
+        const ComboRun r = combo({ kSelect, kSelect | kLeft, kSelect | kLeft | kCross, 0 }, true);
+        CHECK(r.acts.size() == 1 && r.acts[0] == PAction::DummyWallFront);
+        const ComboRun r2 = combo({ kSelect, kSelect | kDown | kRight, kSelect | kDown | kRight | kCross, 0 }, true);
+        CHECK(r2.acts.size() == 1 && r2.acts[0] == PAction::PlayerWallBack);
+    }
+    /* 1, 2, 4: record, play, loop; the direction does not matter */
+    {
+        const ComboRun r = combo({ kSelect, kSelect | kSquare, kSelect, kSelect | kTriangle, kSelect | kRight,
+                                   kSelect | kRight | kCircle, 0 });
+        CHECK_EQ(r.acts.size(), 3);
+        if (r.acts.size() == 3) { CHECK(r.acts[0] == PAction::Record); CHECK(r.acts[1] == PAction::Play); CHECK(r.acts[2] == PAction::Loop); }
+    }
+    /* direction taps act on release; a tap with a button in between does not */
+    {
+        const ComboRun r = combo({ kSelect, kSelect | kUp, kSelect | kUp, kSelect, kSelect | kDown, kSelect,
+                                   kSelect | kRight, kSelect, kSelect | kLeft, kSelect, 0 });
+        CHECK_EQ(r.acts.size(), 4);
+        if (r.acts.size() == 4) {
+            CHECK(r.acts[0] == PAction::SlotNext); CHECK(r.acts[1] == PAction::SlotPrev);
+            CHECK(r.acts[2] == PAction::DummyNext); CHECK(r.acts[3] == PAction::DummyPrev);
+        }
+        const ComboRun r2 = combo({ kSelect, kSelect | kRight, kSelect | kRight | kCross, kSelect | kRight, kSelect, 0 });
+        CHECK(r2.acts.size() == 1 && r2.acts[0] == PAction::DummyWallFront);
+        /* d, then df, then 3: one action, no slot change */
+        const ComboRun r3 = combo({ kSelect, kSelect | kDown, kSelect | kDown | kRight, kSelect | kDown | kRight | kCross,
+                                    kSelect | kDown, kSelect, 0 });
+        CHECK(r3.acts.size() == 1 && r3.acts[0] == PAction::PlayerWallFront);
+    }
+    /* SELECT let go first: P1 stays hidden until the pad is neutral; without SELECT nothing happens */
+    {
+        const ComboRun r = combo({ kSelect, kSelect | kCross, kCross, kCross, 0, kCross, 0 });
+        CHECK_EQ(r.acts.size(), 1);
+        CHECK(r.hidden[2] && r.hidden[3]);
+        CHECK(!r.hidden[4] && !r.hidden[5]);
+        const ComboRun r2 = combo({ kCross, kRight | kCross, kSquare, kUp, 0 });
+        CHECK_EQ(r2.acts.size(), 0);
+        for (bool h : r2.hidden) CHECK(!h);
+    }
+    CHECK_EQ(flip_lr(kLeft | kSquare), kRight | kSquare);
+    CHECK_EQ(to_rel(kLeft | kDown, true), kRight | kDown);
+    CHECK_EQ(from_rel(kRight, true), kLeft);
+    CHECK_EQ(from_rel(kRight, false), kRight);
+    CHECK_EQ(flip_lr(kLeft | kRight), kLeft | kRight);
+}
+
+static void test_dummy()
+{
+    Sample d;
+    d.hp = 170; d.right = true;
+    Dummy dm;
+    /* Game: nothing injected */
+    CHECK_EQ(dm.frame(DummyMode::Game, d, 170), 0);
+    /* Crouch: down */
+    CHECK_EQ(dm.frame(DummyMode::Crouch, d, 170), kDown);
+    /* BlockAfterHit: no pad (the game guards); guarding from the hit until idle 30 frames */
+    CHECK_EQ(dm.frame(DummyMode::BlockAfterHit, d, 170), 0);
+    CHECK(!dm.guarding());
+    Sample h = d;
+    h.hp = 160; h.new_move = true; h.cls = 0x10000; h.can_act = false;
+    CHECK_EQ(dm.frame(DummyMode::BlockAfterHit, h, 170), 0);
+    CHECK(dm.guarding());
+    h.new_move = false;
+    for (int i = 0; i < 20; i++) { dm.frame(DummyMode::BlockAfterHit, h, 160); CHECK(dm.guarding()); }
+    Sample idle = d;
+    idle.hp = 160;
+    int guarded = 0;
+    for (int i = 0; i < 40; i++) { dm.frame(DummyMode::BlockAfterHit, idle, 160); if (dm.guarding()) guarded++; }
+    CHECK_EQ(guarded, Dummy::kGuardIdle - 1);
+    CHECK(!dm.guarding());
+    /* a block stun in between keeps it guarding */
+    dm.frame(DummyMode::BlockAfterHit, h, 170);
+    for (int i = 0; i < 10; i++) dm.frame(DummyMode::BlockAfterHit, idle, 160);
+    Sample blk = idle; blk.can_act = false;
+    for (int i = 0; i < 15; i++) { dm.frame(DummyMode::BlockAfterHit, blk, 160); CHECK(dm.guarding()); }
+    for (int i = 0; i < 25; i++) { dm.frame(DummyMode::BlockAfterHit, idle, 160); CHECK(dm.guarding()); }
+    /* the game's own TRAINING DUMMY setting: guard against all after the hit, stand before; crouch; stand to walk */
+    {
+        Dummy g;
+        CHECK_EQ(g.setting(DummyMode::Game), -1);
+        CHECK_EQ(g.setting(DummyMode::Crouch), Dummy::kSetController);
+        CHECK_EQ(g.setting(DummyMode::Walk), Dummy::kSetController);
+        CHECK_EQ(g.setting(DummyMode::Step), Dummy::kSetController);
+        g.frame(DummyMode::BlockAfterHit, d, 170);
+        CHECK_EQ(g.setting(DummyMode::BlockAfterHit), Dummy::kSetStand);
+        g.frame(DummyMode::BlockAfterHit, h, 170);
+        CHECK_EQ(g.setting(DummyMode::BlockAfterHit), Dummy::kSetGuardAll);
+        for (int i = 0; i < Dummy::kGuardIdle; i++) g.frame(DummyMode::BlockAfterHit, idle, 160);
+        CHECK_EQ(g.setting(DummyMode::BlockAfterHit), Dummy::kSetStand);
+    }
+    /* Walk: forward (toward P1 = LEFT on the right side) first, then back */
+    Dummy w;
+    CHECK_EQ(w.frame(DummyMode::Walk, d, 170), kLeft);
+    for (int i = 1; i < Dummy::kWalkFrames; i++) w.frame(DummyMode::Walk, d, 170);
+    CHECK_EQ(w.frame(DummyMode::Walk, d, 170), kRight);
+    /* Step: a short tap of up, nothing, later a tap of down */
+    Dummy s;
+    std::vector<uint16_t> m;
+    for (int i = 0; i < 2 * Dummy::kStepEvery; i++) m.push_back(s.frame(DummyMode::Step, d, 170));
+    CHECK_EQ(m[0], kUp); CHECK_EQ(m[1], kUp); CHECK_EQ(m[2], 0);
+    CHECK_EQ(m[(size_t)Dummy::kStepEvery], kDown); CHECK_EQ(m[(size_t)Dummy::kStepEvery + 2], 0);
+}
+
+static void test_recorder()
+{
+    static Recorder r;     /* 12 KB: not on the stack */
+    r.clear_all();
+    CHECK(r.state() == Recorder::State::Idle);
+    r.toggle_play(false);                                   /* empty slot: nothing */
+    CHECK(r.state() == Recorder::State::Idle);
+    r.toggle_record();
+    for (int i = 0; i < 5; i++) r.record((uint16_t)(i == 2 ? (kRight | kSquare | kSelect) : kDown));
+    r.toggle_record();
+    CHECK(r.state() == Recorder::State::Idle);
+    CHECK_EQ(r.length(0), 5);
+    uint16_t m = 0;
+    r.toggle_play(false);
+    int n = 0;
+    while (r.next(&m)) { if (n == 2) CHECK_EQ(m, kRight | kSquare); else CHECK_EQ(m, kDown); n++; }
+    CHECK_EQ(n, 5);
+    CHECK(r.state() == Recorder::State::Idle);
+    /* loop */
+    r.toggle_play(true);
+    for (int i = 0; i < 12; i++) CHECK(r.next(&m));
+    CHECK(r.state() == Recorder::State::Looping);
+    r.toggle_play(true);
+    CHECK(r.state() == Recorder::State::Idle);
+    /* slots: 5, wrapping both ways; changing the slot stops a playback */
+    r.toggle_play(true);
+    r.select(1);
+    CHECK(r.state() == Recorder::State::Idle);
+    CHECK_EQ(r.slot(), 1);
+    r.select(-2);
+    CHECK_EQ(r.slot(), 4);
+    r.select(1);
+    CHECK_EQ(r.slot(), 0);
+    CHECK_EQ(r.length(1), 0);
+    /* a full slot stops the recording */
+    r.select(3);
+    r.toggle_record();
+    for (int i = 0; i < Recorder::kMaxFrames + 10; i++) r.record(kUp);
+    CHECK(r.state() == Recorder::State::Idle);
+    CHECK_EQ(r.length(3), Recorder::kMaxFrames);
+    CHECK_EQ(r.length(0), 5);
+    /* recording anew replaces the slot */
+    r.select(-3);
+    r.toggle_record();
+    r.record(kLeft);
+    r.toggle_record();
+    CHECK_EQ(r.length(0), 1);
+    /* the neutral frames before the first input go, the ones after it stay */
+    r.toggle_record();
+    for (uint16_t x : { 0, 0, 0, (int)kUp, 0, 0 }) r.record(x);
+    r.toggle_record();
+    CHECK_EQ(r.length(0), 3);
+    r.toggle_play(false);
+    CHECK(r.next(&m) && m == kUp);
+    r.stop();
+    /* nothing but neutral: an empty slot */
+    r.toggle_record();
+    for (int i = 0; i < 30; i++) r.record(0);
+    r.toggle_record();
+    CHECK_EQ(r.length(0), 0);
+    r.toggle_play(true);
+    CHECK(r.state() == Recorder::State::Idle);
+}
+
+static bool near(float a, float b, float eps = 0.01f) { return fabsf(a - b) < eps; }
+
+/* A stand-in for the game's walls: a square stage |x|, |z| <= w. A place
+ * outside is not kept -- the fighter is put somewhere else (the game, traced:
+ * a place inside the stage, not on the line) -- and with `nowall` nothing is
+ * ever moved. */
+struct Arena {
+    float w = 4000;
+    bool nowall = false;
+    Place frame(Place p) const
+    {
+        if (nowall || (fabsf(p.x) <= w && fabsf(p.z) <= w)) return p;
+        Place q = p;
+        q.x = -0.7f * w;          /* "elsewhere": far from the line's end */
+        q.z = 0.6f * w;
+        return q;
+    }
+};
+
+/* runs a wall reset against an arena: the result, and how many frames it took */
+static Placer::Cmd place(PAction a, const Place& p1, const Place& dm, const Arena& ar, int* frames)
+{
+    Placer pl;
+    int mover = -1;
+    Place set;
+    Placer::Cmd c;
+    *frames = 0;
+    if (!pl.start(a, p1, dm, &mover, &set)) return c;
+    for (int i = 0; i < 400; i++) {
+        (*frames)++;
+        c = pl.next(ar.frame(set));
+        if (c.done) return c;
+        set = c.mover;
+        /* the two slide together, kGap apart */
+        const float gap = hypotf(c.mover.x - c.other.x, c.mover.z - c.other.z);
+        if (fabsf(gap - Placer::kGap) > 0.5f) { g_fail++; printf("FAIL slide gap %.1f\n", gap); }
+        g_checks++;
+    }
+    return c;
+}
+
+static void test_placer()
+{
+    const float pi2 = 1.5707963f;
+    Place p1, dm;
+    p1.x = 1000; p1.z = 0; p1.angle = -pi2;
+    dm.x = -1000; dm.z = 0; dm.angle = pi2;
+    CHECK(near(face_toward(p1.x, p1.z, dm.x, dm.z), -pi2));
+    CHECK(near(face_toward(dm.x, dm.z, p1.x, p1.z), pi2));
+    /* the slide starts kGap past the other fighter, on the far side */
+    {
+        Placer pl;
+        int mover = -1;
+        Place first;
+        CHECK(pl.start(PAction::DummyWallFront, p1, dm, &mover, &first));
+        CHECK_EQ(mover, 1);
+        CHECK(near(first.x, 1000 - Placer::kGap) && near(first.z, 0));
+        CHECK(pl.pending());
+        CHECK(pl.start(PAction::PlayerWallBack, p1, dm, &mover, &first));
+        CHECK_EQ(mover, 0);
+        CHECK(near(first.x, -1000 + Placer::kGap));
+        CHECK(pl.start(PAction::DummyWallBack, p1, dm, &mover, &first));
+        CHECK(near(first.x, 1000 + Placer::kGap));
+        CHECK(pl.start(PAction::PlayerWallFront, p1, dm, &mover, &first));
+        CHECK(near(first.x, -1000 - Placer::kGap));
+        CHECK(!pl.start(PAction::ResetRound, p1, dm, &mover, &first));
+        CHECK(!pl.start(PAction::Record, p1, dm, &mover, &first));
+    }
+    /* every wall reset finds the wall within kStep / 16, inside it */
+    {
+        Arena ar;
+        const struct { PAction a; int mover; float sign; } cases[] = {
+            { PAction::DummyWallFront, 1, -1 },
+            { PAction::DummyWallBack, 1, 1 },
+            { PAction::PlayerWallFront, 0, -1 },
+            { PAction::PlayerWallBack, 0, 1 },
+        };
+        for (const auto& k : cases) {
+            int frames = 0;
+            const Placer::Cmd c = place(k.a, p1, dm, ar, &frames);
+            CHECK(c.done && c.wall);
+            const float wx = c.out[k.mover].x * k.sign;
+            CHECK(wx <= ar.w && wx > ar.w - Placer::kStep / 16 - 0.1f);
+            CHECK(near(c.out[k.mover].z, 0));
+            CHECK(near(c.out[1 - k.mover].x, c.out[k.mover].x - k.sign * Placer::kGap, 0.1f));
+            /* both face each other */
+            CHECK(near(c.out[k.mover].angle, -k.sign * pi2, 0.001f) && near(c.out[1 - k.mover].angle, k.sign * pi2, 0.001f));
+            CHECK(frames < 25);
+        }
+    }
+    /* no wall: the places from before, after the slide gave up */
+    {
+        Arena ar;
+        ar.nowall = true;
+        int frames = 0;
+        const Placer::Cmd c = place(PAction::DummyWallFront, p1, dm, ar, &frames);
+        CHECK(c.done && !c.wall);
+        CHECK(near(c.out[0].x, 1000) && near(c.out[1].x, -1000));
+        CHECK_EQ(frames, Placer::kMaxSteps + 1);
+    }
+    /* a diagonal line (after sidesteps): the gap is along the line */
+    {
+        Place a, b;
+        a.x = 0; a.z = 0; b.x = -600; b.z = -800;
+        Arena ar;
+        ar.w = 3000;
+        int frames = 0;
+        const Placer::Cmd c = place(PAction::DummyWallFront, a, b, ar, &frames);
+        CHECK(c.done && c.wall);
+        CHECK(c.out[1].z >= -3000 && c.out[1].z < -3000 + 20);
+        CHECK(near(c.out[0].x, c.out[1].x + 0.6f * Placer::kGap, 0.1f) && near(c.out[0].z, c.out[1].z + 0.8f * Placer::kGap, 0.1f));
+    }
+    /* on top of each other: the line is where P1 looks */
+    {
+        Placer pl;
+        int mover;
+        Place first;
+        CHECK(pl.start(PAction::DummyWallFront, p1, p1, &mover, &first));
+        CHECK(near(first.x, 1000 - Placer::kGap, 1) && near(first.z, 0, 1));
+    }
+    /* turning: the facing direction (sin a, cos a) turned by d is the one of a + d; the fighters'
+     * matrices (rows (cos a, -sin a) and (sin a, cos a) in x/z) turn the same way */
+    for (float a0 : { -1.5707963f, 0.3f, 2.5f })
+        for (float d : { 3.1415927f, -0.7f, 1.2f }) {
+            float x = sinf(a0), z = cosf(a0);
+            turn(x, z, d);
+            CHECK(near(x, sinf(a0 + d), 1e-4f) && near(z, cosf(a0 + d), 1e-4f));
+            float rx = cosf(a0), rz = -sinf(a0);
+            turn(rx, rz, d);
+            CHECK(near(rx, cosf(a0 + d), 1e-4f) && near(rz, -sinf(a0 + d), 1e-4f));
+        }
+}
+
 /* ---- font and layout ------------------------------------------------------------ */
 static void test_font()
 {
@@ -391,6 +877,13 @@ int main()
     test_whiff_and_walk();
     test_string();
     test_down_and_counter();
+    test_special_hit_reaction();
+    test_two_animation_move();
+    test_cancellable_taunt();
+    test_combos();
+    test_dummy();
+    test_recorder();
+    test_placer();
     test_font();
     test_layout();
     if (g_fail) {

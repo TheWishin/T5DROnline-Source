@@ -966,6 +966,123 @@ def net_lockstep(ctx):
             ctx.sleep(5)
 
 
+NET_TRAINING = [
+    # label, rtt, jitter, loss, input delay setting (both), relay, expected rollback input delay
+    ("training RTT 80, 2% loss, jitter +-10 ms", 80, 10, 2, "auto", False, None),
+    ("training RTT 20", 20, 0, 0, "auto", False, None),
+]
+
+
+def training_room_case(ctx, a, b, label, rtt, jitter, loss, delay, relay, _expect, mode="rollback", fights=2):
+    """A training room (docs/ONLINE.md "Training rooms and the health handicap"): a creates it with the Create room
+    window's Training box, b joins; a plays with 70 % health. Every fight ends when a player holds SELECT (the
+    scripted give-up, every 2400 frames); the launchers go back to the select screen by themselves (no Rematch
+    click). Each fight: lobby status "training" on both, the same winner and state hash in both games' result files,
+    0 mismatching frames, the rules in both games' FIGHT START lines, a give-up in the logs."""
+    ctx.shaper.set(rtt, jitter, loss, on=not relay)
+    for p in (a, b):
+        p.app.settings["input_delay"] = delay
+        p.tab.driver.input_delay = delay
+        p.client.block_direct = relay
+    a.tab.life_var.set(a.tab.life_var.get().replace("100", "70"))
+    a.tab.on_life()
+    ctx.wait(lambda: a.client.life == 70, 10, f"{label}: the health handicap is set")
+    since = time.time()
+    a.press("room")
+    w = getattr(a.tab.rooms_ui, "window", None)
+    ctx.require(f"{label}: the Create room window", w is not None)
+    ctx.check(f"{label}: the Training box is on offer", str(w.widgets["training"].cget("state")) != "disabled")
+    w.vars["training"].set(1)
+    w.create_button.invoke()
+    ctx.wait(lambda: (a.me or {}).get("status") == "room", 10, f"{label}: Create room")
+    ctx.wait(lambda: len(b.tab.tv_rooms.get_children()) == 1, 10, f"{label}: the room is listed")
+    rid = b.tab.tv_rooms.get_children()[0]
+    b.tab.tv_rooms.selection_set(rid)
+    b.press("join")
+    mid = found_both(ctx, a, b, since)
+    fa = latest(a, "match_found", since)
+    ctx.check(f"{label}: match_found says training and the health", fa.get("training") is True and
+              (fa.get("life") or {}).get("you") == 70, f"{fa.get('training')}, {fa.get('life')}")
+    accept(ctx, a, mid)
+    accept(ctx, b, mid)
+    if not started_both(ctx, a, b, mid):
+        raise Abort("training match did not start")
+    rows = []
+    for k in range(fights):
+        if k:
+            t0 = time.time() - 30
+            ok = ctx.wait(lambda: any(e.get("match") != mid and e.get("continue") for e in a.events_of("match_start", t0))
+                          and any(e.get("match") != mid for e in b.events_of("match_start", t0)), 60,
+                          f"{label}: the next training fight starts by itself")
+            if not ok:
+                raise Abort("no next training fight")
+            mid = [e for e in a.events_of("match_start", t0) if e.get("match") != mid][-1]["match"]
+        start = a.matches.get(mid, {})
+        ctx.check(f"{label} fight {k + 1}: match_start fight has training, one round and the health",
+                  (start.get("fight") or {}).get("training") is True and (start.get("fight") or {}).get("rounds") == 1
+                  and 70 in ((start.get("fight") or {}).get("life") or []), str(start.get("fight")))
+        if not wait_fight(ctx, mid, (a, b), timeout=180):
+            raise Abort("no fight")
+        wait_results(ctx, mid, (a, b), timeout=400)
+        row = match_row(ctx, mid, (a, b), "training", f"{label} fight {k + 1}")
+        for p in (a, b):
+            seg = p.log_segment(mid)
+            ctx.check(f"{label} fight {k + 1}: {p.name}'s game fought with the rules",
+                      any("FIGHT START" in ln and "training (endless health" in ln and "70 %" in ln for ln in seg),
+                      "no FIGHT START line with the rules")
+            ctx.check(f"{label} fight {k + 1}: {p.name}'s game saw the give-up",
+                      any("held SELECT for" in ln and "gives up" in ln for ln in seg), "no give-up line")
+            row[p.name]["refills"] = [ln.split("training: ", 1)[1] for ln in seg if "training: health refilled" in ln][-1:]
+        ctx.check(f"{label} fight {k + 1}: netcode {mode} on both",
+                  row[a.name]["mode"] == mode and row[b.name]["mode"] == mode,
+                  f"{row[a.name]['mode']}/{row[b.name]['mode']}")
+        rows.append(row)
+    ctx.note(f"{label}: proxy {ctx.shaper.stats()}")
+    for p in (b, a):            # Leave room -- in a training room also during its (next) fight: leave any time
+        ctx.wait(lambda: p.action_on("leave"), 30, f"{label}: {p.name}'s Leave room is on")
+        p.press("leave")
+        ctx.wait(lambda: (p.me or {}).get("status") == "idle", 20, f"{label}: {p.name} left the room")
+    res = latest(a, "match_result", 0.0) or {}
+    ctx.check(f"{label}: the fight going on when Bob's side left ended without a result", res.get("status") ==
+              "training" and res.get("reason") in ("left", None), f"{res.get('status')} ({res.get('reason')})")
+    a.tab.life_var.set(a.tab.life_var.get().replace("70", "100"))
+    a.tab.on_life()
+    ctx.sleep(2.0)
+    return rows
+
+
+@scenario("net_training", "6 netcode", game=True, suites=("game", "net"),
+          desc="online training (1.1.5): a training room with endless health and a 70 % handicap, fights ended by a "
+               "held SELECT, back to the select screen by themselves; rollback at RTT 80 with loss and jitter, and "
+               "lockstep -- 0 mismatching frames, no result counted")
+def net_training(ctx):
+    game_server(ctx)
+    for mode, env in (("rollback", {}), ("lockstep", {"T5_RB_MODE": "off"})):
+        if ctx.run.netcode == "lockstep" and mode == "rollback":
+            continue
+        a = ctx.player(f"E2E Train{mode[0].upper()}1", env=env, tag=mode)
+        b = ctx.player(f"E2E Train{mode[0].upper()}2", env=env, tag=mode)
+        for i, p in enumerate((a, b)):
+            p.give_up_every, p.give_up_at = 2400, 2400 + 1200 * i
+        login(ctx, a)
+        login(ctx, b)
+        if not a.client.training_ok():
+            raise Skip("this game build or server has no training rooms")
+        cases = NET_TRAINING if mode == "rollback" else NET_TRAINING[1:]
+        for c in cases:
+            try:
+                training_room_case(ctx, a, b, f"{mode} {c[0]}", *c[1:], mode=mode)
+            except Abort as e:
+                ctx.check(f"{mode} {c[0]}: completed", False, str(e))
+                for p in (a, b):
+                    if p.action_on("leave"):
+                        p.press("leave")
+                ctx.sleep(5)
+        for p in (a, b):          # (the lockstep pair next: two games at a time on this PC)
+            p.close()
+            ctx.players.remove(p)
+
+
 @scenario("net_internal_res", "6 netcode", game=True, suites=("game", "net"),
           desc="different internal resolutions on the two PCs (4K against Lowest, the launcher's setting): a match and "
                "a rematch stay in sync")
@@ -978,6 +1095,9 @@ def net_internal_res(ctx):
     b = ctx.player("E2E ResLow", char="dragunov")
     a.app.settings["internal_res"] = "4k"
     b.app.settings["internal_res"] = "lowest"
+    # since igpu-114 a step counts only when the player chose it (else Auto on integrated graphics, Native elsewhere)
+    a.app.settings["internal_res_set"] = True
+    b.app.settings["internal_res_set"] = True
     login(ctx, a)
     login(ctx, b)
     a.set_char("lili")
@@ -1507,6 +1627,125 @@ def firewall_stub(ctx):
     login(ctx, a)
     login(ctx, b)
     _fw_cases(ctx, a, b, real=False)
+
+
+# ------------------------------------------------------------------ rematches after the relay (1.1.5)
+# Production 2026-10-21 (1.1.4): a firewall blocked one game, the fallback moved the match onto the relay, and every
+# rematch of the session stayed there with freezes -- the firewall was fixed meanwhile. Now a rematch after the relay
+# tries the direct path again (docs/NETPLAY.md "Rematches after the relay"); a second failure keeps the relay.
+def _rr_play(ctx, a, b, mid, label, real):
+    if real:
+        if not wait_fight(ctx, mid, (a, b), timeout=180):
+            raise Abort(f"{label}: no fight")
+        wait_results(ctx, mid, (a, b))
+        row = match_row(ctx, mid, (a, b), "confirmed", label)
+    else:
+        wait_results(ctx, mid, (a, b), timeout=120)
+        st = [p.matches.get(mid, {}).get("status") for p in (a, b)]
+        ctx.check(f"{label}: lobby result confirmed", st == ["confirmed", "confirmed"], st)
+        row = {"match": mid, "label": label, "status": st[0], "path": a.matches.get(mid, {}).get("path")}
+    ctx.matches.append(dict(row, cont=a.matches.get(mid, {}).get("cont"), keep=a.matches.get(mid, {}).get("keep")))
+    return row
+
+
+def _rr_rematch(ctx, a, b, label, keep, path, real):
+    """Both click Rematch: a new connection (keep False) or the running games (keep True), on `path`. (A stub game
+    ends with its match: its rematches are always new connections.)"""
+    mid = rematch(ctx, a, b)
+    m = a.matches.get(mid, {})
+    keep = keep and real
+    ctx.check(f"{label}: {'continues in the running games' if keep else 'a new connection (match_found keep false)'}",
+              bool(m.get("keep")) == keep and bool(m.get("cont")) == keep, f"keep {m.get('keep')}, continue {m.get('cont')}")
+    got = m.get("path")
+    ctx.check(f"{label}: path {path}", got == path or (path == "direct" and got == "lan"), got)
+    return mid
+
+
+def _session_let_go(p):
+    """The player's game took the "idle" its launcher sent when the set ended (1.1.5), or has no session to let go."""
+    drv = p.tab.driver
+    if drv is None or drv.mode != "persistent" or drv.ctl is None or not drv.game_running():
+        return True
+    st = drv.ctl.state() or {}
+    try:
+        return bool(drv.released) and int(st.get("seq") or 0) >= drv.ctl.seq
+    except (TypeError, ValueError):
+        return False
+
+
+def _relay_rematch(ctx, a, b, real):
+    # 1. the production case: the direct path is found, a game blocked completely hears nothing, the relay takes over
+    ctx.shaper.set(0, 0, 0, on=True, ip="127.0.0.2")
+    a.set_firewall("block", None)
+    since = time.time()
+    mid = queue_match(ctx, a, b, "quick")
+    ctx.check("match 1: the lobby found the direct path", a.matches[mid].get("path") in ("direct", "lan"),
+              a.matches[mid].get("path"))
+    ctx.wait(lambda: len(a.events_of("match_start", since)) >= 2 and len(b.events_of("match_start", since)) >= 2, 90,
+             "match 1 moves onto the relay (a second match_start on both PCs)")
+    ctx.check("match 1: on the relay after the fallback", a.matches[mid].get("path") == "relay", a.matches[mid].get("path"))
+    _rr_play(ctx, a, b, mid, "match 1 (the fallback's relay)", real)
+    a.set_firewall(None, None)                         # the player fixed the firewall
+    mid = _rr_rematch(ctx, a, b, "rematch 1 after the relay", keep=False, path="direct", real=real)
+    _rr_play(ctx, a, b, mid, "rematch 1 (direct again)", real)
+    mid = _rr_rematch(ctx, a, b, "rematch 2", keep=True, path="direct", real=real)
+    _rr_play(ctx, a, b, mid, "rematch 2 (same session, direct)", real)
+    for p in (a, b):
+        leave(ctx, p)
+    # (seen here with 1.1.4: after a rematch inside the session, with no next match, both persistent games kept the
+    # session; the shaper's proxy closing below cut the way between them, they stood at the same frame waiting for each
+    # other's input until the 20 s peer_timeout, and a match found meanwhile was not taken by one game in the control
+    # channel's 10 s: its launcher went to process mode. 1.1.5: the set is over, so each launcher lets its game's
+    # session go at once -- MatchDriver._set_over -- while the way is still open.)
+    ctx.wait(lambda: _session_let_go(a) and _session_let_go(b), 30, "both games let the finished session go")
+    ctx.shaper.set(0, 0, 0, on=False)
+    ctx.wait(lambda: a.action_on("quick") and b.action_on("quick"), 60, "free for the next pairing")
+    ctx.sleep(1.0)
+    # 2. no direct path at all (a punch blocked on both launchers): one more try, then the relay for the session
+    for p in (a, b):
+        p.client.block_direct = True
+    try:
+        mid = queue_match(ctx, a, b, "quick")
+        ctx.check("match 4: relay from the start", a.matches[mid].get("path") == "relay", a.matches[mid].get("path"))
+        _rr_play(ctx, a, b, mid, "match 4 (relay, no direct path)", real)
+        mid = _rr_rematch(ctx, a, b, "rematch 4a: the direct path tried again, failed again", keep=False, path="relay",
+                          real=real)
+        _rr_play(ctx, a, b, mid, "rematch 4a (relay again)", real)
+        mid = _rr_rematch(ctx, a, b, "rematch 4b: stays on the relay", keep=True, path="relay", real=real)
+        _rr_play(ctx, a, b, mid, "rematch 4b (same session, relay)", real)
+    finally:
+        for p in (a, b):
+            p.client.block_direct = False
+            leave(ctx, p)
+
+
+@scenario("net_relay_rematch", "6 netcode", game=True, suites=("game", "net"),
+          desc="1.1.5: a rematch after the relay tries the direct path again (fallback -> firewall fixed -> rematch "
+               "direct, next rematch in the same session); without a direct path one more try, then the relay stays")
+def net_relay_rematch(ctx):
+    from t5lobby import nat as _nat
+    if not hasattr(_nat, "InboundFilter"):
+        raise Skip("no T5_NET_TEST_INBOUND in this tree (firewall-fallback, 1.1.3)")
+    game_server(ctx)
+    a = ctx.player("E2E RrA")
+    b = ctx.player("E2E RrB")
+    login(ctx, a)
+    login(ctx, b)
+    _relay_rematch(ctx, a, b, real=True)
+
+
+@scenario("relay_rematch_stub", "6 netcode", suites=("lobby", "net"),
+          desc="net_relay_rematch with stub games")
+def relay_rematch_stub(ctx):
+    from t5lobby import nat as _nat
+    if not hasattr(_nat, "InboundFilter"):
+        raise Skip("no T5_NET_TEST_INBOUND in this tree (firewall-fallback, 1.1.3)")
+    stub_server(ctx)
+    a = ctx.player("E2E RrsA", kind="stub", env={"T5_STUB_SECONDS": 3})
+    b = ctx.player("E2E RrsB", kind="stub", env={"T5_STUB_SECONDS": 3})
+    login(ctx, a)
+    login(ctx, b)
+    _relay_rematch(ctx, a, b, real=False)
 
 
 # ------------------------------------------------------------------ regional relays (1.1.1)
@@ -2496,9 +2735,23 @@ class _Resp:
 
 @scenario("update_check", "8 launcher", suites=("quick", "lobby"),
           desc="the update check and download against mocked GitHub answers (no network): offer, cache, 304, "
-               "rate limit, draft, 404, foreign host, checksum, stage and swap keeping native/")
+               "rate limit, draft, 404, foreign host, signature (unsigned / other key refused), checksum, stage and "
+               "swap keeping native/")
 def update_check(ctx):
     import updater as up
+    import release_sig
+    # The shipped launcher trusts the owner's release key only; this fake release is signed with a stand-in key
+    # of this scenario, trusted for the scenario's run only (the shipped key list is put back afterwards).
+    seed = hashlib.sha256(b"t5dr e2e update_check stand-in release key").digest()
+    shipped = up.RELEASE_PUBLIC_KEYS
+    up.RELEASE_PUBLIC_KEYS = (release_sig.public_key(seed).hex(),)
+    try:
+        _update_check(ctx, up, release_sig, seed)
+    finally:
+        up.RELEASE_PUBLIC_KEYS = shipped
+
+
+def _update_check(ctx, up, release_sig, seed):
     inst = os.path.join(ctx.dir, "T5DR-Online-1.0.0")
     os.makedirs(os.path.join(inst, "launcher"), exist_ok=True)
     os.makedirs(os.path.join(inst, "native", "gamedata"), exist_ok=True)
@@ -2525,12 +2778,16 @@ def update_check(ctx):
              "body": "## Fixes\n- rematch\n\n---\n| Code ID | `0123456789abcdef` |",
              "assets": [{"name": "T5DR-Online-1.0.1.zip", "browser_download_url": base + "T5DR-Online-1.0.1.zip",
                          "size": len(zbytes), "state": "uploaded", "digest": f"sha256:{sha}"},
-                        {"name": "SHA256SUMS", "browser_download_url": base + "SHA256SUMS", "size": 100, "state": "uploaded"}]}
+                        {"name": "SHA256SUMS", "browser_download_url": base + "SHA256SUMS", "size": 100, "state": "uploaded"},
+                        {"name": "SHA256SUMS.sig", "browser_download_url": base + "SHA256SUMS.sig", "size": 300,
+                         "state": "uploaded"}]}
         d.update(over)
         return json.dumps(d).encode()
 
     calls = []
-    plan = {"api": ("ok", release_json()), "zip": zbytes, "sums": f"{sha}  T5DR-Online-1.0.1.zip\n".encode()}
+    sums = f"{sha}  T5DR-Online-1.0.1.zip\n".encode()
+    plan = {"api": ("ok", release_json()), "zip": zbytes, "sums": sums,
+            "sig": release_sig.make_sig_file(seed, "1.0.1", sums).encode()}
 
     def opener(url, headers=None, kind="download", timeout=None):
         calls.append((url, dict(headers or {})))
@@ -2543,6 +2800,8 @@ def update_check(ctx):
             raise urllib.error.HTTPError(url, what, "mock", body or {}, None)
         if url.endswith("SHA256SUMS"):
             return _Resp(plan["sums"])
+        if url.endswith("SHA256SUMS.sig"):
+            return _Resp(plan["sig"])
         return _Resp(plan["zip"], {"Content-Length": str(len(plan["zip"]))})
     cache = os.path.join(inst, up.CACHE_FILE)
     now = time.time()
@@ -2576,7 +2835,23 @@ def update_check(ctx):
     rel8, prob8 = up.check_latest(cache, force=True, opener=opener, now=now)
     ctx.check("an asset on another host is refused", rel8 is None and prob8 and "not on this project" in prob8, prob8)
     # download, verify, stage
+    unsigned = json.loads(release_json())
+    unsigned["assets"] = [a for a in unsigned["assets"] if a["name"] != "SHA256SUMS.sig"]
+    try:
+        up.prepare_update(up.parse_release(unsigned), root=inst, opener=opener, need_python=False)
+        ctx.check("an unsigned release is refused", False, "it was staged")
+    except up.UpdateError as e:
+        ctx.check("an unsigned release is refused, nothing changed", "not signed" in str(e) and
+                  up.local_version(inst) == "1.0.0" and not any(os.path.exists(d) for d in up.stage_roots(inst)), str(e))
     rel = up.parse_release(json.loads(release_json()))
+    plan["sig"] = release_sig.make_sig_file(hashlib.sha256(b"somebody else's key").digest(), "1.0.1", sums).encode()
+    try:
+        up.prepare_update(rel, root=inst, opener=opener, need_python=False)
+        ctx.check("a release signed by another key is refused", False, "it was staged")
+    except up.UpdateError as e:
+        ctx.check("a release signed by another key is refused, nothing changed", "signature check" in str(e) and
+                  up.local_version(inst) == "1.0.0" and not any(os.path.exists(d) for d in up.stage_roots(inst)), str(e))
+    plan["sig"] = release_sig.make_sig_file(seed, "1.0.1", sums).encode()
     plan["zip"] = zbytes[:-1] + bytes([zbytes[-1] ^ 1])
     try:
         up.prepare_update(rel, root=inst, opener=opener, need_python=False)
@@ -2652,11 +2927,15 @@ def settings_persist(ctx):
     stub_server(ctx)
     path = os.path.join(ctx.dir, "launcher.json")
     s = core.Settings(path)
-    keys = [k for k in ("display", "internal_res", "render_scale", "input_delay", "mute", "nickname", "extra_env",
-                        "language") if k in core.DEFAULTS]
+    keys = [k for k in ("display", "internal_res", "internal_res_set", "render_scale", "input_delay", "mute",
+                        "nickname", "extra_env", "language") if k in core.DEFAULTS]
     s.update(display="borderless", input_delay="2", mute=True, nickname="E2E Sue", extra_env="FOO_E2E=1")
     if "internal_res" in core.DEFAULTS:
         s["internal_res"] = "1440p"
+        if "internal_res_set" in core.DEFAULTS:
+            # as the Settings tab marks a click: since igpu-114 an unmarked step is not the player's choice (the
+            # game gets Auto on integrated graphics, Native elsewhere), so 1440p never reached the game here
+            s["internal_res_set"] = True
     else:
         s["render_scale"] = "0.75"
     if "language" in core.DEFAULTS:
@@ -3861,6 +4140,74 @@ def _spectate_case(ctx, watched, games=True):
                                                 if isinstance(r[n], dict) and "result_file" in r[n]))
 
 
+@scenario("spectate_training", "12 spectating", game=True, suites=("game",),
+          desc="a training room (1.1.5: endless health, P1 at 70 % health, fights ended by a held SELECT, back to the "
+               "select screen by themselves) watched from the start through Rooms: Watch; the spectator's game plays "
+               "both fights with every recorded hash and result the same")
+def spectate_training(ctx):
+    if "spectate" not in features():
+        raise Skip("this tree has no spectating")
+    game_server(ctx)
+    a = ctx.player("E2E Tia", char="steve")
+    b = ctx.player("E2E Tom", char="hwoarang")
+    v = ctx.player("E2E Val")
+    for i, p in enumerate((a, b)):
+        p.give_up_every, p.give_up_at = 2400, 2400 + 1200 * i
+    for p in (a, b, v):
+        login(ctx, p)
+    if not a.client.training_ok():
+        raise Skip("this game build or server has no training rooms")
+    a.tab.life_var.set(a.tab.life_var.get().replace("100", "70"))
+    a.tab.on_life()
+    ctx.wait(lambda: a.client.life == 70, 10, "Tia's health handicap is set")
+    t = time.time()
+    a.press("room")
+    w = a.tab.rooms_ui.window
+    w.vars["training"].set(1)
+    w.create_button.invoke()
+    ctx.wait(lambda: (a.me or {}).get("status") == "room", 10, "Tia creates a training room")
+    ctx.wait(lambda: len(b.tab.tv_rooms.get_children()) == 1, 10, "the room is listed")
+    rid = b.tab.tv_rooms.get_children()[0]
+    b.tab.tv_rooms.selection_set(rid)
+    b.press("join")
+    mid = found_both(ctx, a, b, t)
+    accept(ctx, a, mid)
+    accept(ctx, b, mid)
+    started_both(ctx, a, b, mid)
+    ctx.wait(lambda: any(r.get("watch") for r in v.client.rooms), 30, "the training room's match can be watched")
+    v.tab.tv_rooms.selection_set(rid)
+    v.tab.spec.set_actions()
+    ctx.require("Val's Watch button is on", str(v.tab.actions["watch_room"].cget("state")) == "normal")
+    v.tab.actions["watch_room"].invoke()
+    ctx.wait(lambda: (v.tab.spec.w or {}).get("game") is not None, 30, "Val's game starts")
+    mids = [mid]
+    for k in range(2):
+        if k:
+            t0 = time.time() - 30
+            ok = ctx.wait(lambda: any(e.get("match") not in mids for e in a.events_of("match_start", t0))
+                          and any(e.get("match") not in mids for e in b.events_of("match_start", t0)), 60,
+                          "the next training fight starts by itself")
+            if not ok:
+                raise Abort("no next training fight")
+            mids.append([e for e in a.events_of("match_start", t0) if e.get("match") not in mids][-1]["match"])
+        m = mids[-1]
+        wait_fight(ctx, m, (a, b), timeout=180)
+        wait_results(ctx, m, (a, b), timeout=400)
+        match_row(ctx, m, (a, b), "training", f"training fight {k + 1}")
+    for p in (b, a):            # Leave room (a training room: also during its next fight)
+        ctx.wait(lambda: p.action_on("leave"), 30, f"{p.name}'s Leave room is on")
+        p.press("leave")
+        ctx.wait(lambda: (p.me or {}).get("status") == "idle", 20, f"{p.name} left the room")
+    ctx.wait(lambda: (v.tab.spec.w or {}).get("state") == "over", 900, "Val's game ends at the end of the stream")
+    vd = _verdict(v) or {}
+    ms = vd.get("matches") or []
+    ctx.check("Val: identical to the live games", vd.get("identical") is True,
+              f"{vd.get('hashes_compared')} hashes compared, {vd.get('hash_mismatches')} different, "
+              f"{vd.get('uncompared')} uncompared, setup problems {vd.get('setup_problems')}")
+    ctx.check("Val: both training fights played, the same results", len(ms) >= 2 and all(m.get("same") for m in ms),
+              [(m.get("winner"), m.get("hash"), m.get("same")) for m in ms])
+
+
 @scenario("spectate_live", "12 spectating", game=True, suites=("game",),
           desc="a room match and a rematch in the running games (rollback); a friend watches from the start "
                "(Friends: Watch), a guest joins 60 s late (Rooms: Watch); both spectators' games play the "
@@ -4299,3 +4646,152 @@ def cross_build_pair(ctx):
     login(ctx, b)
     rows = _two_matches(ctx, a, b, "cross-build pair", rematches=2)
     ctx.note(f"final hashes: {[r[a.name]['result_file'].get('hash') for r in rows]}")
+
+
+# ---------------------------------------------------------------------------- 1.1.5: sides and stages by choice
+def _casual_wish(ctx, p, side, stage):
+    """Set p's casual wishes in its Online tab the way a player does (docs/ONLINE.md "Sides and stages by choice"):
+    side None (any) / 0 (P1) / 1 (P2), stage "random" or a stage key."""
+    ui = p.tab.casual
+    ui.refresh()
+    ui.side_var.set(list(ui.side_cb.cget("values"))[{None: 0, 0: 1, 1: 2}[side]])
+    names = list(ui.stage_cb.cget("values"))
+    ui.stage_var.set(names[0] if stage == "random" else names[1 + ui.stages.index(stage)])
+    ui.on_change()
+    ctx.pump(0.5)
+    ctx.check(f"{p.name}: wishes set in the launcher (side {side}, stage {stage})",
+              (ui.side, ui.stage) == (side, stage), f"{ui.side}, {ui.stage}")
+
+
+def _casual_challenge(ctx, a, b):
+    """a challenges b in the players list, b accepts in the bar. -> (match id, b's challenge question)."""
+    t = time.time()
+    ctx.wait(lambda: a.action_on("challenge") and b.action_on("challenge"), 30, "both free to challenge")
+    ctx.sleep(1.0)                       # (the wishes went out with the last pump; the challenge comes after them)
+    a.tab.tv_players.selection_set(b.client.me["id"])
+    a.press("challenge")
+    if not ctx.wait(lambda: b.bar_button("Accept") is not None, 20, f"{b.name} gets {a.name}'s challenge"):
+        raise Abort("no challenge")
+    bar = b.tab.bar_text.get()
+    b.click("Accept")
+    if not ctx.wait(lambda: latest(a, "match_start", t) and latest(b, "match_start", t), 60,
+                    "the accepted challenge starts on both PCs"):
+        raise Abort("no match from the challenge")
+    return latest(a, "match_start", t)["match"], bar
+
+
+def _casual_play(ctx, a, b, mid, label):
+    """The real match to its confirmed result, in sync (match_row: both results, the same hash, 0 mismatching
+    frames). -> {name: the parsed game log segment}, read at once (a segment runs to the end of the log)."""
+    if not wait_fight(ctx, mid, (a, b), timeout=150):
+        raise Abort(f"{label}: no fight")
+    wait_results(ctx, mid, (a, b))
+    row = match_row(ctx, mid, (a, b), "confirmed", label)
+    fps_check(ctx, row, (a, b))
+    return {p.name: parse_segment(p.log_segment(mid)) for p in (a, b)}
+
+
+def _casual_sides_stage(ctx, a, b, mid, segs, a_slot, stage, label):
+    """The lobby's sides (match_start slot) against the games' (netplay "connected (host, P1)"), the lobby's stage
+    against the stage both games fought on ("FIGHT START ... id <match>: ..., stage <id>"). -> the lobby's stage."""
+    from e2e_flows import RE_FIGHT
+    from t5lobby import fighters
+    ma, mb = a.matches[mid], b.matches[mid]
+    ctx.check(f"{label}: lobby sides {a.name} P{a_slot + 1}, {b.name} P{2 - a_slot}",
+              (ma.get("slot"), mb.get("slot")) == (a_slot, 1 - a_slot), f"{ma.get('slot')} / {mb.get('slot')}")
+    want = {a.name: ("host" if a_slot == 0 else "join", f"P{a_slot + 1}"),
+            b.name: ("join" if a_slot == 0 else "host", f"P{2 - a_slot}")}
+    got = {n: tuple((s["connected"] or (None, None, None))[:2]) for n, s in segs.items()}
+    ctx.check(f"{label}: the games connected with those sides (a new netplay session)", got == want, str(got))
+    lobby_stage = (ma.get("fight") or {}).get("stage")
+    if stage is not None:
+        ctx.check(f"{label}: match_start stage {stage} on both PCs",
+                  lobby_stage == stage and (mb.get("fight") or {}).get("stage") == stage,
+                  f"{lobby_stage} / {(mb.get('fight') or {}).get('stage')}")
+    st = fighters.table().stage(lobby_stage) or {}
+    fought = {}
+    for n, s in segs.items():
+        for ln in s["fight_start"]:
+            m = RE_FIGHT.search(ln)
+            if m and m.group(3).rstrip(":") == mid:
+                fought[n] = int(m.group(5))
+    ctx.check(f"{label}: both games fought on the lobby's stage ({lobby_stage} = id {st.get('id')})",
+              len(fought) == 2 and all(v == st.get("id") for v in fought.values()), str(fought))
+    return lobby_stage
+
+
+@scenario("net_casual_choice", "6 netcode", game=True, suites=("game", "net"),
+          desc="1.1.5 casual choices with real games: A challenges B wanting P2, both on Aurora Australis (lobby and "
+               "games: A is P2, stage 27); Rematch: swap sides (a new session, A is P1); then B challenges A, both "
+               "want P1 (coin flip), Ghetto Pit against Random (random between the two); every match in sync")
+def net_casual_choice(ctx):
+    if "casual_choice" not in features():
+        raise Skip("no casual choices in this tree (casual-115)")
+    import random as _random
+    from t5lobby import fighters
+    forced = bool(getattr(ctx.run, "stage", None))          # (run.py --stage overrides every stage: no stage checks)
+    game_server(ctx)
+    a = ctx.player("E2E CasA")
+    b = ctx.player("E2E CasB")
+    login(ctx, a)
+    login(ctx, b)
+    if not a.client.casual_ok():
+        raise Skip("the lobby server has no casual choices")
+    ctx.check("the launcher shows the side and stage choices", a.tab.casual.row.winfo_manager() == "grid")
+
+    # 1. A challenges B: A wants P2, both want Aurora Australis (s27)
+    _casual_wish(ctx, a, 1, "s27")
+    _casual_wish(ctx, b, None, "s27")
+    mid, bar = _casual_challenge(ctx, a, b)
+    ctx.check("B's challenge question shows A's wishes", "wants to be P2 on Aurora Australis" in bar, bar)
+    segs = _casual_play(ctx, a, b, mid, "challenge: A wants P2 on Aurora Australis")
+    _casual_sides_stage(ctx, a, b, mid, segs, 1, None if forced else "s27", "challenge")
+    ctx.note(f"match card: {a.tab.match_var.get()!r}")
+
+    # 2. Rematch: swap sides -- A asks, B sees the offer with the sides swapped and says yes
+    t = time.time()
+    if not ctx.wait(lambda: a.bar_button("Rematch: swap sides") is not None, 25,
+                    f"{a.name}: Rematch: swap sides after the casual match"):
+        raise Abort("no Rematch: swap sides")
+    a.click("Rematch: swap sides")
+    ctx.wait(lambda: "with the sides swapped" in b.tab.bar_text.get() and b.bar_button("Rematch") is not None, 25,
+             f"{b.name}: the offer says the sides are swapped")
+    b.click("Rematch")
+    if not ctx.wait(lambda: latest(a, "match_start", t) and latest(b, "match_start", t), 90,
+                    "the swapped rematch starts on both PCs"):
+        raise Abort("no swapped rematch")
+    mid2 = latest(a, "match_start", t)["match"]
+    ctx.check("swapped rematch: a new netplay session, not a rematch inside the running games",
+              not a.matches[mid2].get("cont") and not b.matches[mid2].get("cont"),
+              f"{a.matches[mid2].get('cont')} / {b.matches[mid2].get('cont')}")
+    segs2 = _casual_play(ctx, a, b, mid2, "rematch: swap sides")
+    _casual_sides_stage(ctx, a, b, mid2, segs2, 0, None if forced else "s27", "swapped rematch")
+    for p in (a, b):
+        leave(ctx, p)
+    ctx.sleep(2.0)
+
+    # 3. B challenges A: both want P1 (coin flip); A Ghetto Pit (s20), B Random (random between the two)
+    _casual_wish(ctx, a, 0, "s20")
+    _casual_wish(ctx, b, 0, "random")
+    t = time.time()
+    mid3, bar3 = _casual_challenge(ctx, b, a)
+    ctx.check("A's challenge question shows B's wish", "wants to be P1" in bar3, bar3)
+    segs3 = _casual_play(ctx, a, b, mid3, "both want P1, Ghetto Pit against Random")
+    a_slot = a.matches[mid3].get("slot")
+    ctx.check("coin flip: one of the two is P1, the other P2",
+              a_slot in (0, 1) and b.matches[mid3].get("slot") == 1 - a_slot,
+              f"{a_slot} / {b.matches[mid3].get('slot')}")
+    if a_slot in (0, 1):
+        stage = _casual_sides_stage(ctx, a, b, mid3, segs3, a_slot, None, "coin flip")
+        if not forced:
+            seed = latest(a, "match_start", t)["seed"]
+            wishes = ("s20", fighters.RANDOM) if a_slot == 0 else (fighters.RANDOM, "s20")     # (P1's, P2's)
+            pick = wishes[_random.Random((int(seed) ^ 0x5EED57A6) & 0xFFFFFFFF).randrange(2)]
+            ctx.note(f"coin flip: {a.name} is P{a_slot + 1}; the match seed picks {pick!r}; the stage is {stage}")
+            if pick == "s20":
+                ctx.check("random between the two: the seed picked Ghetto Pit", stage == "s20", stage)
+            else:
+                ctx.check("random between the two: the seed picked Random, a stage from the pool",
+                          stage in fighters.table().stage_pool(old_stages=True), stage)
+    for p in (a, b):
+        leave(ctx, p)

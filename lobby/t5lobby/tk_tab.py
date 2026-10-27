@@ -70,10 +70,16 @@ from . import discord_rpc, fighters, fwcheck, lag, notify, padmap, padnav, proto
 from .buildid import BuildInfo
 from .client import LobbyClient
 from .i18n import N_, stamp, t, translate_message
-from .match_driver import MatchDriver, fps_from_logs, game_supports_pick
+from .match_driver import MatchDriver, fps_from_logs, game_files, game_supports_pick, game_supports_rules
 from .proto import DEFAULT_PORT, LobbyError
-from . import theme, tk_rooms, tk_spectate, tk_tour, tk_views, tklist, winfront
+from . import theme, tk_casual, tk_rooms, tk_rules, tk_spectate, tk_tour, tk_views, tklist, winfront
 from .ranks import record_label as _record
+
+
+def _rate(wins, games):
+    """Win rate in whole percent (0 for no games)."""
+    return round(100 * wins / games) if games else 0
+
 
 AVAILABLE = True
 DEFAULT_SERVER = f"127.0.0.1:{DEFAULT_PORT}"
@@ -84,9 +90,9 @@ ROOM_STATE_TEXT = {"open": N_("open"), "full": N_("full"), "playing": N_("playin
 RESULT_TEXT = {"confirmed": N_("Result confirmed"), "onesided": N_("Result recorded (your opponent did not report)"),
                "forfeit": N_("Match decided by forfeit"), "resolved": N_("Result decided by the games' state"),
                "disputed": N_("You and your opponent reported different results -- not counted"),
-               "void": N_("No result")}
+               "void": N_("No result"), "training": N_("Training fight over -- nothing is counted")}
 RESULT_WORD = {"confirmed": N_("confirmed"), "onesided": N_("one-sided"), "forfeit": N_("forfeit"),
-               "resolved": N_("resolved"), "disputed": N_("disputed"), "void": N_("void")}
+               "resolved": N_("resolved"), "disputed": N_("disputed"), "void": N_("void"), "training": N_("training")}
 OUTCOME_WORD = {"win": N_("win"), "loss": N_("loss"), "draw": N_("draw")}
 REASON_TEXT = {"desync": N_("the two games went out of sync"), "too_short": N_("too short to count"),
                "disputed": N_("the reports disagreed"), "crash": N_("a game crashed"),
@@ -175,6 +181,33 @@ def rank_text(p, plates=False):
     return ranks.label(p)
 
 
+def _ping_cell(ms, measured=False):
+    """The Ping column: "~85 ms" for an estimate, "85 ms" once measured in a match together, "" when unknown."""
+    if ms is None:
+        return ""
+    return f"{ms:.0f} ms" if measured else f"~{ms:.0f} ms"
+
+
+ping_text = tk_views.ping_text      # (the bar's line for a ping before a match: tk_views, which the cards share)
+
+
+def _list_ping(client, p, me):
+    """(ms, measured) of a lobby list entry: LobbyClient.ping_to; a stand-in client without it: the old sum of both
+    round trips to the lobby server."""
+    fn = getattr(client, "ping_to", None)
+    if fn is not None:
+        return fn(p)
+    if p.get("rtt") is None or (me and p.get("id") == me.get("id")):
+        return None, False
+    return p["rtt"] + (getattr(client, "server_rtt", None) or 0.0), False
+
+
+def _event_ping(client, ev, who="from"):
+    """The ping of a challenge / invite / found match: LobbyClient.ping_info, else the server's own."""
+    fn = getattr(client, "ping_info", None)
+    return fn(ev, who) if fn is not None else (ev or {}).get("ping")
+
+
 def _reselect(tv):
     """After an in-place update: tell the list's selection handlers again (the selected row may have changed)."""
     if tv.selection():
@@ -220,6 +253,7 @@ class OnlineTab:
         self._relogin_n = 0
         self._login_busy = False         # a login is on its way (no automatic one beside it)
         self._kicked = False             # removed by the server (ban, kick): no automatic login after that
+        self._pending_search = None      # "ranked" / "quick": the launcher's --search, started after the saved login
         self.ask_string = theme.ask_string           # dialogs (tests replace them)
         self.ask_yes_no = theme.ask_yes_no
         self.new_window = tk.Toplevel                # the tab's own windows (tests make hidden ones)
@@ -257,6 +291,7 @@ class OnlineTab:
         self._pad_until = 0.0            # no controller action before this (pad clock)
         self.spec = tk_spectate.Spectating(self)   # watching live matches (docs/SPECTATE.md)
         self.rooms_ui = tk_rooms.RoomsUI(self)     # private and community rooms (docs/ONLINE.md "Rooms")
+        self.casual = tk_casual.CasualUI(self)     # side and stage by choice (docs/ONLINE.md "Sides and stages by choice")
         self._bar_t = -1e9               # when the question bar's buttons last changed (pad clock): BAR_ARM_S
         self.tours = tk_tour.TourController(self)    # tournaments: the page, the calls (docs/TOURNAMENTS.md)
         self.fw_check = fwcheck.check    # the read-only firewall check (tests replace it)
@@ -287,6 +322,7 @@ class OnlineTab:
         self.cfg["server"] = self.server_var.get().strip()
         self.cfg["name"] = self.name_var.get().strip()
         self.cfg["char"] = self._char_key()
+        self.cfg["life"] = tk_rules.parse_life(self.life_var.get())     # health handicap (casual), tk_rules.py
         self.cfg["remember"] = bool(self.remember_var.get())
         self.cfg["strict"] = bool(self.strict_var.get())
         self.cfg["pad"] = bool(self.pad_var.get())
@@ -329,6 +365,7 @@ class OnlineTab:
         self.hint_var = tk.StringVar(value=t("Passwords are only sent to servers on this PC / your network, or "
                                              "over an encrypted (TLS) connection."))
         self.char_var = tk.StringVar(value=self.table.fighter_name(self.cfg.get("char") or fighters.RANDOM))
+        self.life_var = tk_rules.life_var(self.cfg)
         self.strict_var = tk.IntVar(value=1 if self.cfg.get("strict") else 0)
         self.bar_text = tk.StringVar()
         self.match_var = tk.StringVar(value="")
@@ -374,6 +411,7 @@ class OnlineTab:
         for k, b in self.actions.items():
             b.configure(state="normal" if on.get(k) else "disabled")
         self.spec.set_actions(busy)
+        self.casual.refresh()
         connected = self.client is not None
         for b in (self.b_guest, self.b_login, self.b_register, self.b_forgot):
             b.configure(state="disabled" if connected else "normal")
@@ -515,6 +553,7 @@ class OnlineTab:
                     if self.driver is not None:
                         self.driver.on_event(ev)
                     self.on_event(ev)
+                    self.casual.after_event(ev)
             except queue.Empty:
                 pass
         if self.driver is not None:
@@ -550,7 +589,7 @@ class OnlineTab:
                 return fn()
             except Exception:   # noqa: BLE001
                 pass
-        return os.path.join(getattr(self.app.settings, "out_dir", "") or os.getcwd(), "build", "cmake", "t5dr.exe")
+        return game_files(getattr(self.app.settings, "out_dir", "") or os.getcwd())[0]
 
     def check_firewall(self, force=False):
         """Read Windows Firewall's rules again (worker thread; at most every FW_CHECK_GAP_S unless forced)."""
@@ -620,6 +659,10 @@ class OnlineTab:
         st = self.app.game_state()
         if not st.get("ok"):
             return None, st.get("text") or t("The game is not built.")
+        if not BuildInfo.has_online(self.app.settings.out_dir):
+            # a macOS build without the online modules (online on a Mac is a test build for now)
+            return None, t("This Mac build has no online play. For a test match: tools/build_game.py --macos-online "
+                           "(docs/MACOS_ONLINE_TEST.md).")
         try:
             rel = "dev"
             try:
@@ -649,12 +692,14 @@ class OnlineTab:
                         game_port=int(self.cfg.get("game_port", 0) or 0),
                         plain_passwords=bool(self.cfg.get("plain_passwords")), blind_ready=True,
                         ingame_pick=self._game_can_pick(),
+                        match_rules=self._game_has_rules(),     # training rooms, the health handicap
                         sets=bool(self.cfg.get("sets", True)),   # online.json "sets": false: no ranked sets
                         # launcher Settings -> "Open the game's port on my router" (docs/NETPLAY.md)
                         port_mapping=bool(getattr(self.app, "settings", {}).get("router_ports", True)),
                         tournaments=True,
                         **self.spec.client_kw())
         self.spec.new_client(c)
+        self.casual.new_client(c)
         # this PC's game speed from its last online match (the lobby warns / keeps slow PCs out of ranked);
         # before the first one, from the newest game log (offline play)
         try:
@@ -669,8 +714,13 @@ class OnlineTab:
     def _game_can_pick(self):
         """This PC's game picks the characters on its own select screen (in-game select)."""
         out = getattr(self.app.settings, "out_dir", os.getcwd())
-        return game_supports_pick([os.path.join(out, "build", "cmake", "t5dr.exe"),
-                                   os.path.join(out, "build", "cmake", "t5dr_game.dll")])
+        return game_supports_pick(game_files(out))
+
+    def _game_has_rules(self):
+        """This PC's game can play training rooms (endless health) and the health handicap."""
+        out = getattr(self.app.settings, "out_dir", os.getcwd())
+        return game_supports_rules([os.path.join(out, "build", "cmake", "t5dr.exe"),
+                                    os.path.join(out, "build", "cmake", "t5dr_game.dll")])
 
     def do_login(self, mode, session=None):
         if mode != "session":
@@ -732,11 +782,14 @@ class OnlineTab:
                                               if mode == "session" else ""))
             self._set_actions()
             self.on_char()
+            self.on_life()
             if client.recovery_codes:
                 self.show_codes(client.recovery_codes, first=True)
+            self._run_pending_search()
 
         def failed():
             self._login_busy = False
+            self._pending_search = None             # (--search: the player sees why in the status line)
             # Only the server's "no" ends the saved login. A server that cannot be reached (restarting for an
             # update, an outage, no internet) leaves it: it works again once the server is back.
             if mode == "session" and refused.get("auth"):
@@ -803,14 +856,50 @@ class OnlineTab:
             self.name_var.set(s.get("name", self.name_var.get()))
             self.do_login("session", session=s["token"])
 
+    # The launcher's command line --search ranked / --search casual (a desktop shortcut, Steam's launch options;
+    # casual = the Quick match queue): the Online tab opens, logs in with the saved login and starts searching.
+    SEARCH_MODES = {"ranked": "ranked", "casual": "quick", "quick": "quick"}
+
+    def search_on_start(self, mode):
+        """Remember a search to start once the saved login is in (try_saved_login logs in when the tab is shown).
+        Without a saved login for this server, or a game that is not built, only a hint. -> True when the search
+        will start by itself."""
+        mode = self.SEARCH_MODES.get(str(mode or "").strip().lower())
+        if not mode:
+            return False
+        if self.client is not None and self.client.me:
+            self._pending_search = mode
+            self._run_pending_search()
+            return True
+        if not self.app.game_state().get("ok"):
+            self.status(t("Build the game first (Build tab); then the search starts by itself next time."),
+                        error=True)
+            return False
+        if self._saved_session() is None:
+            self.status(t("Log in to start the search. Tick \"Remember me\" when you log in with your account: next "
+                          "time --search logs in and starts searching by itself."))
+            return False
+        self._pending_search = mode
+        return True
+
+    def _run_pending_search(self):
+        mode, self._pending_search = self._pending_search, None
+        me = self.client.me if self.client is not None and self.client.connected else None
+        if not mode or not me:
+            return
+        if mode == "ranked" and me.get("guest", True):
+            self.status(t("Ranked matches need an account: log in with your name and password."), error=True)
+            return
+        if me.get("status") != "idle":
+            return                                  # already searching, in a room or a match
+        self.do_queue(mode)
+
     def _make_driver(self):
         if self.driver is not None:          # a game left from before a lost connection
             self.driver.close()
         out = getattr(self.app.settings, "out_dir", os.getcwd())
-        exe = os.path.join(out, "build", "cmake", "t5dr.exe")
-        dll = os.path.join(out, "build", "cmake", "t5dr_game.dll")
         self.driver = MatchDriver(self.client, self._launch, os.path.join(out, "logs", "online"),
-                                  table=self.table, mode=self.cfg.get("game_mode", "auto"), game_files=[exe, dll],
+                                  table=self.table, mode=self.cfg.get("game_mode", "auto"), game_files=game_files(out),
                                   async_calls=True,
                                   input_delay=(getattr(self.app, "settings", None) or {}).get("input_delay"))
 
@@ -953,6 +1042,16 @@ class OnlineTab:
         self._save_cfg()
         if self.client and self.client.me:
             self.call(self.client.set_char, self._char_key())
+
+    def on_life(self):
+        """The health handicap picker (tk_rules.py): remembered, and sent when the server and the game have it."""
+        self._save_cfg()
+        c = self.client
+        tk_rules.sync_picker(self)
+        if c and c.me and c.handicap_ok():
+            life = tk_rules.parse_life(self.life_var.get())
+            if life != c.life:
+                self.call(c.set_life, life)
 
     def do_queue(self, mode):
         c = self.client
@@ -1260,9 +1359,12 @@ class OnlineTab:
                      room=(ev.get("room") or {}).get("name") or "?")
         else:
             text = t("{name} ({rank}) invites you to a casual match", name=frm.get("name"), rank=rank_text(frm))
+        self.status(text + ".")
+        ping = _event_ping(self.client, ev)
+        if ping and (ev.get("room") or {}).get("size", 2) <= 2:     # (1.1.5; a bigger room: others play there too)
+            text += " -- " + ping_text(ping)
         self.show_bar(text, [(t("Accept"), lambda: self._answer_invite(True), "cross"),
                              (t("Decline"), lambda: self._answer_invite(False), "circle")])
-        self.status(text + ".")
 
     def _answer_invite(self, accept):
         inv, self.invite = self.invite, None
@@ -1367,18 +1469,22 @@ class OnlineTab:
     def _on_subtab(self):
         try:
             sel = self.nb.select()
-            tab = self.nb.index(sel) if sel else None      # 0 lobby, 1 leaderboard, 2 profile, 3 friends, 4 tournaments
         except tk.TclError:
             return                                         # (the tabs are being destroyed)
+        # lobby, leaderboard, stats, profile, friends, tournaments (tk_views._build_lobby): compared by page
+        page = next((name for name in ("board", "prof", "friends") if sel and sel == str(getattr(self, name + "_page",
+                                                                                                ""))), None)
         if sel and sel == str(getattr(self, "tours_page", "")):
             self.tours.shown()
         else:
             self.tours.page_shown = False
-        if tab == 1:
+        if sel and sel == str(getattr(self, "stats_page", "")) and getattr(self, "stats", None) is not None:
+            self.stats.shown()                             # the Stats page (tk_stats.py)
+        if page == "board":
             self.load_leaderboard()
-        elif tab == 2 and self.client and self.profile_name is None:
+        elif page == "prof" and self.client and self.profile_name is None:
             self.show_profile(None)
-        elif tab == 3:
+        elif page == "friends":
             self._fill_friends()
 
     def load_leaderboard(self):
@@ -1425,7 +1531,7 @@ class OnlineTab:
         if not self.client:
             return
         self.profile_name = name
-        self.nb.select(2)
+        self.nb.select(self.prof_page)
 
         def done(p):
             self.view.profile_shown(p)
@@ -1437,17 +1543,32 @@ class OnlineTab:
             if p.get("place"):
                 rating += ", " + t("#{place} on the leaderboard", place=p["place"])
             lines = [rating]
-            rec = p.get("record", [0, 0, 0])
-            parts = [t("Record {record}", record=_record(rec, draws=True))]
-            if p.get("account"):
-                parts.append(t("ranked matches {count}", count=p["ranked_games"]))
+            st = p.get("stats") if isinstance(p.get("stats"), dict) else None
+            mode = {k: st.get(k) or {} for k in ("ranked", "casual")} if st else {}
+            played = sum(m.get("games", 0) for m in mode.values())
+            parts = []
+            if played:         # a 1.1.5 server: matches played and win rate, all / ranked / casual
+                won = sum(m.get("wins", 0) for m in mode.values())
+                lines.append(t("Played {games}: {wins} won, {losses} lost, win rate {rate} %", games=played, wins=won,
+                               losses=sum(m.get("losses", 0) for m in mode.values()), rate=_rate(won, played)))
+                split = [t(text, games=m["games"], rate=_rate(m.get("wins", 0), m["games"]))
+                         for text, m in ((N_("Ranked {games}, {rate} % won"), mode["ranked"]),
+                                         (N_("Casual {games}, {rate} % won"), mode["casual"])) if m.get("games")]
+                lines.append(", ".join(split))
+            else:
+                rec = p.get("record", [0, 0, 0])
+                parts.append(t("Record {record}", record=_record(rec, draws=True)))
+                if p.get("account"):
+                    parts.append(t("ranked matches {count}", count=p["ranked_games"]))
             if p.get("peak_rank"):
                 peak = ranks.display_name({"tier": p.get("peak"), "rank": p["peak_rank"]})
                 parts.append(t("highest rank {rank}", rank=peak))
-            lines.append(", ".join(parts))
+            if parts:
+                lines.append(", ".join(parts))
             if p.get("chars"):
                 lines.append(t("Characters: {list}", list=", ".join(
-                    f"{self.table.fighter_name(c['char'])} {c['wins']}/{c['games']}" for c in p["chars"])))
+                    f"{self.table.fighter_name(c['char'])} {c['wins']}/{c['games']} ({_rate(c['wins'], c['games'])} %)"
+                    for c in p["chars"])))
             if p.get("voids_24h"):
                 lines.append(t("Matches without result caused in the last 24 h: {count}", count=p["voids_24h"]))
             if p.get("self") and p.get("recovery_codes_left") is not None:
@@ -1466,6 +1587,8 @@ class OnlineTab:
                 self.tv_hist.insert("", "end", values=(when, _word(OUTCOME_WORD, h["result"]), h["opponent"], chars,
                                                        score, delta, st),
                                     tags=(h["result"],) if h.get("result") in ("won", "lost") else ())
+            if getattr(self, "history", None) is not None:
+                self.history.shown(p)                      # results coloured, replays on this PC (tk_history.py)
         self.call(self.client.profile, name, 20, then=done)
 
     # ------------------------------------------------------------------ server events
@@ -1495,7 +1618,9 @@ class OnlineTab:
             self.chat_line(f"{ev['from']['name']}: {ev['text']}")
         elif kind == "challenged":
             self.challenge = ev["challenge"]
-            self.show_bar(t("{name} ({rank}) challenges you", name=ev["from"]["name"], rank=rank_text(ev["from"])),
+            ping = _event_ping(c, ev)    # (1.1.5: the ping and the likely path before an answer)
+            self.show_bar(t("{name} ({rank}) challenges you", name=ev["from"]["name"], rank=rank_text(ev["from"]))
+                          + (" -- " + ping_text(ping) if ping else ""),
                           [(t("Accept"), lambda: self._answer(True), "cross"),
                            (t("Decline"), lambda: self._answer(False), "circle")])
         elif kind == "challenge_update":
@@ -1536,8 +1661,12 @@ class OnlineTab:
                 self.show_bar(self._ready_text(), [(t("Accept"), lambda: self._ready(True), "cross"),
                                                    (t("Decline"), lambda: self._ready(False), "circle")])
             else:
-                text = self._opponent_text(ev["opponent"], ev["ranked"], ev.get("origin") == "rematch")
+                text = " -- ".join([self._opponent_text(ev["opponent"], ev["ranked"], ev.get("origin") == "rematch")]
+                                   + tk_rules.rules_parts(ev))
                 if ev["ready_check"]:
+                    ping = _event_ping(c, ev, "opponent")
+                    if ping:
+                        text += " -- " + ping_text(ping)
                     self.ready_deadline = time.monotonic() + float(ev.get("ready_timeout") or 15)
                     self.show_bar(text, [(t("Accept"), lambda: self._ready(True), "cross"),
                                          (t("Decline"), lambda: self._ready(False), "circle")])
@@ -1580,14 +1709,18 @@ class OnlineTab:
                 self._match_head = t("Tournament set vs {name}", name=ev["opponent"]["name"])
             elif ev.get("ranked"):
                 self._match_head = t("Ranked match vs {name}", name=ev["opponent"]["name"])
+            elif f.get("training"):
+                self._match_head = t("Training vs {name}", name=ev["opponent"]["name"])
             else:
                 self._match_head = t("Casual match vs {name}", name=ev["opponent"]["name"])
+            self._match_head += self.casual.head_suffix(ev)        # (P2 on Scrapyard): casual by choice
             regional = (ev.get("relay") or {}).get("name") if ev.get("path") == "relay" else None
             self._match_tail = t("ping {ms} ms ({how}), input delay {frames} frames ({delay_ms} ms)",
                                  ms=f"{ev.get('rtt_ms', 0):.0f}",
                                  how=(t("via the relay server {name}", name=regional) if regional
                                       else _word(PATH_TEXT, ev.get("path"))),
                                  frames=ev.get("delay"), delay_ms=f"{delay * 16.7:.0f}")
+            self._match_tail = " -- ".join([self._match_tail] + tk_rules.rules_parts(ev, ev.get("slot")))
             if f.get("pick"):
                 # in-game select: the fighters are picked on the game's own select screen
                 fighters_text = t("pick your fighter in the game ({secs} s)", secs=f["pick"])
@@ -1658,9 +1791,10 @@ class OnlineTab:
                 (t("I quit"), lambda: self._answer_result("quit")),
             ])
         elif k == "rematch_offer":
-            self.show_bar(t("{opponent} wants a rematch", opponent=n["opponent"]),
+            swapped, more = self.casual.offer(n)          # "with the sides swapped" / Rematch: swap sides
+            self.show_bar(t("{opponent} wants a rematch", opponent=n["opponent"]) + swapped,
                           [(t("Rematch"), lambda: self._rematch(True), "cross"),
-                           (t("No thanks"), lambda: self._rematch(False), "circle")])
+                           (t("No thanks"), lambda: self._rematch(False), "circle")] + more)
         self.view.after_driver(n)
         if k == "rematch_offer":
             self._come_forward(("rematch", n.get("match")))     # a decision for the player
@@ -1765,11 +1899,14 @@ class OnlineTab:
             self.driver.answer(what)
         self.status(t("Result sent; waiting for your opponent's report..."))
 
-    def _rematch(self, accept):
+    def _rematch(self, accept, swap=False):
         self.view.rematch_sent(bool(accept))
         self.hide_bar()
         if self.driver:
-            self.driver.rematch(None, accept)
+            if swap:
+                self.driver.rematch(None, accept, swap=True)      # P1 and P2 the other way round (tk_casual.py)
+            else:
+                self.driver.rematch(None, accept)
         if accept:
             self.status(t("Rematch offered; waiting for your opponent..."))
 
@@ -1777,16 +1914,16 @@ class OnlineTab:
         self._last_lobby = ev
         me = self.client.me if self.client else None
         mine = self.client.build.build_id if self.client else None
-        my_rtt = (self.client.server_rtt if self.client else None) or 0.0
         rows = []
         rtt_of = {}
         plates = self.view.plates_on()
         for p in ev.get("players", []):
             # another version: that is what matters (no challenge either way), not what they are doing
             status = _word(STATUS_TEXT, p["status"]) if p["build"] == mine else t("other version")
-            ms = None if p["rtt"] is None or (me and p["id"] == me["id"]) else p["rtt"] + my_rtt
-            rtt_of[p["id"]] = ms
-            ping = "" if ms is None else f"~{ms:.0f} ms"
+            # (1.1.5: the best relay both measured, as the server estimates it; measured in a match: no "~")
+            ms, measured = _list_ping(self.client, p, me)
+            rtt_of[p["id"]] = (ms, measured)
+            ping = _ping_cell(ms, measured)
             rating = "" if p["guest"] else p["rating"]
             rec = p.get("record") or [0, 0, 0]
             name = p["name"] + (self._you_suffix() if me and p["id"] == me["id"] else "")
@@ -1802,8 +1939,8 @@ class OnlineTab:
                              + ([t("ranked")] if r["ranked"] else []))
             # the lock: nobody can join it now -- or only with its password / invite code
             closed = r["status"] != "open" or r["build"] != mine or bool(r.get("private"))
-            ms = rtt_of.get(r["owner"].get("id"))
-            rows.append((r["id"], (r["name"], r["owner"]["name"], state, "" if ms is None else f"~{ms:.0f} ms"),
+            ms, measured = rtt_of.get(r["owner"].get("id"), (None, False))
+            rows.append((r["id"], (r["name"], r["owner"]["name"], state, _ping_cell(ms, measured)),
                          self.view.room_image(closed), ("closed",) if closed else ()))
         tklist.sync(self.tv_rooms, rows)
         _reselect(self.tv_rooms)
@@ -1821,15 +1958,9 @@ class OnlineTab:
     def _ready_text(self):
         """The blind ready check: only the ping and the rules, and the seconds left."""
         m = self.match or {}
-        ping = m.get("ping") or {}
-        if ping.get("known"):
-            # (the server's estimate: the best relay path for the two; the real ping is measured after both accept)
-            where = t("ping about {ms} ms (estimated; measured directly once you both accept)",
-                      ms=f"{ping.get('ms', 0):.0f}")
-        else:
-            where = t("ping not known yet")
+        where = ping_text(m.get("ping"))         # (estimated or measured last time, and the likely path: 1.1.5)
         left = max(0, int((self.ready_deadline or 0) - time.monotonic() + 0.99)) if self.ready_deadline else 0
-        parts = [t("Opponent found")] + ([t("RANKED")] if m.get("ranked") else []) + [
+        parts = [t("Opponent found")] + ([t("RANKED")] if m.get("ranked") else []) + tk_rules.rules_parts(m) + [
             where, t("accept within {seconds} s?", seconds=left)]
         return " -- ".join(parts)
 
@@ -1900,11 +2031,12 @@ class OnlineTab:
     def _show_rematch_bar(self):
         text, opp = self.rematch_bar
         buttons = [(t("Rematch {name}", name=opp), lambda: self._rematch(True), "cross"),
+                   *self.casual.rematch_buttons(),            # Rematch: swap sides (Triangle), casual by choice
                    (t("Next game"), self._next_game),
                    (t("Leave"), lambda: self._rematch(False), "circle"),
                    (t("Block {name}", name=opp), lambda: self.block_opponent(opp))]
         check = self.lag
-        if check and check.get("verdict") == "more_lag" and check.get("can_leave"):
+        if check and lag.lagged(check.get("verdict")) and check.get("can_leave"):
             buttons.insert(3, (t("Leave: too laggy"), self._leave_for_lag))
         self.show_bar(text, buttons)
 
@@ -1929,7 +2061,7 @@ class OnlineTab:
         info, slot, _end = self.set_bar
         buttons = [(t("Leave set (counts as a loss)"), self._leave_set, "circle")]
         check = self.lag
-        if check and check.get("verdict") == "more_lag" and check.get("can_leave"):
+        if check and lag.lagged(check.get("verdict")) and check.get("can_leave"):
             buttons.insert(0, (t("Leave: too laggy"), self._leave_for_lag))
         self.show_bar(self._set_bar_text(), buttons)
 
@@ -2007,8 +2139,8 @@ class OnlineTab:
     # ------------------------------------------------------------------ controller (padnav.py)
     # A pad or arcade stick runs the whole online loop: Cross (A) accepts a found match or a challenge,
     # starts the rematch, and searches; Circle (B) declines, leaves, and stops the search. Which stick
-    # button is Cross comes from the game's controls.ini. Triangle (Y) is read but unused: every match
-    # gets a random stage from the server (a rematch too), so there is no stage choice to make.
+    # button is Cross comes from the game's controls.ini. Triangle (Y) is Rematch: swap sides after a casual
+    # match by choice (tk_casual.py); the stage is chosen in the launcher, never on the pad.
     def _tab_viewable(self):
         return bool(self.parent.winfo_viewable())
 
@@ -2072,6 +2204,9 @@ class OnlineTab:
         plan = {}
         if self.client is None:
             return plan
+        cs = getattr(self, "charsel", None)
+        if cs is not None and cs.is_open():        # the character select grid: pick / close (tk_charsel.py)
+            return cs.pad_plan()
         if self.bar.winfo_manager():               # a question is up: its own buttons answer, nothing else
             return {b: (None, fn) for b, fn in self.bar_pad.items()}
         if str(self.actions["cancel"].cget("state")) == "normal":

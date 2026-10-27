@@ -87,9 +87,11 @@ OUR_FILES = [
     "tools/build_game.py", "tools/run_game.py", "tools/make_keys.py", "tools/unself.py", "tools/prereqs.py",
     "tools/build_game_dll.py", "tools/lift_spu_jobs.py", "tools/gamedll/t5dr_game_dll.c", "tools/gamedll/t5dr_host.def",
     "tools/gamedll/ucrt_min.def", "tools/gamedll/t5dr_lifted.proftext", "tools/profile_check.py",
+    "tools/shader_warmup.py",      # 1.1.5: build_game.py --warmup (the launcher's BUILD GAME)
     "launcher/t5dr_launcher.pyw", "launcher/core.py", "launcher/online.py", "launcher/updater.py",
     "launcher/release_sig.py",
     "launcher/problem_report.py", "launcher/problem_report_ui.py",
+    "launcher/problem_check.py", "launcher/problem_check_ui.py", "launcher/tab_look.py",
     "launcher/controls_ui.py", "launcher/controls_edit.py", "launcher/stub/t5dr_stub.c",
     "launcher/replays.py", "launcher/replays_ui.py",
     "docs/RELEASE.md",
@@ -110,6 +112,8 @@ OUR_OPTIONAL_FILES = ["CHANGELOG.md", "docs/TROUBLESHOOTING.md", "docs/README.de
 # so a staged tree without it builds a runtime with no online play at all (the host build does not fail).
 OUR_GLOBS = ["patches/ps3recomp/*.patch", "tools/gamedll/include/*.h", "lobby/t5lobby/*.py",
              "lobby/t5lobby/data/*.json", "lobby/t5lobby/server/*.py",
+             # freely licensed fonts the launcher loads for itself (theme.load_fonts), each with its licence file
+             "lobby/t5lobby/fonts/*.ttf", "lobby/t5lobby/fonts/*.otf", "lobby/t5lobby/fonts/*.txt",
              "src/*/*.cpp", "src/*/*.h", "src/*/*.c", "src/*/*.manifest", "src/*/*.rc.in", "src/*/*/*.c"]
 
 # ps3recomp: only what tools/build_game.py and CMakeLists.txt use.
@@ -147,6 +151,12 @@ PY_SELFTEST = (
     "import sys, json, ssl, sqlite3, ctypes, zlib, hashlib, asyncio, multiprocessing, tkinter\n"
     "from Crypto.Cipher import AES\n"
     "assert AES.new(bytes(16), AES.MODE_ECB).encrypt(bytes(16)).hex() == '66e94bd4ef8a2c3b884cfa59ca342b2e'\n"
+    # the updater's release signature check (launcher/release_sig.py) works with this Python: RFC 8032 test 2
+    "sys.path.insert(0, 'launcher'); import release_sig; sys.path.pop(0)\n"
+    "pk = bytes.fromhex('3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c')\n"
+    "sg = bytes.fromhex('92a009a9f0d4cab8720e820b5f642540a2b27b5416503f8fb3762223ebdb69da'\n"
+    "                   '085ac1e43e15996e458f3613d0f11d8c387b2eaeb4302aeeb00d291612bb0c00')\n"
+    "assert release_sig.verify(pk, b'\\x72', sg) and not release_sig.verify(pk, b'\\x73', sg)\n"
     "print(json.dumps({'version': sys.version.split()[0], 'tcl': tkinter.Tcl().eval('info patchlevel'),\n"
     "                  'prefix': sys.prefix, 'path': sys.path}))\n")
 

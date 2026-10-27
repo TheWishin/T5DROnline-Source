@@ -426,9 +426,22 @@ class Frames(unittest.TestCase):
         self.assertLess(f.spike_score(im), 0.01)
 
 
+def smoke_run():
+    """tools/smoke/run.py by its path: a plain "import run" took lobby/run.py whenever an earlier test (the launcher's
+    Replays tab tests) left lobby/ ahead of tools/smoke on sys.path."""
+    import importlib.util
+    mod = sys.modules.get("t5dr_smoke_run")
+    if mod is None:
+        spec = importlib.util.spec_from_file_location("t5dr_smoke_run", os.path.join(SMOKE, "run.py"))
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules["t5dr_smoke_run"] = mod
+        spec.loader.exec_module(mod)
+    return mod
+
+
 class Runner(unittest.TestCase):
     def test_list_and_missing_exe(self):
-        import run
+        run = smoke_run()
         import scenarios
         quick = {t["name"] for t in scenarios.tests_for("quick")}
         self.assertEqual(quick, {"boot_menu", "arcade_fight", "vs_two_pads", "practice", "title_twice"})
@@ -455,12 +468,13 @@ class Runner(unittest.TestCase):
         self.assertEqual(cwd, os.path.join(d, "t", "cwd"))
         for k in ("PS3_WINDOW_BACKGROUND", "PS3_PAD_FILE", "PS3_PAD_FILE2", "AUDIO_RATE", "LD_FRAME_DUMP"):
             self.assertIn(k, env)
-        self.assertEqual(env["RSX_LIVE_DRAW"], "1")                  # run_game.py's defaults come along
+        if sys.platform != "darwin":                                 # run_game.py's defaults come along
+            self.assertEqual(env["RSX_LIVE_DRAW"], "1")
         self.assertEqual(env["X_TEST"], "1")
         self.assertNotIn("\\", env["PS3_PAD_FILE"])
 
     def test_bad_threshold(self):
-        import run
+        run = smoke_run()
         with self.assertRaises(SystemExit):
             run.parse_set(["fps_min.nope=3"])
         self.assertEqual(run.parse_set(["fps_min.menu=50"]), {"fps_min.menu": 50.0})

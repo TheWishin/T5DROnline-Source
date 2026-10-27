@@ -16,6 +16,7 @@
 The C++ part needs a Windows C++ compiler and a ps3recomp tree (stb's zlib code, libs/codec); it is skipped
 without them.
 """
+import datetime
 import json
 import os
 import shutil
@@ -69,6 +70,8 @@ def make_file(path, inputs, matches, bars=(), hashes=(), rollback=True, slot=0, 
             b += struct.pack("<H", len(e)) + e
         if version >= 3:
             b += struct.pack("<I", 0)                    # format 3: no custom costume blocks
+        if version >= 5:
+            b += struct.pack("<I", m.get("rules", 0))    # format 5: the match's rules (training, health handicap)
     b += struct.pack("<I", len(bars))
     for x in bars:
         b += struct.pack("<5IQ3I", x["kind"], x["f"], x["nf"], x["seed"], 1, x["f"], 1, 2, 3)
@@ -89,7 +92,7 @@ def make_file(path, inputs, matches, bars=(), hashes=(), rollback=True, slot=0, 
         header["matches"].append({"n": k, "start": m["start"], "end": m["end"], "p1": m["p1"], "p2": m["p2"],
                                   "stage": m["stage"], "winner": m.get("winner"), "score": list(m.get("score", (0, 0))),
                                   "complete": m.get("winner") is not None, "started": m.get("started", created),
-                                  "names": list(names)})
+                                  "ended": m.get("ended"), "names": list(names)})
     with open(path, "wb") as f:
         f.write(replays.MAGIC + json.dumps(header).encode() + b"\n" + zlib.compress(bytes(b)))
     return header
@@ -277,6 +280,44 @@ class LauncherSideTest(unittest.TestCase):
         self.assertEqual(replays.read_payload(q)["frames"], 32)
 
 
+class HistoryMatchTest(unittest.TestCase):
+    """The Online tab's match history finds its replays (1.1.5): by the lobby's time, both fighters and the
+    opponent's name."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="t5dr-hist")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+
+    @staticmethod
+    def ts(iso):
+        return datetime.datetime.strptime(iso, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc).timestamp()
+
+    def test_found_by_time_fighters_and_name(self):
+        make_file(os.path.join(self.tmp, "a" + replays.EXT), sample_inputs(50),
+                  [{"start": 0, "end": 20, "p1": 9, "p2": 33, "stage": 27, "winner": 0, "score": (2, 1),
+                    "started": "2026-10-19T12:00:00Z", "ended": "2026-10-19T12:03:00Z"},
+                   {"start": 25, "end": 45, "p1": 9, "p2": 33, "stage": 27, "winner": 1, "score": (0, 2),
+                    "started": "2026-10-19T12:04:00Z", "ended": "2026-10-19T12:07:00Z"}], slot=0, names=("Me", "Rival"))
+        make_file(os.path.join(self.tmp, "b" + replays.EXT), sample_inputs(30),
+                  [{"start": 0, "end": 20, "p1": 1, "p2": 9, "stage": 27, "winner": 0, "score": (3, 0),
+                    "started": "2026-10-19T13:00:00Z", "ended": "2026-10-19T13:02:00Z"}], slot=1, names=("Other", "Me"))
+        rows = replays.list_replays(self.tmp)
+        f = replays.for_history
+        e = f(rows, self.ts("2026-10-19T12:07:40Z"), 9, 33, "rival", [0, 2])          # the server's clock: 40 s off
+        self.assertEqual((os.path.basename(e.path), e.index), ("a" + replays.EXT, 2))
+        e = f(rows, self.ts("2026-10-19T12:03:05Z"), 9, 33, "Rival", [2, 1])
+        self.assertEqual(e.index, 1)
+        e = f(rows, self.ts("2026-10-19T13:02:00Z"), 9, 1, "Other", [0, 3])         # this PC was P2 there
+        self.assertEqual(os.path.basename(e.path), "b" + replays.EXT)
+        self.assertIsNone(f(rows, self.ts("2026-10-19T12:07:00Z"), 33, 9, "Rival"))     # the fighters the other way
+        self.assertIsNone(f(rows, self.ts("2026-10-19T12:07:00Z"), 9, 33, "Somebody"))  # another opponent
+        self.assertIsNone(f(rows, self.ts("2026-10-19T14:07:00Z"), 9, 33, "Rival"))     # an hour later: not it
+        self.assertIsNone(f([], self.ts("2026-10-19T12:07:00Z"), 9, 33, "Rival"))
+        # two matches minutes apart: the score decides before the closer time
+        e = f(rows, self.ts("2026-10-19T12:05:00Z"), 9, 33, "Rival", [2, 1])
+        self.assertEqual(e.index, 1)
+
+
 class ReplaysTabTest(unittest.TestCase):
     """The launcher's Replays tab, built for real (not shown): the rows, Watch (the game's environment and the
     verdict it shows afterwards), Delete, in English and German."""
@@ -360,6 +401,36 @@ class ReplaysTabTest(unittest.TestCase):
         tab._poll()
         self.assertIn("identical to the live match (69 checks", tab.verdict.get())
         self.assertIsNone(tab.watching)
+
+    def test_watch_from_the_match_history(self):
+        app = self.launcher("en")
+        started = {}
+
+        class FakeGame:
+            def running(self):
+                return True
+
+            def stop(self):
+                pass
+
+        app.start_game = lambda env=None: (started.update(env), FakeGame())[1]
+        app.game_state = lambda: {"ok": True}
+        tab = app.replays
+        ts = HistoryMatchTest.ts("2026-10-19T12:04:30Z")
+        h = {"time": ts, "you_char": "jin", "opp_char": "lili", "opponent": "Rival", "score": [0, 2]}
+        e = tab.for_history(h, {"jin": 9, "lili": 33})
+        self.assertIsNotNone(e)
+        self.assertEqual(e.index, 2)
+        self.assertIsNone(tab.for_history(dict(h, opp_char="law"), {"jin": 9, "lili": 33, "law": 1}))
+        self.assertIsNone(tab.for_history({"time": "x"}, {}))                    # a damaged row: no replay, no error
+        tab.watch_entry(e)
+        self.assertEqual(app.nb.select(), str(app.tabs["replays"]))
+        self.assertEqual(started["T5_REPLAY_MATCH"], "2")
+        self.assertEqual(tab.tv.selection(), ("0",))
+        tab.watching = None
+        os.remove(self.file)
+        tab.watch_entry(e)                                                       # gone meanwhile: says so
+        self.assertIn("no longer", tab.verdict.get())
 
     def test_german(self):
         from t5lobby import i18n
@@ -451,12 +522,18 @@ class GameCodeTest(unittest.TestCase):
         frames = list(zip(p["inputs"][0], p["inputs"][1]))
         self.assertEqual(int(self.lines(out, "DIGESTPLUS")[0], 16), fnv_digest(frames))
         self.assertEqual(self.lines(out, "LINE"), ["1 9,33,27,2 buttons=2|4 pick=30 names=Alpha%20One|B%C3%A9ta",
-                                                   "2 9,33,27,2 buttons=2|1 names=Alpha%20One|B%C3%A9ta"])
+                                                   "2 9,33,27,2 buttons=2|1 train=1 life=70|100 "
+                                                   "names=Alpha%20One|B%C3%A9ta"])
         self.assertEqual(len(self.lines(out, "BARRIER")), 3)
         # format 3: match 1's custom costume blocks (P1 a pattern, P2 none), match 2 without any
         blocks = bytes((i * 13 + 1) & 0xFF for i in range(0x108)) + bytes(0x108)
-        self.assertEqual(p["version"], 4)
+        self.assertEqual(p["version"], 5)
         self.assertEqual(p["matches"][0]["costumes"], [blocks[:0x108].hex(), blocks[0x108:].hex()])
+        # format 5: match 2 is a training fight with P1 at 70 % health (match 1: no rules)
+        self.assertEqual((p["matches"][0]["training"], p["matches"][0]["life"]), (False, [100, 100]))
+        self.assertEqual((p["matches"][1]["training"], p["matches"][1]["life"]), (True, [70, 100]))
+        self.assertNotIn("training", m1)
+        self.assertEqual((m2["training"], m2["life"]), (True, [70, 100]))
         # format 4: the select seed mixes the match number; a session without T5_NET_UNLOCKS is closed
         self.assertTrue(p["select_mix"])
         self.assertEqual(p["unlocks"], "closed")
@@ -476,6 +553,8 @@ class GameCodeTest(unittest.TestCase):
         self.assertEqual(self.lines(out, "LINE")[0], "1 9,33,27,2 buttons=2|4 pick=30")
         self.assertEqual(self.lines(out, "COSTUMES"), [f"1 {fnv:016x}", "2 none"], "the costumes stay in a copy")
         self.assertEqual(replays.read_payload(stripped)["matches"][0]["costumes"], p["matches"][0]["costumes"])
+        self.assertEqual(self.lines(out, "LINE")[1], "2 9,33,27,2 buttons=2|1 train=1 life=70|100",
+                         "the rules stay in a copy")
 
     def test_live_stream_plays_like_the_file(self):
         """Spectating (docs/SPECTATE.md): the live stream written next to the replay holds the same session --
@@ -572,11 +651,35 @@ class GameCodeTest(unittest.TestCase):
         self.assertEqual(code, 0, out)
         path = self.lines(out, "FILE")[0]
         p = replays.read_payload(path)
-        self.assertEqual((p["version"], p["select_mix"], p["unlocks"]), (4, True, "open"))
+        self.assertEqual((p["version"], p["select_mix"], p["unlocks"]), (5, True, "open"))
         self.assertEqual(replays.read_header(path)["unlocks"], "open")
         code, out = self.run_exe("read", path)
         self.assertEqual(code, 0, out)
         self.assertEqual(self.lines(out, "FLAGS"), ["select_mix 1 unlocks_open 1"])
+
+    def test_format_4_files_have_no_rules(self):
+        """1.1.4 files (format 4) have no rules word: no training, both at 100 % -- and they play as before."""
+        ins = sample_inputs(400, seed=6)
+        path = os.path.join(self.tmp, "v4" + replays.EXT)
+        make_file(path, ins, [{"start": 0, "end": 300, "p1": 3, "p2": 4, "stage": 20, "winner": 0}], version=4)
+        p = replays.read_payload(path)
+        self.assertEqual((p["version"], p["matches"][0]["training"], p["matches"][0]["life"]), (4, False, [100, 100]))
+        code, out = self.run_exe("read", path)
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("train=", self.lines(out, "LINE")[0])
+        self.assertEqual(int(self.lines(out, "DIGESTPLUS")[0], 16), fnv_digest(list(zip(ins[0], ins[1]))))
+
+    def test_format_5_rules_from_python(self):
+        """A format 5 file with a handicap match: the game's line carries life=, and no train= without training."""
+        ins = sample_inputs(300, seed=8)
+        path = os.path.join(self.tmp, "v5" + replays.EXT)
+        make_file(path, ins, [{"start": 0, "end": 250, "p1": 3, "p2": 4, "stage": 20, "winner": 1,
+                               "rules": 50 << 8 | 90 << 16}], version=5)
+        self.assertEqual(replays.read_payload(path)["matches"][0]["life"], [50, 90])
+        code, out = self.run_exe("read", path)
+        self.assertEqual(code, 0, out)
+        self.assertIn(" life=50|90", self.lines(out, "LINE")[0])
+        self.assertNotIn("train=", self.lines(out, "LINE")[0])
 
     def test_format_3_files_play_as_recorded(self):
         """1.1.3 files (format 3): one select seed for the whole session (no match number mixed in) and the

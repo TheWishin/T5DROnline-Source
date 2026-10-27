@@ -116,7 +116,7 @@ class GameSide(unittest.TestCase):
 
     def test_replay_format_4(self):
         src = text("src", "netplay", "replay.cpp")
-        self.assertIn("constexpr uint32_t kVersion = 4;", src)
+        self.assertRegex(src, r"constexpr uint32_t kVersion = [45];")   # (5 in 1.1.5: a match's rules word)
         self.assertIn("d.select_mix = ver >= 4 && (hf & kFlagSelectMix);", src)
         self.assertIn("d.unlocks_open = ver >= 4 && (hf & kFlagUnlocksOpen);", src)
 

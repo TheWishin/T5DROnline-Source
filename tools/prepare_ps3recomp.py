@@ -73,7 +73,9 @@ def main():
             fail(f"{dest} exists; pass --replace to start over")
         shutil.rmtree(dest)
 
-    clone = ["clone", "-q", "--no-checkout"]
+    # autocrlf=true on every OS: some patches (0033) carry CRLF in their context lines and only
+    # apply to a tree with CRLF line endings, as a Windows checkout has.
+    clone = ["clone", "-q", "--no-checkout", "-c", "core.autocrlf=true"]
     if is_url(a.source):
         # Full history of the branch, blobs on demand: a few MB instead of the
         # whole object store, and the pinned commit is reachable either way.

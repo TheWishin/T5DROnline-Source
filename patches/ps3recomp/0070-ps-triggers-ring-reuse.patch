@@ -1,0 +1,312 @@
+diff --git a/libs/input/pad_host_win32.c b/libs/input/pad_host_win32.c
+index 54ae6d9..c5539cf 100644
+--- a/libs/input/pad_host_win32.c
++++ b/libs/input/pad_host_win32.c
+@@ -78,8 +78,10 @@ static u64 qpc_to_ns(LONGLONG t)
+  *            index (DUP=0 .. Y=15), LT=16, RT=17 (pressed past 30/255).
+  *   128..143 hat directions: 128 + hat*4 + {0 up, 1 right, 2 down, 3 left}
+  *   144..159 axis directions: 144 + axis*2 + {0 positive, 1 negative}, past
+- *            half deflection. Axes: DInput X Y Z RX RY RZ S0 S1;
+- *            XInput LX LY RX RY LT RT. Y axes are PS3-oriented: up < 0.
++ *            half deflection (a PlayStation pad's RX RY = L2 R2 travel are
++ *            half axes: RX+ RY+ past half way, RX- RY- never; see ps_trig).
++ *            Axes: DInput X Y Z RX RY RZ S0 S1; XInput LX LY RX RY LT RT.
++ *            Y axes are PS3-oriented: up < 0.
+  * -----------------------------------------------------------------------*/
+ 
+ #define CID_HAT   128
+@@ -363,8 +365,17 @@ typedef struct {
+     s8   axis[4];            /* LX LY RX RY <- device axis, -1 = none */
+     u8   inv[4];
+     char desc[96];           /* for the log: preset + layers */
++    int  ps_trig;            /* a PlayStation pad's table: RX- / RY- (released L2 / R2) are no inputs */
+ } BindTable;
+ 
++/* RX- / RY- on a PlayStation pad: where L2 / R2 rest. They never come on (ps_trig); a binding to one is
++ * dropped, and a line that bound nothing else is left out as if it were not there, so the button keeps
++ * its preset binding. Controls windows up to 1.1.4 could capture them (the trigger let go). */
++static int ps_rest_source(const BindTable* t, int cls, int id)
++{
++    return t->ps_trig && cls == CLS_DINPUT && (id == CID_AXIS + 3 * 2 + 1 || id == CID_AXIS + 4 * 2 + 1);
++}
++
+ /* Presets are lists of "TARGET=SOURCE SOURCE ..." lines in the config syntax. */
+ typedef struct { const char* name; int cls; const char* const* lines; } Preset;
+ 
+@@ -464,15 +475,22 @@ static void bind_line(BindTable* t, int cls, const char* target, const char* sou
+     }
+     u16 mask = parse_target_mask(tg);
+     if (!mask) { printf("[pad] %s: unknown PS3 button '%s'\n", where, tg); return; }
+-    int srcs[16], ns = 0;
++    int srcs[16], ns = 0, rest = 0;
+     char buf[200]; snprintf(buf, sizeof buf, "%s", sources);
+     char* save = NULL;
+     for (char* tok = strtok_s(buf, " ,\t", &save); tok; tok = strtok_s(NULL, " ,\t", &save)) {
+         if (name_eq(tok, "none")) continue;
+         int id = parse_source(cls, tok);
+         if (id < 0) { printf("[pad] %s: unknown %s input '%s' (for %s)\n", where, k_cls_name[cls], tok, tg); continue; }
++        if (ps_rest_source(t, cls, id)) {
++            printf("[pad] %s: %s is where %s rests on a PlayStation pad, never a press: ignored (for %s)\n",
++                   where, tok, id == CID_AXIS + 3 * 2 + 1 ? "L2" : "R2", tg);
++            rest++;
++            continue;
++        }
+         if (ns < 16) srcs[ns++] = id;
+     }
++    if (!ns && rest) return;             /* it bound only a resting trigger: as if the line were not there */
+     if (replace) {
+         /* The target's old sources lose it (combos that merely include it,
+          * like a 1+2 macro when 1 is re-bound, stay); the new sources lose
+@@ -516,10 +534,13 @@ static void desc_add(BindTable* t, const char* what)
+  * user's lines, least specific first:
+  *   [<cls>]  ->  [<cls>.VVVV:PPPP]  ->  [port<N>.<cls>]
+  * (keyboard players: [keys1] / [keys2]). */
++static int ps_model(u16 vid, u16 pid);
++
+ static void build_table(BindTable* t, int cls, int port, u16 vid, u16 pid, const char* keys_sec)
+ {
+     memset(t, 0, sizeof *t);
+     for (int a = 0; a < 4; a++) t->axis[a] = -1;
++    t->ps_trig = cls == CLS_DINPUT && ps_model(vid, pid) != 0;
+     const IniSec* layer[3] = { NULL, NULL, NULL };
+     char name[48];
+     if (cls == CLS_KEYS) {
+@@ -866,6 +887,7 @@ typedef struct {
+     u8   rumble[2];
+     int  di_buffered;          /* DInput event buffer set up (tap latch) */
+     int  di_primed;            /* first drain done: older events discarded (DInput, HID) */
++    int  ps_trig;              /* a PlayStation pad: RX RY are L2 R2 travel, read as half axes (ps_trig) */
+     struct HidDev* hid;        /* DEV_HID: the reader */
+     int  hid_failed;           /* DEV_HID: its death was counted (hid_fail_add) */
+     WCHAR path[MAX_PATH];      /* DEV_DINPUT / DEV_HID: HID device path ("" = unknown) */
+@@ -925,6 +947,15 @@ static s32 xi_stick(short raw)
+     return 0;
+ }
+ 
++/* A PlayStation pad's L2 / R2 travel (RX / RY) is a half axis: 0 = released .. 32767 = fully pressed.
++ * DirectInput gives it -32768..32767 with the released trigger at -32768, and every axis direction is
++ * "past half deflection" from the centre -- so a released trigger read as RX- / RY- held, for good, and
++ * anything bound there (a capture of the trigger's resting end, 1.1.4 and older) was held all the time.
++ * As a half axis its centre is the released trigger: RX+ / RY+ = pressed past half way, and RX- / RY- never
++ * come on. ps_trig: travel 0..255; ps_trig_di: DirectInput's -32768..32767 for the same travel. */
++static s32 ps_trig(u8 v) { return (s32)v * 32767 / 255; }
++static s32 ps_trig_di(LONG v) { return v < -32768 ? 0 : v > 32767 ? 32767 : (s32)((v + 32768) >> 1); }
++
+ static void axis_dirs(RawState* r)
+ {
+     for (int a = 0; a < NAXES; a++) {
+@@ -968,8 +999,9 @@ static void di_drain(PadDev* d, RawState* r)
+                     pov_set(r->tap, (int)(ofs - FIELD_OFFSET(DIJOYSTATE2, rgdwPOV)) / 4, ev[i].dwData);
+                 } else if (ofs < FIELD_OFFSET(DIJOYSTATE2, rgdwPOV) && (ofs & 3) == 0) {
+                     /* lX lY lZ lRx lRy lRz sliders: the axis order of dev_read */
+-                    const LONG v = (LONG)ev[i].dwData;
++                    LONG v = (LONG)ev[i].dwData;
+                     const unsigned a = ofs / 4;
++                    if (d->ps_trig && (a == 3 || a == 4)) v = ps_trig_di(v);   /* L2 R2: half axes */
+                     if (v > 16384) raw_set_tap(r, CID_AXIS + a * 2);
+                     if (v < -16384) raw_set_tap(r, CID_AXIS + a * 2 + 1);
+                 }
+@@ -1110,6 +1142,7 @@ static int ps_crc_gate(PsCrcGate* g, int ok)
+ /* 0..255 -> -32768..32767, what DirectInput gives for a logical 0..255 axis with DIPROP_RANGE -32768..32767. */
+ static s32 ps_axis(u8 v) { return (s32)v * 257 - 32768; }
+ 
++
+ /* st: LX LY RX RY; b: the three button bytes; b2mask: the bits of b[2] that are buttons. */
+ static void ps_fill(RawState* r, const u8* st, const u8* b, u8 b2mask, u8 l2, u8 r2)
+ {
+@@ -1123,7 +1156,7 @@ static void ps_fill(RawState* r, const u8* st, const u8* b, u8 b2mask, u8 l2, u8
+     r->bits[0] = (u32)(b[0] >> 4) | (u32)b[1] << 4 | (u32)(x & 7u) << 12 | (u32)(x >> 4) << 15;
+     r->axis[0] = ps_axis(st[0]); r->axis[1] = ps_axis(st[1]);     /* X Y   = left stick */
+     r->axis[2] = ps_axis(st[2]); r->axis[5] = ps_axis(st[3]);     /* Z RZ  = right stick */
+-    r->axis[3] = ps_axis(l2);    r->axis[4] = ps_axis(r2);        /* RX RY = L2 R2 */
++    r->axis[3] = ps_trig(l2);    r->axis[4] = ps_trig(r2);        /* RX RY = L2 R2 travel (half axes) */
+     r->lt = l2; r->rt = r2;
+     axis_dirs(r);
+ }
+@@ -1446,6 +1479,10 @@ static int dev_read(PadDev* d, RawState* r)
+     r->axis[0] = js.lX;  r->axis[1] = js.lY;  r->axis[2] = js.lZ;
+     r->axis[3] = js.lRx; r->axis[4] = js.lRy; r->axis[5] = js.lRz;
+     r->axis[6] = js.rglSlider[0]; r->axis[7] = js.rglSlider[1];
++    if (d->ps_trig) {                     /* a PlayStation pad through DirectInput: L2 R2 as with HID */
++        r->axis[3] = ps_trig_di(js.lRx); r->axis[4] = ps_trig_di(js.lRy);
++        r->lt = (u8)(r->axis[3] * 255 / 32767); r->rt = (u8)(r->axis[4] * 255 / 32767);
++    }
+     axis_dirs(r);
+     return 1;
+ }
+@@ -1609,6 +1646,7 @@ static void di_scan(void)
+         if (!d) { ReleaseSRWLockExclusive(&g_dev_lock); di->lpVtbl->Release(di); continue; }
+         d->kind = DEV_DINPUT; d->di = di; d->inst = in->guidInstance; d->di_buffered = buffered;
+         d->vid = vid; d->pid = pid; d->order = ++g_dev_order;
++        d->ps_trig = ps_model(vid, pid) != PSM_NONE;
+         snprintf(d->name, sizeof d->name, "%s", name);
+         wcscpy_s(d->path, MAX_PATH, path);
+         ReleaseSRWLockExclusive(&g_dev_lock);
+@@ -1680,6 +1718,7 @@ static void hid_add(HidDev* h, const WCHAR* path, const char* how)
+     PadDev* d = dev_alloc();
+     if (d) {
+         d->kind = DEV_HID; d->hid = h; d->vid = h->vid; d->pid = h->pid; d->order = ++g_dev_order;
++        d->ps_trig = 1;
+         snprintf(d->name, sizeof d->name, "%s", h->name);
+         wcscpy_s(d->path, MAX_PATH, path);
+     }
+diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
+index fc8d758..7a59113 100644
+--- a/libs/video/rsx_live_draw.c
++++ b/libs/video/rsx_live_draw.c
+@@ -3194,6 +3194,48 @@ static int ld_async_present(void)
+     if (v < 0) { const char* e = getenv("RSX_ASYNC_PRESENT"); v = (e && *e == '0') ? 0 : 1; }
+     return v;
+ }
++/* RSX_RING_GUARD=1 (test hook, patch 0070): every range of the vertex, index, vertex-constant, pixel-constant
++ * and upload rings the walker hands out is checked against the list that used those bytes before (per
++ * 64 KB / 4 KB block: the fence value that list signals): a write while that list is not finished on the
++ * GPU -- or not even submitted, its calls still queued for the renderer thread -- is reused too early and
++ * counted ("[ring-guard]"). With RSX_XLAT_RENDER_DELAY_US it shows whether the overlap (patch 0067) can
++ * hand out memory a queued frame still reads (docs/RENDER_PERF.md "Ring reuse"). */
++enum { LDG_VB, LDG_IB, LDG_CB, LDG_PSCB, LDG_UPLOAD, LDG_N };
++static int g_ldg_on = -1;
++static u64* g_ldg_blk[LDG_N];
++static u64 g_ldg_checked, g_ldg_early;
++static void ld_ring_guard(int ring, u64 off, u64 len)
++{
++    static const char* const names[LDG_N] = { "vertex", "index", "vertex-constant", "pixel-constant", "upload" };
++    static const u32 shift[LDG_N] = { 16, 16, 12, 12, 16 };
++    if (g_ldg_on < 0) {
++        const char* e = getenv("RSX_RING_GUARD");
++        g_ldg_on = e && *e == '1';
++        if (g_ldg_on) {
++            const u64 cap[LDG_N] = { VERT_BUFFER_SIZE, INDEX_BUFFER_SIZE, CB_RING_BYTES, PS_CB_RING_BYTES, UPLOAD_SIZE };
++            for (int i = 0; i < LDG_N; i++) g_ldg_blk[i] = (u64*)calloc((size_t)(cap[i] >> shift[i]) + 2, sizeof(u64));
++            fprintf(stderr, "[ring-guard] on: ring memory reuse is checked against the GPU fence (test hook)\n");
++        }
++    }
++    if (!g_ldg_on || !len || !g_ldg_blk[ring]) return;
++    const u64 cur = g.fence_value + 1;           /* what the list being recorded will signal */
++    const u64 done = g.fence->lpVtbl->GetCompletedValue(g.fence);
++    g_ldg_checked++;
++    for (u64 b = off >> shift[ring]; b <= (off + len - 1) >> shift[ring]; b++) {
++        const u64 last = g_ldg_blk[ring][b];
++        if (last && last != cur && last > done) {
++            if (g_ldg_early++ < 12)
++                fprintf(stderr, "[ring-guard] %s ring bytes 0x%llX+%llu reused while list %llu still uses them "
++                                "(GPU done to %llu, recording %llu, renderer thread %lld bytes behind)\n",
++                        names[ring], (unsigned long long)off, (unsigned long long)len, (unsigned long long)last,
++                        (unsigned long long)done, (unsigned long long)cur,
++                        (long long)(g_rq_wl - __atomic_load_n(&g_rq_r, __ATOMIC_ACQUIRE)));
++            break;
++        }
++    }
++    for (u64 b = off >> shift[ring]; b <= (off + len - 1) >> shift[ring]; b++) g_ldg_blk[ring][b] = cur;
++}
++
+ static void ld_begin_recording_owned(void);
+ /* Patch 0067: resetting the list (and waiting for the GPU before it) needs the
+  * real list: the walker takes it over from the renderer thread first. */
+@@ -3641,6 +3683,7 @@ static ID3D12Resource* create_texture_mipped(DXGI_FORMAT fmt, const tex_level_t*
+         const u32 pitch = (lv[m].row_bytes + 255) & ~255u;
+         const u32 start = (g.upload_used + 511) & ~511u;
+         if ((u64)start + (u64)pitch * lv[m].rows > UPLOAD_SIZE) break;
++        ld_ring_guard(LDG_UPLOAD, start, (u64)pitch * lv[m].rows);
+         for (u32 y = 0; y < lv[m].rows; y++)
+             memcpy(g.upload_mapped + start + (size_t)y * pitch,
+                    lv[m].data + (size_t)y * lv[m].row_bytes, lv[m].row_bytes);
+@@ -3696,6 +3739,7 @@ static ID3D12Resource* create_texture_cube(
+                 ld_tex_release(tex);   /* nothing recorded against it yet */
+                 return NULL;
+             }
++            ld_ring_guard(LDG_UPLOAD, start, (u64)pitch * level->rows);
+             for (u32 y = 0; y < level->rows; y++)
+                 memcpy(g.upload_mapped + start + (size_t)y * pitch,
+                        level->data + (size_t)y * level->row_bytes,
+@@ -7219,6 +7263,7 @@ static int ld_upload_pixel_constants(u32* out_offset)
+     const LONGLONG upload_begin = ld_profile_qpc();
+ #endif
+     u8* destination = g.ps_cb_mapped + offset;
++    ld_ring_guard(LDG_PSCB, offset, allocation_bytes ? allocation_bytes : data_bytes);
+     memset(destination, 0, data_bytes);
+     if (g.fp_constants.count)
+         memcpy(
+@@ -8086,6 +8131,8 @@ static int ld_vjob_submit(u32 prim, const rsx_vertex_layout_plan* layout,
+         memset(&j->ia, 0, sizeof(j->ia));
+         j->base_index = 0; j->restart_en = 0; j->restart_val = 0;
+     }
++    ld_ring_guard(LDG_VB, g.vb_used, vb_bytes);
++    ld_ring_guard(LDG_IB, g.ib_used, ib_bytes);
+     j->vb_dst = g.vb_mapped + g.vb_used;
+     j->ib_dst = (u32*)((u8*)g.ib_mapped + g.ib_used);
+     j->ib_count = (u32)n_idx;
+@@ -10229,6 +10276,8 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+         g.ps_cb_used = 0; g_ld_ps_cb_epoch++;
+         ld_rings_reset();
+     }
++    ld_ring_guard(LDG_VB, g.vb_used, draw_vb_bytes);
++    ld_ring_guard(LDG_IB, g.ib_used, draw_ib_bytes);
+     if (draw_vb_bytes)
+         memcpy(
+             g.vb_mapped + g.vb_used, vertex_data,
+@@ -10278,6 +10327,7 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+         return;
+     }
+     g.cb_used = vertex_cb_offset;
++    ld_ring_guard(LDG_CB, vertex_cb_offset, CB_BLOCK_ALIGNED);
+     u32 ps_cb_offset = 0;
+     if (!ld_upload_pixel_constants(&ps_cb_offset)) {
+         live_draw_csv_emit(prim, n_tri, "drop_ps_cbring");
+@@ -14519,6 +14569,9 @@ void rsx_live_draw_present(u32 buffer_id)
+     }
+     ((rq_u32*)ld_rq_put(RQ_PRESENT, sizeof(rq_u32)))->v = buffer_id;
+     g_xo_present_end = g_rq_wl;
++    if (g_ldg_on > 0 && (g_xo_async % 600u) == 0)
++        fprintf(stderr, "[ring-guard] %llu ring ranges checked, %llu reused before the GPU was done with them\n",
++                (unsigned long long)g_ldg_checked, (unsigned long long)g_ldg_early);
+     g_xo_async++;
+     g_xo_last_async = (unsigned)g_xo_async;
+     ld_rq_publish();
+diff --git a/libs/video/rsx_record_ring.h b/libs/video/rsx_record_ring.h
+index e14ee34..3226c38 100644
+--- a/libs/video/rsx_record_ring.h
++++ b/libs/video/rsx_record_ring.h
+@@ -517,9 +517,34 @@ static void ld_rq_replay(const ld_rq_hdr* h, ID3D12GraphicsCommandList* L)
+  * until the walker wakes it. Returns once g_rq_stop is set
+  * and the ring is empty (tests; the renderer thread never stops). */
+ static volatile LONG g_rq_stop;
++/* RSX_XLAT_RENDER_DELAY_US=<us>[,<ms>] (test hook, patch 0070): the renderer thread spins <us> after every
++ * call it makes and sleeps <ms> after every present -- a renderer thread as slow as vkd3d-proton's can be
++ * (Linux / Steam Proton), to check that nothing the walker writes for the GPU is reused before the GPU and
++ * this thread are done with it (RSX_RING_GUARD, docs/RENDER_PERF.md "Ring reuse"). */
++static double g_rq_delay_us = -1.0;
++static DWORD g_rq_delay_present_ms;
++static void ld_rq_delay(int present)
++{
++    if (g_rq_delay_us < 0) {
++        const char* e = getenv("RSX_XLAT_RENDER_DELAY_US");
++        g_rq_delay_us = e && *e ? atof(e) : 0.0;
++        const char* c = e ? strchr(e, ',') : NULL;
++        g_rq_delay_present_ms = c ? (DWORD)atoi(c + 1) : 0;
++        if (g_rq_delay_us > 0 || g_rq_delay_present_ms)
++            fprintf(stderr, "[xlat-overlap] RSX_XLAT_RENDER_DELAY_US: the renderer thread waits %.1f us a call, "
++                            "%lu ms a present (test hook)\n", g_rq_delay_us, (unsigned long)g_rq_delay_present_ms);
++    }
++    if (present && g_rq_delay_present_ms) Sleep(g_rq_delay_present_ms);
++    if (g_rq_delay_us > 0) {
++        const LONGLONG end = rq_qpc() + (LONGLONG)(g_rq_delay_us * (double)rq_qpf() / 1e6);
++        while (rq_qpc() < end) _mm_pause();
++    }
++}
++
+ static void ld_rq_consume(ID3D12GraphicsCommandList* (*list)(void))
+ {
+     t_ld_render = 1;
++    ld_rq_delay(0);
+     LONGLONG r = __atomic_load_n(&g_rq_r, __ATOMIC_ACQUIRE);
+     for (;;) {
+         LONGLONG w = __atomic_load_n(&g_rq_w, __ATOMIC_ACQUIRE);
+@@ -541,6 +566,7 @@ static void ld_rq_consume(ID3D12GraphicsCommandList* (*list)(void))
+         while (r != w) {
+             const ld_rq_hdr* h = (const ld_rq_hdr*)(g_rq_buf + (uint32_t)(r % LD_RQ_BYTES));
+             ld_rq_replay(h, L);
++            if (g_rq_delay_us != 0.0) ld_rq_delay(h->op == RQ_PRESENT);
+             r += h->bytes;
+             /* consumed: room for the walker, and the end of a sync wait */
+             __atomic_store_n(&g_rq_r, r, __ATOMIC_SEQ_CST);

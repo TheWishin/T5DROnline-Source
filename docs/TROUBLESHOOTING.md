@@ -5,6 +5,14 @@ This is a test release. It was tested on one development PC only (Windows 11,
 not tried on this project. Everything else comes from the code, the launcher or
 our QA run on 2026-10-16.
 
+**First try "Check my problem"** (launcher, Play offline tab; on the Build tab after a failed build). It
+looks in this PC's logs and settings for the problems other players had and says how to fix each, in your
+language; nothing is changed or sent. It knows: a game package of another version (v01.01), a damaged or
+incomplete package (also the game's own "data is corrupted" message), unpacking that ran out of memory,
+Windows Firewall blocking `t5dr.exe`, a 2-core processor, an old graphics card (Direct3D 12 resource binding
+tier 1) and Wine / Proton (`launcher/problem_check.py`; `python launcher/problem_check.py --out native`
+prints the same in English).
+
 **Problems? Click "Report a problem"** (launcher, Play offline tab; also in the Build tab
 and in the Online tab after a match). It makes one zip on your Desktop. Send the
 zip to the person who gave you the game, or attach it to an issue at
@@ -24,6 +32,7 @@ Contents:
 - [Controllers and keyboard](#controllers-and-keyboard)
 - [Online play](#online-play)
 - [Windows versions and other PCs](#windows-versions-and-other-pcs)
+- [Linux and Steam Deck (Wine, Proton)](#linux-and-steam-deck-wine-proton)
 - [Low frame rate](#low-frame-rate) -- also [Game speeds up or slows down on a laptop or handheld](#game-speeds-up-or-slows-down-on-a-laptop-or-handheld)
 - [White screen or crash after a few minutes](#white-screen-or-crash-after-a-few-minutes)
 - [Saves](#saves)
@@ -76,6 +85,18 @@ shows the content ID and size.
 - Yellow warning "Tekken 5 DR, but not the supported package": the right game,
   a different version. There is no workaround. The port supports only this one
   version today.
+
+### "This package is version 01.01 of the game"
+
+From 1.1.5 the launcher reads the package's own version (its `PARAM.SFO`)
+and the content ID of the program inside it. It does this when you choose
+the `.pkg`, and BUILD GAME checks again before it decrypts anything. Version
+01.01 of the package (program content ID
+`UP0700-NPUB30009_00-0000000000000000`) does not work with the port. No
+`.rap` changes that. Launchers before 1.1.5 said "The license (.rap) does
+not belong to this package" for it. That was misleading: the license was not
+the problem, the version was. The port needs version 01.00, see
+["This copy is a different version of the game"](#this-copy-is-a-different-version-of-the-game).
 
 ### "This package is ... The port needs ..."
 
@@ -134,6 +155,41 @@ Tick **Keep the PC responsive (slower)** before you start. Close other programs.
 The build takes about 90 seconds on a fast 16-core PC. On slower PCs we expect
 minutes (an estimate). It runs once. **Cancel** is safe: BUILD GAME continues
 where it stopped.
+
+### The build seems stuck (no new lines for minutes)
+
+From 1.1.5, every step has a time limit. When a step prints nothing for
+longer than that (2 to 10 minutes, depending on the step), a second line
+under the progress bar says so. It names the step and the program the step
+started last, for example `Last program started: pkg_extract.py`. The same
+line goes into `native\build.log` and `launcher.log`.
+
+- Wait a little first. On a slow PC a step can take a while.
+- If nothing changes, press **Cancel**, then **BUILD GAME** again. The build
+  continues where it stopped.
+- If it stops at the same place again, click **Report a problem...** and send
+  the zip. The line with the program's name tells us where it hangs.
+
+While the build runs, the launcher keeps Windows from going to sleep. The
+screen can still turn off. Before 1.1.5, a PC that went to sleep during the
+build also paused the build until it woke up.
+
+### The build ran out of memory while unpacking
+
+Launchers before 1.1.5 decrypted the package in one piece and needed several GB
+of free memory for it; a PC with less stopped with a memory error
+(`MemoryError`). From 1.1.5 the package is unpacked in 16 MB pieces (about
+220 MB at most). Update the launcher and press **BUILD GAME** again. A package
+that is cut short is now named as an incomplete download: download it again.
+
+### The build starts the game and plays fights by itself (step "Shaders")
+
+From 1.1.5, BUILD GAME ends with a shader warm-up: the game opens and plays
+one fight on every stage, so your first real fights do not stutter while the
+game makes its shaders. It takes about 3.5 minutes on a fast PC, longer on a
+slow one, and runs once per build.
+**Skip warm-up** on the Build tab ends it at once; the game is built and
+works, and the first fights on each stage make the rest.
 
 ### The build stops at "Translate code"
 
@@ -240,6 +296,13 @@ The downloaded zip did not match the published checksum. Nothing was changed.
 Try again; if it keeps happening, download the zip from the releases page and
 update by hand (README, "Updating").
 
+**"... is not signed with the project's release key" / "... failed the signature check"**
+From 1.1.5 on the launcher installs only updates signed with the project's
+release key (`SHA256SUMS.sig`). This message means the release on GitHub was
+not made by the project's release process, so the launcher refused it and
+changed nothing. Do not install it by hand either; report it on the project's
+GitHub page or Discord and wait for the next release.
+
 **"Not enough free disk space."** The update needs about 600 MB free on the
 drive of the launcher's folder for a moment (download, unpacked copy). Free
 some space and try again.
@@ -322,6 +385,25 @@ The first seconds can be black while the game loads. If it stays black:
   renderer instead of the graphics card. It is slow, but shows whether the
   card or its driver is the problem. `RSX_ADAPTER=1` (or part of a name, like
   `RSX_ADAPTER=Intel`) picks another graphics chip.
+
+### "The game shows: ..." (the game's own messages)
+
+The game sometimes shows a message box of its own, as it did on a PS3. The
+port answers it by itself, so the game window may show only a still or
+black picture. From 1.1.5 the launcher shows the message on the Play offline
+tab and in the status bar, with what to do:
+
+- **"The installed game data is corrupted. Ending game."** The game stops
+  after it. The launcher comes to the front with a message. Open the Build
+  tab, tick **Redo every step** and press **BUILD GAME**. If the message comes
+  back, download the package again. It must be exactly **619,430,240 bytes**.
+- **"Unable to save Play Data."** The game could not write its save. Check
+  free disk space, and check that no antivirus blocks `native\gamedata`
+  (Windows Security: "Controlled folder access").
+- **"Unable to load Play Data."** The game could not read its save. If it
+  happens every time, click **Report a problem**.
+
+Every message is also written to `launcher.log` (`game dialog: ...`).
 
 ### "The graphics card stopped working for the game"
 
@@ -417,6 +499,15 @@ PC's clock -- except on a 60 Hz monitor, where it follows the monitor.
   `[pacing] display 50 Hz: slower than the game's 59.94 Hz`.
 - Tested with simulated 30, 50 and 144 Hz monitors (`RSX_TEST_DISPLAY_HZ`),
   not with real ones: the test PC has a 59.94 Hz monitor.
+
+### Hit sparks, the EWGF lightning or shadows are missing
+
+Look at **Settings** -> **Graphics (weak graphics cards)** (from 1.1.5):
+**Effects Off** hides the hit sparks and other hit effects (the EWGF lightning
+too), flames, smoke, mist and waterfalls; **Shadows Off** hides the shadows.
+**Lowest (old graphics cards)** keeps the effects on; **Default** puts
+everything back. Each player chooses for their own PC, also online. More for
+weak PCs: [WEAK_PC.md "Player checklist"](WEAK_PC.md#player-checklist).
 
 ### The game closes by itself
 
@@ -676,8 +767,14 @@ controller it is.
   that one has no button now"): a controller button can only be one game button.
   Set the other one again, or press Revert.
 - **A trigger or stick direction (for example RX-) seems pressed all the time.**
-  Some controllers rest their triggers at the end of the range. The screen
-  ignores such an axis until it has moved once.
+  Some controllers rest their triggers at the end of the range. The screen never
+  takes the end an axis rests at (since 1.1.5; before, letting go of a trigger
+  could set the next button to RX- / RY-, and the game then held that button
+  all the time: "L2/R2 always pressed" on PS4 / PS5 pads). On a DualShock 4 or
+  DualSense the released triggers are not a press at all any more, in the
+  screen and in the game, and a `controls.ini` from 1.1.4 that binds RX- / RY-
+  on such a pad is fixed when the window opens (Save keeps it; the game already
+  ignores those lines).
 - **I saved, but the game plays as before.** The game reads the file when it
   starts: close it and start it again (a game that is already running says so
   in the status line). The line `[pad] controls: ...` in the game log shows which
@@ -854,6 +951,18 @@ friend's server (README, "Online"). **(untested)**
 You are only matched with players who have the same build: the same release
 **and** a build made from it. After you update to a new release, click BUILD
 GAME again (the Play offline tab tells you). Ask your opponent to do the same.
+1.1.4 and 1.1.5 players are never matched: training rooms and the health
+handicap changed the game, so both need 1.1.5.
+
+### No Training room, side choice or health handicap
+
+These need 1.1.5 on both sides and the lobby server updated for 1.1.5. With an
+older server the launcher turns them off (and the Stats page too). A player
+with an older launcher cannot join a training room ("training rooms need a
+newer launcher; update it"), and a side or stage wish counts only in
+challenges, invites and rooms, never in Quick or Ranked. How they work:
+[ONLINE.md "Training rooms and the health handicap"](ONLINE.md#training-rooms-and-the-health-handicap)
+and ["Sides and stages by choice"](ONLINE.md#sides-and-stages-by-choice).
 
 ### Lag during an online match
 
@@ -862,6 +971,22 @@ lockstep, so a late packet makes both wait. The lobby suggests an input delay fr
 the measured ping (2 frames on one PC or LAN, 3 at about 40 ms, 5 at about 100
 ms). Use a cable instead of Wi-Fi, stop downloads, and close other games. The
 result bar can show how many frames behind a match was.
+
+From 1.1.5:
+
+- **"This match lagged: the games waited N s for each other's inputs."** The
+  games stood still that long during the match, whatever the ping said: the
+  connection (often Wi-Fi or an upload) or the other PC. In a ranked set
+  **Leave: too laggy** is offered after it. More in
+  [RANKED.md "Post-game lag check"](RANKED.md#post-game-lag-check).
+- **Far matches have more input delay:** above 150 ms ping both games get at
+  least 3 frames, above 250 ms 4, so the rollback corrects less and the
+  characters jump less. That is set by the server, also in ranked.
+- **A rematch after a match on the relay** tries the direct connection again,
+  so it may take a few seconds longer to start and then play with less ping.
+- **The Ping column:** "~" marks an estimate through the nearest relay
+  server; without it, it is the ping measured in your match with that player
+  since the launcher started.
 
 ## Windows versions and other PCs
 
@@ -880,6 +1005,32 @@ result bar can show how many frames behind a match was.
   run there.
 - **Virtual machines and remote desktop**: usually no Direct3D 12 graphics
   card; the game says "Direct3D 12 not available".
+
+## Linux and Steam Deck (Wine, Proton)
+
+Linux is not supported, and we have no Linux PC to test on. Some players run
+the Windows release under Proton (Steam) or Wine anyway. This is what they
+found:
+
+- **From 1.1.5 the launcher detects Wine** and starts the game with
+  `RSX_VERTEX_THREADS=0` and `PS3_LWM_FAST=0`. A player on GE-Proton 11-11
+  with an RX 9060 XT found what goes wrong without them: stages flash black,
+  stage geometry jumps for about a second, and the fighters' bodies are
+  drawn wrong. Your own value wins. For example, Settings -> "Advanced: extra
+  settings" -> `RSX_VERTEX_THREADS=2` turns the vertex workers back on to
+  compare. The first line of the game log (`native\logs\game-*.log`) and a
+  line in `launcher.log` show what was detected, for example
+  `[wine] Wine 10.0 Proton: GE-Proton10-11 on Linux 6.17 -- RSX_VERTEX_THREADS=0, PS3_LWM_FAST=0`.
+  Only the name of the Proton folder goes into the logs, not its path.
+- **Dark blue screen, sound plays** (GitHub #26, CachyOS): with the default
+  Proton-GE the game showed only a dark blue screen. With **proton-cachyos-slr**
+  it worked. If you see this, try another Proton build: in Steam, open the
+  game's **Properties -> Compatibility**, tick "Force the use of a specific
+  Steam Play compatibility tool" and pick proton-cachyos-slr (on CachyOS),
+  Proton Experimental or another GE-Proton release. **(untested)**: one
+  player's report.
+- A problem report (**Report a problem**) works there too. In an issue, say
+  which Proton or Wine build you used and which ones you tried.
 
 ## Low frame rate
 
@@ -901,13 +1052,23 @@ said 30-45 fps; that was fixed by later work. On a weaker PC:
   is not enough. The 3D scene gets softer, the HUD stays sharp; the game
   itself does not change, so you can play online against someone who uses
   another step. If you chose 1080p, 1440p or 4K, go back to **Native** first:
-  those need a strong graphics card.
+  those need a strong graphics card. From 1.1.5, **Settings** -> **Graphics
+  (weak graphics cards)** -> **Lowest (old graphics cards)** also switches
+  stage blur / glow and shadows off (a GT 730 and the like); **Default** puts
+  it back. See also [WEAK_PC.md](WEAK_PC.md) "Old graphics card".
 - **Few CPU cores**: the game sets its number of helper threads to the cores
   it may use; there is nothing to set. In our tests (fast desktop cores held to
   4-8 threads) fights ran at 60 fps from 4 threads up. Online against a far-away
   player (150 ms) rollback costs more: about 50 fps with 4-8 threads while
   other programs were running. Online, both games run at the speed of the
-  slower PC, so close other programs on both.
+  slower PC, so close other programs on both. From 1.1.5 a PC with 2 cores
+  (an i3-3240, an i5-4210M) gets a 2-core mode by itself. `PS3_TWO_CORE_OWN=1`
+  under Extra settings gives the game a core of its own; it was slower on our
+  stand-in, a real 2-core PC may differ ([WEAK_PC.md](WEAK_PC.md)
+  "2 cores / 4 threads").
+- **Stutter in the first fight on a stage** after a new build: the game makes
+  its shaders. From 1.1.5 BUILD GAME plays every stage once for that (see
+  [the Shaders step](#the-build-starts-the-game-and-plays-fights-by-itself-step-shaders)).
 
 What may help as well:
 

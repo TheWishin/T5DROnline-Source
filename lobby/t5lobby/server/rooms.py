@@ -115,6 +115,7 @@ class Room:
         self.next_timer = None          # community rooms: the countdown to the next match
         self.next_at = None             # ... when it ends (unix time, for the members' view)
         self.sent = {}                  # member id -> the last view pushed to it
+        self.training = False           # a training room: endless health, no result (matchrules.py)
 
     @property
     def community(self):
@@ -139,6 +140,8 @@ class Room:
             d.update(size=self.size, rotation=self.rotation)
         if self.lock is not None:
             d.update(private=True, lock=self.lock)
+        if self.training:
+            d["training"] = True        # (older launchers ignore it; they cannot join: _room_training_check)
         return d
 
 
@@ -338,6 +341,7 @@ class RoomsMixin:
                     raise LobbyError(proto.E_BAD_REQUEST, "room passwords are 4-64 characters, no space at either end")
             if ranked and (size > 2 or lock or hidden):
                 raise LobbyError(proto.E_NOT_ALLOWED, "private and community rooms are casual (unranked)")
+        training = self._room_training_opt(conn, msg, ranked)      # (matchrules.py)
         if ranked and not self.cfg.ranked_rooms:
             raise LobbyError(proto.E_NOT_ALLOWED, "ranked matches come from the ranked queue on this server")
         if ranked and p.guest and not self.cfg.guest_ranked:
@@ -351,6 +355,7 @@ class RoomsMixin:
         name = proto.clean_text(msg.get("name") or f"{p.name}'s room", 32)
         r = Room(p, name, ranked, size, rotation)
         r.hidden = hidden
+        r.training = training
         code = None
         if lock == "password":
             r.lock, r.secret = "password", secret
@@ -359,9 +364,10 @@ class RoomsMixin:
         self.rooms[r.id] = r
         p.room, p.status = r, "room"
         self.dirty = True
-        if size > 2 or lock or hidden:
-            log.info("room %s: %s made a %s room for %d%s%s", r.id, p.name, rotation if size > 2 else "two-player",
-                     size, f", locked ({lock})" if lock else "", ", hidden" if hidden else "")
+        if size > 2 or lock or hidden or training:
+            log.info("room %s: %s made a %s%s room for %d%s%s", r.id, p.name, "training " if training else "",
+                     rotation if size > 2 else "two-player", size, f", locked ({lock})" if lock else "",
+                     ", hidden" if hidden else "")
         reply = {"t": "room", "room": self._room_view(r, p)}
         if code is not None:
             reply["code"] = code                 # (to the host only; the server keeps its HMAC)
@@ -409,6 +415,7 @@ class RoomsMixin:
             self._check_speed(p)
         if self._block_key(p) in r.kicked:
             raise LobbyError(proto.E_NOT_ALLOWED, "the room's host removed you from this room")
+        self._room_training_check(r, p)
         if any(self._is_blocked(p, q) for q in r.members):
             raise LobbyError(proto.E_NOT_ALLOWED, "you cannot join this room")
 
@@ -427,7 +434,7 @@ class RoomsMixin:
         p = conn.player
         if p.room is None:
             raise LobbyError(proto.E_STATE, "not in a room")
-        if p.match is not None:
+        if p.match is not None and not self._training_leave(p):     # (a training room: any time, matchrules.py)
             raise LobbyError(proto.E_BUSY, "finish the match first")
         self._leave_room(p)
 
@@ -553,8 +560,10 @@ class RoomsMixin:
             return
         gs = r.set if r.set is not None and r.set.state == "active" and \
             {id(q) for q in r.set.players} == {id(a), id(b)} else None
-        r.match = self.create_match(a, b, ranked=r.ranked and not r.community,
+        ranked = r.ranked and not r.community
+        r.match = self.create_match(*self._casual_sides(a, b, ranked), ranked=ranked,
                                     origin="invite" if invited else "room", room=r, game_set=gs)
+        r.match.line_order = (a, b)              # (the line's order, whatever sides the players asked for: casual.py)
         if r.match.state == "cancelled":
             r.match = None
 
@@ -626,15 +635,16 @@ class RoomsMixin:
         match after T5L_ROOM_NEXT_SECONDS."""
         if r is None or not r.community or r.id not in self.rooms:
             return
+        order = getattr(m, "line_order", None) or m.players     # (P1 / P2 may be the other way round: casual.py)
         if r.rotation == "winner":
-            # winner stays; the loser to the back (no winner: both, P1 first)
+            # winner stays; the loser to the back (no winner: both, the first in line first)
             stay = m.players[winner] if status in COUNTED and winner is not None else None
         else:
-            # everyone in turn: the one who was at the table longer (P1: first in line) goes to the back, the other
+            # everyone in turn: the one who was at the table longer (first in line) goes to the back, the other
             # stays for one more match -- every member plays two in a row, against both neighbours in the line,
             # whoever wins (with three, everyone meets everyone)
-            stay = m.players[1]
-        for q in m.players:
+            stay = order[1]
+        for q in order:
             if q is not stay and q in r.line:
                 r.line.remove(q)
                 r.line.append(q)

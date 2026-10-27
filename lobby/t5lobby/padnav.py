@@ -215,12 +215,24 @@ def axis_sources(name, value, lo, hi):
     return set()
 
 
-def winmm_sources(buttons, nbuttons, pov, axes):
-    """B1..Bn held, the hat and the axes past half deflection. axes: [(name, value, lo, hi)]"""
+def half_axis_sources(name, value, lo, hi):
+    """A PlayStation pad's L2 / R2 travel (RX / RY), released at `lo`: a half axis, as the game reads it since
+    1.1.5 (pad_host_win32.c ps_trig) -- 'RX+' past half the travel, never 'RX-' (where the trigger rests)."""
+    if hi <= lo:
+        return set()
+    return {name + "+"} if (value - lo) * 32767 // (hi - lo) > 16384 else set()
+
+
+def winmm_sources(buttons, nbuttons, pov, axes, ps_pad=False):
+    """B1..Bn held, the hat and the axes past half deflection. axes: [(name, value, lo, hi)]. ps_pad: a
+    PlayStation pad, whose RX RY are L2 R2 travel (half axes)."""
     held = {f"B{i + 1}" for i in range(min(max(nbuttons, 0), 32)) if buttons >> i & 1}
     held |= hat_sources(pov)
     for name, value, lo, hi in axes:
-        held |= axis_sources(name, value, lo, hi)
+        if ps_pad and name in ("RX", "RY"):
+            held |= half_axis_sources(name, value, lo, hi)
+        else:
+            held |= axis_sources(name, value, lo, hi)
     return held
 
 
@@ -355,7 +367,8 @@ class WinMMSource(PadSource):
             axes = [(name, getattr(info, pos), getattr(caps, lo), getattr(caps, hi))
                     for name, pos, lo, hi, flag in WINMM_AXES if not flag or caps.wCaps & flag]
             out.append(Device(DINPUT, f"winmm:{jid}", d["name"], d["vid"], d["pid"], None,
-                              frozenset(winmm_sources(info.dwButtons, d["nbuttons"], info.dwPOV, axes))))
+                              frozenset(winmm_sources(info.dwButtons, d["nbuttons"], info.dwPOV, axes,
+                                                      ps_pad=ps_model(d["vid"], d["pid"]) is not None))))
         return out
 
 
@@ -378,7 +391,8 @@ class WinMMSource(PadSource):
 # L1 R1 L2 R2 share options L3 R3; byte 2 = PS, touchpad, mute (DualSense full reports), Edge Fn/paddles in bits
 # 4-7. Bluetooth extended reports end in a CRC-32 of 0xA1 + the report. The result has the names DirectInput
 # gives the pad (B1..B14 in that order, B15 mute, B16..B19 the Edge's, HAT_*, X Y = left stick, Z RZ = right
-# stick, RX RY = L2 R2), so controls.ini's [dinput] / [dinput.054C:0CE6] / dinput:... pins apply as in the game.
+# stick, RX RY = L2 R2 travel as half axes: RX+ past half way, never RX-), so controls.ini's [dinput] /
+# [dinput.054C:0CE6] / dinput:... pins apply as in the game.
 #
 # Nothing is ever sent to a pad: no output report, no feature report (asking for one is what switches a
 # Bluetooth pad to its extended report), not even the product string. The device is opened for reading with
@@ -451,12 +465,13 @@ def _ps_sources(st, b, b2mask, l2, r2):
     x = b[2] & b2mask
     bits = (b[0] >> 4) | (b[1] << 4) | ((x & 7) << 12) | ((x >> 4) << 15)
     held |= {f"B{i + 1}" for i in range(19) if bits >> i & 1}
-    for name, v in (("X", st[0]), ("Y", st[1]), ("Z", st[2]), ("RZ", st[3]), ("RX", l2), ("RY", r2)):
+    for name, v in (("X", st[0]), ("Y", st[1]), ("Z", st[2]), ("RZ", st[3])):
         a = v * 257 - 32768
         if a > 16384:
             held.add(name + "+")
         elif a < -16384:
             held.add(name + "-")
+    held |= half_axis_sources("RX", l2, 0, 255) | half_axis_sources("RY", r2, 0, 255)    # L2 R2 travel
     return held
 
 
@@ -488,8 +503,9 @@ def ps_parse(model, bt, data):
 
 
 def ps_neutral():
-    """What a pad at rest holds (before its first report): the triggers at their end, nothing else."""
-    return frozenset({"RX-", "RY-"})
+    """What a pad at rest holds (before its first report): nothing. (Up to 1.1.4 the released triggers read as
+    RX- / RY- held: the Controls window could bind them, and that button was then held all the time.)"""
+    return frozenset()
 
 
 def _vidpid_list(value):

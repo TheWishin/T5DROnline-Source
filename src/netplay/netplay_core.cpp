@@ -45,11 +45,10 @@
  */
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
-#include <winsock2.h>
-#include <ws2tcpip.h>
-#include <windows.h>
-#include <xmmintrin.h>   /* _mm_getcsr: the FP environment line in the log */
+#include "../platform/t5_sock.h"    /* Winsock / BSD sockets; before <windows.h> */
+#include "../platform/t5_win.h"
 
+#include <ctype.h>
 #include <atomic>
 #include <cstdarg>
 #include <cstdio>
@@ -318,7 +317,7 @@ struct Session {
 struct State : Session {
     std::once_flag once;
     std::mutex mu;                     /* guards the session fields and the socket */
-    std::atomic<SOCKET> sock{ INVALID_SOCKET };   /* closed and replaced between sessions (rx_thread follows) */
+    std::atomic<t5s_socket> sock{ T5S_INVALID };   /* closed and replaced between sessions (rx_thread follows) */
     std::atomic<uint64_t> rx_datagrams{ 0 };      /* datagrams the session's socket got, valid or not (no_peer's line) */
     bool rb_offer = false;             /* this side offers rollback (HELLO flag); set by the rollback loop */
     /* T5_NET_LOCAL_LAG=n (local mode, tests: tools/rb_equiv_test.py --lag): the
@@ -384,13 +383,17 @@ const char* env(const char* k) { const char* v = env_raw(k); return (v && *v) ? 
  * bits with any of them (docs/NETPLAY.md, "Same game state on every CPU"). */
 void note_fp_env()
 {
-    const char* arch = nullptr;
-    if (HMODULE dll = GetModuleHandleA("t5dr_game.dll"))
-        arch = (const char*)GetProcAddress(dll, "t5dr_game_march");   /* tools/gamedll/t5dr_game_dll.c */
+    const char* arch = (const char*)t5p_game_symbol("t5dr_game_march");   /* tools/gamedll/t5dr_game_dll.c */
 #ifdef T5DR_LIFTED_ARCH_NAME
     if (!arch) arch = T5DR_LIFTED_ARCH_NAME;
 #endif
-    note_("fp: game code -march=%s, main thread MXCSR 0x%04X", arch ? arch : "unknown", _mm_getcsr() & 0xFFC0u);
+    note_("fp: game code -march=%s, main thread %s 0x%04X", arch ? arch : "unknown",
+#if defined(T5P_ARM64)
+          "FPCR",   /* expected 0: round to nearest, no flush to zero, no default NaN (docs/MACOS.md) */
+#else
+          "MXCSR",
+#endif
+          (unsigned)t5p_fp_control());
 }
 
 std::vector<ScriptEvent> parse_script(const char* spec)
@@ -531,7 +534,7 @@ bool same_addr(const sockaddr_in& a, const sockaddr_in& b)
  * session's end line) and the first ones from each address are logged. */
 struct TestInbound {
     std::mutex mu;
-    SOCKET sock = INVALID_SOCKET;      /* the socket this state belongs to: a new session's socket starts empty */
+    t5s_socket sock = T5S_INVALID;      /* the socket this state belongs to: a new session's socket starts empty */
     int mode = 0;                      /* 0 off, 1 stateful, 2 block */
     std::set<uint64_t> sent;           /* address:port this socket sent to */
     std::set<uint64_t> logged;         /* sources whose drop was logged */
@@ -541,7 +544,7 @@ TestInbound& TI() { static TestInbound t; return t; }
 
 uint64_t ti_key(const sockaddr_in& a) { return ((uint64_t)a.sin_addr.s_addr << 16) | a.sin_port; }
 
-void test_inbound_open(SOCKET sk)
+void test_inbound_open(t5s_socket sk)
 {
     TestInbound& t = TI();
     std::lock_guard<std::mutex> lk(t.mu);
@@ -556,7 +559,7 @@ void test_inbound_open(SOCKET sk)
          : "nothing but 127.0.0.1 gets in");
 }
 
-void test_inbound_sent(SOCKET sk, const sockaddr_in& to)
+void test_inbound_sent(t5s_socket sk, const sockaddr_in& to)
 {
     TestInbound& t = TI();
     std::lock_guard<std::mutex> lk(t.mu);
@@ -564,7 +567,7 @@ void test_inbound_sent(SOCKET sk, const sockaddr_in& to)
 }
 
 /* false: the emulated firewall drops this datagram (it never reaches the netplay) */
-bool test_inbound_pass(SOCKET sk, const sockaddr_in& from)
+bool test_inbound_pass(t5s_socket sk, const sockaddr_in& from)
 {
     TestInbound& t = TI();
     std::lock_guard<std::mutex> lk(t.mu);
@@ -589,7 +592,7 @@ uint64_t test_inbound_dropped()
 void send_to(const void* p, int n, const sockaddr_in* to = nullptr)
 {
     State& s = S();
-    if (s.sock == INVALID_SOCKET) return;
+    if (s.sock == T5S_INVALID) return;
     if (!to) { if (!s.peer_known) return; to = &s.peer; }
     /* T5_NET_DROP=<percent>: throw away that share of outgoing packets, to
      * test that the redundant resends cover for a lossy link. */
@@ -608,7 +611,7 @@ void send_to(const void* p, int n, const sockaddr_in* to = nullptr)
         memcpy(buf + n, &t, kTag);
         n += kTag;
     }
-    const SOCKET sk = s.sock.load();
+    const t5s_socket sk = s.sock.load();
     test_inbound_sent(sk, *to);
     sendto(sk, (const char*)buf, n, 0, (const sockaddr*)to, sizeof *to);
     s.packets_out++;
@@ -1257,9 +1260,21 @@ void handle_packet(const uint8_t* p, int n, const sockaddr_in& from)
  * Windows 10 1607+, looked up so an older Windows only goes without the name. */
 void name_thread(const wchar_t* name)
 {
+#if defined(_WIN32)
     typedef HRESULT(WINAPI* fn_t)(HANDLE, PCWSTR);
     static fn_t fn = (fn_t)(void*)GetProcAddress(GetModuleHandleA("kernel32.dll"), "SetThreadDescription");
     if (fn) fn(GetCurrentThread(), name);
+#else
+    char n[16];   /* (Linux: 15 characters at most) */
+    size_t i = 0;
+    for (; name[i] && i + 1 < sizeof n; i++) n[i] = (char)name[i];
+    n[i] = 0;
+#  if defined(__APPLE__)
+    pthread_setname_np(n);   /* the calling thread only */
+#  else
+    pthread_setname_np(pthread_self(), n);
+#  endif
+#endif
 }
 
 /* The receive thread runs above the game's own threads (ps3recomp patch 0065, docs/RENDER_PERF.md
@@ -1273,10 +1288,10 @@ DWORD WINAPI rx_thread(LPVOID)
     State& s = S();
     uint8_t buf[2048];
     for (;;) {
-        const SOCKET sk = s.sock.load();
-        if (sk == INVALID_SOCKET) { Sleep(10); continue; }     /* between two sessions */
-        sockaddr_in from{}; int fl = sizeof from;
-        int n = recvfrom(sk, (char*)buf, sizeof buf, 0, (sockaddr*)&from, &fl);
+        const t5s_socket sk = s.sock.load();
+        if (sk == T5S_INVALID) { Sleep(10); continue; }     /* between two sessions */
+        sockaddr_in from{}; t5s_socklen fl = sizeof from;
+        int n = (int)recvfrom(sk, (char*)buf, sizeof buf, 0, (sockaddr*)&from, &fl);
         if (n > 0) {
             if (!test_inbound_pass(sk, from)) continue;          /* T5_NET_TEST_INBOUND: the "firewall" took it */
             if (sk == s.sock.load()) {                           /* not a late packet of a closed session */
@@ -1285,9 +1300,9 @@ DWORD WINAPI rx_thread(LPVOID)
             }
             continue;
         }
-        if (n == SOCKET_ERROR) {
-            int e = WSAGetLastError();
-            if (e == WSAETIMEDOUT || e == WSAECONNRESET || e == WSAEMSGSIZE) continue;
+        if (n == T5S_ERROR) {
+            int e = t5s_last_error();
+            if (t5s_error_is_transient(e)) continue;
             if (sk != s.sock.load()) continue;                  /* the session's socket was closed: the next one */
             note("recvfrom failed (%d); receive thread stops", e);
             return 0;
@@ -1381,7 +1396,7 @@ bool parse_addr(const char* spec, sockaddr_in* out)
 void say_bye()
 {
     State& s = S();
-    if (s.sock == INVALID_SOCKET) return;
+    if (s.sock == T5S_INVALID) return;
     std::lock_guard<std::mutex> lk(s.mu);
     if (!s.connected) return;
     Hdr h = make_hdr(PKT_BYE);
@@ -1476,7 +1491,7 @@ void configure()
             rp::play_fail(file, rp::play_error());
             note("replay: cannot play %s: %s -- the game closes", file ? file : "(T5_REPLAY_FILE not set)", rp::play_error());
             fflush(stderr);
-            TerminateProcess(GetCurrentProcess(), 8);
+            t5p_exit_now(8);
         }
         s.slot = rp::play_slot();
         s.delay = rp::play_delay();
@@ -1490,17 +1505,15 @@ void configure()
 
     static bool wsa_ok = false;
     if (!wsa_ok) {
-        WSADATA wsa;
-        if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) { note("WSAStartup failed -- netplay off"); s.mode = Mode::Off; return; }
+        if (!t5s_startup()) { note("WSAStartup failed -- netplay off"); s.mode = Mode::Off; return; }
         wsa_ok = true;
     }
-    const SOCKET sk = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    if (sk == INVALID_SOCKET) { note("socket() failed -- netplay off"); s.mode = Mode::Off; return; }
-    { DWORD tmo = 200; setsockopt(sk, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tmo, sizeof tmo); }
+    const t5s_socket sk = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (sk == T5S_INVALID) { note("socket() failed -- netplay off"); s.mode = Mode::Off; return; }
+    t5s_set_recv_timeout(sk, 200);
     /* No ICMP port-unreachable resets on Windows UDP sockets: a peer that is
      * not up yet must not break our receive loop. */
-    { BOOL off = FALSE; DWORD ret = 0;
-      WSAIoctl(sk, _WSAIOW(IOC_VENDOR, 12) /* SIO_UDP_CONNRESET */, &off, sizeof off, nullptr, 0, &ret, nullptr, nullptr); }
+    t5s_no_connreset(sk);
     int port = s.mode == Mode::Host ? 7000 : 0;
     if (const char* v = env("T5_NET_PORT")) port = atoi(v);
     /* Test pairs on 127.0.0.1 bind loopback: no Windows Firewall prompt per build folder. A player's
@@ -1516,11 +1529,11 @@ void configure()
         s.fail_reason = "bind_failed";
         s.peer_lost = true;
         s.trouble_ms = GetTickCount64();
-        note("cannot connect (bind_failed): UDP %s:%d is not free (%d)", bind_ip, port, WSAGetLastError());
-        closesocket(sk);
+        note("cannot connect (bind_failed): UDP %s:%d is not free (%d)", bind_ip, port, t5s_last_error());
+        t5s_close(sk);
         return;
     }
-    { sockaddr_in got{}; int len = sizeof got;
+    { sockaddr_in got{}; t5s_socklen len = sizeof got;
       if (getsockname(sk, (sockaddr*)&got, &len) == 0) port = ntohs(got.sin_port); }
     s.rx_datagrams = 0;
     test_inbound_open(sk);
@@ -1529,7 +1542,7 @@ void configure()
         const char* peer = env("T5_NET_PEER");
         if (!peer || !parse_addr(peer, &s.peer)) {
             note("join needs T5_NET_PEER=<host ip>:<port> -- netplay off");
-            s.sock = INVALID_SOCKET; closesocket(sk);
+            s.sock = T5S_INVALID; t5s_close(sk);
             s.mode = Mode::Off; return;
         }
         s.peer_known = true;
@@ -1766,7 +1779,7 @@ void set_loading(bool on)
     std::lock_guard<std::mutex> lk(s.mu);
     if (s.loading == on) return;
     s.loading = on;
-    if (on && s.connected && !s.peer_lost && s.sock != INVALID_SOCKET) send_ping_locked();   /* the peer knows at once */
+    if (on && s.connected && !s.peer_lost && s.sock != T5S_INVALID) send_ping_locked();   /* the peer knows at once */
 }
 
 int load_timeout_s() { State& s = S(); std::lock_guard<std::mutex> lk(s.mu); return s.load_timeout_s; }
@@ -1784,7 +1797,7 @@ void give_up(const char* reason, const char* fmt, ...)
     va_list ap; va_start(ap, fmt); vsnprintf(buf, sizeof buf, fmt, ap); va_end(ap);
     std::lock_guard<std::mutex> lk(s.mu);
     if (s.mode == Mode::Off || s.peer_lost || !s.fail_reason.empty()) return;   /* no session, or over already */
-    if (!strcmp(reason, "load_timeout") && s.connected && s.sock != INVALID_SOCKET) {
+    if (!strcmp(reason, "load_timeout") && s.connected && s.sock != T5S_INVALID) {
         struct { Hdr h; uint8_t why; } p = { make_hdr(PKT_BYE), BYE_LOAD_TIMEOUT };
         for (int i = 0; i < 3; i++) send_raw(&p, sizeof p);
     }
@@ -2252,6 +2265,13 @@ void costume_set(const uint8_t* p, size_t n)
     s.cos_local_hash = cos_hash(s.cos_local.data(), s.cos_local.size());
     s.cos_local_set = true;
     s.cos_acked = 0; s.cos_next = 0;
+    if (s.mode == Mode::Local) {
+        /* both players on this PC (tests: tools/training_check.py): no peer to wait for, P2 gets the same table */
+        s.cos_peer = s.cos_local;
+        s.cos_peer_hash = s.cos_local_hash;
+        s.cos_peer_done = true;
+        return;
+    }
     if (s.connected && !s.peer_lost) send_costume_locked(0);
 }
 bool costume_local_set() { State& s = S(); std::lock_guard<std::mutex> lk(s.mu); return s.cos_local_set; }
@@ -2283,8 +2303,8 @@ void session_end(const char* why)
          (unsigned long long)s.packets_in, (unsigned long long)s.packets_out, s.mismatches);
     if (const uint64_t dropped = test_inbound_dropped())
         note("TEST: the emulated inbound firewall dropped %llu datagram(s) in this session", (unsigned long long)dropped);
-    const SOCKET sk = s.sock.exchange(INVALID_SOCKET);
-    if (sk != INVALID_SOCKET) closesocket(sk);         /* frees the UDP port for the launcher's next punch */
+    const t5s_socket sk = s.sock.exchange(T5S_INVALID);
+    if (sk != T5S_INVALID) t5s_close(sk);              /* frees the UDP port for the launcher's next punch */
     static const Session kFresh{};
     static_cast<Session&>(s) = kFresh;                 /* mode Off: every wait returns, the tick thread rests */
     g_local_inject_on = false; g_local_inject = 0;

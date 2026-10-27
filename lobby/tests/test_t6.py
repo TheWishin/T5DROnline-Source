@@ -601,10 +601,11 @@ class LagUnitTest(unittest.TestCase):
         return lagmod.clean_report({"frames": frames, "waited_ms": frames * ms_per_frame, "pc_fps": pc_fps})
 
     def test_as_expected(self):
-        a = lagmod.assess(3, [self.rep(2.0), self.rep(5.0)])
+        # (1.1.5: a few seconds of waiting in a match, as most matches have; 1.1.4's test waited 5 ms a frame)
+        a = lagmod.assess(3, [self.rep(0.2), self.rep(0.9)])
         self.assertEqual((a["expected"], a["verdict"], a["cause"]), (3, "ok", None))
-        self.assertAlmostEqual(a["observed"], 3 + 5.0 / proto.FRAME_MS, delta=0.06)
-        self.assertIn("It was 3.3.", lagmod.describe(85.0, a, 0, [self.rep(2.0), self.rep(5.0)]))
+        self.assertAlmostEqual(a["observed"], 3 + 0.9 / proto.FRAME_MS, delta=0.06)
+        self.assertIn("It was 3.1.", lagmod.describe(85.0, a, 0, [self.rep(0.2), self.rep(0.9)]))
         self.assertIn("Ping 85 ms should mean about 3 frames behind.", lagmod.describe(85.0, a, 0))
 
     def test_more_than_the_ping_explains(self):
@@ -626,6 +627,62 @@ class LagUnitTest(unittest.TestCase):
         self.assertEqual((a["verdict"], a["observed"]), ("unknown", None))
         self.assertIn("nothing to compare", lagmod.describe(60.0, a, 0))
 
+    # 1.1.5: the waits per frame looked fine while the games stood still much of the match
+    def full(self, waited_s, fps=59.5, pc_fps=60.0, frames=10800):
+        return lagmod.clean_report({"frames": frames, "waited_ms": waited_s * 1000.0, "pc_fps": pc_fps, "fps": fps})
+
+    def test_a_third_of_the_match_waiting_is_flagged(self):
+        # production 2026-10-21, gozmo vs joebudden, direct 97 ms, delay 5: 1.1.4 stored observed 5.6, "ok"
+        reports = [self.full(92.0, 39.8, 60.2, 10192), self.full(94.8, 39.8, 60.2, 10192)]
+        a = lagmod.assess(5, reports)
+        self.assertEqual((a["verdict"], a["cause"], a["slow"]), ("slow", "network", []))
+        self.assertEqual(a["observed"], 5.6)                         # (the frames behind still look like the ping)
+        self.assertEqual(a["waited_s"], [92.0, 94.8])
+        self.assertAlmostEqual(a["share"], 94.8 / (10192 / 39.8), delta=0.002)
+        self.assertIsNone(a["waited_more"])                          # about the same on both PCs
+        self.assertEqual(a["why"], "network: the games waited 92 s / 95 s of 256 s (37 %) for each other's inputs")
+        self.assertEqual(lagmod.describe(97.0, a, 0, reports),
+                         "This match lagged: the games waited 95 s for each other's inputs. "
+                         "A wired connection and no uploads during matches help.")
+        self.assertTrue(lagmod.lagged(a["verdict"]))
+
+    def test_the_usual_waits_stay_ok(self):
+        # 1.1.4 matches, ~3 minutes: direct median 0.5 s/min, p90 2.4 s/min; relay median 1.1 s/min
+        for per_min in (0.5, 1.1, 2.4):
+            a = lagmod.assess(4, [self.full(per_min * 3), self.full(per_min * 3 * 0.9)])
+            self.assertEqual(a["verdict"], "ok", per_min)
+            self.assertIsNone(a["why"])
+        # the relay's p90 (4.7 s/min, 8 % of the match) is flagged; so are the relay rematches' worst (8.5 s in 3 min:
+        # 4.7 %) only from T5L_LAG_WAIT_SHARE 0.04
+        self.assertEqual(lagmod.assess(4, [self.full(14.1), self.full(13.0)])["verdict"], "slow")
+        self.assertEqual(lagmod.assess(4, [self.full(8.5), self.full(8.0)])["verdict"], "ok")
+        self.assertEqual(lagmod.assess(4, [self.full(8.5), self.full(8.0)], wait_share=0.04)["verdict"], "slow")
+        self.assertEqual(lagmod.assess(4, [self.full(14.1), None], wait_share=0)["verdict"], "ok")      # 0 = off
+
+    def test_a_short_match_needs_a_few_seconds_of_waiting(self):
+        self.assertEqual(lagmod.assess(3, [self.full(2.5, frames=900), None])["verdict"], "ok")     # 15 s, 2.5 s
+        self.assertEqual(lagmod.assess(3, [self.full(3.5, frames=900), None])["verdict"], "slow")
+
+    def test_fps_well_below_the_pcs_own_speed(self):
+        # no clear share of waiting reported, but the game ran at 48 fps on a 60 fps PC
+        r = lagmod.clean_report({"frames": 10800, "waited_ms": 8000.0, "pc_fps": 60.0, "fps": 48.0})
+        self.assertEqual(lagmod.assess(4, [r, None])["verdict"], "slow")
+
+    def test_the_side_that_waited_more_is_named(self):
+        reports = [self.full(4.0), self.full(20.0)]
+        a = lagmod.assess(4, reports)
+        self.assertEqual((a["verdict"], a["waited_more"]), ("slow", 1))
+        self.assertTrue(a["why"].endswith("; P2's game waited more"), a["why"])
+
+    def test_a_slow_pc_behind_long_waits(self):
+        reports = [self.full(20.0, 40.0, 44.0), self.full(22.0)]
+        a = lagmod.assess(4, reports, warn_fps=55.0)
+        self.assertEqual((a["verdict"], a["cause"], a["slow"]), ("slow", "pc", [0]))
+        self.assertTrue(a["why"].startswith("pc: below full speed: P1 44 fps; the games waited 20 s / 22 s"), a["why"])
+        self.assertEqual(lagmod.describe(60.0, a, 0, reports),
+                         "This match lagged: the games waited 22 s for each other's inputs. "
+                         "Your PC was the slow one (44 fps).")
+
     def test_reports_are_validated(self):
         self.assertIsNone(lagmod.clean_report({"frames": 100, "waited_ms": 1}))          # too short to say anything
         self.assertIsNone(lagmod.clean_report({"frames": "x", "waited_ms": 1}))
@@ -646,16 +703,16 @@ class LagCheckTest(Base):
     def test_both_players_get_the_same_numbers(self):
         a, b, ea, ra = self.played()
         mid = ra["match"]
-        a.report_lag(mid, 3000, 3000 * 1.7, 60.1, 59.0)
+        a.report_lag(mid, 3000, 3000 * 0.17, 60.1, 59.9)
         self.assertIsNone(b.next_event(0.2, ("lag_check",)))        # one report: still waiting for the other
-        b.report_lag(mid, 3000, 3000 * 3.4, 59.8, 58.0)
+        b.report_lag(mid, 3000, 3000 * 0.34, 59.8, 59.5)
         la, lb = expect(a, "lag_check"), expect(b, "lag_check")
         for k in ("ping_ms", "expected_frames", "observed_frames", "verdict", "cause", "match", "path"):
             self.assertEqual(la[k], lb[k], k)
         self.assertEqual(la["expected_frames"], ea["delay"])        # "ping X should mean about Y frames behind"
         self.assertAlmostEqual(la["ping_ms"], ea["rtt_ms"], delta=0.06)
         self.assertEqual(la["verdict"], "ok")
-        self.assertAlmostEqual(la["observed_frames"], ea["delay"] + 3.4 / proto.FRAME_MS, delta=0.06)
+        self.assertAlmostEqual(la["observed_frames"], ea["delay"] + 0.34 / proto.FRAME_MS, delta=0.06)
         self.assertEqual(la["yours"]["extra_frames"], lb["opponent"]["extra_frames"])      # the same numbers, turned round
         self.assertEqual(la["opponent"]["extra_frames"], lb["yours"]["extra_frames"])
         self.assertEqual(la["yours"]["pc_fps"], 60.1)
@@ -685,7 +742,7 @@ class LagCheckTest(Base):
 
     def test_one_report_is_enough_after_a_short_wait(self):
         a, b, ea, ra = self.played()
-        b.report_lag(ra["match"], 3000, 3000 * 2.0, 60.0)
+        b.report_lag(ra["match"], 3000, 3000 * 0.2, 60.0)
         la, lb = expect(a, "lag_check", 4.0), expect(b, "lag_check", 4.0)
         self.assertEqual(la["verdict"], "ok")
         self.assertIsNone(la["yours"]["extra_frames"])              # Alice's game said nothing
@@ -727,6 +784,37 @@ class LagCheckTest(Base):
         self.assertEqual(self.s.call(lambda: self.s.srv.counters["lag_leaves"]), 1)
         with self.assertRaises(LobbyError):
             b.rematch(mid, True)                                     # the set is over
+
+    def test_long_waits_are_flagged_and_leaving_costs_nothing(self):
+        a, b, ea, ra = self.played()
+        mid = ra["match"]
+        a.report_lag(mid, 10192, 92000.0, 60.2, 39.8)              # production numbers (1.1.4 said "ok")
+        b.report_lag(mid, 10192, 94800.0, 60.2, 39.8)
+        la, lb = expect(a, "lag_check"), expect(b, "lag_check")
+        self.assertEqual((la["verdict"], la["cause"], la["waited_s"]), ("slow", "network", 94.8))
+        self.assertEqual((la["yours"]["waited_s"], la["opponent"]["waited_s"]), (92.0, 94.8))
+        self.assertEqual((lb["yours"]["waited_s"], lb["opponent"]["waited_s"]), (94.8, 92.0))
+        self.assertTrue(la["text"].startswith("This match lagged: the games waited 95 s for each other's inputs."))
+        self.assertEqual(lagmod.describe_event(la), la["text"])
+        row = self.s.call(lambda: self.s.srv.store.match_row(mid))
+        stored = json.loads(row["lag"])["assess"]
+        self.assertEqual((stored["verdict"], stored["cause"]), ("slow", "network"))
+        p1p2 = "92 s / 95 s" if ea["slot"] == 0 else "95 s / 92 s"    # the log lists P1 first; a may be either side
+        self.assertTrue(stored["why"].startswith("network: the games waited " + p1p2), stored["why"])
+        self.assertEqual(self.s.call(lambda: self.s.srv.counters["lag_slow"]), 1)
+        a.leave_set("lag")                                            # a ranked set is left for free after it
+        sa = expect(a, "set_end")
+        self.assertEqual((sa["reason"], sa["by"]), ("lag", "you"))
+
+    def test_a_114_launcher_gets_more_lag_for_long_waits(self):
+        a, b, ea, ra = self.played()
+        self.s.call(lambda: setattr(self.s.srv.by_name["bob"].conn, "caps",
+                                    self.s.srv.by_name["bob"].conn.caps - {"lag_wait"}))
+        a.report_lag(ra["match"], 10192, 92000.0, 60.2, 39.8)
+        b.report_lag(ra["match"], 10192, 94800.0, 60.2, 39.8)
+        la, lb = expect(a, "lag_check"), expect(b, "lag_check")
+        self.assertEqual((la["verdict"], lb["verdict"]), ("slow", "more_lag"))     # its "Leave: too laggy" button
+        self.assertIn("connection stalled", lagmod.describe_event(lb))
 
     def test_a_bad_check_does_not_stop_a_rematch(self):
         a, b, ea, ra = self.played()

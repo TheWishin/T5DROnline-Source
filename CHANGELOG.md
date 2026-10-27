@@ -3,6 +3,220 @@
 All notable changes, newest first. The project is a test release. Short commit hashes are in parentheses. The state of each
 part is in the README's status table.
 
+## v1.1.5 (2026-10-27)
+
+**Train online with a friend, choose your side and stage, see the real ping, and a faster game on weak PCs.**
+Online training rooms with endless health, a health handicap and P1 / P2 and stage choices for casual matches; the
+Ping column counts the regional relay servers, and far matches get more input delay so the rollback jumps less;
+offline practice tools (position resets, dummy behaviours, 5 recording slots); a stats page and your match history
+with its replays; graphics settings and a 2-core mode for weak PCs; signed updates; and the game builds on macOS
+(Apple silicon, offline), thanks to n0madic. Both players need 1.1.5: training rooms and the handicap change what
+the game simulates online, so 1.1.4 and 1.1.5 games are never paired. The launcher offers the update itself; after
+it, press **BUILD GAME** once (a shader warm-up then plays every stage once; **Skip warm-up** ends it). The new
+online features need the lobby server updated; 1.1.4 launchers keep working with it.
+
+### Online
+- **The Ping column reads right for players far from the lobby server.** Two friends in North America saw each other
+  at about 200 ms: the list added both round trips to the lobby server in Germany. The list now also carries every
+  player's round trips to the regional relay servers, and the launcher shows the shorter way, as the matchmaking
+  already did (about 50 ms through the relay in Oregon for those two). Estimates keep their "~"; a player you played
+  since the launcher started shows the ping measured in that match, without "~".
+- **Matchmaking remembers the measured ping.** Quick and Ranked already looked for nearby opponents first and widened
+  the search while you wait; two players who played each other in the last 7 days now count with the ping they really
+  had (often much lower than the estimate), so neighbours far from every server find each other at once.
+- **Ping and connection before you accept.** The found-match card, a challenge and a friend's invite show the ping
+  (estimated, or measured in your last match together) and whether the match will most likely be a direct connection
+  or go through a relay server. In all seven languages.
+- **Fewer hitches in rollback fights.** When one game ran a little ahead, the correction that lets the other catch
+  up used to freeze the picture for up to three refreshes -- or for none and then again a moment later; it now holds
+  one picture for exactly one refresh, and only when needed (1-3 times a match instead of 5-16). While a rollback
+  fight runs, frames also get 2 ms more room before the screen's refresh, so a frame that had to correct a prediction
+  is less often late. On this PC at 60 / 120 / 180 ms ping: 50 / 67 / 62 pictures shown twice per player and match
+  before, 38 / 40 / 36 now (most of the rest is first-time shader work, which the shader warm-up after BUILD GAME
+  removes). Input to screen: ~1-2 ms more. Both games stay in step as before.
+- **Smoother far matches.** Above 150 ms ping both games now get 3 frames of input delay (4 above 250 ms) instead of 2,
+  so the rollback corrects less and the characters jump less. Ranked and casual alike; a server setting
+  (`T5L_PING_DELAYS`).
+- **A rematch after the relay tries the direct connection again.** When a match had to go through the relay server
+  (for example because Windows Firewall blocked the game for a moment), every rematch of the session used to stay on
+  the relay, with longer ping and more freezes, although a new match would have played direct. Now the next rematch
+  connects anew and plays direct when that works. Only when it fails again do the rematches stay on the relay. Such a
+  rematch takes a few seconds longer to start. In the lobby server: 1.1.4 launchers get it too.
+- **The lag check counts the time the games stood still.** A match in which the games kept waiting for each other's
+  inputs could still read "That is what the ping explains" (one match waited 92 s of about 4 minutes and ran at
+  40 fps). Now such a match says, for example: "This match lagged: the games waited 92 s for each other's inputs. A
+  wired connection and no uploads during matches help." In a ranked set, **Leave: too laggy** is offered after it,
+  as after any laggy match. In all seven languages; in the lobby server, so a 1.1.4 launcher shows such a match as
+  "more lag".
+- **No 20 s wait after the last rematch.** When a set ended (rematch declined, the time ran out, a player left), both
+  games kept the connection; when the way between them then closed (a relay after the rematch window), they stood
+  waiting for each other for 20 s, and a new match found in those seconds made the launcher restart the game for every
+  later match. The launcher now ends the game's connection as soon as the set is over, and gives a game that is still
+  waiting for a lost opponent the time it needs before it counts as not answering.
+
+### Training
+- **Training rooms: practice with a friend online.** **Create room -> Training room**: you and a friend fight
+  with endless health like in Tekken 8's practice lobby -- damage never KOs, no hit and no combo, health refills a
+  second after the last hit, no round timer, and nothing is counted (no rating, record, history or penalty). Hold
+  SELECT for a second to give up and end the fight: both games go back to the character select by themselves, so this
+  is also how you pick other fighters. **Leave room** works at any time, during a fight too. Both players need 1.1.5;
+  rollback, replays and spectating work as in any match. In all seven languages.
+- **Practice tools** (Practice, offline only; Settings -> Practice tools, on by default): hold SELECT and press 3 to
+  put both fighters back where the fight started, f+3 / b+3 to put the dummy against the wall in front of / behind
+  you, df+3 / db+3 to put yourself against the wall in front of / behind you. SELECT+1 records the dummy (your pad
+  plays it), SELECT+2 plays the recording once, SELECT+4 in a loop; 5 slots (tap up / down with SELECT). Tap
+  forward / back with SELECT for what the dummy does: as set in the game's menu, blocks after the first hit,
+  crouches, walks forward and back, sidesteps. Never in online matches, replays or spectating; online matches are
+  unchanged. Player requests; docs/TRAINING.md "Practice tools".
+- **Frame data: moves whose hit reaction looked free too early show the right number.** Bryan's d+4 showed -17 on
+  hit; it is +3 (and -13 on block). Some hit reactions set the game's "idle" flag long before the defender can do
+  anything; the overlay now waits for the end of the reaction there, as the game itself does (checked with the
+  defender mashing a jab). Players' report; docs/TRAINING.md.
+- **Frame data: moves with a wind-up show their real startup.** Bryan's f+1+2 (a wind-up, then the attack) showed
+  i4; it is i22. A move made of several animations now counts from its first frame.
+- **Frame data: Bryan's taunt (1+3+4) reads i28, hit, +14.** Its +14 was right, but the overlay called it a block
+  and showed no startup (or the one of the move before): the taunt can be cancelled from its first frame, and its
+  stun does no damage. Now it counts as a hit, guarded or not (it cannot be blocked), with its own startup (checked
+  with Bryan and the defender mashing a jab).
+
+### Casual
+- **Choose your side and the stage.** For challenges, friends' invites and rooms you can now ask for P1, P2 or any
+  side and for a stage (or Random), next to Strict on the Play online tab. A wish is granted when your opponent does
+  not want the same; when you both want P1, a coin flip decides, and two different stages are decided by a coin flip
+  too (a stage against Random: that stage or a random one). A challenge or an invite shows what the other player
+  asked for, and the match card shows your side and the stage. Ranked and Quick keep choosing sides and a random
+  stage for you. Players with a 1.1.4 launcher can still be challenged and invited as before. In all seven languages.
+- **Rematch: swap sides.** After a challenge, an invite or a room's match, **Rematch: swap sides** (Y on a
+  controller) plays the rematch with the sides the other way round; either player can ask for it.
+- **Every stage has its name** (Western Gate, Ghetto Pit, Wolves' Den, ... and the Tekken 5 stages' own names),
+  checked in a fight on each of them. The names stay English in every language, as players know them.
+- **Health handicap.** **My health (casual)** on the Play online tab: 100 % down to 30 % in steps of 10, for quick
+  matches, challenges, invites and rooms (ranked and tournament matches are always 100 %). Both players see both
+  values before they accept and on the match card, and in the fight the name under the health bar says it
+  ("Alice 70%"). Only between two 1.1.5 players. In all seven languages.
+
+### Launcher
+- **Check my problem** (Play offline tab; on the Build tab after a failed build): looks in this PC's logs and
+  settings for the problems other players had and says how to fix each, in your language -- a package of another
+  version, a damaged or incomplete package, unpacking that ran out of memory, Windows Firewall blocking the game, a
+  2-core processor, an old graphics card, Wine / Proton. Nothing is changed or sent.
+- **Stats page** on the Online tab, next to the Leaderboard: accounts, players (guests too), matches, ranked
+  matches, the last 24 hours, and every fighter's matches, wins, win rate and share of the picks (All / Ranked /
+  Casual). Needs the 1.1.5 lobby server.
+- **Your record in the profile:** matches played, wins, losses and win rate (all, ranked, casual) and the win rate
+  of each of your fighters. Needs the 1.1.5 lobby server (an older one shows the old Record line).
+- **Match history with Watch replay:** in your own profile, a match that has a replay on this PC is marked and plays
+  on the Replays tab with one click; wins and losses are coloured again.
+- **A character select grid** in the Online tab: Random and every fighter, the chosen one lit, your main starred
+  (arrow keys, Enter, Esc; Cross / A picks, Circle / B closes).
+- **Start a search from a shortcut or Steam:** `T5DR Online.exe --search ranked` (or `--search casual` for a quick
+  match) opens the Online tab, logs in with your saved login and starts the search (README "Start a search from a
+  shortcut").
+- **The game's own messages in the launcher.** When the game shows a message box of its own (for example "The
+  installed game data is corrupted"), the launcher shows it on the Play offline tab and in the status bar, with what
+  to do; the game window used to stay black or still.
+- **A package of another version is named as such.** The launcher reads the package's own version when you choose
+  it, and BUILD GAME checks again before it decrypts anything: version 01.01 now says "This package is version 01.01
+  of the game" instead of the misleading "The license (.rap) does not belong to this package".
+- **Unpacking needs far less memory.** The package is decrypted and written in 16 MB pieces (patch 0074): about
+  220 MB at most instead of 6.7 GB, so PCs with little free memory no longer stop with a memory error; a package cut
+  short is named as an incomplete download.
+- **A build step that prints nothing for long says so**, naming the step and the program it started last, and the
+  PC no longer goes to sleep during BUILD GAME (GitHub #27).
+- **The Build, Play offline and Settings tabs in the Online tab's look:** rounded cards with their title inside.
+
+### Speed and graphics
+- **Minimum requirements** at the top of the README's Requirements: Windows 10/11, a 4-core CPU from about 2014 on
+  (Intel Core i5/i7 4th gen, AMD Ryzen or newer; AVX2 recommended), a DirectX 12-capable graphics card, 8 GB RAM.
+  The CPU matters most: one fast core.
+- **Two frames in flight on a dedicated graphics card:** the game prepares the next frame while the card still draws
+  the last one (integrated graphics keep one frame: there it was slower). On a test PC with a slowed graphics card
+  fights ran 7-13 % faster; for an old card like the GT 730 we estimate about 28 fps instead of 20 (no such card here
+  to measure). `RSX_FRAMES_IN_FLIGHT=1` goes back.
+- **Settings -> Graphics (weak graphics cards):** Shadows and Effects, On (default) or Off. Effects Off also hides
+  the hit sparks and other hit effects (the EWGF lightning too), flames, smoke, mist and waterfalls. **Lowest (old
+  graphics cards)** sets Internal resolution Lowest and switches stage blur / glow and shadows off; effects stay on
+  (the hit effects show what happens in a fight); **Default** puts them back. Online, each player can choose their
+  own (patch 0079).
+- **2-core mode** (found by itself on 2 physical cores, as on an i3-3240 or i5-4210M): the sound no longer prefers the
+  game's processor core. `PS3_TWO_CORE_OWN=1` under Extra settings gives the game a core of its own to try
+  (docs/WEAK_PC.md).
+- **Shader warm-up after BUILD GAME:** the build plays every stage once, so the first fights on each stage no longer
+  stutter while their shaders are made (0-4 new ones instead of up to 93 on the test PC; about 3.5 minutes there,
+  longer on a slow PC). **Skip warm-up** on the Build tab ends it at once; the first fights then make the rest.
+- **Faster intro and menus:** 32-bit A8R8G8B8 textures are converted in one quick pass instead of texel by
+  texel (the intro movie's frame: 3.5 ms -> 0.7 ms).
+- **An honest verdict in the game log** (`system.txt`, "How the game ran"): `GPU-bound` names the graphics card,
+  `CPU-bound` the processor; a lower resolution is suggested only when it helps. Old graphics cards (Direct3D 12
+  resource binding tier 1) log per-pass GPU times (`[gpu-pass]`) for us (patch 0075).
+- **Hit effects vanishing (GitHub #12: the EWGF's lightning):** not caused by rollback, and the renderer drops
+  nothing online (the odd dropped draw of the first rollback tests was gone before 1.1.0). The game itself ends its hit
+  effects after a few frames when its frames take longer than a screen refresh: on a PC that runs it at 30 fps or
+  less (an old graphics card) most of them, at 60 fps online only in a stretch of long frames. Still open; if you see
+  it at 60 fps, send us a clip and the game log.
+- **Old graphics cards (GeForce GT 4xx-7xx with the Fermi chip, resource binding tier 1):** less binding work per
+  draw for the graphics driver, and the game log says how much per frame (for the next player log; patch 0081).
+
+### Fixes
+- **PS4 / PS5 controllers: L2 and R2 are no longer pressed all the time.** A released trigger counted as held when a
+  button was bound to its resting end -- which the Controls window did by itself when you let go of a trigger while it
+  waited for the next button. That button (L2, R2, a punch, a macro) was then held for good, in fights and on the
+  character select (where a held button can pick the wrong costume, or Panda instead of Kuma). Now a DualShock 4,
+  DualSense or DualSense Edge trigger counts only when you pull it (past half way for the RX+ / RY+ names), the game
+  ignores such old bindings, and the Controls window never takes the end an axis rests at and cleans an old
+  `controls.ini` when it opens (Save keeps it). Other controllers and Xbox pads work as before (patch 0070).
+- **Setting a button with a trigger in the Controls window:** pulling L2 / R2 sets the trigger's own button (no more
+  "several buttons at once"), and the next question waits until you let go.
+- **Linux and Steam Deck (Wine, Proton):** the launcher detects Wine and starts the game with
+  `RSX_VERTEX_THREADS=0` and `PS3_LWM_FAST=0`; a player on GE-Proton found that these stop the black stage flashes,
+  the stage geometry jumping for about a second and the wrongly drawn fighters. Your own value under Extra settings
+  wins. The jumping was not caused by 1.1.4's frame overlap (checked with a deliberately slowed renderer and a memory
+  check); its root cause is still open. docs/TROUBLESHOOTING.md "Linux and Steam Deck".
+- **Better logs for bug reports** (nothing the game does changes): a graphics card that hangs or resets leaves notes
+  of what it was drawing (patch 0076); a draw of an unusual kind is named; the game says when a side keeps the fighter
+  it loaded in the match before (the open question of white custom costumes online). `RSX_RING_GUARD=1` under Extra
+  settings checks the renderer's memory reuse for one evening if you see models' vertices jump.
+
+### macOS (Apple silicon), offline -- build from source (by n0madic, thank you)
+- The game builds and plays on macOS 13+ (arm64): `python3 tools/build_game.py --pkg ... --rap ...` then
+  `python3 tools/run_game.py` (README "Building on macOS"). Metal draws, SDL2 plays the sound and reads the keyboard,
+  VideoToolbox plays the movies. The launcher and the release zip are Windows-only for now.
+- **Online on a Mac: prepared, a test build, off by default.** `tools/build_game.py --macos-online` builds a Mac game
+  with the online modules (netplay, rollback, direct fight, training). It stays a test build until a Mac-vs-PC match
+  ends with 0 mismatching frames (docs/MACOS_ONLINE_TEST.md, the owner's step list); a Mac offers rollback only with
+  `T5_MACOS_ROLLBACK=1`. Without the flag a Mac build is the game alone, offline, and the Online tab says so.
+- `patches/ps3recomp/0071-macos-port.patch`: the guest runs on its own thread so AppKit has the main thread; Metal
+  renderer fixes -- display buffers registered when the backend comes up later, vertex arrays in main memory resolved
+  through the IO table (black/white flicker; the D3D12 build shares that function and has not been measured with
+  it), one mip level for pitch-linear textures (banded floors), comparing depth-format shadow samplers (a cyan cast),
+  one depth snapshot per depth target (black arenas from the second stage on), and the FIFO walker honouring the
+  NV406E semaphore ACQUIRE (on by default on macOS, `GCM_SEMA_ACQUIRE=0` turns it off: limbs twitched every frame),
+  without the deadlocks that dropped frames; `ps3_ms_now` has a clock off Windows.
+- `0072-macos-audio.patch`: the Windows mixer schedule serves SDL2 too, paced on the clock (no more rasp), with thread
+  QoS classes on Apple silicon; WASAPI unchanged. `0073-macos-video.patch`: movies decoded by VideoToolbox.
+- `0078-macos-online.patch` and `src/platform`: `src/` reaches the host only through `src/platform` (BSD sockets,
+  monotonic clocks, POSIX files on macOS; the same Win32 calls as before on Windows); the square root of a negative
+  number gives a PC's NaN on Apple silicon; `--hook-slots` lets a Mac intercept the functions the rollback and the
+  unlocks detour. Nothing changes for a PC's game: the same results, the same lifted code.
+- The ps3recomp checkout uses `core.autocrlf=true` on every OS; `tools/build_game.py` stops early on macOS when
+  glslang or spirv-cross is missing and explains Homebrew Python's refusal of `pip install`;
+  `tests/test_macos_port.py` compiles every `src/` file for arm64 macOS on the Windows PC. More in docs/MACOS.md.
+
+### Security
+- **Updates are signed.** 1.1.5 is the first signed release: the launcher installs an update only when the release's
+  checksums carry a valid signature by the project's release key (`SHA256SUMS.sig`, made by the release workflow). A
+  release somebody else put on GitHub (a stolen token or login) is refused and nothing changes. Launchers up to 1.1.4
+  have no key and update to 1.1.5 as before.
+
+### Servers
+- **Lobby 1.1.5** (docs/DEPLOY_1.1.5.md): the relay round trips in the lobby list, remembered pair pings
+  (`T5L_PAIR_PING_DAYS`, 7 days, memory only), more input delay for far matches (`T5L_PING_DELAYS`, `150:3,250:4`),
+  rematches that try the direct path again (`T5L_REMATCH_DIRECT`, on), the lag check's waiting share
+  (`T5L_LAG_WAIT_SHARE`, 5 %), casual side and stage choices, the stats page (`stats`, computed at most every
+  5 minutes), training rooms and the health handicap (`match_rules`), and 32 client capabilities read instead of 16.
+- **No database change and no relay change:** 1.1.5 opens the 1.1.4 database as it is (training matches are never
+  saved), and the relay node may stay as it is.
+
 ## v1.1.4 (2026-10-21)
 
 **Jinpachi and Random in casual matches, Start skips the intros and replays online, a chime when a match is found, the game's own rank plates, and a faster game.** Both players need 1.1.4

@@ -28,6 +28,7 @@ T5_DF_PICK=<seconds>                                 pick=<seconds> for fight li
 T5_COSTUME_SAVE=<SYS-DATA>|0                         netplay: this player's own save, its customization goes to the opponent
                                                      ("Custom costumes online"; the launcher sets it); offline tests: P1's
 T5_COSTUME_SAVE2=<SYS-DATA>                          offline tests: P2's customization
+T5_DF_RULES="train=1 life=70|100"                    train= / life= for fight lines without them (tests)
 ```
 
 - `p1`, `p2`: character id 0-35, 3-letter code or name prefix (table below).
@@ -49,6 +50,12 @@ T5_COSTUME_SAVE2=<SYS-DATA>                          offline tests: P2's customi
 - `p1color`, `p2color`: 1 or 2. Kept for old lines; it changes nothing: the
   second confirm it picks the button of is the handicap bar (see "Character
   select in the game"). The costume is the button that confirms the character.
+- `train=1` (key=value, 1.1.5): a training room's fight -- endless health (damage never KOs), no round timer, a
+  player who holds SELECT for a second gives up (KO); one round (`rounds` is forced to 1). `life=<P1>|<P2>`: each side's
+  health in percent (the health handicap, 10-100). Both are part of what the two PCs simulate: the driver
+  writes the handicap into the battle config at the game mode's first frame (below) and latches both at
+  FIGHT START; netplay's training rule acts on every frame after that (docs/NETPLAY.md "Online training and
+  the health handicap"). The status file says `"training"` and `"life"`.
 - `pick=<seconds>` (key=value): the in-game select -- both players pick
   character and costume on the select screen within that many seconds; `p1`,
   `p2` are what a player gets who does not pick in time (the launcher's
@@ -96,7 +103,8 @@ T5_COSTUME_SAVE2=<SYS-DATA>                          offline tests: P2's customi
   `T5_DF_STAGE_WAIT=<frames>` (default 30, was 90): from both fighters
   confirmed to the first stage confirm.
 - Diagnostics: `T5_DF_PROBE=1` (mode changes), `T5_DF_TRACE=1` (every injected
-  press with the cursor state), `T5_DF_LOG`, `T5_DF_DUMP=frames`,
+  press with the cursor state), `T5_DF_LOG`, `T5_DF_DUMP=frames` (`++n`:
+  n frames after every FIGHT START, files tagged `fs<FIGHT START frame>_p<n>`),
   `T5_DF_DUMP_RANGES`, `T5_DF_DUMP_MODES=1`, `T5_DF_WATCH=addr,...`,
   `T5_DF_POKE=frame:addr:width:value`, `T5_DF_SHOT=frames` (needs
   `LD_SURF_DUMP`/`LD_SURF_DUMP_GATE`; `+n` = n frames after the first FIGHT
@@ -104,6 +112,9 @@ T5_COSTUME_SAVE2=<SYS-DATA>                          offline tests: P2's customi
   `T5_DF_STARTVS=N` (the title-to-select jump alone), `T5_DF_FIND=frame:text,...`
   (log every address of that text, ASCII and UTF-16BE, in guest memory at
   that frame), `T5_DF_FRESH_LOG`, `T5_DF_FRESH_AT`, `T5_DF_GUARD`,
+  `T5_DF_WATCHPOINT=addr,...` + `T5_DF_WATCHPOINT_AT=frame` (x64 debug registers on the main thread: every
+  write to those words with the new value and the lifted writer; the writer's name is only as exact as the
+  host-to-guest map of the optimised game code),
   `T5_DF_STUCK_SECONDS` (persistent game, "After a session ends"),
   `T5_DF_SELECT_STUCK_SECONDS`, `T5_DF_READER_GUARD=0` ("Select stall after a fight").
 
@@ -149,7 +160,9 @@ param)`; the factory is `func_0025E6AC`.
    In a rematch under lockstep the two panels' picks differed (QA run
    fd_rematch: 0x1d vs 0x11 for the 50 frames between confirm and fight start,
    a transient desync); now the hashed state never sees them.
-3. First frame in mode 4: rounds to win -> 0x1008EBD4 (u8), stage id ->
+3. First frame in mode 4: rounds to win -> 0x1008EBD4 (u8), each side's health handicap (percent, u32) ->
+   0x1008EBF4 (P1) / 0x1008EBF8 (P2) -- the game mode's set-up builds the fighters' maximum health from them
+   in this frame (fighter block +0x6C0, 16.16 fixed point: 145.0 at 100 %, 72.5 at 50 %; health +0x6BC) --, stage id ->
    0x1008F088 (the stage confirm writes the panel's pick there; the game-mode
    loader copies it to 0x10053A08 later, so the overwrite wins), then
    `t5_netplay_start()`. This frame is "FIGHT START" in the log/status.
@@ -1266,7 +1279,76 @@ the per-side model words 0x10098E90, 0x104235E4/0x1042360C[side] and
 0x104257D4[side] at FIGHT START or at the stage panel changed nothing, and the
 fighter object's +0x42 crashes the game. In a player's log: two `fighters: ...
 (model 0xNN)` lines in a row with the same model on a side, the second
-`costumes written` naming a different block (another hash) for it.
+`costumes written` naming a different block (another hash) for it. Since 1.1.5
+the game says so itself, right after `costumes written`: `costumes: P2 has the
+same model (0x25) as in match 1 of this game but another block (..., was ...):
+without a visit to the title since, the game keeps the fighter it loaded and
+shows that match's look` (a `to the title for a fresh select screen` line
+between the two matches means the game loaded the fighter again).
+
+**1.1.5 investigation (costumes-online-115): not reproduced online; what a
+player's log now says.** Online pairs on this PC with the integration-115 build
+(saves: host `col_sysdata` -- Heihachi, Kazuya and Lili with four parts and three
+colours on their second costume --, joiner `B_sysdata`), pictures in the fight
+(`T5_DF_SHOT=++1100`) on both PCs:
+
+| run | flow | matches | costumes | sync |
+|---|---|---|---|---|
+| pa_rb | rollback, in-game pick, each pick resting 6 s on the cell (`pick_flow_test`) | Lili (custom) vs Kazuya (default); rematch with the models on the other sides (Kazuya custom vs Lili custom); Heihachi mirror; a new session Kazuya vs Heihachi, both custom | as written on both PCs | 4/4, 0 mismatching |
+| pc_rb120 | rollback through the UDP proxy, 120 ms, jitter 8 ms, 2 % loss, lobby-picked lines (the default Cross = the second costume), `--mash` | the same four pairings, process mode | as written on both PCs (4,695 and 4,768 frames re-simulated) | 4/4, 0 mismatching |
+| pb_ls | lockstep, in-game pick as pa_rb | as pa_rb | as written on both PCs | 4/4, 0 mismatching |
+| pd_rb | rollback, in-game pick, a ranked-set lock (games 2 and 3 skip the select screen) and the health handicap 60 / 100 % (`T5_DF_RULES`) | Kazuya (custom) vs Lili (custom) three times, then a new session Lili (custom) vs Kazuya (default) | as written on both PCs | 4/4, 0 mismatching |
+
+Offline the reuse above was found again and located (`two_fights.py`, memory
+dumps `T5_DF_DUMP=++2,++300`: a Kazuya with the colours-only block, the same
+Kazuya with the zero block, and the reuse case). The colours are baked into the
+fighter's textures in main memory during the loading (here 65 KB of A8R8G8B8
+pixels at 0x45C21615: 1D8E8D85 white, 1D3C000A dark red with the colours); in
+the reuse case those bytes stay those of the earlier fight, byte for byte, while
+the game's own copies of the new block (0x104259D4.. for P2, the costume
+record 0x106257B5) do take the new block. The fight loader's record of what it
+has loaded, 0x104257C0 {u32 1, u16 item character[2], u16 item character[2],
+s32 -2, s32 -2, u16 model[2]}, is set by the first loading and not cleared
+between fights (nor by the boot-state copy, which covers 0x1008E000..0x100A5000
+only); it is not what decides the reuse either: clearing its model words, its
+item characters or its first word at FIGHT START (a test switch, not kept)
+still showed the earlier fight's look. Models moving to the other side between two fights (Lili P1 then P2,
+Kazuya P2 then P1) are built again: the reuse is per side.
+
+So online the reuse cannot happen in the flows that exist: within a session each
+side keeps its player and that player's table, so the same model on a side
+always brings the same block; a new session (another opponent, a room's Ready,
+swapped sides -- a new session too, lobby.py) goes through the title first; a
+spectator's game is a process of its own per stream.
+
+**Reading a player's log** (each line is in both PCs' logs, the same on both):
+
+1. `costumes: this player's table N bytes (...)`: `no save given` (the launcher
+   sent `T5_COSTUME_SAVE=0`), `the save cannot be read` (no offline save where
+   the launcher looks: <game folder>/gamedata/dev_hdd0/home/00000001/savedata/
+   NPUB30009-SYSNET/SYS-DATA), `0 character(s) customized` (nothing worn in
+   that save), or the item characters customized.
+2. `costumes: the opponent's table N bytes (...)` (1.1.5): the same for what the
+   opponent sent, once per table.
+3. `costume tables: ...`: `not read` means every customized block is refused
+   (default costumes for both, on both PCs).
+4. `costumes written: P1 item char C (...): <why>`: `custom`, `nothing
+   customized` (that player has no block for this character), or the check's
+   reason the block was refused.
+5. `costumes worn: P1 costume K (model 0xNN): parts H,F,U,D colours 1,2,3`
+   (1.1.5): what the fighter wears from the block, `-` = none. `nothing worn,
+   customized: costume 2` = the block is used but the costume the confirm button
+   gave (or a mirror's other costume) is not the customized one: the player sees
+   that costume's default look, which is white for many second costumes.
+6. `costumes: P2 has the same model ... another block`: the reuse above (only
+   without a title visit since that side's last fight).
+7. `the VS custom data changed during the loading`: something overwrote the
+   blocks after FIGHT START.
+
+When all of these say the fighter wears its customization and the picture is
+still white, the game built the look (the textures in memory) and the cause is
+on the drawing side: then the graphics card and settings named in the same log
+are the next thing to look at.
 
 **Spectators** (docs/SPECTATE.md "Custom costumes in the stream"): the live stream's MATCH records are the
 replay's matches with the blocks, so a spectator's game writes them at its FIGHT START like a replay (`custom
@@ -1578,10 +1660,43 @@ The stage select lists ids 17-34 (0x11-0x22, the list at 0x1009405C the stage
 panel is built from; its random pick lands in 0x1008F088 at the confirm). The
 old Tekken 5 stages have the sprite names `stage_1_old` .. `stage_16_old`:
 ids 0-13 and 15, offered once unlocked (14 and 16 are empty slots; with the
-unlock the panel also lists 37, not tried). See "Unlocks".
-Verified by forcing the id and looking at the fight: 20 (scrapyard with
-wrecked trucks), 33 (industrial yard). The game's own picks seen in runs: 24,
-25, 31, 33. Names for every id are still to be matched to screenshots.
+unlock the panel also lists 37: Inferno, below). See "Unlocks".
+
+The stage select shows no names, only a picture per stage, and in Versus
+that picture is a roulette: it steps through the panel's list every 3 frames
+(the index at 0x1009405B) until the confirm draws the stage. So each id was
+seen in a fight of its own (1.1.5: one offline direct fight per id, `T5_FIGHT`
+forcing it, a frame dump of the fight) and named as the Tekken wikis list the
+game's stages, by what the stage shows (Western Gate's tiger statues, Ghetto
+Pit's hung trucks, Urban Jungle's crowd behind bars, ...). Dark Resurrection
+remade the Tekken 5 stages 0-13 as ids 17-30 (id + 17), in the same order;
+31-34 are new. The launcher shows these names (lobby/t5lobby/fighters.py
+`STAGE_NAMES`, kept in English in every language: they are the stages' names).
+
+| id | key | Tekken 5 | id | key | Dark Resurrection |
+|---|---|---|---|---|---|
+| 0 | t5s01 | Dragon's Nest | 17 | s17 | Western Gate |
+| 1 | t5s02 | Burning Temple | 18 | s18 | Autumn Temple |
+| 2 | t5s03 | Waterfall | 19 | s19 | Meteor Shower |
+| 3 | t5s04 | Urban Jungle | 20 | s20 | Ghetto Pit |
+| 4 | t5s05 | City at Sunset | 21 | s21 | City Lights |
+| 5 | t5s06 | Moonlit Wilderness | 22 | s22 | Great Plains |
+| 6 | t5s07 | Pirate's Cove | 23 | s23 | Galleon |
+| 7 | t5s08 | Secret Garden | 24 | s24 | All Hollow's Eve |
+| 8 | t5s09 | Cathedral | 25 | s25 | Winter Palace |
+| 9 | t5s10 | Acid Rain | 26 | s26 | Festival |
+| 10 | t5s11 | Polar Paradise | 27 | s27 | Aurora Australis |
+| 11 | t5s12 | Hell's Gate | 28 | s28 | Heaven's Gate |
+| 12 | t5s13 | Final Frontier | 29 | s29 | Space Colony |
+| 13 | t5s14 | Poolside | 30 | s30 | Pool Party |
+| 15 | t5s15 | Final Stage | 31 | s31 | Playroom |
+| | | | 32 | s32 | Wolves' Den |
+| | | | 33 | s33 | Industrial Complex |
+| | | | 34 | s34 | Ominous Mist |
+
+37 (listed with the Tekken 5 stages unlocked) is Inferno, Jinpachi's red lava
+field; it is not in fighters.json. The game's own picks seen in runs: 24, 25,
+31, 33.
 
 ## Determinism and netplay
 

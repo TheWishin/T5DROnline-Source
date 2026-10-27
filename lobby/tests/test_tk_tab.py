@@ -168,6 +168,25 @@ class TkTabTest(TkBase):
         tab.report_btn.invoke()
         self.assertEqual(self.app.reports, 1)
 
+    def test_fold_the_cards(self):
+        """The fold button (right of the lists' tabs) puts the account and match cards away, so the lists get the
+        height; it brings them back, and so does anything that happens in the match card (a search here)."""
+        tab = self.tab
+        view = tab.view
+        tab.server_var.set(self.s.addr)
+        tab.do_login("guest")
+        self.pump(lambda: str(tab.actions["quick"].cget("state")) == "normal")
+        view.top_btn.invoke()
+        self.assertTrue(view.top_hidden)
+        self.assertEqual((tab.me_row.winfo_manager(), view.stage_card.winfo_manager()), ("", ""))
+        view.top_btn.invoke()
+        self.assertEqual((tab.me_row.winfo_manager(), view.stage_card.winfo_manager()), ("grid", "grid"))
+        view.top_btn.invoke()
+        tab.actions["quick"].invoke()                       # (the keyboard / controller can still start a search)
+        self.pump(lambda: view.stage_card.winfo_manager() == "grid")
+        self.assertFalse(view.top_hidden)
+        self.assertEqual(tab.me_row.winfo_manager(), "grid")
+
     def test_the_connection_ends_in_the_middle_of_the_events(self):
         """The lobby drops the tab while more events wait in its queue (build/e2e finding, old UI): the poll
         stops at "disconnected" instead of reading the next event from a client that is gone, and the tab
@@ -352,6 +371,33 @@ class TkTabTest(TkBase):
         with open(cfg_path) as f:
             self.assertNotIn('"token"', f.read())
         self.tab = tab2
+
+    def test_search_from_the_command_line(self):
+        """The launcher's --search ranked / casual: with a saved login the tab logs in and searches by itself;
+        without one it only says what to do (and searches nothing)."""
+        tab = self.tab
+        tab.server_var.set(self.s.addr)
+        self.assertFalse(tab.search_on_start("ranked"))                  # no saved login yet: a hint
+        self.assertIn("Remember me", tab.status_var.get())
+        self.assertFalse(tab.search_on_start("upside-down"))             # not a search: nothing
+        tab.name_var.set("Searcher")
+        tab.pw_var.set("secret-pw1")
+        tab.ask_string = lambda *a, **k: "secret-pw1"
+        tab.do_login("register")
+        self.pump(lambda: tab.codes_window is not None)
+        tab.codes_window.destroy()
+        tab.on_close()
+        for mode, queue in (("ranked", "ranked"), ("casual", "quick")):
+            tab2 = OnlineTab(self.root, self.app)
+            tab2._build_info = lambda: (BUILD, None)
+            tab2.new_window = hidden_window
+            self.tab = tab2
+            self.assertTrue(tab2.search_on_start(mode))
+            tab2.on_show()                                              # (the launcher selects the tab)
+            self.pump(lambda: "Searching for an opponent" in tab2.status_var.get())
+            self.assertEqual(tab2.cfg.get("last_search"), queue)
+            self.pump(lambda: self.s.call(lambda: self.s.srv.by_name["searcher"].status) == "queue")
+            tab2.on_close()
 
     def test_no_password_to_a_public_server_without_tls(self):
         from unittest import mock
@@ -547,12 +593,24 @@ class TkT6Test(TkBase):
         self.assertEqual(self.s.call(lambda: self.s.srv.by_name["ranker"].rating.r), rating)
         self.assertEqual(str(tab.char_cb.cget("state")), "readonly")
 
+    def test_long_waits_in_the_tab(self):
+        # 1.1.5: few frames behind, but the games stood still a third of the match (1.1.4 called it "ok")
+        tab = self.tab
+        self.ranked_result()
+        mid = tab.driver.last["match"]
+        tab.client.report_lag(mid, 10192, 92000.0, 60.2, 39.8)
+        self.other.report_lag(mid, 10192, 94800.0, 60.2, 39.8)
+        self.pump(lambda: "This match lagged" in tab.match_var.get())
+        self.assertEqual(tab.match_var.get(), "Lag check: This match lagged: the games waited 95 s for each other's "
+                                              "inputs. A wired connection and no uploads during matches help.")
+        self.assertIsNotNone(self.bar_button("Leave: too laggy"))
+
     def test_a_good_lag_check_offers_no_way_out(self):
         tab = self.tab
         self.ranked_result()
         mid = tab.driver.last["match"]
-        tab.client.report_lag(mid, 3000, 3000 * 1.0, 60.0)
-        self.other.report_lag(mid, 3000, 3000 * 1.0, 60.0)
+        tab.client.report_lag(mid, 3000, 3000 * 0.3, 60.0)
+        self.other.report_lag(mid, 3000, 3000 * 0.3, 60.0)
         self.pump(lambda: "That is what the ping explains" in tab.match_var.get())
         self.assertIsNone(self.bar_button("Leave: too laggy"))
 

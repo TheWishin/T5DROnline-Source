@@ -29,10 +29,13 @@
  * Time sync (GGPO's): every packet carries the sender's lead estimate
  * (own frame minus the peer's frame as implied by its latest input); the
  * true advantage is (mine - theirs) / 2 averaged over a window; the side
- * ahead by a frame or more sleeps that many frames (at most 3) at the
- * boundary, no more than once per second, so both peers predict and roll
- * back about equally instead of the one that happens to run ahead doing it
- * all.
+ * ahead by a frame or more gives one frame up -- the runtime skips one vblank
+ * tick (ps3recomp patch 0080), so one picture stays a refresh longer -- and
+ * measures again once that has reached both estimates, so both peers predict
+ * and roll back about equally instead of the one that happens to run ahead
+ * doing it all (docs/ROLLBACK.md sections 28 and 34; T5_RB_NET_TS_MODE=sleep:
+ * the old boundary sleep). While the loop runs against a peer, the display
+ * lock's margin is at least T5_RB_NET_DISPLAY_MARGIN ms (3.5).
  */
 #pragma once
 #include <stdint.h>

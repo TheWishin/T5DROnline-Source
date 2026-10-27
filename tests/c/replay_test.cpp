@@ -102,6 +102,7 @@ static int do_write(const char* dir, uint32_t frames, uint32_t seed, const char*
             r.clock = 0x10000; r.c[0] = r.c[1] = r.c[2] = 0x10000;
             rp::rec_barrier(r);
             ft.btn[1] = 1; ft.pick = 0; ft.model[1] = 0x4D;
+            ft.rules = 1u | 70u << 8 | 100u << 16;   /* format 5: a training fight, P1 at 70 % health */
             rp::rec_fight(ft);
             rp::rec_match_begin(half);
         }

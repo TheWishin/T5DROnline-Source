@@ -19,7 +19,9 @@ Styles (the prefix names what the widget sits on, so rounded corners blend into 
 Buttons: "TButton" (secondary), "Accent.TButton" (primary), "Hero.TButton" / "HeroAlt.TButton" (big),
 "Ghost.TButton" (text only), "Small.TButton", "Danger.TButton". Frames: "Card.TFrame", "Tile.TFrame",
 "Err.TFrame", "Note.TFrame". Labels: "", "Muted", "Faint", "H1", "H2", "H3", "Caps", "Big", "Huge",
-"ok", "warn", "error", "Accent", "Mono", "Pill"/"PillAccent"/"PillOk"/"PillBad"/"PillGold".
+"ok", "warn", "error", "Accent", "Mono", "Pill"/"PillAccent"/"PillOk"/"PillBad"/"PillGold". Notebooks: "TNotebook" (a
+page's tabs), "Main.TNotebook" (the launcher's own tab row, a size larger); both draw a hairline under the tab row,
+no box around the pages.
 
 High DPI: fonts are in points (Tk scales them); every pixel size here goes through Theme.px(), which
 follows Tk's scaling (the launcher makes the process DPI-aware before the first window).
@@ -45,33 +47,35 @@ from .rank_art import ART
 THEME = "t5dark"
 
 C = {
-    "bg": "#0d0f13",          # the window
-    "surface": "#161920",     # cards
-    "raised": "#1f232c",      # tiles, inputs, secondary buttons
-    "hover": "#2a2f3b",
-    "pressed": "#14171d",
-    "line": "#2d333f",
-    "line_hi": "#434b5c",
-    "text": "#eceef2",
-    "muted": "#a6aebc",
-    "faint": "#717a8b",
-    "accent": "#e0412a",      # one accent: Tekken red-orange
-    "accent_hi": "#f25438",
-    "accent_lo": "#b8341f",
-    "accent_dim": "#4a2a25",  # a disabled primary button
+    # a warm, soft charcoal (never black): the window, cards a step lighter, tiles and inputs another step
+    "bg": "#18171c",          # the window
+    "surface": "#222027",     # cards
+    "raised": "#2c2a32",      # tiles, inputs, secondary buttons
+    "hover": "#37353e",
+    "pressed": "#1d1c21",
+    "line": "#312f38",
+    "line_hi": "#4a4752",
+    "text": "#f4f1ec",
+    "muted": "#bcb6ad",
+    "faint": "#8a857e",
+    "accent": "#e8472b",      # one accent: Tekken red-orange
+    "accent_hi": "#ff6040",
+    "accent_lo": "#c03a21",
+    "accent_dim": "#4d2a24",  # (kept for callers; a disabled primary button is grey)
     "on_accent": "#ffffff",
-    "sel": "#4b2219",         # selected row
-    "ok": "#46d37d",
-    "warn": "#f3b63f",
-    "bad": "#ff6161",
-    "gold": "#f5c542",
-    "info": "#5aa9ff",
-    "err_bg": "#2b1517",
-    "err_line": "#6e2b2d",
-    "note_bg": "#282210",
-    "note_line": "#6a5520",
-    "ok_bg": "#11281a",
-    "bad_bg": "#2b1517",
+    "sel": "#55291f",         # selected row
+    "ok": "#52d98b",
+    "warn": "#f6bd4a",
+    "bad": "#ff6b6b",
+    "gold": "#f7c95a",
+    "info": "#66b2ff",
+    "err_bg": "#341a1d",
+    "err_line": "#76312f",
+    "note_bg": "#30291a",
+    "note_line": "#715b27",
+    "ok_bg": "#17301f",
+    "bad_bg": "#341a1d",
+    "head_hi": "#3d211d",     # the header band's warm end (behind the mark)
 }
 
 # Rank tiers (ranks.RANKS index) -> badge colour, by group: the colours of the game's own rank plates.
@@ -88,6 +92,9 @@ GUEST_COLOR = "#5d6676"
 TIER_ABBR = {0: "B", 17: "SH", 18: "EX", 19: "WA", 20: "MA", 21: "VI", 22: "CH", 23: "LW", 24: "DS", 25: "BK",
              26: "SG", 27: "LG", 28: "FJ", 29: "RJ", 30: "DT", 31: "LoW", 32: "DL", 33: "TL", 34: "DK", 35: "KR",
              36: "KN"}
+
+# what the result banners (Win. / Loss. / Even. styles) are drawn on: a canvas inside one takes this background
+GROUNDS = {"Win.": C["ok_bg"], "Loss.": C["bad_bg"], "Even.": C["raised"], "Tile.": C["raised"], "Card.": C["surface"]}
 
 PING_GOOD, PING_OK = 60, 120      # ms: green up to 60, yellow up to 120, red above
 _PNG_CACHE = {}                    # (image key, size, scale) -> PNG data: a second window reuses the drawing
@@ -260,15 +267,30 @@ def raster(w, h, layers, ss=4, bg=None, band=None):
     middle row / column are worked out, the rest is copied (much faster)."""
     sub = [(i + 0.5) / ss for i in range(ss)]
     n = float(ss * ss)
-    cols = [(_rgb(col), inside, convex, getattr(inside, "bbox", None)) for inside, col, convex in layers]
+    # a colour is "#rrggbb", or a list of (y, "#rrggbb") stops: a vertical gradient (flat before the first stop
+    # and after the last -- keep the stops inside an image element's top and bottom border rows, which ttk never
+    # tiles, and the gradient never repeats on a large widget)
+    cols = [(_rgb(col) if isinstance(col, str) else [(float(y), _rgb(c)) for y, c in col], inside, convex,
+             getattr(inside, "bbox", None)) for inside, col, convex in layers]
+    graded = any(isinstance(c[0], list) for c in cols)
     b0 = _rgb(bg) if bg else None
+
+    def at(stops, y):
+        if y <= stops[0][0]:
+            return stops[0][1]
+        for (y0, c0), (y1, c1) in zip(stops, stops[1:]):
+            if y <= y1:
+                t = (y - y0) / ((y1 - y0) or 1.0)
+                return tuple(c0[i] + (c1[i] - c0[i]) * t for i in range(3))
+        return stops[-1][1]
 
     def pixel(x, y):
         if b0:
             pr, pg, pb, pa = float(b0[0]), float(b0[1]), float(b0[2]), 1.0
         else:
             pr = pg = pb = pa = 0.0
-        for (cr, cg, cb), inside, convex, bb in cols:
+        for col, inside, convex, bb in cols:
+            cr, cg, cb = at(col, y + 0.5) if isinstance(col, list) else col
             if bb is not None and (x + 1 < bb[0] or x > bb[2] or y + 1 < bb[1] or y > bb[3]):
                 continue
             if convex:
@@ -299,6 +321,8 @@ def raster(w, h, layers, ss=4, bg=None, band=None):
         left = b"".join(px_[x] for x in range(band))
         right = b"".join(px_[x] for x in range(w - band, w))
         return left + px_[band] * (w - 2 * band) + right
+    if graded:
+        return bytearray(b"".join(row(y) for y in range(h)))
     top = [row(y) for y in range(band)]
     mid = row(band)
     bot = [row(y) for y in range(h - band, h)]
@@ -385,6 +409,51 @@ def scale_of(widget):
 
 
 # ---------------------------------------------------------------------- the theme
+TEXT_FONTS = ["Inter", "Segoe UI"]                      # body text, in order of preference
+DISPLAY_FONTS = ["Rajdhani SemiBold", "Barlow Condensed SemiBold", "Bahnschrift SemiBold Condensed",
+                 "Bahnschrift SemiBold"]                  # titles, tabs, big buttons
+DISPLAY_REGULAR = ["Rajdhani", "Barlow Condensed", "Bahnschrift Condensed", "Bahnschrift"]
+CAPS_FONTS = ["Rajdhani SemiBold", "Barlow SemiBold", "Bahnschrift SemiBold"]   # small capitals: not condensed
+
+
+def pick(families, wanted):
+    """The first of `wanted` that is installed (or loaded by load_fonts), else None."""
+    for name in wanted:
+        if name in families:
+            return name
+    return None
+
+
+FONT_DIRS = (os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts"),)
+_LOADED_FONTS = []
+
+
+def load_fonts(dirs=FONT_DIRS):
+    """Freely licensed fonts shipped with the launcher (t5lobby/fonts/*.ttf|otf, each with its licence file) for
+    this process only (Windows: AddFontResourceExW with FR_PRIVATE -- nothing is installed); before the first
+    window. Without them (or elsewhere) the system fonts above are used. -> the files loaded."""
+    if _LOADED_FONTS or os.name != "nt":
+        return list(_LOADED_FONTS)
+    try:
+        add = ctypes.windll.gdi32.AddFontResourceExW
+    except (AttributeError, OSError):
+        return []
+    for d in dirs:
+        try:
+            names = sorted(os.listdir(d))
+        except OSError:
+            continue
+        for name in names:
+            if name.lower().endswith((".ttf", ".otf")):
+                path = os.path.join(d, name)
+                try:
+                    if add(ctypes.c_wchar_p(path), 0x10, 0):          # FR_PRIVATE
+                        _LOADED_FONTS.append(path)
+                except OSError:
+                    pass
+    return list(_LOADED_FONTS)
+
+
 class Theme:
     def __init__(self, root):
         self.root = root
@@ -394,6 +463,7 @@ class Theme:
         self._measure_fonts = {}
         self._element_names = None
         self.style = ttk.Style(root)
+        load_fonts()
         self._fonts()
         _disk_load()
         self._build()
@@ -401,6 +471,11 @@ class Theme:
 
     def px(self, v):
         return int(round(v * self.s))
+
+    @property
+    def shadow(self):
+        """How deep a card's shadow is (px): the bottom of its image element (tab_look's cards use the same)."""
+        return max(2, self.px(3))
 
     def photo(self, key, w, h, layers, bg=None, band=None):
         """A PhotoImage drawn from `layers` (see raster); opaque on `bg` when given (fast to draw)."""
@@ -422,24 +497,26 @@ class Theme:
             fams = set(tkfont.families(self.root))
         except tk.TclError:
             fams = set()
-        ui = "Segoe UI" if "Segoe UI" in fams or not fams else "TkDefaultFont"
-        semi = "Segoe UI Semibold" if "Segoe UI Semibold" in fams else ui
-        disp = "Bahnschrift SemiBold" if "Bahnschrift SemiBold" in fams else semi
-        disp_reg = "Bahnschrift" if "Bahnschrift" in fams else ui
+        ui = pick(fams, TEXT_FONTS) or ("Segoe UI" if not fams else "TkDefaultFont")
+        semi = pick(fams, [f + " Semibold" for f in TEXT_FONTS] + [f + " SemiBold" for f in TEXT_FONTS]) or ui
+        # titles, tabs and big buttons: a condensed, sporty face (a shipped one when loaded, else Windows' own)
+        disp = pick(fams, DISPLAY_FONTS) or semi
+        disp_reg = pick(fams, DISPLAY_REGULAR) or ui
+        caps = pick(fams, CAPS_FONTS) or semi
         mono = "Consolas" if "Consolas" in fams or not fams else "TkFixedFont"
         heavy = "normal"                  # the weight of semi / disp (they are semibold families already)
         cjk = i18n.ui_family(None, fams)  # Korean / Japanese: a font with their glyphs (i18n.FONTS)
         if cjk:
             ui = disp_reg = cjk
-            semi = disp = cjk + " Semibold" if cjk + " Semibold" in fams else cjk
+            semi = disp = caps = cjk + " Semibold" if cjk + " Semibold" in fams else cjk
             heavy = "normal" if semi != cjk else "bold"
         spec = {
             "body": (ui, 10, "normal"), "small": (ui, 9, "normal"), "bold": (semi, 10, heavy),
-            "button": (semi, 10, heavy), "tab": (semi, 10, heavy),
-            "h1": (disp, 20, heavy), "h2": (disp, 14, heavy), "h3": (disp, 11, heavy),
-            "caps": (disp, 9, heavy), "hero": (disp, 14, heavy), "big": (disp, 26, heavy),
-            "huge": (disp_reg, 30, "bold"), "num": (disp, 12, heavy), "mono": (mono, 10, "normal"),
-            "code": (mono, 14, "normal"),
+            "button": (semi, 10, heavy), "tab": (disp, 12, heavy), "maintab": (disp, 13, heavy),
+            "h1": (disp, 22, heavy), "h2": (disp, 15, heavy), "h3": (disp, 13, heavy),
+            "caps": (caps, 9, heavy), "hero": (disp, 16, heavy), "big": (disp, 28, heavy),
+            "huge": (disp, 32, heavy), "num": (disp, 14, heavy), "mono": (mono, 10, "normal"),
+            "code": (mono, 14, "normal"), "brand": (disp, 20, heavy),
         }
         existing = set(tkfont.names(self.root))
         for key, (fam, size, weight) in spec.items():
@@ -481,6 +558,22 @@ class Theme:
             layers.append((rrect(d, d, w - d, h - d, r - d), fill, True))
         elif fill:
             layers.append((rrect(0, 0, w, h, r), fill, True))
+        return self.photo(key, w, h, layers, bg, band=int(r) + 3)
+
+    def _panel(self, key, w, h, r, fill, bg, line=None, shadow=0):
+        """A card / tile image: lighter at the top edge (fill and border fade into their colour within the
+        corner rows), a soft shadow `shadow` px deep under it."""
+        lit = max(1, r)
+        layers = []
+        if shadow:
+            layers.append((rrect(0, shadow * 0.5, w, h, r + 1), mix(bg, "#000000", 0.22), True))
+            layers.append((rrect(1, shadow, w - 1, h, r), mix(bg, "#000000", 0.38), True))
+        hb = h - shadow
+        if line:
+            layers.append((rrect(0, 0, w, hb, r), [(0, mix(line, "#ffffff", 0.10)), (lit, line)], True))
+            layers.append((rrect(1, 1, w - 1, hb - 1, r - 1), [(0, mix(fill, "#ffffff", 0.045)), (lit, fill)], True))
+        else:
+            layers.append((rrect(0, 0, w, hb, r), [(0, mix(fill, "#ffffff", 0.06)), (lit, fill)], True))
         return self.photo(key, w, h, layers, bg, band=int(r) + 3)
 
     def _ring_only(self, key, w, h, r, col, width, bg):
@@ -536,8 +629,13 @@ class Theme:
                 ("Even", C["raised"], C["line_hi"], C["surface"], 8, 32, (px(12), px(8)))):
             rr = px(r)
             size = 2 * rr + px(center)
-            img = self._rounded("frame_" + name, *self._sliced("frame", size), rr, fill, on, line=line)
-            self._element(f"{name}.bg", img, border=rr + 1, sticky="nsew", width=size, height=size)
+            w, h = self._sliced("frame", size)
+            # every frame is lit from above: its top edge and border a little lighter; a card on the page also
+            # throws a soft shadow under itself
+            sh = self.shadow if name == "Card" else 0
+            img = self._panel("frame_" + name, w, h + sh, rr, fill, on, line, sh)
+            self._element(f"{name}.bg", img, border=(rr + 1, rr + 1, rr + 1, rr + 1 + sh), sticky="nsew",
+                          width=size, height=size + sh)
             st.layout(f"{name}.TFrame", [(f"{name}.bg", {"sticky": "nsew"})])
             st.configure(f"{name}.TFrame", background=on, padding=pad)
         # plain frames inside a card / tile / banner (rows of widgets)
@@ -564,6 +662,8 @@ class Theme:
             "Num.": dict(font=f["num"], foreground=C["text"]),
             "Mono.": dict(font=f["mono"], foreground=C["text"]),
             "Accent.": dict(font=f["bold"], foreground=C["accent_hi"]),
+            "Brand.": dict(font=f["brand"], foreground=C["text"]),           # the launcher's name in its header
+            "BrandAccent.": dict(font=f["brand"], foreground=C["accent_hi"]),
             "ok.": dict(foreground=C["ok"]), "warn.": dict(foreground=C["warn"]),
             "error.": dict(foreground=C["bad"]), "gold.": dict(font=f["bold"], foreground=C["gold"]),
         }
@@ -577,9 +677,11 @@ class Theme:
                                ("PillOk", mix(C["ok"], C["surface"], 0.2), "#08130c"),
                                ("PillBad", mix(C["bad"], C["surface"], 0.15), "#1a0707"),
                                ("PillGold", C["gold"], "#1d1704"), ("PillWarn", C["warn"], "#1d1404")):
-            for pre, bg in (("", C["bg"]), ("Card.", C["surface"]), ("Tile.", C["raised"])):
+            for pre, bg in (("", C["bg"]), ("Card.", C["surface"]), ("Tile.", C["raised"]),
+                            ("Win.", C["ok_bg"]), ("Loss.", C["bad_bg"]), ("Even.", C["raised"])):
                 img = self._rounded(f"pill_{name}_{pre}", *self._sliced("pill", psize), rp, fill, bg)
-                self._element(f"{pre}{name}.bg", img, border=rp + 1, sticky="nsew", width=psize, height=psize)
+                self._element(f"{pre}{name}.bg", img, border=rp + 1, padding=(rp + 1, max(1, px(1))), sticky="nsew",
+                              width=psize, height=psize)
                 st.layout(f"{pre}{name}.TLabel", [(f"{pre}{name}.bg", {"sticky": "nsew", "children": [
                     ("Label.padding", {"sticky": "nsew", "children": [("Label.label", {"sticky": "nsew"})]})]})])
                 st.configure(f"{pre}{name}.TLabel", background=bg, foreground=fg, font=f["caps"],
@@ -612,33 +714,51 @@ class Theme:
     # backgrounds buttons sit on (their corners are blended into it): the page, cards, the error banner
     BUTTON_GROUNDS = (("", "bg"), ("Card.", "surface"), ("Err.", "err_bg"), ("Note.", "note_bg"))
 
-    def _button_family(self, name, fill, hover, pressed, disabled, ring_col, line=None):
-        """Rounded button elements (one per background) with their states, and their layouts."""
+    def _button_family(self, name, fill, hover, pressed, disabled, ring_col, line=None, glow=None):
+        """Rounded button elements (one per background) with their states, and their layouts. The body sits
+        `g` px inside its image: that margin holds the hover glow and, with the keyboard or a controller, a
+        clear focus ring around the button; the body is lit from above (lighter top, darker bottom edge)."""
         st, px = self.style, self.px
         r = px(7)
-        size = 2 * r + px(18)
+        g = max(2, px(2))
+        size = 2 * (r + g) + px(18)
         w, h = self._sliced("button", size)
-        rw = max(2, px(2))
+
+        def body(col, edge=None):
+            if col is None:
+                return []
+            stops = [(g, mix(col, "#ffffff", 0.10)), (g + r, col), (h - g - r, col), (h - g, mix(col, "#000000", 0.14))]
+            out = []
+            if edge:
+                out.append((rrect(g, g, w - g, h - g, r), [(g, mix(edge, "#ffffff", 0.12)), (g + r, edge)], True))
+                out.append((rrect(g + 1, g + 1, w - g - 1, h - g - 1, r - 1), stops, True))
+            else:
+                out.append((rrect(g, g, w - g, h - g, r), stops, True))
+            return out
+
+        def halo(col):
+            return [(rrect(0, 0, w, h, r + g), col, True)] if col else []
+
         for pre, key in self.BUTTON_GROUNDS:
             bg = C[key]
-            imgs = {}
-            for state, col in (("normal", fill), ("hover", hover), ("pressed", pressed), ("disabled", disabled)):
-                k = f"btn_{name}_{state}_{pre}"
-                if col is None:
-                    imgs[state] = self._blank(k, w, h, bg)
-                else:
-                    imgs[state] = self._rounded(k, w, h, r, col, bg, line=line if state != "disabled" else None)
-            if fill is None:
-                imgs["focus"] = self._ring_only(f"btn_{name}_focus_{pre}", w, h, r, ring_col, rw, bg)
-            else:
-                imgs["focus"] = self._rounded(f"btn_{name}_focus_{pre}", w, h, r, fill, bg, ring_col=ring_col,
-                                              ring_w=rw)
-            imgs["focus_hover"] = self._rounded(f"btn_{name}_fh_{pre}", w, h, r, hover or C["hover"], bg,
-                                                ring_col=ring_col, ring_w=rw)
+            soft = mix(glow, bg, 0.5) if glow else None
+            imgs = {
+                "normal": body(fill, line),
+                "hover": halo(soft) + body(hover, line),
+                "pressed": body(pressed, line),
+                # (disabled: an outline, so the button keeps its shape but plainly cannot be pressed)
+                "disabled": body(disabled, C["line"]) if disabled is not None else [],
+                "focus": halo(ring_col) + (body(fill, line) if fill is not None else
+                                           [(rrect(g, g, w - g, h - g, r), bg, True)]),
+                "focus_hover": halo(ring_col) + body(hover or C["hover"], line),
+            }
+            imgs = {k: self.photo(f"btn_{name}_{k}_{pre}", w, h, layers, bg, band=int(r + g) + 3)
+                    for k, layers in imgs.items()}
             el = f"{pre}{name}.bg"
             self._element(el, imgs["normal"], ("disabled", imgs["disabled"]), ("pressed", imgs["pressed"]),
                           ("focus", "active", imgs["focus_hover"]), ("focus", imgs["focus"]),
-                          ("active", imgs["hover"]), border=r + 2, sticky="nsew", width=size, height=size)
+                          ("active", imgs["hover"]), border=r + g + 1, padding=(r + 2, g + 1, r + 2, g + 1),
+                          sticky="nsew", width=size, height=size)
             style = (pre + "TButton") if name == "Base" else f"{pre}{name}.TButton"
             st.layout(style, [(el, {"sticky": "nsew", "children": [
                 ("Button.padding", {"sticky": "nsew", "children": [("Button.label", {"sticky": "nsew"})]})]})])
@@ -647,19 +767,22 @@ class Theme:
     def _buttons(self):
         st, px, f = self.style, self.px, self.fonts
         self._button_family("Base", C["raised"], C["hover"], C["pressed"], mix(C["raised"], C["bg"], 0.5),
-                            C["accent"], line=C["line"])
-        self._button_family("Accent", C["accent"], C["accent_hi"], C["accent_lo"], C["accent_dim"], "#ffffff")
+                            C["accent"], line=C["line_hi"], glow=C["line_hi"])
+        # (a primary button that cannot be pressed now looks like any disabled button: grey, not a dim red)
+        self._button_family("Accent", C["accent"], C["accent_hi"], C["accent_lo"], mix(C["raised"], C["bg"], 0.5),
+                            "#ffffff", glow=C["accent_hi"])
         self._button_family("Ghost", None, C["hover"], C["pressed"], None, C["accent"])
-        acc_dis = mix(C["on_accent"], C["accent_dim"], 0.55)
-        # (style suffix, layout family, font, padding, foreground, disabled / active foreground)
-        kinds = (("TButton", "Base", f["button"], (px(14), px(6)), C["text"], None),
-                 ("Accent.TButton", "Accent", f["button"], (px(16), px(6)), C["on_accent"], acc_dis),
-                 ("Hero.TButton", "Accent", f["hero"], (px(22), px(13)), C["on_accent"], acc_dis),
-                 ("HeroAlt.TButton", "Base", f["hero"], (px(22), px(13)), C["text"], None),
-                 ("Ghost.TButton", "Ghost", f["button"], (px(8), px(4)), C["muted"], "active"),
-                 ("Link.TButton", "Ghost", f["small"], (px(6), px(2)), C["accent_hi"], "active"),
+        acc_dis = C["faint"]
+        # (style suffix, layout family, font, padding, foreground, disabled / active foreground); the heights:
+        # small 28, normal 34, hero 46 px at 100 % (the element adds only room for the focus ring)
+        kinds = (("TButton", "Base", f["button"], (px(14), px(5)), C["text"], None),
+                 ("Accent.TButton", "Accent", f["button"], (px(16), px(5)), C["on_accent"], acc_dis),
+                 ("Hero.TButton", "Accent", f["hero"], (px(22), px(8)), C["on_accent"], acc_dis),
+                 ("HeroAlt.TButton", "Base", f["hero"], (px(22), px(8)), C["text"], None),
+                 ("Ghost.TButton", "Ghost", f["button"], (px(8), px(5)), C["muted"], "active"),
+                 ("Link.TButton", "Ghost", f["body"], (px(6), px(3)), C["accent_hi"], "active"),
                  ("Small.TButton", "Base", f["small"], (px(10), px(3)), C["text"], None),
-                 ("Danger.TButton", "Base", f["button"], (px(14), px(6)), C["bad"], None))
+                 ("Danger.TButton", "Base", f["button"], (px(14), px(5)), C["bad"], None))
         for pre, key in self.BUTTON_GROUNDS:
             for suffix, fam, font, pad, fg, dis in kinds:
                 style = pre + suffix
@@ -678,6 +801,7 @@ class Theme:
         r = px(4)
         pad = px(1)
         w = b + 2 * pad
+        gap = px(7)                       # between the box and its text (drawn into the image, on its right)
         chk = [(pad + b * 0.24, pad + b * 0.53), (pad + b * 0.43, pad + b * 0.72), (pad + b * 0.77, pad + b * 0.30)]
         sw = max(1.6, b * 0.14)
         box = rrect(pad, pad, pad + b, pad + b, r)
@@ -690,13 +814,13 @@ class Theme:
                 layers = [(box, line, True), (inner, fill, True)]
                 if check:
                     layers.append((stroke(chk, sw), check, False))
-                return self.photo(key + pre, w, w, layers, bg)
+                return self.photo(key + pre, w + gap, w, layers, bg)
 
             def rimg(key, fill, line, dot=None):
                 layers = [(circle(cx, cy, rr), line, True), (circle(cx, cy, rr - lw), fill, True)]
                 if dot:
                     layers.append((circle(cx, cy, rr * 0.42), dot, True))
-                return self.photo(key + pre, w, w, layers, bg)
+                return self.photo(key + pre, w + gap, w, layers, bg)
             self._element(f"{pre}Check.ind", img("chk_off", C["raised"], C["line_hi"]),
                           ("disabled", "selected", img("chk_on_d", C["accent_dim"], C["accent_dim"], C["muted"])),
                           ("disabled", img("chk_off_d", C["surface"], C["line"])),
@@ -730,7 +854,7 @@ class Theme:
                       ("selected", self._rounded("seg_on", sw, sh, rs, C["hover"], track)),
                       ("focus", self._ring_only("seg_f", sw, sh, rs, C["accent"], fw, track)),
                       ("active", self._rounded("seg_h", sw, sh, rs, mix(C["raised"], C["hover"], 0.5), track)),
-                      border=rs + 2, sticky="nsew", width=ssize, height=ssize)
+                      border=rs + 2, padding=(rs + 2, max(2, px(2))), sticky="nsew", width=ssize, height=ssize)
         st.layout("Seg.TRadiobutton", [("Seg.bg", {"sticky": "nsew", "children": [
             ("Radiobutton.padding", {"sticky": "nsew", "children": [("Radiobutton.label", {"sticky": "nsew"})]})]})])
         st.configure("Seg.TRadiobutton", background=track, foreground=C["muted"], font=self.fonts["button"],
@@ -770,7 +894,8 @@ class Theme:
                                                   line_w=max(2, px(2)))),
                           ("active", self._rounded("field_h" + pre, fw, fh, r, C["raised"], bg, line=C["muted"],
                                                    line_w=lw)),
-                          border=r + 2, sticky="nsew", width=size, height=size)
+                          border=r + 2, padding=(r + 2, max(2, px(2)), r + 2, max(2, px(2))), sticky="nsew",
+                          width=size, height=size)
             st.layout(pre + "TEntry", [(el, {"sticky": "nswe", "children": [
                 ("Entry.padding", {"sticky": "nswe", "children": [("Entry.textarea", {"sticky": "nswe"})]})]})])
             st.configure(pre + "TEntry", background=bg, foreground=C["text"], fieldbackground=C["raised"],
@@ -807,12 +932,24 @@ class Theme:
             ("Treeitem.focus", {"side": "left", "sticky": "", "children": [("Treeitem.text", {"side": "left",
                                                                                              "sticky": ""})]})]})])
         st.configure("Treeview.Item", padding=(px(6), 0))
+        # column headings: a hairline under them (lists sit on cards)
+        lw = max(1, px(1))
+        hw, hh = px(320), px(24)
+        self._element("Heading.line", self.photo("tv_head", hw, hh, [(lambda x, y: y >= hh - lw, C["line"], True)],
+                                                 C["surface"]),
+                      ("active", self.photo("tv_head_h", hw, hh, [(lambda x, y: y >= hh - lw, C["line_hi"], True)],
+                                            C["raised"])),
+                      border=(0, 0, 0, lw), padding=(0, 0, 0, lw), sticky="nsew", width=px(8), height=lw + 1)
+        st.layout("Treeview.Heading", [("Heading.line", {"sticky": "nswe", "children": [
+            ("Treeheading.padding", {"sticky": "nswe", "children": [
+                ("Treeheading.image", {"side": "right", "sticky": ""}),
+                ("Treeheading.text", {"sticky": "we"})]})]})])
         # thin scroll bars without arrows
         for orient in ("Vertical", "Horizontal"):
             st.layout(f"{orient}.TScrollbar", [(f"{orient}.Scrollbar.trough", {"sticky": "nswe", "children": [
                 (f"{orient}.Scrollbar.thumb", {"expand": "1", "sticky": "nswe"})]})])
-            st.configure(f"{orient}.TScrollbar", troughcolor=C["surface"], background=C["hover"],
-                         bordercolor=C["surface"], lightcolor=C["hover"], darkcolor=C["hover"],
+            st.configure(f"{orient}.TScrollbar", troughcolor=C["surface"], background=C["line"],
+                         bordercolor=C["surface"], lightcolor=C["line"], darkcolor=C["line"],
                          arrowsize=px(10), gripcount=0, relief="flat", borderwidth=0)
             st.map(f"{orient}.TScrollbar", background=[("pressed", C["line_hi"]), ("active", C["line_hi"])],
                    lightcolor=[("active", C["line_hi"])], darkcolor=[("active", C["line_hi"])])
@@ -835,10 +972,23 @@ class Theme:
         st.configure("TNotebook", background=C["bg"], borderwidth=0, bordercolor=C["line"], lightcolor=C["bg"],
                      darkcolor=C["bg"], tabmargins=(0, 0, 0, 0), tabposition="nw")
         st.configure("TNotebook.Tab", background=C["bg"], foreground=C["muted"], font=f["tab"],
-                     padding=(px(14), px(7), px(14), px(7)), focuscolor=C["accent"], borderwidth=0)
+                     padding=(px(14), px(5), px(14), px(6)), focuscolor=C["accent"], borderwidth=0)
         st.map("TNotebook.Tab", foreground=[("selected", C["text"]), ("active", C["text"])],
                background=[("selected", C["bg"])], expand=[("selected", (0, 0, 0, 0))])
-        st.layout("TNotebook", [("Notebook.client", {"sticky": "nswe"})])
+        # no box around the pages: one hairline under the tab row, the selected tab's accent bar standing on it
+        lw = max(1, px(1))
+        cw = px(64)
+        self._element("Line.client", self.photo("nb_client", cw, cw, [(lambda x, y: y < lw, C["line"], True)], bg),
+                      border=(0, lw, 0, 0), padding=(0, lw, 0, 0), sticky="nsew")
+        st.layout("TNotebook", [("Line.client", {"sticky": "nswe"})])
+        # the launcher's own tab row (Build, Play offline, ... : Main.TNotebook) a size larger than a page's tabs
+        st.layout("Main.TNotebook", [("Line.client", {"sticky": "nswe"})])
+        st.configure("Main.TNotebook", background=C["bg"], borderwidth=0, tabmargins=(0, 0, 0, 0), tabposition="nw")
+        st.layout("Main.TNotebook.Tab", st.layout("TNotebook.Tab"))
+        st.configure("Main.TNotebook.Tab", background=C["bg"], foreground=C["muted"], font=f["maintab"],
+                     padding=(px(16), px(5), px(18), px(5)), focuscolor=C["accent"], borderwidth=0)
+        st.map("Main.TNotebook.Tab", foreground=[("selected", C["text"]), ("active", C["text"])],
+               background=[("selected", C["bg"])], expand=[("selected", (0, 0, 0, 0))])
 
     def _options(self):
         """Classic Tk widgets (Text, Listbox, the combobox drop-down, simple dialogs) in the same colours."""
@@ -991,6 +1141,49 @@ class Theme:
         layers = [(lambda x, y: y < body_top + 1 and outer(x, y) and not inner(x, y), col, False),
                   (rrect(1, body_top, w - 1, h - 0.5, px(2)), col, True)]
         return self.photo(key, w, h, layers)
+
+    def icon(self, name, col=None, size=18, bg=None):
+        """One of the launcher's own line icons (drawn here, nothing from the game): "build" (a hammer), "play"
+        (a play button), "settings" (a gear), "online" (a globe), "replays" (a film strip), in `col` on `bg`."""
+        col, bg = col or C["muted"], bg or C["bg"]
+        d = self.px(size)
+        key = f"icon_{name}_{col}_{bg}_{d}"
+        if key in self.images:
+            return self.images[key]
+        lw = max(1.6, d * 0.11)
+        c = d / 2.0
+        if name == "build":
+            layers = [(stroke([(d * 0.2, d * 0.84), (d * 0.62, d * 0.42)], lw * 1.2), col, False),
+                      (polygon([(d * 0.42, d * 0.3), (d * 0.66, d * 0.06), (d * 0.94, d * 0.34), (d * 0.7, d * 0.58)]),
+                       col, True)]
+        elif name == "play":
+            layers = [(ring(circle(c, c, d * 0.46), circle(c, c, d * 0.46 - lw)), col, False),
+                      (polygon([(d * 0.4, d * 0.3), (d * 0.72, c), (d * 0.4, d * 0.7)]), col, True)]
+        elif name == "settings":
+            teeth = []
+            for i in range(8):
+                a = i * math.pi / 4
+                ca, sa = math.cos(a), math.sin(a)
+                pts = [(c + ca * r0 - sa * t0, c + sa * r0 + ca * t0) for r0, t0 in
+                       ((d * 0.3, -d * 0.08), (d * 0.48, -d * 0.07), (d * 0.48, d * 0.07), (d * 0.3, d * 0.08))]
+                teeth.append((polygon(pts), col, True))
+            layers = teeth + [(ring(circle(c, c, d * 0.36), circle(c, c, d * 0.15)), col, False)]
+        elif name == "online":
+            r0 = d * 0.45
+            meridian = lambda x, y: ((x - c) / (r0 * 0.45)) ** 2 + ((y - c) / r0) ** 2   # noqa: E731
+            layers = [(ring(circle(c, c, r0), circle(c, c, r0 - lw)), col, False),
+                      (lambda x, y: abs(meridian(x, y) - 1.0) < lw / r0 * 1.6 and (x - c) ** 2 + (y - c) ** 2 <= r0 ** 2,
+                       col, False),
+                      (stroke([(d * 0.08, c), (d * 0.92, c)], lw * 0.9), col, False)]
+        else:                                                    # replays: a film strip
+            layers = [(ring(rrect(d * 0.06, d * 0.18, d * 0.94, d * 0.82, d * 0.1),
+                            rrect(d * 0.06 + lw, d * 0.18 + lw, d * 0.94 - lw, d * 0.82 - lw, d * 0.05)), col, False),
+                      (polygon([(d * 0.42, d * 0.36), (d * 0.64, c), (d * 0.42, d * 0.64)]), col, True)]
+            for i in range(4):
+                x0 = d * (0.18 + i * 0.19)
+                layers.append((rrect(x0, d * 0.06, x0 + d * 0.09, d * 0.15, 1), col, True))
+                layers.append((rrect(x0, d * 0.85, x0 + d * 0.09, d * 0.94, 1), col, True))
+        return self.photo(key, d, d, layers, bg)
 
     def empty_icon(self, w=None, h=None):
         w = w or self.px(14)
@@ -1202,6 +1395,169 @@ class Spinner(tk.Canvas):
         ext = 70 + 50 * (1 + math.sin(math.radians(self.angle * 2))) / 2
         for item in (self.halo, self.arc):
             self.itemconfigure(item, start=self.angle, extent=ext)
+
+
+def list_look(tv):
+    """Calmer, easier lists: every second row a shade lighter ("zebra") and the row under the mouse lit ("hover"),
+    kept right after every insert / delete / move / re-tag. The selection still shows over both. Once per list."""
+    if getattr(tv, "_t5_list_look", False):
+        return
+    tv._t5_list_look = True
+    try:
+        # (a Treeview's tags rank by when they were made: hover first, so it shows over a zebra row)
+        tv.tag_configure("hover", background=mix(C["hover"], C["surface"], 0.35))
+        tv.tag_configure("zebra", background=mix(C["surface"], C["raised"], 0.42))
+    except tk.TclError:
+        return
+    st = {"gen": 0, "hover": None}
+
+    def stripe(gen):
+        if gen != st["gen"]:
+            return                          # (a later change asked for its own pass)
+        try:
+            for i, iid in enumerate(tv.get_children()):
+                tags = [x for x in tv.item(iid, "tags") if x not in ("zebra", "hover")]
+                if i % 2:
+                    tags.append("zebra")
+                if iid == st["hover"]:
+                    tags.append("hover")
+                if tuple(tags) != tuple(tv.item(iid, "tags")):
+                    _item(iid, tags=tags)
+        except tk.TclError:
+            pass
+
+    def later():
+        st["gen"] += 1
+        try:
+            tv.after_idle(stripe, st["gen"])
+        except tk.TclError:
+            pass
+
+    def wrap(name):
+        orig = getattr(tv, name)
+
+        def call(*a, **k):
+            out = orig(*a, **k)
+            later()
+            return out
+        setattr(tv, name, call)
+        return orig
+    for name in ("insert", "delete", "move", "detach", "reattach"):
+        wrap(name)
+    _item = tv.item
+
+    def item(iid, option=None, **kw):
+        out = _item(iid, option, **kw)
+        if "tags" in kw:
+            later()
+        return out
+    tv.item = item
+
+    def hover(row):
+        if row != st["hover"]:
+            st["hover"] = row or None
+            later()
+    tv.bind("<Motion>", lambda e: hover(tv.identify_row(e.y)), add="+")
+    tv.bind("<Leave>", lambda _e: hover(None), add="+")
+    later()
+
+
+def draw_mark(cv, x, y, d, tags=()):
+    """The launcher's mark (two slanted bars) on canvas `cv`, `d` px square, its top left at (x, y)."""
+    w = d * 0.26
+    for i, col in enumerate((C["accent"], mix(C["accent"], C["gold"], 0.45))):
+        x0 = x + d * 0.18 + i * (w + d * 0.12)
+        cv.create_polygon(x0 + d * 0.22, y + d * 0.1, x0 + d * 0.22 + w, y + d * 0.1, x0 + w, y + d * 0.9, x0,
+                          y + d * 0.9, fill=col, outline="", tags=tags)
+
+
+class Band(tk.Canvas):
+    """A strip drawn by code for depth: a warm glow on the left fading into `base` (a soft horizontal gradient)
+    with a few slanted slashes in the accent colour (Tekken's motif). It is redrawn when its width changes;
+    text and widgets go on top (canvas items tagged other than "band", or packed children)."""
+
+    def __init__(self, parent, height, base=None, glow=None, reach=760, **kw):
+        th = apply(parent)
+        self.th, self.base, self.glow, self.reach = th, base or C["bg"], glow or C["head_hi"], reach
+        super().__init__(parent, height=th.px(height), bg=self.base, highlightthickness=0, takefocus=0, **kw)
+        self._drawn = None
+        self.bind("<Configure>", self._on_size, add="+")
+
+    def _on_size(self, e):
+        if self._drawn != (e.width, e.height):
+            self._drawn = (e.width, e.height)
+            self.paint(e.width, e.height)
+
+    def shade(self, x):
+        """The band's colour at x."""
+        reach = self.th.px(self.reach)
+        return mix(self.glow, self.base, min(1.0, max(0.0, x / float(reach))) ** 0.7)
+
+    def paint(self, w, h):
+        px = self.th.px
+        self.delete("band")
+        reach = px(self.reach)
+        step = max(2, px(6))
+        for x in range(0, min(w, reach) + step, step):
+            self.create_rectangle(x, 0, x + step, h, fill=self.shade(x), outline="", tags="band")
+        sw, gap = px(5), px(26)
+        lean = h * 0.45
+        for i, x in enumerate(range(px(150), int(reach * 0.75), gap)):
+            fade = min(1.0, x / (reach * 0.75))
+            col = mix(mix(C["accent"], self.shade(x), 0.78), self.shade(x), fade)
+            self.create_polygon(x, h, x + sw, h, x + sw + lean, 0, x + lean, 0, fill=col, outline="", tags="band")
+        self.create_line(0, h - 1, w, h - 1, fill=mix(C["line"], self.base, 0.4), tags="band")
+        self.tag_lower("band")
+
+
+class Portrait(tk.Canvas):
+    """The player's main fighter in the Play online account card: a square picture (the fighter's head and
+    shoulders from the player's own game, fighter_art.py, when the launcher has it; else a drawn placeholder: a
+    silhouette on a warm gradient) over a bar with the fighter's name."""
+
+    def __init__(self, parent, side=80, bg=None, **kw):
+        th = apply(parent)
+        self.th = th
+        self.side, self.bar = th.px(side), th.px(22)
+        self.w, self.h = self.side, self.side + self.bar
+        super().__init__(parent, width=self.w, height=self.h, bg=bg or C["surface"], highlightthickness=0,
+                         takefocus=0, **kw)
+        self.key = self.photo = None
+        self.set(None, "")
+
+    def set(self, key, name, photo=None):
+        """Fighter `key` (None: nobody / random) named `name`, its picture `photo` (a PhotoImage `side` px square)
+        or None for the placeholder."""
+        self.key, self.photo = key, photo
+        self.delete("all")
+        w, s, h, px = self.w, self.side, self.h, self.th.px
+        if photo is not None:
+            n = 10
+            for i in range(n):                       # (behind the picture's transparent edges: a warm gradient)
+                self.create_rectangle(0, s * i / n, w, s * (i + 1) / n + 1, outline="",
+                                      fill=mix(mix(C["accent"], C["raised"], 0.7), C["raised"], i / (n - 1.0)))
+            self.create_image(w // 2, s, image=photo, anchor="s")
+        else:
+            n = 14
+            for i in range(n):
+                self.create_rectangle(0, s * i / n, w, s * (i + 1) / n + 1, outline="",
+                                      fill=mix(mix(C["accent"], C["raised"], 0.72), C["raised"], i / (n - 1.0)))
+            sil = mix(C["raised"], "#000000", 0.35)
+            cx = w / 2.0
+            self.create_oval(cx - s * 0.18, s * 0.2, cx + s * 0.18, s * 0.56, fill=sil, outline="")
+            self.create_polygon(cx - s * 0.44, s, cx - s * 0.36, s * 0.74, cx - s * 0.12, s * 0.62, cx + s * 0.12,
+                                s * 0.62, cx + s * 0.36, s * 0.74, cx + s * 0.44, s, fill=sil, outline="", smooth=True)
+            if not key:
+                self.create_text(cx, s * 0.38, text="?", fill=mix(C["text"], C["raised"], 0.5),
+                                 font=self.th.fonts["h1"])
+        self.create_rectangle(0, s, w, h, fill=mix(C["bg"], C["surface"], 0.3), outline="")
+        self.create_rectangle(0, s, px(3), h, fill=C["accent"], outline="")
+        if name:
+            f, text, room = self.th.fonts["caps"], name.upper(), w - px(12)
+            while len(text) > 1 and f.measure(text) > room:
+                text = text[:-2].rstrip() + "…"
+            self.create_text(px(8), s + self.bar / 2.0, text=text, anchor="w", fill=C["text"], font=f)
+        self.create_rectangle(0, 0, w - 1, h - 1, outline=C["line_hi"])
 
 
 class Mark(tk.Canvas):

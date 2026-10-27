@@ -254,7 +254,9 @@ class CatalogTests(Base):
         files = {os.path.basename(s.split(":")[0].replace("\\", "/")) for s in x.dynamic_sites()}
         self.assertLessEqual(files, {"t5dr_launcher.pyw", "tk_tab.py", "match_driver.py", "handover.py",
                                      "problem_report_ui.py", "controls_ui.py",
-                                     "tk_views.py", "tour_text.py", "tk_rooms.py"})
+                                     "tk_views.py", "tour_text.py", "tk_rooms.py",
+                                     "tk_casual.py", "fighters.py",     # (1.1.5: SIDES, STAGE_NAMES)
+                                     "tk_stats.py"})
 
 
 class EngineTests(German):
@@ -600,7 +602,7 @@ class EveryLanguageMessageTests(Base):
                     _a, ev = LagTextTests.event(None, delay, reports, side)
                     text = lag.describe_event(ev)
                     self.assertNotEqual(text, ev["text"], lang)
-                    self.assertIn("37", text, lang)
+                    self.assertIn("95" if ev["verdict"] == "slow" else "37", text, lang)
             self.assertEqual(i18n.missing(), [], lang)
 
     def test_error_tips(self):
@@ -647,6 +649,11 @@ class LagTextTests(German):
              {"frames": 600, "waited_ms": 80000.0, "pc_fps": 41.0, "fps": 40.0}]),
         (3, [{"frames": 600, "waited_ms": 90000.0, "pc_fps": None, "fps": None},
              {"frames": 600, "waited_ms": 80000.0, "pc_fps": 41.0, "fps": 40.0}]),
+        # 1.1.5: a few frames behind on average, but the games stood still a third of the match (gozmo vs joebudden)
+        (5, [{"frames": 10192, "waited_ms": 92000.0, "pc_fps": 60.2, "fps": 39.8},
+             {"frames": 10192, "waited_ms": 94800.0, "pc_fps": 60.2, "fps": 39.8}]),
+        (5, [{"frames": 10192, "waited_ms": 92000.0, "pc_fps": 45.0, "fps": 39.8},
+             {"frames": 10192, "waited_ms": 94800.0, "pc_fps": 60.2, "fps": 39.8}]),
     )
 
     def event(self, delay, reports, side, ping=37.4):
@@ -659,7 +666,7 @@ class LagTextTests(German):
                    "observed_frames": a["observed"], "verdict": a["verdict"], "cause": cause,
                    "yours": {"extra_frames": a["extra"][side], "pc_fps": (reports[side] or {}).get("pc_fps")},
                    "opponent": {"extra_frames": a["extra"][1 - side], "pc_fps": (reports[1 - side] or {}).get("pc_fps")},
-                   "text": lag.describe(ping, a, side, reports)}
+                   "waited_s": lag.waited_most(a), "text": lag.describe(ping, a, side, reports)}
 
     def test_english_matches_the_servers_sentences(self):
         i18n.set_language("en")
@@ -669,7 +676,8 @@ class LagTextTests(German):
                 a, ev = self.event(delay, reports, side)
                 seen.add((a["verdict"], ev["cause"]))
                 self.assertEqual(lag.describe_event(ev), ev["text"])
-        self.assertGreaterEqual(len(seen), 5, seen)        # unknown, ok, more lag for each cause
+        self.assertGreaterEqual(len(seen), 7, seen)        # unknown, ok, more lag and slow for each cause
+        self.assertIn(("slow", "network"), seen)
 
     def test_german_is_complete_and_differs(self):
         for delay, reports in self.CASES:
@@ -677,7 +685,8 @@ class LagTextTests(German):
                 _a, ev = self.event(delay, reports, side)
                 de = lag.describe_event(ev)
                 self.assertNotEqual(de, ev["text"])
-                self.assertTrue(de.startswith("Bei 37 ms Ping sind etwa"), de)
+                self.assertTrue(de.startswith("Dieses Match hat gelaggt: Die Spiele haben 95 s" if ev["verdict"] == "slow"
+                                              else "Bei 37 ms Ping sind etwa"), de)
         self.assertEqual(i18n.missing(), [])
 
     def test_an_event_without_numbers_shows_the_servers_text(self):
@@ -923,7 +932,7 @@ class RenderTests(Base):
         app.update()
         app.nb.select(app.tabs["online"])
         app.update()
-        app.online.nb.select(2)                                 # the Online tab's own tabs: Profile
+        app.online.nb.select(app.online.prof_page)              # the Online tab's own tabs: Profile
         app.update()
         for notebook in (app.online.nb, app.nb):
             for tab in notebook.tabs():
@@ -1002,12 +1011,12 @@ class RenderTests(Base):
         app.build = type("B", (), {"events": __import__("queue").Queue(),
                                    "quiet_hint": lambda _self: quiet[-1] if quiet else None})()
         app._drain_build()
-        self.assertTrue(app.detail.get().startswith("Schritt 6 von 8: Code übersetzen  —  1:15"), app.detail.get())
+        self.assertTrue(app.detail.get().startswith("Schritt 6 von 9: Code übersetzen  —  1:15"), app.detail.get())
         self.assertNotIn("\n", app.detail.get())
         quiet.append(self.core.lift_quiet_hint("lift", 200))
         app._drain_build()
         first, second = app.detail.get().split("\n")
-        self.assertTrue(first.startswith("Schritt 6 von 8: Code übersetzen"), first)
+        self.assertTrue(first.startswith("Schritt 6 von 9: Code übersetzen"), first)
         self.assertTrue(second.startswith("Der Schritt „Code übersetzen“ hat seit 3 Minuten nichts ausgegeben."), second)
         app.build.events.put(("error", "Choose your license file (.rap) first."))
         app._drain_build()
@@ -1259,6 +1268,13 @@ class OnlineTabGermanTests(German):
         t._show_rematch_bar()
         labels = [str(b.cget("text")) for b in t.bar_buttons.winfo_children()]
         self.assertEqual(labels, ["Rematch mit Rival", "Nächstes Spiel", "Verlassen", "Rival blockieren"])
+        t.on_event({"t": "lag_check", "ping_ms": 97.0, "expected_frames": 5, "observed_frames": 5.6, "verdict": "slow",
+                    "cause": "network", "waited_s": 94.8, "can_leave": True, "text": "This match lagged ..."})
+        self.assertEqual(t.match_var.get(), "Lag-Check: Dieses Match hat gelaggt: Die Spiele haben 95 s auf die "
+                                            "Eingaben des anderen gewartet. Ein LAN-Kabel statt WLAN und keine Uploads "
+                                            "während der Matches helfen.")
+        labels = [str(b.cget("text")) for b in t.bar_buttons.winfo_children()]
+        self.assertIn("Verlassen: zu laggy", labels)
         self.assertEqual(i18n.missing(), [])
 
     def test_driver_notes(self):
@@ -1373,7 +1389,7 @@ class OnlineTabGermanTests(German):
             "requests_left": 20}
         t._set_account_view(True)
         t.on_event({"t": "friends"})
-        t.nb.select(3)
+        t.nb.select(t.friends_page)
         texts, english = self.shown()
         for expect in ("FREUNDE", "Zum Match einladen", "In den Raum einladen", "Entfernen", "FREUND HINZUFÜGEN",
                        "Anfrage senden", "ANFRAGEN", "möchte dein Freund sein", "wartet auf Antwort",

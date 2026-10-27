@@ -343,6 +343,79 @@ static void test_no_table(void)
           "no table: budget only (%d, %d)", p.lps, p.spurs_threads);
 }
 
+/* Patch 0075: 2-core mode (hsp_two_core). */
+static hsp_plan plan2(const char* what, const table* t, uint64_t allowed, int budget, int budget_cores, int mode,
+                      int own_sets, int game_own)
+{
+    hsp_plan p;
+    hsp_make(t->c, t->n, allowed, budget, 0, &p);
+    hsp_pools(&p, budget, budget_cores, 0);   /* as host_sched.c sizes them (hs_pools_now) */
+    const hsp_plan before = p;
+    hsp_two_core(t->c, t->n, mode, budget, budget_cores, 0, own_sets, game_own, &p);
+    /* the pools never change with it (measured: fewer workers and no spinning were slower) */
+    CHECK(p.spurs_threads == before.spurs_threads && p.vertex_threads == before.vertex_threads &&
+          p.vertex_spin == before.vertex_spin, "%s: pools changed", what);
+    if (!p.own_core) {
+        for (int k = 0; k < HSP_KINDS; k++) CHECK(p.set[k] == before.set[k], "%s: kind %d set changed", what, k);
+    }
+    return p;
+}
+
+static void test_two_core(void)
+{
+    /* i3-3240 / i5-4210M: 2 cores / 4 threads, no core ranked above the other */
+    table t = { 0 };
+    add(&t, 2, 2, 0, 0, 0, 3072);
+    hsp_plan p = plan2("2c/4t auto", &t, all_of(&t), 0, 0, -1, 0, 0);
+    CHECK(p.two_core && !p.own_core, "2c/4t: 2-core mode, no own core by default");
+    CHECK(p.own == 0xCull && p.rest == 0x3ull, "2c/4t: the game thread's core is LP 2-3 (own 0x%llx rest 0x%llx)",
+          (unsigned long long)p.own, (unsigned long long)p.rest);
+    CHECK(p.ideal[HSP_MAIN] == 2, "2c/4t: game thread on LP 2 (got %d)", p.ideal[HSP_MAIN]);
+    CHECK(p.ideal[HSP_TICKER] == 0 && p.ideal[HSP_SPU] == 1,
+          "2c/4t: translation and sound core on the other core's two processors (got %d, %d)",
+          p.ideal[HSP_TICKER], p.ideal[HSP_SPU]);
+    CHECK(core_of(&t, p.ideal[HSP_SPU]) != core_of(&t, p.ideal[HSP_MAIN]), "2c/4t: sound core off the game thread's core");
+    for (int k = 0; k < HSP_KINDS; k++) CHECK(p.set[k] == 0, "2c/4t: no CPU set by default (kind %d)", k);
+
+    /* PS3_TWO_CORE_OWN=1: the game thread's core by CPU sets */
+    for (int g = 0; g < 3; g++) {
+        p = plan2("2c/4t own", &t, all_of(&t), 0, 0, -1, 1, g);
+        CHECK(p.own_core && p.set[HSP_MAIN] == 0xCull, "2c/4t own: game thread on LP 2-3");
+        CHECK(p.set[HSP_TICKER] == 0x3ull && p.set[HSP_SPU] == 0x3ull && p.set[HSP_SPURS] == 0x3ull &&
+              p.set[HSP_VERTEX] == 0x3ull, "2c/4t own: translation, sound core and workers on LP 0-1");
+        CHECK(p.set[HSP_GAME] == (g == 1 ? 0xCull : g == 2 ? 0 : 0x3ull), "2c/4t own: game threads (%d) 0x%llx", g,
+              (unsigned long long)p.set[HSP_GAME]);
+        CHECK((p.own & p.rest) == 0 && (p.own | p.rest) == 0xFull, "2c/4t own: the two cores split the mask");
+        for (int k = HSP_TICKER; k <= HSP_SPU; k++)
+            CHECK((p.set[k] >> p.ideal[k]) & 1u, "2c/4t own: kind %d ideal LP %d inside its set", k, p.ideal[k]);
+    }
+
+    /* PS3_TWO_CORE=0: as before */
+    p = plan2("2c/4t off", &t, all_of(&t), 0, 0, 0, 1, 0);
+    CHECK(!p.two_core && !p.own_core && p.ideal[HSP_SPU] == 2, "2c/4t off: unchanged (sound core ideal %d)",
+          p.ideal[HSP_SPU]);
+
+    /* 2 cores without SMT (Pentium G): the mode, but no core to split */
+    table t2 = { 0 };
+    add(&t2, 2, 1, 0, 0, 0, 3072);
+    p = plan2("2c/2t", &t2, all_of(&t2), 0, 0, -1, 1, 0);
+    CHECK(p.two_core && !p.own_core, "2c/2t: 2-core mode, no own core");
+
+    /* 4 cores: not a 2-core PC unless asked */
+    table t4 = { 0 };
+    add(&t4, 4, 2, 0, 0, 0, 8192);
+    p = plan2("4c/8t", &t4, all_of(&t4), 0, 0, -1, 1, 0);
+    CHECK(!p.two_core && !p.own_core, "4c/8t: no 2-core mode");
+    p = plan2("4c/8t forced", &t4, all_of(&t4), 0, 0, 1, 1, 0);
+    CHECK(p.two_core && !p.own_core, "4c/8t PS3_TWO_CORE=1: the mode, no own core (4 cores)");
+    /* a 2c/4t mask on it: the cores of the mask count */
+    p = plan2("4c/8t mask 0xF0", &t4, 0xF0ull, 0, 0, -1, 1, 0);
+    CHECK(p.two_core && p.own_core && (p.own | p.rest) == 0xF0ull, "mask 0xF0: 2-core mode with its own core");
+    /* PS3_CPUS=4 (budget 4, 2 cores) on the whole table: the mode by the budget, no CPU sets */
+    p = plan2("4c/8t PS3_CPUS=4", &t4, all_of(&t4), 4, 2, -1, 1, 0);
+    CHECK(p.two_core && !p.own_core, "PS3_CPUS=4: 2-core mode by the budget, placement unchanged");
+}
+
 static void test_mask_text(void)
 {
     char b[64];
@@ -395,6 +468,7 @@ int main(void)
     test_7950x3d();
     test_3700x();
     test_no_table();
+    test_two_core();
     test_mask_text();
     test_random();
     if (g_fails) { printf("FAILED %d of %d checks\n", g_fails, g_checks); return 1; }

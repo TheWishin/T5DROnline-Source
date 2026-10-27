@@ -140,8 +140,8 @@ class QuietHint(unittest.TestCase):
             self.assertIsNone(b.quiet_hint(now=1301.0))
             self.assertIsNotNone(b.quiet_hint(now=1490.0))
             self.assertEqual(len(drain(b)), 1)
-            b.step = "compile"
-            self.assertIsNone(b.quiet_hint(now=5000.0))
+            b.step = "compile"                  # (1.1.5: every step has a hint, with its own time; test_build_quiet)
+            self.assertIsNone(b.quiet_hint(now=1300.0 + core.QUIET_S["compile"] - 1))
 
     def test_pump_resets_the_quiet_clock(self):
         with tempfile.TemporaryDirectory() as d:

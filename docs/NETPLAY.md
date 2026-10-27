@@ -222,7 +222,17 @@ match starts:
   suggestion; tests that start with 0 stay at 0);
 - **ranked matches** use a fixed value for everybody: the lobby server sends
   `T5L_RANKED_INPUT_DELAY` (default 2) in `match_start`, the launcher passes it
-  as `T5_RB_NET_DELAY` on both PCs, and it wins over the player's setting.
+  as `T5_RB_NET_DELAY` on both PCs, and it wins over the player's setting;
+- **far matches** (1.1.5, ranked or not): above 150 ms measured round trip the
+  lobby server sends at least 3 frames the same way, 4 above 250 ms
+  (`T5L_PING_DELAYS`, default `150:3,250:4`; ranked: the higher of the two
+  values), never above the session's lockstep delay. About a quarter of the
+  matches are relayed, many of them far: with 2 frames a 200 ms match predicts
+  ~4 frames of the opponent's input and rolls back that deep on every surprise;
+  3-4 frames of delay make the jumps smaller. Both PCs get the same number, so
+  the host's pick is that number ("both players set 3"); a launcher from 1.1.4
+  passes it on too (it passes any `input_delay` of `match_start`). A rematch
+  inside the running games keeps its session's delay.
 
 The round trip is measured by the game, not taken from the lobby: from the
 handshake to the match start both games send a PING every 200 ms when nothing
@@ -493,6 +503,91 @@ In the game (build/nopause/runs; two games on this PC, minimized, muted, below-n
 | s1760 / s1900 (main's code) | START in a round's KO slow motion / in its replay | nothing / the replay skipped 5 frames later; no menu either time |
 | off1 | offline direct fight (no netplay), START in the fight | the PAUSE menu opens (0x10092EA0 -> 2 at the press; screenshot) |
 | smoke quick | offline menus, arcade, VS with two pads, practice, title twice | PASS (81 checks) with up to 10 other games running; an earlier run beside 16-20 other games failed `practice` (black frames, no fight HUD) -- main's exe failed it the same way at that load |
+
+## Online training and the health handicap (1.1.5, branch online-training-115)
+
+Two match rules that change what the game simulates, so both PCs must apply them on the same frames
+(`src/netplay/match_rules.h`, the lobby's side in docs/ONLINE.md "Training rooms and the health handicap"):
+
+- **Training** (a training room's fights, `train=1` on the fight line): endless health like Tekken 8's
+  practice lobby -- damage never KOs, not even in the longest combo --, no round timer, nothing counted. A
+  player who holds SELECT for a second gives up: their health goes to 0 and the game KOs them, which ends the
+  fight (training fights have one round; this is their only KO); both launchers then go back to the select
+  screen by themselves (a rematch), so this is also how two friends pick other fighters.
+- **Health handicap** (`life=P1|P2`, percent): the game's own VS handicap. The battle config holds each
+  side's percent (0x1008EBF4 / 0x1008EBF8, 100 after the select screen's handicap bar); the game mode's
+  set-up turns it into the fighters' maximum health (fighter block +0x6C0, 16.16 fixed point: 145.0 at 100 %,
+  72.5 at 50 %, 108.75 at 75 %) and their health at each round start (+0x6BC). The direct-fight driver writes
+  both words at the game mode's first frame, before that set-up runs, on both PCs alike. The bars show health
+  against each fighter's own maximum (both look full at a round's start), so the launchers put the percent after
+  the name under the bar ("Alice 70%").
+
+**The training rule** (`np::TrainingRule`, called by `training_rule()` in `t5_hooks.cpp` right after the
+no-pause rule): on the game state at the boundary of every frame that runs -- live, re-simulated by the
+rollback loop, played back from a replay or a live stream -- after that run's inputs are final:
+
+- only while the round is fought (round state 0x1009322C = 5, the decided byte 0);
+- the round timer (0x1008F054, frames) is held at 3600 (60 s): no time-out;
+- **damage never KOs** (owner, 2026-10-27): a fighter whose health a hit took to 0 gets 1.0 back at the next
+  boundary. That is always in time: the game clamps health at 0 when a hit lands and decides the KO in the frame
+  after it, from the health it finds then (probe ko1: P2 at 3.0, a 7-point hit -> 0 at boundary 1816, MATCH OVER
+  only at 1817; probe p6: 0 written at a boundary is KO'd in that frame). The next hit takes the 1.0 again, so a
+  combo that never stops keeps the fighter at the floor, never at 0;
+- a fighter's health goes back to its maximum once it has taken no damage for 60 frames: a second after the
+  last hit of a combo, standing, blocking or on the ground;
+- SELECT held 60 frames (in that player's input of those frames, the exchanged one) sets their health to 0 --
+  that KO, the give-up, is the one a training fight has.
+
+Found by probes of the running game (offline, `T5_DF_WATCH` / `T5_DF_POKE`, build/int115/h-runs): health and
+maximum per fighter block, the timer counting 3600 down from round state 5, the handicap words read at the
+game mode's first frame, and a health word set to 0 at a boundary KOs that fighter in the next frame
+(MATCH OVER, the winner the other side).
+
+**Why both PCs stay equal.** The rule reads only the game state at the boundary and the frame's two inputs
+(the exchanged ones), never which PC runs it or which side is local, and it treats both slots alike. Its
+writes happen after the boundary's state hash and snapshot (lockstep: after `state_hash`; rollback: after
+`on_boundary` commits), so a rollback's restore undoes them with the rest of the frame (the write watch sees
+host writes too) and the re-simulation writes them again from the restored state. Two counters per player
+(frames without damage, frames SELECT held) are kept per frame (frame mod 4096, tagged with the frame), each
+from its predecessor's entry -- the no-pause rule's scheme: a re-simulated boundary is recomputed from the
+restored state and its final inputs, and the boundaries before a rollback's first wrong frame ran with the
+right inputs. A sync point renumbers frames differently on the two PCs (the side that got there first skips
+numbers), so the counters are cleared at every sync point and at frame 0 on both alike; no rollback crosses a
+sync point. The rules themselves come from the fight line both launchers got from the lobby (and a replay
+from its file, format 5), latched by the driver at FIGHT START before `t5_netplay_start()`. The handicap
+words are in the hashed battle state, health and maximum in the hashed fighter blocks: a PC that applied
+other rules would show as a desync at once.
+
+**Older games are kept out** by the build id: `tools/build_game.py` CODE_VERSION 7 changes the code id, so a
+1.1.5 game is never paired with an older one (rooms included); the lobby offers training rooms and the
+handicap only to launchers whose game has them (cap `match_rules`; the game binary's
+`T5_DF_RULES`).
+
+Tests: `tests/test_match_rules.py` (`tests/c/match_rules_test.cpp`: the rule against a model of a fight --
+refill, timer, give-up, slot symmetry, and lockstep vs rollback with late inputs, predictions and sync points
+vs replay: the same state every frame; plus source checks), `tests/test_replays.py` (format 5),
+`lobby/tests/test_training.py`, `tools/fight_flow_test.py --line-extra "train=1 life=70|100"
+--give-up-every 2400` (real pairs), e2e `net_training` (a training room through the lobby: rollback with RTT
+80 ms, loss and jitter, and lockstep), e2e `spectate_training`.
+
+Tested (2026-10-27, this PC, build/int115/h-runs; both players mashing with a gap of up to 25 frames, a SELECT
+hold every 2400 frames): `fight_flow_test` persistent pairs, a new session then rematches, P1 at 70 % --
+rollback with the joiner stuttering (20 ms suspends): 4/4 and 4/4 fights (runs ff2, ff4; 260 rollbacks on one
+side in ff2), lockstep with P2 at 50 %: 3/3 (ff3) -- every fight ended by the give-up, health refilled in all
+of them, 0 mismatching frames, the same result hash on both PCs; the 8 replays the four games recorded (ff4,
+ff3) play back identical (every recorded hash and result). Through the lobby (e2e, the launchers' own Online
+tab, a local server): `net_training` rollback RTT 80 ms +-10 ms, 2 % loss (279 and 108 rollbacks per fight),
+rollback RTT 20, lockstep RTT 20 -- 6 training fights, each `training` in the lobby, the same hash, 0
+mismatching frames, the next fight started by itself, Leave room during a fight ended it ("left") on both;
+`spectate_training`: a spectator from the start plays both fights identical (82 hashes compared, 0
+different).
+
+No KO from damage (2026-10-27, after the owner's "Nie KO"; both players mashing every 1-6 frames with motion
+inputs -- electrics, hellsweeps, qcf/hcb --, a SELECT hold every 2400 frames): rollback with the joiner stuttering,
+P1 at 30 % (run nk1, 521 rollbacks on one side) and both at 10 % = 14.5 health (nk3, 526 rollbacks; health taken to
+0 and set back to 1.0 17 times live), lockstep with P2 at 30 % (nk2; set back 4 times) -- 9 of 9 fights ended by the
+give-up and by nothing else, 0 mismatching frames, the same result hash on both PCs; the 8 replays they recorded
+play back identical.
 
 ## Skipping intros and replays online (branch skip-114, 1.1.4)
 
@@ -957,6 +1052,23 @@ not followed (the new address never sent to). Spectating or anything else that w
 first needs the relay with a blocked firewall. Two symmetric NATs with both firewalls blocking can still lose 15 s to
 the fallback (a consistent choice of the punched pair would avoid it: the other side would have to say in its
 F_HEARD where it saw this side -- a punch format change).
+
+**Rematches after the relay (1.1.5, lobby server only).** A rematch used to continue in the running games on the
+path they had, so once a session was on the relay every rematch stayed there. Production, 2026-10-21 (1.1.4): one
+player's firewall blocked his game, the fallback moved the match onto the relay (127 ms instead of 94 ms direct), and
+each following ~3-minute rematch waited 4.5-8.5 s for inputs (freezes) -- the firewall was fixed on his PC meanwhile,
+and a new match from the lobby went direct again. Now a rematch (or the next game of a ranked set) after a match on
+the relay is a new connection: both launchers send their games back to idle and the lobby runs registration and the
+punch as for a new match (`match_found` with `keep: false`, the old relay session is closed). Direct works: the
+session continues direct. It fails again (punch, or the game hears nothing and the fallback runs once more): the
+session stays on the relay for its following rematches (`Match.direct_again`), so a pair without a direct path pays
+the extra setup (punch window, or the fallback's 15 s) once. Not tried again: `T5L_FORCE_RELAY`, two symmetric NATs
+without predictable ports (nothing would change), both relay bridges already on the direct path. `T5L_REMATCH_DIRECT=0`
+turns it off. 1.1.4 launchers need nothing new (a rematch with `keep: false` is what they did when one game had
+closed). Tests: lobby/tests/test_firewall.py `RematchAfterRelay*`; e2e `net_relay_rematch` (real games, 1.1.4 build
+with this lobby: fallback onto the relay, firewall fixed, the rematch plays direct in a new session, the next one
+continues in it; punch blocked, the rematch tries once more and stays on the relay, the next one continues there: 6 of 6
+confirmed, same hashes, 0 mismatching frames) and `relay_rematch_stub`.
 
 ## Relayed matches (branch relay-smooth, 1.1.4)
 
@@ -1817,7 +1929,7 @@ GetTickCount, timeouts, "going on" in src/netplay, src/rollback, src/directfight
 | `t5_hooks.cpp ensure_keyread_parked` | 5 s, then the take-over is postponed a frame | no: an offset before lockstep frame 0, which the fight-loaded sync point evens out (as for a persistent vs a fresh game) | unchanged |
 | `netplay_core.cpp` handshake, `begin_frame`, `scene_barrier`, tick thread | `T5_NET_CONNECT_TIMEOUT`, `T5_NET_START_TIMEOUT`, `T5_NET_TIMEOUT` | no: they end the session (`no_peer`, `start_timeout`, `peer_stalled`, `peer_timeout`), never play on | the peer's loading no longer counts as a stall |
 | `t5_hooks.cpp flush_result` | the result waits up to 3 s for the deciding frame's hash comparison | no: what is reported, not the game | unchanged |
-| `rb_net.cpp` time sync, early rollback | sleeps, when a rollback runs | no: pacing only | unchanged |
+| `rb_net.cpp` time sync, early rollback | sleeps, when a rollback runs | no: pacing only | a correction skips one vblank tick in the runtime (patch 0080, docs/ROLLBACK.md section 34) instead of sleeping on GetTickCount64 |
 | `df_fight.cpp` pick clock (30 s), Select = random | this player's own pick | no: decided on one PC and sent to the other | unchanged |
 
 **What was tested** (this PC, 32 logical processors, other agents' games running; two games of

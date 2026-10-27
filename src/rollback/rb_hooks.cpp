@@ -16,7 +16,7 @@
  *     on its per-frame semaphore (id at 0x106D4A30) is the frame boundary.
  */
 #define WIN32_LEAN_AND_MEAN
-#include <windows.h>
+#include "../platform/t5_win.h"
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -261,7 +261,11 @@ void list_threads()
         if (t.state == PPU_THREAD_STATE_FREE) continue;
         note("thread slot %d id %llu state %d name \"%s\" stack 0x%08X+0x%X host tid %lu", i,
              (unsigned long long)t.ctx.thread_id, t.state, t.name, t.stack_addr, t.stack_size,
+#if defined(_WIN32)
              (unsigned long)t.host_tid);
+#else
+             (unsigned long)(uintptr_t)t.host_thread);   /* (no thread id in the POSIX record) */
+#endif
     }
 }
 
@@ -442,10 +446,9 @@ struct Register {
              * and main() reads this one from that cache. */
             const bool needs = strcmp(m, "net") ? true : net::offered_by_env();
             char ww[8] = "";
-            GetEnvironmentVariableA("PS3_VM_WRITE_WATCH", ww, sizeof ww);
+            t5p_getenv_os("PS3_VM_WRITE_WATCH", ww, sizeof ww);
             if (needs && ww[0] != '1') {
-                SetEnvironmentVariableA("PS3_VM_WRITE_WATCH", "1");
-                _putenv_s("PS3_VM_WRITE_WATCH", "1");
+                t5p_setenv_os("PS3_VM_WRITE_WATCH", "1");
                 fputs("[rb] PS3_VM_WRITE_WATCH=1 (the rollback state needs the write watch)\n", stderr);
             }
         }

@@ -64,6 +64,13 @@ message(STATUS "Lifted sources: ${RECOMP_SOURCE_COUNT} file(s) in ${RECOMP_DIR}"
 # The runtime library, built from source so its link requirements come along.
 add_subdirectory("${PS3RECOMP_DIR}" "${CMAKE_BINARY_DIR}/ps3recomp" EXCLUDE_FROM_ALL)
 
+# macOS (tools/build_game.py passes it): without glslang and spirv-cross the Metal backend has no
+# guest shaders and every draw is dropped, so stop here instead of building a black window.
+option(T5DR_REQUIRE_SHADERS "Fail the configure step when the guest shaders cannot be translated" OFF)
+if(T5DR_REQUIRE_SHADERS AND NOT TARGET ps3recomp_msl_translation)
+    message(FATAL_ERROR "T5DR_REQUIRE_SHADERS: glslang and spirv-cross were not found")
+endif()
+
 # Firmware NID -> HLE handler table, generated from the runtime's sources.
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
 set(HLE_NID_TABLE "${CMAKE_BINARY_DIR}/gen/ppu_hle_nids.cpp")
@@ -154,16 +161,25 @@ if(_lifted_arch STREQUAL "auto")
         endif()
     endif()
 endif()
+if(MSVC)
+    set(_clang_flag_prefix "/clang:")   # clang-cl forwards GCC-style flags with this prefix
+else()
+    set(_clang_flag_prefix "")
+endif()
 # -fno-caret-diagnostics: clang names file(line,col) and the message, without quoting the lifted source line (the
 # game's own code, translated) -- nothing of it in a build log or a problem report made from one. Diagnostics only:
 # the objects are the same (tools/build_game_dll.py does the same for the player's build).
-# /GS-: no stack cookies in the lifted code (as tools/build_game_dll.py builds it): it keeps the PPU's
-# registers in its context, not in local arrays, so a cookie guards nothing there.
 # -fno-finite-loops: a guest `b .` (a deliberate hang) stays a hang -- C++ lets the compiler assume every loop ends
 # and remove the way into it (tools/build_game_dll.py PPU_LOOPS).
-set(_lifted_opts /clang:-ffp-contract=off /clang:-fno-caret-diagnostics /GS- /clang:-fno-finite-loops)
+set(_lifted_opts "${_clang_flag_prefix}-ffp-contract=off" "${_clang_flag_prefix}-fno-caret-diagnostics"
+                 "${_clang_flag_prefix}-fno-finite-loops")
+if(MSVC)
+    # /GS-: no stack cookies in the lifted code (as tools/build_game_dll.py builds it): it keeps the PPU's
+    # registers in its context, not in local arrays, so a cookie guards nothing there.
+    list(APPEND _lifted_opts /GS-)
+endif()
 if(NOT _lifted_arch STREQUAL "none")
-    list(APPEND _lifted_opts "/clang:-march=${_lifted_arch}")
+    list(APPEND _lifted_opts "${_clang_flag_prefix}-march=${_lifted_arch}")
 endif()
 message(STATUS "Lifted PPU code: -march=${_lifted_arch}")
 # Extra compile options for the lifted code: T5DR_LIFTED_COPTS for the lifted PPU
@@ -244,6 +260,17 @@ if(T5DR_GAME_DLL)
     target_link_options(t5dr PRIVATE "/DEF:${CMAKE_CURRENT_SOURCE_DIR}/tools/gamedll/t5dr_host.def")
 endif()
 
+# Our own modules (src/: rollback, netplay, direct fight, training, perf) reach the host through
+# src/platform (t5_win.h, t5_plat.h, t5_sock.h): Win32 on Windows, the runtime's POSIX shim and
+# t5_plat_posix.c elsewhere (docs/MACOS.md). On macOS they are built only with
+# T5DR_MACOS_ONLINE (tools/build_game.py --macos-online): online play between a Mac and a PC is
+# not proven in sync yet (docs/MACOS_ONLINE_TEST.md), so the default Mac build stays the game
+# alone, offline, as before.
+option(T5DR_MACOS_ONLINE "macOS: build the online modules (a test build until a Mac-vs-PC match is proven in sync)" OFF)
+if(T5DR_MACOS_ONLINE AND NOT APPLE)
+    message(FATAL_ERROR "T5DR_MACOS_ONLINE is for macOS builds")
+endif()
+if(WIN32 OR T5DR_MACOS_ONLINE)
 # Rollback (our own code, src/rollback/): off unless T5_RB_MODE is set. The
 # netplay layer calls its loop (T5_RB_MODE=net), so it is built in both modes;
 # rb_hooks.cpp reads the lifted table through ppu_game_table in DLL mode.
@@ -270,7 +297,8 @@ set_source_files_properties(${DIRECTFIGHT_SOURCES} PROPERTIES COMPILE_DEFINITION
 
 # Training overlay (our own code, src/training/, docs/TRAINING.md): input display and
 # frame data drawn by the runtime's overlay layer (ps3recomp patch 0045). Off unless
-# T5_TRAINING is set; reads guest memory only, never writes it.
+# T5_TRAINING is set; reads guest memory only, never writes it. The practice tools
+# (practice.cpp) change the game -- in offline Practice only, with T5_PRACTICE=1.
 file(GLOB TRAINING_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/training/*.cpp")
 target_sources(t5dr PRIVATE ${TRAINING_SOURCES})
 set_source_files_properties(${TRAINING_SOURCES} PROPERTIES COMPILE_DEFINITIONS _CRT_SECURE_NO_WARNINGS
@@ -288,6 +316,29 @@ if(T5DR_PGO STREQUAL "gen")
     # brings the UCRT import of it too. Instrumented builds only.
     target_link_options(t5dr PRIVATE /FORCE:MULTIPLE)
     target_sources(t5dr PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/perf/pgo/pgo_crt_shim.c")
+endif()
+if(APPLE)
+    # The POSIX half of src/platform/t5_plat.h, and the runtime's Win32 shim for t5_win.h.
+    target_sources(t5dr PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/t5_plat_posix.c")
+    target_include_directories(t5dr PRIVATE "${PS3RECOMP_DIR}/runtime/platform")
+    # Entry detours without code patching (rb_detour.cpp): the lifted code must have been
+    # lifted with the hook slots (ppu_lifter.py --hook-slots src/rollback/hook_slots.txt).
+    file(STRINGS "${RECOMP_DIR}/ppu_recomp.h" _hook_slots REGEX "^#define PPU_HOOK_SLOTS ")
+    if(NOT _hook_slots)
+        message(FATAL_ERROR "T5DR_MACOS_ONLINE: ${RECOMP_DIR} was lifted without hook slots -- "
+                            "run tools/build_game.py --macos-online (it lifts again)")
+    endif()
+    set_property(SOURCE ${ROLLBACK_SOURCES} APPEND PROPERTY COMPILE_DEFINITIONS T5DR_HOOK_SLOTS)
+    message(STATUS "macOS online modules: on (${_hook_slots})")
+endif()
+endif()   # WIN32 OR T5DR_MACOS_ONLINE: our own modules
+
+# macOS: no spontaneous fused multiply-add anywhere in t5dr (Apple clang contracts a*b+c by
+# default; the runtime library and the lifted code already say so, this covers the boot harness,
+# the loader, the HLE table and src/). Clang on x86-64 Windows has no FMA to contract into
+# outside the lifted code, which gets -ffp-contract=off above.
+if(APPLE)
+    target_compile_options(t5dr PRIVATE -ffp-contract=off)
 endif()
 
 # The generated NID table includes every module's header.
@@ -346,7 +397,7 @@ endif()
 # already required it), and no code is generated differently except that these
 # calls become the instructions they wrap. The lifted code keeps its options
 # (T5DR_LIFTED_ARCH; x86-64-v3 includes cx16).
-if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND CMAKE_SIZEOF_VOID_P EQUAL 8)
+if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND CMAKE_SIZEOF_VOID_P EQUAL 8 AND MSVC)   # (clang-cl: not a Mac's LLVM clang)
     target_compile_options(ps3recomp_runtime PRIVATE /clang:-mcx16)
     get_target_property(_t5dr_srcs t5dr SOURCES)
     if(GAME_SOURCES)

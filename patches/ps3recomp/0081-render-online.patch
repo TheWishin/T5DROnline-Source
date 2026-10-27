@@ -1,0 +1,384 @@
+diff --git a/libs/video/cellGcmSys.c b/libs/video/cellGcmSys.c
+index 5f027db..c4a7dec 100644
+--- a/libs/video/cellGcmSys.c
++++ b/libs/video/cellGcmSys.c
+@@ -2854,6 +2854,11 @@ u32 cellGcm_display_buffer_count(void)
+     return n;
+ }
+ 
++/* Patch 0081: where the FIFO walker is (the packet it walks), for the renderer's
++ * notes on a draw it cannot make (rsx_live_draw.c ld_note_prim_drop). */
++u32 cellGcm_walk_offset(void) { return s_fifo_getoff; }
++u32 cellGcm_walk_io2ea(u32 io) { return gcm_io2ea(io); }
++
+ static s32 gcm_flip_request(u32 bufferId, int in_fifo)
+ {
+     rsx_pf_guest_flip();   /* PS3_FRAMELOG: the guest asked for a flip */
+diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
+index 363977a..2a64312 100644
+--- a/libs/video/rsx_live_draw.c
++++ b/libs/video/rsx_live_draw.c
+@@ -536,6 +536,23 @@ static unsigned g_ld_vendor;      /* the render adapter's PCI vendor id (ld_crea
+  * binding tier (0 unknown): the frames-in-flight default and the [slow-frames] verdict read them. */
+ static int g_ld_gpu_uma = -1;
+ static unsigned g_ld_bind_tier;
++/* Patch 0081: the resource binding tier 1 path (an old card such as the Fermi GT 730, whose driver emulates
++ * descriptor tables: every table a draw sets is copied into the card's binding slots). On by default with
++ * tier 1, RSX_TIER1_PATH=1 / =0 forces it on / off (measured on tier 3 here; tier 2/3 default unchanged). */
++static int g_ld_t1 = -1;
++static u64 g_ld_t1_tables_kept;      /* draws that kept the previous draw's table (only unsampled units differed) */
++static u64 g_ld_t1_unread;          /* texture units enabled but not sampled by the program (not bound on this path) */
++static u32 g_ld_t1_units_seen;      /* union of the units the programs sample (tier-1 path, [xlat-stats]) */
++static int ld_tier1_path(void)
++{
++    if (g_ld_t1 < 0) {
++        const char* e = getenv("RSX_TIER1_PATH");
++        g_ld_t1 = e && *e ? *e != '0' : g_ld_bind_tier == 1;
++        fprintf(stderr, "[gpu] tier-1 binding path: %s (resource binding tier %u%s)\n", g_ld_t1 ? "on" : "off",
++                g_ld_bind_tier, e && *e ? ", RSX_TIER1_PATH" : "");
++    }
++    return g_ld_t1;
++}
+ /* 2 = bilinear pairs (AMD: bit-identical to the loop, measured), 1 = unrolled
+  * loads (bit-identical everywhere), 0 = patch 0043's loop */
+ static int ld_gview_fast(void)
+@@ -667,6 +684,7 @@ typedef struct {
+     u32 cube_mask, vtex_mask, txl_mask;
+     u32 input_mask, input_stride;
+     u32 packed_offsets;
++    u32 fp_tex_mask;     /* patch 0081: units the fragment program samples (tier-1 path; else 0xFFFF) */
+ } ld_pso_metadata;
+ 
+ static ld_pso_metadata g_ld_current_pso;
+@@ -2185,6 +2203,21 @@ static void ld_bound_invalidate(void)
+     g_ld_bound.cbv0 = g_ld_bound.cbv4 = ~(D3D12_GPU_VIRTUAL_ADDRESS)0;
+     g_ld_bound.t1.ptr = g_ld_bound.t2.ptr = g_ld_bound.t3.ptr = ~(u64)0;
+ }
++/* Patch 0081, tier-1 path: the copy, snapshot and guest-view passes and the draws all bind the same two heaps;
++ * each pass used to set them again, and the draw after it once more. On some old cards a SetDescriptorHeaps is a
++ * flush of the GPU's binding state; on the tier-1 path the heaps are set once per command list (until the present
++ * binds its own). Tier 2/3: every call as before. */
++static int g_ld_heaps_main;                 /* the list has {srv_heap, smp_heap} bound (reset with the list) */
++static u64 g_ld_heap_calls, g_ld_heap_sets; /* SetDescriptorHeaps asked for / issued */
++static void ld_set_main_heaps(ID3D12GraphicsCommandList* l)
++{
++    g_ld_heap_calls++;
++    if (g_ld_heaps_main && ld_tier1_path()) return;
++    ID3D12DescriptorHeap* heaps[] = {g.srv_heap, g.smp_heap};
++    l->lpVtbl->SetDescriptorHeaps(l, 2, heaps);
++    g_ld_heaps_main = 1;
++    g_ld_heap_sets++;
++}
+ /* GetGPUVirtualAddress once per buffer (they are made once) */
+ typedef struct { ID3D12Resource* res; D3D12_GPU_VIRTUAL_ADDRESS va; } ld_va_cache;
+ static ld_va_cache g_ld_va_cb, g_ld_va_ps_cb, g_ld_va_vb, g_ld_va_ib;
+@@ -2266,6 +2299,7 @@ static u32 sampler_slot(const rsx_dsp_texture* t, u32 key)
+  * is unchanged. Sampler descriptors are never rewritten (smp_keys only grow),
+  * so a table stays valid until the ring starts over. */
+ static struct { u32 valid, epoch, index; u32 slots[SMP_TABLE_SIZE]; } g_ld_smp_last;
++static u64 g_ld_smp_tables_copied;   /* patch 0081: [xlat-stats] */
+ static D3D12_GPU_DESCRIPTOR_HANDLE sampler_table(const u32 slots[SMP_TABLE_SIZE])
+ {
+     if (ld_state_cache_on() && g_ld_smp_last.valid && g_ld_smp_last.epoch == g_ld_ring_epoch &&
+@@ -2291,6 +2325,7 @@ static D3D12_GPU_DESCRIPTOR_HANDLE sampler_table(const u32 slots[SMP_TABLE_SIZE]
+         return invalid;
+     }
+     const u32 base = g.smp_ring_used++ * SMP_TABLE_SIZE;
++    g_ld_smp_tables_copied++;
+     memcpy(g.smp_ring_slots[base / SMP_TABLE_SIZE], slots,
+            sizeof(g.smp_ring_slots[0]));
+     g_ld_smp_last.valid = 1; g_ld_smp_last.epoch = g_ld_ring_epoch;
+@@ -3341,6 +3376,26 @@ static void ld_gp_report(u32 frames_now)
+     qsort(g_gp.acc, g_gp.n_acc, sizeof(gp_acc), gp_cmp);
+     fprintf(stderr, "[gpu-pass] %u frames, %.3f ms GPU per frame in %.1f lists; per frame:", frames,
+             (double)g_gp.total_ticks * g_gp.ms_per_tick / frames, (double)g_gp.lists / frames);
++    {   /* patch 0081: the binding work per frame (on resource binding tier 1 the driver copies every table set) */
++        static u64 l_by[15], l_srvc, l_smpc, l_unread, l_draws, l_hs, l_hc, l_kept;
++        const double fr = (double)frames;
++        fprintf(stderr, " binding %.0f draws, tables set %.0f (textures %.0f, samplers %.0f, vertex textures %.0f), "
++                        "root signatures %.0f, descriptor heaps %.1f of %.1f, constant buffers %.0f; tables copied: textures %.0f, samplers %.1f; "
++                        "units not sampled %.0f, tables kept %.0f (tier-1 path %s)",
++                (double)(g_pf.draws - l_draws) / fr,
++                (double)(g_ld_api_by[6] + g_ld_api_by[7] + g_ld_api_by[8] - l_by[6] - l_by[7] - l_by[8]) / fr,
++                (double)(g_ld_api_by[6] - l_by[6]) / fr, (double)(g_ld_api_by[7] - l_by[7]) / fr,
++                (double)(g_ld_api_by[8] - l_by[8]) / fr, (double)(g_ld_api_by[3] - l_by[3]) / fr,
++                (double)(g_ld_heap_sets - l_hs) / fr, (double)(g_ld_heap_calls - l_hc) / fr,
++                (double)(g_ld_api_by[4] + g_ld_api_by[5] - l_by[4] - l_by[5]) / fr,
++                (double)(g_ld_srv_tables_copied - l_srvc) / fr, (double)(g_ld_smp_tables_copied - l_smpc) / fr,
++                (double)(g_ld_t1_unread - l_unread) / fr, (double)(g_ld_t1_tables_kept - l_kept) / fr,
++                ld_tier1_path() ? "on" : "off");
++        memcpy(l_by, g_ld_api_by, sizeof l_by);
++        l_kept = g_ld_t1_tables_kept;
++        l_srvc = g_ld_srv_tables_copied; l_smpc = g_ld_smp_tables_copied; l_unread = g_ld_t1_unread; l_draws = g_pf.draws;
++        l_hs = g_ld_heap_sets; l_hc = g_ld_heap_calls;
++    }
+     for (u32 a = 0; a < g_gp.n_acc && a < (g_gp.per_draw ? 48u : 14u); a++) {
+         const gp_acc* A = &g_gp.acc[a];
+         const double ms = (double)A->ticks * g_gp.ms_per_tick / frames;
+@@ -3490,6 +3545,7 @@ static void ld_begin_recording_owned(void)
+     g.alloc->lpVtbl->Reset(g.alloc);
+     LDL->lpVtbl->Reset(LDL, g.alloc, NULL);
+     ld_bound_invalidate();
++    g_ld_heaps_main = 0;
+     ld_gt_begin();
+     ld_gp_list_begin();
+     g.upload_used = 0;
+@@ -3585,6 +3641,7 @@ static void ld_flush_owned(ld_flush_reason reason)
+     g.alloc->lpVtbl->Reset(g.alloc);
+     LDL->lpVtbl->Reset(LDL, g.alloc, NULL);
+     ld_bound_invalidate();
++    g_ld_heaps_main = 0;
+     ld_gt_begin();
+     ld_gp_list_begin();
+     g.upload_used = 0;
+@@ -5317,9 +5374,8 @@ static int ld_surface_copy(u32 si, u32 sx, u32 sy, u32 di, u32 dx, u32 dy, u32 w
+                           (float)S->pw / kx, (float)S->ph / ky, 0.0f, 1.0f };
+     const D3D12_RECT sc = { (LONG)dl, (LONG)dt, (LONG)dr, (LONG)db };
+     const D3D12_CPU_DESCRIPTOR_HANDLE rtv = rtv_handle(LD_SWAP_BUFFERS + di);
+-    ID3D12DescriptorHeap* heaps[] = {g.srv_heap, g.smp_heap};
+     ld_bound_invalidate();   /* patch 0062: the pass below records its own state */
+-    LDL->lpVtbl->SetDescriptorHeaps(LDL, 2, heaps);
++    ld_set_main_heaps(LDL);
+     LDL->lpVtbl->OMSetRenderTargets(LDL, 1, &rtv, FALSE, NULL);
+     LDL->lpVtbl->SetGraphicsRootSignature(LDL, g_ld_copy.rootsig);
+     LDL->lpVtbl->SetGraphicsRootDescriptorTable(LDL, 0, gpu);
+@@ -5732,8 +5788,7 @@ static int zdepth_snapshot(u32 slot)
+ 
+     ld_gp_mark(GP_DEPTHSNAP, z->offset, 0, ld_pxs(z->snapshot_w, z->scale), ld_pxs(z->snapshot_h, z->scale), 0, 0);
+     ld_bound_invalidate();   /* patch 0062: the pass below records its own state */
+-    ID3D12DescriptorHeap* heaps[] = {g.srv_heap, g.smp_heap};
+-    LDL->lpVtbl->SetDescriptorHeaps(LDL, 2, heaps);
++    ld_set_main_heaps(LDL);
+     LDL->lpVtbl->SetPipelineState(LDL, g.depth_snapshot_pso);
+     LDL->lpVtbl->SetComputeRootSignature(
+         LDL, g.depth_snapshot_rootsig);
+@@ -6953,6 +7008,7 @@ static void ld_pso_bail(int* said, const char* reason)
+ typedef struct {
+     u32 valid, loc, off, size, n_const;
+     u64 shash;
++    u32 tex_mask;        /* patch 0081: rsx_fp_texture_mask on the tier-1 path */
+     u32 consts[LD_FP_MEMO_CONSTS][4];
+     u8 bytes[LD_FP_MEMO_BYTES];
+ } ld_fp_memo;
+@@ -7180,6 +7236,7 @@ static ID3D12PipelineState* get_pso(
+                 m->n_const = g.fp_constants.count;
+                 memcpy(m->consts, g.fp_constants.values, (size_t)m->n_const * 16u);
+                 m->shash = fp_shash;
++                m->tex_mask = ld_tier1_path() ? rsx_fp_texture_mask(fp_uc, fp_size) : 0xFFFFu;
+                 memcpy(m->bytes, fp_uc, fp_size);
+             }
+         }
+@@ -7285,6 +7342,8 @@ have_key:
+             ? masked_layout->stride : VERT_STRIDE;
+     g_ld_current_pso.packed_offsets =
+         masked_layout && packed_payload;
++    g_ld_current_pso.fp_tex_mask = !ld_tier1_path() ? 0xFFFFu
++                                 : fpm ? fpm->tex_mask : rsx_fp_texture_mask(fp_uc, fp_size);
+ 
+ #if defined(YZ_PERF_PROFILE)
+     g_ld_profile.total.pso_lookups++;
+@@ -9188,7 +9247,10 @@ static void ld_movie_capture_overlay(void)
+     ld_movie_reset_rings();
+ }
+ 
+-static void sink_begin(void* u, const rsx_dispatch* r, u32 prim) { (void)u; (void)r; (void)prim; dc_reset(); }
++extern u32 cellGcm_walk_offset(void);      /* cellGcmSys.c (patch 0081) */
++extern u32 cellGcm_walk_io2ea(u32 io);
++static u32 g_ld_begin_fifo;                /* the walker's packet at this draw's BEGIN (patch 0081: ld_note_prim_drop) */
++static void sink_begin(void* u, const rsx_dispatch* r, u32 prim) { (void)u; (void)r; (void)prim; g_ld_begin_fifo = cellGcm_walk_offset(); dc_reset(); }
+ static void sink_draw_arrays(void* u, const rsx_dispatch* r, u32 first, u32 count)
+ {
+     (void)u; (void)r; g_ld_stats.packets_seen++;
+@@ -9994,17 +10056,32 @@ static void write_topology_indices(u32 prim, u32* indices)
+ static void ld_note_prim_drop(u32 prim)
+ {
+     static u32 seen[16];
++    static int limit = -1;   /* RSX_PRIM_NOTES=n: name the first n of each kind (default 3) */
+     static const char* names[16] = { "?", "points", "lines", "line loop", "line strip", "triangles",
+                                      "triangle strip", "triangle fan", "quads", "quad strip", "polygon" };
++    if (limit < 0) { const char* e = getenv("RSX_PRIM_NOTES"); limit = e ? atoi(e) : 3; }
+     const u32 k = prim < 16 ? prim : 0;
+-    if (seen[k]++ >= 3) return;
++    lat_log('Z', "%u %u %u 0x%X", g_ld_frames, prim, cellGcm_lat_walk_seq(), g_ld_begin_fifo);
++    if (seen[k]++ >= (u32)limit) return;
+     rsx_dsp_texture t0;
+     rsx_dsp_get_texture(&g.rsx, 0, &t0);
+     fprintf(stderr, "[live-draw] primitive %u (%s) not drawn (no topology for it here): frame %u, %u vertices, "
+-                    "fragment program 0x%08X, texture 0 %s0x%X fmt 0x%02X %ux%u\n",
++                    "fragment program 0x%08X, texture 0 %s0x%X fmt 0x%02X %ux%u; FIFO 0x%X, flip %u, colour 0x%X\n",
+             prim, names[k] ? names[k] : "?", g_ld_frames, dc.n_source_refs ? dc.n_source_refs : dc.n_verts,
+             rsx_dsp_reg(&g.rsx, 0x08E4u), t0.enabled ? "" : "(off) ", t0.offset, t0.format & 0xFFu,
+-            t0.width, t0.height);
++            t0.width, t0.height, g_ld_begin_fifo, cellGcm_lat_walk_seq(), rsx_dsp_reg(&g.rsx, 0x0210u));
++    {   /* the ring words around the packet (diagnostics: what wrote this draw) */
++        extern u8* vm_base;
++        char line[512]; int n = 0;
++        const u32 at = g_ld_begin_fifo & ~3u;
++        for (int i = -12; i <= 12 && n < (int)sizeof line - 16; i++) {
++            const u32 ea = cellGcm_walk_io2ea(at + (u32)(i * 4));
++            if (!ea) continue;
++            n += snprintf(line + n, sizeof line - n, "%s%08X%s", i == 0 ? " [" : " ",
++                          __builtin_bswap32(*(const u32*)(vm_base + ea)), i == 0 ? "]" : "");
++        }
++        fprintf(stderr, "[live-draw]   ring at 0x%X:%s\n", at, line);
++    }
+ }
+ 
+ /* ---------------------------------------------------------------------------
+@@ -10344,9 +10421,8 @@ static u32 ld_guest_view_srv(u32 slot)
+                          (float)ld_gview_fast() };
+     const D3D12_VIEWPORT vp = { 0.0f, 0.0f, (float)s->w, (float)s->h, 0.0f, 1.0f };
+     const D3D12_RECT sc = { 0, 0, (LONG)s->w, (LONG)s->h };
+-    ID3D12DescriptorHeap* heaps[] = {g.srv_heap, g.smp_heap};
+     ld_bound_invalidate();   /* patch 0062: the pass below records its own state */
+-    LDL->lpVtbl->SetDescriptorHeaps(LDL, 2, heaps);
++    ld_set_main_heaps(LDL);
+     LDL->lpVtbl->OMSetRenderTargets(LDL, 1, &rtv, FALSE, NULL);
+     LDL->lpVtbl->SetGraphicsRootSignature(LDL, g_ld_gview.rootsig);
+     LDL->lpVtbl->SetGraphicsRootDescriptorTable(LDL, 0, gpu);
+@@ -10476,12 +10552,32 @@ static int ld_effect_draw(void)
+     }
+     return 1;
+ }
++/* Patch 0081 (diagnostics): RSX_FX_COUNT=1 with PS3_LATENCY_LOG -- per flip the effect draws (ld_effect_draw: the
++ * 3D pass, blending, depth test, no depth writes) and those of them with a 64 x 64 DXT texture (the EWGF's lightning,
++ * GitHub #12) as an 'H' line: what the game submitted, to line up with rollbacks ('M'/'Q'). */
++static int g_ld_fxc = -1;
++static u32 g_ld_fx_n, g_ld_fx64_n;
++static void ld_fx_count(void)
++{
++    if (g_ld_fxc < 0) {
++        const char* e = getenv("RSX_FX_COUNT");
++        g_ld_fxc = e && *e == '1' && lat_log_enabled();
++        if (e) fprintf(stderr, "[live-draw] effect draws per flip in the latency log (RSX_FX_COUNT): %s\n", g_ld_fxc ? "on" : "off (no PS3_LATENCY_LOG)");
++    }
++    if (!g_ld_fxc || !ld_effect_draw()) return;
++    g_ld_fx_n++;
++    rsx_dsp_texture t0;
++    rsx_dsp_get_texture(&g.rsx, 0, &t0);
++    const u32 f = t0.format & 0x9Fu;
++    if (t0.enabled && t0.width == 64 && t0.height == 64 && f >= 0x86u && f <= 0x88u) g_ld_fx64_n++;
++}
+ static void sink_end_impl(void* user, const rsx_dispatch* r)
+ {
+     (void)user; (void)r;
+     if (g_ld_movie_mode && !ld_movie_composite_ui_enabled()) return;
+     if (!dc.n_packets) { g_ld_stats.groups_empty++; return; }
+     g_ld_stats.groups_seen++;
++    if (g_ld_fxc) ld_fx_count();
+     /*
+      * a010's native per-mesh constant builder can overwrite the otherwise
+      * valid reconstructed camera with NaNs after the ordinary camera upload.
+@@ -10887,6 +10983,8 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+           }
+       } }
+     u32 post_taps = ~0u, post_reads = 0;   /* patch 0043: this draw's filter kernel units */
++    const u32 fp_reads = ld_tier1_path() ? g_ld_current_pso.fp_tex_mask : 0xFFFFu;   /* patch 0081 */
++    g_ld_t1_units_seen |= fp_reads;
+     int post_kernel = 0;
+     for (u32 u = 0; u < SRV_TABLE_SIZE; u++) {
+         if (!(rsx_dsp_reg(&g.rsx, 0x1A0C + u * 0x20) >> 31))
+@@ -10907,6 +11005,10 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+           if (fb0 && t.location == 1u && t.offset == 0x4003C0u)
+               t.offset = 0x400000u; }
+         if (!t.enabled) continue;
++        /* Patch 0081, tier-1 path: a unit the program does not sample keeps the white texture and the default
++         * sampler -- the same table as every other draw of that program (fewer tables to copy and set), and no
++         * upload, feedback copy or depth snapshot made for it. */
++        if (!((fp_reads >> u) & 1u)) { g_ld_t1_unread++; continue; }
+         texture_mask |= 1u << u;
+         smp_slots[u] = sampler_slot(&t, sampler_key(&t));
+         /* Pick WHICH surface at this offset to sample.
+@@ -11212,10 +11314,35 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+         }
+     }
+     if (!cache || !B->heaps) {
+-        ID3D12DescriptorHeap* heaps[] = {g.srv_heap, g.smp_heap};
+-        LDL->lpVtbl->SetDescriptorHeaps(LDL, 2, heaps);
++        ld_set_main_heaps(LDL);
+         B->heaps = 1; g_ld_api_set++; g_ld_api_by[1]++;
+     }
++    /* Patch 0081, tier-1 path: when this draw differs from the one before it only in units its program does not
++     * sample, it takes that draw's table (texture or sampler) as it is -- no table set. Otherwise the units it does
++     * not sample keep the white texture and the default sampler, so its table is the same as the other draws of its
++     * program. Textures only while no texture descriptor was written since, and only a guest texture or the white
++     * one in a unit taken over -- never a render target or depth view. */
++    if (fp_reads != 0xFFFFu) {
++        static struct { u32 valid, gen; u32 srv[SRV_TABLE_SIZE], smp[SMP_TABLE_SIZE]; } prev;
++        if (prev.valid) {
++            int srv_same = prev.gen == g_ld_srv_gen, smp_same = 1;
++            for (u32 u = 0; u < SRV_TABLE_SIZE; u++) {
++                if ((fp_reads >> u) & 1u) {
++                    srv_same &= slots[u] == prev.srv[u];
++                    smp_same &= smp_slots[u] == prev.smp[u];
++                } else {
++                    const u32 ps = prev.srv[u];
++                    srv_same &= ps == SRV_WHITE || (ps >= SRV_TEXTURE_BASE && ps < SRV_VTEX_BASE);
++                }
++            }
++            if (srv_same) memcpy(slots, prev.srv, sizeof(prev.srv));
++            if (smp_same) memcpy(smp_slots, prev.smp, sizeof(prev.smp));
++            g_ld_t1_tables_kept += (u64)srv_same + (u64)smp_same;
++        }
++        memcpy(prev.srv, slots, sizeof(prev.srv));
++        memcpy(prev.smp, smp_slots, sizeof(prev.smp));
++        prev.valid = 1; prev.gen = g_ld_srv_gen;
++    }
+     const D3D12_GPU_DESCRIPTOR_HANDLE table = srv_table_memo(slots);
+     const D3D12_GPU_DESCRIPTOR_HANDLE stbl = sampler_table(smp_slots);
+     D3D12_GPU_DESCRIPTOR_HANDLE vtex_table = {0};
+@@ -11751,8 +11878,7 @@ static void ld_slow_gpu_frame(void)
+     D3D12_GPU_DESCRIPTOR_HANDLE gpu = ld_heap_gpu(g.srv_heap, &g_hs_srv);
+     gpu.ptr += (u64)base * g.srv_step;
+     ld_bound_invalidate();   /* the dispatch records its own state */
+-    ID3D12DescriptorHeap* heaps[] = {g.srv_heap, g.smp_heap};
+-    LDL->lpVtbl->SetDescriptorHeaps(LDL, 2, heaps);
++    ld_set_main_heaps(LDL);
+     LDL->lpVtbl->SetPipelineState(LDL, g_ld_sg_pso);
+     LDL->lpVtbl->SetComputeRootSignature(LDL, g_ld_sg_rs);
+     LDL->lpVtbl->SetComputeRootDescriptorTable(LDL, 0, gpu);
+@@ -12493,6 +12619,7 @@ static void ld_present_copy(ID3D12Resource* bb, u32 bbi, ID3D12Resource* src, u3
+     ld_bound_invalidate();   /* patch 0062: the pass below records its own state */
+     LDL->lpVtbl->OMSetRenderTargets(LDL, 1, &rtv, FALSE, NULL);
+     LDL->lpVtbl->SetDescriptorHeaps(LDL, 1, &g_ldp.heap);
++    g_ld_heaps_main = 0;
+     LDL->lpVtbl->SetGraphicsRootSignature(LDL, g_ldp.rootsig);
+     LDL->lpVtbl->SetGraphicsRootDescriptorTable(LDL, 0, gpu);
+     {
+@@ -13711,7 +13838,9 @@ static void ld_present_body(u32 buffer_id, int display_synced)
+           done = 1;
+           if (getenv("RSX_FAST_SELFCHECK")) ld_gview_selfcheck(sd);
+           snprintf(g_ld_bb_shot_path, sizeof g_ld_bb_shot_path, "%s\\f%06u_backbuffer.ppm", sd, g_ld_frames);
+-          for (u32 i = 0; i < g.n_surfaces; i++) {
++          static int bb_only = -1;   /* LD_SURF_DUMP_BB_ONLY=1: the picture only (patch 0081) */
++          if (bb_only < 0) bb_only = getenv("LD_SURF_DUMP_BB_ONLY") ? 1 : 0;
++          for (u32 i = 0; i < g.n_surfaces && !bb_only; i++) {
+               char path[MAX_PATH * 2];
+               snprintf(path, sizeof(path), "%s\\f%06u_surf_%02u_%08X_%ux%u.ppm",
+                        sd, g_ld_frames, i, g.surfaces[i].offset,
+@@ -14021,6 +14150,10 @@ static void ld_present_body(u32 buffer_id, int display_synced)
+     { static unsigned long long packets_at_last_frame = 0;
+       g_ld_last_frame_draws = (u32)(g_ld_stats.packets_seen - packets_at_last_frame);
+       packets_at_last_frame = g_ld_stats.packets_seen; }
++    if (g_ld_fxc > 0) {   /* patch 0081 diagnostics (RSX_FX_COUNT): this present's effect draws */
++        lat_log('H', "%u %u %u", g_ld_frames + 1u, g_ld_fx_n, g_ld_fx64_n);
++        g_ld_fx_n = g_ld_fx64_n = 0;
++    }
+     g_ld_frames++;
+     ld_pf_frame_log(pf_present_begin);
+     ld_pso_lib_maybe_save(0);
+@@ -14060,6 +14193,14 @@ static void ld_present_body(u32 buffer_id, int display_synced)
+               l_by[k] = g_ld_api_by[k];
+           }
+           fprintf(stderr, "[xlat-stats] state calls by kind (rt/heaps/pso/rootsig/cbv0/cbv4/srv/smp/vtex/vp/sc/sref/vb/topo/ib): %s\n", by);
++          static u64 l_smpc, l_unread, l_hs2, l_hc2, l_kept2;   /* patch 0081 */
++          fprintf(stderr, "[xlat-stats] per frame: sampler tables copied %.1f, descriptor heaps set %.1f of %.1f, texture units enabled but not sampled %.1f, "
++                          "tables kept %.1f (tier-1 path %s; units sampled 0x%04X)\n", (double)(g_ld_smp_tables_copied - l_smpc) / f,
++                  (double)(g_ld_heap_sets - l_hs2) / f, (double)(g_ld_heap_calls - l_hc2) / f,
++                  (double)(g_ld_t1_unread - l_unread) / f, (double)(g_ld_t1_tables_kept - l_kept2) / f,
++                  ld_tier1_path() ? "on: not bound" : "off: bound", g_ld_t1_units_seen);
++          l_kept2 = g_ld_t1_tables_kept;
++          l_smpc = g_ld_smp_tables_copied; l_unread = g_ld_t1_unread; l_hs2 = g_ld_heap_sets; l_hc2 = g_ld_heap_calls;
+       } }
+     if (g_gt.on > 0 && (g_ld_frames % 600u) == 0) {
+         static int gl = -1;

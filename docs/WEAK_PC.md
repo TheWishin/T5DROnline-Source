@@ -89,6 +89,8 @@ waited for the walk now counts as translation, not "vblank thread late".
 | **Display not 60 Hz** (50 Hz TV, 75/144 Hz with VSync) | no | `[pacing] display 50 Hz: slower than the game's 59.94 Hz ...` / `display 144 Hz: vsync on` | simulated 50, 75, 144 Hz: 59.94 fps each; 75 Hz shows frames unevenly (present p95 20.9 ms) but the game keeps its speed | 120 Hz or 60 Hz for the smoothest picture; VRR |
 | **Overlay fps counter on a 144 Hz screen** | a reading, not a cause | -- | -- | the game's own `[fps]` line / the launcher's fps is the game's speed |
 | **iGPU at high Internal resolution** | yes at 1440p/4K | `[slow-frames]` "GPU N", GPU wait ms; `[gpu] adapter: ... integrated`; since 0063 "GPU busy N %" and "GPU-bound" / "integrated graphics busy" at the end of the line. A stronger APU (780M) shows a long **game** part instead: the busy GPU slows the CPU work through the shared memory and power (RENDER_PERF.md "4K on integrated graphics") | this PC's 2-CU Radeon: Native 2.5 ms GPU, 60 fps; 1080p 6.3 ms, 60 fps; 4K 24-32 ms, **28-35 fps**; Auto (1080p) 59.7 fps | Internal resolution 1080p or Auto (at most 1080p on integrated graphics), Native/Lower on weak ones |
+| **Old graphics card** (resource binding tier 1: the GT 730 with the Fermi chip, GT 4xx/5xx, Haswell graphics) | **yes** -- a player's i3-3240 + GT 730 4 GB: 20 fps | `[gpu] adapter: ... resource binding tier 1`; GPU busy 32-37 ms a frame that hardly follows the resolution (0.5x vs 2x: +30 % fps for 16x fewer pixels); before 1.1.5 also a "GPU wait" of ~20 ms inside the translation; since 1.1.5 `GPU-bound: the graphics card needs X ms a frame at <step> -- the card itself is the limit` and `[gpu-pass]` lines (per pass, and what the GPU reads from system memory) | no such card here; a stand-in by `RSX_TEST_SLOW_GPU` (RENDER_PERF.md "2-core mode and slow graphics cards") | 1.1.5: two frames in flight on a dedicated card (the GPU no longer waits for the game and the game no longer for the GPU); beyond that a newer card -- a lower resolution saves little |
+| **2 cores / 4 threads** (i3-3240, i5-4210M) | at a slow core, yes | `[sched] processors: 4 logical, 2 cores ..., 2-core mode`; the game thread's processor time 1.8-2.4x the 4-core PC's at the same clock | stand-in (2 cores here + `tools/slow_core.py`): the game thread on a core of its own was 21-33 % slower (everything else on one core), fewer workers 12-18 % slower | 1.1.5: the sound core no longer prefers the game thread's processor; `PS3_TWO_CORE_OWN=1` to try the own core on a real 2-core PC |
 | **D3D12 driver overhead per draw** | no | `fifo_cpu_us` / translation median | 830 draws a frame; D3D12 recording 0.57-0.69 ms + submit 0.05-0.09 + present 0.12-0.18 ms, the same on the RTX 3090 and the Radeon | see [D3D12 or Vulkan](#d3d12-or-vulkan) |
 | **PSO compiles** | no (one-time hitches) | `[pso-prewarm] N pipeline(s) created ahead`; `RSX_HITCH_LOG=1` lists misses | first session of a build: 95 misses, 42 compiles, 1.1 s in total, worst frame 0.7 s; second session: 0 compiles | the cache warms itself; only the first fight after a build hitches |
 | **Online: the other player's PC** | **yes** | `[netplay] speed: X fps, this PC Y fps without the waits for the peer` (now in system.txt) | rollback pair, one slow PC: both games at that PC's speed (32 fps before 0059, 46 after) | both games run at the slower PC's speed; the lobby keeps <40 fps PCs out of ranked |
@@ -291,6 +293,11 @@ Paste this to a player who reports 40-50 fps:
 >    handhelds) use **Auto** (the default there since 1.1.4), **1080p** or
 >    lower -- never more than your screen. 1440p and 4K need a real graphics
 >    card: a busy built-in GPU also slows the processor.
+>    **An old or weak graphics card** (a GT 730 and the like, 1.1.5 or
+>    newer): Settings -> Graphics -> **Lowest (old graphics cards)** --
+>    the 3D scene at half size, no stage blur or shadows (the effects, hit
+>    sparks too, stay on). It also leaves the processor less to translate.
+>    **Default** puts it back.
 > 5. **Online:** both games always run at the speed of the slower PC. If
 >    you only see 40-50 fps against one opponent, the slow PC may be theirs.
 > 6. **Do not start the game in "efficiency mode"** or at low priority
@@ -314,6 +321,16 @@ For us, in that report (`system.txt`, "How the game ran"):
   one line.
 - `processor clock limit A of B MHz (held back ...)`: heat or the power
   plan.
+- 1.1.5: `GPU-bound: the graphics card needs X ms a frame at <step> -- the
+  card itself is the limit (an old graphics card: resource binding tier 1)`:
+  the card, not the resolution (Native or below already); the `[gpu-pass]`
+  lines of such a log say which passes take the time -- please keep them for
+  us. Since patch 0081 they start with the binding work per frame (`per frame:
+  binding 830 draws, tables set ..., descriptor heaps ...`) and the log says
+  `[gpu] tier-1 binding path: on` (RENDER_PERF.md "Online pictures and old
+  graphics cards"). `CPU-bound: the game needs X ms ... the render translation Y`: the
+  processor; `CPU and GPU in turn`: one frame in flight
+  (`RSX_FRAMES_IN_FLIGHT=1`, or integrated graphics) with a slow GPU.
 - `processors at X GHz on average (Y % of their Z)` well under 100 % on AC
   power with late frames: the power mode (Balanced holds an APU back), or the
   built-in GPU taking the shared power budget -- Best performance and a lower

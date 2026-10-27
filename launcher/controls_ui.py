@@ -37,6 +37,7 @@ POLL_HZ = 60
 SCAN_S = 1.0
 IDLE_S = 0.05
 SETTLE_S = 0.08            # presses this close together are one press of several buttons
+RETURN_S = 0.3             # an axis end coming on this soon after its other end went off is the axis going back
 PAD_TIMEOUT_S = 8.0        # a capture started with the controller gives up (skips) after this
 REPEAT_DELAY_S, REPEAT_S = 0.45, 0.12
 COLORS = {"ok": "#1a7f37", "muted": "#57606a", "live": "#dafbe1", "warn": "#9a6700", "error": "#cf222e"}
@@ -58,8 +59,15 @@ class DevicePoller:
 
     After a poll: `devices` (every controller found, as padnav.Device), `held[key]` (the sources held now), and
     `edges` -- one Edge for every source that went down since the previous poll, in order. Sources that are
-    held when the window comes forward do not make an edge. An axis that rests at one end (a trigger at -32768)
-    is not a press until it has been seen let go."""
+    held when the window comes forward do not make an edge.
+
+    The end an axis rests at is never a press (1.1.5). A trigger read as a full axis rests at one end (RX- /
+    RY- of many DirectInput pads; PlayStation pads no longer report it at all, padnav.half_axis_sources): an
+    axis end held when the controller is first seen stays its rest for as long as the controller is, and an
+    axis end that comes on within RETURN_S of the other end of the same axis going off is that axis going
+    back to rest (a trigger let go), not a press, until it goes off again. Up to 1.1.4 a resting end counted
+    as a press once the trigger had been pulled and let go, so a capture took "RX-" and the game then held
+    that button all the time."""
 
     def __init__(self, sources, foreground=None, clock=time.monotonic, hz=POLL_HZ, scan_s=SCAN_S, controls=None):
         """controls(): the controls.ini being edited (padmap.Controls), handed to the sources before each scan."""
@@ -78,7 +86,10 @@ class DevicePoller:
         self._active = False
         self._next_scan = 0.0
         self._prev = {}              # key -> frozenset held at the previous poll (rest axes left out)
-        self._rest = {}              # key -> axis sources that rest held
+        self._rest = {}              # key -> axis sources held when the controller was first seen (for good)
+        self._raw = {}               # key -> frozenset the source reported at the previous poll
+        self._off = {}               # key -> {axis source: when it last went off}
+        self._back = {}              # key -> axis sources back at rest (left out until they go off)
         self._thread = None
         self._stop = threading.Event()
 
@@ -123,9 +134,20 @@ class DevicePoller:
             first = d.key not in self._prev
             if first:
                 self._rest[d.key] = {x for x in cur if is_axis_source(x)}
+                self._off[d.key], self._back[d.key] = {}, set()
             else:
-                self._rest[d.key] &= cur
-            eff = cur - self._rest[d.key]
+                was, off, back = self._raw[d.key], self._off[d.key], self._back[d.key]
+                for x in was - cur:
+                    if is_axis_source(x) and x in self._prev[d.key]:     # a pressed end let go (not a rest)
+                        off[x] = now
+                back &= cur
+                for x in cur - was:
+                    if is_axis_source(x):
+                        other = x[:-1] + ("-" if x[-1] == "+" else "+")
+                        if other in off and now - off[other] <= RETURN_S:
+                            back.add(x)
+            self._raw[d.key] = cur
+            eff = cur - self._rest[d.key] - self._back[d.key]
             if not first:
                 for src in sorted(eff - self._prev[d.key]):
                     self.edges.put(Edge(now, d.key, src))
@@ -134,7 +156,8 @@ class DevicePoller:
         for k in list(self._prev):
             if k not in keys:
                 del self._prev[k]
-                self._rest.pop(k, None)
+                for m in (self._rest, self._raw, self._off, self._back):
+                    m.pop(k, None)
         self.devices = tuple(found)
         self.held = held
         self.polls += 1
@@ -143,8 +166,8 @@ class DevicePoller:
     def _forget(self):
         """The window left the front: no button is known to be up any more, and no device stays open."""
         self._active = False
-        self._prev.clear()
-        self._rest.clear()
+        for m in (self._prev, self._rest, self._raw, self._off, self._back):
+            m.clear()
         self.held = {}
         for s in self.sources:
             try:
@@ -197,17 +220,29 @@ class DevicePoller:
 # ---------------------------------------------------------------------- capture and navigation
 
 class Capture:
-    """Waits for one press on one controller. `update(now, edges)` -> None (keep waiting), ("ok", source),
-    ("multi", [sources]) when several went down together, or ("timeout", None)."""
+    """Waits for one press on one controller. `update(now, edges, held)` -> None (keep waiting), ("ok", source),
+    ("multi", [sources]) when several went down together, or ("timeout", None).
 
-    def __init__(self, started, settle_s=SETTLE_S, timeout_s=None):
+    held: what the controller holds when the capture starts, and at each update. If it held something, the
+    capture starts only once the controller has been seen with nothing held: the button that set the previous
+    one (a trigger still travelling: its axis end can come on after the settle time) or the Cross that started
+    the capture is never taken for this one.
+    A button that goes down together with axis ends is that button: a trigger's digital L2 / R2 with its
+    travel (B7 + RX+), not "several buttons"."""
+
+    def __init__(self, started, settle_s=SETTLE_S, timeout_s=None, held=None):
         self.started = started
         self.settle_s = settle_s
         self.timeout_s = timeout_s
         self.first = None
         self.found = []
+        self.armed = not held
 
-    def update(self, now, edges):
+    def update(self, now, edges, held=None):
+        if not self.armed:
+            if held is not None and not held:
+                self.armed = True
+            edges = []                          # went down before everything was let go: not for this one
         for e in edges:
             if self.first is None:
                 self.first = e.t
@@ -216,7 +251,12 @@ class Capture:
         if self.first is not None:
             if now - self.first < self.settle_s:
                 return None
-            return ("ok", self.found[0]) if len(self.found) == 1 else ("multi", list(self.found))
+            if len(self.found) == 1:
+                return ("ok", self.found[0])
+            buttons = [s for s in self.found if not is_axis_source(s)]
+            if len(buttons) == 1:
+                return ("ok", buttons[0])
+            return ("multi", list(self.found))
         if self.timeout_s is not None and now - self.started >= self.timeout_s:
             return ("timeout", None)
         return None
@@ -309,6 +349,7 @@ class ControlsDialog:
             env = {}
         self.path = path or ce.controls_path(getattr(settings, "out_dir", os.getcwd()), env)
         self.editor = ce.ControlsEditor.load(self.path)
+        self.editor.drop_ps_rest()      # (1.1.4's captures of a let-go PS trigger; noted below)
         if sources is None:
             sources = padnav.default_sources(keyboard=True)
         self.no_pads = not sources
@@ -334,6 +375,8 @@ class ControlsDialog:
         self._build()
         self.top.protocol("WM_DELETE_WINDOW", self.close)
         self.pump()
+        if self.editor.notes:
+            self.status(" ".join(self.editor.notes), WARN)
         if thread:
             self.poller.start()
             self._after = self.top.after(33, self._tick)
@@ -610,7 +653,7 @@ class ControlsDialog:
         mine = [e for e in edges if e.key == self.chosen]
         held = self.poller.held
         if self.capture is not None:
-            res = self.capture.update(now, mine)
+            res = self.capture.update(now, mine, held.get(self.chosen, frozenset()))
             if res:
                 self._capture_result(res)
         else:
@@ -945,7 +988,8 @@ class ControlsDialog:
             self._end_capture()
             return
         self.cap_key = self.queue.pop(0)
-        self.capture = Capture(self.poller.clock(), timeout_s=PAD_TIMEOUT_S if self.pad_started else None)
+        self.capture = Capture(self.poller.clock(), timeout_s=PAD_TIMEOUT_S if self.pad_started else None,
+                               held=self.poller.held.get(self.chosen))
         n = self.cap_total - len(self.queue)
         self.prompt_var.set(t("Press the button for {button}...", button=self.slot_label(self.cap_key)))
         hint = t("Press only that one button on the controller.")
@@ -994,7 +1038,8 @@ class ControlsDialog:
         elif kind == "multi":
             self.status(t("That was several buttons at once ({sources}). Press one button only.",
                           sources=" + ".join(payload)), WARN)
-            self.capture = Capture(self.poller.clock(), timeout_s=PAD_TIMEOUT_S if self.pad_started else None)
+            self.capture = Capture(self.poller.clock(), timeout_s=PAD_TIMEOUT_S if self.pad_started else None,
+                                   held=self.poller.held.get(self.chosen))
         else:
             self.status(t("{button}: skipped.", button=self.slot_label(key)))
             self._next_capture()

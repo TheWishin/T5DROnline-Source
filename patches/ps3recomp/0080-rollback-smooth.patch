@@ -1,0 +1,72 @@
+diff --git a/runtime/ppu/tests/boot_main.cpp b/runtime/ppu/tests/boot_main.cpp
+index d87e89f..577e675 100644
+--- a/runtime/ppu/tests/boot_main.cpp
++++ b/runtime/ppu/tests/boot_main.cpp
+@@ -35,6 +35,7 @@
+ #include "../../platform/host_sched.h"        /* thread roles: priority, CPU set, name */
+ #include "../../platform/lat_log.h"           /* PS3_LATENCY_LOG V events (patch 0034) */
+ #include <algorithm>                          /* std::sort: display lock (patch 0034) */
++#include <atomic>                             /* cellGcm_skip_ticks (patch 0080) */
+ #include <math.h>
+ /* The lifted ppu_recomp.h already defines `struct ppu_context` (identical to
+  * runtime/ppu/ppu_context.h by design -- "keep the two in sync"). A syscall
+@@ -782,6 +783,13 @@ extern "C" void cellGcm_note_presented(void);
+  *     like a PS3 on that TV. Other displays (30/50 Hz, 120/144 Hz, VRR with
+  *     RSX_PRESENT_MODE=tearing) keep the 59.94 Hz clock of patch 0031.
+  *   PS3_DISPLAY_LEAD_MS=<ms> fixes the lead (tests). */
++/* Patch 0080: cellGcm_display_margin_min_ms(ms) -- at least this margin while a
++ * caller needs more room than PS3_DISPLAY_MARGIN_MS: the frames of a rollback
++ * session cost more when they re-simulate, and the 99th percentile + 1.5 ms
++ * left a few late (a picture shown twice) per minute (T5DR's
++ * src/rollback/rb_net.cpp). Negative: back to PS3_DISPLAY_MARGIN_MS alone. */
++static std::atomic<int> g_margin_min_us{ -1 };
++extern "C" void cellGcm_display_margin_min_ms(double ms) { g_margin_min_us.store(ms < 0 ? -1 : (int)(ms * 1000.0 + 0.5)); }
+ struct DisplayLock {
+     int cfg = -1, on = 0;
+     double qpf = 1, margin = 0, lead = 0, lead_fixed = 0;
+@@ -903,6 +911,8 @@ struct DisplayLock {
+         frames++;
+         costs[ncost++ % 240] = cost;
+         if (lead_fixed > 0) { lead = lead_fixed; return; }
++        const int min_us = g_margin_min_us.load();   /* patch 0080 */
++        const double margin = min_us >= 0 && min_us * qpf / 1e6 > this->margin ? min_us * qpf / 1e6 : this->margin;
+         const double maxl = (double)per - 0.2 * qpf / 1000.0, minl = 4.0 * qpf / 1000.0;
+         if (cost > lead_at_release) {
+             misses++;
+@@ -938,6 +948,21 @@ struct DisplayLock {
+ };
+ 
+ static volatile DWORD g_ticker_tid = 0;   /* PS3_HOST_PROF_WHO=ticker */
++
++/* ---- Patch 0080: cellGcm_skip_ticks(n) -- give up exactly n frames.
++ *
++ * The next n vblank ticks that would complete a flip are skipped: no vblank,
++ * no flip completion, no handlers. The frame in flight stays on the screen one
++ * refresh longer (it was presented when translated) and the game's next frame
++ * starts one tick later; the ticks after it keep the display's grid. A game
++ * that has to slow down by a frame (rollback time sync, T5DR's
++ * src/rollback/rb_net.cpp) cannot do it any other way: holding its frame start
++ * past a tick makes PS3_LATE_FLIP (patch 0059) hold the next tick for a frame
++ * that is late on purpose, and the frame was given up twice (two ticks) or, a
++ * tick that came during the wait having been counted, not at all. Timing only:
++ * the game runs the same frames. */
++static std::atomic<int> g_skip_ticks{ 0 };
++extern "C" void cellGcm_skip_ticks(int n) { if (n > 0) g_skip_ticks.fetch_add(n); }
+ static DWORD WINAPI vblank_ticker(LPVOID)
+ {
+     g_ticker_tid = GetCurrentThreadId();
+@@ -1086,6 +1111,14 @@ static DWORD WINAPI vblank_ticker(LPVOID)
+         static int late_present = -1;
+         if (late_present < 0) { const char* e = getenv("PS3_PRESENT_LATE"); late_present = !(e && *e == '0'); }
+         while (hold_until <= 0 && now >= next_tick && fired < 240) {
++            /* patch 0080: a tick that would complete a flip, given up on request */
++            if (g_skip_ticks.load() > 0 && cellGcm_flip_held()) {
++                g_skip_ticks.fetch_sub(1);
++                lat_log('Y', "%lld", (long long)next_tick);   /* a vblank tick skipped (as scheduled) */
++                next_tick += vb_period;
++                lock.adjust(&next_tick, &vb_period, vb_nominal);
++                continue;
++            }
+             g_rsx_next_tick_qpc = (long long)(next_tick + vb_period);   /* presents in here: the tick after this one */
+             cellGcmTickVBlank();
+             s_slow.on_tick();

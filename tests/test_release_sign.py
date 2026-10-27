@@ -123,6 +123,19 @@ class ReleaseSign(unittest.TestCase):
             with self.assertRaises(release_sign.Fail):                           # secret, but no key shipped
                 release_sign.ci("1.1.2", self.dist)
 
+    def test_ci_with_the_shipped_key(self):
+        """launcher/updater.py ships the owner's public key: a release run without the secret, or with a
+        secret that is not that key, stops before anything is published."""
+        self.assertTrue(release_sign.updater_keys())
+        with mock.patch.dict(os.environ, {release_sign.KEY_ENV: ""}):
+            code, msg = release_sign.ci("1.1.2", self.dist)
+        self.assertEqual(code, 1)
+        self.assertIn(release_sign.KEY_ENV, msg)
+        with mock.patch.dict(os.environ, {release_sign.KEY_ENV: self.seed.hex()}):
+            with self.assertRaisesRegex(release_sign.Fail, "not in RELEASE_PUBLIC_KEYS"):
+                release_sign.ci("1.1.2", self.dist)
+        self.assertFalse(os.path.exists(os.path.join(self.dist, "SHA256SUMS.sig")))
+
     def test_bad_private_keys(self):
         for bad in ("", "xyz", "ab" * 31, "ab" * 33):
             with self.assertRaises(release_sign.Fail):

@@ -31,6 +31,9 @@
 #include <string.h>
 
 #include "ppu_recomp.h"     /* vm_base */
+#if !defined(_WIN32)
+#  include "msvc_compat.h"     /* _byteswap_* off Windows (as platform/t5_win.h) */
+#endif
 #include "training_logic.h"
 
 extern "C" int t5_netplay_enabled(void);       /* src/netplay/t5_hooks.cpp */

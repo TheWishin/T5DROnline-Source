@@ -1361,7 +1361,8 @@ class App(tk.Tk):
                 self._run_shown = True
             elif self._run_shown:
                 self._run_shown = False
-                why = core.explain_exit(self.game.proc.returncode, self.game.last_lines, self.game.dialogs)
+                why = core.explain_exit(self.game.proc.returncode, self.game.last_lines,
+                                        getattr(self.game, "dialogs", ()))
                 # patch 0063: the game log's [slow-frames] verdicts -- the graphics were the limit
                 speed = self._speed_notes()
                 core.log(f"game ended: exit code {self.game.proc.returncode}" + (", explained to the player"
@@ -1378,10 +1379,11 @@ class App(tk.Tk):
         after which the game stops ("The installed game data is corrupted. Ending game.") also brings the launcher
         forward with a message box."""
         g = self.game
-        if g.dialog_count <= self._dialogs_seen or not g.dialogs:
+        count, shown = getattr(g, "dialog_count", 0), getattr(g, "dialogs", ())    # (tests' stand-in games: none)
+        if count <= self._dialogs_seen or not shown:
             return
-        self._dialogs_seen = g.dialog_count
-        text = g.dialogs[-1]
+        self._dialogs_seen = count
+        text = shown[-1]
         fatal, _advice = core.dialog_info(text)
         self._dialog_text = core.dialog_message(text)
         core.log("game dialog: " + " | ".join(text.splitlines()) + (" (the game stops after it)" if fatal else ""))

@@ -148,7 +148,7 @@ class LobbyClient(TourCalls, SpectateClientMixin):
         code, hidden rooms (docs/ONLINE.md "Rooms"); False behaves like a 1.1.2 client (the server then lists no
         locked room for it).
         match_rules: this player's game can play training rooms (endless health) and the health handicap
-        (docs/ONLINE.md "Training rooms and the health handicap"; caps "training" and "handicap"). Off by default:
+        (docs/ONLINE.md "Training rooms and the health handicap"; the cap "match_rules"). Off by default:
         the launcher turns it on when its game build has them (match_driver.game_supports_rules)."""
         self.host, self.port = proto.parse_hostport(server)
         self.build = build
@@ -315,9 +315,10 @@ class LobbyClient(TourCalls, SpectateClientMixin):
                                                 + (["tournaments"] if self.tournaments else [])
                                                 + (["spectate"] if self.spectate else [])
                                                 + (["private_rooms"] if self.private_rooms else [])
-                                                + (["training", "handicap"] if self.match_rules else [])
                                                 + (["game_fallback"] if self._can_fallback() else [])
-                                                + ["boss_chars", "lag_wait"]})
+                                                + ["boss_chars", "lag_wait"]
+                                                # (last: a server reads a client's first 16 caps)
+                                                + (["match_rules"] if self.match_rules else [])})
         except LobbyError:
             # Refused (version) or no answer (e.g. TLS on one side only): leave nothing half open.
             closing, self._closing = self._closing, True
@@ -1360,7 +1361,7 @@ class LobbyClient(TourCalls, SpectateClientMixin):
 
     def _rules_ok(self, cap):
         w = self.welcome or {}
-        return bool(self.match_rules and cap in (w.get("features") or ()) and cap in (w.get("caps") or ()))
+        return bool(self.match_rules and cap in (w.get("features") or ()) and "match_rules" in (w.get("caps") or ()))
 
     def training_ok(self):
         """Can this player create and join training rooms (the server has them, this client's game can play them)?"""

@@ -53,6 +53,14 @@ class TrainingRoomTest(Base):
             old._call({"t": "room_create", "name": "r", "training": True})
         self.assertIn("training rooms need a newer launcher", e.exception.msg)
 
+    def test_the_cap_fits_in_a_full_hello(self):
+        """A launcher announces every cap it has; the server reads only the first 16 -- match_rules must be among
+        them (one cap for both features, sent last)."""
+        a = self.c("Alice", blind_ready=True, ingame_pick=True, sets=True, tournaments=True, spectate=True)
+        self.assertTrue(a.training_ok() and a.handicap_ok())
+        caps = self.s.call(lambda: sorted(self.srv().by_name["alice"].conn.caps))
+        self.assertIn("match_rules", caps)
+
     def test_training_room_match(self):
         a, b = self.c("Alice", auto_ready=True), self.c("Bob", auto_ready=True)
         room = a.create_room("Practice", training=True)

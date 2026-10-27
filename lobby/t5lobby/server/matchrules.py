@@ -9,12 +9,12 @@ room (training) and the players' own settings (life), so match_found, match_star
   lobby). Nothing is rated, recorded or blamed: whatever ends the fight (a player holding SELECT to give up, a
   100 % combo, a player leaving, a lost connection) finishes the match as `training` (no winner, no history, no
   strike). One round: the fight ends at its first KO, and the players' launchers go back to the select screen with
-  a rematch. Only launchers that announce the `training` cap (their game can run it) may create or join one, or be
+  a rematch. Only launchers that announce the `match_rules` cap (their game can run it) may create or join one, or be
   invited into one.
 * Health handicap: each player picks their own health in percent (`set_life`, 30-100 in steps of 10) for casual
   matches -- quick matches, challenges, invites, rooms. Ranked and tournament matches are always 100 %. Both
   players see both values before and during the match (match_found, match_start, the lobby list's `life`).
-  Applied only when both launchers have the `handicap` cap (both games must write it).
+  Applied only when both launchers have the `match_rules` cap (both games must write it).
 
 Methods of LobbyServer (lobby.py) that keep this feature apart from the rest of the server code (the second wave's
 agents B and E change the same files).
@@ -22,6 +22,7 @@ agents B and E change the same files).
 from .. import proto
 from ..proto import LobbyError
 
+CAP = "match_rules"                          # the client cap of both (a server reads only a client's first 16 caps)
 LIFE_CHOICES = tuple(range(30, 101, 10))     # what a player may pick (percent)
 TRAINING_ROUNDS = 1                          # a training fight ends at its first KO (a give-up)
 
@@ -39,7 +40,7 @@ class MatchRulesMixin:
     # ------------------------------------------------------------------ the health handicap
     async def h_set_life(self, conn, msg):
         """The health this player fights with in casual matches (percent; 100 = no handicap)."""
-        if "handicap" not in conn.caps:
+        if CAP not in conn.caps:
             raise LobbyError(proto.E_NOT_ALLOWED, "the health handicap needs a newer launcher; update it")
         life = clean_life(msg.get("life"))
         if life is None:
@@ -56,7 +57,7 @@ class MatchRulesMixin:
         ranked and tournament matches, or a launcher (game) that cannot play it."""
         if ranked or origin == "tournament":
             return None
-        if not all("handicap" in getattr(q.conn, "caps", ()) for q in (host, join)):
+        if not all(CAP in getattr(q.conn, "caps", ()) for q in (host, join)):
             return None
         life = [getattr(host, "life", 100), getattr(join, "life", 100)]
         return life if life != [100, 100] else None
@@ -120,7 +121,7 @@ class MatchRulesMixin:
         if caps is None:
             conn = getattr(p_or_conn, "conn", None)
             caps = getattr(conn, "caps", ()) if conn is not None else ()
-        return "training" in caps
+        return CAP in caps
 
     def _room_training_opt(self, conn, msg, ranked):
         """room_create's `training`: True only from a launcher that can play it; never ranked."""

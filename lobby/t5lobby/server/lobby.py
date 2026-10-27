@@ -66,7 +66,7 @@ SERVER_NAME = "t5lobby/0.2"
 # optional protocol features a client may announce in hello
 CAPS = frozenset(("delta", "blind_ready", "notices", "sets", "ingame_pick", "nat2", "relays", "friends", "old_stages",
                   "tournaments", "spectate", "game_fallback", "private_rooms", "boss_chars", "lag_wait",
-                  "training", "handicap"))
+                  "match_rules"))     # (a server reads 16 caps: one cap for training rooms and the handicap)
 QUEUE_MODES = ("quick", "ranked")
 # What this server supports beyond protocol 1's base (the client checks before using them).
 FEATURES = ["ranks", "sessions", "recovery", "passwd", "profile", "history", "chars", "integrity", "rematch",

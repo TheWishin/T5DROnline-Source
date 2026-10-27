@@ -543,7 +543,7 @@ other rules would show as a desync at once.
 
 **Older games are kept out** by the build id: `tools/build_game.py` CODE_VERSION 7 changes the code id, so a
 1.1.5 game is never paired with an older one (rooms included); the lobby offers training rooms and the
-handicap only to launchers whose game has them (caps `training`, `handicap`; the game binary's
+handicap only to launchers whose game has them (cap `match_rules`; the game binary's
 `T5_DF_RULES`).
 
 Tests: `tests/test_match_rules.py` (`tests/c/match_rules_test.cpp`: the rule against a model of a fight --

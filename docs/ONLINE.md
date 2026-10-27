@@ -541,15 +541,16 @@ result has no `reason`), which is also how the two pick other fighters. **Leave 
 training room, during its fight too (elsewhere only between matches): the match ends without a result
 (`reason` "left") and both launchers end their games' session (`idle`); closing the game is a quit
 (`reason` "quit") with no loss either. A training room can be private or hidden like any room; it is never ranked.
-`room_create {training: true}` needs the `training` cap; the room's list entry and view say
+`room_create {training: true}` needs the `match_rules` cap (one cap for both features: a server reads a
+client's first 16 caps; its FEATURES say `training` and `handicap`); the room's list entry and view say
 `"training": true`; joining it or being invited into it needs the cap too ("training rooms need a newer
 launcher; update it"). The match: `match_found {training: true}`, `match_start.fight {training: true,
 rounds: 1}`; the launchers put `train=1` on the fight line. A training match is never saved
 (`_save`), and `_finish` turns any status into `training` with no winner and no blame.
 
 **Health handicap.** Online tab -> **My health (casual)**: 100 % down to 30 % in steps of 10, remembered in
-online.json (`life`) and sent after every login (`set_life {life}`, the `handicap` cap; 30-100 in steps of
-10, else "life is 30 to 100 in steps of 10"). It applies to every casual match -- quick matches, challenges,
+online.json (`life`) and sent after every login (`set_life {life}`; 30-100 in steps of
+10, else "life is 30 to 100 in steps of 10"; the same `match_rules` cap). It applies to every casual match -- quick matches, challenges,
 invites, rooms (training rooms too) -- and never to ranked or tournament matches, nor against a launcher
 without the cap (both games must play it). The server fixes it per match at create_match and shows it to
 both players: the lobby list's player entry has `life` when it is not 100, `match_found` has `life {you,

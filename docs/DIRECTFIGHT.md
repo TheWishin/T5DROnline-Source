@@ -1281,9 +1281,71 @@ the game says so itself, right after `costumes written`: `costumes: P2 has the
 same model (0x25) as in match 1 of this game but another block (..., was ...):
 without a visit to the title since, the game keeps the fighter it loaded and
 shows that match's look` (a `to the title for a fresh select screen` line
-between the two matches means the game loaded the fighter again). Still open
-for 1.1.5: no player log with white costumes has arrived; with one, this line
-(or its absence) tells whether the reuse above is the cause.
+between the two matches means the game loaded the fighter again).
+
+**1.1.5 investigation (costumes-online-115): not reproduced online; what a
+player's log now says.** Online pairs on this PC with the integration-115 build
+(saves: host `col_sysdata` -- Heihachi, Kazuya and Lili with four parts and three
+colours on their second costume --, joiner `B_sysdata`), pictures in the fight
+(`T5_DF_SHOT=++1100`) on both PCs:
+
+| run | flow | matches | costumes | sync |
+|---|---|---|---|---|
+| pa_rb | rollback, in-game pick, each pick resting 6 s on the cell (`pick_flow_test`) | Lili (custom) vs Kazuya (default); rematch with the models on the other sides (Kazuya custom vs Lili custom); Heihachi mirror; a new session Kazuya vs Heihachi, both custom | as written on both PCs | 4/4, 0 mismatching |
+| pc_rb120 | rollback through the UDP proxy, 120 ms, jitter 8 ms, 2 % loss, lobby-picked lines (the default Cross = the second costume), `--mash` | the same four pairings, process mode | as written on both PCs (4,695 and 4,768 frames re-simulated) | 4/4, 0 mismatching |
+| pb_ls | lockstep, in-game pick as pa_rb | as pa_rb | as written on both PCs | 4/4, 0 mismatching |
+| pd_rb | rollback, in-game pick, a ranked-set lock (games 2 and 3 skip the select screen) and the health handicap 60 / 100 % (`T5_DF_RULES`) | Kazuya (custom) vs Lili (custom) three times, then a new session Lili (custom) vs Kazuya (default) | as written on both PCs | 4/4, 0 mismatching |
+
+Offline the reuse above was found again and located (`two_fights.py`, memory
+dumps `T5_DF_DUMP=++2,++300`: a Kazuya with the colours-only block, the same
+Kazuya with the zero block, and the reuse case). The colours are baked into the
+fighter's textures in main memory during the loading (here 65 KB of A8R8G8B8
+pixels at 0x45C21615: 1D8E8D85 white, 1D3C000A dark red with the colours); in
+the reuse case those bytes stay those of the earlier fight, byte for byte, while
+the game's own copies of the new block (0x104259D4.. for P2, the costume
+record 0x106257B5) do take the new block. The fight loader's record of what it
+has loaded, 0x104257C0 {u32 1, u16 item character[2], u16 item character[2],
+s32 -2, s32 -2, u16 model[2]}, is set by the first loading and not cleared
+between fights (nor by the boot-state copy, which covers 0x1008E000..0x100A5000
+only); it is not what decides the reuse either: clearing its model words, its
+item characters or its first word at FIGHT START (a test switch, not kept)
+still showed the earlier fight's look. Models moving to the other side between two fights (Lili P1 then P2,
+Kazuya P2 then P1) are built again: the reuse is per side.
+
+So online the reuse cannot happen in the flows that exist: within a session each
+side keeps its player and that player's table, so the same model on a side
+always brings the same block; a new session (another opponent, a room's Ready,
+swapped sides -- a new session too, lobby.py) goes through the title first; a
+spectator's game is a process of its own per stream.
+
+**Reading a player's log** (each line is in both PCs' logs, the same on both):
+
+1. `costumes: this player's table N bytes (...)`: `no save given` (the launcher
+   sent `T5_COSTUME_SAVE=0`), `the save cannot be read` (no offline save where
+   the launcher looks: <game folder>/gamedata/dev_hdd0/home/00000001/savedata/
+   NPUB30009-SYSNET/SYS-DATA), `0 character(s) customized` (nothing worn in
+   that save), or the item characters customized.
+2. `costumes: the opponent's table N bytes (...)` (1.1.5): the same for what the
+   opponent sent, once per table.
+3. `costume tables: ...`: `not read` means every customized block is refused
+   (default costumes for both, on both PCs).
+4. `costumes written: P1 item char C (...): <why>`: `custom`, `nothing
+   customized` (that player has no block for this character), or the check's
+   reason the block was refused.
+5. `costumes worn: P1 costume K (model 0xNN): parts H,F,U,D colours 1,2,3`
+   (1.1.5): what the fighter wears from the block, `-` = none. `nothing worn,
+   customized: costume 2` = the block is used but the costume the confirm button
+   gave (or a mirror's other costume) is not the customized one: the player sees
+   that costume's default look, which is white for many second costumes.
+6. `costumes: P2 has the same model ... another block`: the reuse above (only
+   without a title visit since that side's last fight).
+7. `the VS custom data changed during the loading`: something overwrote the
+   blocks after FIGHT START.
+
+When all of these say the fighter wears its customization and the picture is
+still white, the game built the look (the textures in memory) and the cause is
+on the drawing side: then the graphics card and settings named in the same log
+are the next thing to look at.
 
 **Spectators** (docs/SPECTATE.md "Custom costumes in the stream"): the live stream's MATCH records are the
 replay's matches with the blocks, so a spectator's game writes them at its FIGHT START like a replay (`custom

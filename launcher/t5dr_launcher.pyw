@@ -190,6 +190,9 @@ class App(tk.Tk):
         if not offscreen:
             core.log(f"launcher {self.info.get('version', '?')} started, Python {sys.version.split()[0]}, "
                      f"output {self.settings.out_dir}")
+            wine = core.run_game.under_wine()
+            if wine:          # (Linux / Steam Deck: the game gets two defaults there, tools/run_game.py WINE_ENV)
+                core.log(core.run_game.wine_note(wine))
             gone = replays.prune(self.settings.replay_dir)       # the newest replays.DEFAULT_KEEP files stay
             if gone:
                 core.log(f"replays: {gone} old replay file(s) deleted (the newest {replays.DEFAULT_KEEP} are kept)")

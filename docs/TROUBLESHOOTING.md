@@ -24,6 +24,7 @@ Contents:
 - [Controllers and keyboard](#controllers-and-keyboard)
 - [Online play](#online-play)
 - [Windows versions and other PCs](#windows-versions-and-other-pcs)
+- [Linux and Steam Deck (Wine, Proton)](#linux-and-steam-deck-wine-proton)
 - [Low frame rate](#low-frame-rate) -- also [Game speeds up or slows down on a laptop or handheld](#game-speeds-up-or-slows-down-on-a-laptop-or-handheld)
 - [White screen or crash after a few minutes](#white-screen-or-crash-after-a-few-minutes)
 - [Saves](#saves)
@@ -886,6 +887,32 @@ result bar can show how many frames behind a match was.
   run there.
 - **Virtual machines and remote desktop**: usually no Direct3D 12 graphics
   card; the game says "Direct3D 12 not available".
+
+## Linux and Steam Deck (Wine, Proton)
+
+Linux is not supported, and we have no Linux PC to test on. Some players run
+the Windows release under Proton (Steam) or Wine anyway. This is what they
+found:
+
+- **From 1.1.5 the launcher detects Wine** and starts the game with
+  `RSX_VERTEX_THREADS=0` and `PS3_LWM_FAST=0`. A player on GE-Proton 11-11
+  with an RX 9060 XT found what goes wrong without them: stages flash black,
+  stage geometry jumps for about a second, and the fighters' bodies are
+  drawn wrong. Your own value wins. For example, Settings -> "Advanced: extra
+  settings" -> `RSX_VERTEX_THREADS=2` turns the vertex workers back on to
+  compare. The first line of the game log (`native\logs\game-*.log`) and a
+  line in `launcher.log` show what was detected, for example
+  `[wine] Wine 10.0 Proton: GE-Proton10-11 on Linux 6.17 -- RSX_VERTEX_THREADS=0, PS3_LWM_FAST=0`.
+  Only the name of the Proton folder goes into the logs, not its path.
+- **Dark blue screen, sound plays** (GitHub #26, CachyOS): with the default
+  Proton-GE the game showed only a dark blue screen. With **proton-cachyos-slr**
+  it worked. If you see this, try another Proton build: in Steam, open the
+  game's **Properties -> Compatibility**, tick "Force the use of a specific
+  Steam Play compatibility tool" and pick proton-cachyos-slr (on CachyOS),
+  Proton Experimental or another GE-Proton release. **(untested)**: one
+  player's report.
+- A problem report (**Report a problem**) works there too. In an issue, say
+  which Proton or Wine build you used and which ones you tried.
 
 ## Low frame rate
 

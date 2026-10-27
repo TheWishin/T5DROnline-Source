@@ -497,7 +497,9 @@ NPUB30009 version 01.00. The builder refuses everything else.
 not provide the package or the license and cannot help to get them.
 
 **Does it run on Linux or macOS?** macOS on Apple silicon: yes, offline, built from source
-(see "Building on macOS"). No release zip, launcher or online play there yet. Linux: no.
+(see "Building on macOS"). No release zip, launcher or online play there yet. Linux: not
+supported, but players run the Windows release under Proton or Wine; what they found is in
+[docs/TROUBLESHOOTING.md "Linux and Steam Deck"](docs/TROUBLESHOOTING.md#linux-and-steam-deck-wine-proton).
 
 **Does it run on Windows on ARM (Snapdragon laptops)?** Not tested. Windows 11
 should run it through its x64 emulation, more slowly; Windows 10 on ARM cannot.

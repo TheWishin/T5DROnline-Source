@@ -870,6 +870,13 @@ class GameRun:
                 pass
         self.log_path = os.path.join(logs, f"game-{datetime.datetime.now():%Y%m%d-%H%M%S}.log")
         logf = open(self.log_path, "w", encoding="utf-8", errors="replace")
+        wine = run_game.under_wine()
+        if wine:
+            # first line of the game log (and launcher.log): Wine / Proton and the two defaults it gets there
+            note = run_game.wine_note(wine, env)
+            logf.write(note + "\n")
+            logf.flush()
+            log(note)
         si = None
         if IS_WIN and env_over.get("PS3_WINDOW_BACKGROUND"):
             # Also ask for minimized through STARTUPINFO. On its own this does NOT keep the

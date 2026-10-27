@@ -560,7 +560,7 @@ LIFT_QUIET_S = 180
 # #27: a BUILD GAME seemed stuck all night). Generous: the compile step prints when a file is done, and the slowest
 # file takes 1-2 minutes on a slow PC (tools/build_game_dll.py); the unpack prints every 64 MB (patch 0074).
 QUIET_S = {"deps": 300, "keys": 120, "decrypt": 120, "unpack": 180, "vfs": 120, "lift": LIFT_QUIET_S, "spu": 300,
-           "compile": 600}
+           "compile": 600, "shaders": 300}     # (the warm-up prints a line per fight, ~10 s each)
 RE_TOKEN = re.compile(r'"[^"]*"|\S+')
 
 
@@ -614,7 +614,7 @@ def step_title(step):
     """t(STEP_TITLES[step]) with the texts written out (tests/test_i18n.py keeps t(variable) out of this file)."""
     return {"deps": t("Recompiler"), "keys": t("Key data"), "decrypt": t("Check & decrypt"), "unpack": t("Unpack"),
             "vfs": t("Game files"), "lift": t("Translate code"), "spu": t("Sound core"),
-            "compile": t("Compile")}.get(step, step)
+            "compile": t("Compile"), "shaders": t("Shaders")}.get(step, step)
 
 
 def step_quiet_hint(step, quiet_s, tool=None):

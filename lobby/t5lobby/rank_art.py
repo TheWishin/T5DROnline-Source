@@ -399,7 +399,7 @@ class Art:
 
     def prepare(self, heights, out_dir=None, after=None, log=None):
         """In a thread: extract the plates when the folder has none (and the game files are there), make the
-        `heights`; then after(callback) on the Tk thread (a widget's after) -> notify the listeners."""
+        `heights`; then after(0, callback) on the Tk thread (a widget's after) -> notify the listeners."""
         heights = sorted(set(int(h) for h in heights if h and h > 0))
 
         def work():
@@ -418,8 +418,8 @@ class Art:
                     log(f"rank plates: not read ({e}); the launcher draws its own badges")
             if ok and after:
                 try:
-                    after(lambda: self._done(heights))
-                except RuntimeError:
+                    after(0, lambda: self._done(heights))       # a widget's after(ms, func): after(func) failed in 1.1.5
+                except Exception:   # noqa: BLE001 -- the window is gone (RuntimeError, TclError)
                     pass
         threading.Thread(target=work, name="rank-art", daemon=True).start()
 

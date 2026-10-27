@@ -192,6 +192,8 @@ class Faces:
         self.listeners = []           # called on the Tk thread when pictures became available
         self.lock = threading.Lock()
         self.busy = False
+        self.wanted = set()           # sizes asked for, not made yet
+        self.wanted_lock = threading.Lock()
         self.failed = None            # why the last try did not work (logged once)
 
     def set_folder(self, folder):
@@ -220,33 +222,45 @@ class Faces:
 
     def prepare(self, sizes, out_dir=None, after=None, log=None):
         """In a thread: read the pictures when the folder lacks them (and the game is built), make `sizes`; then
-        after(callback) on the Tk thread -> the listeners."""
-        sizes = sorted({int(s) for s in sizes if s and s > 0})
-        if self.busy:
-            return
+        after(0, callback) on the Tk thread -> the listeners. A request while the thread runs is not dropped: the
+        thread makes its sizes too (the grid and the profile picture ask at the same time; 1.1.5 lost one)."""
+        with self.wanted_lock:
+            self.wanted.update(int(s) for s in sizes if s and s > 0)
+            if self.busy:
+                return
+            self.busy = True
 
         def work():
-            ok = False
-            try:
-                with self.lock:
-                    if self.folder and not is_ready(self.folder) and out_dir and ra.find_sources(out_dir):
-                        extract(out_dir, self.folder, log=log)
-                    if self.folder and is_ready(self.folder):
-                        for s in sizes:
-                            ensure_size(self.folder, s)
-                        ok = True
-            except (ra.ArtError, OSError, ValueError, zlib.error, struct.error, IndexError) as e:
-                if log and str(e) != self.failed:
-                    log(f"fighter pictures: not read ({e}); the character select shows the names")
-                self.failed = str(e)
-            finally:
-                self.busy = False
-            if ok and after:
+            while True:
+                with self.wanted_lock:
+                    todo = sorted(self.wanted)
+                    self.wanted.clear()
+                    if not todo:
+                        self.busy = False
+                        return
+                ok = False
                 try:
-                    after(lambda: self._done(sizes))
-                except RuntimeError:
-                    pass
-        self.busy = True
+                    with self.lock:
+                        if self.folder and not is_ready(self.folder) and out_dir and ra.find_sources(out_dir):
+                            extract(out_dir, self.folder, log=log)
+                        if self.folder and is_ready(self.folder):
+                            for s in todo:
+                                ensure_size(self.folder, s)
+                            ok = True
+                except (ra.ArtError, OSError, ValueError, zlib.error, struct.error, IndexError) as e:
+                    if log and str(e) != self.failed:
+                        log(f"fighter pictures: not read ({e}); the character select shows the names")
+                    self.failed = str(e)
+                if not ok:
+                    with self.wanted_lock:
+                        self.wanted.clear()
+                        self.busy = False
+                    return
+                if after:
+                    try:
+                        after(0, lambda done=todo: self._done(done))   # a widget's after(ms, func); 1.1.5: after(func)
+                    except Exception:   # noqa: BLE001 -- the window is gone (RuntimeError, TclError)
+                        pass
         threading.Thread(target=work, name="fighter-art", daemon=True).start()
 
     def _done(self, sizes):

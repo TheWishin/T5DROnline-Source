@@ -4,6 +4,7 @@ import json
 import os
 import struct
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -127,6 +128,41 @@ class CacheTest(unittest.TestCase):
             w, h, rgba = ra.png_rgba(f.read())
         self.assertEqual((w, h), (40, 40))
         self.assertEqual(tuple(rgba[:4]), (200, 30, 30, 255))
+
+    def test_prepare_with_a_real_tk_after(self):
+        # 1.1.5/1.1.6: prepare() called after(func) -- a widget's after needs after(ms, func) -- so the pictures were
+        # read but no window ever heard of it; and a second size asked while the first was made (the grid and the
+        # profile picture at the start) was dropped. Here: a real Tk, both sizes, from a game "read" by the thread.
+        try:
+            import tkinter as tk
+            root = tk.Tk()
+        except Exception as e:   # noqa: BLE001 -- no Tk / no display
+            self.skipTest(f"no Tk ({e})")
+        self.addCleanup(root.destroy)
+        root.withdraw()
+        solid = bytes((30, 200, 30, 255)) * (fa.SIZE * fa.SIZE)
+        faces = fa.Faces()
+        with mock.patch.dict(os.environ, {"T5_FIGHTER_ART": ""}):
+            faces.set_folder(self.folder)
+        heard = []
+        faces.listeners.append(lambda: heard.append(sorted(faces.sizes)))
+        with mock.patch.object(ra, "find_sources", return_value=("elf", "data")), \
+                mock.patch.object(fa, "portrait", return_value=solid):
+            faces.prepare([64], out_dir=self.tmp.name, after=root.after)
+            faces.prepare([80], out_dir=self.tmp.name, after=root.after)
+            end = time.time() + 20
+
+            def check():           # (a call from another thread reaches Tk only while mainloop runs)
+                if (faces.has(64) and faces.has(80)) or time.time() > end:
+                    root.quit()
+                else:
+                    root.after(20, check)
+            root.after(20, check)
+            root.mainloop()
+        self.assertTrue(faces.has(64) and faces.has(80), (heard, faces.failed))
+        self.assertIsNotNone(faces.image(root, 5, 64))
+        self.assertTrue(heard)
+        self.assertFalse(faces.busy)
 
     def test_nothing_in_the_repository(self):
         # the pictures live in the player's output folder only: no PNG of a fighter anywhere in the source tree

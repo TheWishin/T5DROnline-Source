@@ -114,21 +114,27 @@ run the code they ran before: CODE_VERSION is unchanged.
 
 - **Places** (traced in Practice, `T5_TRAINING_TRACE`): a fighter's place on
   the floor is x at +0x10 and z at +0x18 of its block (y, +0x14, is 0 on the
-  ground); +0x24 / +0x2C are the root (the place moved by the animation) and
-  +0x30 the angle it faces (it looks along (sin a, cos a)). At the start of
-  the fight P1 stands at (1000, 0) facing -pi/2 and the dummy at (-1000, 0)
-  facing +pi/2. A reset writes x, z, the root moved by the same amount and
-  the angle.
+  ground) and the angle it faces at +0x30 (it looks along (sin a, cos a)).
+  The root -- the place moved by the animation -- is at +0x24 / +0x2C with
+  its angle at +0x84, and three 4x4 world matrices of the root (this frame and
+  the two before) at +0x700, +0x740 and +0x780: rows 0-2 the rotation (row 2
+  the facing direction), row 3 the position. The game takes the root's motion
+  from the matrices: a place written to the base alone sprang back or jumped
+  (a fighter put 4,000 units away moved another 1,273 in the next frame) and
+  an angle written to +0x30 alone was undone. A reset moves and turns all of
+  them alike. At the start of the fight P1 stands at (1000, 0) facing -pi/2
+  and the dummy at (-1000, 0) facing +pi/2.
 - **Round start**: the places of the first frame of the fight, kept.
 - **Walls**: the walls are the stage's own collision, so they are found with
-  it, not read from the stage. The fighter that goes to the wall is put far
-  out along the line through both fighters (60,000 units); a game that pushes
-  fighters back inside its walls puts it at the wall. If it is still out there
-  in the next frame it slides instead: 1,100 units past the other fighter, then
-  250 units further each frame, until a frame in which the game moved it --
-  the wall -- or 40,000 units without one (no wall in that direction: the
-  places from before come back). At the wall the other one is put 1,100 units
-  in front of it, both facing each other.
+  it, not read from the stage. A place past a wall is one the game does not
+  keep: it puts the fighter somewhere else inside the stage (traced: a fighter
+  put 60,000 units out along the line came back 2,400 units off the line). So
+  the fighter that goes to the wall slides out along the line through both
+  fighters, from 1,100 units past the other one, 300 units a frame; the first
+  place the game did not keep ends the slide, and four frames of halving
+  between it and the last place it kept find the wall to 20 units. No wall
+  within 36,000 units: the places from before come back. At the wall the other
+  one is put 1,100 units in front of it, both facing each other.
 
 ## The overlay never changes the game
 

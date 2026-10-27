@@ -50,6 +50,7 @@
 #include <vector>
 #include "df.h"
 #include "../netplay/match_score.h"   /* a decided match's score: the fighters' round counts */
+#include "../netplay/match_rules.h"   /* online training and the health handicap (train=, life=) */
 
 extern "C" void t5_netplay_start(void);
 extern "C" int  t5_netplay_lockstep_active(void);
@@ -70,7 +71,7 @@ extern "C" void t5_netplay_pause(void);
  * START; a playback takes every match's line from the file and checks the setup against it */
 extern "C" void t5_replay_fight_start(unsigned match, const int chr[2], const int btn[2], const int model[2], int stage,
                                       int rounds, int pick, const char* name1, const char* name2,
-                                      const unsigned char* costumes);
+                                      const unsigned char* costumes, unsigned rules);
 extern "C" int  t5_replay_fight_line(unsigned match, char* buf, int size);
 /* unlocks (df_unlock.cpp, docs/DIRECTFIGHT.md "Unlocks"): Jinpachi's and the random cell on the select grid
  * (online: the match kind T5_NET_UNLOCKS, a playback: its file); a persistent game's session sets its kind */
@@ -88,6 +89,8 @@ bool drives(int p) { return !(netplay_on() && t5_netplay_lockstep_active()) || p
 constexpr uint32_t kFnStartGame  = 0x0004E9DC;   /* (game_type, player_mask) -> config + select mode */
 constexpr uint32_t kConfig       = 0x1008EBAC;   /* battle config: +0 game type (4 = VS) */
 constexpr uint32_t kRoundsToWin  = 0x1008EBD4;   /* u8 */
+constexpr uint32_t kLifeP1       = 0x1008EBF4;   /* u32: P1's health handicap in percent (100 after the select's bar) */
+constexpr uint32_t kLifeP2       = 0x1008EBF8;   /* u32: P2's; the game mode's set-up scales both fighters' health by them */
 constexpr uint32_t kMatchOver    = 0x1008EBD5;   /* u8: non-zero once the match is decided */
 constexpr uint32_t kWinsP1       = np::MatchScore::kRoundWinsP1;   /* u8: rounds P1 won (fighter block +0xA1) */
 constexpr uint32_t kWinsP2       = np::MatchScore::kRoundWinsP2;   /* u8: rounds P2 won */
@@ -162,7 +165,8 @@ int cell_col(int c) { return c >= 24 ? c - 24 : c >= 12 ? c - 12 : c; }
  * costume. pick: seconds for the in-game select (0 = the line's characters). */
 struct Fight { int chr[2] = { -1, -1 }; int stage = -1; int rounds = 3; int color[2] = { 1, 1 }; bool valid = false;
                std::string text, match; std::string names[2]; int rank[2] = { -1, -1 }; bool hud = false;
-               int btn[2] = { 0, 0 }; int pick = 0; };
+               int btn[2] = { 0, 0 }; int pick = 0;
+               np::MatchRules rules; };   /* train=1, life=P1|P2 (match_rules.h) */
 std::string g_fight_file, g_status_file, g_result_file;
 Fight g_cfg;            /* the fight being set up / fought */
 bool g_configured = false;
@@ -225,10 +229,17 @@ void parse_hud(Fight& f, const char* names, const char* ranks, bool encoded)
 }
 
 int g_pick_default = 0;   /* T5_DF_PICK=<seconds>: the in-game select for fight lines without pick= (tests) */
+/* T5_DF_RULES="train=1 life=70|100": the rules for fight lines without train= / life= (tests; the launcher looks for
+ * this name in the game binary to know the build can play training rooms and the health handicap) */
+std::string g_rules_default;
 
-bool parse_fight(const char* s, Fight& out)
+bool parse_fight(const char* s0, Fight& out)
 {
-    Fight f; f.text = s ? s : "";
+    std::string line = s0 ? s0 : "";
+    if (!g_rules_default.empty() && line.find("train=") == std::string::npos && line.find("life=") == std::string::npos)
+        line += " " + g_rules_default;
+    const char* s = line.c_str();
+    Fight f; f.text = s;
     f.rounds = default_rounds();
     f.pick = g_pick_default;
     /* the HUD identity carries over from the last fight (a rematch: same players) unless the line has its own */
@@ -245,6 +256,14 @@ bool parse_fight(const char* s, Fight& out)
         else if (_stricmp(k.c_str(), "names") == 0) names = cur.substr(eq + 1);
         else if (_stricmp(k.c_str(), "ranks") == 0) ranks = cur.substr(eq + 1);
         else if (_stricmp(k.c_str(), "pick") == 0) { const int n = atoi(cur.substr(eq + 1).c_str()); f.pick = n < 0 ? 0 : n > 120 ? 120 : n; }
+        else if (_stricmp(k.c_str(), "train") == 0) f.rules.training = atoi(cur.substr(eq + 1).c_str()) != 0;
+        else if (_stricmp(k.c_str(), "life") == 0) {   /* life=P1|P2: each side's health in percent (the handicap) */
+            const std::string v = cur.substr(eq + 1);
+            const size_t bar = v.find('|');
+            const int a = atoi(v.c_str()), b = bar == std::string::npos ? 100 : atoi(v.c_str() + bar + 1);
+            f.rules.life[0] = a > 0 ? np::MatchRules::clamp_life(a) : 100;
+            f.rules.life[1] = b > 0 ? np::MatchRules::clamp_life(b) : 100;
+        }
         else if (_stricmp(k.c_str(), "buttons") == 0) {   /* buttons=b1|b2: the confirm buttons (costumes), 1-4, 0 = default */
             const std::string v = cur.substr(eq + 1);
             const size_t bar = v.find('|');
@@ -266,6 +285,7 @@ bool parse_fight(const char* s, Fight& out)
     else f.stage = atoi(tok[2].c_str());
     if (tok.size() > 3) f.rounds = atoi(tok[3].c_str());
     if (f.rounds < 1 || f.rounds > 5) f.rounds = default_rounds();
+    if (f.rules.training) f.rounds = 1;   /* a training fight ends at its first KO (a give-up): back to the select screen */
     if (tok.size() > 5) { f.color[0] = atoi(tok[4].c_str()) == 2 ? 2 : 1; f.color[1] = atoi(tok[5].c_str()) == 2 ? 2 : 1; }
     parse_hud(f, names.empty() ? nullptr : names.c_str(), ranks.empty() ? nullptr : ranks.c_str(), true);
     f.valid = true;
@@ -368,10 +388,11 @@ void status(const char* state, uint32_t f)
     char buf[640];
     snprintf(buf, sizeof buf,
              "{\"state\": \"%s\", \"frame\": %u, \"match\": %u, \"p1\": %d, \"p2\": %d, \"stage\": %d, \"rounds\": %d, "
-             "\"last_winner\": %s, \"last_score\": [%d, %d], \"pick\": %d, \"b1\": %d, \"b2\": %d%s}\n",
+             "\"last_winner\": %s, \"last_score\": [%d, %d], \"pick\": %d, \"b1\": %d, \"b2\": %d, \"training\": %s, \"life\": [%d, %d]%s}\n",
              state, f, g_match, g_cfg.chr[0], g_cfg.chr[1], g_cfg.stage, g_cfg.rounds,
              g_last_winner == -2 ? "null" : g_last_winner == -1 ? "null" : (g_last_winner == 0 ? "0" : "1"),
-             g_last_score[0], g_last_score[1], g_cfg.pick, g_cfg.btn[0], g_cfg.btn[1], status_extra().c_str());
+             g_last_score[0], g_last_score[1], g_cfg.pick, g_cfg.btn[0], g_cfg.btn[1],
+             g_cfg.rules.training ? "true" : "false", g_cfg.rules.life[0], g_cfg.rules.life[1], status_extra().c_str());
     write_text(g_status_file, buf);
 }
 
@@ -1394,6 +1415,22 @@ void pick_wait_frame(uint32_t f)
  * copies, which the game mode's set-up drew
  * (0x121E0C <- 0x5A304 <- 0x53C88, phase 2) from the select screen's pinned
  * generator; logged at FIGHT START as "plays". */
+/* The rules latched at FIGHT START (match_rules.h): what the training rule in t5_hooks.cpp acts on. */
+np::MatchRules g_rules;
+
+/* ", training (...), health P1 70 % / P2 100 % (...)" for the FIGHT START line */
+std::string rules_text()
+{
+    if (!g_rules.any()) return std::string();
+    std::string o;
+    char b[160];
+    if (g_rules.training) o += ", training (endless health, no timer, SELECT held 1 s gives up)";
+    snprintf(b, sizeof b, ", health P1 %d %% / P2 %d %% (handicap words %u / %u)", g_rules.life[0], g_rules.life[1],
+             rd32(kLifeP1), rd32(kLifeP2));
+    o += b;
+    return o;
+}
+
 std::string fighter_words()
 {
     std::string o;
@@ -1582,6 +1619,10 @@ void fight_on_frame(uint32_t f)
             g_wait_setup = true;
             resolve_stage(true);
             wr8(kRoundsToWin, (uint8_t)g_cfg.rounds);
+            /* the health handicap: the game mode's set-up reads these when it builds the fighters (after this
+             * frame), the same values on both PCs (100 % unless the line says otherwise) */
+            wr32(kLifeP1, (uint32_t)g_cfg.rules.life[0]);
+            wr32(kLifeP2, (uint32_t)g_cfg.rules.life[1]);
             if (session_netplay() && !g_cfg.match.empty()) t5_netplay_set_match(g_cfg.match.c_str());
             write_hud(g_cfg, f);
         }
@@ -1608,14 +1649,15 @@ void fight_on_frame(uint32_t f)
         g_over_wait = false;
         g_held = false;
         g_fight_frame = f;
-        note("frame %u: FIGHT START match %u%s%s: %s vs %s, stage %d (field 0x%X), rounds %u, game type %u",
+        g_rules = g_cfg.rules;   /* the training rule (t5_hooks.cpp) reads them from the next frame on */
+        note("frame %u: FIGHT START match %u%s%s: %s vs %s, stage %d (field 0x%X), rounds %u, game type %u%s",
              f, g_match, g_cfg.match.empty() ? "" : " id ", g_cfg.match.c_str(), kName[g_cfg.chr[0]], kName[g_cfg.chr[1]],
-             g_cfg.stage, rd32(kStageId), rd8(kRoundsToWin), rd32(kConfig));
+             g_cfg.stage, rd32(kStageId), rd8(kRoundsToWin), rd32(kConfig), rules_text().c_str());
         /* each player's custom costume, both sides, the same on both PCs (df_costume.cpp); a replay's from its file */
         costume_apply(f, costume_mode(), g_match);
         /* the replay: what this match is (recording), or the check that it is the recorded one (playback) */
         t5_replay_fight_start(g_match, g_cfg.chr, g_cfg.btn, g_models, g_cfg.stage, g_cfg.rounds, g_cfg.pick,
-                              g_cfg.names[0].c_str(), g_cfg.names[1].c_str(), costume_written());
+                              g_cfg.names[0].c_str(), g_cfg.names[1].c_str(), costume_written(), g_rules.pack());
         if (session_netplay()) { t5_netplay_start(); note("frame %u: t5_netplay_start() called (lockstep frame 0 is the next frame)", f); }
         set_phase(Ph::Fight, "fight", f);
         break;
@@ -1820,6 +1862,8 @@ bool fight_configured() { return g_configured; }
 
 /* tests (T5_NET_SCRIPT_FIGHT): the scripted fight input applies only in a fight */
 extern "C" int t5_df_in_fight(void) { return df::g_ph == df::Ph::Fight ? 1 : 0; }
+/* the fight's rules (match_rules.h MatchRules::pack), latched at FIGHT START: the training rule in t5_hooks.cpp */
+extern "C" uint32_t t5_df_rules(void) { return df::g_rules.pack(); }
 /* Fights started in this netplay session (FIGHT START counts; a new session starts at 0): the same on
  * both PCs at their select screens and in a playback -- t5_hooks.cpp mixes it into the select screen's
  * random seed (Mokujin's copy). */
@@ -1901,6 +1945,7 @@ void fight_init()
     if (const char* s = getenv("T5_DF_STATUS_FILE")) g_status_file = s;
     if (const char* a = getenv("T5_DF_ALT_BUTTON")) g_alt_button = (uint16_t)strtoul(a, nullptr, 16);
     if (const char* pk = getenv("T5_DF_PICK")) { const int n = atoi(pk); g_pick_default = n < 0 ? 0 : n > 120 ? 120 : n; }
+    if (const char* ru = getenv("T5_DF_RULES")) g_rules_default = ru;
     { const char* t = getenv("T5_DF_TRACE"); g_trace_presses = t && *t == '1'; }
     if (fight && *fight && !g_ctl && !g_replay) parse_fight(fight, g_cfg);   /* (a replay reads its lines at the title) */
     note("direct fight: %s%s%s", g_cfg.valid ? g_cfg.text.c_str() : g_ctl ? "(persistent game: fights from the control channel)"

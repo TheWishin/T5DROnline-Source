@@ -494,6 +494,65 @@ In the game (build/nopause/runs; two games on this PC, minimized, muted, below-n
 | off1 | offline direct fight (no netplay), START in the fight | the PAUSE menu opens (0x10092EA0 -> 2 at the press; screenshot) |
 | smoke quick | offline menus, arcade, VS with two pads, practice, title twice | PASS (81 checks) with up to 10 other games running; an earlier run beside 16-20 other games failed `practice` (black frames, no fight HUD) -- main's exe failed it the same way at that load |
 
+## Online training and the health handicap (1.1.5, branch online-training-115)
+
+Two match rules that change what the game simulates, so both PCs must apply them on the same frames
+(`src/netplay/match_rules.h`, the lobby's side in docs/ONLINE.md "Training rooms and the health handicap"):
+
+- **Training** (a training room's fights, `train=1` on the fight line): endless health like Tekken 8's
+  practice lobby, no round timer, nothing counted. A player who holds SELECT for a second gives up: their
+  health goes to 0 and the game KOs them at the next frame, which ends the fight (training fights have one
+  round); both launchers then go back to the select screen by themselves (a rematch), so this is also how
+  two friends pick other fighters.
+- **Health handicap** (`life=P1|P2`, percent): the game's own VS handicap. The battle config holds each
+  side's percent (0x1008EBF4 / 0x1008EBF8, 100 after the select screen's handicap bar); the game mode's
+  set-up turns it into the fighters' maximum health (fighter block +0x6C0, 16.16 fixed point: 145.0 at 100 %,
+  72.5 at 50 %, 108.75 at 75 %) and their health at each round start (+0x6BC). The direct-fight driver writes
+  both words at the game mode's first frame, before that set-up runs, on both PCs alike. The bars show the
+  smaller maximum as a shorter bar.
+
+**The training rule** (`np::TrainingRule`, called by `training_rule()` in `t5_hooks.cpp` right after the
+no-pause rule): on the game state at the boundary of every frame that runs -- live, re-simulated by the
+rollback loop, played back from a replay or a live stream -- after that run's inputs are final:
+
+- only while the round is fought (round state 0x1009322C = 5, the decided byte 0);
+- the round timer (0x1008F054, frames) is held at 3600 (60 s): no time-out;
+- a fighter's health goes back to its maximum once it has taken no damage for 60 frames: a second after the
+  last hit of a combo, standing, blocking or on the ground; a stream of hits keeps it down as in a real fight;
+- SELECT held 60 frames (in that player's input of those frames, the exchanged one) sets their health to 0.
+
+Found by probes of the running game (offline, `T5_DF_WATCH` / `T5_DF_POKE`, build/int115/h-runs): health and
+maximum per fighter block, the timer counting 3600 down from round state 5, the handicap words read at the
+game mode's first frame, and a health word set to 0 at a boundary KOs that fighter in the next frame
+(MATCH OVER, the winner the other side).
+
+**Why both PCs stay equal.** The rule reads only the game state at the boundary and the frame's two inputs
+(the exchanged ones), never which PC runs it or which side is local, and it treats both slots alike. Its
+writes happen after the boundary's state hash and snapshot (lockstep: after `state_hash`; rollback: after
+`on_boundary` commits), so a rollback's restore undoes them with the rest of the frame (the write watch sees
+host writes too) and the re-simulation writes them again from the restored state. Two counters per player
+(frames without damage, frames SELECT held) are kept per frame (frame mod 4096, tagged with the frame), each
+from its predecessor's entry -- the no-pause rule's scheme: a re-simulated boundary is recomputed from the
+restored state and its final inputs, and the boundaries before a rollback's first wrong frame ran with the
+right inputs. A sync point renumbers frames differently on the two PCs (the side that got there first skips
+numbers), so the counters are cleared at every sync point and at frame 0 on both alike; no rollback crosses a
+sync point. The rules themselves come from the fight line both launchers got from the lobby (and a replay
+from its file, format 5), latched by the driver at FIGHT START before `t5_netplay_start()`. The handicap
+words are in the hashed battle state, health and maximum in the hashed fighter blocks: a PC that applied
+other rules would show as a desync at once.
+
+**Older games are kept out** by the build id: `tools/build_game.py` CODE_VERSION 7 changes the code id, so a
+1.1.5 game is never paired with an older one (rooms included); the lobby offers training rooms and the
+handicap only to launchers whose game has them (caps `training`, `handicap`; the game binary's
+`T5_DF_RULES`).
+
+Tests: `tests/test_match_rules.py` (`tests/c/match_rules_test.cpp`: the rule against a model of a fight --
+refill, timer, give-up, slot symmetry, and lockstep vs rollback with late inputs, predictions and sync points
+vs replay: the same state every frame; plus source checks), `tests/test_replays.py` (format 5),
+`lobby/tests/test_training.py`, `tools/fight_flow_test.py --line-extra "train=1 life=70|100"
+--give-up-every 2400` (real pairs), e2e `net_training` (a training room through the lobby: rollback with RTT
+80 ms, loss and jitter, and lockstep).
+
 ## Skipping intros and replays online (branch skip-114, 1.1.4)
 
 Owner's request: "replays should be skippable, and the intro at match start" -- the replay after a

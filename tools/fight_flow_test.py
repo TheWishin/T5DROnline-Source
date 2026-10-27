@@ -126,7 +126,7 @@ def motion_moves(fwd, back):
 START = 0x0008
 
 
-def mash_script(path, seed, frames=400000, gap=6, moves=False, start_every=0):
+def mash_script(path, seed, frames=400000, gap=6, moves=False, start_every=0, select_every=0, select_at=0):
     """Face buttons and directions, 1-4 frames each, 1..gap frames apart (no START: that paused a fight
     before 1.1.2). gap 6 (default) is button mashing; ~20 is closer to a person (fewer inputs the peer
     mispredicts). moves: half of the inputs are motion inputs (motion_moves) in either facing.
@@ -153,6 +153,11 @@ def mash_script(path, seed, frames=400000, gap=6, moves=False, start_every=0):
         n = rnd.randint(1, 4)
         out.append(f"{f} {n} {rnd.choice(buttons):#x}")
         f += n + rnd.randint(1, gap)
+    if select_every:
+        # --give-up-every: SELECT held for 70 frames every N frames (from select_at on): in a training fight that
+        # player gives up (match_rules.h: 60 frames held), which ends the fight
+        for g in range(select_at, frames, select_every):
+            out.append(f"{g} 70 0x1")
     with open(path, "w") as fp:
         fp.write("\n".join(out) + "\n")
     return path
@@ -295,9 +300,11 @@ class Game:
             "T5_DF_STATUS_FILE": self.status_path, "T5_NET_TIMEOUT": str(getattr(self.a, "net_timeout", 20)),
         })
         if self.a.mash:
+            every = getattr(self.a, "give_up_every", 0)
             env["T5_NET_SCRIPT"] = mash_script(os.path.join(self.dir, "mash.txt"), 100 + self.idx,
                                                gap=getattr(self.a, "mash_gap", 6), moves=getattr(self.a, "moves", False),
-                                               start_every=getattr(self.a, "mash_start", 0))
+                                               start_every=getattr(self.a, "mash_start", 0), select_every=every,
+                                               select_at=every if self.role == "host" else every + every // 2)
         if getattr(self.a, "mash_start", 0):
             env["T5_DF_WATCH"] = PAUSE_WORD   # the pause menu, logged when it opens (pause_menu_opens)
         for kv in self.a.env + (self.a.env1 if self.role == "host" else self.a.env2):
@@ -388,7 +395,8 @@ def fight_line(a, k, prev=None):
         if colors:
             c1, c2 = prev.split(",")[4:6]
     stages = [int(s) for s in a.stages.split(",")]
-    return f"{p1},{p2},{stages[k % len(stages)]},{a.rounds}" + (f",{c1},{c2}" if colors else "")
+    extra = (" " + a.line_extra) if getattr(a, "line_extra", "") else ""
+    return f"{p1},{p2},{stages[k % len(stages)]},{a.rounds}" + (f",{c1},{c2}" if colors else "") + extra
 
 
 def match_kind(a, k):
@@ -435,6 +443,11 @@ def main():
                     help="--mash: about every N-th input is START (pause mashing); the run fails if a pause menu opens")
     ap.add_argument("--moves", action="store_true", help="--mash with motion inputs (electrics, hellsweeps, qcf/hcb, "
                                                         "dashes, throws, ki charge): what players do")
+    ap.add_argument("--line-extra", default="", help="key=value options for every fight line, e.g. 'train=1 life=60|100' "
+                    "(online training, the health handicap: docs/NETPLAY.md)")
+    ap.add_argument("--give-up-every", type=int, default=0, metavar="N",
+                    help="--mash: SELECT held 70 frames every N frames (the host from N, the joiner from 1.5 N): a "
+                         "training fight's give-up")
     ap.add_argument("--rematch-every", type=int, default=0, help="persistent: every K-th match is a rematch in the session")
     ap.add_argument("--pattern", default="", help="persistent: N (new session) / R (rematch) per match in turn, e.g. NNR")
     ap.add_argument("--same-chars", action="store_true", help="a rematch keeps the last match's characters (the lobby's way)")

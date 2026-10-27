@@ -677,6 +677,10 @@ class BracketView:
         self.boxes = {}                 # set id -> (x0, y0, x1, y1): what was drawn where (tests, clicks)
         self.texts = []                 # every text drawn (tests)
 
+    def badge_h(self):
+        """The height of the line above a set that its badge takes."""
+        return self.th.fonts["caps"].metrics("linespace") + self.px(6)
+
     def _text(self, x, y, text, **kw):
         self.texts.append(text)
         return self.canvas.create_text(x, y, text=text, **kw)
@@ -701,8 +705,11 @@ class BracketView:
             return
         info = {"format": b["format"], "rounds": b["rounds"], "losers_rounds": b["losers_rounds"]}
         sets = {s["id"]: s for s in b["sets"]}
-        W, H, gx, gy = px(178), px(44), px(34), px(12)
-        top = px(26)
+        # a set's badge (LIVE, CALLED, NEEDS THE ORGANIZER, a result's reason) has a line of its own above the set:
+        # it never runs into the set above it or the round's name
+        bh = self.badge_h()
+        W, H, gx, gy = px(178), px(44), px(34), px(12) + bh
+        top = px(26) + bh
         ys = {}
 
         def src_y(s, bracket):
@@ -730,7 +737,7 @@ class BracketView:
         wy = layout("W", b["rounds"])
         ly = layout("L", b["losers_rounds"]) if b["losers_rounds"] else {}
         w_height = (max(wy.values()) + H) if wy else 0
-        l_top = top + w_height + px(42)
+        l_top = top + w_height + px(42) + bh
         col_x = lambda r: px(8) + (r - 1) * (W + gx)          # noqa: E731
         double = b["format"] == "double"
         # round names over the columns
@@ -739,7 +746,8 @@ class BracketView:
                        anchor="w", fill=C["muted"], font=fonts["caps"])
         if double:
             for r in range(1, b["losers_rounds"] + 1):
-                self._text(col_x(r), l_top - px(16), tour_text.round_label(dict(info, bracket="L", round=r)).upper(),
+                self._text(col_x(r), l_top - px(16) - bh,
+                           tour_text.round_label(dict(info, bracket="L", round=r)).upper(),
                            anchor="w", fill=C["muted"], font=fonts["caps"])
             gx0 = b["rounds"] + 1
             self._text(col_x(gx0), px(10), t("Grand final").upper(), anchor="w", fill=C["gold"], font=fonts["caps"])
@@ -840,9 +848,14 @@ class BracketView:
         if badge is None and s["state"] == "done" and s.get("reason") in ("no_show", "dq", "organizer", "forfeit",
                                                                             "bye"):
             badge = tour_text.set_reason_text(s["reason"]).upper()
-        if badge:
-            col = {"playing": C["accent"], "called": C["warn"], "attention": C["bad"]}.get(live, C["faint"])
-            self._text(x + W, y - px(2), badge, anchor="se", fill=col, font=fonts["caps"])
+        if badge:                       # a small tag over the set's right end, on the line kept free for it
+            fill, fg = {"playing": (C["accent"], C["on_accent"]), "called": (C["warn"], "#1d1404"),
+                        "attention": (C["bad"], "#1a0707")}.get(live, (C["hover"], C["muted"]))
+            x1, y1 = x + W, y - px(3)
+            x0, y0 = x1 - fonts["caps"].measure(badge) - px(12), y1 - self.badge_h() + px(3)
+            cv.create_rectangle(x0, y0, x1, y1, fill=fill, outline="", tags=("set", tag))
+            self._text((x0 + x1) / 2.0, (y0 + y1) / 2.0, badge, anchor="center", fill=fg, font=fonts["caps"],
+                       tags=("set", tag))
         cv.tag_bind(tag, "<Button-1>", lambda _e, sid=s["id"]: self.on_click(sid))
 
 

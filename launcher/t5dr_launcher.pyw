@@ -279,10 +279,11 @@ class App(tk.Tk):
         f = th.fonts
         px = th.px
         self.option_add("*Text.Font", f["mono"])
-        st.configure("Step.TLabel", font=f["body"], foreground=C["faint"], padding=(px(6), px(2)))
-        st.configure("StepRun.TLabel", font=f["bold"], foreground=C["accent_hi"], padding=(px(6), px(2)))
-        st.configure("StepDone.TLabel", font=f["body"], foreground=C["ok"], padding=(px(6), px(2)))
-        st.configure("StepFail.TLabel", font=f["bold"], foreground=C["bad"], padding=(px(6), px(2)))
+        # (5 px apart: the nine steps are the Build tab's widest row, in Spanish)
+        st.configure("Step.TLabel", font=f["body"], foreground=C["faint"], padding=(px(5), px(2)))
+        st.configure("StepRun.TLabel", font=f["bold"], foreground=C["accent_hi"], padding=(px(5), px(2)))
+        st.configure("StepDone.TLabel", font=f["body"], foreground=C["ok"], padding=(px(5), px(2)))
+        st.configure("StepFail.TLabel", font=f["bold"], foreground=C["bad"], padding=(px(5), px(2)))
         # the same window at any DPI (fonts grow with it), never larger than the screen
         sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
         self.minsize(min(px(900), sw - 40), min(px(680), sh - 80))
@@ -322,7 +323,8 @@ class App(tk.Tk):
                   text="   " + t("native Windows build  ·  launcher {version}",
                                  version=self.info.get("version", "?"))).pack(side="left")
         self.updater = updater.attach(self, head)     # "Check for updates", the offer, the update itself
-        self.nb = ttk.Notebook(self)
+        dark = getattr(self, "theme", None) is not None
+        self.nb = ttk.Notebook(self, style="Main.TNotebook") if dark else ttk.Notebook(self)
         self.nb.pack(fill="both", expand=True, padx=12, pady=(4, 0))
         self.tabs = {}
         for key, label in (("build", t("Build")), ("play", t("Play offline")), ("settings", t("Settings")),
@@ -469,7 +471,8 @@ class App(tk.Tk):
             sb = ttk.Scrollbar(self.log.frame, orient="vertical", command=self.log.yview)
             sb.pack(side="right", fill="y", before=self.log._w)   # (str(self.log) is its frame)
             self.log.configure(yscrollcommand=sb.set)
-            self.log.frame.configure(bg=COLORS["log_bg"])
+            self.log.frame.configure(bg=COLORS["log_bg"], highlightthickness=1,      # (framed like the cards)
+                                     highlightbackground=self.theme.C["line"], highlightcolor=self.theme.C["line"])
 
     def _play_tab(self, tab):
         box = ttk.Frame(tab, padding=24)

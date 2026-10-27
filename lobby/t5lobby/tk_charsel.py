@@ -131,7 +131,7 @@ class CharSelect:
             style = "Card.Accent.TButton" if key == current else "Card.TButton"
             text = f"{name} {STAR}" if key == main and key != fighters.RANDOM else name
             b = ttk.Button(grid, text=text, style=style, command=lambda k=key, n=name: self.pick(k, n))
-            b.grid(row=i // COLUMNS, column=i % COLUMNS, sticky="nsew", padx=px(3), pady=px(3))
+            b.grid(row=i // COLUMNS, column=i % COLUMNS, sticky="nsew", padx=px(3), pady=px(3), ipady=px(5))
             for seq, dr, dc in (("<Left>", 0, -1), ("<Right>", 0, 1), ("<Up>", -1, 0), ("<Down>", 1, 0)):
                 b.bind(seq, lambda _e, j=i, r=dr, c=dc: self._move(j, r, c))
             b.bind("<Home>", lambda _e: self._focus(0))

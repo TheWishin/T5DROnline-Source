@@ -1594,10 +1594,43 @@ The stage select lists ids 17-34 (0x11-0x22, the list at 0x1009405C the stage
 panel is built from; its random pick lands in 0x1008F088 at the confirm). The
 old Tekken 5 stages have the sprite names `stage_1_old` .. `stage_16_old`:
 ids 0-13 and 15, offered once unlocked (14 and 16 are empty slots; with the
-unlock the panel also lists 37, not tried). See "Unlocks".
-Verified by forcing the id and looking at the fight: 20 (scrapyard with
-wrecked trucks), 33 (industrial yard). The game's own picks seen in runs: 24,
-25, 31, 33. Names for every id are still to be matched to screenshots.
+unlock the panel also lists 37: Inferno, below). See "Unlocks".
+
+The stage select shows no names, only a picture per stage, and in Versus
+that picture is a roulette: it steps through the panel's list every 3 frames
+(the index at 0x1009405B) until the confirm draws the stage. So each id was
+seen in a fight of its own (1.1.5: one offline direct fight per id, `T5_FIGHT`
+forcing it, a frame dump of the fight) and named as the Tekken wikis list the
+game's stages, by what the stage shows (Western Gate's tiger statues, Ghetto
+Pit's hung trucks, Urban Jungle's crowd behind bars, ...). Dark Resurrection
+remade the Tekken 5 stages 0-13 as ids 17-30 (id + 17), in the same order;
+31-34 are new. The launcher shows these names (lobby/t5lobby/fighters.py
+`STAGE_NAMES`, kept in English in every language: they are the stages' names).
+
+| id | key | Tekken 5 | id | key | Dark Resurrection |
+|---|---|---|---|---|---|
+| 0 | t5s01 | Dragon's Nest | 17 | s17 | Western Gate |
+| 1 | t5s02 | Burning Temple | 18 | s18 | Autumn Temple |
+| 2 | t5s03 | Waterfall | 19 | s19 | Meteor Shower |
+| 3 | t5s04 | Urban Jungle | 20 | s20 | Ghetto Pit |
+| 4 | t5s05 | City at Sunset | 21 | s21 | City Lights |
+| 5 | t5s06 | Moonlit Wilderness | 22 | s22 | Great Plains |
+| 6 | t5s07 | Pirate's Cove | 23 | s23 | Galleon |
+| 7 | t5s08 | Secret Garden | 24 | s24 | All Hollow's Eve |
+| 8 | t5s09 | Cathedral | 25 | s25 | Winter Palace |
+| 9 | t5s10 | Acid Rain | 26 | s26 | Festival |
+| 10 | t5s11 | Polar Paradise | 27 | s27 | Aurora Australis |
+| 11 | t5s12 | Hell's Gate | 28 | s28 | Heaven's Gate |
+| 12 | t5s13 | Final Frontier | 29 | s29 | Space Colony |
+| 13 | t5s14 | Poolside | 30 | s30 | Pool Party |
+| 15 | t5s15 | Final Stage | 31 | s31 | Playroom |
+| | | | 32 | s32 | Wolves' Den |
+| | | | 33 | s33 | Industrial Complex |
+| | | | 34 | s34 | Ominous Mist |
+
+37 (listed with the Tekken 5 stages unlocked) is Inferno, Jinpachi's red lava
+field; it is not in fighters.json. The game's own picks seen in runs: 24, 25,
+31, 33.
 
 ## Determinism and netplay
 

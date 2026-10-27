@@ -33,7 +33,9 @@ they work with 1.1.4 launchers as soon as the server is updated.
   stages are decided by a coin flip too. A challenge or an invite shows what the other player asked for, and the
   match card shows your side and the stage. After such a match, **Rematch: swap sides** (Y on a controller) plays
   the rematch with the sides the other way round. Ranked and Quick keep choosing sides and a random stage for you.
-  Players with a 1.1.4 launcher can still be challenged and invited as before. In all seven languages.
+  Players with a 1.1.4 launcher can still be challenged and invited as before. In all seven languages. Every
+  stage has its name (Western Gate, Ghetto Pit, Wolves' Den, ... and the Tekken 5 stages' own names), checked in a
+  fight on each of them; the names stay English in every language, as players know them.
 - **Ping and connection before you accept.** The found-match card, a challenge and a friend's invite show the ping
   (estimated, or measured in your last match together) and whether the match will most likely be a direct connection
   or go through a relay server. In all seven languages.
@@ -79,6 +81,10 @@ they work with 1.1.4 launchers as soon as the server is updated.
   defender mashing a jab). Players' report; docs/TRAINING.md.
 - **Frame data: moves with a wind-up show their real startup.** Bryan's f+1+2 (a wind-up, then the attack) showed
   i4; it is i22. A move made of several animations now counts from its first frame.
+- **Frame data: Bryan's taunt (1+3+4) reads i28, hit, +14.** Its +14 was right, but the overlay called it a block
+  and showed no startup (or the one of the move before): the taunt can be cancelled from its first frame, and its
+  stun does no damage. Now it counts as a hit, guarded or not (it cannot be blocked), with its own startup (checked
+  with Bryan and the defender mashing a jab).
 - **Practice tools** (Practice, offline only; Settings -> Practice tools, on by default): hold SELECT and press 3 to
   put both fighters back where the fight started, f+3 / b+3 to put the dummy against the wall in front of / behind
   you, df+3 / db+3 to put yourself against the wall in front of / behind you. SELECT+1 records the dummy (your pad

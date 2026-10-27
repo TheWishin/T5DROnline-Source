@@ -302,8 +302,21 @@ move at 30; a jab Jin mashed from the hit on came out only at 30. Every
 other reaction traced (blocks, jab and kick hits, juggle hits, P1 and P2)
 turns able to act with bit 24 itself. So inside a hit reaction the tracker
 now counts bit 24 only: Bryan's d+4 is i15, **-13 on block, +3 on hit**,
-both checked with the defender mashing a jab. A taunt reported at +14 on hit
-could not be checked: neither 1+2+3+4 nor b+1+2 attacked in the traces.
+both checked with the defender mashing a jab.
+
+**Bryan's taunt (1+3+4).** Players saw it at +14 on hit. Traced the same way
+(Jin walking into it, Jin guarding, Bryan or Jin mashing a jab): the +14 is
+right, but the overlay called it a block and gave no startup (or the one of
+the move before). The taunt is an animation in which Bryan can act from its
+first frame -- it is cancellable: a jab pressed in its last active frame
+starts in the next one -- so it never looked like a move of its own; its
+attack is active 28 frames in. Jin's reaction is a stun (+0x15C 0x10000,
+the hit counter of a combo, a guard has 0) for 0 damage, the same whether he
+guards or not, and he can act again 15 frames after it began (a jab he
+mashed started one frame later). Bryan's jab started 14 frames before Jin's.
+Now an attack that comes out of such an animation is a move from the frame
+that animation began, a hit reaction counts as a hit without damage, and an
+older move no longer lends its startup: **i28, hit, +14**, guarded or not.
 
 These are the game's own mechanics (who can start a move first). Published
 frame data for other Tekken games often says "+1 / +8" for a jab; the numbers

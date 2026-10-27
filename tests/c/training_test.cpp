@@ -373,6 +373,65 @@ static void test_two_animation_move()
     }
 }
 
+/* Bryan's taunt 1+3+4 (traced in local lockstep, Bryan vs Jin): an animation in which
+ * Bryan can act from its first frame (it is cancellable; a jab pressed in its last
+ * active frame starts in the next one), active 28 frames in; Jin's reaction is a stun
+ * (class 0x10000, no damage) whether he guards or walks into it, able to act again 15
+ * frames after it began -- a jab mashed by Jin starts one frame later. So i28, hit,
+ * +14 (the jab race: Bryan's jab starts 14 frames before Jin's). A jab Bryan whiffed
+ * before must not lend the taunt its startup. */
+static void test_cancellable_taunt()
+{
+    auto taunt = [](Timeline& a) {
+        a.move(5, 6, 30); a.active(12, 12);     /* a jab into the air first: i8 */
+        a.f[40].new_move = true;                /* the taunt: able to act all along ... */
+        a.active(67, 69);                       /* ... active from its 28th frame */
+        a.f[71].can_act = false;                /* one frame between it and its end pose */
+        a.f[72].new_move = true;
+    };
+    {
+        Timeline a(160), d(160);
+        taunt(a);
+        d.move(68, 0x10000, 83);                /* the stun: no damage */
+        d.f[108].new_move = true;               /* standing again */
+        const Run r = run(a, d);
+        CHECK_EQ(r.results.size(), 2);
+        if (r.results.size() == 2) {
+            CHECK(r.results[0].kind == Kind::Whiff);
+            CHECK_EQ(r.results[0].startup, 8);
+            CHECK(r.results[1].kind == Kind::Hit);
+            CHECK_EQ(r.results[1].startup, 28);
+            CHECK_EQ(r.results[1].adv, 14);
+        }
+    }
+    /* Jin mashing a jab from the stun on: the window opens early (bit 24 alone at 79),
+     * both at 83, his jab starts at 84 -> the same +14 */
+    {
+        Timeline a(160), d(160);
+        taunt(a);
+        d.move(68, 0x10000, 83);
+        for (int t = 79; t < 83; t++) d.f[(size_t)t].cls = 0x10000;
+        for (int t = 69; t <= 83; t += 2) d.input(t, t, kSquare);
+        d.move(84, 7, 110); d.active(93, 93);
+        const Run r = run(a, d);
+        CHECK(r.results.size() >= 2);
+        if (r.results.size() >= 2) {
+            CHECK(r.results[1].kind == Kind::Hit);
+            CHECK_EQ(r.results[1].startup, 28);
+            CHECK_EQ(r.results[1].adv, 14);
+        }
+    }
+    /* a guard reaction (class 0) without damage stays a block */
+    {
+        Timeline a(160), d(160);
+        taunt(a);
+        d.move(68, 0, 83);
+        const Run r = run(a, d);
+        CHECK_EQ(r.results.size(), 2);
+        if (r.results.size() == 2) { CHECK(r.results[1].kind == Kind::Block); CHECK_EQ(r.results[1].adv, 14); }
+    }
+}
+
 /* ---- practice tools ----------------------------------------------------------------- */
 struct ComboRun { std::vector<PAction> acts; std::vector<bool> hidden; };
 static ComboRun combo(const std::vector<uint16_t>& frames, bool facing_left = false)
@@ -820,6 +879,7 @@ int main()
     test_down_and_counter();
     test_special_hit_reaction();
     test_two_animation_move();
+    test_cancellable_taunt();
     test_combos();
     test_dummy();
     test_recorder();

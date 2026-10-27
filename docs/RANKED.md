@@ -231,9 +231,9 @@ both PCs get the same, and sends `fight: {p1, p2, stage, rounds}` in
 
 Keys ("jin", "s20") are stable; the ids in `lobby/t5lobby/data/fighters.json`
 are the game's own (character ids 0-35 in the game's order, stage ids 17-34 of
-its stage select; names are known for two stages so far). Not offered: Jinpachi
-(no cursor cell in Versus) and Panda (reached through Kuma's cell with another
-button, unverified). Rounds: first to 3 (`T5L_ROUNDS`), like Tekken 6 online.
+its stage select, each with its name: docs/DIRECTFIGHT.md "Stage ids"). Not
+offered: Jinpachi (no cursor cell in Versus) and Panda (reached through Kuma's
+cell with another button, unverified). Rounds: first to 3 (`T5L_ROUNDS`), like Tekken 6 online.
 The stage is always resolved by the server: the game's own random pick happens
 before lockstep starts and would differ between the two PCs. Ranked and Quick
 draw it at random; in a casual match the players chose each other for

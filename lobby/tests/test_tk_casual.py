@@ -63,9 +63,10 @@ class TkCasualTest(TkBase):
         self.assertEqual(cas.stage_var.get(), "Random stage")
         names = list(cas.stage_cb.cget("values"))
         self.assertEqual(names[0], "Random stage")
-        self.assertIn("Scrapyard", names)
-        self.assertIn("Stage 17", names)
-        self.choose("P2 (right)", "Scrapyard")
+        self.assertIn("Ghetto Pit", names)
+        self.assertIn("Western Gate", names)
+        self.assertNotIn("Stage 17", names)                      # every stage has its name
+        self.choose("P2 (right)", "Ghetto Pit")
         self.pump(lambda: self.wish() == (1, "s20"))
         self.assertEqual((tab.cfg["casual_side"], tab.cfg["casual_stage"]), (1, "s20"))
         # a new login sends them again (they live in online.json)
@@ -79,7 +80,7 @@ class TkCasualTest(TkBase):
     def test_a_challenge_with_wishes_and_swap_sides(self):
         tab = self.tab
         self.login()
-        self.choose("P2 (right)", "Industrial yard")
+        self.choose("P2 (right)", "Industrial Complex")
         self.pump(lambda: self.wish() == (1, "s33"))
         self.other = client(self.s, "Rival")
         self.other.set_casual_prefs(0, "s33")
@@ -87,12 +88,12 @@ class TkCasualTest(TkBase):
         self.other.challenge(tab.client.me["id"])
         self.pump(lambda: self.bar_button("Accept") is not None)
         self.assertIn("Rival", tab.bar_text.get())
-        self.assertIn("wants to be P1 on Industrial yard", tab.bar_text.get())
+        self.assertIn("wants to be P1 on Industrial Complex", tab.bar_text.get())
         self.bar_button("Accept").invoke()
         self.pump(lambda: len(self.app.games) == 1)
         game = self.app.games[0]
         self.assertEqual(game.env["T5_NET_MODE"], "join")             # the tab asked for P2, Rival for P1
-        self.pump(lambda: "(P2 on Industrial yard)" in tab.match_var.get())
+        self.pump(lambda: "(P2 on Industrial Complex)" in tab.match_var.get())
         self.play_to_the_rematch_question(game)
         swap = self.bar_button("Rematch: swap sides")
         self.assertIsNotNone(swap)
@@ -103,7 +104,7 @@ class TkCasualTest(TkBase):
         self.other.rematch(off["match"], True)
         self.pump(lambda: len(self.app.games) >= 1 and tab.driver.ticket is not None
                   and tab.driver.ticket.role == "host", timeout=30)
-        self.pump(lambda: "(P1 on Industrial yard)" in tab.match_var.get())
+        self.pump(lambda: "(P1 on Industrial Complex)" in tab.match_var.get())
 
     def test_the_opponent_asks_for_the_swap(self):
         tab = self.tab

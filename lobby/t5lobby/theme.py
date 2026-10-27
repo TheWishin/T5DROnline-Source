@@ -441,7 +441,7 @@ class Theme:
             "h1": (disp, 20, heavy), "h2": (disp, 14, heavy), "h3": (disp, 11, heavy),
             "caps": (disp, 9, heavy), "hero": (disp, 14, heavy), "big": (disp, 26, heavy),
             "huge": (disp_reg, 30, "bold"), "num": (disp, 12, heavy), "mono": (mono, 10, "normal"),
-            "code": (mono, 14, "normal"),
+            "code": (mono, 14, "normal"), "brand": (disp, 16, heavy),
         }
         existing = set(tkfont.names(self.root))
         for key, (fam, size, weight) in spec.items():
@@ -566,6 +566,8 @@ class Theme:
             "Num.": dict(font=f["num"], foreground=C["text"]),
             "Mono.": dict(font=f["mono"], foreground=C["text"]),
             "Accent.": dict(font=f["bold"], foreground=C["accent_hi"]),
+            "Brand.": dict(font=f["brand"], foreground=C["text"]),           # the launcher's name in its header
+            "BrandAccent.": dict(font=f["brand"], foreground=C["accent_hi"]),
             "ok.": dict(foreground=C["ok"]), "warn.": dict(foreground=C["warn"]),
             "error.": dict(foreground=C["bad"]), "gold.": dict(font=f["bold"], foreground=C["gold"]),
         }

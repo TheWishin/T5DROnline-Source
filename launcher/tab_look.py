@@ -39,8 +39,9 @@ class Look:
         # sitting on the border line.
         self.inset = px(12) + 1                   # the card image's corner (theme.py: radius 12, border radius + 1)
         self.side = 0                             # (the content as far in as before: no tab gets wider)
-        # (the titles keep their case, so a heading font rather than the small capitals of the Online tab's sections)
-        self.caps_h = tkfont.Font(font=self.th.fonts["h3"]).metrics("linespace")
+        # (the titles in the Online tab's section style: small capitals, muted -- shown by a label of their own, the
+        # frame's text stays as it is written: tests and tools find the boxes by it)
+        self.caps_h = tkfont.Font(font=self.th.fonts["caps"]).metrics("linespace")
         img = self.th.images.get("frame_Card")
         if img is not None and "CardLF.border" not in st.element_names():
             size = 2 * px(12) + px(48)
@@ -142,21 +143,32 @@ class Look:
             # (the content's place inside the card: the card image's corners plus a little; under the title)
             edge = self.inset + self.side
             top = self.px(12) + self.caps_h + self.px(8) if title else edge
-            # (the title stays as it is written -- tests and tools find the boxes by it; the heading style does the rest)
             lf.configure(text=title, style="Card.TLabelframe", padding=(edge, top, edge, self.inset))
+            if title:
+                lf.configure(labelwidget=ttk.Label(lf, text=title.upper(), style="Card.Caps.TLabel"))
         except tk.TclError:
             return
         self.cards.append(lf)
         self.restyle(lf)
 
-    def card_frame(self, f, pad=18):
-        """A plain frame (the Play offline tab's content) -> one card."""
+    def card_frame(self, f, pad=16):
+        """A plain frame (the Play offline and Replays tabs' content) -> one card; its big title becomes the card's
+        section title in small capitals, like every other card's."""
         try:
             f.configure(style="Card.TFrame", padding=self.px(pad))
         except tk.TclError:
             return
         self.cards.append(f)
         self.restyle(f)
+        for w in f.winfo_children():
+            try:
+                if w.winfo_class() == "TLabel" and str(w.cget("style")) == "Card.H1.TLabel":
+                    w.configure(text=str(w.cget("text")).upper(), style="Card.Caps.TLabel")
+                    if w.winfo_manager() == "pack":
+                        w.pack_configure(pady=(0, self.px(6)))
+                    break
+            except tk.TclError:
+                pass
 
 
 def labelframes(w):

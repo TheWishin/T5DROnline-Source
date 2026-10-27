@@ -1,14 +1,17 @@
 """The Online tab's character select (1.1.5): a fighting-game select grid instead of a plain drop-down list.
 
-The play card shows the chosen fighter on a button; it opens the grid over the Online tab: Random and every fighter
-a player can pick (fighters.json, in the game's order), the chosen one lit in the accent colour, the player's main
-(the fighter of most of their counted matches, from the lobby) marked with a star. Keyboard: the arrow keys move,
+The play card shows the chosen fighter on a button; it opens the grid over the Online tab: Random first, then every
+fighter a player can pick (fighters.json) in the alphabetical order of the names shown, each with its picture, the
+chosen one lit in the accent colour, the player's main (the fighter of most of their counted matches, from the lobby)
+marked with a star. Keyboard: the arrow keys move,
 Enter or Space picks, Esc closes (Tab / Shift+Tab walk the tiles too); a controller as on the rest of the Online tab:
 Cross / A picks the tile that has the focus, Circle / B closes. A ranked set's lock greys the button and closes the
 grid (as it greyed the old list).
 
-Names only: the game's select-screen portraits are not in a form this launcher reads (the online lobby's layout,
-which rank_art.py reads for the rank plates, holds flags and plates, not faces), and nothing of the game is shipped.
+Pictures: the head and shoulders of the game's own select-screen render of each fighter, read from the player's
+built game into <output folder>\\cache\\fighters (fighter_art.py; never shipped) -- on the first use after BUILD GAME,
+in a thread, the grid fills them in when they are there. Without them (no build yet, a failed read) the tiles show
+the names alone.
 
 `tab.char_cb` is the button's stand-in for the old list (state "readonly" = open to choose, "disabled" = locked):
 tests, the e2e runner and the tab's own code keep using it as before; `tab.char_var` still holds the fighter's name.
@@ -16,10 +19,12 @@ tests, the e2e runner and the tab's own code keep using it as before; `tab.char_
 import tkinter as tk
 from tkinter import ttk
 
-from . import fighters
+from . import fighter_art, fighters
 from .i18n import t
 
-COLUMNS = 6
+COLUMNS = 6                 # names only
+COLUMNS_PICTURES = 9        # with the pictures (36 tiles: 4 rows)
+PICTURE = 64                # the pictures' size at 100 % display scaling
 STAR = "★"
 
 
@@ -58,10 +63,19 @@ class CharSelect:
         self.panel = None
         self.tiles = []                    # [(key, name, button)]
         self.cursor = 0                    # the tile with the keyboard focus (the controller's Cross picks it)
+        self.columns = COLUMNS
         self.button = ttk.Button(parent, style="Card.TButton", command=self.toggle, cursor="hand2")
         self.chip = _Chip(self, self.button)
         tab.char_var.trace_add("write", lambda *_a: self._label())
         self._label()
+        self._styles()
+        self.pic_size = self.px(PICTURE)
+        self.blank = None                  # the Random tile's empty picture (the tiles' text lines up)
+        fighter_art.FACES.listeners.append(self._pictures_ready)
+        try:
+            self.button.after(2500, self.prepare_pictures)      # (the first use after BUILD GAME reads them)
+        except tk.TclError:
+            pass
 
     # ------------------------------------------------------------------ the button
     def _label(self):
@@ -83,8 +97,73 @@ class CharSelect:
 
     # ------------------------------------------------------------------ the grid
     def choices(self):
-        """[(key, name)]: Random first, then every fighter a player can pick, in the game's order."""
-        return [(fighters.RANDOM, t("Random"))] + [(f["key"], f["name"]) for f in self.tab.table.selectable()]
+        """[(key, name)]: Random first, then every fighter a player can pick, by the name shown (A to Z)."""
+        picks = sorted(((f["key"], f["name"]) for f in self.tab.table.selectable()), key=lambda c: c[1].casefold())
+        return [(fighters.RANDOM, t("Random"))] + picks
+
+    # ------------------------------------------------------------------ pictures (fighter_art.py)
+    def _styles(self):
+        """Tile styles: the card buttons with the small font and less padding, so a picture and a name fit."""
+        st = ttk.Style(self.button)
+        th = self.view.th if hasattr(self.view, "th") else None
+        font = th.fonts["small"] if th is not None and "small" in getattr(th, "fonts", {}) else None
+        for base in ("Card.TButton", "Card.Accent.TButton"):
+            opts = {"padding": (self.px(4), self.px(4))}
+            if font is not None:
+                opts["font"] = font
+            st.configure("Fighter." + base, **opts)
+
+    def out_dir(self):
+        return getattr(getattr(getattr(self.tab, "app", None), "settings", None), "out_dir", None)
+
+    def prepare_pictures(self):
+        """Read the pictures from the built game once (a thread); the grid fills them in when they are there."""
+        faces, out = fighter_art.FACES, self.out_dir()
+        if out:
+            faces.set_folder(fighter_art.folder_for(out))
+        if faces.has(self.pic_size) or not out:
+            return
+        try:
+            from .tk_tab import _launcher_log
+            faces.prepare([self.pic_size], out_dir=out, after=self.button.after, log=_launcher_log)
+        except (tk.TclError, RuntimeError):
+            pass
+
+    def _pictures_ready(self):
+        try:
+            alive = self.button.winfo_exists()
+        except tk.TclError:
+            alive = False
+        if not alive:
+            fighter_art.FACES.listeners[:] = [f for f in fighter_art.FACES.listeners if f != self._pictures_ready]
+            return
+        if self.is_open():
+            self.open()                    # (again, with the pictures)
+
+    def random_picture(self, faces):
+        """The Random tile's picture: four fighters' pictures at half size, a new four each time the grid opens."""
+        import random
+        half = self.pic_size // 2
+        if len(faces) < 4 or half < 2:
+            return None
+        try:
+            img = tk.PhotoImage(master=self.button, width=half * 2, height=half * 2)
+            for k, face in enumerate(random.sample(faces, 4)):
+                small = face.subsample(max(1, face.width() // half))
+                img.tk.call(img, "copy", small, "-to", (k % 2) * half, (k // 2) * half)
+        except tk.TclError:
+            return None
+        self._random_img = img             # (kept: Tk drops an image nobody holds)
+        return img
+
+    def picture(self, key):
+        """The PhotoImage of fighter `key`, None without the pictures."""
+        faces = fighter_art.FACES
+        if not faces.has(self.pic_size):
+            return None
+        f = self.tab.table._f.get(key) if hasattr(self.tab.table, "_f") else None
+        gid = f.get("id") if isinstance(f, dict) else None
+        return faces.image(self.button, gid, self.pic_size) if isinstance(gid, int) else None
 
     def main_key(self):
         me = getattr(getattr(self.tab, "client", None), "me", None)
@@ -123,15 +202,28 @@ class CharSelect:
                                                                                           sticky="e")
         grid = self.view.body(p)
         grid.grid(row=1, column=0, sticky="nsew")
-        for c in range(COLUMNS):
+        if not fighter_art.FACES.has(self.pic_size):
+            self.prepare_pictures()        # (the first use: the grid gets them when they are read)
+        choices = self.choices()
+        pics = {key: self.picture(key) for key, _n in choices}
+        with_pics = any(pics.values())
+        self.columns = cols = COLUMNS_PICTURES if with_pics else COLUMNS
+        if with_pics:
+            pics[fighters.RANDOM] = self.random_picture([p for p in pics.values() if p is not None])
+            if self.blank is None:
+                self.blank = tk.PhotoImage(master=self.button, width=self.pic_size, height=self.pic_size)
+        for c in range(cols):
             grid.columnconfigure(c, weight=1, uniform="fighters")
         current = self.tab._char_key()
         self.tiles = []
-        for i, (key, name) in enumerate(self.choices()):
+        for i, (key, name) in enumerate(choices):
             style = "Card.Accent.TButton" if key == current else "Card.TButton"
             text = f"{name} {STAR}" if key == main and key != fighters.RANDOM else name
             b = ttk.Button(grid, text=text, style=style, command=lambda k=key, n=name: self.pick(k, n))
-            b.grid(row=i // COLUMNS, column=i % COLUMNS, sticky="nsew", padx=px(3), pady=px(3), ipady=px(5))
+            if with_pics:                  # the picture above the name (a missing one: the name alone, lined up)
+                b.configure(image=pics[key] or self.blank, compound="top", style="Fighter." + style)
+            b.grid(row=i // cols, column=i % cols, sticky="nsew", padx=px(3), pady=px(3),
+                   ipady=0 if with_pics else px(5))
             for seq, dr, dc in (("<Left>", 0, -1), ("<Right>", 0, 1), ("<Up>", -1, 0), ("<Down>", 1, 0)):
                 b.bind(seq, lambda _e, j=i, r=dr, c=dc: self._move(j, r, c))
             b.bind("<Home>", lambda _e: self._focus(0))
@@ -162,9 +254,10 @@ class CharSelect:
         if dc:
             j = i + dc
         else:
-            j = i + dr * COLUMNS
+            cols = self.columns
+            j = i + dr * cols
             if j >= n:                           # down from the last row's gap: the last tile
-                j = n - 1 if i // COLUMNS < (n - 1) // COLUMNS else i
+                j = n - 1 if i // cols < (n - 1) // cols else i
         if 0 <= j < n:
             self._focus(j)
         return "break"

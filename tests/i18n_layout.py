@@ -526,6 +526,28 @@ class Walk:
             tab.charsel.open()
             self.screen("online character select")
             tab.charsel.close()
+            # with the fighters' pictures (fighter_art.py; stand-ins of one colour: the walk has no game)
+            from t5lobby import fighter_art, rank_art
+            faces = fighter_art.FACES
+            saved = (faces.folder, set(faces.sizes), dict(faces.images), os.environ.get("T5_FIGHTER_ART"))
+            pics = tempfile.mkdtemp(prefix="t5dr-walk-faces")
+            for g in range(fighter_art.COUNT):
+                with open(fighter_art.face_path(pics, g), "wb") as f:
+                    f.write(rank_art.png_bytes(bytes((90, 100, 120, 255)) * fighter_art.SIZE ** 2, fighter_art.SIZE,
+                                               fighter_art.SIZE))
+            with open(os.path.join(pics, "fighters.json"), "w") as f:
+                f.write('{"format": %d, "count": %d}' % (fighter_art.FORMAT, fighter_art.COUNT))
+            os.environ["T5_FIGHTER_ART"] = pics
+            faces.folder, faces.sizes, faces.images = pics, set(), {}
+            faces.prepare_now([tab.charsel.pic_size])
+            tab.charsel.open()
+            self.screen("online character select, pictures")
+            tab.charsel.close()
+            faces.folder, faces.sizes, faces.images = saved[0], saved[1], saved[2]
+            if saved[3] is None:
+                os.environ.pop("T5_FIGHTER_ART", None)
+            else:
+                os.environ["T5_FIGHTER_ART"] = saved[3]
         from t5lobby import fwcheck
         tab.fw_status = fwcheck.Status("blocked", ["game", "launcher"],
                                        paths={"launcher": r"C:\T5DR Online\python\pythonw.exe"})

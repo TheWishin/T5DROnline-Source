@@ -372,22 +372,32 @@ struct Place { float x = 0, z = 0, angle = 0; };
 
 inline float face_toward(float fx, float fz, float tx, float tz) { return atan2f(tx - fx, tz - fz); }
 
+/* A turn by d radians of a floor vector (x, z) -- a direction, or a place relative
+ * to the fighter: the sense in which the angle grows, so turning the facing
+ * direction (sin a, cos a) by d gives (sin(a + d), cos(a + d)). */
+inline void turn(float& x, float& z, float d)
+{
+    const float c = cosf(d), s = sinf(d), nx = x * c + z * s, nz = z * c - x * s;
+    x = nx;
+    z = nz;
+}
+
 /* The wall resets. The walls are the stage's own collision, so they are found
- * with it, not read from the stage. Frame 1: the fighter that goes to the wall
- * (the mover) is put far out along the line through both fighters (kProbe past
- * P1); a game that pushes fighters back inside its walls puts it at the wall.
- * If it is still out there next frame, the mover slides instead: kGap past the
- * other fighter, then kStep further each frame, until a frame in which the game
- * moved it (that is the wall) -- or kMaxSteps without one: no wall in that
- * direction, the places from before come back. At the wall, the other one goes
- * kGap in front of the mover, both facing each other. */
+ * with it, not read from the stage: the fighter that goes to the wall (the
+ * mover) slides along the line through both fighters, from kGap past the other
+ * one, kStep further each frame. A place past a wall is one the game does not
+ * keep: it puts the fighter elsewhere (traced in Practice: somewhere inside the
+ * stage, not on the line). The first place it did not keep ends the slide; a
+ * few frames of halving between it and the last place it kept find the wall to
+ * kStep / 2^kRefine. No wall within kMaxSteps: the places from before. At the
+ * wall the other one goes kGap in front of the mover, both facing each other. */
 class Placer {
 public:
-    static constexpr float kProbe = 60000.0f;   /* far past any wall */
     static constexpr float kGap = 1100.0f;      /* the distance at the wall: close, in reach of most moves */
-    static constexpr float kNoWall = 1000.0f;   /* still this close to the probe: not pushed back */
-    static constexpr float kStep = 250.0f;      /* the slide: units per frame (15 m/s) */
-    static constexpr int kMaxSteps = 160;       /* 40,000 units of slide without a wall: none there */
+    static constexpr float kStep = 300.0f;      /* the slide: units per frame (18 m/s) */
+    static constexpr int kMaxSteps = 120;       /* 36,000 units without a wall: none there */
+    static constexpr int kRefine = 4;           /* halvings at the wall: within 300 / 16 < 20 units */
+    static constexpr float kKept = 2.0f;        /* the game kept a place: it is still within this */
 
     struct Cmd {
         bool done = false;      /* finished: out[] holds both places (P1, the dummy) */
@@ -397,8 +407,8 @@ public:
     };
 
     /* a wall action (DummyWall*, PlayerWall*): returns false for other actions.
-     * *mover: 0 = P1, 1 = the dummy; probe: where it goes this frame */
-    bool start(PAction a, const Place& p1, const Place& dummy, int* mover, Place* probe)
+     * *mover: 0 = P1, 1 = the dummy; first: where it goes this frame */
+    bool start(PAction a, const Place& p1, const Place& dummy, int* mover, Place* first)
     {
         float ux = dummy.x - p1.x, uz = dummy.z - p1.z;
         const float len = sqrtf(ux * ux + uz * uz);
@@ -414,56 +424,71 @@ public:
         }
         vx_ = ux * s; vz_ = uz * s;
         before_[0] = p1; before_[1] = dummy;
-        set_ = Place{ p1.x + vx_ * kProbe, p1.z + vz_ * kProbe, before_[mover_].angle };
-        sliding_ = false;
         k_ = 0;
+        refine_ = -1;
+        lo_ = kGap; hi_ = 0;
         pending_ = true;
         *mover = mover_;
-        *probe = set_;
+        *first = at(lo_);
+        set_r_ = lo_;
         return true;
     }
     bool pending() const { return pending_; }
     int mover() const { return mover_; }
 
-    /* every frame while pending: the mover's place now (after the game ran a frame from what was set) */
+    /* every frame while pending: the mover's place now (the game ran a frame from the place set last) */
     Cmd next(const Place& now)
     {
         Cmd c;
-        const float dx = now.x - set_.x, dz = now.z - set_.z, d2 = dx * dx + dz * dz;
-        if (!sliding_ ? d2 >= kNoWall * kNoWall : d2 > 1.0f) return at_wall(now);
-        sliding_ = true;
-        if (++k_ > kMaxSteps) {
-            pending_ = false;
-            c.done = true;
-            c.out[0] = before_[0];
-            c.out[1] = before_[1];
-            return c;
+        const Place want = at(set_r_);
+        const float dx = now.x - want.x, dz = now.z - want.z;
+        const bool kept = dx * dx + dz * dz <= kKept * kKept;
+        if (refine_ < 0) {                       /* sliding */
+            if (kept) {
+                lo_ = set_r_;
+                if (++k_ > kMaxSteps) return finish(false);
+                set_r_ = kGap + kStep * (float)k_;
+            } else {
+                if (set_r_ <= kGap) return finish(true);   /* a wall right behind the other one */
+                hi_ = set_r_;
+                refine_ = 0;
+                set_r_ = (lo_ + hi_) * 0.5f;
+            }
+        } else {                                 /* halving between the last kept and the first lost place */
+            if (kept) lo_ = set_r_; else hi_ = set_r_;
+            if (++refine_ >= kRefine) return finish(true);
+            set_r_ = (lo_ + hi_) * 0.5f;
         }
-        const Place& other = before_[1 - mover_];
-        const float r = kGap + kStep * (float)(k_ - 1);
-        set_ = Place{ other.x + vx_ * r, other.z + vz_ * r, before_[mover_].angle };
-        c.mover = set_;
+        c.mover = at(set_r_);
         return c;
     }
     void cancel() { pending_ = false; }
 
 private:
-    Cmd at_wall(const Place& now)
+    /* the mover's place r past the other fighter, along the line */
+    Place at(float r) const
+    {
+        const Place& o = before_[1 - mover_];
+        return Place{ o.x + vx_ * r, o.z + vz_ * r, before_[mover_].angle };
+    }
+    Cmd finish(bool wall)
     {
         Cmd c;
         pending_ = false;
-        c.done = c.wall = true;
+        c.done = true;
+        c.wall = wall;
+        if (!wall) { c.out[0] = before_[0]; c.out[1] = before_[1]; return c; }
         const int o = 1 - mover_;
-        c.out[mover_] = now;
-        c.out[o] = Place{ now.x - vx_ * kGap, now.z - vz_ * kGap, 0 };
+        c.out[mover_] = at(lo_);
+        c.out[o] = Place{ c.out[mover_].x - vx_ * kGap, c.out[mover_].z - vz_ * kGap, 0 };
         c.out[mover_].angle = face_toward(c.out[mover_].x, c.out[mover_].z, c.out[o].x, c.out[o].z);
         c.out[o].angle = face_toward(c.out[o].x, c.out[o].z, c.out[mover_].x, c.out[mover_].z);
         return c;
     }
-    bool pending_ = false, sliding_ = false;
-    int mover_ = 1, k_ = 0;
-    float vx_ = 0, vz_ = 0;
-    Place before_[2], set_;
+    bool pending_ = false;
+    int mover_ = 1, k_ = 0, refine_ = -1;
+    float vx_ = 0, vz_ = 0, lo_ = 0, hi_ = 0, set_r_ = 0;
+    Place before_[2];
 };
 
 /* ---- the dummy's behaviour ------------------------------------------------------ */

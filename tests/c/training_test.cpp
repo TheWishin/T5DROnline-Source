@@ -559,23 +559,20 @@ static void test_recorder()
 
 static bool near(float a, float b, float eps = 0.01f) { return fabsf(a - b) < eps; }
 
-/* A stand-in for the game's wall collision: a square arena |x|, |z| <= w. With
- * `instant` it brings any fighter outside back to the wall; without, only one
- * that is at most `reach` past it (a push-out of limited depth). */
+/* A stand-in for the game's walls: a square stage |x|, |z| <= w. A place
+ * outside is not kept -- the fighter is put somewhere else (the game, traced:
+ * a place inside the stage, not on the line) -- and with `nowall` nothing is
+ * ever moved. */
 struct Arena {
-    float w = 4000, reach = 400;
-    bool instant = true, walls = true;
+    float w = 4000;
+    bool nowall = false;
     Place frame(Place p) const
     {
-        if (!walls) return p;
-        auto clamp1 = [&](float v) {
-            if (fabsf(v) <= w) return v;
-            if (!instant && fabsf(v) > w + reach) return v;
-            return v > 0 ? w : -w;
-        };
-        p.x = clamp1(p.x);
-        p.z = clamp1(p.z);
-        return p;
+        if (nowall || (fabsf(p.x) <= w && fabsf(p.z) <= w)) return p;
+        Place q = p;
+        q.x = -0.7f * w;          /* "elsewhere": far from the line's end */
+        q.z = 0.6f * w;
+        return q;
     }
 };
 
@@ -605,48 +602,51 @@ static void test_placer()
     dm.x = -1000; dm.z = 0; dm.angle = pi2;
     CHECK(near(face_toward(p1.x, p1.z, dm.x, dm.z), -pi2));
     CHECK(near(face_toward(dm.x, dm.z, p1.x, p1.z), pi2));
-    /* the probe goes far out along the line */
+    /* the slide starts kGap past the other fighter, on the far side */
     {
         Placer pl;
         int mover = -1;
-        Place probe;
-        CHECK(pl.start(PAction::DummyWallFront, p1, dm, &mover, &probe));
+        Place first;
+        CHECK(pl.start(PAction::DummyWallFront, p1, dm, &mover, &first));
         CHECK_EQ(mover, 1);
-        CHECK(near(probe.x, 1000 - Placer::kProbe) && near(probe.z, 0));
+        CHECK(near(first.x, 1000 - Placer::kGap) && near(first.z, 0));
         CHECK(pl.pending());
-        CHECK(pl.start(PAction::PlayerWallBack, p1, dm, &mover, &probe));
+        CHECK(pl.start(PAction::PlayerWallBack, p1, dm, &mover, &first));
         CHECK_EQ(mover, 0);
-        CHECK(near(probe.x, 1000 + Placer::kProbe));
-        CHECK(!pl.start(PAction::ResetRound, p1, dm, &mover, &probe));
-        CHECK(!pl.start(PAction::Record, p1, dm, &mover, &probe));
+        CHECK(near(first.x, -1000 + Placer::kGap));
+        CHECK(pl.start(PAction::DummyWallBack, p1, dm, &mover, &first));
+        CHECK(near(first.x, 1000 + Placer::kGap));
+        CHECK(pl.start(PAction::PlayerWallFront, p1, dm, &mover, &first));
+        CHECK(near(first.x, -1000 - Placer::kGap));
+        CHECK(!pl.start(PAction::ResetRound, p1, dm, &mover, &first));
+        CHECK(!pl.start(PAction::Record, p1, dm, &mover, &first));
     }
-    /* every wall reset, the game bringing the fighter back at once and only with a push-out of limited depth */
-    for (int inst = 0; inst < 2; inst++) {
+    /* every wall reset finds the wall within kStep / 16, inside it */
+    {
         Arena ar;
-        ar.instant = inst == 1;
-        const struct { PAction a; int mover; float wall_x, other_x; } cases[] = {
-            { PAction::DummyWallFront, 1, -4000, -4000 + Placer::kGap },
-            { PAction::DummyWallBack, 1, 4000, 4000 - Placer::kGap },
-            { PAction::PlayerWallFront, 0, -4000, -4000 + Placer::kGap },
-            { PAction::PlayerWallBack, 0, 4000, 4000 - Placer::kGap },
+        const struct { PAction a; int mover; float sign; } cases[] = {
+            { PAction::DummyWallFront, 1, -1 },
+            { PAction::DummyWallBack, 1, 1 },
+            { PAction::PlayerWallFront, 0, -1 },
+            { PAction::PlayerWallBack, 0, 1 },
         };
         for (const auto& k : cases) {
             int frames = 0;
             const Placer::Cmd c = place(k.a, p1, dm, ar, &frames);
             CHECK(c.done && c.wall);
-            CHECK(near(c.out[k.mover].x, k.wall_x) && near(c.out[k.mover].z, 0));
-            CHECK(near(c.out[1 - k.mover].x, k.other_x));
+            const float wx = c.out[k.mover].x * k.sign;
+            CHECK(wx <= ar.w && wx > ar.w - Placer::kStep / 16 - 0.1f);
+            CHECK(near(c.out[k.mover].z, 0));
+            CHECK(near(c.out[1 - k.mover].x, c.out[k.mover].x - k.sign * Placer::kGap, 0.1f));
             /* both face each other */
-            const float want = k.wall_x < 0 ? pi2 : -pi2;
-            CHECK(near(c.out[k.mover].angle, want, 0.001f) && near(c.out[1 - k.mover].angle, -want, 0.001f));
-            if (ar.instant) CHECK_EQ(frames, 1);
-            else CHECK(frames > 1 && frames < 40);
+            CHECK(near(c.out[k.mover].angle, -k.sign * pi2, 0.001f) && near(c.out[1 - k.mover].angle, k.sign * pi2, 0.001f));
+            CHECK(frames < 25);
         }
     }
     /* no wall: the places from before, after the slide gave up */
     {
         Arena ar;
-        ar.walls = false;
+        ar.nowall = true;
         int frames = 0;
         const Placer::Cmd c = place(PAction::DummyWallFront, p1, dm, ar, &frames);
         CHECK(c.done && !c.wall);
@@ -662,16 +662,28 @@ static void test_placer()
         int frames = 0;
         const Placer::Cmd c = place(PAction::DummyWallFront, a, b, ar, &frames);
         CHECK(c.done && c.wall);
+        CHECK(c.out[1].z >= -3000 && c.out[1].z < -3000 + 20);
         CHECK(near(c.out[0].x, c.out[1].x + 0.6f * Placer::kGap, 0.1f) && near(c.out[0].z, c.out[1].z + 0.8f * Placer::kGap, 0.1f));
     }
     /* on top of each other: the line is where P1 looks */
     {
         Placer pl;
         int mover;
-        Place probe;
-        CHECK(pl.start(PAction::DummyWallFront, p1, p1, &mover, &probe));
-        CHECK(near(probe.x, 1000 - Placer::kProbe, 1) && near(probe.z, 0, 1));
+        Place first;
+        CHECK(pl.start(PAction::DummyWallFront, p1, p1, &mover, &first));
+        CHECK(near(first.x, 1000 - Placer::kGap, 1) && near(first.z, 0, 1));
     }
+    /* turning: the facing direction (sin a, cos a) turned by d is the one of a + d; the fighters'
+     * matrices (rows (cos a, -sin a) and (sin a, cos a) in x/z) turn the same way */
+    for (float a0 : { -1.5707963f, 0.3f, 2.5f })
+        for (float d : { 3.1415927f, -0.7f, 1.2f }) {
+            float x = sinf(a0), z = cosf(a0);
+            turn(x, z, d);
+            CHECK(near(x, sinf(a0 + d), 1e-4f) && near(z, cosf(a0 + d), 1e-4f));
+            float rx = cosf(a0), rz = -sinf(a0);
+            turn(rx, rz, d);
+            CHECK(near(rx, cosf(a0 + d), 1e-4f) && near(rz, -sinf(a0 + d), 1e-4f));
+        }
 }
 
 /* ---- font and layout ------------------------------------------------------------ */

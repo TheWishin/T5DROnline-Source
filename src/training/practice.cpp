@@ -45,9 +45,17 @@ inline uint32_t rd32(uint32_t a) { uint32_t v; memcpy(&v, vm_base + a, 4); retur
 inline uint16_t rd16(uint32_t a) { uint16_t v; memcpy(&v, vm_base + a, 2); return _byteswap_ushort(v); }
 inline uint8_t  rd8(uint32_t a)  { return vm_base[a]; }
 
-/* positions (training_logic.h Place): x, z of the base, x, z of the root (the base moved by the
- * animation), the angle the fighter faces */
-constexpr uint32_t kPosX = 0x10, kPosZ = 0x18, kRootX = 0x24, kRootZ = 0x2C, kAngle = 0x30;
+/* A fighter's place (traced in Practice, T5_TRAINING_TRACE): the base x / z at
+ * +0x10 / +0x18 and its facing angle at +0x30; the root (the base moved by the
+ * animation) at +0x24 / +0x2C and its angle at +0x84; three 4x4 world
+ * matrices of the root (this frame and the two before) at +0x700, +0x740 and
+ * +0x780: rows 0-2 the rotation (row 2 the facing direction), row 3 the
+ * position. The game takes the root's motion from the matrices, so a place
+ * written to the base alone springs back or jumps (traced: a fighter put 4,000
+ * units away moved another 1,273 in the next frame) and an angle written to
+ * +0x30 alone is undone. put_place moves and turns all of them alike. */
+constexpr uint32_t kPosX = 0x10, kPosZ = 0x18, kAngle = 0x30, kRootX = 0x24, kRootZ = 0x2C, kRootAngle = 0x84;
+constexpr uint32_t kMatrix[3] = { 0x700, 0x740, 0x780 };
 
 inline float rdf(uint32_t a) { const uint32_t u = rd32(a); float f; memcpy(&f, &u, 4); return f; }
 /* THE store into guest memory: only from put_place, only behind allowed() (offline Practice) */
@@ -62,15 +70,40 @@ Place read_place(int p)
     return pl;
 }
 
+inline float wrap_angle(float a)
+{
+    while (a > 3.14159265f) a -= 6.28318531f;
+    while (a <= -3.14159265f) a += 6.28318531f;
+    return a;
+}
+
+/* a point (x at a, z at a + 8) relative to the old base: turned by d, then put at the new base */
+void move_point(uint32_t a, float x0, float z0, const Place& to, float d)
+{
+    float x = rdf(a) - x0, z = rdf(a + 8) - z0;
+    turn(x, z, d);
+    putf(a, to.x + x);
+    putf(a + 8, to.z + z);
+}
+
 void put_place(int p, const Place& to)
 {
     const uint32_t b = kFighter[p];
-    const float dx = to.x - rdf(b + kPosX), dz = to.z - rdf(b + kPosZ);
+    const float x0 = rdf(b + kPosX), z0 = rdf(b + kPosZ), d = to.angle - rdf(b + kAngle);
+    move_point(b + kRootX, x0, z0, to, d);
+    for (uint32_t m : kMatrix) {
+        for (uint32_t r = 0; r < 3; r++) {             /* the rotation rows: their x / z turn */
+            float x = rdf(b + m + r * 16), z = rdf(b + m + r * 16 + 8);
+            turn(x, z, d);
+            putf(b + m + r * 16, x);
+            putf(b + m + r * 16 + 8, z);
+        }
+        move_point(b + m + 48, x0, z0, to, d);         /* the position row */
+    }
     putf(b + kPosX, to.x);
     putf(b + kPosZ, to.z);
-    putf(b + kRootX, rdf(b + kRootX) + dx);
-    putf(b + kRootZ, rdf(b + kRootZ) + dz);
     putf(b + kAngle, to.angle);
+    putf(b + kRootAngle, wrap_angle(rdf(b + kRootAngle) + d));
 }
 
 Sample read_fighter(uint32_t b)

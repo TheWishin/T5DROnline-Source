@@ -99,6 +99,8 @@ DEFAULTS = {
     "training": "frames",      # training overlay in Practice: off | inputs | frames (inputs + frame data), T5_TRAINING
     "training_all": False,     # ... also in the other offline modes (T5_TRAINING_ALL=1)
     "training_online": False,  # ... also online, this PC's own inputs only (T5_TRAINING_ONLINE=1)
+    "practice": True,          # practice tools in Practice (offline): SELECT combos, dummy, recordings, T5_PRACTICE
+    "practice_dummy": "game",  # the dummy's behaviour at the start: game | block | crouch | walk | step, T5_PRACTICE_DUMMY
     "router_ports": True,      # online: forward the game's port on the router for a match (PCP / NAT-PMP / UPnP)
     "language": "auto",        # auto (the Windows language) | en | de | es | ko | ja | pt-BR | fr -- applies at start
     "discord_presence": False, # online: show the lobby / search / match in Discord (Rich Presence, docs/ONLINE.md)
@@ -180,6 +182,10 @@ class Settings(dict):
             self["stage_blur"] = "off"
         if not isinstance(self["training"], str) or self["training"] not in TRAINING_MODES:
             self["training"] = "frames"
+        if not isinstance(self["practice"], bool):
+            self["practice"] = True
+        if not isinstance(self["practice_dummy"], str) or self["practice_dummy"] not in PRACTICE_DUMMY:
+            self["practice_dummy"] = "game"
 
     def save(self):
         try:
@@ -246,6 +252,12 @@ class Settings(dict):
                 if self["training_online"]:
                     env["T5_TRAINING_ONLINE"] = "1"
                 env["T5_TRAINING_LANG"] = i18n.resolve(self["language"]) if I18N else "en"
+        # Practice tools (docs/TRAINING.md "Practice tools"): offline Practice only -- the game never uses
+        # them online, in a replay or while spectating, whatever this says.
+        env["T5_PRACTICE"] = "1" if self["practice"] else "0"
+        if self["practice"]:
+            env["T5_PRACTICE_DUMMY"] = self["practice_dummy"] if self["practice_dummy"] in PRACTICE_DUMMY else "game"
+            env.setdefault("T5_TRAINING_LANG", i18n.resolve(self["language"]) if I18N else "en")
         # Unlocks count offline only: a game started for online play answers as a fresh save does,
         # whatever it is given (both PCs must build the same select screens and stage lists); online, Jinpachi
         # and the random cell come with the match kind instead (T5_NET_UNLOCKS from the lobby's match event).
@@ -1169,6 +1181,22 @@ TRAINING_MODES = {       # English; t(label) where it is shown
     "inputs": N_("Inputs"),
     "frames": N_("Inputs + frame data"),
 }
+
+# Practice tools (docs/TRAINING.md "Practice tools"): in Practice, offline only, P1 holds SELECT and
+# presses 3 for a position reset (with f / b / df / db: against a wall), 1 / 2 / 4 to record the
+# dummy, play it once or in a loop (5 slots, tap up / down), and taps forward / back to change what
+# the dummy does. The game type, netplay, replays and spectating are checked by the game itself.
+PRACTICE_DUMMY = {       # English; t(label) where it is shown -- the dummy's behaviour at the start
+    "game": N_("As set in the game's Practice menu"),
+    "block": N_("Blocks after the first hit"),
+    "crouch": N_("Crouches"),
+    "walk": N_("Walks forward and back"),
+    "step": N_("Sidesteps"),
+}
+PRACTICE_HELP = N_(
+    "In Practice, hold SELECT and press: 3 round start; f+3 / b+3 the dummy against the wall in front of / "
+    "behind you; df+3 / db+3 you against the wall in front of / behind you. 1 records the dummy (you play it), "
+    "2 plays the recording once, 4 in a loop; tap up / down for slot 1-5, forward / back for what the dummy does.")
 
 
 def internal_res_for_screen(width, height):

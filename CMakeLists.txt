@@ -290,7 +290,8 @@ set_source_files_properties(${DIRECTFIGHT_SOURCES} PROPERTIES COMPILE_DEFINITION
 
 # Training overlay (our own code, src/training/, docs/TRAINING.md): input display and
 # frame data drawn by the runtime's overlay layer (ps3recomp patch 0045). Off unless
-# T5_TRAINING is set; reads guest memory only, never writes it.
+# T5_TRAINING is set; reads guest memory only, never writes it. The practice tools
+# (practice.cpp) change the game -- in offline Practice only, with T5_PRACTICE=1.
 file(GLOB TRAINING_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/training/*.cpp")
 target_sources(t5dr PRIVATE ${TRAINING_SOURCES})
 set_source_files_properties(${TRAINING_SOURCES} PROPERTIES COMPILE_DEFINITIONS _CRT_SECURE_NO_WARNINGS

@@ -31,10 +31,10 @@ index ade876d..531c98d 100644
                  const u32 new_len = (u32)n0 + alen + (u32)n1;
                  const u32 old_len = (u32)(end + 1 - at);
 diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
-index 5f2aa48..0637101 100644
+index f81c27c..363977a 100644
 --- a/libs/video/rsx_live_draw.c
 +++ b/libs/video/rsx_live_draw.c
-@@ -506,6 +506,27 @@ static float g_ld_res_scale = 1.0f;
+@@ -507,6 +507,27 @@ static float g_ld_res_scale = 1.0f;
  /* PS3_STAGE_BLUR (patch 0043): 1 = the stages' blur and glow as the game
   * draws them (default), 0 = off. See ld_guest_view_srv. */
  static int g_ld_stage_blur = 1;
@@ -62,7 +62,7 @@ index 5f2aa48..0637101 100644
  /* Patch 0051: the cheaper guest view and present downscale (RSX_GVIEW_FAST=0 /
   * RSX_PRESENT_FAST=0: patch 0043's / 0038's shaders, for comparisons). */
  static int g_ld_gview_fast = -1, g_ld_present_fast = -1;
-@@ -2995,10 +3016,10 @@ static void ld_gt_harvest(void)
+@@ -3126,10 +3147,10 @@ static void ld_gt_harvest(void)
   * No CPU wait: results are read once their fence passed. Off by default (a
   * few hundred timestamps a frame). */
  enum { GP_LIST = 0, GP_PASS, GP_CLEAR, GP_ZCLEAR, GP_UPLOAD, GP_FEEDBACK, GP_SURFCOPY, GP_GUESTVIEW,
@@ -75,7 +75,7 @@ index 5f2aa48..0637101 100644
  #define GP_CAP 16384u
  #define GP_LISTS 64u
  typedef struct { u8 kind, fp16, mrt; u32 a, b; u32 w, h; } gp_label;
-@@ -3018,8 +3039,9 @@ static struct {
+@@ -3149,8 +3170,9 @@ static struct {
      u64 pend_start[GP_LISTS], pend_n[GP_LISTS], pend_fence[GP_LISTS];
      u32 pend_head, pend_tail;
      u32 last_key;                    /* the pass now bound (target | zslot | mrt) */
@@ -86,18 +86,20 @@ index 5f2aa48..0637101 100644
      u64 total_ticks, lists, frames0;
  } g_gp = { -1 };
  
-@@ -3051,7 +3073,9 @@ static void ld_gp_init(void)
+@@ -3185,8 +3207,10 @@ static void ld_gp_init(void)
      g_gp.ms_per_tick = 1000.0 / (double)freq;
      g_gp.last_key = ~0u;
      g_gp.on = 1;
--    fprintf(stderr, "[gpu-pass] per-pass timestamps on (RSX_GPU_PASSES)\n");
-+    g_gp.per_draw = *e == '2';
-+    fprintf(stderr, "[gpu-pass] per-pass timestamps on (RSX_GPU_PASSES)%s\n",
+-    fprintf(stderr, "[gpu-pass] per-pass timestamps on (RSX_GPU_PASSES%s)\n",
+-            e && *e ? "" : "; on by default with resource binding tier 1");
++    g_gp.per_draw = e && *e == '2';
++    fprintf(stderr, "[gpu-pass] per-pass timestamps on (RSX_GPU_PASSES%s)%s\n",
++            e && *e ? "" : "; on by default with resource binding tier 1",
 +            g_gp.per_draw ? ", and per draw by pipeline (pso key as in RSX_DRAW_CSV)" : "");
  }
  static void ld_gp_harvest(void);
  static void ld_gp_mark(u32 kind, u32 a, u32 b, u32 w, u32 h, int fp16, u32 mrt)
-@@ -3068,7 +3092,7 @@ static void ld_gp_mark(u32 kind, u32 a, u32 b, u32 w, u32 h, int fp16, u32 mrt)
+@@ -3203,7 +3227,7 @@ static void ld_gp_mark(u32 kind, u32 a, u32 b, u32 w, u32 h, int fp16, u32 mrt)
      g_gp.draws[i] = 0;
      g_gp.cur = g_gp.head;
      g_gp.head++;
@@ -106,7 +108,7 @@ index 5f2aa48..0637101 100644
  }
  static void ld_gp_list_begin(void)
  {
-@@ -3105,6 +3129,16 @@ static void ld_gp_submitted(int k, u64 fence_value)
+@@ -3240,6 +3264,16 @@ static void ld_gp_submitted(int k, u64 fence_value)
  {
      if (k >= 0) g_gp.pend_fence[k] = fence_value;
  }
@@ -123,7 +125,7 @@ index 5f2aa48..0637101 100644
  static void ld_gp_note_draw(void)
  {
      if (g_gp.on > 0 && g_gp.open) g_gp.draws[g_gp.cur % GP_CAP]++;
-@@ -3141,7 +3175,7 @@ static void ld_gp_harvest(void)
+@@ -3276,7 +3310,7 @@ static void ld_gp_harvest(void)
                      A->fp16 == L->fp16 && A->mrt == L->mrt) break;
              }
              if (a == g_gp.n_acc) {
@@ -132,7 +134,7 @@ index 5f2aa48..0637101 100644
                  else {
                      gp_acc* A = &g_gp.acc[g_gp.n_acc++];
                      memset(A, 0, sizeof *A);
-@@ -3172,7 +3206,7 @@ static void ld_gp_report(u32 frames_now)
+@@ -3307,7 +3341,7 @@ static void ld_gp_report(u32 frames_now)
      qsort(g_gp.acc, g_gp.n_acc, sizeof(gp_acc), gp_cmp);
      fprintf(stderr, "[gpu-pass] %u frames, %.3f ms GPU per frame in %.1f lists; per frame:", frames,
              (double)g_gp.total_ticks * g_gp.ms_per_tick / frames, (double)g_gp.lists / frames);
@@ -141,7 +143,7 @@ index 5f2aa48..0637101 100644
          const gp_acc* A = &g_gp.acc[a];
          const double ms = (double)A->ticks * g_gp.ms_per_tick / frames;
          if (ms < 0.005) break;
-@@ -3183,11 +3217,30 @@ static void ld_gp_report(u32 frames_now)
+@@ -3318,6 +3352,8 @@ static void ld_gp_report(u32 frames_now)
          if (A->kind == GP_PASS && A->b != 0xFFFFFFFFu) fprintf(stderr, " z 0x%08X", A->b);
          if (A->kind == GP_PASS && A->mrt > 1) fprintf(stderr, " mrt %u", A->mrt);
          if (A->kind == GP_PRESENT || A->kind == GP_DEPTHSNAP || A->kind == GP_ZCLEAR) fprintf(stderr, " %ux%u", A->w, A->h);
@@ -150,7 +152,9 @@ index 5f2aa48..0637101 100644
          fprintf(stderr, ": %.3f ms (%.1fx", ms, (double)A->n / frames);
          if (A->draws) fprintf(stderr, ", %.0f draws", (double)A->draws / frames);
          fprintf(stderr, ")");
-     }
+@@ -3332,6 +3368,23 @@ static void ld_gp_report(u32 frames_now)
+                 g_ld_up[4] / 1048576.0 / g_ld_up_frames);
+     memset(g_ld_up, 0, sizeof g_ld_up); g_ld_up_frames = 0;
      fprintf(stderr, "\n");
 +    if (g_gp.per_draw) {                 /* every draw, summed per target (the list above stops at 48) */
 +        u32 tw[16] = {0}, th[16] = {0}, nt = 0;
@@ -172,7 +176,7 @@ index 5f2aa48..0637101 100644
      g_gp.n_acc = 0; g_gp.total_ticks = 0; g_gp.lists = 0; g_gp.frames0 = frames_now;
  }
  
-@@ -6845,7 +6898,7 @@ static ID3D12PipelineState* get_pso(
+@@ -7050,7 +7103,7 @@ static ID3D12PipelineState* get_pso(
                   * reference to [0,1] like GL, so points past the light's far
                   * plane read as lit. Our snapshot is R32F, which would not
                   * clamp on its own. */
@@ -181,7 +185,7 @@ index 5f2aa48..0637101 100644
                  const u32 minf = (ut.filter >> 16) & 7u, magf = (ut.filter >> 24) & 7u;
                  if (magf == 2u || minf == 2u || minf == 4u || minf == 6u)
                      shadow_linear |= 1u << unit;
-@@ -10142,6 +10195,63 @@ static void ld_post_note(u32 unit, u32 src, u32 target, const char* how)
+@@ -10366,6 +10419,63 @@ static void ld_post_note(u32 unit, u32 src, u32 target, const char* how)
              (double)g.surfaces[src].scale, d, g.surfaces[target].w, g.surfaces[target].h, how);
  }
  
@@ -245,7 +249,7 @@ index 5f2aa48..0637101 100644
  static void sink_end_impl(void* user, const rsx_dispatch* r)
  {
      (void)user; (void)r;
-@@ -10186,6 +10296,19 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+@@ -10410,6 +10520,19 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
              }
          }
      }
@@ -265,7 +269,7 @@ index 5f2aa48..0637101 100644
      const u32 prim = g.rsx.current_primitive;
      rsx_vertex_layout_plan used_layout;
      ld_current_vertex_layout(&used_layout);
-@@ -10711,6 +10834,9 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+@@ -10936,6 +11059,9 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
                  for (u32 k = 0; k < n_surf_used; k++) if (surf_used[k] == (u32)sampled) seen = 1;
                  if (!seen && n_surf_used < SRV_TABLE_SIZE) surf_used[n_surf_used++] = (u32)sampled;
              }
@@ -275,7 +279,7 @@ index 5f2aa48..0637101 100644
          } else {
              int sampled_depth = -1;
              const u32 texture_base_fmt =
-@@ -11085,10 +11211,12 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+@@ -11310,10 +11436,12 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
              LDL->lpVtbl->IASetIndexBuffer(LDL, &ibv);
              B->ibv = ibv; g_ld_api_set++; g_ld_api_by[14]++; B->ibv_valid = 1;
          }
@@ -288,7 +292,7 @@ index 5f2aa48..0637101 100644
          LDL->lpVtbl->DrawInstanced(LDL, n_tri, 1, (UINT)base_vertex, 0);
      }
      ld_gp_note_draw();
-@@ -11658,6 +11786,19 @@ static void ld_display_config(void)
+@@ -11998,6 +12126,19 @@ static void ld_display_config(void)
              g_ld_stage_blur ? (g_ld_res_scale > 1.0f ? "on (filters read guest-size views of scaled targets)"
                                                       : "on")
                              : "off (PS3_STAGE_BLUR): filters read one tap, glow composites skipped");

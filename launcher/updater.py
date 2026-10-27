@@ -97,7 +97,9 @@ RE_ASSET_PATH = re.compile(r"^/github-production-release-asset(?:-[0-9a-z]+)?/(\
 # signature"; tools/release_sign.py add-public-key). Empty: updates are checked against SHA256SUMS and
 # GitHub's digest only, as up to 1.1.1. With a key: an update without a valid signature by one of these
 # keys is refused. Two keys while the owner moves to a new one; never a private key here.
+# From 1.1.5 on: the owner's key (key id c2acdfbc80f3c4c2).
 RELEASE_PUBLIC_KEYS = (
+    "b47cc1692fbdb91cb7e13a98edd56e99ceea307e693a151b05688ca8f9e67425",
 )
 SIG_ASSET = "SHA256SUMS.sig"
 

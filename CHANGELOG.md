@@ -3,7 +3,7 @@
 All notable changes, newest first. The project is a test release. Short commit hashes are in parentheses. The state of each
 part is in the README's status table.
 
-## v1.1.5 (not released yet)
+## v1.1.5 (2026-10-27)
 
 **Train online with a friend, choose your side and stage, see the real ping, and a faster game on weak PCs.**
 Online training rooms with endless health, a health handicap and P1 / P2 and stage choices for casual matches; the

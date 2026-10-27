@@ -8,8 +8,8 @@ English: [../README.md](../README.md)
 
 <!-- RELEASE LINE: the version and date in the next two lines change with every release, when it is tagged
 (docs/RELEASING.md "Cutting a release", step 2); the same lines are in README.md. -->
-**Release 1.1.4 (2026-10-21).** Lade
-`T5DR-Online-1.1.4.zip` von https://github.com/TheWishin/T5DROnline/releases
+**Release 1.1.5 (2026-10-27).** Lade
+`T5DR-Online-1.1.5.zip` von https://github.com/TheWishin/T5DROnline/releases
 
 **Offline ist spielbereit:** alle Modi, 60 fps, Xbox-Pad und Arcade-Stick getestet.
 **Online funktioniert:** getestet zwischen den PCs von zwei Spielern über das

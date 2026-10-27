@@ -714,6 +714,9 @@ MESSAGES = {
     "A build is running. Stop it and quit?": "Une compilation est en cours. L'arrêter et quitter ?",
     # ---- launcher/updater.py
     "Check for updates": "Rechercher des mises à jour",
+    "Community Discord": "Discord de la communauté",
+    "Could not open a browser. The address: {url}": "Impossible d'ouvrir un navigateur. L'adresse : {url}",
+    "Questions? Ask the players in the community Discord: {url}": "Des questions ? Demande aux joueurs sur le Discord de la communauté : {url}",
     "Updated from {old} to {new}.": "Mis à jour de {old} vers {new}.",
     "the new version": "la nouvelle version",
     "The update to {version} failed and could not be undone completely: {error}.\n\nThe "

@@ -685,6 +685,9 @@ MESSAGES = {
     "A build is running. Stop it and quit?": "빌드가 진행 중입니다. 중지하고 종료할까요?",
     # ---- launcher/updater.py
     "Check for updates": "업데이트 확인",
+    "Community Discord": "커뮤니티 Discord",
+    "Could not open a browser. The address: {url}": "브라우저를 열 수 없습니다. 주소: {url}",
+    "Questions? Ask the players in the community Discord: {url}": "질문이 있나요? 커뮤니티 Discord에서 플레이어들에게 물어보세요: {url}",
     "Updated from {old} to {new}.": "{old}에서 {new}(으)로 업데이트했습니다.",
     "the new version": "새 버전",
     "The update to {version} failed and could not be undone completely: {error}.\n\nThe "

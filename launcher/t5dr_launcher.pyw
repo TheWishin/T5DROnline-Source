@@ -282,6 +282,17 @@ class App(tk.Tk):
         except Exception:     # noqa: BLE001 -- (no stderr under pythonw)
             pass
 
+    def open_discord(self):
+        """The community Discord (core.DISCORD_URL) in the default browser."""
+        import webbrowser
+        try:
+            opened = webbrowser.open(core.DISCORD_URL)
+        except Exception as e:      # noqa: BLE001 -- no browser on this PC
+            opened = False
+            core.log(f"Community Discord: no browser ({e})")
+        if not opened:
+            self.status.set(t("Could not open a browser. The address: {url}", url=core.DISCORD_URL))
+
     def _click_through(self):
         """WS_EX_TRANSPARENT on the (layered) frame: mouse clicks go to the windows below."""
         try:
@@ -405,6 +416,13 @@ class App(tk.Tk):
         self.updater = updater.attach(self, head)     # "Check for updates", the offer, the update itself
         if dark and getattr(self.updater, "button", None) is not None:
             self.updater.button.pack_configure(padx=(0, self.px(16)))
+        # the players' community on Discord (1.1.7, the owner's wish): one click from every tab, left of the updates
+        self.discord_btn = ttk.Button(head, text=t("Community Discord"), command=self.open_discord, cursor="hand2")
+        self.discord_btn.pack(side="right", padx=(0, self.px(8)))
+        if dark:
+            # the band asks for room for its texts and both buttons (the window is never narrower than that)
+            buttons = sum(b.winfo_reqwidth() for b in (self.discord_btn, getattr(self.updater, "button", None)) if b)
+            head.configure(width=int(head.cget("width")) + buttons + self.px(8 + 16))
         self.nb = ttk.Notebook(self, style="Main.TNotebook") if dark else ttk.Notebook(self)
         self.nb.pack(fill="both", expand=True, padx=12, pady=(4, 0))
         self.tabs = {}
@@ -1565,7 +1583,8 @@ class App(tk.Tk):
                                   online_dir=online_dir, online_info=online_info, build_problem=build_problem)
         core.log("report window opened")
         self._report_dlg = report_ui.ReportDialog(self, make_context, core.desktop_dir(), reveal=core.reveal_file,
-                                                  issues_url=core.ISSUES_URL, log=core.log)
+                                                  issues_url=core.ISSUES_URL, log=core.log,
+                                                  discord_url=core.DISCORD_URL)
         return self._report_dlg
 
     def _speed_notes(self):

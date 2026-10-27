@@ -51,6 +51,7 @@ SETTINGS_FILE = os.path.join(ROOT, "launcher.json")
 LAUNCHER_LOG = os.path.join(ROOT, "launcher.log")     # what the launcher did; goes into the problem report
 LAUNCHER_LOG_MAX = 512 * 1024                         # then it moves to launcher.log.1 (one old copy is kept)
 ISSUES_URL = "https://github.com/TheWishin/T5DROnline/issues"
+DISCORD_URL = "https://discord.gg/4DwDHAkk2x"      # the players' community (header button, the report window)
 _log_lock = threading.Lock()
 
 

@@ -826,7 +826,7 @@ class Window(unittest.TestCase):
     def dialog(self):
         return report_ui.ReportDialog(self.root, lambda: self.ctx, os.path.join(self.d, "Desktop"),
                                       reveal=self.revealed.append, issues_url="https://example.org/issues",
-                                      log=self.logged.append, visible=False)
+                                      log=self.logged.append, visible=False, discord_url="https://discord.gg/x")
 
     def pump(self, cond, timeout=20.0):
         end = time.monotonic() + timeout
@@ -857,6 +857,9 @@ class Window(unittest.TestCase):
             self.assertNotIn("build.log", z.namelist())
         self.assertEqual(self.revealed, [res.path])                      # the folder was opened once, afterwards
         self.assertTrue(any("report saved" in m for m in self.logged))
+        shown = " ".join(str(w.cget("text")) for w in dlg.body.winfo_children() if w.winfo_class() == "TLabel")
+        self.assertIn("attach it to an issue at https://example.org/issues", shown)
+        self.assertIn("Questions? Ask the players in the community Discord: https://discord.gg/x", shown)   # 1.1.7
         dlg.open_folder()
         self.assertEqual(len(self.revealed), 2)
         dlg.close()

@@ -29,6 +29,9 @@ part is in the README's status table.
   sender's name in bold in a colour of their own (from the name, the same on every PC, readable on the dark card),
   your own name in the accent colour, a name line with space above whenever another player writes, and the
   launcher's and server's lines muted.
+- A "Community Discord" button in the launcher's header, beside "Check for updates": it opens the players'
+  Discord (https://discord.gg/4DwDHAkk2x, `launcher/core.py` `DISCORD_URL`) in the browser; the report window
+  names it for questions too.
 
 ## v1.1.6 (2026-10-27)
 

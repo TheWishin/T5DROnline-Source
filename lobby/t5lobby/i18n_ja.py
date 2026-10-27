@@ -692,6 +692,9 @@ MESSAGES = {
     "A build is running. Stop it and quit?": "ビルドが実行中です。停止して終了しますか？",
     # ---- launcher/updater.py
     "Check for updates": "アップデートを確認",
+    "Community Discord": "コミュニティ Discord",
+    "Could not open a browser. The address: {url}": "ブラウザーを開けませんでした。アドレス: {url}",
+    "Questions? Ask the players in the community Discord: {url}": "質問は? コミュニティの Discord でプレイヤーに聞いてください: {url}",
     "Updated from {old} to {new}.": "{old} から {new} にアップデートしました。",
     "the new version": "新しいバージョン",
     "The update to {version} failed and could not be undone completely: {error}.\n\nThe "

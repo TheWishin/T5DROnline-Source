@@ -33,7 +33,9 @@ they work with 1.1.4 launchers as soon as the server is updated.
   stages are decided by a coin flip too. A challenge or an invite shows what the other player asked for, and the
   match card shows your side and the stage. After such a match, **Rematch: swap sides** (Y on a controller) plays
   the rematch with the sides the other way round. Ranked and Quick keep choosing sides and a random stage for you.
-  Players with a 1.1.4 launcher can still be challenged and invited as before. In all seven languages.
+  Players with a 1.1.4 launcher can still be challenged and invited as before. In all seven languages. Every
+  stage has its name (Western Gate, Ghetto Pit, Wolves' Den, ... and the Tekken 5 stages' own names), checked in a
+  fight on each of them; the names stay English in every language, as players know them.
 - **Ping and connection before you accept.** The found-match card, a challenge and a friend's invite show the ping
   (estimated, or measured in your last match together) and whether the match will most likely be a direct connection
   or go through a relay server. In all seven languages.

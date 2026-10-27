@@ -652,8 +652,8 @@ community, not a ranked room's) and the rematches of those -- each player can as
 **stage** (Random or one of the stages). The two choices are in the play card, right of Strict ("Challenges,
 invites, rooms: [Any side] [Random stage]"); the launcher keeps them in online.json and sends them to the server after
 every login and whenever they change (`casual_prefs`). A challenge and a friend's casual invite carry the sender's
-wishes ("Alice (2nd Dan) challenges you -- wants to be P1 on Scrapyard"), and the match card says what this player got
-("Casual match vs Alice (P2 on Stage 24)"; when a coin flip went against a wish, the status line says so).
+wishes ("Alice (2nd Dan) challenges you -- wants to be P1 on Ghetto Pit"), and the match card says what this player got
+("Casual match vs Alice (P2 on All Hollow's Eve)"; when a coin flip went against a wish, the status line says so).
 
 | | rule |
 |---|---|

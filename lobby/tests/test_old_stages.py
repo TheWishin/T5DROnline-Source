@@ -16,9 +16,23 @@ class TableTest(unittest.TestCase):
         old = [s for s in t.stages if s.get("t5")]
         self.assertEqual([s["id"] for s in old], list(range(0, 14)) + [15])
         self.assertEqual([s["id"] for s in t.stages if not s.get("t5")], list(range(17, 35)))
-        self.assertEqual(t.stage_name("t5s01"), "Tekken 5 stage 1")
+        self.assertEqual(t.stage_name("t5s01"), "Dragon's Nest")
+        self.assertEqual(t.stage_name("t5s15"), "Final Stage")
         self.assertEqual(t.fight_env("paul", "law", "t5s15", 3), "0,1,15,3")
         self.assertTrue(t.valid_stage("t5s01"))
+
+    def test_every_stage_has_its_name(self):
+        # the names of the screenshot pass (docs/DIRECTFIGHT.md "Stage ids"): one for every key, no two alike,
+        # each the English text of a catalog entry
+        t = fighters.table()
+        names = [t.stage_name(s["key"]) for s in t.stages]
+        self.assertEqual(sorted(fighters.STAGE_NAMES), sorted(s["key"] for s in t.stages))
+        self.assertEqual(len(set(names)), len(names))
+        self.assertEqual(t.stage_name("s20"), "Ghetto Pit")
+        self.assertEqual(t.stage_name("s33"), "Industrial Complex")
+        self.assertEqual(t.stage_name("s17"), "Western Gate")
+        for s in t.stages:
+            self.assertEqual(s["name"], t.stage_name(s["key"]), s["key"])     # fighters.json says the same
 
     def test_draw_without_them_is_unchanged(self):
         t = fighters.table()

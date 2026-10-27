@@ -13,9 +13,21 @@ import random
 from .i18n import N_, t
 
 RANDOM = "random"
-# The stages' names in the player's language (data/fighters.json has English placeholders). Only two stages are
-# known by name so far (docs/DIRECTFIGHT.md "Stage ids"); the others are called by their number.
-STAGE_NAMES = {"s20": N_("Scrapyard"), "s33": N_("Industrial yard")}
+# The stages' names (docs/DIRECTFIGHT.md "Stage ids": each id seen in a fight of its own, named as the Tekken wikis
+# list the game's stages; the game itself shows only pictures). Players know them by these English names in every
+# language, so the catalogs keep them. Ids 17-30 are Dark Resurrection's new versions of the Tekken 5 stages 0-13.
+STAGE_NAMES = {
+    "s17": N_("Western Gate"), "s18": N_("Autumn Temple"), "s19": N_("Meteor Shower"), "s20": N_("Ghetto Pit"),
+    "s21": N_("City Lights"), "s22": N_("Great Plains"), "s23": N_("Galleon"), "s24": N_("All Hollow's Eve"),
+    "s25": N_("Winter Palace"), "s26": N_("Festival"), "s27": N_("Aurora Australis"), "s28": N_("Heaven's Gate"),
+    "s29": N_("Space Colony"), "s30": N_("Pool Party"), "s31": N_("Playroom"), "s32": N_("Wolves' Den"),
+    "s33": N_("Industrial Complex"), "s34": N_("Ominous Mist"),
+    "t5s01": N_("Dragon's Nest"), "t5s02": N_("Burning Temple"), "t5s03": N_("Waterfall"),
+    "t5s04": N_("Urban Jungle"), "t5s05": N_("City at Sunset"), "t5s06": N_("Moonlit Wilderness"),
+    "t5s07": N_("Pirate's Cove"), "t5s08": N_("Secret Garden"), "t5s09": N_("Cathedral"), "t5s10": N_("Acid Rain"),
+    "t5s11": N_("Polar Paradise"), "t5s12": N_("Hell's Gate"), "t5s13": N_("Final Frontier"),
+    "t5s14": N_("Poolside"), "t5s15": N_("Final Stage"),
+}
 _DEFAULT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "fighters.json")
 
 
@@ -53,7 +65,7 @@ class Table:
         return x["name"] if x else (t("Random") if key == RANDOM else (key or "?"))
 
     def stage_name(self, key):
-        """The stage's name in the player's language: "Scrapyard", "Stage 17", "Tekken 5 stage 6"."""
+        """The stage's name: "Ghetto Pit"; a stage without one by its number ("Stage 35", "Tekken 5 stage 6")."""
         x = self._s.get(key)
         if x is None:
             return t("Random") if key == RANDOM else (key or "?")

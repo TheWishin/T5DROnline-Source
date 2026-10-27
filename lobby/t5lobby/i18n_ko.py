@@ -2384,4 +2384,7 @@ MESSAGES = {
     "P{n} on {stage}": "P{n}, {stage}",
     "Rematch: swap sides": "Rematch: 사이드 교체",
     "with the sides swapped": "사이드를 바꿔서",
+    # the fold button right of the Online tab's lists (tk_views.toggle_top)
+    "Hide": "숨기기",
+    "Show": "보이기",
 }

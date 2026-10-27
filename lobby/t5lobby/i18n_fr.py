@@ -2482,4 +2482,7 @@ MESSAGES = {
     "P{n} on {stage}": "P{n} sur {stage}",
     "Rematch: swap sides": "Rematch : changer de côté",
     "with the sides swapped": "en changeant de côté",
+    # the fold button right of the Online tab's lists (tk_views.toggle_top)
+    "Hide": "Masquer",
+    "Show": "Afficher",
 }

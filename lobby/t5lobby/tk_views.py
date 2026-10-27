@@ -1070,7 +1070,7 @@ class OnlineView:
         # the account and match cards folded away (and back): the lists below get their height; a match found, a
         # challenge or an invite unfolds them again by itself
         self.top_hidden = False
-        self.top_btn = ttk.Button(pad, text=FOLD[0], style="Ghost.TButton", width=2, command=self.toggle_top)
+        self.top_btn = ttk.Button(pad, text=f"{FOLD[0]}  {t('Hide')}", style="Ghost.TButton", command=self.toggle_top)
         self.top_btn.pack(side="left", padx=(px(8), 0))
         self.footer = st
         st.bind("<Configure>", self._place_footer, add="+")
@@ -1088,7 +1088,7 @@ class OnlineView:
                 w.grid_remove()
             else:
                 w.grid()
-        self.top_btn.configure(text=FOLD[1] if hide else FOLD[0])
+        self.top_btn.configure(text=f"{FOLD[1]}  {t('Show')}" if hide else f"{FOLD[0]}  {t('Hide')}")
 
     def _place_status(self):
         """The tab's own status line, unless the launcher shows the same line in its status bar."""

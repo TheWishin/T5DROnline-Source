@@ -49,6 +49,10 @@ part is in the README's status table.
   CHANGELOG's line breaks at 120 characters made lines break in the middle; paragraphs and list items are one line
   each now, wrapped by the window, with the lists and headings kept. A cached answer of an older launcher is asked
   again once.
+- Tests: `test_controls_ui`'s runtime comparison failed on the main checkout's `deps/ps3recomp`, a patch series
+  behind (0053; the series is at 0083); on a tree prepared fresh with `tools/prepare_ps3recomp.py` it passes, on
+  a1bd816 and on this branch. A tree found on its own is now used only when its stamp names this series
+  (`tests/helpers.py` `ps3recomp_series_problem`); otherwise the test skips and says why.
 
 ### Updates and releases
 - An update keeps the new launcher only once it has run for 15 seconds or was closed by hand

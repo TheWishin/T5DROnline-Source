@@ -23,6 +23,7 @@ import re
 import time
 import weakref
 import tkinter as tk
+import tkinter.font as tkfont
 from tkinter import ttk
 
 from . import i18n, proto, ranks, theme, tk_charsel, tk_history, tk_rules, tk_stats, tk_tour
@@ -30,6 +31,8 @@ from .i18n import N_, t
 from .lag import describe_event as describe_lag, lagged
 from .rank_art import ART
 from .theme import C
+
+FOLD = ("▲", "▼")        # the fold button: up (fold the cards away), down (bring them back)
 
 # column headings of the lists, by column id (shown in capitals)
 HEADINGS = {"player": N_("Player"), "rank": N_("Rank"), "rating": N_("Rating"), "record": N_("Record"),
@@ -172,6 +175,7 @@ class OnlineView:
         theme.bind_return_on_buttons(tab.parent)
         self._logged = None
         self._stage = None
+        self.top_hidden = False            # (toggle_top: the account and match cards folded away)
         self._bar_on = False
         self._bar_sig = None
         self._bar_kind = None
@@ -345,6 +349,30 @@ class OnlineView:
         self.scr_lobby = self._build_lobby(self.box)
         self._build_footer(self.box)
         self.box.bind("<Configure>", self._on_resize, add="+")
+        self._compact = False
+        self.box.bind("<Configure>", self._fit_height, add="+")
+
+    COMPACT_H = 660          # px at 100 %: a shorter tab (a 1080p screen at 133 or 150 %) sets its cards closer
+
+    def _fit_height(self, _e=None):
+        """Less space between the cards while the tab is short, so the lists below keep visible rows."""
+        try:
+            on = 1 < self.box.winfo_height() < self.px(self.COMPACT_H)
+            if on == self._compact:
+                return
+            self._compact = on
+            px = self.px
+            self.box.configure(padding=(px(14), px(8 if on else 14), px(14), px(8)))
+            nb = getattr(self.tab, "nb", None)
+            if nb is not None:
+                nb.grid_configure(pady=(px(6 if on else 10), 0))
+                for page in nb.tabs():
+                    nb.nametowidget(page).configure(padding=(0, px(6 if on else 10), 0, 0))
+            for card in (getattr(self.tab, "me_row", None), getattr(self, "stage_card", None)):
+                if card is not None:
+                    card.configure(padding=px(12 if on else 16))
+        except tk.TclError:
+            pass
 
     # --- login
     def _build_login(self, parent):
@@ -888,8 +916,20 @@ class OnlineView:
         self.prof_badge = theme.Badge(card, size=40)
         self.prof_badge.grid(row=0, column=0, rowspan=2, sticky="nw", padx=(0, px(12)))
         ttk.Label(card, textvariable=tab.prof_title, style="Card.H2.TLabel").grid(row=0, column=1, sticky="w")
-        ttk.Label(card, textvariable=tab.prof_text, style="Card.Muted.TLabel", justify="left").grid(
-            row=1, column=1, sticky="w", pady=(px(2), px(8)))
+        # the facts in two columns (half the lines each): the match history below keeps more of the height
+        facts = self.body(card)
+        facts.grid(row=1, column=1, sticky="w", pady=(px(2), px(8)))
+        cols = [ttk.Label(facts, text="", style="Card.Muted.TLabel", justify="left") for _ in range(2)]
+        cols[0].grid(row=0, column=0, sticky="nw")
+        cols[1].grid(row=0, column=1, sticky="nw", padx=(px(28), 0))
+
+        def split(*_a):
+            lines = str(tab.prof_text.get()).splitlines()
+            half = (len(lines) + 1) // 2 if len(lines) > 2 else len(lines)
+            cols[0].configure(text="\n".join(lines[:half]))
+            cols[1].configure(text="\n".join(lines[half:]))
+        tab.prof_text.trace_add("write", split)
+        split()
         fr, tab.tv_hist = self.tree(card, ("when", "result", "opponent", "chars", "score", "rating", "status"),
                                     (110, 84, 120, 180, 60, 76, 330), height=7, image_col=False, select="none")
         fr.grid(row=2, column=0, columnspan=2, sticky="nsew")
@@ -1027,6 +1067,28 @@ class OnlineView:
         tab.pad_check = ttk.Checkbutton(pad, text=t("Use a controller here"), variable=tab.pad_var,
                                         command=tab._pad_toggle)
         tab.pad_check.pack(side="left")
+        # the account and match cards folded away (and back): the lists below get their height; a match found, a
+        # challenge or an invite unfolds them again by itself
+        self.top_hidden = False
+        self.top_btn = ttk.Button(pad, text=FOLD[0], style="Ghost.TButton", width=2, command=self.toggle_top)
+        self.top_btn.pack(side="left", padx=(px(8), 0))
+        self.footer = st
+        st.bind("<Configure>", self._place_footer, add="+")
+        if getattr(tab, "nb", None) is not None:
+            tab.nb.bind("<Configure>", self._place_footer, add="+")
+
+    def toggle_top(self, hide=None):
+        """Fold the account and match cards away (hide=True), unfold them (False), or the other way round."""
+        hide = (not self.top_hidden) if hide is None else bool(hide)
+        self.top_hidden = hide
+        for w in (getattr(self.tab, "me_row", None), getattr(self, "stage_card", None)):
+            if w is None:
+                continue
+            if hide:
+                w.grid_remove()
+            else:
+                w.grid()
+        self.top_btn.configure(text=FOLD[1] if hide else FOLD[0])
 
     def _place_status(self):
         """The tab's own status line, unless the launcher shows the same line in its status bar."""
@@ -1035,6 +1097,39 @@ class OnlineView:
                 self.status_label.grid_remove()
         except tk.TclError:
             pass
+        self._place_footer()
+
+    def _place_footer(self, _e=None):
+        """In the lobby, with the status line in the launcher's status bar: Report a problem and Use a controller
+        here at the right end of the lists' tab row (Lobby, Leaderboard, ...) instead of a row of their own under
+        everything -- that height goes to the lists. Back under the lists when the tab row has no room for them."""
+        st, nb = getattr(self, "footer", None), getattr(self.tab, "nb", None)
+        if st is None or nb is None:
+            return
+        try:
+            inline = (getattr(self, "_logged", False) and not self.status_label.winfo_manager()
+                      and 1 < self._tabs_width(nb) + st.winfo_reqwidth() + self.px(24) <= nb.winfo_width())
+            if inline and st.winfo_manager() != "place":
+                st.grid_forget()
+                st.place(in_=nb, relx=1.0, x=0, y=self.px(1), anchor="ne")
+                st.lift()
+            elif not inline and st.winfo_manager() != "grid":
+                st.place_forget()
+                st.grid(row=4, column=0, sticky="we", pady=(self.px(8), 0))
+        except tk.TclError:
+            pass
+
+    def _tabs_width(self, nb):
+        """The width of a notebook's row of tabs (their texts in the tab font, the theme's padding around each)."""
+        st = ttk.Style(nb)
+        try:
+            f = tkfont.Font(root=nb, font=st.lookup("TNotebook.Tab", "font") or "TkDefaultFont")
+            pad = st.lookup("TNotebook.Tab", "padding")
+            pad = [int(float(v)) for v in (nb.tk.splitlist(pad) if pad else ())] or [0]
+            side = pad[0] + (pad[2] if len(pad) > 2 else pad[0])
+            return sum(f.measure(str(nb.tab(i, "text"))) + side + self.px(6) for i in range(len(nb.tabs())))
+        except (tk.TclError, ValueError):
+            return 10 ** 6
 
     # ------------------------------------------------------------------ screens
     def set_logged_in(self, on):
@@ -1049,9 +1144,12 @@ class OnlineView:
         else:
             self.scr_lobby.grid_forget()
             self.scr_login.grid(row=0, column=0, sticky="nsew")
+            if self.top_hidden:
+                self.toggle_top(False)
             self.result_info = None
             self.result_dismissed = True
             self.match_ev = None
+        self._place_footer()
         self.refresh()
 
     def _show_notice(self):
@@ -1266,6 +1364,8 @@ class OnlineView:
         elif stage != "search":
             self.search_t0 = None
         if stage != self._stage:
+            if self.top_hidden and stage not in (None, "play"):
+                self.toggle_top(False)              # (something happened: the cards come back)
             for name, w in self.stages.items():
                 if name != stage:
                     w.grid_forget()
@@ -1678,8 +1778,9 @@ class OnlineView:
         banner.grid(row=0, column=0, sticky="we")
         banner.columnconfigure(1, weight=1)
         col = {"win": C["ok"], "loss": C["bad"]}.get(kind, C["text"])
-        ttk.Label(banner, text=title, style=pre + "Huge.TLabel", foreground=col).grid(row=0, column=0, rowspan=2,
-                                                                                       sticky="w")
+        title_lbl = ttk.Label(banner, text=title, style=pre + "Huge.TLabel", foreground=col)
+        title_lbl.grid(row=0, column=0, rowspan=3, sticky="w")
+        sc = None
         se = info.get("set_end")
         if se and se.get("tournament"):
             sub = t("Tournament set vs {name}", name=info["opp"]) if info.get("opp") else t("Tournament set")
@@ -1702,14 +1803,14 @@ class OnlineView:
         score = ev.get("score")
         if se and isinstance(se.get("wins"), (list, tuple)) and len(se["wins"]) == 2:
             sc = self.body(banner, pre.rstrip(".") + "Body.TFrame")         # a set: the games, from this side
-            sc.grid(row=0, column=2, rowspan=2, sticky="e", padx=(px(12), px(4)))
+            sc.grid(row=0, column=2, rowspan=3, sticky="e", padx=(px(12), px(4)))
             ttk.Label(sc, text=f"{se['wins'][0]} – {se['wins'][1]}", style=pre + "Big.TLabel").pack(anchor="e")
             ttk.Label(sc, text=t("GAMES  (YOU – THEM)"), style=pre + "Caps.TLabel").pack(anchor="e")
         elif isinstance(score, (list, tuple)) and len(score) == 2:
             slot = info.get("slot")
             a, b = (score[0], score[1]) if slot != 1 else (score[1], score[0])
             sc = self.body(banner, pre.rstrip(".") + "Body.TFrame")
-            sc.grid(row=0, column=2, rowspan=2, sticky="e", padx=(px(12), px(4)))
+            sc.grid(row=0, column=2, rowspan=3, sticky="e", padx=(px(12), px(4)))
             ttk.Label(sc, text=f"{a} – {b}", style=pre + "Big.TLabel").pack(anchor="e")
             ttk.Label(sc, text=t("ROUNDS  (YOU – THEM)") if slot is not None else t("ROUNDS  (P1 – P2)"),
                       style=pre + "Caps.TLabel").pack(anchor="e")
@@ -1719,30 +1820,17 @@ class OnlineView:
             row += 1
         r = (se or {}).get("rating") if se else ev.get("rating")
         if r:
-            rr = self.body(v)
-            rr.grid(row=row, column=0, sticky="w", pady=(px(10), 0))
-            row += 1
-            after = r.get("after") or {}
-            ttk.Label(rr, text=t("Rating {rating}", rating=f"{after.get('r', 0):.0f}"),
-                      style="Card.Num.TLabel").pack(side="left")
-            d = r.get("delta") or 0
-            ttk.Label(rr, text=f"  {d:+.0f}", style="Card.Num.TLabel",
-                      foreground=C["ok"] if d > 0 else C["bad"] if d < 0 else C["muted"]).pack(side="left")
-            rank_after = r.get("rank_after") or {}
-            evn = r.get("event")
-            pill = {"promoted": (t("PROMOTED"), "Card.PillGold.TLabel"),
-                    "demoted": (t("DEMOTED"), "Card.PillBad.TLabel"),
-                    "placed": (t("PLACED"), "Card.PillAccent.TLabel")}.get(evn)
-            if pill:
-                ttk.Label(rr, text=pill[0], style=pill[1]).pack(side="left", padx=(px(16), px(8)))
-                bd = theme.Badge(rr, size=22)
-                bd.set(_tier_of(rank_after), rank_after.get("provisional"))
-                bd.pack(side="left", padx=(0, px(6)))
-                ttk.Label(rr, text=ranks.display_name(rank_after), style="Card.Bold.TLabel").pack(side="left")
-            elif rank_after.get("placement"):
-                n, k = rank_after["placement"]
-                ttk.Label(rr, text="   " + t("Placement match {done} of {total}", done=n, total=k),
-                          style="Card.Muted.TLabel").pack(side="left")
+            # the rating change inside the banner, under the match line (one row less: the lists below keep their
+            # height on a small screen) -- when the banner still fits the narrowest card; else its own row below
+            rr, need = self._rating_row(banner, pre, r)
+            score_w = max((w.winfo_reqwidth() for w in sc.winfo_children()), default=0) if sc is not None else 0
+            if title_lbl.winfo_reqwidth() + need + score_w + px(48) <= px(self.RESULT_ROOM):
+                rr.grid(row=2, column=1, sticky="w", padx=(px(16), 0), pady=(px(4), 0))
+            else:
+                rr.destroy()
+                rr, _need = self._rating_row(v, "Card.", r)
+                rr.grid(row=row, column=0, sticky="w", pady=(px(10), 0))
+                row += 1
         if self.game_waits():
             wr = self.body(v)                       # what the game is doing now (players took it for a hang)
             wr.grid(row=8, column=0, sticky="we", pady=(px(8), 0))
@@ -1767,6 +1855,36 @@ class OnlineView:
                 row=0, column=0, sticky="nw", padx=(0, px(8)))
             self.wrap(ttk.Label(lr, text=describe_lag(lag), style="Card.warn.TLabel" if bad else "Card.Small.TLabel",
                                 justify="left"), self.stage_card, 150).grid(row=0, column=1, sticky="w")
+
+    RESULT_ROOM = 660      # px at 100 %: the result banner's content in the narrowest match card (a 1080 px window)
+
+    def _rating_row(self, parent, pre, r):
+        """'Rating 1612 +12 [PROMOTED] (badge) Lord of War' on `pre`'s ground ("Card.", or a banner's "Win." ...)
+        -> (its frame, its width)."""
+        px = self.px
+        rr = self.body(parent, "CardBody.TFrame" if pre == "Card." else pre.rstrip(".") + "Body.TFrame")
+        after = r.get("after") or {}
+        ttk.Label(rr, text=t("Rating {rating}", rating=f"{after.get('r', 0):.0f}"),
+                  style=pre + "Num.TLabel").pack(side="left")
+        d = r.get("delta") or 0
+        ttk.Label(rr, text=f"  {d:+.0f}", style=pre + "Num.TLabel",
+                  foreground=C["ok"] if d > 0 else C["bad"] if d < 0 else C["muted"]).pack(side="left")
+        rank_after = r.get("rank_after") or {}
+        evn = r.get("event")
+        pill = {"promoted": (t("PROMOTED"), pre + "PillGold.TLabel"),
+                "demoted": (t("DEMOTED"), pre + "PillBad.TLabel"),
+                "placed": (t("PLACED"), pre + "PillAccent.TLabel")}.get(evn)
+        if pill:
+            ttk.Label(rr, text=pill[0], style=pill[1]).pack(side="left", padx=(px(16), px(8)))
+            bd = theme.Badge(rr, size=22, bg=theme.GROUNDS.get(pre, C["surface"]))
+            bd.set(_tier_of(rank_after), rank_after.get("provisional"))
+            bd.pack(side="left", padx=(0, px(6)))
+            ttk.Label(rr, text=ranks.display_name(rank_after), style=pre + "Bold.TLabel").pack(side="left")
+        elif rank_after.get("placement"):
+            n, k = rank_after["placement"]
+            ttk.Label(rr, text="   " + t("Placement match {done} of {total}", done=n, total=k),
+                      style=pre + "Muted.TLabel").pack(side="left")
+        return rr, sum(w.winfo_reqwidth() for w in rr.winfo_children()) + px(30)
 
     def _set_strip(self, v, row):
         """A ranked set between two games: 'RANKED SET, BEST OF 3', one dot per game won (green) or lost (red),

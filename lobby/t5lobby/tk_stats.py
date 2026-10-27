@@ -60,6 +60,14 @@ class StatsPage:
         self.made_var = tk.StringVar(value="")
         head, tools = view.section_head(card, t("Community stats").upper(), self.made_var)
         head.grid(row=0, column=0, sticky="we")
+        # the fighters' table's choice (all / ranked / casual) in the card's head row: one row less above the table
+        ttk.Label(tools, text=t("Fighters").upper(), style="Card.Caps.TLabel").pack(side="left", padx=(0, px(10)))
+        self.mode_var = tk.StringVar(value=MODES[0][0])
+        seg = ttk.Frame(tools, style="SegTrack.TFrame", padding=px(3))
+        seg.pack(side="left", padx=(0, px(14)))
+        for key, text in MODES:
+            ttk.Radiobutton(seg, text=t(text), value=key, variable=self.mode_var, style="Seg.TRadiobutton",
+                            command=self.fill, takefocus=True).pack(side="left")
         ttk.Button(tools, text=t("Refresh"), style="Card.Small.TButton", command=lambda: self.load(force=True)).pack(
             side="left")
 
@@ -78,15 +86,6 @@ class StatsPage:
         self.day_sub = tk.StringVar(value="")                 # (the last tile: matches big, players below)
         ttk.Label(tile, textvariable=self.day_sub, style="Tile.Faint.TLabel").pack(anchor="w")
 
-        row = view.body(card)
-        row.grid(row=2, column=0, sticky="we", pady=(0, px(6)))
-        ttk.Label(row, text=t("Fighters").upper(), style="Card.Caps.TLabel").pack(side="left", padx=(0, px(10)))
-        self.mode_var = tk.StringVar(value=MODES[0][0])
-        seg = ttk.Frame(row, style="SegTrack.TFrame", padding=px(3))
-        seg.pack(side="left")
-        for key, text in MODES:
-            ttk.Radiobutton(seg, text=t(text), value=key, variable=self.mode_var, style="Seg.TRadiobutton",
-                            command=self.fill, takefocus=True).pack(side="left")
         self.note = ttk.Label(card, style="Card.Faint.TLabel", justify="left", text=t(
             "Win rate per match; a mirror match counts as one win and one loss. Grey: fewer than {count} matches, "
             "not much to go on yet. Click a column to sort.", count=FEW))

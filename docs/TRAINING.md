@@ -140,9 +140,10 @@ run the code they ran before: CODE_VERSION is unchanged.
   last place it kept find the wall to 16 units. No wall within 30,000 units (a
   second of sliding): the places from before come back and the status line
   says `NO WALL THAT WAY`. They end 1,100 units apart at the wall. Checked in
-  Practice on stage 19 (walls about 9,500 units either side of the start: all
-  four wall resets found them in 22-25 frames); on stages 17, 18, 21, 22 and 24
-  a fighter walked 8,000-13,000 units without reaching one.
+  Practice on stage 19 (walls about 9,500 units either side of the start) and
+  stage 20 (about 8,600): all four wall resets found them in 20-25 frames
+  (`tools/practice_check.py`); on stages 17, 18, 21, 22 and 24 a fighter
+  walked 8,000-13,000 units without reaching one.
 - **Facing**: the game keeps each fighter's own facing -- an angle written
   to it is undone by the animation in the next frame -- and a fighter turns
   to the other one when it starts a move (traced: walking off after

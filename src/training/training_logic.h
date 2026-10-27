@@ -39,6 +39,7 @@
 #pragma once
 #include <stdint.h>
 #include <string.h>
+#include <math.h>
 
 namespace training {
 
@@ -353,6 +354,74 @@ private:
     uint16_t prev_ = 0;
     uint8_t dir_ = 5, tap_ = 0;
     bool latched_ = false;
+};
+
+/* ---- positions ---------------------------------------------------------------------
+ * A fighter's place on the floor: x and z (+0x10 / +0x18 of its block; y, +0x14,
+ * is 0 on the ground) and the angle it faces (+0x30, radians: it looks along
+ * (sin a, cos a)). Round start in Practice: P1 at (1000, 0) facing -pi/2, the
+ * dummy at (-1000, 0) facing +pi/2. */
+struct Place { float x = 0, z = 0, angle = 0; };
+
+inline float face_toward(float fx, float fz, float tx, float tz) { return atan2f(tx - fx, tz - fz); }
+
+/* The wall resets in two frames. Frame 1: the fighter that goes to the wall is
+ * put far out along the line (kProbe past P1), and the game's own collision
+ * brings it back to the wall. Frame 2: where it stands now is the wall; the
+ * other one goes kGap in front of it, both facing each other. A stage without a
+ * wall there (the fighter is still out at the probe) gets the places from
+ * before back. */
+class Placer {
+public:
+    static constexpr float kProbe = 60000.0f;   /* far past any wall */
+    static constexpr float kGap = 1100.0f;      /* the distance at the wall: close, in reach of most moves */
+    static constexpr float kNoWall = 1000.0f;   /* still this close to the probe: there was no wall */
+
+    /* a wall action (DummyWall*, PlayerWall*): returns false for other actions.
+     * probe: where the mover (*mover: 0 = P1, 1 = the dummy) goes this frame */
+    bool start(PAction a, const Place& p1, const Place& dummy, int* mover, Place* probe)
+    {
+        float ux = dummy.x - p1.x, uz = dummy.z - p1.z;
+        const float len = sqrtf(ux * ux + uz * uz);
+        if (len > 1.0f) { ux /= len; uz /= len; }
+        else { ux = sinf(p1.angle); uz = cosf(p1.angle); }   /* on top of each other: where P1 looks */
+        float s;
+        switch (a) {
+        case PAction::DummyWallFront: mover_ = 1; s = 1; break;
+        case PAction::DummyWallBack: mover_ = 1; s = -1; break;
+        case PAction::PlayerWallFront: mover_ = 0; s = 1; break;
+        case PAction::PlayerWallBack: mover_ = 0; s = -1; break;
+        default: return false;
+        }
+        vx_ = ux * s; vz_ = uz * s;
+        before_[0] = p1; before_[1] = dummy;
+        probe_ = Place{ p1.x + vx_ * kProbe, p1.z + vz_ * kProbe, mover_ ? dummy.angle : p1.angle };
+        pending_ = true;
+        *mover = mover_;
+        *probe = probe_;
+        return true;
+    }
+    bool pending() const { return pending_; }
+    /* frame 2: the mover's place now -> both places (out[0] P1, out[1] the dummy); false: no wall, out = before */
+    bool finish(const Place& mover_now, Place out[2])
+    {
+        pending_ = false;
+        const float dx = mover_now.x - probe_.x, dz = mover_now.z - probe_.z;
+        if (dx * dx + dz * dz < kNoWall * kNoWall) { out[0] = before_[0]; out[1] = before_[1]; return false; }
+        const int o = 1 - mover_;
+        out[mover_] = mover_now;
+        out[o] = Place{ mover_now.x - vx_ * kGap, mover_now.z - vz_ * kGap, 0 };
+        out[mover_].angle = face_toward(out[mover_].x, out[mover_].z, out[o].x, out[o].z);
+        out[o].angle = face_toward(out[o].x, out[o].z, out[mover_].x, out[mover_].z);
+        return true;
+    }
+    void cancel() { pending_ = false; }
+
+private:
+    bool pending_ = false;
+    int mover_ = 1;
+    float vx_ = 0, vz_ = 0;
+    Place before_[2], probe_;
 };
 
 /* ---- the dummy's behaviour ------------------------------------------------------ */

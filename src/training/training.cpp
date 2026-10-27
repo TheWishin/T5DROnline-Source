@@ -43,6 +43,8 @@
 
 extern "C" int t5_netplay_enabled(void);       /* src/netplay/t5_hooks.cpp */
 extern "C" int t5_netplay_local_slot(void);
+extern "C" int t5_practice_on(void);                                   /* practice.cpp: the practice tools */
+extern "C" int t5_practice_status(char* out, unsigned n, int de);      /* ... their status line ("" = none) */
 
 namespace {
 
@@ -125,8 +127,8 @@ void init()
         g_cfg.trace = fopen(f, "wb");
         parse_trace_ranges(getenv("T5_TRAINING_TRACE_RANGES"));
     }
+    if (g_cfg.mode != kOff || t5_practice_on()) rsx_overlay_prepare();
     if (g_cfg.mode != kOff) {
-        rsx_overlay_prepare();
         fprintf(stderr, "[training] overlay: %s, %s%s (F2 switches it)\n",
                 g_cfg.mode == kFrames ? "inputs and frame data" : "inputs",
                 g_cfg.all ? "every offline fight" : "Practice",
@@ -242,7 +244,15 @@ void draw_results(float cx, float y)
     }
 }
 
-void publish(int mode, bool show_p1, bool show_p2, bool frames)
+void draw_status(const char* st)
+{
+    const float w = rsx_overlay_text_width(st, kPx) + 24.0f, y = 176.0f + kRowH * 3 + 14.0f;
+    rsx_overlay_rect(640.0f - w / 2, y - 4, w, kRowH + 8, kPanel);
+    rsx_overlay_text(640.0f, y, kPx, kYellow, RSX_OVL_CENTER | RSX_OVL_SHADOW, st);
+}
+
+/* mode kOff: only the practice status line */
+void publish(int mode, bool show_p1, bool show_p2, bool frames, const char* status = "")
 {
     if (!g_shown && g_cfg.log) {
         fprintf(g_cfg.log, "%llu show game type %u%s%s%s\n", (unsigned long long)g_live, rd32(kGameType),
@@ -250,9 +260,12 @@ void publish(int mode, bool show_p1, bool show_p2, bool frames)
         fflush(g_cfg.log);
     }
     rsx_overlay_begin();
-    if (show_p1) draw_history(0, 16.0f, 190.0f);
-    if (show_p2) draw_history(1, 1280.0f - 16.0f - 156.0f, 190.0f);
-    if (frames && mode == kFrames) draw_results(640.0f, 176.0f);
+    if (mode != kOff) {
+        if (show_p1) draw_history(0, 16.0f, 190.0f);
+        if (show_p2) draw_history(1, 1280.0f - 16.0f - 156.0f, 190.0f);
+        if (frames && mode == kFrames) draw_results(640.0f, 176.0f);
+    }
+    if (status[0]) draw_status(status);
     rsx_overlay_end();
     g_shown = true;
 }
@@ -299,6 +312,20 @@ void parse_trace_ranges(const char* p)
     }
 }
 
+/* a range page by page: pages the game has not committed (yet) go in as zeros */
+void trace_range(uint32_t base, uint32_t len)
+{
+    static const uint8_t zero[4096] = {};
+    for (uint32_t off = 0; off < len;) {
+        const uint32_t a = base + off, n = (len - off) < (4096 - (a & 4095)) ? (len - off) : (4096 - (a & 4095));
+        MEMORY_BASIC_INFORMATION mi;
+        const bool ok = VirtualQuery(vm_base + a, &mi, sizeof mi) && mi.State == MEM_COMMIT &&
+                        !(mi.Protect & (PAGE_NOACCESS | PAGE_GUARD));
+        fwrite(ok ? (const void*)(vm_base + a) : (const void*)zero, 1, n, g_cfg.trace);
+        off += n;
+    }
+}
+
 void trace_frame()
 {
     static uint32_t n = 0;
@@ -311,7 +338,7 @@ void trace_frame()
     fwrite(vm_base + 0x106D4D88u, 1, 8, g_cfg.trace);
     for (int i = 0; i < g_trace_nextra; i++) {
         const TraceRange& r = g_trace_extra[i];
-        if (k % r.every == 0) fwrite(vm_base + r.base, 1, r.len, g_cfg.trace);
+        if (k % r.every == 0) trace_range(r.base, r.len);
     }
     fflush(g_cfg.trace);
 }
@@ -327,7 +354,7 @@ extern "C" void t5_training_frame(ppu_context* ctx)
     (void)ctx;
     if (!g_init) init();
     if (g_cfg.trace) trace_frame();
-    if (g_cfg.mode == kOff && g_f2_mode < 0 && !g_cfg.trace) return;
+    if (g_cfg.mode == kOff && g_f2_mode < 0 && !g_cfg.trace && !t5_practice_on()) return;
     /* T5_TRAINING_STATS: wall time and this thread's own CPU time (cycles, so a
      * busy PC preempting the thread does not count) */
     LARGE_INTEGER t0, t1;
@@ -426,7 +453,10 @@ static bool frame_body()
     } else if (gt != kGtPractice && !g_cfg.all) {
         show = false;
     }
-    if (show) publish(mode, p1, p2, frames);
+    /* the practice tools' status line (practice.cpp; offline Practice only) */
+    char status[96] = "";
+    if (!online && gt == kGtPractice) t5_practice_status(status, sizeof status, g_cfg.de ? 1 : 0);
+    if (show || status[0]) publish(show ? mode : kOff, p1, p2, frames, status);
     else hide();
     return true;
 }

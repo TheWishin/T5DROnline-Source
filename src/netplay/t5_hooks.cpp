@@ -90,6 +90,7 @@ extern "C" uint32_t t5_df_mode_cur(void);  /* src/directfight/df_fight.cpp: the 
 extern "C" uint32_t t5_df_mode_next(void); /* src/directfight/df_fight.cpp: the mode the manager was asked for (14 = none) */
 extern "C" void t5_df_window_closed(void);   /* src/directfight/df_fight.cpp: state.json "quit" (persistent game) */
 extern "C" void t5_training_frame(ppu_context* ctx);   /* src/training/training.cpp: the training overlay */
+extern "C" void t5_practice_pads(uint16_t* p1, uint16_t* p2);   /* src/training/practice.cpp: offline Practice only */
 /* ps3recomp patch 0035 (boot_main.cpp, rsx_null_backend.c): the game window was closed; Esc asks twice */
 extern "C" void ps3_set_window_closed_handler(void (*fn)(void));
 extern "C" void ps3_set_window_close_guard(int (*fn)(void));
@@ -682,9 +683,13 @@ void keyread_tick()
     gcall(kFnPadUpdate);                         /* 0x8F3A4: cellPadGetInfo/GetData, port states */
     if (rd32(kRingResetFlag)) gcall(kFnRingReset);
     const uint32_t slot = (rd32(kRingWriteIdx) & 15) * 2;
-    const uint16_t m0 = (uint16_t)gcall(kFnPortMask, 0);
-    wr16(kRing + slot, m0);
-    const uint16_t m1 = (uint16_t)gcall(kFnPortMask, 1);
+    uint16_t m0 = (uint16_t)gcall(kFnPortMask, 0);
+    if (!g_offline) wr16(kRing + slot, m0);
+    uint16_t m1 = (uint16_t)gcall(kFnPortMask, 1);
+    if (g_offline) {   /* offline only (never netplay, a replay or spectating): the practice tools, in Practice */
+        t5_practice_pads(&m0, &m1);
+        wr16(kRing + slot, m0);
+    }
     wr16(kRing + 0x20 + slot, m1);
     gcall(kFnRingAdvance);                       /* 0x12071C: write index++ */
     gcall(kFnTickTail);                          /* 0x13F91C */

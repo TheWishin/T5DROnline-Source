@@ -55,6 +55,7 @@ from .casual import CasualMixin
 from .config import Config
 from .ratelimit import BanList, KeyedBuckets, TokenBucket
 from .relays import MAIN as RELAY_MAIN, MAX_RELAYS, RelayPool
+from .matchrules import MatchRulesMixin
 from .rooms import Room, RoomsMixin  # noqa: F401 -- (Room: lobby.Room for tools and tests)
 from .spectating import SpectateMixin
 from .store import COUNTED, SET_COUNTED, Store, check_password, hash_password
@@ -65,7 +66,8 @@ log = logging.getLogger("t5lobby")
 SERVER_NAME = "t5lobby/0.2"
 # optional protocol features a client may announce in hello
 CAPS = frozenset(("delta", "blind_ready", "notices", "sets", "ingame_pick", "nat2", "relays", "friends", "old_stages",
-                  "tournaments", "spectate", "game_fallback", "private_rooms", "boss_chars", "lag_wait"))
+                  "tournaments", "spectate", "game_fallback", "private_rooms", "boss_chars", "lag_wait",
+                  "match_rules"))     # (a server reads 16 caps: one cap for training rooms and the handicap)
 QUEUE_MODES = ("quick", "ranked")
 # What this server supports beyond protocol 1's base (the client checks before using them).
 FEATURES = ["ranks", "sessions", "recovery", "passwd", "profile", "history", "chars", "integrity", "rematch",
@@ -74,6 +76,7 @@ FEATURES = ["ranks", "sessions", "recovery", "passwd", "profile", "history", "ch
 FEATURES += ["casual_choice"]       # 1.1.5: P1 / P2 and the stage by choice in casual matches (casual.py)
 FEATURES.append("stats")       # 1.1.5: the Online tab's stats page (h_stats)
 STATS_SECONDS = 300.0          # the stats page's numbers are computed again at most this often
+FEATURES += ["training", "handicap"]   # 1.1.5: training rooms and the health handicap (matchrules.py)
 REPORT_SOURCES = ("game", "manual", "quit", "crash", "disconnect")
 DAY = 86400.0
 
@@ -149,6 +152,7 @@ class Player:
         self.spec_allow = False         # spectators allowed (spec_prefs; never sent by a client without the cap)
         self.spec_ranked = False        # ... in ranked matches too
         self.watching = None            # the spectating.Stream this player watches
+        self.life = 100                 # health handicap in casual matches, percent (set_life; matchrules.py)
         if account:
             self.rating = glicko.Rating(account["rating"], account["rd"], account["vol"])
             self.record = [account["wins"], account["losses"], account["draws"]]
@@ -168,6 +172,8 @@ class Player:
              "record": self.record, "room": self.room.id if self.room and not self.room.hidden else None,
              "rtt": None if self.rtt_shown is None else round(self.rtt_shown, 1),
              "build": self.build_id, "release": self.release, "char": self.char, "main": self.main}
+        if self.life != 100:
+            d["life"] = self.life       # (the health handicap: shown to everybody; older launchers ignore it)
         if self.relay_shown:
             # 1.1.5: the round trips to the regional relays, so that a launcher can estimate its ping to this player the
             # way the server does (_est_ping: the best relay both measured), not only through the central server
@@ -357,6 +363,8 @@ class Match:
         self.set_number = None               # its number in a rated set (1, 2, 3; a replay keeps it)
         self.lost_lobby = [False, False]     # side -> its lobby connection dropped while the match ran
         self.stream_id = self.id             # the live stream of its netplay session (a continued rematch: the first's)
+        self.training = bool(getattr(room, "training", False))   # a training room's match (matchrules.py)
+        self.life = None                     # [P1, P2] health handicap in percent, None = 100/100 (matchrules.py)
 
     def side(self, player):
         return 0 if self.players[0] is player else 1 if self.players[1] is player else None
@@ -496,7 +504,7 @@ class Conn:
 
 # =============================================================================== server
 
-class LobbyServer(SpectateMixin, RoomsMixin, CasualMixin):
+class LobbyServer(SpectateMixin, RoomsMixin, CasualMixin, MatchRulesMixin):
     def __init__(self, cfg=None):
         self.cfg = cfg or Config.from_env()
         self.store = Store(self.cfg.db)
@@ -825,7 +833,7 @@ class LobbyServer(SpectateMixin, RoomsMixin, CasualMixin):
     HEAVY = frozenset(("leaderboard", "profile", "history", "lobby", "friends"))
     HEAVY = HEAVY | {"stats"}
     STATE = frozenset(("queue", "unqueue", "room_create", "room_join", "room_leave", "room_lock", "room_kick",
-                       "room_line", "room_bar", "set_char", "udp_rtt", "perf",
+                       "room_line", "room_bar", "set_char", "set_life", "udp_rtt", "perf",
                        "relay_rtt",
                        "challenge", "challenge_cancel", "block", "unblock", "leave_set",
                        "friend_add", "friend_answer", "friend_cancel", "friend_remove", "invite", "invite_answer",
@@ -1906,6 +1914,7 @@ class LobbyServer(SpectateMixin, RoomsMixin, CasualMixin):
                         f"(limit {self.cfg.pair_cap})")
         m = Match(host, join, ranked, origin, room)
         m.rematch_of = rematch_of.id if rematch_of is not None else None
+        self._rules_new_match(m, host, join, ranked, origin, rematch_of)     # training, health handicap
         self.matches[m.id] = m
         for inv in [i for i in self.invites.values() if i.src in (host, join) or i.dst in (host, join)]:
             self._end_invite(inv, "cancelled")          # (playing someone else now)
@@ -1931,6 +1940,7 @@ class LobbyServer(SpectateMixin, RoomsMixin, CasualMixin):
             else:
                 found.update(role="host" if side == 0 else "join", slot=side,
                              opponent=m.players[1 - side].brief())
+            found.update(self._rules_found(m, side))
             p.send(found)
             if note:
                 p.send({"t": "notice", "code": note_code, "match": m.id, "msg": note})
@@ -2662,7 +2672,8 @@ class LobbyServer(SpectateMixin, RoomsMixin, CasualMixin):
                 "opponent": m.players[1 - side].brief(), "seed": int.from_bytes(m.tag[:4], "big"),
                 "key": m.key,                          # T5_NET_KEY (the tag above travels in UDP punches)
                 "fight": dict({"p1": m.chars[0], "p2": m.chars[1], "stage": m.stage, "rounds": self.cfg.rounds},
-                              **({"pick": m.pick} if m.pick else {}), **self._locked_costumes(m)),
+                              **({"pick": m.pick} if m.pick else {}), **self._locked_costumes(m),
+                              **self._rules_fight(m)),
                 "start_time": int(m.started),          # PS3_FIXED_TIME: the same game clock on both PCs
                 "players": [q.brief() for q in m.players],
                 "continue": m.continued, "rematch_of": m.rematch_of,
@@ -3085,6 +3096,7 @@ class LobbyServer(SpectateMixin, RoomsMixin, CasualMixin):
 
     def _finish(self, m, status, winner, score, reason=None, blame=None):
         self._cancel_timers(m)
+        status, winner, score, reason, blame = self._rules_finish(m, status, winner, score, reason, blame)
         m.state = "done"
         picked = self._picked(m)
         if picked:
@@ -3185,6 +3197,8 @@ class LobbyServer(SpectateMixin, RoomsMixin, CasualMixin):
         self.dirty = True
 
     def _save(self, m, status, winner=None, score=None, changes=None, reason=None, blame=None):
+        if m.training:
+            return                           # a training room's match: no result, no history (matchrules.py)
         try:
             self.store.save_match({
                 "id": m.id, "created": m.created, "ended": time.time() if status != "playing" else None,
@@ -3570,6 +3584,7 @@ class LobbyServer(SpectateMixin, RoomsMixin, CasualMixin):
                 raise LobbyError(proto.E_FULL, "room is full")
             if self._block_key(q) in room.kicked:
                 raise LobbyError(proto.E_NOT_ALLOWED, "the room's host removed that player from this room")
+            self._room_training_check(room, q)
             if any(self._is_blocked(q, x) for x in room.members if x is not p):
                 # (security review 3) a community room holds up to 8: the friend and another member have blocked one
                 # another -- the invite must not bring them together (joining the room is refused the same way)
@@ -3602,7 +3617,7 @@ class LobbyServer(SpectateMixin, RoomsMixin, CasualMixin):
         if room is not None:
             # (a private room: the invite is the key -- the friend joins without the password; no secret is sent)
             ev["room"] = {"id": room.id, "name": room.name, "ranked": room.ranked, "private": room.private,
-                          "size": room.size}
+                          "size": room.size, **({"training": True} if room.training else {})}
         q.send(ev)
         self._count("invites_sent")
         log.info("%s invited %s (%s)", p.name, q.name, kind)

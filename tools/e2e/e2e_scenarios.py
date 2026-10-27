@@ -966,6 +966,123 @@ def net_lockstep(ctx):
             ctx.sleep(5)
 
 
+NET_TRAINING = [
+    # label, rtt, jitter, loss, input delay setting (both), relay, expected rollback input delay
+    ("training RTT 80, 2% loss, jitter +-10 ms", 80, 10, 2, "auto", False, None),
+    ("training RTT 20", 20, 0, 0, "auto", False, None),
+]
+
+
+def training_room_case(ctx, a, b, label, rtt, jitter, loss, delay, relay, _expect, mode="rollback", fights=2):
+    """A training room (docs/ONLINE.md "Training rooms and the health handicap"): a creates it with the Create room
+    window's Training box, b joins; a plays with 70 % health. Every fight ends when a player holds SELECT (the
+    scripted give-up, every 2400 frames); the launchers go back to the select screen by themselves (no Rematch
+    click). Each fight: lobby status "training" on both, the same winner and state hash in both games' result files,
+    0 mismatching frames, the rules in both games' FIGHT START lines, a give-up in the logs."""
+    ctx.shaper.set(rtt, jitter, loss, on=not relay)
+    for p in (a, b):
+        p.app.settings["input_delay"] = delay
+        p.tab.driver.input_delay = delay
+        p.client.block_direct = relay
+    a.tab.life_var.set(a.tab.life_var.get().replace("100", "70"))
+    a.tab.on_life()
+    ctx.wait(lambda: a.client.life == 70, 10, f"{label}: the health handicap is set")
+    since = time.time()
+    a.press("room")
+    w = getattr(a.tab.rooms_ui, "window", None)
+    ctx.require(f"{label}: the Create room window", w is not None)
+    ctx.check(f"{label}: the Training box is on offer", str(w.widgets["training"].cget("state")) != "disabled")
+    w.vars["training"].set(1)
+    w.create_button.invoke()
+    ctx.wait(lambda: (a.me or {}).get("status") == "room", 10, f"{label}: Create room")
+    ctx.wait(lambda: len(b.tab.tv_rooms.get_children()) == 1, 10, f"{label}: the room is listed")
+    rid = b.tab.tv_rooms.get_children()[0]
+    b.tab.tv_rooms.selection_set(rid)
+    b.press("join")
+    mid = found_both(ctx, a, b, since)
+    fa = latest(a, "match_found", since)
+    ctx.check(f"{label}: match_found says training and the health", fa.get("training") is True and
+              (fa.get("life") or {}).get("you") == 70, f"{fa.get('training')}, {fa.get('life')}")
+    accept(ctx, a, mid)
+    accept(ctx, b, mid)
+    if not started_both(ctx, a, b, mid):
+        raise Abort("training match did not start")
+    rows = []
+    for k in range(fights):
+        if k:
+            t0 = time.time() - 30
+            ok = ctx.wait(lambda: any(e.get("match") != mid and e.get("continue") for e in a.events_of("match_start", t0))
+                          and any(e.get("match") != mid for e in b.events_of("match_start", t0)), 60,
+                          f"{label}: the next training fight starts by itself")
+            if not ok:
+                raise Abort("no next training fight")
+            mid = [e for e in a.events_of("match_start", t0) if e.get("match") != mid][-1]["match"]
+        start = a.matches.get(mid, {})
+        ctx.check(f"{label} fight {k + 1}: match_start fight has training, one round and the health",
+                  (start.get("fight") or {}).get("training") is True and (start.get("fight") or {}).get("rounds") == 1
+                  and 70 in ((start.get("fight") or {}).get("life") or []), str(start.get("fight")))
+        if not wait_fight(ctx, mid, (a, b), timeout=180):
+            raise Abort("no fight")
+        wait_results(ctx, mid, (a, b), timeout=400)
+        row = match_row(ctx, mid, (a, b), "training", f"{label} fight {k + 1}")
+        for p in (a, b):
+            seg = p.log_segment(mid)
+            ctx.check(f"{label} fight {k + 1}: {p.name}'s game fought with the rules",
+                      any("FIGHT START" in ln and "training (endless health" in ln and "70 %" in ln for ln in seg),
+                      "no FIGHT START line with the rules")
+            ctx.check(f"{label} fight {k + 1}: {p.name}'s game saw the give-up",
+                      any("held SELECT for" in ln and "gives up" in ln for ln in seg), "no give-up line")
+            row[p.name]["refills"] = [ln.split("training: ", 1)[1] for ln in seg if "training: health refilled" in ln][-1:]
+        ctx.check(f"{label} fight {k + 1}: netcode {mode} on both",
+                  row[a.name]["mode"] == mode and row[b.name]["mode"] == mode,
+                  f"{row[a.name]['mode']}/{row[b.name]['mode']}")
+        rows.append(row)
+    ctx.note(f"{label}: proxy {ctx.shaper.stats()}")
+    for p in (b, a):            # Leave room -- in a training room also during its (next) fight: leave any time
+        ctx.wait(lambda: p.action_on("leave"), 30, f"{label}: {p.name}'s Leave room is on")
+        p.press("leave")
+        ctx.wait(lambda: (p.me or {}).get("status") == "idle", 20, f"{label}: {p.name} left the room")
+    res = latest(a, "match_result", 0.0) or {}
+    ctx.check(f"{label}: the fight going on when Bob's side left ended without a result", res.get("status") ==
+              "training" and res.get("reason") in ("left", None), f"{res.get('status')} ({res.get('reason')})")
+    a.tab.life_var.set(a.tab.life_var.get().replace("70", "100"))
+    a.tab.on_life()
+    ctx.sleep(2.0)
+    return rows
+
+
+@scenario("net_training", "6 netcode", game=True, suites=("game", "net"),
+          desc="online training (1.1.5): a training room with endless health and a 70 % handicap, fights ended by a "
+               "held SELECT, back to the select screen by themselves; rollback at RTT 80 with loss and jitter, and "
+               "lockstep -- 0 mismatching frames, no result counted")
+def net_training(ctx):
+    game_server(ctx)
+    for mode, env in (("rollback", {}), ("lockstep", {"T5_RB_MODE": "off"})):
+        if ctx.run.netcode == "lockstep" and mode == "rollback":
+            continue
+        a = ctx.player(f"E2E Train{mode[0].upper()}1", env=env, tag=mode)
+        b = ctx.player(f"E2E Train{mode[0].upper()}2", env=env, tag=mode)
+        for i, p in enumerate((a, b)):
+            p.give_up_every, p.give_up_at = 2400, 2400 + 1200 * i
+        login(ctx, a)
+        login(ctx, b)
+        if not a.client.training_ok():
+            raise Skip("this game build or server has no training rooms")
+        cases = NET_TRAINING if mode == "rollback" else NET_TRAINING[1:]
+        for c in cases:
+            try:
+                training_room_case(ctx, a, b, f"{mode} {c[0]}", *c[1:], mode=mode)
+            except Abort as e:
+                ctx.check(f"{mode} {c[0]}: completed", False, str(e))
+                for p in (a, b):
+                    if p.action_on("leave"):
+                        p.press("leave")
+                ctx.sleep(5)
+        for p in (a, b):          # (the lockstep pair next: two games at a time on this PC)
+            p.close()
+            ctx.players.remove(p)
+
+
 @scenario("net_internal_res", "6 netcode", game=True, suites=("game", "net"),
           desc="different internal resolutions on the two PCs (4K against Lowest, the launcher's setting): a match and "
                "a rematch stay in sync")
@@ -3978,6 +4095,74 @@ def _spectate_case(ctx, watched, games=True):
         ctx.note(f"{r['label']}: " + ", ".join(f"{n}: fps {r[n]['result_file'].get('fps')}, desync "
                                                 f"{r[n]['result_file'].get('desync')}" for n in r
                                                 if isinstance(r[n], dict) and "result_file" in r[n]))
+
+
+@scenario("spectate_training", "12 spectating", game=True, suites=("game",),
+          desc="a training room (1.1.5: endless health, P1 at 70 % health, fights ended by a held SELECT, back to the "
+               "select screen by themselves) watched from the start through Rooms: Watch; the spectator's game plays "
+               "both fights with every recorded hash and result the same")
+def spectate_training(ctx):
+    if "spectate" not in features():
+        raise Skip("this tree has no spectating")
+    game_server(ctx)
+    a = ctx.player("E2E Tia", char="steve")
+    b = ctx.player("E2E Tom", char="hwoarang")
+    v = ctx.player("E2E Val")
+    for i, p in enumerate((a, b)):
+        p.give_up_every, p.give_up_at = 2400, 2400 + 1200 * i
+    for p in (a, b, v):
+        login(ctx, p)
+    if not a.client.training_ok():
+        raise Skip("this game build or server has no training rooms")
+    a.tab.life_var.set(a.tab.life_var.get().replace("100", "70"))
+    a.tab.on_life()
+    ctx.wait(lambda: a.client.life == 70, 10, "Tia's health handicap is set")
+    t = time.time()
+    a.press("room")
+    w = a.tab.rooms_ui.window
+    w.vars["training"].set(1)
+    w.create_button.invoke()
+    ctx.wait(lambda: (a.me or {}).get("status") == "room", 10, "Tia creates a training room")
+    ctx.wait(lambda: len(b.tab.tv_rooms.get_children()) == 1, 10, "the room is listed")
+    rid = b.tab.tv_rooms.get_children()[0]
+    b.tab.tv_rooms.selection_set(rid)
+    b.press("join")
+    mid = found_both(ctx, a, b, t)
+    accept(ctx, a, mid)
+    accept(ctx, b, mid)
+    started_both(ctx, a, b, mid)
+    ctx.wait(lambda: any(r.get("watch") for r in v.client.rooms), 30, "the training room's match can be watched")
+    v.tab.tv_rooms.selection_set(rid)
+    v.tab.spec.set_actions()
+    ctx.require("Val's Watch button is on", str(v.tab.actions["watch_room"].cget("state")) == "normal")
+    v.tab.actions["watch_room"].invoke()
+    ctx.wait(lambda: (v.tab.spec.w or {}).get("game") is not None, 30, "Val's game starts")
+    mids = [mid]
+    for k in range(2):
+        if k:
+            t0 = time.time() - 30
+            ok = ctx.wait(lambda: any(e.get("match") not in mids for e in a.events_of("match_start", t0))
+                          and any(e.get("match") not in mids for e in b.events_of("match_start", t0)), 60,
+                          "the next training fight starts by itself")
+            if not ok:
+                raise Abort("no next training fight")
+            mids.append([e for e in a.events_of("match_start", t0) if e.get("match") not in mids][-1]["match"])
+        m = mids[-1]
+        wait_fight(ctx, m, (a, b), timeout=180)
+        wait_results(ctx, m, (a, b), timeout=400)
+        match_row(ctx, m, (a, b), "training", f"training fight {k + 1}")
+    for p in (b, a):            # Leave room (a training room: also during its next fight)
+        ctx.wait(lambda: p.action_on("leave"), 30, f"{p.name}'s Leave room is on")
+        p.press("leave")
+        ctx.wait(lambda: (p.me or {}).get("status") == "idle", 20, f"{p.name} left the room")
+    ctx.wait(lambda: (v.tab.spec.w or {}).get("state") == "over", 900, "Val's game ends at the end of the stream")
+    vd = _verdict(v) or {}
+    ms = vd.get("matches") or []
+    ctx.check("Val: identical to the live games", vd.get("identical") is True,
+              f"{vd.get('hashes_compared')} hashes compared, {vd.get('hash_mismatches')} different, "
+              f"{vd.get('uncompared')} uncompared, setup problems {vd.get('setup_problems')}")
+    ctx.check("Val: both training fights played, the same results", len(ms) >= 2 and all(m.get("same") for m in ms),
+              [(m.get("winner"), m.get("hash"), m.get("same")) for m in ms])
 
 
 @scenario("spectate_live", "12 spectating", game=True, suites=("game",),

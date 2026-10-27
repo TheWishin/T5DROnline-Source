@@ -19,7 +19,9 @@
  *       bit 1 hash, bit 2 complete); i32 p1, p2, b1, b2, m1, m2, stage, rounds, pick,
  *       winner (-1: none), score1, score2; u64 hash; str name1, name2 (u16 length + bytes);
  *       format 3: u32 costume flags (bit 0: the blocks follow), then 2 x 0x108 bytes -- the custom
- *       costume blocks the driver wrote for P1 and P2 at FIGHT START
+ *       costume blocks the driver wrote for P1 and P2 at FIGHT START;
+ *       format 5: u32 rules (bit 0 a training fight, bits 8-15 / 16-23 P1's / P2's health in percent,
+ *       0 = 100; src/netplay/match_rules.h)
  *   u32 sync points, each: u32 kind, frame, continued at, seed, flags (bit 0 counters);
  *       u64 frame clock; u32 counters[3]
  *   u32 hashes, each: u32 frame, u64 hash
@@ -44,6 +46,7 @@
 #include <vector>
 
 #include "replay.h"
+#include "match_rules.h"   /* format 5: a match's rules word */
 
 extern "C" int t5_unlock_online_open(void);   /* src/directfight/df_unlock.cpp: T5_NET_UNLOCKS=open of this session */
 unsigned char* rp_zlib_compress(const unsigned char* data, int len, int* out_len);     /* replay_zlib.cpp */
@@ -52,9 +55,10 @@ unsigned char* rp_zlib_decompress(const unsigned char* data, int len, int* out_l
 namespace rp {
 namespace {
 
-constexpr uint32_t kVersion = 4;   /* 2: the last frame the recording game ran (after the hash interval);
+constexpr uint32_t kVersion = 5;   /* 2: the last frame the recording game ran (after the hash interval);
                                     3: each match's custom costume blocks;
-                                    4: header flags bit 1 (select seed per match) and bit 2 (unlocks open) */
+                                    4: header flags bit 1 (select seed per match) and bit 2 (unlocks open);
+                                    5: each match's rules word (online training, the health handicap) */
 constexpr uint32_t kFlagRollback = 1, kFlagSelectMix = 2, kFlagUnlocksOpen = 4;
 constexpr uint32_t kCostumeBlock = 0x108;
 constexpr int kMaxDelay = 30;      /* netplay_core.cpp kMaxDelay: the input delay a session can have */
@@ -136,6 +140,7 @@ void put_match(std::vector<uint8_t>& b, const Match& m)
     putstr(b, m.ft.names[0]); putstr(b, m.ft.names[1]);
     put32(b, m.ft.costumes ? 1u : 0u);     /* format 3: the custom costume blocks (both sides) */
     if (m.ft.costumes) for (int s = 0; s < 2; s++) b.insert(b.end(), m.ft.cos[s], m.ft.cos[s] + kCostumeBlock);
+    put32(b, m.ft.rules);                  /* format 5: the match's rules (training, health handicap) */
 }
 
 void put_barrier(std::vector<uint8_t>& b, const Barrier& x)
@@ -235,6 +240,7 @@ Match get_match(Reader& r, uint32_t ver)
     m.ft.names[0] = r.str(); m.ft.names[1] = r.str();
     if (ver >= 3 && (r.u32() & 1))         /* format 3: the custom costume blocks the match was fought in */
         m.ft.costumes = r.bytes(m.ft.cos[0], kCostumeBlock) && r.bytes(m.ft.cos[1], kCostumeBlock);
+    if (ver >= 5) m.ft.rules = r.u32();    /* format 5: training, health handicap (older files: none) */
     return m;
 }
 
@@ -336,6 +342,12 @@ std::string to_json(const Data& d, bool names, uint32_t frames)
                  !m.have_result || m.winner < 0 ? "null" : m.winner == 0 ? "0" : "1", m.score[0], m.score[1], m.frames, m.desync,
                  m.complete ? "true" : "false");
         j += b;
+        if (m.ft.rules) {   /* format 5: a training fight, the health handicap (match_rules.h) */
+            const np::MatchRules ru = np::MatchRules::unpack(m.ft.rules);
+            snprintf(b, sizeof b, ", \"training\": %s, \"life\": [%d, %d]", ru.training ? "true" : "false", ru.life[0],
+                     ru.life[1]);
+            j += b;
+        }
         if (m.have_hash) { snprintf(b, sizeof b, ", \"hash\": \"%016llx\"", (unsigned long long)m.hash); j += b; }
         if (!m.reason.empty()) j += ", \"reason\": " + jstr(m.reason);
         j += ", \"started\": " + jstr(m.started) + ", \"ended\": " + (m.ended.empty() ? std::string("null") : jstr(m.ended));
@@ -1425,6 +1437,11 @@ void play_fight(const Fight& ft, uint32_t match)
     Play& p = P();
     if (match < 1 || match > p.d.matches.size()) return;
     const Fight& rec = p.d.matches[match - 1].ft;
+    if (ft.rules != rec.rules) {
+        p.model_bad++;
+        note("match %u: FIGHT START with rules 0x%X, the recording had 0x%X (training / health handicap)", match, ft.rules,
+             rec.rules);
+    }
     if (ft.model[0] != rec.model[0] || ft.model[1] != rec.model[1] || ft.stage != rec.stage) {
         p.model_bad++;
         note("match %u: FIGHT START with models 0x%X / 0x%X on stage %d, the recording had 0x%X / 0x%X on stage %d", match,
@@ -1459,6 +1476,12 @@ bool play_fight_line(uint32_t match, std::string* line)
     snprintf(b, sizeof b, "%d,%d,%d,%d buttons=%d|%d", f.chr[0], f.chr[1], f.stage, f.rounds, f.btn[0], f.btn[1]);
     *line = b;
     if (f.pick > 0) *line += " pick=" + std::to_string(f.pick);
+    if (f.rules) {   /* format 5: the match's rules, as the lobby's line had them (match_rules.h) */
+        const np::MatchRules ru = np::MatchRules::unpack(f.rules);
+        if (ru.training) *line += " train=1";
+        if (ru.life[0] != 100 || ru.life[1] != 100)
+            *line += " life=" + std::to_string(ru.life[0]) + "|" + std::to_string(ru.life[1]);
+    }
     if (!f.names[0].empty() || !f.names[1].empty()) {
         auto enc = [](const std::string& s) {
             std::string o;
@@ -1575,11 +1598,11 @@ void play_finish(const char* why)
 /* ---- the direct-fight driver's side (df_fight.cpp) ----------------------------- */
 extern "C" void t5_replay_fight_start(unsigned match, const int chr[2], const int btn[2], const int model[2], int stage,
                                       int rounds, int pick, const char* name1, const char* name2,
-                                      const unsigned char* costumes)
+                                      const unsigned char* costumes, unsigned rules)
 {
     Fight ft;
     for (int i = 0; i < 2; i++) { ft.chr[i] = chr[i]; ft.btn[i] = btn[i]; ft.model[i] = model[i]; }
-    ft.stage = stage; ft.rounds = rounds; ft.pick = pick;
+    ft.stage = stage; ft.rounds = rounds; ft.pick = pick; ft.rules = rules;
     ft.names[0] = name1 ? name1 : ""; ft.names[1] = name2 ? name2 : "";
     if (costumes) { ft.costumes = true; memcpy(ft.cos[0], costumes, kCostumeBlock); memcpy(ft.cos[1], costumes + kCostumeBlock, kCostumeBlock); }
     if (playing()) play_fight(ft, match);

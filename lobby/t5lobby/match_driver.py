@@ -71,6 +71,7 @@ from .i18n import N_, t, translate_message
 
 CTL_MARKER = b"T5_CTL_DIR"
 PICK_MARKER = b"T5_DF_PICK"     # a game build with the in-game select (src/directfight, docs/DIRECTFIGHT.md)
+RULES_MARKER = b"T5_DF_RULES"   # a game build with training rooms and the health handicap (src/netplay/match_rules.h)
 
 RE_SYNC = re.compile(r"\[netplay\] sync check through frame (\d+): (\d+) mismatching")
 RE_DESYNC = re.compile(r"\[netplay\] DESYNC at frame (\d+)")
@@ -343,6 +344,27 @@ def game_supports_pick(paths):
     return _has_marker(paths, PICK_MARKER)
 
 
+def game_supports_rules(paths):
+    """Can this game build play training rooms (endless health) and the health handicap (train= / life= on the
+    fight line; docs/ONLINE.md "Training rooms and the health handicap")?"""
+    return _has_marker(paths, RULES_MARKER)
+
+
+def fight_rules(fight):
+    """The fight line's rules from match_start's `fight`: " train=1" for a training room's match, " life=P1|P2" for
+    the health handicap (both games must write the same: the server sends them only when both can)."""
+    out = ""
+    if not isinstance(fight, dict):
+        return out
+    if fight.get("training") is True:
+        out += " train=1"
+    life = fight.get("life")
+    if (isinstance(life, list) and len(life) == 2 and all(isinstance(x, int) and not isinstance(x, bool)
+                                                           and 10 <= x <= 100 for x in life) and life != [100, 100]):
+        out += f" life={life[0]}|{life[1]}"
+    return out
+
+
 def _has_marker(paths, marker):
     key = [marker]
     for p in paths:
@@ -529,7 +551,8 @@ class MatchDriver:
             if isinstance(b, list) and len(b) == 2 and all(isinstance(x, int) and 0 <= x <= 4 for x in b) and any(b):
                 # a ranked set's next game: the costumes its first game picked in the game
                 line += f" buttons={b[0]}|{b[1]}"
-        return line
+        # a training room's match (endless health), the health handicap: both games simulate them
+        return line + fight_rules(fight)
 
     def _write_fight_file(self, line, mid=None, ev=None):
         # match=<id>: the game puts it into this match's result file (older builds ignore it);
@@ -800,6 +823,14 @@ class MatchDriver:
             self.note("set_next", match=ev["match"], set=s)
         elif ev.get("rematch_window") and self.auto_rematch > 0:
             self.rematch(ev["match"], True)
+        elif ev.get("status") == "training":
+            # a training room's fight (docs/ONLINE.md "Training rooms and the health handicap"): ended in the game (a
+            # give-up, a KO -- no reason): both launchers go on at once, back to the select screen together. A player
+            # left or quit, or the connection broke: this game's session ends too (the other game would play on)
+            if ev.get("reason") is None and ev.get("rematch_window") and self.connected_game():
+                self.rematch(ev["match"], True)
+            else:
+                self._release_game()
 
     def rematch(self, match_id=None, accept=True, swap=False):
         """Offer / accept (or decline) a rematch against the last opponent (swap: P1 and P2 the other way round)."""
@@ -1198,6 +1229,11 @@ def hud_values(ev):
     if s.get("rated") and int(s.get("number") or 1) > 1 and isinstance(wins, list) and len(wins) == 2:
         # a ranked set from game 2 on: the games won so far after each name ("Alice [1]"), 16 characters at most
         names = [f"{n[:12]} [{int(w)}]" for n, w in zip(names, wins)]
+    life = ((ev or {}).get("fight") or {}).get("life")
+    if isinstance(life, list) and len(life) == 2 and all(isinstance(x, int) for x in life) and life != [100, 100]:
+        # the health handicap (docs/ONLINE.md "Training rooms and the health handicap"): the game's bars show health
+        # against each fighter's own (smaller) maximum, so the name says it -- "Alice 70%" (outside the hashed state)
+        names = [n if x == 100 else f"{n[:11]} {x}%" for n, x in zip(names, life)]
     tiers = []
     for p in players:
         t = p.get("tier")

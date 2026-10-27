@@ -25,7 +25,7 @@ import weakref
 import tkinter as tk
 from tkinter import ttk
 
-from . import i18n, proto, ranks, theme, tk_history, tk_stats, tk_tour
+from . import i18n, proto, ranks, theme, tk_history, tk_rules, tk_stats, tk_tour
 from .i18n import N_, t
 from .lag import describe_event as describe_lag, lagged
 from .rank_art import ART
@@ -643,12 +643,14 @@ class OnlineView:
             row=0, column=0, sticky="w")
         self.room_label = ttk.Label(top, text="", style="Card.Accent.TLabel")
         self.room_label.grid(row=1, column=0, sticky="w")
-        ttk.Label(top, text=t("Character"), style="Card.Muted.TLabel").grid(row=0, column=1, rowspan=2, sticky="e",
+        ttk.Label(top, text=t("Character"), style="Card.Muted.TLabel").grid(row=0, column=1, sticky="e",
                                                                           padx=(0, px(8)))
         names = [t("Random")] + [x["name"] for x in tab.table.selectable()]
         cb = ttk.Combobox(top, textvariable=tab.char_var, values=names, state="readonly", width=15,
                           style="Card.TCombobox")
-        cb.grid(row=0, column=2, rowspan=2, sticky="e")
+        cb.grid(row=0, column=2, sticky="e")
+        # the health handicap for casual matches, under the character (tk_rules.py)
+        tk_rules.build_life_picker(self, top, tab).grid(row=1, column=1, columnspan=2, sticky="e", pady=(px(2), 0))
         cb.bind("<<ComboboxSelected>>", lambda _e: tab.on_char())
         tab.char_cb = cb
         self.lock_label = ttk.Label(top, text=t("Locked for this ranked set"), style="Card.Faint.TLabel")
@@ -1649,6 +1651,8 @@ class OnlineView:
                 return "loss", t("SET LOST"), "Loss."
             return "void", t("NO CONTEST"), "Even."
         st = ev.get("status")
+        if st == "training":                         # a training room's fight: nothing counted (tk_rules.py)
+            return "over", t("TRAINING OVER"), "Even."
         counted = st in ("confirmed", "onesided", "forfeit", "resolved")
         mine = info.get("mine")
         if counted and mine is True:

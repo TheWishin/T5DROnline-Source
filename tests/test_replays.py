@@ -70,6 +70,8 @@ def make_file(path, inputs, matches, bars=(), hashes=(), rollback=True, slot=0, 
             b += struct.pack("<H", len(e)) + e
         if version >= 3:
             b += struct.pack("<I", 0)                    # format 3: no custom costume blocks
+        if version >= 5:
+            b += struct.pack("<I", m.get("rules", 0))    # format 5: the match's rules (training, health handicap)
     b += struct.pack("<I", len(bars))
     for x in bars:
         b += struct.pack("<5IQ3I", x["kind"], x["f"], x["nf"], x["seed"], 1, x["f"], 1, 2, 3)
@@ -520,12 +522,18 @@ class GameCodeTest(unittest.TestCase):
         frames = list(zip(p["inputs"][0], p["inputs"][1]))
         self.assertEqual(int(self.lines(out, "DIGESTPLUS")[0], 16), fnv_digest(frames))
         self.assertEqual(self.lines(out, "LINE"), ["1 9,33,27,2 buttons=2|4 pick=30 names=Alpha%20One|B%C3%A9ta",
-                                                   "2 9,33,27,2 buttons=2|1 names=Alpha%20One|B%C3%A9ta"])
+                                                   "2 9,33,27,2 buttons=2|1 train=1 life=70|100 "
+                                                   "names=Alpha%20One|B%C3%A9ta"])
         self.assertEqual(len(self.lines(out, "BARRIER")), 3)
         # format 3: match 1's custom costume blocks (P1 a pattern, P2 none), match 2 without any
         blocks = bytes((i * 13 + 1) & 0xFF for i in range(0x108)) + bytes(0x108)
-        self.assertEqual(p["version"], 4)
+        self.assertEqual(p["version"], 5)
         self.assertEqual(p["matches"][0]["costumes"], [blocks[:0x108].hex(), blocks[0x108:].hex()])
+        # format 5: match 2 is a training fight with P1 at 70 % health (match 1: no rules)
+        self.assertEqual((p["matches"][0]["training"], p["matches"][0]["life"]), (False, [100, 100]))
+        self.assertEqual((p["matches"][1]["training"], p["matches"][1]["life"]), (True, [70, 100]))
+        self.assertNotIn("training", m1)
+        self.assertEqual((m2["training"], m2["life"]), (True, [70, 100]))
         # format 4: the select seed mixes the match number; a session without T5_NET_UNLOCKS is closed
         self.assertTrue(p["select_mix"])
         self.assertEqual(p["unlocks"], "closed")
@@ -545,6 +553,8 @@ class GameCodeTest(unittest.TestCase):
         self.assertEqual(self.lines(out, "LINE")[0], "1 9,33,27,2 buttons=2|4 pick=30")
         self.assertEqual(self.lines(out, "COSTUMES"), [f"1 {fnv:016x}", "2 none"], "the costumes stay in a copy")
         self.assertEqual(replays.read_payload(stripped)["matches"][0]["costumes"], p["matches"][0]["costumes"])
+        self.assertEqual(self.lines(out, "LINE")[1], "2 9,33,27,2 buttons=2|1 train=1 life=70|100",
+                         "the rules stay in a copy")
 
     def test_live_stream_plays_like_the_file(self):
         """Spectating (docs/SPECTATE.md): the live stream written next to the replay holds the same session --
@@ -641,11 +651,35 @@ class GameCodeTest(unittest.TestCase):
         self.assertEqual(code, 0, out)
         path = self.lines(out, "FILE")[0]
         p = replays.read_payload(path)
-        self.assertEqual((p["version"], p["select_mix"], p["unlocks"]), (4, True, "open"))
+        self.assertEqual((p["version"], p["select_mix"], p["unlocks"]), (5, True, "open"))
         self.assertEqual(replays.read_header(path)["unlocks"], "open")
         code, out = self.run_exe("read", path)
         self.assertEqual(code, 0, out)
         self.assertEqual(self.lines(out, "FLAGS"), ["select_mix 1 unlocks_open 1"])
+
+    def test_format_4_files_have_no_rules(self):
+        """1.1.4 files (format 4) have no rules word: no training, both at 100 % -- and they play as before."""
+        ins = sample_inputs(400, seed=6)
+        path = os.path.join(self.tmp, "v4" + replays.EXT)
+        make_file(path, ins, [{"start": 0, "end": 300, "p1": 3, "p2": 4, "stage": 20, "winner": 0}], version=4)
+        p = replays.read_payload(path)
+        self.assertEqual((p["version"], p["matches"][0]["training"], p["matches"][0]["life"]), (4, False, [100, 100]))
+        code, out = self.run_exe("read", path)
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("train=", self.lines(out, "LINE")[0])
+        self.assertEqual(int(self.lines(out, "DIGESTPLUS")[0], 16), fnv_digest(list(zip(ins[0], ins[1]))))
+
+    def test_format_5_rules_from_python(self):
+        """A format 5 file with a handicap match: the game's line carries life=, and no train= without training."""
+        ins = sample_inputs(300, seed=8)
+        path = os.path.join(self.tmp, "v5" + replays.EXT)
+        make_file(path, ins, [{"start": 0, "end": 250, "p1": 3, "p2": 4, "stage": 20, "winner": 1,
+                               "rules": 50 << 8 | 90 << 16}], version=5)
+        self.assertEqual(replays.read_payload(path)["matches"][0]["life"], [50, 90])
+        code, out = self.run_exe("read", path)
+        self.assertEqual(code, 0, out)
+        self.assertIn(" life=50|90", self.lines(out, "LINE")[0])
+        self.assertNotIn("train=", self.lines(out, "LINE")[0])
 
     def test_format_3_files_play_as_recorded(self):
         """1.1.3 files (format 3): one select seed for the whole session (no match number mixed in) and the

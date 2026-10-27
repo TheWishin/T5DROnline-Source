@@ -80,6 +80,7 @@
 #include "replay.h"       /* replays: recording and playback (docs/REPLAYS.md) */
 #include "no_pause.h"     /* no pause online: the rule (docs/NETPLAY.md "No pause online") */
 #include "match_score.h"  /* a decided match's score: the fighters' round counts (docs/NETPLAY.md "Match result") */
+#include "match_rules.h"  /* online training and the health handicap (docs/NETPLAY.md "Online training ...") */
 #include "../rollback/rb_net.h"   /* T5_RB_MODE=net: the rollback loop takes the per-frame decisions */
 namespace rb { void rand_install(); void tls_rand_reseed(uint32_t tls_base, uint32_t seed, bool streams); }   /* rb_rand.cpp: the TLS random generator */
 
@@ -99,6 +100,7 @@ extern "C" void t5_unlock_install(void);   /* src/directfight/df_unlock.cpp: unl
 extern "C" void t5_select_trace(void);     /* src/directfight/df_unlock.cpp: T5_SELECT_TRACE=1 (diagnostics) */
 extern "C" uint32_t t5_df_session_matches(void);   /* src/directfight/df_fight.cpp: fights started in this netplay session */
 extern "C" uint32_t t5_df_find_mode(uint32_t f);    /* src/directfight/df_hooks.cpp: the mode manager's mode (offline tests) */
+extern "C" uint32_t t5_df_rules(void);   /* src/directfight/df_fight.cpp: the fight's rules, latched at FIGHT START (MatchRules::pack) */
 extern "C" {
 void    ps3_hle_register_ctx(uint32_t nid, const char* name, void (*fn)(ppu_context*));
 int32_t cellPadInit(uint32_t max_connect);           /* ps3recomp libs/input/cellPad.c */
@@ -589,7 +591,8 @@ uint32_t g_np_part_frames = 0;   /* ... the live frames in the skip part so far 
 unsigned g_np_part_live = 0;     /* ... and that part */
 uint32_t g_np_test_press[3] = { UINT32_MAX, UINT32_MAX, UINT32_MAX };   /* T5_TEST_SKIP_PRESS, per part */
 
-void no_pause_reset() { g_np_rule.reset(); g_np_live = UINT32_MAX; }   /* frame 0: the frames are numbered anew (the tally stays for its report) */
+void training_reset();
+void no_pause_reset() { g_np_rule.reset(); g_np_live = UINT32_MAX; training_reset(); }   /* frame 0: the frames are numbered anew (the tally stays for its report) */
 
 np::NoPauseRule::State np_state_now()
 {
@@ -657,6 +660,48 @@ void no_pause_report(uint32_t f, const char* what)
              g_np_skip);
     g_np_cut[0] = g_np_cut[1] = g_np_kept = g_np_skip = 0;
     g_np_noted = false;
+}
+
+/* ---- Online training (docs/NETPLAY.md "Online training and the health handicap") ----
+ * A training fight (the fight line's train=1, latched by the direct-fight driver at FIGHT START): endless
+ * health, no round timer, SELECT held to give up -- match_rules.h, applied to the game state at the boundary of
+ * every frame that runs (live, re-simulated, played back), after its inputs are final for that run, like the
+ * no-pause rule. The health handicap needs nothing here: the driver writes it into the battle config before the
+ * game mode's set-up reads it (df_fight.cpp). */
+constexpr uint32_t kFighter0 = 0x10090030, kFighterStride = 0x8D0;   /* the fighter blocks (training_logic.h) */
+constexpr uint32_t kFtHealth = 0x6BC, kFtHealthMax = 0x6C0;          /* 16.16 fixed point */
+constexpr uint32_t kRoundTimer = 0x1008F054;                         /* frames left in the round */
+np::TrainingRule g_train;
+uint32_t g_train_refills[2], g_train_noted = 0;
+
+void training_reset() { g_train.reset(); g_train_noted = 0; }   /* frame 0 and every sync point: the frames are numbered anew */
+
+/* in[] = frame f's inputs, game memory = the state at f's boundary (restored if it is re-simulated); live: the
+ * frame is played for the first time (the log only) */
+void training_rule(uint32_t f, const np::PadInput in[2], bool live)
+{
+    if (!g_directfight || !(t5_df_rules() & 1)) return;
+    np::TrainingRule::State st;
+    st.fighting = t5_df_game_mode() != 0 && rd32(kRoundState) == 5 && rd8(kMatchOver) == 0;
+    for (int p = 0; p < 2 && st.fighting; p++) {
+        const uint32_t b = kFighter0 + (uint32_t)p * kFighterStride;
+        st.f[p].hp = (int32_t)rd32(b + kFtHealth);
+        st.f[p].max = (int32_t)rd32(b + kFtHealthMax);
+    }
+    const np::TrainingRule::Action a = g_train.step(f, st, in);
+    if (a.hold_timer && rd32(kRoundTimer) != np::TrainingRule::kRoundTimer) wr32(kRoundTimer, np::TrainingRule::kRoundTimer);
+    for (int p = 0; p < 2; p++) {
+        if (!a.set_hp[p]) continue;
+        wr32(kFighter0 + (uint32_t)p * kFighterStride + kFtHealth, (uint32_t)a.hp[p]);
+        if (!live) continue;
+        if (a.refilled[p]) g_train_refills[p]++;
+        if (a.gave_up[p]) np::note("frame %u: training: P%d held SELECT for %u frames -- gives up (KO)", f, p + 1,
+                                   np::TrainingRule::kGiveUpFrames);
+    }
+    if (live && st.fighting && f >= g_train_noted + 1800) {   /* every ~30 s of fighting */
+        g_train_noted = f;
+        np::note("frame %u: training: health refilled %u x (P1), %u x (P2) so far", f, g_train_refills[0], g_train_refills[1]);
+    }
 }
 
 uint64_t gcall(uint32_t code, uint64_t a0 = 0)
@@ -1572,6 +1617,7 @@ void on_frame_start(ppu_context* ctx)
         f = nf;
         g_frame = f;
         g_scenes++;
+        training_reset();
         equal_counters();
         sync_counters();
         const uint32_t seed = sync_seed(rp::kResume, np::match_seed() + g_scenes * 0x9E3779B9u);
@@ -1639,6 +1685,7 @@ void on_frame_start(ppu_context* ctx)
             if (nf > f) skip_frames(nf - f);
             sync_counters();
             g_scenes++;
+            training_reset();
             const uint32_t seed = sync_seed(kind, np::match_seed() + g_scenes * 0x9E3779B9u);
             reseed(seed);
             sync_record(kind, f, nf, seed);
@@ -1654,6 +1701,7 @@ void on_frame_start(ppu_context* ctx)
         g_frame = run + 1;
         if (np::replaying()) rp::play_inputs(run, in);   /* (a sync point may have renumbered the frames: the recorded frame's inputs) */
         no_pause_rule(run, in, run >= f);   /* (memory: the state at run's boundary, restored if it is re-simulated) */
+        training_rule(run, in, run >= f);   /* (after the inputs are final for this run, like the no-pause rule) */
         g_cur[0] = in[0];
         g_cur[1] = in[1];
         keyread_tick();
@@ -1687,6 +1735,7 @@ void on_frame_start(ppu_context* ctx)
         const uint32_t f_was = f;
         f = nf;
         g_scenes++;
+        training_reset();
         const uint32_t seed = sync_seed(kind, np::match_seed() + g_scenes * 0x9E3779B9u);
         reseed(seed);
         sync_record(kind, f_was, nf, seed);
@@ -1743,6 +1792,7 @@ void on_frame_start(ppu_context* ctx)
     start_gate(f);   /* this PC's START out only in a skip part */
     np::begin_frame(f, h, in, g_directfight && intro_input_now());
     no_pause_rule(f, in, true);
+    training_rule(f, in, true);
     g_cur[0] = in[0];
     g_cur[1] = in[1];
     keyread_tick();

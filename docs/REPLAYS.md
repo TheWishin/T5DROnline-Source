@@ -63,6 +63,14 @@ ly, rx, ry, then P2) of one byte per frame, each XORed with the frame before, so
 run of zeros. The JSON line is a view of the binary (format 4 adds `"unlocks": "open"|"closed"`); the
 game reads only the binary. `launcher/replays.py` reads both (`read_header`, `read_payload`).
 
+**Format 5 (1.1.5).** Each match also keeps its rules word (after the costume blocks): bit 0 a training
+room's fight (endless health, no round timer, SELECT held to give up), bits 8-15 / 16-23 P1's / P2's
+health in percent (the health handicap; 0 = 100); `src/netplay/match_rules.h`, docs/NETPLAY.md "Online
+training and the health handicap". The playback hands the game the match's line with `train=1` /
+`life=P1|P2` again, so it simulates what the live match did, and FIGHT START checks the rules against the
+recording like the fighters and costumes. A format 4 or older file has no rules word: no training, both
+at 100 %, as before. The JSON line's match gets `"training"` and `"life"` when it had rules.
+
 **Format 4 (1.1.4).** Two things a playback must do as its live session did, so the file says them:
 the select screen's generator seed changes with every match of a session since 1.1.4 (Mokujin's copy
 and the random cell draw anew in a rematch, docs/NETPLAY.md "Desync hunt": the select pin), and a

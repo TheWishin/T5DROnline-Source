@@ -240,6 +240,13 @@ class Client:
     def private_rooms_ok(self):
         return True
 
+    life = 100
+
+    def training_ok(self):          # (training rooms, the health handicap: tk_rules.py)
+        return True
+
+    def handicap_ok(self):
+        return True
     def casual_ok(self):
         return True
 

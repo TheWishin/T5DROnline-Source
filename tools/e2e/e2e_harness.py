@@ -958,6 +958,10 @@ class Player:
                     import fight_flow_test
                     seed = (1000 + sum(map(ord, me.name)) + me.ctx.run.seed) * 7919 + sum(map(ord, ev.get("match", "")))
                     kw = {"start_every": me.start_every} if me.start_every else {}
+                    if getattr(me, "give_up_every", 0):
+                        # a training room's fight ends when a player holds SELECT (match_rules.h): every N frames,
+                        # the players half a period apart (net_training)
+                        kw.update(select_every=me.give_up_every, select_at=me.give_up_at)
                     env["T5_NET_SCRIPT"] = fight_flow_test.mash_script(
                         os.path.join(me.dir, f"mash-{ev.get('match')}.txt"), seed, gap=me.mash_gap, **kw)
                 if me.fw_game:

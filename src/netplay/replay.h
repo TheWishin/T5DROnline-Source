@@ -49,6 +49,8 @@ struct Fight {
      * the 0x108 bytes the driver wrote into each side's VS custom data at FIGHT START (format 3) */
     bool costumes = false;
     uint8_t cos[2][0x108] = {};
+    /* the match's rules (format 5; match_rules.h MatchRules::pack): a training fight, the health handicap */
+    uint32_t rules = 0;
 };
 
 /* ---- recording ----------------------------------------------------------- */

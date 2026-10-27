@@ -70,9 +70,9 @@ from . import discord_rpc, fighters, fwcheck, lag, notify, padmap, padnav, proto
 from .buildid import BuildInfo
 from .client import LobbyClient
 from .i18n import N_, stamp, t, translate_message
-from .match_driver import MatchDriver, fps_from_logs, game_supports_pick
+from .match_driver import MatchDriver, fps_from_logs, game_supports_pick, game_supports_rules
 from .proto import DEFAULT_PORT, LobbyError
-from . import theme, tk_casual, tk_rooms, tk_spectate, tk_tour, tk_views, tklist, winfront
+from . import theme, tk_casual, tk_rooms, tk_rules, tk_spectate, tk_tour, tk_views, tklist, winfront
 from .ranks import record_label as _record
 
 
@@ -90,9 +90,9 @@ ROOM_STATE_TEXT = {"open": N_("open"), "full": N_("full"), "playing": N_("playin
 RESULT_TEXT = {"confirmed": N_("Result confirmed"), "onesided": N_("Result recorded (your opponent did not report)"),
                "forfeit": N_("Match decided by forfeit"), "resolved": N_("Result decided by the games' state"),
                "disputed": N_("You and your opponent reported different results -- not counted"),
-               "void": N_("No result")}
+               "void": N_("No result"), "training": N_("Training fight over -- nothing is counted")}
 RESULT_WORD = {"confirmed": N_("confirmed"), "onesided": N_("one-sided"), "forfeit": N_("forfeit"),
-               "resolved": N_("resolved"), "disputed": N_("disputed"), "void": N_("void")}
+               "resolved": N_("resolved"), "disputed": N_("disputed"), "void": N_("void"), "training": N_("training")}
 OUTCOME_WORD = {"win": N_("win"), "loss": N_("loss"), "draw": N_("draw")}
 REASON_TEXT = {"desync": N_("the two games went out of sync"), "too_short": N_("too short to count"),
                "disputed": N_("the reports disagreed"), "crash": N_("a game crashed"),
@@ -322,6 +322,7 @@ class OnlineTab:
         self.cfg["server"] = self.server_var.get().strip()
         self.cfg["name"] = self.name_var.get().strip()
         self.cfg["char"] = self._char_key()
+        self.cfg["life"] = tk_rules.parse_life(self.life_var.get())     # health handicap (casual), tk_rules.py
         self.cfg["remember"] = bool(self.remember_var.get())
         self.cfg["strict"] = bool(self.strict_var.get())
         self.cfg["pad"] = bool(self.pad_var.get())
@@ -364,6 +365,7 @@ class OnlineTab:
         self.hint_var = tk.StringVar(value=t("Passwords are only sent to servers on this PC / your network, or "
                                              "over an encrypted (TLS) connection."))
         self.char_var = tk.StringVar(value=self.table.fighter_name(self.cfg.get("char") or fighters.RANDOM))
+        self.life_var = tk_rules.life_var(self.cfg)
         self.strict_var = tk.IntVar(value=1 if self.cfg.get("strict") else 0)
         self.bar_text = tk.StringVar()
         self.match_var = tk.StringVar(value="")
@@ -686,6 +688,7 @@ class OnlineTab:
                         game_port=int(self.cfg.get("game_port", 0) or 0),
                         plain_passwords=bool(self.cfg.get("plain_passwords")), blind_ready=True,
                         ingame_pick=self._game_can_pick(),
+                        match_rules=self._game_has_rules(),     # training rooms, the health handicap
                         sets=bool(self.cfg.get("sets", True)),   # online.json "sets": false: no ranked sets
                         # launcher Settings -> "Open the game's port on my router" (docs/NETPLAY.md)
                         port_mapping=bool(getattr(self.app, "settings", {}).get("router_ports", True)),
@@ -709,6 +712,12 @@ class OnlineTab:
         out = getattr(self.app.settings, "out_dir", os.getcwd())
         return game_supports_pick([os.path.join(out, "build", "cmake", "t5dr.exe"),
                                    os.path.join(out, "build", "cmake", "t5dr_game.dll")])
+
+    def _game_has_rules(self):
+        """This PC's game can play training rooms (endless health) and the health handicap."""
+        out = getattr(self.app.settings, "out_dir", os.getcwd())
+        return game_supports_rules([os.path.join(out, "build", "cmake", "t5dr.exe"),
+                                    os.path.join(out, "build", "cmake", "t5dr_game.dll")])
 
     def do_login(self, mode, session=None):
         if mode != "session":
@@ -770,6 +779,7 @@ class OnlineTab:
                                               if mode == "session" else ""))
             self._set_actions()
             self.on_char()
+            self.on_life()
             if client.recovery_codes:
                 self.show_codes(client.recovery_codes, first=True)
             self._run_pending_search()
@@ -1031,6 +1041,16 @@ class OnlineTab:
         self._save_cfg()
         if self.client and self.client.me:
             self.call(self.client.set_char, self._char_key())
+
+    def on_life(self):
+        """The health handicap picker (tk_rules.py): remembered, and sent when the server and the game have it."""
+        self._save_cfg()
+        c = self.client
+        tk_rules.sync_picker(self)
+        if c and c.me and c.handicap_ok():
+            life = tk_rules.parse_life(self.life_var.get())
+            if life != c.life:
+                self.call(c.set_life, life)
 
     def do_queue(self, mode):
         c = self.client
@@ -1638,7 +1658,8 @@ class OnlineTab:
                 self.show_bar(self._ready_text(), [(t("Accept"), lambda: self._ready(True), "cross"),
                                                    (t("Decline"), lambda: self._ready(False), "circle")])
             else:
-                text = self._opponent_text(ev["opponent"], ev["ranked"], ev.get("origin") == "rematch")
+                text = " -- ".join([self._opponent_text(ev["opponent"], ev["ranked"], ev.get("origin") == "rematch")]
+                                   + tk_rules.rules_parts(ev))
                 if ev["ready_check"]:
                     ping = _event_ping(c, ev, "opponent")
                     if ping:
@@ -1685,6 +1706,8 @@ class OnlineTab:
                 self._match_head = t("Tournament set vs {name}", name=ev["opponent"]["name"])
             elif ev.get("ranked"):
                 self._match_head = t("Ranked match vs {name}", name=ev["opponent"]["name"])
+            elif f.get("training"):
+                self._match_head = t("Training vs {name}", name=ev["opponent"]["name"])
             else:
                 self._match_head = t("Casual match vs {name}", name=ev["opponent"]["name"])
             self._match_head += self.casual.head_suffix(ev)        # (P2 on Scrapyard): casual by choice
@@ -1694,6 +1717,7 @@ class OnlineTab:
                                  how=(t("via the relay server {name}", name=regional) if regional
                                       else _word(PATH_TEXT, ev.get("path"))),
                                  frames=ev.get("delay"), delay_ms=f"{delay * 16.7:.0f}")
+            self._match_tail = " -- ".join([self._match_tail] + tk_rules.rules_parts(ev, ev.get("slot")))
             if f.get("pick"):
                 # in-game select: the fighters are picked on the game's own select screen
                 fighters_text = t("pick your fighter in the game ({secs} s)", secs=f["pick"])
@@ -1933,7 +1957,7 @@ class OnlineTab:
         m = self.match or {}
         where = ping_text(m.get("ping"))         # (estimated or measured last time, and the likely path: 1.1.5)
         left = max(0, int((self.ready_deadline or 0) - time.monotonic() + 0.99)) if self.ready_deadline else 0
-        parts = [t("Opponent found")] + ([t("RANKED")] if m.get("ranked") else []) + [
+        parts = [t("Opponent found")] + ([t("RANKED")] if m.get("ranked") else []) + tk_rules.rules_parts(m) + [
             where, t("accept within {seconds} s?", seconds=left)]
         return " -- ".join(parts)
 

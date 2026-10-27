@@ -146,6 +146,11 @@ def read_payload(path):
         if out["version"] >= 3 and r.u32() & 1:
             m["costumes"] = [b[r.i:r.i + COSTUME_BLOCK].hex(), b[r.i + COSTUME_BLOCK:r.i + 2 * COSTUME_BLOCK].hex()]
             r.i += 2 * COSTUME_BLOCK
+        # format 5: the match's rules (src/netplay/match_rules.h): bit 0 a training fight, bits 8-15 / 16-23 each
+        # side's health in percent (0 = 100)
+        rules = r.u32() if out["version"] >= 5 else 0
+        m["training"] = bool(rules & 1)
+        m["life"] = [((rules >> 8) & 0xFF) or 100, ((rules >> 16) & 0xFF) or 100]
         ms.append(m)
     out["matches"] = ms
     bars = []
@@ -371,6 +376,9 @@ def strip_names(path, placeholder="<player>"):
             n = 4 + (2 * COSTUME_BLOCK if flags & 1 else 0)
             out += b[r.i:r.i + n]
             r.i += n
+        if version >= 5:        # the match's rules word stays
+            out += b[r.i:r.i + 4]
+            r.i += 4
     out += b[r.i:]
     if r.i > len(b):
         raise ReplayError("damaged data")

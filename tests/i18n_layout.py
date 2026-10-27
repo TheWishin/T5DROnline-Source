@@ -239,6 +239,14 @@ class Client:
     def private_rooms_ok(self):
         return True
 
+    life = 100
+
+    def training_ok(self):          # (training rooms, the health handicap: tk_rules.py)
+        return True
+
+    def handicap_ok(self):
+        return True
+
     def __init__(self):
         self.me = {"id": "p1", "name": "Me", "guest": False, "rating": 1500, "record": [3, 2, 0], "status": "idle",
                    "main": "jin", "tier": 31, "rank": "Lord of War", "provisional": False}

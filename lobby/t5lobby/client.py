@@ -102,7 +102,7 @@ class LobbyClient(TourCalls, SpectateClientMixin):
                  reconnect=60.0, plain_passwords=False, blind_ready=False, ingame_pick=False, sets=False,
                  port_mapping=False, nat2=True, relay_bridge=True, relays=True, friends=True, old_stages=True,
                  tournaments=False, spectate=False, live_dir=None, watch_dir=None, test_inbound=None,
-                 private_rooms=True):
+                 private_rooms=True, match_rules=False):
         """server: "host[:port]". build: BuildInfo. on_event: optional callable(event) run on the
         client thread (use the `events` queue from a UI). game_port: local UDP port for the game
         (0 = any free one; set it when the player forwarded a port on the router).
@@ -146,7 +146,10 @@ class LobbyClient(TourCalls, SpectateClientMixin):
         game"). None: T5_NET_TEST_INBOUND from the environment; "" off.
         private_rooms: rooms for more than two players who take turns, rooms locked with a password or an invite
         code, hidden rooms (docs/ONLINE.md "Rooms"); False behaves like a 1.1.2 client (the server then lists no
-        locked room for it)."""
+        locked room for it).
+        match_rules: this player's game can play training rooms (endless health) and the health handicap
+        (docs/ONLINE.md "Training rooms and the health handicap"; caps "training" and "handicap"). Off by default:
+        the launcher turns it on when its game build has them (match_driver.game_supports_rules)."""
         self.host, self.port = proto.parse_hostport(server)
         self.build = build
         self.on_event = on_event
@@ -170,6 +173,8 @@ class LobbyClient(TourCalls, SpectateClientMixin):
         self.invites = {}            # invite id -> the `invited` event: invites waiting for this player's answer
         self.invite_waits = {}       # friend's name (lower case) -> monotonic time this player may invite them again
         self.private_rooms = private_rooms
+        self.match_rules = match_rules
+        self.life = 100              # this player's health handicap (set_life), as the server confirmed it
         self.my_room = None          # this player's room as its members see it (the last `room` message)
         self.room_code = None        # its invite code, when this launcher knows it (never sent to anyone but the server)
 
@@ -310,6 +315,7 @@ class LobbyClient(TourCalls, SpectateClientMixin):
                                                 + (["tournaments"] if self.tournaments else [])
                                                 + (["spectate"] if self.spectate else [])
                                                 + (["private_rooms"] if self.private_rooms else [])
+                                                + (["training", "handicap"] if self.match_rules else [])
                                                 + (["game_fallback"] if self._can_fallback() else [])
                                                 + ["boss_chars", "lag_wait"]})
         except LobbyError:
@@ -1278,12 +1284,17 @@ class LobbyClient(TourCalls, SpectateClientMixin):
         return self._call({"t": "unqueue"})
 
     def create_room(self, name=None, ranked=False, size=2, rotation="winner", private=None, password=None,
-                    hidden=False):
+                    hidden=False, training=False):
         """A room. size 2 = a classic room; 3.. = a community room whose members take turns (rotation "winner":
         winner stays, "queue": everyone in turn). private "password" (with `password`) or "code" (the server makes
         an invite code: .room_code, the reply's "code"); hidden: not in the room list. -> the room (a member's view).
         The password goes to the server only, over this connection; nothing here keeps or logs it."""
         msg = {"t": "room_create", "name": name, "ranked": ranked}
+        if training:
+            # a training room (docs/ONLINE.md "Training rooms and the health handicap"): endless health, no result
+            if not self.training_ok():
+                raise LobbyError(proto.E_NOT_ALLOWED, "this server has no training rooms")
+            msg["training"] = True
         if size != 2 or private or hidden:
             if not self.private_rooms_ok():
                 raise LobbyError(proto.E_NOT_ALLOWED, "this server has no private rooms")
@@ -1346,6 +1357,27 @@ class LobbyClient(TourCalls, SpectateClientMixin):
     def room_line(self, back=True):
         """Community rooms: back=False sits out (stay in the room, skip your turns), True puts you back in line."""
         return self._call({"t": "room_line", "in": bool(back)})["room"]
+
+    def _rules_ok(self, cap):
+        w = self.welcome or {}
+        return bool(self.match_rules and cap in (w.get("features") or ()) and cap in (w.get("caps") or ()))
+
+    def training_ok(self):
+        """Can this player create and join training rooms (the server has them, this client's game can play them)?"""
+        return self._rules_ok("training")
+
+    def handicap_ok(self):
+        """Can this player set a health handicap for casual matches?"""
+        return self._rules_ok("handicap")
+
+    def set_life(self, life):
+        """The health this player fights with in casual matches, in percent (30-100 in steps of 10; 100 = none).
+        Ranked and tournament matches are always 100 %. -> the value the server took."""
+        if not self.handicap_ok():
+            raise LobbyError(proto.E_NOT_ALLOWED, "this server has no health handicap")
+        r = self._call({"t": "set_life", "life": int(life)})
+        self.life = int(r.get("life", life))
+        return self.life
 
     def private_rooms_ok(self):
         """Does the server have private and community rooms (and this client asked for them)?"""

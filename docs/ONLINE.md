@@ -21,6 +21,7 @@ install for players or for whoever runs the server.
 - [NAT traversal and the relay](#nat-traversal-and-the-relay) (and [regional relays](#regional-relays))
 - [Ratings, queues, results](#ratings-queues-results)
 - [Rooms](#rooms) (classic, community rooms that take turns, private rooms with a password or an invite code)
+- [Training rooms and the health handicap](#training-rooms-and-the-health-handicap) (1.1.5)
 - [Friends and invites](#friends-and-invites)
 - [Discord Rich Presence](#discord-rich-presence)
 - [Chime and taskbar flash](#chime-and-taskbar-flash)
@@ -524,6 +525,37 @@ nothing secret in the log, events or status), `lobby/tests/test_tk_rooms.py` (th
 the code field, the clipboard untouched), `lobby/tools/room_session.py` (N players with stub games taking turns in a
 private room, the rule checked match by match), e2e `private_room_turns` (three launchers, stub games) and
 `private_room` (a real-game match in a private room, rollback).
+
+## Training rooms and the health handicap
+
+(1.1.5. Code: `server/matchrules.py`, the launcher's `tk_rules.py`; the games' side: docs/NETPLAY.md "Online
+training and the health handicap".)
+
+**Training room.** Create room -> **Training room: endless health, nothing counted**. Its fights are
+practice with a friend, like Tekken 8's practice lobby: health refills a second after the last hit, no round
+timer, no rating, no record, no history, no blame -- whatever ends a fight (a player holding SELECT for a
+second, a 100 % combo, a player leaving or closing the game, a lost connection) finishes the match with the
+status `training`. A fight is one round; when it ends both launchers go back to the select screen by
+themselves (an automatic rematch in the running games), which is also how the two pick other fighters.
+Leaving the room ends it. A training room can be private or hidden like any room; it is never ranked.
+`room_create {training: true}` needs the `training` cap; the room's list entry and view say
+`"training": true`; joining it or being invited into it needs the cap too ("training rooms need a newer
+launcher; update it"). The match: `match_found {training: true}`, `match_start.fight {training: true,
+rounds: 1}`; the launchers put `train=1` on the fight line. A training match is never saved
+(`_save`), and `_finish` turns any status into `training` with no winner and no blame.
+
+**Health handicap.** Online tab -> **My health (casual)**: 100 % down to 30 % in steps of 10, remembered in
+online.json (`life`) and sent after every login (`set_life {life}`, the `handicap` cap; 30-100 in steps of
+10, else "life is 30 to 100 in steps of 10"). It applies to every casual match -- quick matches, challenges,
+invites, rooms (training rooms too) -- and never to ranked or tournament matches, nor against a launcher
+without the cap (both games must play it). The server fixes it per match at create_match and shows it to
+both players: the lobby list's player entry has `life` when it is not 100, `match_found` has `life {you,
+opponent}` (also in a blind ready check), `match_start.fight` has `life [P1, P2]`; the launcher shows it in
+the ready check and on the match card, and puts `life=P1|P2` on the fight line.
+
+Tests: `lobby/tests/test_training.py` (caps, a training match without result or history, leaving without a
+loss, an older launcher refused and not invitable, never ranked; set_life's rules, both values in a room
+match, none without the cap, none in ranked or tournament matches), e2e `net_training` (real games).
 
 ## Friends and invites
 

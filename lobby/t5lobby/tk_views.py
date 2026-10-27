@@ -25,7 +25,7 @@ import weakref
 import tkinter as tk
 from tkinter import ttk
 
-from . import i18n, proto, ranks, theme, tk_tour
+from . import i18n, proto, ranks, theme, tk_rules, tk_tour
 from .i18n import N_, t
 from .lag import describe_event as describe_lag, lagged
 from .rank_art import ART
@@ -641,6 +641,7 @@ class OnlineView:
         tab.strict_check = ttk.Checkbutton(f, text=t("Strict (ranked: +-150 rating)"), variable=tab.strict_var,
                                            command=tab._save_cfg, style="Card.TCheckbutton")
         tab.strict_check.grid(row=3, column=0, sticky="w", pady=(px(6), 0))
+        tk_rules.build_life_picker(self, f, tab).grid(row=3, column=1, sticky="w", padx=(px(6), 0), pady=(px(6), 0))
         self.wrap(ttk.Label(f, textvariable=tab.hint_var, style="Card.Faint.TLabel", justify="left"),
                   card, 40).grid(row=4, column=0, columnspan=2, sticky="w", pady=(px(6), 0))
         return f
@@ -1596,6 +1597,8 @@ class OnlineView:
                 return "loss", t("SET LOST"), "Loss."
             return "void", t("NO CONTEST"), "Even."
         st = ev.get("status")
+        if st == "training":                         # a training room's fight: nothing counted (tk_rules.py)
+            return "over", t("TRAINING OVER"), "Even."
         counted = st in ("confirmed", "onesided", "forfeit", "resolved")
         mine = info.get("mine")
         if counted and mine is True:

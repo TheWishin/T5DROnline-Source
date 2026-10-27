@@ -96,6 +96,8 @@ class RoomsUI:
             parts.append(f"{len(r.get('members') or ())}/{r['size']}")
         if r.get("private"):
             parts.append(t("private"))
+        if r.get("training"):
+            parts.append(t("training"))
         return parts
 
     def set_actions(self, me, st, busy):
@@ -145,6 +147,8 @@ class RoomsUI:
             head.append(t("private (invite code)"))
         if r.get("hidden"):
             head.append(t("hidden"))
+        if r.get("training"):
+            head.append(t("training: endless health, nothing counted"))
         if r.get("size", 2) > 2:
             head.append(t(ROTATION_CHOICES[0][0]) if r.get("rotation") == "winner" else t(ROTATION_CHOICES[1][0]))
         lines = [" · ".join(head)]
@@ -311,7 +315,7 @@ def create_window(ui):
     v = {"name": tk.StringVar(w, value=""), "size": tk.StringVar(w, value="2"),
          "rotation": tk.StringVar(w, value=t(ROTATION_CHOICES[0][0])),
          "access": tk.StringVar(w, value=t(ACCESS_CHOICES[0][0])), "password": tk.StringVar(w, value=""),
-         "hidden": tk.IntVar(w, value=0)}
+         "hidden": tk.IntVar(w, value=0), "training": tk.IntVar(w, value=0)}
     rows = (("name", t("Room name (optional):"), None),
             ("size", t("Players:"), [str(n) for n in range(2, top + 1)]),
             ("rotation", t("Turns (3 or more players):"), [t(x) for x, _v in ROTATION_CHOICES]),
@@ -333,8 +337,16 @@ def create_window(ui):
                            style="Card.TCheckbutton")
     hide.grid(row=len(rows) + 1, column=0, columnspan=2, sticky="w", pady=(px(6), 0))
     widgets["hidden"] = hide
+    # a training room (docs/ONLINE.md "Training rooms and the health handicap"): only when this launcher's game and
+    # the server can play it
+    train = ttk.Checkbutton(card, text=t("Training room: endless health, nothing counted"), variable=v["training"],
+                            style="Card.TCheckbutton")
+    train.grid(row=len(rows) + 2, column=0, columnspan=2, sticky="w", pady=(px(4), 0))
+    if not tab.client.training_ok():
+        train.configure(state="disabled")
+    widgets["training"] = train
     err = ttk.Label(card, text="", style="Card.error.TLabel", wraplength=px(360), justify="left")
-    err.grid(row=len(rows) + 2, column=0, columnspan=2, sticky="w", pady=(px(6), 0))
+    err.grid(row=len(rows) + 3, column=0, columnspan=2, sticky="w", pady=(px(6), 0))
 
     def sync(*_a):
         many = v["size"].get() not in ("", "2")
@@ -361,16 +373,17 @@ def create_window(ui):
         rotation = _pick(ROTATION_CHOICES, v["rotation"].get())
         name = v["name"].get().strip() or None
         hidden = bool(v["hidden"].get())
+        training = bool(v["training"].get()) and tab.client.training_ok()
         v["password"].set("")                          # (not kept in the window either)
 
         def done(_room):
             ui.close_window()
             tab.status(t("Room created. Press Copy invite code to see the code you can share.") if lock == "code"
                        else t("Room created."))
-        tab.call(tab.client.create_room, name, False, size, rotation, lock, pw, hidden, then=done)
+        tab.call(tab.client.create_room, name, False, size, rotation, lock, pw, hidden, training, then=done)
 
     bar = tab.view.body(card)
-    bar.grid(row=len(rows) + 3, column=0, columnspan=2, sticky="we", pady=(px(12), 0))
+    bar.grid(row=len(rows) + 4, column=0, columnspan=2, sticky="we", pady=(px(12), 0))
     ttk.Button(bar, text=t("Cancel"), style="Card.TButton", command=ui.close_window).pack(side="right")
     b = ttk.Button(bar, text=t("Create"), style="Card.Accent.TButton", command=create)
     b.pack(side="right", padx=(0, px(8)))

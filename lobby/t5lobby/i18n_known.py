@@ -169,6 +169,11 @@ SERVER = (
     N_("the room picks the next match by itself"),
     N_("the room's host removed that player from this room"),
     N_("only the room's players can watch its match"),
+    # training rooms and the health handicap (server/matchrules.py, 1.1.5)
+    N_("training rooms need a newer launcher; update it"),
+    N_("training rooms are casual (unranked)"),
+    N_("the health handicap needs a newer launcher; update it"),
+    N_("life is 30 to 100 in steps of 10"),
 )
 
 # lobby/t5lobby/server/tournaments.py: errors answering a tournament request (docs/TOURNAMENTS.md)
@@ -233,6 +238,8 @@ CLIENT = (
     N_("closed"),
     N_("the server sent a malformed match id"),
     N_("this server has no private rooms"),     # (client.py create_room: a new launcher, an older server)
+    N_("this server has no training rooms"),    # (client.py create_room / set_life: an older server)
+    N_("this server has no health handicap"),
 )
 
 # tools/build_game.py: the sentence after "ERROR:" in the build log, shown in the Build tab

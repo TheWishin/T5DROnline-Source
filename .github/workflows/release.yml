@@ -323,13 +323,21 @@ jobs:
       - name: Smoke test -- unpacked zip, bare PATH
         run: python tools/smoke_release.py "dist/T5DR-Online-$env:VERSION.zip" --version $env:VERSION --work "$env:RUNNER_TEMP/smoke" --no-gui
 
-      # Starts the launcher (offscreen, then through T5DR Online.exe). Whether a
-      # hosted runner's desktop session can show Tk windows is not guaranteed,
-      # so this one only warns. Approve the release after trying the artifact.
-      - name: Smoke test -- launcher (informational)
+      # Required (1.1.5): T5DR Online.exe starts the launcher from the bundled Python with a package chosen,
+      # and it still runs 15 s later. 1.1.5's launcher closed 2 s after its start on every PC with a .pkg and
+      # this step only warned. It needs Tk to start, not a desktop to paint on: Tk runs on the hosted runner
+      # (the lobby job's test_tk_* modules build the Online tab there; docs/CI.md).
+      - name: Smoke test -- launcher starts with a package chosen
+        timeout-minutes: 5
+        run: python tools/smoke_release.py "dist/T5DR-Online-$env:VERSION.zip" --version $env:VERSION --work "$env:RUNNER_TEMP/smoke-starter" --gui-checks starter
+
+      # The launcher's every tab rendered offscreen (PrintWindow of a mapped, transparent window). Whether a
+      # hosted runner's session paints windows is not known (no test of ours shows one there; they all stay
+      # withdrawn), so this one only warns. tools/release_preflight.py runs it on the owner's PC, required.
+      - name: Smoke test -- launcher renders every tab (informational)
         continue-on-error: true
         timeout-minutes: 8
-        run: python tools/smoke_release.py "dist/T5DR-Online-$env:VERSION.zip" --version $env:VERSION --work "$env:RUNNER_TEMP/smoke-gui"
+        run: python tools/smoke_release.py "dist/T5DR-Online-$env:VERSION.zip" --version $env:VERSION --work "$env:RUNNER_TEMP/smoke-gui" --gui-checks launcher
 
       - name: Release notes
         shell: bash

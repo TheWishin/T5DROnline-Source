@@ -12,6 +12,10 @@ part is in the README's status table.
   lives in the new launcher, so this guards the updates to 1.1.7 and later (the swap step of 1.1.4-1.1.6 already
   rolls back a launcher that ends unconfirmed; 1.1.5's confirmed after 0.3 s). The swap step's marker leaves the
   environment at the start, so nothing the launcher starts in those 15 s inherits it.
+- The release smoke test starts the launcher from the zip with a package chosen (a stand-in .pkg header) and
+  requires it alive after 15 s (`tools/smoke_release.py`); the preflight runs it with the GUI checks, the release
+  workflow requires this starter check (it was informational). On a PC without a package around, the old check
+  passed 1.1.5's zip; this one fails it and passes 1.1.6's.
 
 ## v1.1.6 (2026-10-27)
 

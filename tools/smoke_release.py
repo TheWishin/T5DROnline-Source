@@ -21,7 +21,8 @@ Checks (each one is printed; exit 1 if any fails):
              chosen (a stand-in .pkg header in launcher.json: the Build tab reads it at once); it is
              still running after --starter-seconds (15), and is then closed. 1.1.5's launcher closed
              2 s after its start with a package chosen -- this check had run without one, for 6 s
-Nothing here needs the game. --no-gui skips the two GUI checks.
+Nothing here needs the game. --no-gui skips the two GUI checks; --gui-checks starter runs only the
+starter check (the release workflow requires it: it needs Tk to start, not a desktop to paint on).
 """
 import argparse
 import json
@@ -151,6 +152,8 @@ def main():
     ap.add_argument("--version", required=True)
     ap.add_argument("--work", help="folder to unpack into (emptied first; default: next to the zip)")
     ap.add_argument("--no-gui", action="store_true", help="skip the launcher and starter checks")
+    ap.add_argument("--gui-checks", choices=("all", "starter", "launcher"), default="all",
+                    help="which GUI checks run (default all; --no-gui: none)")
     ap.add_argument("--starter-seconds", type=int, default=15)
     a = ap.parse_args()
     version = a.version[1:] if a.version[:1] in ("v", "V") else a.version
@@ -237,6 +240,10 @@ def main():
         check("runtime: netplay and direct fight compiled in", False, str(e))
 
     if not a.no_gui:
+        # The launchers started here neither ask GitHub for an update (an offer window, a network that may be
+        # down) nor read this PC's online login (%APPDATA%\T5DROnline): what they check is the start itself.
+        env = dict(env, T5DR_NO_UPDATE_CHECK="1", T5_ONLINE_DIR=os.path.join(work, "online"))
+    if not a.no_gui and a.gui_checks in ("all", "launcher"):
         shots = os.path.join(work, "shots")
         t0 = time.time()
         rc, out = run([pyw, "-B", os.path.join(root, "launcher", "t5dr_launcher.pyw"), "--screenshots", shots],
@@ -246,6 +253,7 @@ def main():
               f"exit {rc} after {time.time() - t0:.0f} s, {len(pngs)} tab image(s) in {shots}"
               + (f"\n{out.strip()[-500:]}" if rc else ""))
 
+    if not a.no_gui and a.gui_checks in ("all", "starter"):
         # A package chosen, as every player has one: a retail .pkg header (no content) with the supported
         # content ID. The launcher's Build tab reads it right away (its header, then a peek inside with
         # ps3recomp's pkg_extract.py, which in the zip has no keys).

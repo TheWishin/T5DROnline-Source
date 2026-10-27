@@ -1471,6 +1471,8 @@ MESSAGES = {
     "[Server: {notice}]": "[서버: {notice}]",
     "Server notice: {notice}": "서버 공지: {notice}",
     "The game is not built.": "게임이 빌드되지 않았습니다.",
+    "This Mac build has no online play. For a test match: tools/build_game.py --macos-online (docs/MACOS_ONLINE_TEST.md).":
+        "이 Mac 빌드에는 온라인 플레이가 없습니다. 테스트 대전: tools/build_game.py --macos-online (docs/MACOS_ONLINE_TEST.md).",
     "Cannot read the build's identity: {error}": "빌드 식별 정보를 읽을 수 없습니다: {error}",
     "Enter a password (6 characters or more), or play as a guest.":
         "비밀번호를 입력하거나 (6자 이상), 게스트로 플레이하세요.",

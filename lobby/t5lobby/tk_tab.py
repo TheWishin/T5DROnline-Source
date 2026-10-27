@@ -70,7 +70,7 @@ from . import discord_rpc, fighters, fwcheck, lag, notify, padmap, padnav, proto
 from .buildid import BuildInfo
 from .client import LobbyClient
 from .i18n import N_, stamp, t, translate_message
-from .match_driver import MatchDriver, fps_from_logs, game_supports_pick
+from .match_driver import MatchDriver, fps_from_logs, game_files, game_supports_pick
 from .proto import DEFAULT_PORT, LobbyError
 from . import theme, tk_rooms, tk_spectate, tk_tour, tk_views, tklist, winfront
 from .ranks import record_label as _record
@@ -583,7 +583,7 @@ class OnlineTab:
                 return fn()
             except Exception:   # noqa: BLE001
                 pass
-        return os.path.join(getattr(self.app.settings, "out_dir", "") or os.getcwd(), "build", "cmake", "t5dr.exe")
+        return game_files(getattr(self.app.settings, "out_dir", "") or os.getcwd())[0]
 
     def check_firewall(self, force=False):
         """Read Windows Firewall's rules again (worker thread; at most every FW_CHECK_GAP_S unless forced)."""
@@ -653,6 +653,10 @@ class OnlineTab:
         st = self.app.game_state()
         if not st.get("ok"):
             return None, st.get("text") or t("The game is not built.")
+        if not BuildInfo.has_online(self.app.settings.out_dir):
+            # a macOS build without the online modules (online on a Mac is a test build for now)
+            return None, t("This Mac build has no online play. For a test match: tools/build_game.py --macos-online "
+                           "(docs/MACOS_ONLINE_TEST.md).")
         try:
             rel = "dev"
             try:
@@ -702,8 +706,7 @@ class OnlineTab:
     def _game_can_pick(self):
         """This PC's game picks the characters on its own select screen (in-game select)."""
         out = getattr(self.app.settings, "out_dir", os.getcwd())
-        return game_supports_pick([os.path.join(out, "build", "cmake", "t5dr.exe"),
-                                   os.path.join(out, "build", "cmake", "t5dr_game.dll")])
+        return game_supports_pick(game_files(out))
 
     def do_login(self, mode, session=None):
         if mode != "session":
@@ -840,10 +843,8 @@ class OnlineTab:
         if self.driver is not None:          # a game left from before a lost connection
             self.driver.close()
         out = getattr(self.app.settings, "out_dir", os.getcwd())
-        exe = os.path.join(out, "build", "cmake", "t5dr.exe")
-        dll = os.path.join(out, "build", "cmake", "t5dr_game.dll")
         self.driver = MatchDriver(self.client, self._launch, os.path.join(out, "logs", "online"),
-                                  table=self.table, mode=self.cfg.get("game_mode", "auto"), game_files=[exe, dll],
+                                  table=self.table, mode=self.cfg.get("game_mode", "auto"), game_files=game_files(out),
                                   async_calls=True,
                                   input_delay=(getattr(self.app, "settings", None) or {}).get("input_delay"))
 

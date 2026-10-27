@@ -1495,6 +1495,8 @@ MESSAGES = {
     "[Server: {notice}]": "[Servidor: {notice}]",
     "Server notice: {notice}": "Aviso do servidor: {notice}",
     "The game is not built.": "O jogo não está compilado.",
+    "This Mac build has no online play. For a test match: tools/build_game.py --macos-online (docs/MACOS_ONLINE_TEST.md).":
+        "Esta compilação para Mac não tem jogo online. Para uma partida de teste: tools/build_game.py --macos-online (docs/MACOS_ONLINE_TEST.md).",
     "Cannot read the build's identity: {error}": "Não é possível ler a identidade da build: {error}",
     "Enter a password (6 characters or more), or play as a guest.":
         "Digite uma senha (6 caracteres ou mais), ou jogue como convidado.",

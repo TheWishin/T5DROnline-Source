@@ -70,6 +70,17 @@ from .handover import MatchTicket, match_unlocks, read_result_file
 from .i18n import N_, t, translate_message
 
 CTL_MARKER = b"T5_CTL_DIR"
+# The game in a build output: <out>/build/cmake/t5dr.exe on Windows, t5dr on macOS (tools/run_game.py starts the
+# same file), plus the game DLL a release build has beside it.
+GAME_EXE = "t5dr.exe" if os.name == "nt" else "t5dr"
+
+
+def game_files(out):
+    """The game's binaries in a build output (what the capability markers are looked for in)."""
+    d = os.path.join(out, "build", "cmake")
+    return [os.path.join(d, GAME_EXE), os.path.join(d, "t5dr_game.dll")]
+
+
 PICK_MARKER = b"T5_DF_PICK"     # a game build with the in-game select (src/directfight, docs/DIRECTFIGHT.md)
 
 RE_SYNC = re.compile(r"\[netplay\] sync check through frame (\d+): (\d+) mismatching")

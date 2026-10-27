@@ -78,6 +78,7 @@ class TrainingRoomTest(Base):
             self.assertIsNone(res["winner"])
             self.assertIsNone(res["blame"])
             self.assertIsNone(res["rating"])
+            self.assertIsNone(res["reason"])                         # fought to its end: back to the select screen
             self.assertGreater(res["rematch_window"], 0)            # back to the select screen together
         self.assertEqual([list(self.player(n).record) for n in ("Alice", "Bob")], rec)
         self.assertEqual(self.s.call(lambda: self.srv().store.recent_matches(50)), [])   # no history either
@@ -100,6 +101,29 @@ class TrainingRoomTest(Base):
             self.assertEqual(res["status"], "training")
             self.assertIsNone(res["blame"])
         self.assertEqual(list(self.player("Alice").record), [0, 0, 0])
+
+    def test_leave_the_room_during_a_training_fight(self):
+        """Leave any time: Leave room during the fight ends the match (no result, reason "left") and leaves; in any
+        other room the match must be finished first."""
+        a, b = self.c("Alice", auto_ready=True), self.c("Bob", auto_ready=True)
+        room = a.create_room("Practice", training=True)
+        b.join_room(room["id"])
+        expect(a, "match_start", 30)
+        expect(b, "match_start", 30)
+        b.leave_room()
+        for c in (a, b):
+            res = expect(c, "match_result", 15)
+            self.assertEqual((res["status"], res["reason"], res["blame"]), ("training", "left", None))
+        self.assertEqual(self.player("Bob").status, "idle")
+        self.assertEqual(self.player("Alice").status, "room")
+        # an ordinary room: not during its match
+        c, d = self.c("Cid", auto_ready=True), self.c("Dee", auto_ready=True)
+        r2 = c.create_room("Casual")
+        d.join_room(r2["id"])
+        expect(c, "match_start", 30)
+        with self.assertRaises(LobbyError) as e:
+            d.leave_room()
+        self.assertIn("finish the match first", e.exception.msg)
 
     def test_older_launcher_cannot_join_or_be_invited(self):
         a = self.c("Alice", password="alice-pw-1", register=True)

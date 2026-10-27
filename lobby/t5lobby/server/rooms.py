@@ -434,7 +434,7 @@ class RoomsMixin:
         p = conn.player
         if p.room is None:
             raise LobbyError(proto.E_STATE, "not in a room")
-        if p.match is not None:
+        if p.match is not None and not self._training_leave(p):     # (a training room: any time, matchrules.py)
             raise LobbyError(proto.E_BUSY, "finish the match first")
         self._leave_room(p)
 

@@ -1038,11 +1038,13 @@ def training_room_case(ctx, a, b, label, rtt, jitter, loss, delay, relay, _expec
                   f"{row[a.name]['mode']}/{row[b.name]['mode']}")
         rows.append(row)
     ctx.note(f"{label}: proxy {ctx.shaper.stats()}")
-    for p in (b, a):
-        if p.action_on("leave"):
-            p.press("leave")
-    ctx.wait(lambda: (a.me or {}).get("status") == "idle" and (b.me or {}).get("status") == "idle", 40,
-             f"{label}: both left the room")
+    for p in (b, a):            # Leave room -- in a training room also during its (next) fight: leave any time
+        ctx.wait(lambda: p.action_on("leave"), 30, f"{label}: {p.name}'s Leave room is on")
+        p.press("leave")
+        ctx.wait(lambda: (p.me or {}).get("status") == "idle", 20, f"{label}: {p.name} left the room")
+    res = latest(a, "match_result", 0.0) or {}
+    ctx.check(f"{label}: the fight going on when Bob's side left ended without a result", res.get("status") ==
+              "training" and res.get("reason") in ("left", None), f"{res.get('status')} ({res.get('reason')})")
     a.tab.life_var.set(a.tab.life_var.get().replace("70", "100"))
     a.tab.on_life()
     ctx.sleep(2.0)
@@ -4134,9 +4136,10 @@ def spectate_training(ctx):
         wait_fight(ctx, m, (a, b), timeout=180)
         wait_results(ctx, m, (a, b), timeout=400)
         match_row(ctx, m, (a, b), "training", f"training fight {k + 1}")
-    for p in (b, a):
-        if p.action_on("leave"):
-            p.press("leave")
+    for p in (b, a):            # Leave room (a training room: also during its next fight)
+        ctx.wait(lambda: p.action_on("leave"), 30, f"{p.name}'s Leave room is on")
+        p.press("leave")
+        ctx.wait(lambda: (p.me or {}).get("status") == "idle", 20, f"{p.name} left the room")
     ctx.wait(lambda: (v.tab.spec.w or {}).get("state") == "over", 900, "Val's game ends at the end of the stream")
     vd = _verdict(v) or {}
     ms = vd.get("matches") or []

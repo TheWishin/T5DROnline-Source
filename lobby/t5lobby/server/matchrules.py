@@ -88,12 +88,30 @@ class MatchRulesMixin:
             d["life"] = list(m.life)
         return d
 
-    @staticmethod
-    def _rules_finish(m, status, winner, score, reason, blame):
+    # a training fight that ended in the game (a give-up, a KO): reason None -- the launchers go back to the select
+    # screen together; any other reason (a player left or quit, the connection, a crash): they end the session
+    FOUGHT = (None, "too_short", "no_result", "score_mismatch")
+
+    @classmethod
+    def _rules_finish(cls, m, status, winner, score, reason, blame):
         """_finish: a training match has no result -- whatever ended it."""
         if not m.training:
             return status, winner, score, reason, blame
+        if status in ("confirmed", "onesided", "resolved", "void") and reason in cls.FOUGHT:
+            reason = None
         return "training", None, None, reason, None
+
+    def _training_leave(self, p):
+        """Leave room during a training room's match ("leave any time"): the match ends without a result (reason
+        "left"), the room leave goes on. False when p's match is not a training match (finish it first)."""
+        m = p.match
+        if m is None or not m.training:
+            return False
+        if m.state == "playing":
+            self._finish(m, "training", None, None, reason="left")
+        else:
+            self.cancel_match(m, "opponent_left", by=p)
+        return p.match is None
 
     # ------------------------------------------------------------------ training rooms
     @staticmethod

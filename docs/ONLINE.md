@@ -536,8 +536,11 @@ practice with a friend, like Tekken 8's practice lobby: health refills a second 
 timer, no rating, no record, no history, no blame -- whatever ends a fight (a player holding SELECT for a
 second, a 100 % combo, a player leaving or closing the game, a lost connection) finishes the match with the
 status `training`. A fight is one round; when it ends both launchers go back to the select screen by
-themselves (an automatic rematch in the running games), which is also how the two pick other fighters.
-Leaving the room ends it. A training room can be private or hidden like any room; it is never ranked.
+themselves (an automatic rematch in the running games, only after a fight that ended in the game: the
+result has no `reason`), which is also how the two pick other fighters. **Leave room** works any time in a
+training room, during its fight too (elsewhere only between matches): the match ends without a result
+(`reason` "left") and both launchers end their games' session (`idle`); closing the game is a quit
+(`reason` "quit") with no loss either. A training room can be private or hidden like any room; it is never ranked.
 `room_create {training: true}` needs the `training` cap; the room's list entry and view say
 `"training": true`; joining it or being invited into it needs the cap too ("training rooms need a newer
 launcher; update it"). The match: `match_found {training: true}`, `match_start.fight {training: true,

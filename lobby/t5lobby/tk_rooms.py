@@ -111,6 +111,8 @@ class RoomsUI:
             away = me is not None and me.get("id") not in (r.get("line") or ())
             label = t("Back in line") if away else t("Sit out")
             self.tab.action_text["room_line"] = label
+        if r is not None and r.get("training") and me is not None and st in ("match", "playing"):
+            on["leave"] = True        # a training room: leave any time, its fight too (nothing is counted either way)
         return on if acts else {}
 
     # ------------------------------------------------------------------ this player's room

@@ -763,10 +763,14 @@ class MatchDriver:
             self.note("set_next", match=ev["match"], set=s)
         elif ev.get("rematch_window") and self.auto_rematch > 0:
             self.rematch(ev["match"], True)
-        elif ev.get("status") == "training" and ev.get("rematch_window"):
-            # a training room's fight ended (a give-up, a KO): both launchers go on at once -- back to the select
-            # screen together; leaving the room ends it (docs/ONLINE.md "Training rooms and the health handicap")
-            self.rematch(ev["match"], True)
+        elif ev.get("status") == "training":
+            # a training room's fight (docs/ONLINE.md "Training rooms and the health handicap"): ended in the game (a
+            # give-up, a KO -- no reason): both launchers go on at once, back to the select screen together. A player
+            # left or quit, or the connection broke: this game's session ends too (the other game would play on)
+            if ev.get("reason") is None and ev.get("rematch_window") and self.connected_game():
+                self.rematch(ev["match"], True)
+            else:
+                self._release_game()
 
     def rematch(self, match_id=None, accept=True):
         """Offer / accept (or decline) a rematch against the last opponent."""

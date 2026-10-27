@@ -152,10 +152,14 @@ run the code they ran before: CODE_VERSION is unchanged.
   guarding, 4 guard against all attacks, 5 standard auto guard, 6 / 7 quick
   roll (fore- / background), 8 quick recovery, 9 backward roll, 10
   CONTROLLER ("control with opponent controller": the dummy plays P2's pad).
-  P2's pad alone does nothing to the dummy otherwise. So a behaviour sets this
-  setting while it is chosen and gives the player's own choice back when it is
-  not (and while the pause menu is open, 0x1008F083 = 0, so the menu shows the
-  player's choice): *blocks after the first hit* is the game's own guard --
+  P2's pad alone does nothing to the dummy otherwise. That byte is what the
+  menu shows; when the menu closes the game copies it to 0x1008EC63 and
+  0x1008EC67, and the dummy acts on those (traced: 9 and 9 after "backward
+  roll", 10 and 10 after CONTROLLER, and then the dummy walked and jabbed
+  with P2's pad; with only 0x1008EFF3 written it stood still). So a behaviour
+  writes all three while it is chosen and gives the player's own choice back
+  when it is not (and while the pause menu is open, 0x1008F083 = 0, so the
+  menu shows the player's choice): *blocks after the first hit* is the game's own guard --
   stand without guarding until the dummy is hit, then guard against all
   attacks (lows too) until it has been able to act for half a second;
   *crouches*, *walks* and *sidesteps* are CONTROLLER with the dummy's pad

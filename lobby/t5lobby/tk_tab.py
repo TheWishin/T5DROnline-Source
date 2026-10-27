@@ -1380,6 +1380,8 @@ class OnlineTab:
             self.tours.shown()
         else:
             self.tours.page_shown = False
+        if sel and sel == str(getattr(self, "stats_page", "")) and getattr(self, "stats", None) is not None:
+            self.stats.shown()                             # the Stats page (tk_stats.py)
         if tab == 1:
             self.load_leaderboard()
         elif tab == 2 and self.client and self.profile_name is None:

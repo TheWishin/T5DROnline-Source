@@ -649,6 +649,41 @@ class Store:
                                                           "losses": games - wins - draws}
         return out
 
+    def community_stats(self, now=None):
+        """The Online tab's stats page (1.1.5, read-only): totals and every fighter's matches and wins, ranked and
+        casual apart, over counted matches (as match_stats). A mirror match counts for that fighter twice, one win
+        and one loss. {made, accounts, players, matches, ranked, matches_24h, players_24h,
+        fighters: [{char, ranked: [games, wins, draws], casual: [...]}]} -- most played first."""
+        now = time.time() if now is None else now
+        played = "status IN ('confirmed','onesided','forfeit','resolved')"
+        one = lambda sql, *a: self._x(sql, a).fetchone()[0] or 0          # noqa: E731
+        out = {"made": now, "accounts": one("SELECT COUNT(*) FROM accounts"),
+               "matches": one(f"SELECT COUNT(*) FROM matches WHERE {played}"),
+               "ranked": one(f"SELECT COUNT(*) FROM matches WHERE ranked = 1 AND {played}"),
+               "matches_24h": one(f"SELECT COUNT(*) FROM matches WHERE COALESCE(ended, created) > ? AND {played}",
+                                  now - 86400)}
+        names = (f"SELECT lower(p1_name) AS n FROM matches WHERE {played} {{w}} UNION "
+                 f"SELECT lower(p2_name) FROM matches WHERE {played} {{w}}")
+        out["players"] = one(f"SELECT COUNT(*) FROM ({names.format(w='')}) WHERE n IS NOT NULL AND n != ''")
+        recent = "AND COALESCE(ended, created) > ?"
+        out["players_24h"] = one(f"SELECT COUNT(*) FROM ({names.format(w=recent)}) WHERE n IS NOT NULL AND n != ''",
+                                 now - 86400, now - 86400)
+        chars = {}
+        for r in self._x(
+                "SELECT ch, ranked, COUNT(*) AS games, SUM(won) AS wins, SUM(draw) AS draws FROM ("
+                "  SELECT p1_char AS ch, ranked, CASE WHEN winner = 0 THEN 1 ELSE 0 END AS won, "
+                f"  CASE WHEN winner IS NULL THEN 1 ELSE 0 END AS draw FROM matches WHERE p1_char IS NOT NULL AND {played}"
+                "  UNION ALL "
+                "  SELECT p2_char AS ch, ranked, CASE WHEN winner = 1 THEN 1 ELSE 0 END AS won, "
+                f"  CASE WHEN winner IS NULL THEN 1 ELSE 0 END AS draw FROM matches WHERE p2_char IS NOT NULL AND {played}"
+                ") GROUP BY ch, ranked"):
+            if not r["ch"]:
+                continue
+            c = chars.setdefault(r["ch"], {"char": r["ch"], "ranked": [0, 0, 0], "casual": [0, 0, 0]})
+            c["ranked" if r["ranked"] else "casual"] = [r["games"], r["wins"] or 0, r["draws"] or 0]
+        out["fighters"] = sorted(chars.values(), key=lambda c: (-(c["ranked"][0] + c["casual"][0]), c["char"]))
+        return out
+
     def char_usage(self, aid, limit=5):
         """[{char, games, wins}] over counted matches, most played first."""
         rows = self._x(

@@ -25,7 +25,7 @@ import weakref
 import tkinter as tk
 from tkinter import ttk
 
-from . import i18n, proto, ranks, theme, tk_tour
+from . import i18n, proto, ranks, theme, tk_stats, tk_tour
 from .i18n import N_, t
 from .lag import describe_event as describe_lag, lagged
 from .rank_art import ART
@@ -37,6 +37,9 @@ HEADINGS = {"player": N_("Player"), "rank": N_("Rank"), "rating": N_("Rating"), 
             "owner": N_("Owner"), "state": N_("State"), "place": N_("Place"), "when": N_("When"),
             "result": N_("Result"), "opponent": N_("Opponent"), "chars": N_("Characters"), "score": N_("Score"),
             "request": N_("Request")}
+# the Stats page (tk_stats.py)
+HEADINGS.update(fighter=N_("Fighter"), matches=N_("Matches"), wins=N_("Wins"), winrate=N_("Win rate"),
+                share=N_("Picked"))
 
 # What the player can do about an error: words to look for in the message (lower case; the English words of the
 # server's / client's message and the German ones of its translation, i18n_known.py), and the tip. The tips are in
@@ -550,6 +553,9 @@ class OnlineView:
         nb.add(prof, text=t("Profile"))
         nb.add(friends, text=t("Friends"))          # (last: the others keep their positions 0, 1, 2)
         nb.add(tours, text=t("Tournaments"))        # (after Friends: 4)
+        stats = ttk.Frame(nb, padding=(0, px(10), 0, 0))
+        nb.add(stats, text=t("Stats"))              # (after Tournaments: 5)
+        tab.stats_page = stats
         tab.friends_page = friends
         tab.tours_page = tours
         nb.bind("<<NotebookTabChanged>>", lambda _e: tab._on_subtab())
@@ -558,6 +564,7 @@ class OnlineView:
         self._build_profile_page(prof)
         self._build_friends_page(friends)
         tk_tour.build_page(self, tours)              # tournaments: list, bracket (tk_tour.py)
+        tk_stats.build_page(self, stats)             # the community's numbers, every fighter (tk_stats.py)
         return scr
 
     def _build_profile(self, scr):

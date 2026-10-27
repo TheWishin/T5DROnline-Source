@@ -612,6 +612,18 @@ class Walk:
         self.screen("online tournaments, not a host")
         tab.tours.can_create = True
         tab.tours.render_list()
+        # the Stats page (tk_stats.py): big totals, every fighter with the longest numbers a column gets
+        tab.nb.select(tab.stats_page)
+        self.app.update()                     # (showing the page asks the server: this fake one has no stats)
+        keys = [f["key"] for f in tab.table.fighters]
+        tab.stats.data = {"made": time.time(), "accounts": 1234567, "players": 1234567, "matches": 12345678,
+                          "ranked": 12345678, "matches_24h": 123456, "players_24h": 123456,
+                          "fighters": [{"char": k, "ranked": [123456, 99999, 9], "casual": [1234567, 999999, 9]}
+                                       for k in keys]}
+        for mode in ("all", "ranked", "casual"):
+            tab.stats.mode_var.set(mode)
+            tab.stats.fill()
+            self.screen(f"online stats ({mode})")
 
     def _windows(self, d):
         """The Controls window (fake controllers), the problem report and the update offer: windows of their own,

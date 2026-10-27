@@ -254,7 +254,8 @@ class CatalogTests(Base):
         files = {os.path.basename(s.split(":")[0].replace("\\", "/")) for s in x.dynamic_sites()}
         self.assertLessEqual(files, {"t5dr_launcher.pyw", "tk_tab.py", "match_driver.py", "handover.py",
                                      "problem_report_ui.py", "controls_ui.py",
-                                     "tk_views.py", "tour_text.py", "tk_rooms.py"})
+                                     "tk_views.py", "tour_text.py", "tk_rooms.py",
+                                     "tk_stats.py"})
 
 
 class EngineTests(German):

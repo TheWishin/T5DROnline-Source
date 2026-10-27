@@ -132,7 +132,7 @@ overlay reads:
 | +0x1D2 | 1 = the fighter stands on the right side (forward is LEFT) |
 | +0x20C | bit 24: a new move (animation) started this frame |
 | +0x214 | bits 16-17: the move's attack is active this frame |
-| +0x21C, +0x220 | **can act**: +0x220 low byte 1 and either +0x220 bit 24 (the cancellable end of a move, of a block or a hit reaction) or +0x21C bit 0 (idle, walking, crouching) |
+| +0x21C, +0x220 | **can act**: +0x220 low byte 1 and either +0x220 bit 24 (the cancellable end of a move, of a block or a hit reaction) or +0x21C bit 0 (idle, walking, crouching). In a hit reaction (+0x15C >= 0x10000) only bit 24 counts (see below) |
 | +0x6BC | health (i16) |
 | +0x6D6 | the pad input the fighter read this frame (the game's mask: up 0x1000, right 0x2000, down 0x4000, left 0x8000, Triangle 0x10, Circle 0x20, Cross 0x40, Square 0x80); the CPU's inputs (Practice dummy, Arcade) show here too |
 
@@ -169,6 +169,17 @@ attacking, defender idle or pressing), whiffs 25 frames. Other values the
 traces gave: Jin d+4 i16, -15 on block, -4 on hit; a throw i12 (knockdown).
 In Practice Lili's jab against the dummy: i10, +4 on hit; her d+4 i16,
 knockdown.
+
+**Hit reactions that look free too early (1.1.5).** Players saw Bryan's d+4
+at -17 on hit. Traced in local lockstep (Bryan vs Jin): Jin's reaction to it
+(+0x168 0x0307) sets the idle bit (+0x21C bit 0, +0x220 = 1) nine frames
+in, while its cancellable end (+0x220 bit 24) comes at 29 and the standing
+move at 30; a jab Jin mashed from the hit on came out only at 30. Every
+other reaction traced (blocks, jab and kick hits, juggle hits, P1 and P2)
+turns able to act with bit 24 itself. So inside a hit reaction the tracker
+now counts bit 24 only: Bryan's d+4 is i15, **-13 on block, +3 on hit**,
+both checked with the defender mashing a jab. A taunt reported at +14 on hit
+could not be checked: neither 1+2+3+4 nor b+1+2 attacked in the traces.
 
 These are the game's own mechanics (who can start a move first). Published
 frame data for other Tekken games often says "+1 / +8" for a jab; the numbers

@@ -704,6 +704,10 @@ MESSAGES = {
     "OK": "확인",
     # ---- lobby/t5lobby/fighters.py
     "Random": "랜덤",
+    "Scrapyard": "고철 처리장",
+    "Industrial yard": "공업 지대",
+    "Stage {number}": "스테이지 {number}",
+    "Tekken 5 stage {number}": "Tekken 5 스테이지 {number}",
     # ---- lobby/t5lobby/handover.py
     "direct connection": "직접 연결",
     "local network": "로컬 네트워크",
@@ -2157,4 +2161,18 @@ MESSAGES = {
     "{name} ({rank}) invites you to the private room “{room}”": "{name} ({rank})님이 비공개 방 '{room}'(으)로 초대했습니다",
     "“{room}” is private. Its password:": "'{room}'은(는) 비공개 방입니다. 비밀번호:",
     "this server has no private rooms": "이 서버에는 비공개 방이 없습니다",
+    # ---- lobby/t5lobby/tk_casual.py
+    "Any side": "아무 쪽이나",
+    "P1 (left)": "P1 (왼쪽)",
+    "P2 (right)": "P2 (오른쪽)",
+    "Challenges, invites, rooms:": "도전, 초대, 방:",
+    "Random stage": "랜덤 스테이지",
+    "wants to be P{n} on {stage}": "P{n}, {stage} 희망",
+    "wants to be P{n}": "P{n} 희망",
+    "wants to play on {stage}": "{stage} 희망",
+    "You both wanted P{n}: a coin flip made you P{m}.": "둘 다 P{n}을(를) 원해서 동전 던지기로 P{m}이(가) 되었습니다.",
+    "Your opponent wanted another stage: a coin flip chose {stage}.": "상대가 다른 스테이지를 원해서 동전 던지기로 {stage}(으)로 정해졌습니다.",
+    "P{n} on {stage}": "P{n}, {stage}",
+    "Rematch: swap sides": "Rematch: 사이드 교체",
+    "with the sides swapped": "사이드를 바꿔서",
 }

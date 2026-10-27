@@ -10,9 +10,12 @@ import json
 import os
 import random
 
-from .i18n import t
+from .i18n import N_, t
 
 RANDOM = "random"
+# The stages' names in the player's language (data/fighters.json has English placeholders). Only two stages are
+# known by name so far (docs/DIRECTFIGHT.md "Stage ids"); the others are called by their number.
+STAGE_NAMES = {"s20": N_("Scrapyard"), "s33": N_("Industrial yard")}
 _DEFAULT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "fighters.json")
 
 
@@ -50,8 +53,15 @@ class Table:
         return x["name"] if x else (t("Random") if key == RANDOM else (key or "?"))
 
     def stage_name(self, key):
+        """The stage's name in the player's language: "Scrapyard", "Stage 17", "Tekken 5 stage 6"."""
         x = self._s.get(key)
-        return x["name"] if x else (t("Random") if key == RANDOM else (key or "?"))
+        if x is None:
+            return t("Random") if key == RANDOM else (key or "?")
+        if key in STAGE_NAMES:
+            return t(STAGE_NAMES[key])
+        if x.get("t5"):
+            return t("Tekken 5 stage {number}", number=int(key[3:]) if key[3:].isdigit() else x["id"] + 1)
+        return t("Stage {number}", number=x["id"])
 
     def selectable(self):
         """Fighters a player can pick (bosses and unverified ones are left out)."""

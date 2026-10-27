@@ -811,7 +811,7 @@ class MatchDriver:
         if accept and self.auto_rematch > 0:
             self.auto_rematch -= 1
         if swap:
-            self._call(self.client.rematch, mid, accept, keep, swap=True)
+            self._call(self.client.rematch, mid, accept, keep, True)
         else:
             self._call(self.client.rematch, mid, accept, keep)
         if not accept and self.mode == "process":

@@ -719,6 +719,10 @@ MESSAGES = {
     "OK": "OK",
     # ---- lobby/t5lobby/fighters.py
     "Random": "Aleatório",
+    "Scrapyard": "Ferro-velho",
+    "Industrial yard": "Pátio industrial",
+    "Stage {number}": "Cenário {number}",
+    "Tekken 5 stage {number}": "Cenário {number} do Tekken 5",
     # ---- lobby/t5lobby/handover.py
     "direct connection": "conexão direta",
     "local network": "rede local",
@@ -2197,4 +2201,20 @@ MESSAGES = {
         "{name} ({rank}) te convida para a sala privada “{room}”",
     "“{room}” is private. Its password:": "“{room}” é privada. A senha:",
     "this server has no private rooms": "este servidor não tem salas privadas",
+    # ---- lobby/t5lobby/tk_casual.py
+    "Any side": "Qualquer lado",
+    "P1 (left)": "P1 (esquerda)",
+    "P2 (right)": "P2 (direita)",
+    "Challenges, invites, rooms:": "Desafios, convites, salas:",
+    "Random stage": "Cenário aleatório",
+    "wants to be P{n} on {stage}": "quer ser P{n} em {stage}",
+    "wants to be P{n}": "quer ser P{n}",
+    "wants to play on {stage}": "quer jogar em {stage}",
+    "You both wanted P{n}: a coin flip made you P{m}.":
+        "Vocês dois queriam ser P{n}: no cara ou coroa, você ficou com P{m}.",
+    "Your opponent wanted another stage: a coin flip chose {stage}.":
+        "Seu oponente queria outro cenário: no cara ou coroa, saiu {stage}.",
+    "P{n} on {stage}": "P{n} em {stage}",
+    "Rematch: swap sides": "Rematch: trocar de lado",
+    "with the sides swapped": "com os lados trocados",
 }

@@ -553,8 +553,10 @@ class RoomsMixin:
             return
         gs = r.set if r.set is not None and r.set.state == "active" and \
             {id(q) for q in r.set.players} == {id(a), id(b)} else None
-        r.match = self.create_match(a, b, ranked=r.ranked and not r.community,
+        ranked = r.ranked and not r.community
+        r.match = self.create_match(*self._casual_sides(a, b, ranked), ranked=ranked,
                                     origin="invite" if invited else "room", room=r, game_set=gs)
+        r.match.line_order = (a, b)              # (the line's order, whatever sides the players asked for: casual.py)
         if r.match.state == "cancelled":
             r.match = None
 
@@ -626,15 +628,16 @@ class RoomsMixin:
         match after T5L_ROOM_NEXT_SECONDS."""
         if r is None or not r.community or r.id not in self.rooms:
             return
+        order = getattr(m, "line_order", None) or m.players     # (P1 / P2 may be the other way round: casual.py)
         if r.rotation == "winner":
-            # winner stays; the loser to the back (no winner: both, P1 first)
+            # winner stays; the loser to the back (no winner: both, the first in line first)
             stay = m.players[winner] if status in COUNTED and winner is not None else None
         else:
-            # everyone in turn: the one who was at the table longer (P1: first in line) goes to the back, the other
+            # everyone in turn: the one who was at the table longer (first in line) goes to the back, the other
             # stays for one more match -- every member plays two in a row, against both neighbours in the line,
             # whoever wins (with three, everyone meets everyone)
-            stay = m.players[1]
-        for q in m.players:
+            stay = order[1]
+        for q in order:
             if q is not stay and q in r.line:
                 r.line.remove(q)
                 r.line.append(q)

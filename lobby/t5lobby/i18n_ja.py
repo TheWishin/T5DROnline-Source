@@ -712,6 +712,10 @@ MESSAGES = {
     "OK": "OK",
     # ---- lobby/t5lobby/fighters.py
     "Random": "ランダム",
+    "Scrapyard": "スクラップ置き場",
+    "Industrial yard": "工業地帯",
+    "Stage {number}": "ステージ {number}",
+    "Tekken 5 stage {number}": "Tekken 5 ステージ {number}",
     # ---- lobby/t5lobby/handover.py
     "direct connection": "直接接続",
     "local network": "ローカルネットワーク",
@@ -2187,4 +2191,18 @@ MESSAGES = {
     "{name} ({rank}) invites you to the private room “{room}”": "{name}（{rank}）さんから非公開ルーム「{room}」への招待",
     "“{room}” is private. Its password:": "「{room}」は非公開です。パスワード：",
     "this server has no private rooms": "このサーバーには非公開ルームがありません",
+    # ---- lobby/t5lobby/tk_casual.py
+    "Any side": "どちらでも",
+    "P1 (left)": "P1（左）",
+    "P2 (right)": "P2（右）",
+    "Challenges, invites, rooms:": "対戦申し込み・招待・ルーム：",
+    "Random stage": "ランダムステージ",
+    "wants to be P{n} on {stage}": "P{n}・{stage} を希望",
+    "wants to be P{n}": "P{n} を希望",
+    "wants to play on {stage}": "{stage} を希望",
+    "You both wanted P{n}: a coin flip made you P{m}.": "お互い P{n} を希望したため、コイントスであなたは P{m} になりました。",
+    "Your opponent wanted another stage: a coin flip chose {stage}.": "相手は別のステージを希望しました。コイントスで {stage} に決まりました。",
+    "P{n} on {stage}": "P{n}・{stage}",
+    "Rematch: swap sides": "Rematch：サイド交代",
+    "with the sides swapped": "サイドを交代して",
 }

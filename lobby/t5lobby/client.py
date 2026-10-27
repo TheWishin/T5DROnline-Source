@@ -170,6 +170,7 @@ class LobbyClient(TourCalls, SpectateClientMixin):
         self.invites = {}            # invite id -> the `invited` event: invites waiting for this player's answer
         self.invite_waits = {}       # friend's name (lower case) -> monotonic time this player may invite them again
         self.private_rooms = private_rooms
+        self.casual_prefs = None     # (side None/0/1, stage key or "random"): casual wishes, sent after every login
         self.my_room = None          # this player's room as its members see it (the last `room` message)
         self.room_code = None        # its invite code, when this launcher knows it (never sent to anyone but the server)
 
@@ -408,6 +409,7 @@ class LobbyClient(TourCalls, SpectateClientMixin):
                 self.me = r["you"]
                 self._start_keepalive()
                 await self._spec_after_login()
+                await self._casual_after_login()
                 self._emit({"t": "reconnected"})
                 return
         finally:
@@ -1104,6 +1106,7 @@ class LobbyClient(TourCalls, SpectateClientMixin):
         if self.nat2:
             self._tasks.append(asyncio.ensure_future(self._clock_sync()))
         await self._spec_after_login()
+        await self._casual_after_login()
         return self.me
 
     async def _clock_sync(self, n=3):
@@ -1415,12 +1418,41 @@ class LobbyClient(TourCalls, SpectateClientMixin):
         return bool(self.private_rooms and "private_rooms" in (w.get("features") or ())
                     and "private_rooms" in (w.get("caps") or ()))
 
-    def rematch(self, match_id=None, accept=True, keep=False):
+    def rematch(self, match_id=None, accept=True, keep=False, swap=False):
         """Rooms: rematch() starts the next match in the room. After any other match: the finished
-        match's id; keep=True when this player's game still runs connected to the opponent's."""
+        match's id; keep=True when this player's game still runs connected to the opponent's; swap=True: P1 and
+        P2 the other way round (casual matches by choice, match_start "casual"; a server without it ignores it)."""
         if match_id is None:
             return self._call({"t": "rematch"})
-        return self._call({"t": "rematch", "match": match_id, "accept": bool(accept), "keep": bool(keep)})
+        msg = {"t": "rematch", "match": match_id, "accept": bool(accept), "keep": bool(keep)}
+        if swap:
+            msg["swap"] = True
+        return self._call(msg)
+
+    # ------------------------------------------------------------------ casual choices (server/casual.py)
+    def casual_ok(self):
+        """Does the server take side and stage wishes for casual matches?"""
+        return "casual_choice" in ((self.welcome or {}).get("features") or ())
+
+    def casual_stages(self):
+        """The stage keys this launcher may offer (the server's list; the stage select's on an older server)."""
+        got = ((self.welcome or {}).get("casual") or {}).get("stages")
+        return list(got) if isinstance(got, list) else []
+
+    def set_casual_prefs(self, side=None, stage="random"):
+        """This player's wishes for casual matches (challenges, invites, rooms): side 0 = P1, 1 = P2, None = any;
+        stage a key of casual_stages() or "random". Kept and sent again after every login; nothing on a server
+        without them."""
+        self.casual_prefs = (side if side in (0, 1) else None, str(stage or "random"))
+        if self.connected and self.me and self.casual_ok():
+            self._fire({"t": "casual_prefs", "side": self.casual_prefs[0], "stage": self.casual_prefs[1]})
+
+    async def _casual_after_login(self):
+        if self.casual_prefs is not None and self.casual_ok():
+            side, stage = self.casual_prefs
+            if stage not in self.casual_stages():
+                stage = "random"                 # (a stage this server does not offer, e.g. a Tekken 5 one)
+            await self._safe(self._send({"t": "casual_prefs", "side": side, "stage": stage}))
 
     def challenge(self, player_id):
         return self._call({"t": "challenge", "player": player_id})["challenge"]

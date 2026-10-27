@@ -27,6 +27,13 @@ they work with 1.1.4 launchers as soon as the server is updated.
 - **Matchmaking remembers the measured ping.** Quick and Ranked already looked for nearby opponents first and widened
   the search while you wait; two players who played each other in the last 7 days now count with the ping they really
   had (often much lower than the estimate), so neighbours far from every server find each other at once.
+- **Casual matches: choose your side and the stage.** For challenges, friends' invites and rooms you can now ask
+  for P1, P2 or any side and for a stage (or Random), next to Strict on the Play online tab. A wish is
+  granted when your opponent does not want the same; when you both want P1, a coin flip decides, and two different
+  stages are decided by a coin flip too. A challenge or an invite shows what the other player asked for, and the
+  match card shows your side and the stage. After such a match, **Rematch: swap sides** (Y on a controller) plays
+  the rematch with the sides the other way round. Ranked and Quick keep choosing sides and a random stage for you.
+  Players with a 1.1.4 launcher can still be challenged and invited as before. In all seven languages.
 - **Ping and connection before you accept.** The found-match card, a challenge and a friend's invite show the ping
   (estimated, or measured in your last match together) and whether the match will most likely be a direct connection
   or go through a relay server. In all seven languages.

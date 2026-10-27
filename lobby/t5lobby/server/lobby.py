@@ -51,6 +51,7 @@ import time
 from .. import __version__, fighters, lag as lagmod, proto, ranks, rating as glicko
 from ..buildid import BuildInfo
 from ..proto import LobbyError
+from .casual import CasualMixin
 from .config import Config
 from .ratelimit import BanList, KeyedBuckets, TokenBucket
 from .relays import MAIN as RELAY_MAIN, MAX_RELAYS, RelayPool
@@ -70,6 +71,7 @@ QUEUE_MODES = ("quick", "ranked")
 FEATURES = ["ranks", "sessions", "recovery", "passwd", "profile", "history", "chars", "integrity", "rematch",
             "blind_ready", "blocks", "strict", "set_lock", "lag_check", "notices", "ranked_sets", "ingame_pick",
             "nat2", "relays", "friends", "tournaments", "spectate", "game_fallback", "private_rooms"]
+FEATURES += ["casual_choice"]       # 1.1.5: P1 / P2 and the stage by choice in casual matches (casual.py)
 REPORT_SOURCES = ("game", "manual", "quit", "crash", "disconnect")
 DAY = 86400.0
 
@@ -492,7 +494,7 @@ class Conn:
 
 # =============================================================================== server
 
-class LobbyServer(SpectateMixin, RoomsMixin):
+class LobbyServer(SpectateMixin, RoomsMixin, CasualMixin):
     def __init__(self, cfg=None):
         self.cfg = cfg or Config.from_env()
         self.store = Store(self.cfg.db)
@@ -921,7 +923,8 @@ class LobbyServer(SpectateMixin, RoomsMixin):
                 **({"tournaments": self.tours.welcome()} if "tournaments" in conn.caps else {}),
                 # rooms: the most players a community room may hold, the pause between its matches
                 **({"room_limits": {"max_size": self.cfg.room_max_size, "next_seconds": self.cfg.room_next_seconds}}
-                   if "private_rooms" in conn.caps else {})}
+                   if "private_rooms" in conn.caps else {}),
+                **self._casual_welcome(conn)}          # the stages a launcher may offer for casual matches
 
     async def h_login(self, conn, msg):
         if not conn.helloed:
@@ -1778,17 +1781,21 @@ class LobbyServer(SpectateMixin, RoomsMixin):
             self.recent.pop(prev.id, None)
             raise LobbyError(proto.E_BUSY, "your opponent is no longer available")
         prev.rematch = getattr(prev, "rematch", [None, None])
-        prev.rematch[side] = {"keep": bool(msg.get("keep"))}
+        prev.rematch[side] = {"keep": bool(msg.get("keep")), "swap": self._rematch_swap(prev, msg)}
         if prev.rematch[1 - side] is None:
             other.send({"t": "rematch", "match": prev.id, "state": "offered", "from": p.brief(),
-                        "timeout": self.cfg.rematch_window})
+                        "timeout": self.cfg.rematch_window, **({"swap": True} if prev.rematch[side]["swap"] else {})})
             return {"t": "rematch", "match": prev.id, "state": "waiting"}
         if not other.online or other.match is not None or other.status not in ("idle", "room"):
             self.recent.pop(prev.id, None)
             raise LobbyError(proto.E_BUSY, "your opponent is no longer available")
         self.recent.pop(prev.id, None)
-        keep = all(r["keep"] for r in prev.rematch) and prev.path is not None and not self._direct_again(prev)
-        m = self.create_match(prev.players[0], prev.players[1], ranked=prev.ranked, origin="rematch",
+        # (sides swapped: a new netplay session -- a running game keeps its slot for the whole session)
+        swap = self._rematch_swapped(prev)
+        keep = (all(r["keep"] for r in prev.rematch) and prev.path is not None and not self._direct_again(prev)
+                and not swap)
+        host, join = (prev.players[1], prev.players[0]) if swap else (prev.players[0], prev.players[1])
+        m = self.create_match(host, join, ranked=prev.ranked, origin="rematch",
                               room=prev.room, rematch_of=prev, keep=keep)
         r = prev.room
         if r is not None and r.id in self.rooms and r.match is None and m.state != "cancelled":
@@ -1821,7 +1828,8 @@ class LobbyServer(SpectateMixin, RoomsMixin):
         self.challenges[c.id] = c
         c.timer = asyncio.get_running_loop().call_later(30.0, self._end_challenge, c, "expired")
         ping = self._ping_info(p, q)               # (1.1.5: the ping and the likely path before an answer)
-        q.send({"t": "challenged", "challenge": c.id, "from": p.brief(), "ping": ping})
+        q.send({"t": "challenged", "challenge": c.id, "from": p.brief(), "ping": ping,
+                "wish": self._casual_wish(p)})             # (1.1.5: the challenger's side and stage wishes, casual.py)
         return {"t": "challenge", "challenge": c.id, "ping": ping}
 
     async def h_challenge_reply(self, conn, msg):
@@ -1845,7 +1853,7 @@ class LobbyServer(SpectateMixin, RoomsMixin):
         self._abandon_set(p)
         self._leave_queue(src)
         self._leave_queue(p)
-        self.create_match(src, p, ranked=False, origin="challenge")
+        self.create_match(*self._casual_sides(src, p), ranked=False, origin="challenge")
 
     async def h_challenge_cancel(self, conn, msg):
         c = self.challenges.get(msg.get("challenge"))
@@ -2608,7 +2616,8 @@ class LobbyServer(SpectateMixin, RoomsMixin):
         seed = int.from_bytes(m.tag[:4], "big")
         m.pick = self._pick_seconds(m)
         m.chars = list(self.table.resolve(m.picks[0], m.picks[1], fighters.RANDOM, seed)[:2])
-        m.stage = self.table.resolve(m.picks[0], m.picks[1], fighters.RANDOM, seed, old_stages=self._old_stages(m))[2]
+        m.stage = self.table.resolve(m.picks[0], m.picks[1], self._casual_stage(m, seed), seed,
+                                     old_stages=self._old_stages(m))[2]
         for side, p in enumerate(m.players):
             p.status = "playing"
             self._send_match_start(m, side)
@@ -2649,6 +2658,7 @@ class LobbyServer(SpectateMixin, RoomsMixin):
                 # spectating: the live stream's id (the session's first match) -- the game writes it to a file
                 **({"stream": m.stream_id} if self._can(p, "spectate") else {}),
                 "min_seconds": self.cfg.min_match_seconds,
+                **self._casual_start_info(m),          # casual by choice: the launcher offers Swap sides
                 "set": m.set.info() if m.set is not None else None})
 
     def _old_stages(self, m):
@@ -3576,7 +3586,8 @@ class LobbyServer(SpectateMixin, RoomsMixin):
         self.invites[inv.id] = inv
         inv.timer = asyncio.get_running_loop().call_later(self.cfg.invite_seconds, self._end_invite, inv, "expired")
         ev = {"t": "invited", "invite": inv.id, "from": p.brief(), "kind": kind, "expires": self.cfg.invite_seconds,
-              "ping": self._ping_info(p, q)}         # (1.1.5: to the inviter; in a room it may be somebody else)
+              "ping": self._ping_info(p, q),         # (1.1.5: to the inviter; in a room it may be somebody else)
+              **({"wish": self._casual_wish(p)} if kind == "casual" else {})}     # (1.1.5: casual.py)
         if room is not None:
             # (a private room: the invite is the key -- the friend joins without the password; no secret is sent)
             ev["room"] = {"id": room.id, "name": room.name, "ranked": room.ranked, "private": room.private,
@@ -3620,7 +3631,7 @@ class LobbyServer(SpectateMixin, RoomsMixin):
             self._leave_queue(src)
             self._leave_queue(p)
             self._count("invites_accepted")
-            self.create_match(src, p, ranked=False, origin="invite")
+            self.create_match(*self._casual_sides(src, p), ranked=False, origin="invite")
             return None
         if r.ranked:
             self._check_speed(p)

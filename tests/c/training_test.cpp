@@ -461,25 +461,41 @@ static void test_dummy()
     CHECK_EQ(dm.frame(DummyMode::Game, d, 170), 0);
     /* Crouch: down */
     CHECK_EQ(dm.frame(DummyMode::Crouch, d, 170), kDown);
-    /* BlockAfterHit: neutral until hit, then back (RIGHT for the dummy on the right) until idle 30 frames */
+    /* BlockAfterHit: no pad (the game guards); guarding from the hit until idle 30 frames */
     CHECK_EQ(dm.frame(DummyMode::BlockAfterHit, d, 170), 0);
+    CHECK(!dm.guarding());
     Sample h = d;
     h.hp = 160; h.new_move = true; h.cls = 0x10000; h.can_act = false;
-    CHECK_EQ(dm.frame(DummyMode::BlockAfterHit, h, 170), kRight);
+    CHECK_EQ(dm.frame(DummyMode::BlockAfterHit, h, 170), 0);
+    CHECK(dm.guarding());
     h.new_move = false;
-    for (int i = 0; i < 20; i++) CHECK_EQ(dm.frame(DummyMode::BlockAfterHit, h, 160), kRight);
+    for (int i = 0; i < 20; i++) { dm.frame(DummyMode::BlockAfterHit, h, 160); CHECK(dm.guarding()); }
     Sample idle = d;
     idle.hp = 160;
     int guarded = 0;
-    for (int i = 0; i < 40; i++) if (dm.frame(DummyMode::BlockAfterHit, idle, 160)) guarded++;
+    for (int i = 0; i < 40; i++) { dm.frame(DummyMode::BlockAfterHit, idle, 160); if (dm.guarding()) guarded++; }
     CHECK_EQ(guarded, Dummy::kGuardIdle - 1);
     CHECK(!dm.guarding());
     /* a block stun in between keeps it guarding */
     dm.frame(DummyMode::BlockAfterHit, h, 170);
     for (int i = 0; i < 10; i++) dm.frame(DummyMode::BlockAfterHit, idle, 160);
     Sample blk = idle; blk.can_act = false;
-    for (int i = 0; i < 15; i++) CHECK_EQ(dm.frame(DummyMode::BlockAfterHit, blk, 160), kRight);
-    for (int i = 0; i < 25; i++) CHECK_EQ(dm.frame(DummyMode::BlockAfterHit, idle, 160), kRight);
+    for (int i = 0; i < 15; i++) { dm.frame(DummyMode::BlockAfterHit, blk, 160); CHECK(dm.guarding()); }
+    for (int i = 0; i < 25; i++) { dm.frame(DummyMode::BlockAfterHit, idle, 160); CHECK(dm.guarding()); }
+    /* the game's own TRAINING DUMMY setting: guard against all after the hit, stand before; crouch; stand to walk */
+    {
+        Dummy g;
+        CHECK_EQ(g.setting(DummyMode::Game), -1);
+        CHECK_EQ(g.setting(DummyMode::Crouch), Dummy::kSetController);
+        CHECK_EQ(g.setting(DummyMode::Walk), Dummy::kSetController);
+        CHECK_EQ(g.setting(DummyMode::Step), Dummy::kSetController);
+        g.frame(DummyMode::BlockAfterHit, d, 170);
+        CHECK_EQ(g.setting(DummyMode::BlockAfterHit), Dummy::kSetStand);
+        g.frame(DummyMode::BlockAfterHit, h, 170);
+        CHECK_EQ(g.setting(DummyMode::BlockAfterHit), Dummy::kSetGuardAll);
+        for (int i = 0; i < Dummy::kGuardIdle; i++) g.frame(DummyMode::BlockAfterHit, idle, 160);
+        CHECK_EQ(g.setting(DummyMode::BlockAfterHit), Dummy::kSetStand);
+    }
     /* Walk: forward (toward P1 = LEFT on the right side) first, then back */
     Dummy w;
     CHECK_EQ(w.frame(DummyMode::Walk, d, 170), kLeft);
@@ -590,6 +606,10 @@ static Placer::Cmd place(PAction a, const Place& p1, const Place& dm, const Aren
         c = pl.next(ar.frame(set));
         if (c.done) return c;
         set = c.mover;
+        /* the two slide together, kGap apart */
+        const float gap = hypotf(c.mover.x - c.other.x, c.mover.z - c.other.z);
+        if (fabsf(gap - Placer::kGap) > 0.5f) { g_fail++; printf("FAIL slide gap %.1f\n", gap); }
+        g_checks++;
     }
     return c;
 }

@@ -383,14 +383,17 @@ inline void turn(float& x, float& z, float d)
 }
 
 /* The wall resets. The walls are the stage's own collision, so they are found
- * with it, not read from the stage: the fighter that goes to the wall (the
- * mover) slides along the line through both fighters, from kGap past the other
- * one, kStep further each frame. A place past a wall is one the game does not
- * keep: it puts the fighter elsewhere (traced in Practice: somewhere inside the
- * stage, not on the line). The first place it did not keep ends the slide; a
- * few frames of halving between it and the last place it kept find the wall to
- * kStep / 2^kRefine. No wall within kMaxSteps: the places from before. At the
- * wall the other one goes kGap in front of the mover, both facing each other. */
+ * with it, not read from the stage: both fighters slide along the line through
+ * them, the one that goes to the wall (the mover) in front, the other kGap
+ * behind it -- together, because the game also keeps the two fighters within
+ * about 6,300 units of each other (traced: one fighter sliding alone was held
+ * there, on a stage without a wall that near) -- starting with the mover kGap
+ * past the other one, kStep further each frame. A place past a wall is one the
+ * game does not keep: it puts the fighter elsewhere (traced in Practice:
+ * somewhere inside the stage, not on the line). The first place it did not
+ * keep ends the slide; a few frames of halving between it and the last place it
+ * kept find the wall to kStep / 2^kRefine. No wall within kMaxSteps: the places
+ * from before. Both end kGap apart at the wall, facing each other. */
 class Placer {
 public:
     static constexpr float kGap = 1100.0f;      /* the distance at the wall: close, in reach of most moves */
@@ -402,7 +405,7 @@ public:
     struct Cmd {
         bool done = false;      /* finished: out[] holds both places (P1, the dummy) */
         bool wall = false;      /* ... at a wall (false: the places from before) */
-        Place mover;            /* not done: where the mover goes this frame */
+        Place mover, other;     /* not done: where the two go this frame */
         Place out[2];
     };
 
@@ -460,6 +463,8 @@ public:
             set_r_ = (lo_ + hi_) * 0.5f;
         }
         c.mover = at(set_r_);
+        c.other = at(set_r_ - kGap);
+        c.other.angle = before_[1 - mover_].angle;
         return c;
     }
     void cancel() { pending_ = false; }
@@ -494,7 +499,7 @@ private:
 /* ---- the dummy's behaviour ------------------------------------------------------ */
 enum class DummyMode : uint8_t {
     Game,           /* the game's own dummy (Practice menu), nothing injected */
-    BlockAfterHit,  /* stands; from the first hit on it holds back (guards) until it has been idle a while */
+    BlockAfterHit,  /* stands without guarding; from the first hit on it guards (the game's own) until idle a while */
     Crouch,         /* holds down */
     Walk,           /* walks forward and back */
     Step,           /* sidesteps, one way and then the other */
@@ -524,7 +529,7 @@ public:
                 idle_ = acts(d) ? idle_ + 1 : 0;
                 if (idle_ >= kGuardIdle) guard_ = false;
             }
-            out = guard_ ? back : 0;
+            out = 0;     /* the game guards (setting()) */
             break; }
         case DummyMode::Crouch: out = kDown; break;
         case DummyMode::Walk: out = (t_ / kWalkFrames) % 2 ? back : fwd; break;
@@ -539,6 +544,28 @@ public:
     }
     bool guarding() const { return guard_; }
     void reset() { *this = Dummy{}; }
+
+    /* The game's own TRAINING DUMMY setting (Practice menu; 0x1008EFF3, traced:
+     * 0 stand without guarding, 1 stand while guarding, 2 crouch without
+     * guarding, 3 crouch while guarding, 4 guard against all attacks, 5 standard
+     * auto guard, 6/7 quick roll fore/background, 8 quick recovery, 9 backward
+     * roll, 10 CONTROLLER: "control with opponent controller", the dummy plays
+     * P2's pad) that a behaviour needs this frame, or -1: leave the player's
+     * choice. Blocking after the first hit is the game's own guard (it guards
+     * lows too): it stands without guarding until the hit, then guards against
+     * all attacks; crouching, walking and sidestepping are the dummy's pad
+     * (frame()) on CONTROLLER. */
+    enum : int { kSetStand = 0, kSetGuardAll = 4, kSetController = 10 };
+    int setting(DummyMode m) const
+    {
+        switch (m) {
+        case DummyMode::BlockAfterHit: return guard_ ? kSetGuardAll : kSetStand;
+        case DummyMode::Crouch:
+        case DummyMode::Walk:
+        case DummyMode::Step: return kSetController;
+        default: return -1;
+        }
+    }
 
 private:
     DummyMode mode_ = DummyMode::Game;

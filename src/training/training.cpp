@@ -309,7 +309,7 @@ void parse_trace_ranges(const char* p)
         p = e;
         uint32_t every = 1;
         if (*p == ':') { every = (uint32_t)strtoul(p + 1, &e, 10); p = e; if (!every) every = 1; }
-        if (a >= 0x10000000u && l && l <= 0x01000000u && a + l <= 0x20000000u) g_trace_extra[g_trace_nextra++] = { a, l, every };
+        if (a >= 0x10000u && l && l <= 0x01000000u && (uint64_t)a + l <= 0xF0000000ull) g_trace_extra[g_trace_nextra++] = { a, l, every };
         while (*p == ',' || *p == ' ') p++;
     }
 }

@@ -1096,7 +1096,11 @@ MESSAGES = {
     "not present -- will be downloaded with Git": "없음 -- Git으로 다운로드합니다",
     "not present and Git is missing": "없고 Git도 없음",
     "precompiled, included in this package": "미리 컴파일됨, 이 패키지에 포함",
-    "missing from toolchain\\llvm -- download the release again": "toolchain\\llvm에 없음 -- 릴리스를 다시 받으세요",
+    "missing from toolchain\\llvm -- extract the release zip again": "toolchain\\llvm에 없음 -- 릴리스 zip을 다시 압축 해제하세요",
+    "missing from this folder -- extract the release zip again": "이 폴더에 없음 -- 릴리스 zip을 다시 압축 해제하세요",
+    "This folder is incomplete ({folders} missing). Extract the release zip again with \"Extract All\" into a short path such as {example}, then start T5DR Online.exe from there -- not from inside the zip.":
+        "이 폴더는 불완전합니다({folders} 없음). 릴리스 zip을 \"모두 압축 풀기\"로 {example} 같은 짧은 경로에 다시 풀고, 거기서 T5DR Online.exe를 실행하세요. zip 안에서 실행하지 마세요.",
+    "This folder is incomplete: extract the release zip again (see the Build tab).": "이 폴더는 불완전합니다: 릴리스 zip을 다시 압축 해제하세요(빌드 탭 참고).",
     "not found": "찾을 수 없음",
     "missing {tools}": "없음: {tools}",
     "System information and the settings you use": "시스템 정보와 사용 중인 설정",

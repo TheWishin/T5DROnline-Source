@@ -531,6 +531,11 @@ def install_warnings(root=ROOT, out=None):
     elif os.path.isdir(root) and not _writable(root):
         warn.append(t("Windows does not let the launcher write into this folder. Move it to a folder of your "
                       "own, for example {example}.", example=EXAMPLE_DIR))
+    missing = prereqs.release_missing(root)
+    if missing:
+        warn.insert(0, t("This folder is incomplete ({folders} missing). Extract the release zip again with \"Extract "
+                         "All\" into a short path such as {example}, then start T5DR Online.exe from there -- not from "
+                         "inside the zip.", folders=", ".join(missing), example=prereqs.INCOMPLETE_EXAMPLE))
     if norm.startswith("\\"):
         warn.append(t("This folder is on a network share. Building and playing from there is slow and was "
                       "not tested; copy it to a local drive."))

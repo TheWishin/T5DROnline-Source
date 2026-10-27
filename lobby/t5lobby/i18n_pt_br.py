@@ -1123,8 +1123,11 @@ MESSAGES = {
     "not present -- will be downloaded with Git": "não está -- será baixado com o Git",
     "not present and Git is missing": "não está e falta o Git",
     "precompiled, included in this package": "pré-compilado, incluído neste pacote",
-    "missing from toolchain\\llvm -- download the release again":
-        "faltando em toolchain\\llvm -- baixe o release de novo",
+    "missing from toolchain\\llvm -- extract the release zip again": "faltando em toolchain\\llvm -- extraia o zip do release de novo",
+    "missing from this folder -- extract the release zip again": "faltando nesta pasta -- extraia o zip do release de novo",
+    "This folder is incomplete ({folders} missing). Extract the release zip again with \"Extract All\" into a short path such as {example}, then start T5DR Online.exe from there -- not from inside the zip.":
+        "Esta pasta está incompleta ({folders} faltando). Extraia o zip do release de novo com \"Extrair Tudo\" em um caminho curto como {example} e abra o T5DR Online.exe de lá -- não de dentro do zip.",
+    "This folder is incomplete: extract the release zip again (see the Build tab).": "Esta pasta está incompleta: extraia o zip do release de novo (veja a aba Compilar).",
     "not found": "não encontrado",
     "missing {tools}": "faltando: {tools}",
     "System information and the settings you use": "Informações do sistema e as configurações que você usa",

@@ -1113,8 +1113,11 @@ MESSAGES = {
     "not present -- will be downloaded with Git": "なし -- Git でダウンロードします",
     "not present and Git is missing": "なし、Git もありません",
     "precompiled, included in this package": "コンパイル済み、このパッケージに同梱",
-    "missing from toolchain\\llvm -- download the release again":
-        "toolchain\\llvm にありません -- リリースをもう一度ダウンロードしてください",
+    "missing from toolchain\\llvm -- extract the release zip again": "toolchain\\llvm にありません -- リリースの zip をもう一度展開してください",
+    "missing from this folder -- extract the release zip again": "このフォルダーにありません -- リリースの zip をもう一度展開してください",
+    "This folder is incomplete ({folders} missing). Extract the release zip again with \"Extract All\" into a short path such as {example}, then start T5DR Online.exe from there -- not from inside the zip.":
+        "このフォルダーは不完全です（{folders} がありません）。リリースの zip を \"すべて展開\" で {example} のような短いパスにもう一度展開し、そこから T5DR Online.exe を起動してください。zip の中からは起動しないでください。",
+    "This folder is incomplete: extract the release zip again (see the Build tab).": "このフォルダーは不完全です: リリースの zip をもう一度展開してください（ビルドタブを参照）。",
     "not found": "見つかりません",
     "missing {tools}": "不足：{tools}",
     "System information and the settings you use": "システム情報と使用中の設定",

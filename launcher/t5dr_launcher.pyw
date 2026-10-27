@@ -1048,6 +1048,10 @@ class App(tk.Tk):
         else:
             self.tools_sum.set("✔ " + t("Everything the build needs is installed."))
             self.tools_sum_lbl.configure(style="ok.TLabel")
+        if missing and not any(it["install"] for it in missing) and core.prereqs.release_missing():
+            # (a release folder lacking parts of the zip: nothing to install -- the Build tab says to extract again)
+            self.status.set(t("This folder is incomplete: extract the release zip again (see the Build tab)."))
+            return
         self.status.set(t("All build tools found.") if not missing else
                         t("{count} build tool(s) missing -- click 'Install missing…'.", count=len(missing)))
 

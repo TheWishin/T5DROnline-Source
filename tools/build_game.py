@@ -403,6 +403,12 @@ def step_deps(a):
     elif vend is False:
         fail("The ps3recomp copy in this folder does not match this version of the port. "
              "Download the release again and extract it into an empty folder.")
+    elif prereqs.release_folder() and os.name == "nt" and not os.path.isdir(os.path.join(P.deps, ".git")):
+        # a release folder without its ps3recomp copy: the zip was not fully extracted -- never clone with Git there
+        fail("This folder is incomplete ({folders} missing). Extract the release zip again with \"Extract All\" "
+             "into a short path such as {example}, then start T5DR Online.exe from there -- not from inside the "
+             "zip.".format(folders=", ".join(prereqs.release_missing()) or os.path.join("deps", "ps3recomp"),
+                           example=prereqs.INCOMPLETE_EXAMPLE))
     elif os.path.isdir(os.path.join(P.deps, ".git")) and not a.force:
         print("  already done")
     else:

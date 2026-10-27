@@ -267,6 +267,8 @@ BUILD_TOOL = (
        "extract it into an empty folder."),
     N_("Git is needed to download ps3recomp (the recompiler). Install Git, or use a release zip, which already "
        "contains it."),
+    N_("This folder is incomplete ({folders} missing). Extract the release zip again with \"Extract All\" into a "
+       "short path such as {example}, then start T5DR Online.exe from there -- not from inside the zip."),
     N_("This package's Python is missing pycryptodome. Download the release again."),
     N_("Could not download the public PS3 key data from github.com (needed once, a few KB). Check the internet "
        "connection and press BUILD GAME again."),
@@ -312,7 +314,8 @@ PREREQS = (
     N_("not present -- will be downloaded with Git"),
     N_("not present and Git is missing"),
     N_("precompiled, included in this package"),
-    N_("missing from toolchain\\llvm -- download the release again"),
+    N_("missing from toolchain\\llvm -- extract the release zip again"),
+    N_("missing from this folder -- extract the release zip again"),
     N_("not found"),
     N_("missing {tools}"),
 )

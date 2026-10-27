@@ -20,6 +20,11 @@ part is in the README's status table.
   timer or startup step -- `SystemExit` included, which Tk lets through and which closed 1.1.5 -- goes into
   `launcher.log` and the window stays open; errors in the launcher's threads are logged too (they were printed
   nowhere under pythonw). Only the player's close ends it.
+- An incomplete release folder (no `deps/ps3recomp`, `toolchain/llvm`, `runtime/` or `python/` -- the zip not fully
+  extracted, or run from inside it) is called that (`tools/prereqs.py`, `launcher/core.py`, `tools/build_game.py`):
+  the Build tab and BUILD GAME say to extract the zip again with "Extract All" into a short path such as `C:\T5DR`,
+  and "Install missing..." no longer offers Git or Visual Studio for it (1.1.6 offered Git; installing it changed
+  nothing). A developer's checkout still gets Git offered.
 
 ## v1.1.6 (2026-10-27)
 

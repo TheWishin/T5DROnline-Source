@@ -320,20 +320,32 @@ class App(tk.Tk):
         if dark:
             # one slim bar: the mark, the name with "Online" in the accent colour, the build in small capitals, and
             # Check for updates on the right
-            px = self.px
-            head = ttk.Frame(self, padding=(px(16), px(10), px(16), px(4)))
+            # a band drawn by the theme (a warm glow, the accent's slashes) with the name and the build on it
+            px, th = self.px, self.theme.apply(self)
+            head = self.theme.Band(self, height=60)
             head.pack(fill="x")
-            self.theme.Mark(head, size=26).pack(side="left", padx=(0, px(10)))
+            head.pack_propagate(False)
             first, last = name.rsplit(" ", 1)
-            ttk.Label(head, text=first + " ", style="Brand.TLabel").pack(side="left")
-            ttk.Label(head, text=last, style="BrandAccent.TLabel").pack(side="left")
-            ttk.Label(head, text=sub.upper(), style="Caps.TLabel").pack(side="left", padx=(px(14), 0), pady=(px(3), 0))
+            h, x, m = px(60), px(18), px(28)
+            self.theme.draw_mark(head, x, (h - m) / 2.0, m)
+            x += m + px(10)
+            for text, font, col in ((first + " ", th.fonts["brand"], self.theme.C["text"]),
+                                    (last, th.fonts["brand"], self.theme.C["accent_hi"]),
+                                    (sub.upper(), th.fonts["caps"], self.theme.C["muted"])):
+                if font is th.fonts["caps"]:
+                    x += px(16)
+                head.create_text(x, h / 2.0 + (px(2) if font is th.fonts["caps"] else 0), text=text, anchor="w",
+                                 fill=col, font=font)
+                x += font.measure(text)
+            head.configure(width=x + px(24))
         else:
             head = ttk.Frame(self, padding=(16, 12, 16, 4))
             head.pack(fill="x")
             ttk.Label(head, text=name, style="H1.TLabel").pack(side="left")
             ttk.Label(head, style="Muted.TLabel", text="   " + sub).pack(side="left")
         self.updater = updater.attach(self, head)     # "Check for updates", the offer, the update itself
+        if dark and getattr(self.updater, "button", None) is not None:
+            self.updater.button.pack_configure(padx=(0, self.px(16)))
         self.nb = ttk.Notebook(self, style="Main.TNotebook") if dark else ttk.Notebook(self)
         self.nb.pack(fill="both", expand=True, padx=12, pady=(4, 0))
         self.tabs = {}

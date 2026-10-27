@@ -725,6 +725,10 @@ MESSAGES = {
     "OK": "OK",
     # ---- lobby/t5lobby/fighters.py
     "Random": "Aleatorio",
+    "Scrapyard": "Desguace",
+    "Industrial yard": "Zona industrial",
+    "Stage {number}": "Escenario {number}",
+    "Tekken 5 stage {number}": "Escenario {number} de Tekken 5",
     # ---- lobby/t5lobby/handover.py
     "direct connection": "conexión directa",
     "local network": "red local",
@@ -1855,6 +1859,12 @@ MESSAGES = {
     "Opponent hidden": "Rival oculto",
     "Name and side are shown once you both accept.": "El nombre y el lado se muestran cuando ambos acepten.",
     "(estimated before you connect)": "(estimado antes de conectar)",
+    "(measured in your last match together)": "(medido en la última partida que jugaron juntos)",
+    "ping {ms} ms (measured in your last match together)":
+        "ping de {ms} ms (medido en la última partida que jugaron juntos)",
+    "probably a direct connection": "probablemente una conexión directa",
+    "probably over the local network": "probablemente por la red local",
+    "probably through a relay server": "probablemente a través de un servidor relay",
     "Accepted. Waiting for your opponent...": "Aceptado. Esperando a tu rival...",
     "Match ready": "Partida lista",
     "Connecting the two games...": "Conectando los dos juegos...",
@@ -2226,4 +2236,19 @@ MESSAGES = {
     "life is 30 to 100 in steps of 10": "la vida va de 30 a 100 en pasos de 10",
     "this server has no training rooms": "este servidor no tiene salas de entrenamiento",
     "this server has no health handicap": "este servidor no tiene desventaja de vida",
+    # ---- lobby/t5lobby/tk_casual.py
+    "Any side": "Cualquier lado",
+    "P1 (left)": "P1 (izquierda)",
+    "P2 (right)": "P2 (derecha)",
+    "Challenges, invites, rooms:": "Desafíos, invitaciones, salas:",
+    "Random stage": "Escenario aleatorio",
+    "wants to be P{n} on {stage}": "quiere ser P{n} en {stage}",
+    "wants to be P{n}": "quiere ser P{n}",
+    "wants to play on {stage}": "quiere jugar en {stage}",
+    "You both wanted P{n}: a coin flip made you P{m}.": "Los dos queríais ser P{n}: a cara o cruz, te tocó P{m}.",
+    "Your opponent wanted another stage: a coin flip chose {stage}.":
+        "Tu rival quería otro escenario: a cara o cruz salió {stage}.",
+    "P{n} on {stage}": "P{n} en {stage}",
+    "Rematch: swap sides": "Rematch: cambiar de lado",
+    "with the sides swapped": "con los lados cambiados",
 }

@@ -19,6 +19,31 @@ they work with 1.1.4 launchers as soon as the server is updated.
   40 fps). Now such a match says, for example: "This match lagged: the games waited 92 s for each other's inputs. A
   wired connection and no uploads during matches help." In a ranked set, **Leave: too laggy** is offered after it,
   as after any laggy match. In all seven languages.
+- **The Ping column reads right for players far from the lobby server.** Two friends in North America saw each other
+  at about 200 ms: the list added both round trips to the lobby server in Germany. The list now also carries every
+  player's round trips to the regional relay servers, and the launcher shows the shorter way, as the matchmaking
+  already did (about 50 ms through the relay in Oregon for those two). Estimates keep their "~"; a player you played
+  since the launcher started shows the ping measured in that match, without "~".
+- **Matchmaking remembers the measured ping.** Quick and Ranked already looked for nearby opponents first and widened
+  the search while you wait; two players who played each other in the last 7 days now count with the ping they really
+  had (often much lower than the estimate), so neighbours far from every server find each other at once.
+- **Casual matches: choose your side and the stage.** For challenges, friends' invites and rooms you can now ask
+  for P1, P2 or any side and for a stage (or Random), next to Strict on the Play online tab. A wish is
+  granted when your opponent does not want the same; when you both want P1, a coin flip decides, and two different
+  stages are decided by a coin flip too. A challenge or an invite shows what the other player asked for, and the
+  match card shows your side and the stage. After such a match, **Rematch: swap sides** (Y on a controller) plays
+  the rematch with the sides the other way round. Ranked and Quick keep choosing sides and a random stage for you.
+  Players with a 1.1.4 launcher can still be challenged and invited as before. In all seven languages.
+- **Ping and connection before you accept.** The found-match card, a challenge and a friend's invite show the ping
+  (estimated, or measured in your last match together) and whether the match will most likely be a direct connection
+  or go through a relay server. In all seven languages.
+- **Smoother far matches.** Above 150 ms ping both games now get 3 frames of input delay (4 above 250 ms) instead of 2,
+  so the rollback corrects less and the characters jump less. Ranked too; a server setting (`T5L_PING_DELAYS`).
+- **No 20 s wait after the last rematch.** When a set ended (rematch declined, the time ran out, a player left), both
+  games kept the connection; when the way between them then closed (a relay after the rematch window), they stood
+  waiting for each other for 20 s, and a new match found in those seconds made the launcher restart the game for every
+  later match. The launcher now ends the game's connection as soon as the set is over, and gives a game that is still
+  waiting for a lost opponent the time it needs before it counts as not answering.
 
 ### Documentation
 - **Minimum requirements** at the top of the README's Requirements: Windows 10/11, a 4-core CPU from about 2014 on

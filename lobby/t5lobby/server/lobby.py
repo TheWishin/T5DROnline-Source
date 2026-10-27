@@ -51,6 +51,7 @@ import time
 from .. import __version__, fighters, lag as lagmod, proto, ranks, rating as glicko
 from ..buildid import BuildInfo
 from ..proto import LobbyError
+from .casual import CasualMixin
 from .config import Config
 from .ratelimit import BanList, KeyedBuckets, TokenBucket
 from .relays import MAIN as RELAY_MAIN, MAX_RELAYS, RelayPool
@@ -71,8 +72,9 @@ QUEUE_MODES = ("quick", "ranked")
 # What this server supports beyond protocol 1's base (the client checks before using them).
 FEATURES = ["ranks", "sessions", "recovery", "passwd", "profile", "history", "chars", "integrity", "rematch",
             "blind_ready", "blocks", "strict", "set_lock", "lag_check", "notices", "ranked_sets", "ingame_pick",
-            "nat2", "relays", "friends", "tournaments", "spectate", "game_fallback", "private_rooms",
-            "training", "handicap"]
+            "nat2", "relays", "friends", "tournaments", "spectate", "game_fallback", "private_rooms"]
+FEATURES += ["casual_choice"]       # 1.1.5: P1 / P2 and the stage by choice in casual matches (casual.py)
+FEATURES += ["training", "handicap"]   # 1.1.5: training rooms and the health handicap (matchrules.py)
 REPORT_SOURCES = ("game", "manual", "quit", "crash", "disconnect")
 DAY = 86400.0
 
@@ -94,6 +96,23 @@ def _rid():
     return os.urandom(6).hex()
 
 
+def _ping_delay_floor(spec, rtt):
+    """T5L_PING_DELAYS ("150:3,250:4") and a measured round trip -> the input delay floor in frames, or None when the
+    round trip is not above any threshold (or the setting is off / unreadable: its bad parts are left out)."""
+    if not spec or not isinstance(rtt, (int, float)):
+        return None
+    floor = None
+    for part in str(spec).split(","):
+        ms, _sep, frames = part.partition(":")
+        try:
+            ms, frames = float(ms), int(frames)
+        except ValueError:
+            continue
+        if 0 < frames <= 10 and rtt > ms:
+            floor = max(floor or 0, frames)
+    return floor
+
+
 class Player:
     def __init__(self, conn, name, guest, account=None):
         self.id = "p" + _rid()
@@ -111,6 +130,8 @@ class Player:
         self.match = None
         self.server_rtt = None          # ms, reported by the client (UDP ping)
         self.relay_rtt = {}             # regional relay id -> ms, reported by a client with the "relays" cap
+        self.relay_shown = {}           # ... what the lobby list shows (whole ms; only updated on a real change)
+        self.nat_seen = None            # its NAT in its last match: (symmetric, ports predictable) (_note_nat)
         self.fps = None                 # this PC's sustained game speed in its last match (client report)
         self.rtt_shown = None           # what the lobby list shows: only updated on a real change
         self.token = os.urandom(24).hex()   # session resume token
@@ -151,6 +172,10 @@ class Player:
              "build": self.build_id, "release": self.release, "char": self.char, "main": self.main}
         if self.life != 100:
             d["life"] = self.life       # (the health handicap: shown to everybody; older launchers ignore it)
+        if self.relay_shown:
+            # 1.1.5: the round trips to the regional relays, so that a launcher can estimate its ping to this player the
+            # way the server does (_est_ping: the best relay both measured), not only through the central server
+            d["relays"] = dict(self.relay_shown)
         d.update(self.rank_info())
         return d
 
@@ -477,7 +502,7 @@ class Conn:
 
 # =============================================================================== server
 
-class LobbyServer(SpectateMixin, RoomsMixin, MatchRulesMixin):
+class LobbyServer(SpectateMixin, RoomsMixin, CasualMixin, MatchRulesMixin):
     def __init__(self, cfg=None):
         self.cfg = cfg or Config.from_env()
         self.store = Store(self.cfg.db)
@@ -517,6 +542,7 @@ class LobbyServer(SpectateMixin, RoomsMixin, MatchRulesMixin):
         self.events = []           # (time, kind, data) -- recent events for tests / diagnostics
         self.recent = {}           # match id -> finished Match, kept rematch_window seconds for a rematch
         self.pair_last = {}        # frozenset of two player keys -> monotonic time their last ranked game ended
+        self.pair_net = {}         # frozenset of two player keys -> (measured rtt ms, path, monotonic time) (_remember_pair)
         self.notices_by_id = {}    # active server notices (admin tool): id -> row
         self.latest_release = ""   # `admin release X.Y.Z`: launchers of an older release are told to update
         self.table = fighters.table()
@@ -905,7 +931,8 @@ class LobbyServer(SpectateMixin, RoomsMixin, MatchRulesMixin):
                 **({"tournaments": self.tours.welcome()} if "tournaments" in conn.caps else {}),
                 # rooms: the most players a community room may hold, the pause between its matches
                 **({"room_limits": {"max_size": self.cfg.room_max_size, "next_seconds": self.cfg.room_next_seconds}}
-                   if "private_rooms" in conn.caps else {})}
+                   if "private_rooms" in conn.caps else {}),
+                **self._casual_welcome(conn)}          # the stages a launcher may offer for casual matches
 
     async def h_login(self, conn, msg):
         if not conn.helloed:
@@ -1232,6 +1259,7 @@ class LobbyServer(SpectateMixin, RoomsMixin, MatchRulesMixin):
             if rid in self.relays.nodes and isinstance(ms, (int, float)) and 0 <= ms < 10000:
                 out[rid] = float(ms)
         conn.player.relay_rtt = out
+        self._show_relay_rtts(conn.player)
 
     def _relays_changed(self):
         """relays.json changed: clients that know the regional relays get the new list (and measure it again)."""
@@ -1241,6 +1269,7 @@ class LobbyServer(SpectateMixin, RoomsMixin, MatchRulesMixin):
                 c.send({"t": "relays", "relays": lst})
         for p in self.players.values():
             p.relay_rtt = {k: v for k, v in p.relay_rtt.items() if k in self.relays.nodes}
+            self._show_relay_rtts(p)
 
     def _spawn(self, coro):
         t = asyncio.ensure_future(coro)
@@ -1509,7 +1538,11 @@ class LobbyServer(SpectateMixin, RoomsMixin, MatchRulesMixin):
         a relay in Oregon: about 50 ms, not 300. A pair with a 1.1.0 / 1.1.1 client measured no regional relay:
         the sum through this server, as before. An unknown round trip to this server counts as 50 ms and makes
         the estimate `known: false` -- unless a measured regional relay gives one. The real peer-to-peer ping
-        is measured after both accepted (nat.py, `rtt_ms` in match_start)."""
+        is measured after both accepted (nat.py, `rtt_ms` in match_start). Two players who played each other in the
+        last T5L_PAIR_PING_DAYS: that measured ping (via "measured", 1.1.5: _pair_measured)."""
+        seen = self._pair_measured(a, b)
+        if seen is not None:
+            return seen[0], True, "measured"
         ra = a.server_rtt if a.server_rtt is not None else 50.0
         rb = b.server_rtt if b.server_rtt is not None else 50.0
         est, known, via = ra + rb, a.server_rtt is not None and b.server_rtt is not None, RELAY_MAIN
@@ -1599,6 +1632,106 @@ class LobbyServer(SpectateMixin, RoomsMixin, MatchRulesMixin):
             return math.inf
         return c.ping_start + widen * max(0.0, waited)
 
+    # ------------------------------------------------------------------ ping before a match (1.1.5)
+    # The lobby list carries each player's round trips to the regional relays (Player.public "relays"), so a launcher
+    # estimates its ping to anybody as _est_ping does. The server remembers the measured ping and path of every pair
+    # that played (memory only): the queues use it (_est_ping), and the ready check, a challenge and an invite show it
+    # with the path the two will most likely get (direct / relay) before anybody accepts.
+    PAIR_NET_MAX = 20000            # remembered pairs (the oldest go first)
+
+    def _show_relay_rtts(self, p):
+        """What the lobby list shows of p.relay_rtt: whole ms, only updated on a real change (as rtt_shown)."""
+        new = {k: round(v) for k, v in p.relay_rtt.items()}
+        old = p.relay_shown
+        if new.keys() != old.keys() or any(abs(new[k] - old[k]) > max(5.0, 0.2 * old[k]) for k in new):
+            p.relay_shown = new
+            self.dirty = True
+
+    def _pair_key(self, a, b):
+        return frozenset((self._pair_id(a), self._pair_id(b)))
+
+    def _remember_pair(self, m, path=None, rtt=None):
+        """A match started (or its relay bridges found the direct path): the pair's measured ping and path."""
+        if len(m.players) != 2 or m.players[0] is m.players[1]:
+            return
+        path = path or m.path
+        rtt = m.rtt if rtt is None else rtt
+        if path not in ("direct", "lan", "relay") or not isinstance(rtt, (int, float)) or not 0 <= rtt < 5000:
+            return
+        mem = self.pair_net
+        key = self._pair_key(*m.players)
+        mem.pop(key, None)
+        mem[key] = (float(rtt), path, time.monotonic())
+        while len(mem) > self.PAIR_NET_MAX:
+            del mem[next(iter(mem))]
+
+    def _pair_measured(self, a, b):
+        """-> (rtt ms, path) of the last match these two played within T5L_PAIR_PING_DAYS, or None."""
+        mem = self.pair_net
+        if not mem or a is b:
+            return None
+        seen = mem.get(self._pair_key(a, b))
+        if seen is None:
+            return None
+        if time.monotonic() - seen[2] > self.cfg.pair_ping_days * DAY:
+            mem.pop(self._pair_key(a, b), None)
+            return None
+        return seen[0], seen[1]
+
+    def _note_nat(self, m, views, preds):
+        """What the NAT phase learned about each player's NAT, for the path guess of its next pairs: (symmetric, its
+        next ports predictable). Two symmetric NATs meet only through a relay unless both are predictable
+        (_maybe_punch)."""
+        for side, p in enumerate(m.players):
+            p.nat_seen = (bool(views[side][0]), bool(preds[side]))
+
+    def _guess_path(self, a, b):
+        """The path two players will most likely get: "direct" / "lan" / "relay", or None (not known: the direct path
+        is tried first, as always)."""
+        if self.cfg.force_relay:
+            return "relay"
+        seen = self._pair_measured(a, b)
+        if seen is not None:
+            return seen[1]
+        na, nb = a.nat_seen, b.nat_seen
+        if na and nb and na[0] and nb[0] and not (na[1] and nb[1]):
+            return "relay"
+        return None
+
+    def _ping_info(self, a, b, est=None):
+        """The `ping` a player sees before a match is accepted (match_found, challenged, invited): {ms, kind
+        "estimate" | "measured" (these two played in the last T5L_PAIR_PING_DAYS), known, path (only when guessed)}."""
+        est, known, via = est if est is not None else self._est_ping(a, b)
+        ping = {"ms": round(est), "kind": "measured" if via == "measured" else "estimate", "known": known}
+        path = self._guess_path(a, b)
+        if path:
+            ping["path"] = path
+        return ping
+
+    @staticmethod
+    def _ping_seen_by(ping, blind):
+        """A blind ready check must not tell that the hidden opponent is somebody this player has played before."""
+        return dict(ping, kind="estimate") if blind and ping.get("kind") == "measured" else ping
+
+    def _input_delay(self, m):
+        """match_start's `input_delay` (T5_RB_NET_DELAY on both PCs): a ranked match's fixed value; above a T5L_PING_DELAYS
+        threshold at least that many frames (1.1.5: rollback jumps less on a far or relayed connection), never above
+        the session's lockstep delay; otherwise None (each player's own setting)."""
+        base = self.cfg.ranked_input_delay if m.ranked and self.cfg.ranked_input_delay >= 0 else None
+        floor = _ping_delay_floor(self.cfg.ping_delays, m.rtt)
+        if floor is None:
+            return base
+        if isinstance(m.delay, int) and m.delay > 0:
+            floor = min(floor, m.delay)
+        return max(base or 0, floor)
+
+    def _log_ping_delay(self, m):
+        if _ping_delay_floor(self.cfg.ping_delays, m.rtt) is None:
+            return
+        self._count("ping_delay_raised")
+        log.info("match %s: rtt %.0f ms, rollback input delay %s for both (T5L_PING_DELAYS)", m.id, m.rtt,
+                 self._input_delay(m))
+
     async def _tick_queue(self):
         while True:
             await asyncio.sleep(0.5)
@@ -1656,17 +1789,21 @@ class LobbyServer(SpectateMixin, RoomsMixin, MatchRulesMixin):
             self.recent.pop(prev.id, None)
             raise LobbyError(proto.E_BUSY, "your opponent is no longer available")
         prev.rematch = getattr(prev, "rematch", [None, None])
-        prev.rematch[side] = {"keep": bool(msg.get("keep"))}
+        prev.rematch[side] = {"keep": bool(msg.get("keep")), "swap": self._rematch_swap(prev, msg)}
         if prev.rematch[1 - side] is None:
             other.send({"t": "rematch", "match": prev.id, "state": "offered", "from": p.brief(),
-                        "timeout": self.cfg.rematch_window})
+                        "timeout": self.cfg.rematch_window, **({"swap": True} if prev.rematch[side]["swap"] else {})})
             return {"t": "rematch", "match": prev.id, "state": "waiting"}
         if not other.online or other.match is not None or other.status not in ("idle", "room"):
             self.recent.pop(prev.id, None)
             raise LobbyError(proto.E_BUSY, "your opponent is no longer available")
         self.recent.pop(prev.id, None)
-        keep = all(r["keep"] for r in prev.rematch) and prev.path is not None and not self._direct_again(prev)
-        m = self.create_match(prev.players[0], prev.players[1], ranked=prev.ranked, origin="rematch",
+        # (sides swapped: a new netplay session -- a running game keeps its slot for the whole session)
+        swap = self._rematch_swapped(prev)
+        keep = (all(r["keep"] for r in prev.rematch) and prev.path is not None and not self._direct_again(prev)
+                and not swap)
+        host, join = (prev.players[1], prev.players[0]) if swap else (prev.players[0], prev.players[1])
+        m = self.create_match(host, join, ranked=prev.ranked, origin="rematch",
                               room=prev.room, rematch_of=prev, keep=keep)
         r = prev.room
         if r is not None and r.id in self.rooms and r.match is None and m.state != "cancelled":
@@ -1698,8 +1835,10 @@ class LobbyServer(SpectateMixin, RoomsMixin, MatchRulesMixin):
         c = Challenge(p, q)
         self.challenges[c.id] = c
         c.timer = asyncio.get_running_loop().call_later(30.0, self._end_challenge, c, "expired")
-        q.send({"t": "challenged", "challenge": c.id, "from": p.brief()})
-        return {"t": "challenge", "challenge": c.id}
+        ping = self._ping_info(p, q)               # (1.1.5: the ping and the likely path before an answer)
+        q.send({"t": "challenged", "challenge": c.id, "from": p.brief(), "ping": ping,
+                "wish": self._casual_wish(p)})             # (1.1.5: the challenger's side and stage wishes, casual.py)
+        return {"t": "challenge", "challenge": c.id, "ping": ping}
 
     async def h_challenge_reply(self, conn, msg):
         p = conn.player
@@ -1722,7 +1861,7 @@ class LobbyServer(SpectateMixin, RoomsMixin, MatchRulesMixin):
         self._abandon_set(p)
         self._leave_queue(src)
         self._leave_queue(p)
-        self.create_match(src, p, ranked=False, origin="challenge")
+        self.create_match(*self._casual_sides(src, p), ranked=False, origin="challenge")
 
     async def h_challenge_cancel(self, conn, msg):
         c = self.challenges.get(msg.get("challenge"))
@@ -1773,7 +1912,7 @@ class LobbyServer(SpectateMixin, RoomsMixin, MatchRulesMixin):
         skip_ready = origin in ("challenge", "rematch", "set", "invite", "tournament")
         est, known, via = self._est_ping(host, join)
         # (`via` stays on this server: which relay the estimate went through would hint where a blind opponent lives)
-        ping = {"ms": round(est), "kind": "estimate", "known": known}
+        ping = self._ping_info(host, join, (est, known, via))
         for side, p in enumerate(m.players):
             p.match = m
             p.status = "match"
@@ -1783,7 +1922,8 @@ class LobbyServer(SpectateMixin, RoomsMixin, MatchRulesMixin):
                              and "blind_ready" in getattr(p.conn, "caps", ()))
             found = {"t": "match_found", "match": m.id, "ranked": ranked, "origin": origin,
                      "you": p.brief(), "ready_check": not skip_ready, "ready_timeout": self.cfg.ready_timeout,
-                     "rematch_of": m.rematch_of, "keep": keep, "ping": ping, "set": m.set.info()}
+                     "rematch_of": m.rematch_of, "keep": keep, "ping": self._ping_seen_by(ping, m.blind[side]),
+                     "set": m.set.info()}
             if m.blind[side]:
                 found.update(blind=True, opponent=None)
             else:
@@ -2089,6 +2229,7 @@ class LobbyServer(SpectateMixin, RoomsMixin, MatchRulesMixin):
         preds = [self._predicted(m, i) for i in (0, 1)]
         new = ["nat2" in getattr(p.conn, "caps", ()) for p in m.players]
         both_sym = views[0][0] and views[1][0]
+        self._note_nat(m, views, preds)
         if self.cfg.force_relay or (both_sym and not (preds[0] and preds[1])):
             self._start_relay(m, "forced" if self.cfg.force_relay else "both NATs symmetric")
             return
@@ -2416,6 +2557,8 @@ class LobbyServer(SpectateMixin, RoomsMixin, MatchRulesMixin):
             if m.upgraded is None:
                 self._count("relay_upgrades")
             m.upgraded = rtt
+            if rtt > 0:
+                self._remember_pair(m, "direct", rtt)      # (their next match: the direct path, most likely)
         if path == "direct":
             log.info("match %s: side %d left the relay for the direct path (%.0f ms)", m.id, m.side(p), m.upgraded)
         else:
@@ -2476,13 +2619,15 @@ class LobbyServer(SpectateMixin, RoomsMixin, MatchRulesMixin):
         m.rtt = max(r["rtt"] for r in m.results)
         m.jitter = max(r["jitter"] for r in m.results)
         m.delay = proto.suggest_delay(m.rtt, m.jitter)
+        self._remember_pair(m)
         m.started = time.time()
         if m.set is not None and not again:
             m.set.games += 1
         seed = int.from_bytes(m.tag[:4], "big")
         m.pick = self._pick_seconds(m)
         m.chars = list(self.table.resolve(m.picks[0], m.picks[1], fighters.RANDOM, seed)[:2])
-        m.stage = self.table.resolve(m.picks[0], m.picks[1], fighters.RANDOM, seed, old_stages=self._old_stages(m))[2]
+        m.stage = self.table.resolve(m.picks[0], m.picks[1], self._casual_stage(m, seed), seed,
+                                     old_stages=self._old_stages(m))[2]
         for side, p in enumerate(m.players):
             p.status = "playing"
             self._send_match_start(m, side)
@@ -2498,6 +2643,7 @@ class LobbyServer(SpectateMixin, RoomsMixin, MatchRulesMixin):
         self.note("match_start", match=m.id, path=path, rtt=m.rtt, delay=m.delay, **({"fallback": True} if again else {}))
         log.info("match %s starts: %s, rtt %.1f ms, delay %d, %s vs %s on %s", m.id, path, m.rtt, m.delay,
                  m.chars[0], m.chars[1], m.stage)
+        self._log_ping_delay(m)
 
     def _send_match_start(self, m, side):
         p = m.players[side]
@@ -2508,8 +2654,9 @@ class LobbyServer(SpectateMixin, RoomsMixin, MatchRulesMixin):
                 # a regional relay: where it is (only clients with the "relays" cap get one)
                 **({"relay": m.relay_info} if m.path == "relay" and m.relay_info else {}),
                 "rtt_ms": round(m.rtt, 2), "jitter_ms": round(m.jitter, 2), "delay": m.delay,
-                # rollback input delay: fixed for ranked (T5_RB_NET_DELAY on both PCs), else each player's setting
-                "input_delay": self.cfg.ranked_input_delay if m.ranked and self.cfg.ranked_input_delay >= 0 else None,
+                # rollback input delay: fixed for ranked (T5_RB_NET_DELAY on both PCs), else each player's setting;
+                # above T5L_PING_DELAYS' thresholds at least that much for both (_input_delay)
+                "input_delay": self._input_delay(m),
                 "rounds": self.cfg.rounds, "ranked": m.ranked, "build": m.build_id,
                 "opponent": m.players[1 - side].brief(), "seed": int.from_bytes(m.tag[:4], "big"),
                 "key": m.key,                          # T5_NET_KEY (the tag above travels in UDP punches)
@@ -2522,6 +2669,7 @@ class LobbyServer(SpectateMixin, RoomsMixin, MatchRulesMixin):
                 # spectating: the live stream's id (the session's first match) -- the game writes it to a file
                 **({"stream": m.stream_id} if self._can(p, "spectate") else {}),
                 "min_seconds": self.cfg.min_match_seconds,
+                **self._casual_start_info(m),          # casual by choice: the launcher offers Swap sides
                 "set": m.set.info() if m.set is not None else None})
 
     def _old_stages(self, m):
@@ -3452,7 +3600,9 @@ class LobbyServer(SpectateMixin, RoomsMixin, MatchRulesMixin):
         inv = Invite(p, q, kind, room)
         self.invites[inv.id] = inv
         inv.timer = asyncio.get_running_loop().call_later(self.cfg.invite_seconds, self._end_invite, inv, "expired")
-        ev = {"t": "invited", "invite": inv.id, "from": p.brief(), "kind": kind, "expires": self.cfg.invite_seconds}
+        ev = {"t": "invited", "invite": inv.id, "from": p.brief(), "kind": kind, "expires": self.cfg.invite_seconds,
+              "ping": self._ping_info(p, q),         # (1.1.5: to the inviter; in a room it may be somebody else)
+              **({"wish": self._casual_wish(p)} if kind == "casual" else {})}     # (1.1.5: casual.py)
         if room is not None:
             # (a private room: the invite is the key -- the friend joins without the password; no secret is sent)
             ev["room"] = {"id": room.id, "name": room.name, "ranked": room.ranked, "private": room.private,
@@ -3496,7 +3646,7 @@ class LobbyServer(SpectateMixin, RoomsMixin, MatchRulesMixin):
             self._leave_queue(src)
             self._leave_queue(p)
             self._count("invites_accepted")
-            self.create_match(src, p, ranked=False, origin="invite")
+            self.create_match(*self._casual_sides(src, p), ranked=False, origin="invite")
             return None
         if r.ranked:
             self._check_speed(p)

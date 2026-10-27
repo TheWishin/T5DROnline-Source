@@ -95,6 +95,12 @@ class Config:
                                     # (when both clients announce "old_stages"; docs/RANKED.md "Characters and stages")
     ranked_input_delay: int = 2     # T5L_RANKED_INPUT_DELAY: rollback input delay of ranked matches, frames (fixed: the
                                     # players' own setting -- auto / 0 / 1 / 2 -- applies to other matches; -1 = theirs)
+    # 1.1.5 smoother high-ping matches (docs/NETPLAY.md "Input delay"): at least this rollback input delay when the
+    # measured round trip is above a threshold, "ms:frames" pairs ("150:3,250:4": 3 frames above 150 ms, 4 above
+    # 250 ms); both PCs get it in match_start (ranked too: the higher of the two). "" = off
+    ping_delays: str = "150:3,250:4"  # T5L_PING_DELAYS
+    pair_ping_days: float = 7.0     # T5L_PAIR_PING_DAYS: the measured ping of two players who played counts this long for
+                                    # their next estimate (matchmaking, the ping shown before a match; memory only)
     # community tournaments (docs/TOURNAMENTS.md)
     tour_organizers: str = "any"    # T5L_TOUR_ORGANIZERS: who may create one: any (every account), none, or a comma list
                                     # of account names

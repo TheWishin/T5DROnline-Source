@@ -1658,6 +1658,18 @@ def _rr_rematch(ctx, a, b, label, keep, path, real):
     return mid
 
 
+def _session_let_go(p):
+    """The player's game took the "idle" its launcher sent when the set ended (1.1.5), or has no session to let go."""
+    drv = p.tab.driver
+    if drv is None or drv.mode != "persistent" or drv.ctl is None or not drv.game_running():
+        return True
+    st = drv.ctl.state() or {}
+    try:
+        return bool(drv.released) and int(st.get("seq") or 0) >= drv.ctl.seq
+    except (TypeError, ValueError):
+        return False
+
+
 def _relay_rematch(ctx, a, b, real):
     # 1. the production case: the direct path is found, a game blocked completely hears nothing, the relay takes over
     ctx.shaper.set(0, 0, 0, on=True, ip="127.0.0.2")
@@ -1677,12 +1689,15 @@ def _relay_rematch(ctx, a, b, real):
     _rr_play(ctx, a, b, mid, "rematch 2 (same session, direct)", real)
     for p in (a, b):
         leave(ctx, p)
+    # (seen here with 1.1.4: after a rematch inside the session, with no next match, both persistent games kept the
+    # session; the shaper's proxy closing below cut the way between them, they stood at the same frame waiting for each
+    # other's input until the 20 s peer_timeout, and a match found meanwhile was not taken by one game in the control
+    # channel's 10 s: its launcher went to process mode. 1.1.5: the set is over, so each launcher lets its game's
+    # session go at once -- MatchDriver._set_over -- while the way is still open.)
+    ctx.wait(lambda: _session_let_go(a) and _session_let_go(b), 30, "both games let the finished session go")
     ctx.shaper.set(0, 0, 0, on=False)
     ctx.wait(lambda: a.action_on("quick") and b.action_on("quick"), 60, "free for the next pairing")
-    # (1.1.4 game, seen here: after a rematch inside the session, with no next match, both persistent games stopped at
-    # the same frame waiting for each other's input until the 20 s peer_timeout; a match found meanwhile was not taken
-    # by one game in the control channel's 10 s, and its launcher went to process mode. Not this change: wait it out.)
-    ctx.sleep(25.0 if real else 1.0)
+    ctx.sleep(1.0)
     # 2. no direct path at all (a punch blocked on both launchers): one more try, then the relay for the session
     for p in (a, b):
         p.client.block_direct = True

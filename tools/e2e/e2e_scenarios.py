@@ -2891,11 +2891,15 @@ def settings_persist(ctx):
     stub_server(ctx)
     path = os.path.join(ctx.dir, "launcher.json")
     s = core.Settings(path)
-    keys = [k for k in ("display", "internal_res", "render_scale", "input_delay", "mute", "nickname", "extra_env",
-                        "language") if k in core.DEFAULTS]
+    keys = [k for k in ("display", "internal_res", "internal_res_set", "render_scale", "input_delay", "mute",
+                        "nickname", "extra_env", "language") if k in core.DEFAULTS]
     s.update(display="borderless", input_delay="2", mute=True, nickname="E2E Sue", extra_env="FOO_E2E=1")
     if "internal_res" in core.DEFAULTS:
         s["internal_res"] = "1440p"
+        if "internal_res_set" in core.DEFAULTS:
+            # as the Settings tab marks a click: since igpu-114 an unmarked step is not the player's choice (the
+            # game gets Auto on integrated graphics, Native elsewhere), so 1440p never reached the game here
+            s["internal_res_set"] = True
     else:
         s["render_scale"] = "0.75"
     if "language" in core.DEFAULTS:

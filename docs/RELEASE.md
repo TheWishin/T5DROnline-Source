@@ -320,7 +320,8 @@ Python/tkinter (in the bundled Python), started by `T5DR Online.exe`.
 - **Updates** (`launcher/updater.py`): "Check for updates" in the header and a check at start (once an
   hour) against the public repository's latest published release; the offer shows version, notes and
   size; the zip is downloaded only from this repository's GitHub release files, checked against
-  `SHA256SUMS`, unpacked next to the folder, and swapped in by a copy of the bundled Python after the
+  `SHA256SUMS` and (from 1.1.5 on) its Ed25519 signature `SHA256SUMS.sig` by the project's release key
+  (docs/RELEASING.md "Release signature"; unsigned or wrongly signed: refused, nothing changed), unpacked next to the folder, and swapped in by a copy of the bundled Python after the
   launcher closed (no script files), keeping `native\` and the settings; any failure puts the old
   files back. Never while the game, a build or an online match runs. After an update that changes the
   code ID the Play tab's button becomes BUILD GAME ("Build the game once").

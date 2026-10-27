@@ -367,13 +367,31 @@ class Prepare(unittest.TestCase):
         self.install = os.path.join(self.tmp.name, "T5DR-Online-1.0.0")
         make_install(self.install)
         self.before = tree(self.install)
+        # The shipped launcher has the owner's key, so every release here is signed (with a throwaway key
+        # of this test): the checks below must be reached, not stopped early by "not signed".
+        self.seed = os.urandom(32)
+        p = mock.patch.object(updater, "RELEASE_PUBLIC_KEYS", (release_sig.public_key(self.seed).hex(),))
+        p.start()
+        self.addCleanup(p.stop)
 
     def tearDown(self):
         self.tmp.cleanup()
 
     def prepare(self, data, files):
+        if not any(a["name"] == "SHA256SUMS.sig" for a in data["assets"]):
+            sums_url = data["assets"][0]["browser_download_url"]
+            sig = release_sig.make_sig_file(self.seed, data["tag_name"][1:], files[sums_url]).encode()
+            url = sums_url + ".sig"
+            data["assets"].append({"name": "SHA256SUMS.sig", "size": len(sig), "state": "uploaded",
+                                   "browser_download_url": url})
+            files[url] = sig
         rel = updater.parse_release(data)
-        return updater.prepare_update(rel, self.install, opener=FakeGitHub(files))
+        try:
+            return updater.prepare_update(rel, self.install, opener=FakeGitHub(files))
+        except updater.UpdateError as e:
+            self.assertNotIn("signature", str(e))        # refused for the reason the test is about
+            self.assertNotIn("not signed", str(e))
+            raise
 
     def assert_nothing_changed(self):
         self.assertEqual(tree(self.install), self.before)
@@ -608,6 +626,47 @@ class Signature(unittest.TestCase):
             updater.start_swap({"sroot": self.tmp.name, "new": self.tmp.name}, "1.0.0", "1.0.1", root=self.install,
                                wait_pid=0, python="py.exe")
         self.assertEqual(spawn.call_args[0][0][:3], ["py.exe", "-I", "-B"])
+
+
+class ShippedKey(unittest.TestCase):
+    """The key list as shipped (no mock): the owner's public key is in, so an update that is not signed
+    by it is refused and nothing changes. (Only the public key is used; the private key is not in the
+    repository, so a release signed by the owner is checked by hand: docs/RELEASING.md, step 6.)"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.install = os.path.join(self.tmp.name, "T5DR-Online-1.0.0")
+        make_install(self.install)
+        self.before = tree(self.install)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def refused(self, data, files, why):
+        with self.assertRaisesRegex(updater.UpdateError, why):
+            updater.prepare_update(updater.parse_release(data), self.install, opener=FakeGitHub(files))
+        self.assertEqual(tree(self.install), self.before)
+        for d in updater.stage_roots(self.install):
+            self.assertFalse(os.path.exists(d), d)
+
+    def test_a_key_is_shipped(self):
+        self.assertGreaterEqual(len(updater.RELEASE_PUBLIC_KEYS), 1)
+        for k in updater.RELEASE_PUBLIC_KEYS:
+            release_sig.parse_public_key(k)
+
+    def test_unsigned_release_is_refused(self):
+        self.refused(*release("1.0.1", make_zip("1.0.1")), "not signed")
+
+    def test_release_signed_by_another_key_is_refused(self):
+        self.refused(*release("1.0.1", make_zip("1.0.1"), sig=os.urandom(32)), "does not know")
+
+    def test_wrong_signature_under_the_owners_key_id_is_refused(self):
+        data, files = release("1.0.1", make_zip("1.0.1"), sig=os.urandom(32))
+        url = data["assets"][-1]["browser_download_url"]
+        doc = json.loads(files[url])
+        doc["key"] = release_sig.key_id(bytes.fromhex(updater.RELEASE_PUBLIC_KEYS[0]))
+        files[url] = json.dumps(doc).encode()
+        self.refused(data, files, "does not match")
 
 
 # --------------------------------------------------------------------------- the swap

@@ -45,6 +45,12 @@ they work with 1.1.4 launchers as soon as the server is updated.
   later match. The launcher now ends the game's connection as soon as the set is over, and gives a game that is still
   waiting for a lost opponent the time it needs before it counts as not answering.
 
+### Security
+- **Updates are signed.** The launcher now installs an update only when the release's checksums carry a valid
+  signature by the project's release key (`SHA256SUMS.sig`, made by the release workflow). A release somebody else
+  put on GitHub (a stolen token or login) is refused and nothing changes. Launchers up to 1.1.4 have no key and
+  update to 1.1.5 as before.
+
 ### Documentation
 - **Minimum requirements** at the top of the README's Requirements: Windows 10/11, a 4-core CPU from about 2014 on
   (Intel Core i5/i7 4th gen, AMD Ryzen or newer; AVX2 recommended), a DirectX 12-capable graphics card, 8 GB RAM.

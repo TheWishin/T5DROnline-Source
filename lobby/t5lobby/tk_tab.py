@@ -253,6 +253,7 @@ class OnlineTab:
         self._relogin_n = 0
         self._login_busy = False         # a login is on its way (no automatic one beside it)
         self._kicked = False             # removed by the server (ban, kick): no automatic login after that
+        self._pending_search = None      # "ranked" / "quick": the launcher's --search, started after the saved login
         self.ask_string = theme.ask_string           # dialogs (tests replace them)
         self.ask_yes_no = theme.ask_yes_no
         self.new_window = tk.Toplevel                # the tab's own windows (tests make hidden ones)
@@ -771,9 +772,11 @@ class OnlineTab:
             self.on_char()
             if client.recovery_codes:
                 self.show_codes(client.recovery_codes, first=True)
+            self._run_pending_search()
 
         def failed():
             self._login_busy = False
+            self._pending_search = None             # (--search: the player sees why in the status line)
             # Only the server's "no" ends the saved login. A server that cannot be reached (restarting for an
             # update, an outage, no internet) leaves it: it works again once the server is back.
             if mode == "session" and refused.get("auth"):
@@ -839,6 +842,44 @@ class OnlineTab:
         if s and self.app.game_state().get("ok"):
             self.name_var.set(s.get("name", self.name_var.get()))
             self.do_login("session", session=s["token"])
+
+    # The launcher's command line --search ranked / --search casual (a desktop shortcut, Steam's launch options;
+    # casual = the Quick match queue): the Online tab opens, logs in with the saved login and starts searching.
+    SEARCH_MODES = {"ranked": "ranked", "casual": "quick", "quick": "quick"}
+
+    def search_on_start(self, mode):
+        """Remember a search to start once the saved login is in (try_saved_login logs in when the tab is shown).
+        Without a saved login for this server, or a game that is not built, only a hint. -> True when the search
+        will start by itself."""
+        mode = self.SEARCH_MODES.get(str(mode or "").strip().lower())
+        if not mode:
+            return False
+        if self.client is not None and self.client.me:
+            self._pending_search = mode
+            self._run_pending_search()
+            return True
+        if not self.app.game_state().get("ok"):
+            self.status(t("Build the game first (Build tab); then the search starts by itself next time."),
+                        error=True)
+            return False
+        if self._saved_session() is None:
+            self.status(t("Log in to start the search. Tick \"Remember me\" when you log in with your account: next "
+                          "time --search logs in and starts searching by itself."))
+            return False
+        self._pending_search = mode
+        return True
+
+    def _run_pending_search(self):
+        mode, self._pending_search = self._pending_search, None
+        me = self.client.me if self.client is not None and self.client.connected else None
+        if not mode or not me:
+            return
+        if mode == "ranked" and me.get("guest", True):
+            self.status(t("Ranked matches need an account: log in with your name and password."), error=True)
+            return
+        if me.get("status") != "idle":
+            return                                  # already searching, in a room or a match
+        self.do_queue(mode)
 
     def _make_driver(self):
         if self.driver is not None:          # a game left from before a lost connection

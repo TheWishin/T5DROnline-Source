@@ -917,6 +917,53 @@ MESSAGES = {
     "{supported}.":
         "Cette copie est une autre version du jeu : « {title} » version {version}, content ID {id} (SHA-1 du "
         "programme {sha}...). Le portage ne prend en charge que {game}, content ID {supported}.",
+    # 1.1.5: the package's version, read before the build (tools/build_game.py, launcher/core.py)
+    "This package is version {version} of the game (program content ID {id}). The port supports only version "
+    "{supported}: {game}, content ID {cid}, {size} bytes. This version cannot be used, whatever the license "
+    "(.rap).":
+        "Ce paquet est la version {version} du jeu (content ID du programme {id}). Le port ne prend en charge "
+        "que la version {supported} : {game}, content ID {cid}, {size} octets. Cette version est inutilisable, "
+        "quelle que soit la licence (.rap).",
+    "{id}  ({size} bytes) -- version {version} of the game. The port supports only version {supported}; the "
+    "build will refuse this package.":
+        "{id}  ({size} octets) -- version {version} du jeu. Le port ne prend en charge que la version "
+        "{supported} ; la compilation refusera ce paquet.",
+    "{id}  ({size} bytes) -- its program has content ID {program}, not the supported one ({supported}). The "
+    "build will most likely refuse it.":
+        "{id}  ({size} octets) -- son programme a le content ID {program}, pas celui pris en charge "
+        "({supported}). La compilation le refusera très probablement.",
+    # 1.1.5: the game's own message boxes (launcher/core.py dialog_info, dialog_message)
+    "The game shows: \"{text}\" {advice}": "Le jeu affiche : « {text} » {advice}",
+    "Your built game data is probably damaged. Open the Build tab, tick \"Redo every step\" and press BUILD "
+    "GAME. If the message comes back, download the package again: it must be exactly {size} bytes.":
+        "Les données du jeu compilé sont probablement abîmées. Ouvre l'onglet Compiler, coche « Refaire toutes "
+        "les étapes » et appuie sur BUILD GAME. Si le message revient, télécharge à nouveau le paquet : il doit "
+        "faire exactement {size} octets.",
+    "The game could not write its save, so progress may be lost. Check that the disk is not full and that no "
+    "antivirus blocks the folder native\\gamedata.":
+        "Le jeu n'a pas pu écrire sa sauvegarde : la progression peut être perdue. Vérifie que le disque n'est "
+        "pas plein et qu'aucun antivirus ne bloque le dossier native\\gamedata.",
+    "The game could not read its save. If it happens every time, click Report a problem.":
+        "Le jeu n'a pas pu lire sa sauvegarde. Si cela arrive à chaque fois, clique sur « Signaler un "
+        "problème... ».",
+    "If the game does not go on, click Report a problem.":
+        "Si le jeu ne continue pas, clique sur « Signaler un problème... ».",
+    # 1.1.5: the launcher's --search ranked|casual (lobby/t5lobby/tk_tab.py search_on_start)
+    "Build the game first (Build tab); then the search starts by itself next time.":
+        "Compile d'abord le jeu (onglet Compiler) ; la prochaine fois, la recherche démarrera toute seule.",
+    "Log in to start the search. Tick \"Remember me\" when you log in with your account: next time --search "
+    "logs in and starts searching by itself.":
+        "Connecte-toi pour lancer la recherche. Coche « Se souvenir de moi » en te connectant avec ton compte : "
+        "la prochaine fois, --search te connecte et lance la recherche tout seul.",
+    "Ranked matches need an account: log in with your name and password.":
+        "Les matchs Ranked demandent un compte : connecte-toi avec ton nom et ton mot de passe.",
+    # 1.1.5: a build step that prints nothing for long (launcher/core.py step_quiet_hint)
+    "The step \"{title}\" has printed nothing for {minutes} minutes. On a slow or busy PC it may still be "
+    "working. If nothing changes, press Cancel and then BUILD GAME again; build.log has the details.":
+        "L'étape « {title} » n'a rien affiché depuis {minutes} minutes. Sur un PC lent ou très occupé, elle peut "
+        "encore travailler. Si rien ne change, clique sur Annuler puis à nouveau sur BUILD GAME ; build.log "
+        "contient les détails.",
+    "Last program started: {tool}.": "Dernier programme lancé : {tool}.",
     "The license (.rap) does not belong to this package. Use the .rap whose name matches "
     "the package's content ID ({id}).":
         "La licence (.rap) ne correspond pas à ce paquet. Utilise le .rap dont le nom correspond au content ID du "

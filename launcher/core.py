@@ -278,6 +278,20 @@ def describe_pkg(path):
     size = os.path.getsize(path)
     if cid is None:
         return False, "error", t("This is not a PS3 package (.pkg).")
+    # What is inside (PARAM.SFO and the program's header, read from the package in well under a second): a v01.01
+    # package names itself like the supported one would, and the build used to blame the .rap for it.
+    facts = _package_facts(path)
+    if facts and facts["title_id"] == build_game.TITLE_ID:
+        ver, prog = facts["version"], facts["program"]
+        ver = build_game.OTHER_VERSIONS.get(prog, ver) if ver in ("?", build_game.TITLE_VERSION) else ver
+        if ver not in ("?", build_game.TITLE_VERSION):
+            return False, "error", t("{id}  ({size} bytes) -- version {version} of the game. The port supports only "
+                                     "version {supported}; the build will refuse this package.", id=cid,
+                                     size=f"{size:,}", version=ver, supported=build_game.TITLE_VERSION)
+        if prog and prog not in build_game.CONTENT_IDS:
+            return True, "warn", t("{id}  ({size} bytes) -- its program has content ID {program}, not the supported "
+                                   "one ({supported}). The build will most likely refuse it.", id=cid,
+                                   size=f"{size:,}", program=prog, supported=build_game.CONTENT_ID)
     if cid in build_game.CONTENT_IDS:
         return True, "ok", t("{id}  ({size} bytes) -- the supported version", id=cid, size=f"{size:,}")
     if build_game.TITLE_ID in cid:
@@ -286,6 +300,26 @@ def describe_pkg(path):
                                supported=build_game.CONTENT_ID)
     return True, "warn", t("{id}  ({size} bytes) -- not Tekken 5 DR Online ({title_id}).", id=cid, size=f"{size:,}",
                            title_id=build_game.TITLE_ID)
+
+
+_FACTS = {}
+
+
+def _package_facts(path):
+    """build_game.package_facts(path), once per file (path, size, time): the Build tab asks on every change."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    if cloud_only(path):
+        return None                         # (reading inside it would download 600 MB)
+    key = (os.path.abspath(path), st.st_size, st.st_mtime)
+    if key not in _FACTS:
+        try:
+            _FACTS[key] = build_game.package_facts(path)
+        except Exception:      # noqa: BLE001 -- a line under the file chooser must never stop the launcher
+            _FACTS[key] = None
+    return _FACTS[key]
 
 
 def describe_rap(path, pkg=None):
@@ -507,6 +541,12 @@ RE_FUNCS = re.compile(r"(\d+)/(\d+) functions")
 # The lift step printed nothing for this long: the Build tab says so. The lifter itself prints at least every ~30 s
 # while it works (ps3recomp patch 0048: "... still lifting: 3 chunks left, elapsed 1.5m").
 LIFT_QUIET_S = 180
+# Any step that printed nothing for this long (seconds) gets a hint naming it and the program it started last (GitHub
+# #27: a BUILD GAME seemed stuck all night). Generous: the compile step prints when a file is done, and the slowest
+# file takes 1-2 minutes on a slow PC (tools/build_game_dll.py); the unpack prints every 64 MB (patch 0074).
+QUIET_S = {"deps": 300, "keys": 120, "decrypt": 120, "unpack": 180, "vfs": 120, "lift": LIFT_QUIET_S, "spu": 300,
+           "compile": 600}
+RE_TOKEN = re.compile(r'"[^"]*"|\S+')
 
 
 def build_line_events(step, line):
@@ -541,6 +581,54 @@ def lift_quiet_hint(step, quiet_s):
              "has the details.", minutes=int(quiet_s // 60))
 
 
+def started_tool(line):
+    """The program a "  > <command>" line of build_game.py starts (the script for a Python tool), else None."""
+    if not line.startswith("  > "):
+        return None
+    words = [w.strip('"') for w in RE_TOKEN.findall(line[4:])]
+    for w in words:
+        if w.lower().endswith((".py", ".pyw")):
+            return os.path.basename(w)
+    return os.path.basename(words[0]) if words else None
+
+
+def step_title(step):
+    """t(STEP_TITLES[step]) with the texts written out (tests/test_i18n.py keeps t(variable) out of this file)."""
+    return {"deps": t("Recompiler"), "keys": t("Key data"), "decrypt": t("Check & decrypt"), "unpack": t("Unpack"),
+            "vfs": t("Game files"), "lift": t("Translate code"), "spu": t("Sound core"),
+            "compile": t("Compile")}.get(step, step)
+
+
+def step_quiet_hint(step, quiet_s, tool=None):
+    """The Build tab's hint once a step has printed nothing for QUIET_S[step] seconds, else None. The translation
+    step keeps its own words (lift_quiet_hint)."""
+    if step == "lift":
+        hint = lift_quiet_hint(step, quiet_s)
+    elif step in QUIET_S and quiet_s >= QUIET_S[step]:
+        hint = t("The step \"{title}\" has printed nothing for {minutes} minutes. On a slow or busy PC it may still be "
+                 "working. If nothing changes, press Cancel and then BUILD GAME again; build.log has the details.",
+                 title=step_title(step), minutes=int(quiet_s // 60))
+    else:
+        return None
+    if hint and tool:
+        hint += " " + t("Last program started: {tool}.", tool=tool)
+    return hint
+
+
+ES_CONTINUOUS, ES_SYSTEM_REQUIRED = 0x80000000, 0x00000001
+
+
+def keep_awake(on):
+    """While BUILD GAME runs, Windows does not go to sleep (the screen may still turn off): a build left alone on a PC
+    that sleeps after 15-30 minutes stopped there until morning. Per thread: the build's reading thread asks."""
+    if not IS_WIN:
+        return
+    try:
+        ctypes.windll.kernel32.SetThreadExecutionState(ES_CONTINUOUS | (ES_SYSTEM_REQUIRED if on else 0))
+    except (AttributeError, OSError):
+        pass
+
+
 class BuildRun:
     """Runs tools/build_game.py in the background; events go to `self.events` (a Queue):
        ('line', text) ('step', name) ('skip', name) ('sub', fraction) ('error', text) ('end', code)."""
@@ -564,6 +652,7 @@ class BuildRun:
             cmd += ["--steps"] + list(steps)
         self.cmd = cmd
         self.step = None                        # the step build_game.py is in
+        self.tool = None                        # the program it started last ("  > ..." lines)
         self.last_output = time.monotonic()     # when it last printed a line
         self._quiet_noted = False               # the quiet hint went to the log view in this quiet stretch
         self._log = None                        # build.log while the build runs
@@ -585,6 +674,13 @@ class BuildRun:
         threading.Thread(target=self._pump, daemon=True).start()
 
     def _pump(self):
+        keep_awake(True)
+        try:
+            self._read()
+        finally:
+            keep_awake(False)
+
+    def _read(self):
         with open(self.log_path, "w", encoding="utf-8", errors="replace") as log:
             with self._log_lock:
                 log.write(f"# T5DR Online build log, {datetime.datetime.now():%Y-%m-%d %H:%M:%S}, "
@@ -597,7 +693,11 @@ class BuildRun:
                     log.flush()
                     self.last_output = time.monotonic()
                     self._quiet_noted = False
+                    step = self.step
                     self.step, events = build_line_events(self.step, line)
+                    if self.step != step:
+                        self.tool = None
+                    self.tool = started_tool(line) or self.tool
                 for ev in events:
                     self.events.put(ev)
             code = self.proc.wait()
@@ -607,14 +707,16 @@ class BuildRun:
         self.events.put(("end", -1 if self.cancelled else code))
 
     def quiet_hint(self, now=None):
-        """lift_quiet_hint() for this build (the Build tab asks on every tick). The first time in a quiet stretch
-        it also goes to the log view and build.log as a "[launcher] ..." line."""
+        """step_quiet_hint() for this build (the Build tab asks on every tick). The first time in a quiet stretch
+        it also goes to the log view, build.log and launcher.log as a "[launcher] ..." line."""
         now = time.monotonic() if now is None else now
         with self._log_lock:
-            hint = lift_quiet_hint(self.step, now - self.last_output)
+            hint = step_quiet_hint(self.step, now - self.last_output, self.tool)
             if hint and not self._quiet_noted:
                 self._quiet_noted = True
                 line = "[launcher] " + hint
+                log(f"build: step {self.step} printed nothing for {int(now - self.last_output)} s"
+                    + (f" ({self.tool})" if self.tool else ""))
                 self.events.put(("line", line))
                 if self._log is not None:
                     try:
@@ -640,8 +742,9 @@ def kill_tree(pid):
 
 # --------------------------------------------------------------------------- game process
 
-def explain_exit(code, lines):
-    """One plain sentence for the Play tab when the game ended on its own; None when it closed normally."""
+def explain_exit(code, lines, dialogs=()):
+    """One plain sentence for the Play tab when the game ended on its own; None when it closed normally. `dialogs`:
+    the game's own message boxes (GameRun.dialogs); one after which the game stops explains the end."""
     text = "\n".join(lines[-80:])
     if code == 12 or "[gpu] device lost" in text:
         return t("The graphics card stopped working for the game (the driver crashed, was reset or updated). "
@@ -663,12 +766,68 @@ def explain_exit(code, lines):
         # character select after a match ends itself; the next match starts a fresh one.
         return t("The game could not get back to character select after the last match and closed itself. "
                  "It starts again for your next match.")
+    fatal = [d for d in dialogs if dialog_info(d)[0]]
+    if fatal:
+        return dialog_message(fatal[-1])
     crashed = "[CRASH]" in text or "[STACKOVERFLOW]" in text
     if code == 0 and not crashed:
         return None
     if crashed:
         return t("The game stopped after a crash (exit code {code}). The game log has the details.", code=code)
     return t("The game stopped (exit code {code}). The game log has the details.", code=code)
+
+
+# The game's own message boxes (cellMsgDialog). The runtime answers them by itself and only prints their text, between
+# a line "[DIALOG] <first line>" and a line of "=" signs; the player saw nothing of it ("The installed game data is
+# corrupted. Ending game." left a silent black screen). The launcher shows each one with what to do.
+DIALOG_START = "[DIALOG] "
+DIALOG_MAX_LINES = 8          # a longer one is cut there (another thread's output in between, a missing end line)
+
+
+class DialogScan:
+    """Feed it the game log line by line; feed() returns the text of a dialog when its last line has come, else None."""
+
+    def __init__(self):
+        self.lines = None
+
+    def feed(self, line):
+        line = line.rstrip("\r\n")
+        if line.startswith(DIALOG_START):
+            done = self.finish()                       # (an unfinished one before it ends here)
+            self.lines = [line[len(DIALOG_START):]]
+            return done
+        if self.lines is None:
+            return None
+        if line.startswith("=====") or line.startswith("[cellMsgDialog]"):
+            return self.finish()
+        self.lines.append(line)
+        return self.finish() if len(self.lines) >= DIALOG_MAX_LINES else None
+
+    def finish(self):
+        text = "\n".join(l.strip() for l in (self.lines or []) if l.strip())
+        self.lines = None
+        return text or None
+
+
+def dialog_info(text):
+    """(fatal: the game stops after it, the sentence for the player) for a dialog the game showed. The texts are the
+    US game's own (English); the ones seen in game logs so far have their own advice."""
+    low = " ".join((text or "").lower().split())
+    if "game data is corrupted" in low:      # "The installed game data is corrupted. Ending game. ..."
+        return True, t("Your built game data is probably damaged. Open the Build tab, tick \"Redo every step\" and "
+                       "press BUILD GAME. If the message comes back, download the package again: it must be exactly "
+                       "{size} bytes.", size=f"{build_game.PKG_SIZE:,}")
+    if "unable to save" in low:              # "Unable to save Play Data. Cancel Play Data save?"
+        return False, t("The game could not write its save, so progress may be lost. Check that the disk is not full "
+                        "and that no antivirus blocks the folder native\\gamedata.")
+    if "unable to load" in low:              # "Unable to load Play Data."
+        return False, t("The game could not read its save. If it happens every time, click Report a problem.")
+    return False, t("If the game does not go on, click Report a problem.")
+
+
+def dialog_message(text):
+    """The Play tab's sentence for a dialog: the game's own words (English, as the game has them) and what to do."""
+    return t("The game shows: \"{text}\" {advice}", text=" ".join((text or "").split()), advice=dialog_info(text)[1])
 
 
 UNLOCK_ENV = ("T5_UNLOCK_STAGES", "T5_UNLOCK_ITEMS", "T5_UNLOCK_JINPACHI")
@@ -748,6 +907,8 @@ class GameRun:
         self.log_path = None
         self.fps = None
         self.last_lines = []
+        self.dialogs = []          # the texts of the game's own message boxes, oldest first (DialogScan; the last 20)
+        self.dialog_count = 0      # how many it showed in all
         self.started = None
 
     def start(self, extra_env=None, monitor_point=None):
@@ -777,6 +938,13 @@ class GameRun:
                 pass
         self.log_path = os.path.join(logs, f"game-{datetime.datetime.now():%Y%m%d-%H%M%S}.log")
         logf = open(self.log_path, "w", encoding="utf-8", errors="replace")
+        wine = run_game.under_wine()
+        if wine:
+            # first line of the game log (and launcher.log): Wine / Proton and the two defaults it gets there
+            note = run_game.wine_note(wine, env)
+            logf.write(note + "\n")
+            logf.flush()
+            log(note)
         si = None
         if IS_WIN and env_over.get("PS3_WINDOW_BACKGROUND"):
             # Also ask for minimized through STARTUPINFO. On its own this does NOT keep the
@@ -804,15 +972,24 @@ class GameRun:
             kill_tree(self.proc.pid)
 
     def _tail(self):
+        scan = DialogScan()
         with open(self.log_path, encoding="utf-8", errors="replace") as f:
             while True:
                 line = f.readline()
                 if not line:
                     if not self.running():
+                        line = scan.finish()           # a dialog the game's end cut short
+                        if line:
+                            self.dialogs = (self.dialogs + [line])[-20:]
+                            self.dialog_count += 1
                         break
                     time.sleep(0.25)
                     continue
                 line = line.rstrip()
+                dialog = scan.feed(line)
+                if dialog:
+                    self.dialogs = (self.dialogs + [dialog])[-20:]
+                    self.dialog_count += 1
                 if line.startswith("[fps]"):
                     try:
                         self.fps = float(line.split()[1])

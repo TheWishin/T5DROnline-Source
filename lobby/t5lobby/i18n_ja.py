@@ -890,6 +890,52 @@ MESSAGES = {
     "{supported}.":
         "このコピーは別バージョンのゲームです：「{title}」バージョン {version}、コンテンツID {id}（プログラム SHA-1 "
         "{sha}...）。この移植版が対応しているのは {game}、コンテンツID {supported} だけです。",
+    # 1.1.5: the package's version, read before the build (tools/build_game.py, launcher/core.py)
+    "This package is version {version} of the game (program content ID {id}). The port supports only version "
+    "{supported}: {game}, content ID {cid}, {size} bytes. This version cannot be used, whatever the license "
+    "(.rap).":
+        "このパッケージはゲームのバージョン {version} です（プログラムのコンテンツID "
+        "{id}）。この移植版が対応しているのはバージョン {supported} だけです：{game}、コンテンツID {cid}、{size} "
+        "バイト。このバージョンは、どのライセンス（.rap）でも使えません。",
+    "{id}  ({size} bytes) -- version {version} of the game. The port supports only version {supported}; the "
+    "build will refuse this package.":
+        "{id}  ({size} バイト) -- ゲームのバージョン {version} です。この移植版はバージョン {supported} "
+        "だけに対応しています。ビルドはこのパッケージを拒否します。",
+    "{id}  ({size} bytes) -- its program has content ID {program}, not the supported one ({supported}). The "
+    "build will most likely refuse it.":
+        "{id}  ({size} バイト) -- このプログラムのコンテンツIDは {program} "
+        "で、対応するもの（{supported}）ではありません。ビルドはほぼ確実に拒否します。",
+    # 1.1.5: the game's own message boxes (launcher/core.py dialog_info, dialog_message)
+    "The game shows: \"{text}\" {advice}": "ゲームのメッセージ：「{text}」 {advice}",
+    "Your built game data is probably damaged. Open the Build tab, tick \"Redo every step\" and press BUILD "
+    "GAME. If the message comes back, download the package again: it must be exactly {size} bytes.":
+        "ビルドしたゲームデータが壊れている可能性があります。ビルドタブを開き、「全ステップをやり直す」にチェック"
+        "を入れて BUILD GAME を押してください。それでもこのメッセージが出る場合は、パッケージをダウンロードし直し"
+        "てください（ちょうど {size} バイトのはずです）。",
+    "The game could not write its save, so progress may be lost. Check that the disk is not full and that no "
+    "antivirus blocks the folder native\\gamedata.":
+        "ゲームがセーブデータを書き込めませんでした。進行状況が失われる可能性があります。ディスクの空き容量と、ウ"
+        "イルス対策ソフトが native\\gamedata フォルダーをブロックしていないか確認してください。",
+    "The game could not read its save. If it happens every time, click Report a problem.":
+        "ゲームがセーブデータを読み込めませんでした。毎回起きる場合は「問題を報告...」をクリックしてください。",
+    "If the game does not go on, click Report a problem.":
+        "ゲームが先に進まない場合は「問題を報告...」をクリックしてください。",
+    # 1.1.5: the launcher's --search ranked|casual (lobby/t5lobby/tk_tab.py search_on_start)
+    "Build the game first (Build tab); then the search starts by itself next time.":
+        "先にゲームをビルドしてください（ビルドタブ）。次回からは検索が自動で始まります。",
+    "Log in to start the search. Tick \"Remember me\" when you log in with your account: next time --search "
+    "logs in and starts searching by itself.":
+        "検索を始めるにはログインしてください。アカウントでログインするときに「ログイン状態を保持」にチェックを入"
+        "れておくと、次回からは --search で自動的にログインして検索が始まります。",
+    "Ranked matches need an account: log in with your name and password.":
+        "Ranked 対戦にはアカウントが必要です。名前とパスワードでログインしてください。",
+    # 1.1.5: a build step that prints nothing for long (launcher/core.py step_quiet_hint)
+    "The step \"{title}\" has printed nothing for {minutes} minutes. On a slow or busy PC it may still be "
+    "working. If nothing changes, press Cancel and then BUILD GAME again; build.log has the details.":
+        "「{title}」ステップが {minutes} 分間何も出力していません。遅いPCや負荷の高いPCではまだ処理中の場合があり"
+        "ます。変化がなければキャンセルを押してからもう一度 BUILD GAME を押してください。詳細は build.log "
+        "にあります。",
+    "Last program started: {tool}.": "最後に起動したプログラム：{tool}",
     "The license (.rap) does not belong to this package. Use the .rap whose name matches "
     "the package's content ID ({id}).":
         "ライセンス（.rap）がこのパッケージのものではありません。名前がパッケージのコンテンツID（{id}）と一致する "

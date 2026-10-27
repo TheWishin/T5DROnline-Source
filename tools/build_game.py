@@ -54,6 +54,9 @@ CONTENT_ID = "UP0700-NPUB30009_00-UPDATE0000010000"
 # The same package (619,430,240 bytes, the same program: ELF_SHA1) also comes from PSN under this content ID,
 # with its own .rap (a player's build, 1.1.3). The build checks the program itself, so both are supported.
 CONTENT_IDS = (CONTENT_ID, "UP0700-NPUB30009_00-0000000000010000")
+# Programs of other versions players had (the content ID in the program's own header -> the version): the build
+# says so instead of blaming the .rap (two players' v01.01 packages, GitHub #20/#21).
+OTHER_VERSIONS = {"UP0700-NPUB30009_00-0000000000000000": "01.01"}
 GAME_NAME = "Tekken 5: Dark Resurrection Online (PS3, US PSN, NPUB30009 v01.00)"
 ELF_SHA1 = "be80165b84e30b6334baa6d6331b9db4ffd5a6a4"
 PKG_SIZE = 619430240
@@ -145,7 +148,11 @@ def pkg_content_id(path):
 def read_sfo(path):
     """PARAM.SFO -> {key: value}."""
     with open(path, "rb") as f:
-        d = f.read()
+        return parse_sfo(f.read())
+
+
+def parse_sfo(d):
+    """PARAM.SFO's bytes -> {key: value}; {} for anything else."""
     if d[:4] != b"\0PSF":
         return {}
     key_tab, data_tab, n = struct.unpack_from("<III", d, 8)
@@ -157,6 +164,106 @@ def read_sfo(path):
         out[key] = (struct.unpack_from("<I", raw)[0] if fmt == 0x0404
                     else raw.split(b"\0")[0].decode("utf-8", "replace"))
     return out
+
+
+def sfo_version(s):
+    """The game version a PARAM.SFO names: APP_VER (a v01.01 package has "01.01"), else VERSION (the supported
+    package has only VERSION "01.00"); "?" when it names none."""
+    return s.get("APP_VER") or s.get("VERSION") or "?"
+
+
+def self_content_id(data):
+    """The content ID in a PS3 program's (SELF's) NPDRM header -- no key needed to read it -- or None. `data`: the
+    program's first bytes (64 KB is plenty) or a path. Decrypting it needs the .rap of exactly this content ID."""
+    try:
+        if isinstance(data, str):
+            with open(data, "rb") as f:
+                data = f.read(1 << 16)
+        if data[:4] != b"SCE\0":
+            return None
+        sup_off, sup_size = struct.unpack_from(">QQ", data, 0x28 + 8 * 6)
+        off, end = sup_off, min(sup_off + sup_size, len(data))
+        while off + 0x10 <= end:
+            typ, size, nxt = struct.unpack_from(">IIQ", data, off)
+            if typ == 3:
+                npd = data[off + 0x10: off + 0x90]
+                return npd[0x10:0x40].rstrip(b"\0").decode("ascii", "replace") if npd[:4] == b"NPD\0" else None
+            if not nxt or size < 0x10:
+                break
+            off += size
+    except (OSError, struct.error):
+        pass
+    return None
+
+
+_PKG_TOOL = {}
+
+
+def _pkg_tool(deps):
+    """ps3recomp's pkg_extract.py as a module (for its keystream: the package key stays in ps3recomp), or None."""
+    path = os.path.join(deps, "tools", "pkg_extract.py")
+    if path not in _PKG_TOOL:
+        mod = None
+        try:
+            import importlib.util
+            spec = importlib.util.spec_from_file_location("t5dr_pkg_extract", path)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            if not (getattr(mod, "_HAVE_PYCRYPTO", False) and callable(getattr(mod, "_keystream", None))):
+                mod = None
+        except Exception:        # noqa: BLE001 -- no tree, an old one, no pycryptodome: nothing to peek with
+            mod = None
+        _PKG_TOOL[path] = mod
+    return _PKG_TOOL[path]
+
+
+def pkg_peek(path, want=("PARAM.SFO", "EBOOT.BIN"), limit=1 << 16, deps=None):
+    """{file name: its first `limit` bytes} for the files named in `want`, read straight from a retail PS3 package:
+    its file table and a few KB, nothing unpacked, well under a second. None when that is not possible (not a
+    package, a debug package, ps3recomp's pkg_extract.py or pycryptodome missing)."""
+    mod = _pkg_tool(deps or P.deps)
+    if mod is None:
+        return None
+    try:
+        with open(path, "rb") as f:
+            hdr = f.read(0xA0)
+            if len(hdr) < 0xA0 or hdr[:4] != b"\x7fPKG" or not struct.unpack_from(">H", hdr, 4)[0] & 0x8000:
+                return None
+            count = struct.unpack_from(">I", hdr, 0x14)[0]
+            data_off = struct.unpack_from(">Q", hdr, 0x20)[0]
+            riv, hdr60 = hdr[0x70:0x80], hdr[0x60:0xA0]
+            if not 0 < count < 100000:
+                return None
+
+            def dec(off, n):
+                sb, skip = off // 16, off % 16
+                f.seek(data_off + sb * 16)
+                raw = f.read(skip + n)
+                ks = mod._keystream("finalized", riv, hdr60, sb, (len(raw) + 15) // 16)[:len(raw)]
+                return (int.from_bytes(raw, "big") ^ int.from_bytes(ks, "big")).to_bytes(len(raw), "big")[skip:]
+            table = dec(0, count * 0x20)
+            out = {}
+            for i in range(len(table) // 0x20):
+                no, ns, fo, fs, flags = struct.unpack_from(">IIQQI", table, i * 0x20)
+                if flags & 0x10000000 or not 0 < ns < 4096:      # PSP-keyed entries: not in a PS3 game
+                    continue
+                name = dec(no, ns).split(b"\0")[0].decode("ascii", "replace").replace("\\", "/").split("/")[-1]
+                if name in want and fs > 0 and name not in out:
+                    out[name] = dec(fo, min(fs, limit))
+            return out
+    except (OSError, struct.error, ValueError, OverflowError):
+        return None
+
+
+def package_facts(path, deps=None):
+    """What a package says about itself before anything is unpacked: {"title", "title_id", "version" (PARAM.SFO),
+    "program" (the content ID of its program, whose license it needs)}, or None when it cannot be read that way."""
+    files = pkg_peek(path, deps=deps)
+    if not files:
+        return None
+    s = parse_sfo(files.get("PARAM.SFO", b""))
+    return {"title": s.get("TITLE", "?"), "title_id": s.get("TITLE_ID", "?"), "version": sfo_version(s),
+            "program": self_content_id(files.get("EBOOT.BIN", b""))}
 
 
 def keys_env():
@@ -322,6 +429,12 @@ def program_kind(path):
     return {b"SCE\0": "self", b"\x7fELF": "elf"}.get(head)
 
 
+def fail_version(ver, prog):
+    fail(f"This package is version {ver} of the game (program content ID {prog or '?'}). The port supports only "
+         f"version {TITLE_VERSION}: {GAME_NAME}, content ID {CONTENT_ID}, {PKG_SIZE:,} bytes. This version cannot "
+         "be used, whatever the license (.rap).")
+
+
 def step_decrypt(a):
     if os.path.exists(P.elf) and sha1(P.elf) == ELF_SHA1 and not a.force:
         print("  already done")
@@ -351,11 +464,20 @@ def step_decrypt(a):
         fail("This package has no USRDIR/EBOOT.BIN -- it is not a game package (an add-on or theme?). "
              f"The port needs {GAME_NAME}.")
     s = read_sfo(sfo) if os.path.exists(sfo) else {}
-    title, tid, ver = s.get("TITLE", "?"), s.get("TITLE_ID", "?"), s.get("APP_VER", s.get("VERSION", "?"))
+    title, tid, ver = s.get("TITLE", "?"), s.get("TITLE_ID", "?"), sfo_version(s)
     print(f"  PARAM.SFO: {title} / {tid} / version {ver}")
     if tid != TITLE_ID:
         fail(f"This package is \"{title}\" ({tid}). The port needs {GAME_NAME}.")
     kind = program_kind(eboot)
+    prog = self_content_id(eboot) if kind == "self" else None
+    if prog:
+        print(f"  program content ID: {prog} (its license: {prog}.rap)")
+    # Two players had v01.01 (APP_VER 01.01, program UP0700-NPUB30009_00-0000000000000000): their .rap could not
+    # decrypt it and the build said the .rap was wrong. The version is what is wrong, and no .rap changes that.
+    if ver not in ("?", TITLE_VERSION):
+        fail_version(ver, prog)
+    if prog in OTHER_VERSIONS:
+        fail_version(OTHER_VERSIONS[prog], prog)
     if kind == "elf":
         # A re-packed package that carries the program already decrypted: usable when it is the same program
         # (the SHA-1 pin below decides).
@@ -369,8 +491,10 @@ def step_decrypt(a):
                       capture=True)
         except subprocess.CalledProcessError as e:
             if "wrong .rap" in (e.output or ""):
+                if prog in OTHER_VERSIONS:
+                    fail_version(OTHER_VERSIONS[prog], prog)     # no .rap makes another version usable
                 fail("The license (.rap) does not belong to this package. Use the .rap whose name matches "
-                     f"the package's content ID ({CONTENT_ID}).")
+                     f"the package's content ID ({prog or CONTENT_ID}).")
             if a.pkg and os.path.exists(a.pkg) and os.path.getsize(a.pkg) != PKG_SIZE:
                 fail(f"The package is {os.path.getsize(a.pkg):,} bytes, the supported one is {PKG_SIZE:,} bytes: "
                      "the download is incomplete or it is a different file. Download it again.")
@@ -397,7 +521,15 @@ def step_unpack(a):
         open(P.unpacked_stamp, "w").close()
         return
     need_pkg(a)
-    run([PY, os.path.join(P.tools, "pkg_extract.py"), a.pkg, P.pkg_dir], env=keys_env())
+    try:
+        # (ps3recomp patch 0074: every file in 16 MB pieces, a line every 64 MB of a big one, and an incomplete
+        # package is named instead of leaving short files behind)
+        run([PY, os.path.join(P.tools, "pkg_extract.py"), a.pkg, P.pkg_dir], env=keys_env(), capture=True)
+    except subprocess.CalledProcessError as e:
+        if "cut short" in (e.output or ""):
+            fail(f"The package is {os.path.getsize(a.pkg):,} bytes, the supported one is {PKG_SIZE:,} bytes: the "
+                 "download is incomplete or it is a different file. Download it again.")
+        raise
     with open(P.unpacked_stamp, "w", encoding="utf-8") as f:   # any file name (cp1252 stopped at "Ł")
         f.write(os.path.basename(a.pkg) + "\n")
 

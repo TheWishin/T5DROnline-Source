@@ -1,6 +1,8 @@
 /* "T5DR Online.exe" -- starts the launcher with the Python that ships in the
  * release folder (python\pythonw.exe launcher\t5dr_launcher.pyw), or with an
- * installed Python when the folder has none. No console window.
+ * installed Python when the folder has none. No console window. Its own command
+ * line goes on to the launcher ("T5DR Online.exe" --search ranked: a desktop
+ * shortcut or Steam's launch options, README "Start a search from a shortcut").
  *
  * Built by tools/package_release.py as an ordinary Windows application: static C
  * runtime, version information, icon and manifest (t5dr_stub.rc, written there).
@@ -19,6 +21,7 @@
  */
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <stdlib.h>   /* __argc, __wargv */
 
 #ifdef T5DR_STUB_INPROCESS
 /* python312.lib (the Python that is bundled) resolves this; /DELAYLOAD:python312.dll, so the DLL
@@ -73,18 +76,25 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR args, int show)
 #ifdef T5DR_STUB_INPROCESS
     {
         static wchar_t dll[PATH_CAP];
-        wchar_t* argv[3];
+        static wchar_t* argv[64];
+        int argn = 0;
         lstrcpyW(dll, dir); cat(dll, L"python\\python312.dll", PATH_CAP);
         SetCurrentDirectoryW(dir);                /* where the child process of the default build starts */
         if (!LoadLibraryExW(dll, NULL, LOAD_WITH_ALTERED_SEARCH_PATH)) return fail();
-        argv[0] = py; argv[1] = script; argv[2] = NULL;
-        return Py_Main(2, argv);
+        argv[argn++] = py; argv[argn++] = script;
+        for (int i = 1; __wargv && i < __argc && argn < 63; i++)
+            argv[argn++] = __wargv[i];            /* this exe's own arguments, for the launcher */
+        argv[argn] = NULL;
+        return Py_Main(argn, argv);
     }
 #else
     cmd[0] = 0;
     cat(cmd, L"\"", 3 * PATH_CAP); cat(cmd, py, 3 * PATH_CAP);
     cat(cmd, L"\" \"", 3 * PATH_CAP); cat(cmd, script, 3 * PATH_CAP);
     cat(cmd, L"\"", 3 * PATH_CAP);
+    if (args && *args) {                          /* this exe's own arguments, as they were typed */
+        cat(cmd, L" ", 3 * PATH_CAP); cat(cmd, args, 3 * PATH_CAP);
+    }
 
     STARTUPINFOW si; PROCESS_INFORMATION pi;
     for (unsigned i = 0; i < sizeof si; i++) ((char*)&si)[i] = 0;

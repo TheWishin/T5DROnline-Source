@@ -247,6 +247,9 @@ BUILD_TOOL = (
     N_("This package is \"{title}\" ({id}). The port needs {game}."),
     N_("This copy is a different version of the game: \"{title}\" version {version}, content ID {id} (program "
        "SHA-1 {sha}...). The port supports only {game}, content ID {supported}."),
+    N_("This package is version {version} of the game (program content ID {id}). The port supports only version "
+       "{supported}: {game}, content ID {cid}, {size} bytes. This version cannot be used, whatever the license "
+       "(.rap)."),
     N_("The license (.rap) does not belong to this package. Use the .rap whose name matches the package's content "
        "ID ({id})."),
     N_("Decrypting the game program failed (see the log above). Tick \"Redo every step\" and press BUILD GAME "

@@ -181,6 +181,33 @@ def rank_text(p, plates=False):
     return ranks.label(p)
 
 
+def _ping_cell(ms, measured=False):
+    """The Ping column: "~85 ms" for an estimate, "85 ms" once measured in a match together, "" when unknown."""
+    if ms is None:
+        return ""
+    return f"{ms:.0f} ms" if measured else f"~{ms:.0f} ms"
+
+
+ping_text = tk_views.ping_text      # (the bar's line for a ping before a match: tk_views, which the cards share)
+
+
+def _list_ping(client, p, me):
+    """(ms, measured) of a lobby list entry: LobbyClient.ping_to; a stand-in client without it: the old sum of both
+    round trips to the lobby server."""
+    fn = getattr(client, "ping_to", None)
+    if fn is not None:
+        return fn(p)
+    if p.get("rtt") is None or (me and p.get("id") == me.get("id")):
+        return None, False
+    return p["rtt"] + (getattr(client, "server_rtt", None) or 0.0), False
+
+
+def _event_ping(client, ev, who="from"):
+    """The ping of a challenge / invite / found match: LobbyClient.ping_info, else the server's own."""
+    fn = getattr(client, "ping_info", None)
+    return fn(ev, who) if fn is not None else (ev or {}).get("ping")
+
+
 def _reselect(tv):
     """After an in-place update: tell the list's selection handlers again (the selected row may have changed)."""
     if tv.selection():
@@ -1266,9 +1293,12 @@ class OnlineTab:
                      room=(ev.get("room") or {}).get("name") or "?")
         else:
             text = t("{name} ({rank}) invites you to a casual match", name=frm.get("name"), rank=rank_text(frm))
+        self.status(text + ".")
+        ping = _event_ping(self.client, ev)
+        if ping and (ev.get("room") or {}).get("size", 2) <= 2:     # (1.1.5; a bigger room: others play there too)
+            text += " -- " + ping_text(ping)
         self.show_bar(text, [(t("Accept"), lambda: self._answer_invite(True), "cross"),
                              (t("Decline"), lambda: self._answer_invite(False), "circle")])
-        self.status(text + ".")
 
     def _answer_invite(self, accept):
         inv, self.invite = self.invite, None
@@ -1516,7 +1546,9 @@ class OnlineTab:
             self.chat_line(f"{ev['from']['name']}: {ev['text']}")
         elif kind == "challenged":
             self.challenge = ev["challenge"]
-            self.show_bar(t("{name} ({rank}) challenges you", name=ev["from"]["name"], rank=rank_text(ev["from"])),
+            ping = _event_ping(c, ev)    # (1.1.5: the ping and the likely path before an answer)
+            self.show_bar(t("{name} ({rank}) challenges you", name=ev["from"]["name"], rank=rank_text(ev["from"]))
+                          + (" -- " + ping_text(ping) if ping else ""),
                           [(t("Accept"), lambda: self._answer(True), "cross"),
                            (t("Decline"), lambda: self._answer(False), "circle")])
         elif kind == "challenge_update":
@@ -1559,6 +1591,9 @@ class OnlineTab:
             else:
                 text = self._opponent_text(ev["opponent"], ev["ranked"], ev.get("origin") == "rematch")
                 if ev["ready_check"]:
+                    ping = _event_ping(c, ev, "opponent")
+                    if ping:
+                        text += " -- " + ping_text(ping)
                     self.ready_deadline = time.monotonic() + float(ev.get("ready_timeout") or 15)
                     self.show_bar(text, [(t("Accept"), lambda: self._ready(True), "cross"),
                                          (t("Decline"), lambda: self._ready(False), "circle")])
@@ -1798,16 +1833,16 @@ class OnlineTab:
         self._last_lobby = ev
         me = self.client.me if self.client else None
         mine = self.client.build.build_id if self.client else None
-        my_rtt = (self.client.server_rtt if self.client else None) or 0.0
         rows = []
         rtt_of = {}
         plates = self.view.plates_on()
         for p in ev.get("players", []):
             # another version: that is what matters (no challenge either way), not what they are doing
             status = _word(STATUS_TEXT, p["status"]) if p["build"] == mine else t("other version")
-            ms = None if p["rtt"] is None or (me and p["id"] == me["id"]) else p["rtt"] + my_rtt
-            rtt_of[p["id"]] = ms
-            ping = "" if ms is None else f"~{ms:.0f} ms"
+            # (1.1.5: the best relay both measured, as the server estimates it; measured in a match: no "~")
+            ms, measured = _list_ping(self.client, p, me)
+            rtt_of[p["id"]] = (ms, measured)
+            ping = _ping_cell(ms, measured)
             rating = "" if p["guest"] else p["rating"]
             rec = p.get("record") or [0, 0, 0]
             name = p["name"] + (self._you_suffix() if me and p["id"] == me["id"] else "")
@@ -1823,8 +1858,8 @@ class OnlineTab:
                              + ([t("ranked")] if r["ranked"] else []))
             # the lock: nobody can join it now -- or only with its password / invite code
             closed = r["status"] != "open" or r["build"] != mine or bool(r.get("private"))
-            ms = rtt_of.get(r["owner"].get("id"))
-            rows.append((r["id"], (r["name"], r["owner"]["name"], state, "" if ms is None else f"~{ms:.0f} ms"),
+            ms, measured = rtt_of.get(r["owner"].get("id"), (None, False))
+            rows.append((r["id"], (r["name"], r["owner"]["name"], state, _ping_cell(ms, measured)),
                          self.view.room_image(closed), ("closed",) if closed else ()))
         tklist.sync(self.tv_rooms, rows)
         _reselect(self.tv_rooms)
@@ -1842,13 +1877,7 @@ class OnlineTab:
     def _ready_text(self):
         """The blind ready check: only the ping and the rules, and the seconds left."""
         m = self.match or {}
-        ping = m.get("ping") or {}
-        if ping.get("known"):
-            # (the server's estimate: the best relay path for the two; the real ping is measured after both accept)
-            where = t("ping about {ms} ms (estimated; measured directly once you both accept)",
-                      ms=f"{ping.get('ms', 0):.0f}")
-        else:
-            where = t("ping not known yet")
+        where = ping_text(m.get("ping"))         # (estimated or measured last time, and the likely path: 1.1.5)
         left = max(0, int((self.ready_deadline or 0) - time.monotonic() + 0.99)) if self.ready_deadline else 0
         parts = [t("Opponent found")] + ([t("RANKED")] if m.get("ranked") else []) + [
             where, t("accept within {seconds} s?", seconds=left)]

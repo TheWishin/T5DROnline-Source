@@ -113,8 +113,12 @@ lobby/
 2. **Login.** Guest (just a name), account (name + password), register, or
    resume (after a dropped connection, with the session token).
 3. **Lobby.** The server pushes `lobby_state` (players with status, rating,
-   UDP ping to the server, build; open rooms; queue sizes) whenever something
-   changes, at most ~3 times a second.
+   UDP ping to the server, round trips to the regional relays, build; open rooms; queue sizes) whenever something
+   changes, at most ~3 times a second. The **Ping** column (1.1.5) is the launcher's estimate of the ping to
+   that player made as the server makes it ("Found match" in docs/RANKED.md): the smaller of the way through
+   the lobby server (both round trips to it added) and the best regional relay both measured -- two players in
+   North America read ~50 ms through the relay in Oregon, not ~200 ms through Nuremberg. Estimates show with
+   "~"; a player this launcher played since it started shows the ping measured in that match, without "~".
 4. **Finding an opponent**, three ways:
    - *Quick match*: the queue pairs the players with the lowest estimated ping
      (the best relay path: the smallest sum of both players' round trips to a relay, the
@@ -134,9 +138,17 @@ lobby/
    place in it. A match from the queue is *blind* for clients that ask
    (`caps: ["blind_ready"]`): both see the ping between them, and neither sees the other's
    name or side until both accepted (`match_reveal`). The ping at that point is the
-   server's estimate (both players' UDP round trips to the server, added), because the PCs
+   server's estimate (the best relay path, as in step 3), because the PCs
    are only connected after the accept; the real ping between them is measured in step 6
    and arrives in `match_start`. See RANKED.md, "Tekken 6 style options".
+   **Before anybody accepts** (1.1.5) -- the ready check, a challenge, a friend's invite -- the launcher shows
+   that ping and the path the two will most likely get: `ping` {`ms`, `kind`, `known`, `path`} in `match_found`,
+   `challenged` and `invited`. Two players who played each other in the last 7 days (`T5L_PAIR_PING_DAYS`; the
+   server keeps it in memory only) get the ping measured then (`kind: "measured"`) and its path; otherwise
+   `kind: "estimate"`, and `path: "relay"` when both players' NATs were symmetric without predictable ports in
+   their last matches (they meet only through a relay) or the server forces the relay; no `path` when nothing
+   is known (the direct path is tried first, as always). A blind ready check never says `measured` (it would
+   tell that the hidden opponent is an old acquaintance).
 6. **NAT traversal** (next section): each launcher opens the UDP socket the game
    will use, registers it with the server, punches through to the other
    player, measures the round trip. If that fails, both bind to the relay.
@@ -173,7 +185,7 @@ lobby/
 | `T5_NET_PORT` | yes | local UDP port: exactly the port the lobby punched through (relay bridge: a free local port). Bind it. |
 | `T5_NET_PEER` | yes | `ip:port` of the opponent (direct/LAN), of the lobby server's relay, or `127.0.0.1:<port>` of the launcher's relay bridge |
 | `T5_NET_DELAY` | yes | input delay in frames for the lockstep (host's value wins, as netplay already does); the rollback delay is never above it |
-| `T5_RB_NET_DELAY` | yes | ranked only: the server's fixed rollback input delay (`T5L_RANKED_INPUT_DELAY`, default 2, in `match_start` as `input_delay`); other matches get the player's own setting from the launcher (`auto`, 0, 1, 2; docs/NETPLAY.md "Input delay") |
+| `T5_RB_NET_DELAY` | yes | ranked: the server's fixed rollback input delay (`T5L_RANKED_INPUT_DELAY`, default 2, in `match_start` as `input_delay`); other matches get the player's own setting from the launcher (`auto`, 0, 1, 2; docs/NETPLAY.md "Input delay"). Above 150 ms measured ping (1.1.5, `T5L_PING_DELAYS`, default `150:3,250:4`) every match gets at least 3 frames (4 above 250 ms) the same way, never above `T5_NET_DELAY` |
 | `T5_NET_TIMEOUT` | yes | seconds the peer may be silent / stall before the match ends (20) |
 | `T5_NET_MATCH` | yes | match id; logged and written into the result file |
 | `T5_NET_ROUNDS` | yes | rounds to win (3); direct fight takes them from `T5_FIGHT` |
@@ -908,6 +920,8 @@ Settings (environment variables; command-line flags `--host --port --udp-port
 | `T5L_OLD_STAGES` | `0` | `1` = the stage drawn for a match may also be one of the Tekken 5 stages (both clients must announce `old_stages`; docs/RANKED.md "Characters and stages") |
 | `T5L_PING_START` / `T5L_PING_WIDEN` / `T5L_PING_ANY_SECONDS` | `80` / `10` / `60` | ranked queue: the estimated ping a pair may have at first (ms), how fast that grows while both wait (ms per s), and after how long any ping goes (0 = never) |
 | `T5L_QUICK_PING_WIDEN` / `T5L_QUICK_PING_ANY_SECONDS` | `20` / `30` | the same for the quick queue (it starts at `T5L_PING_START` too) |
+| `T5L_PAIR_PING_DAYS` | `7` | two players who played each other: the ping measured then is their estimate for this long (queues, the ping before a match; in memory only) |
+| `T5L_PING_DELAYS` | `150:3,250:4` | rollback input delay of far matches: at least 3 frames above 150 ms measured ping, 4 above 250 ms, for both PCs (ranked too: the higher value); `""` = off |
 | `T5L_STRICT_RANGE` / `T5L_PAIR_COOLDOWN` / `T5L_MAX_BLOCKS` | `150` / `30` / `200` | strict matchmaking range, same-opponent cooldown (s), blocks per player |
 | `T5L_MAX_FRIENDS` / `T5L_FRIEND_REQUESTS_DAY` / `T5L_FRIEND_PENDING` | `100` / `20` / `30` | friends per account, requests sent per 24 h, requests waiting per sender and per receiver ("Friends and invites") |
 | `T5L_FRIEND_REQUEST_DAYS` / `T5L_FRIEND_RETRY_DAYS` / `T5L_INVITE_SECONDS` | `14` / `7` / `60` | an unanswered request runs out; a declined one may be repeated after; an invite waits |

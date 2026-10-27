@@ -1875,6 +1875,12 @@ MESSAGES = {
     "Name and side are shown once you both accept.":
         "Le nom et le côté s'affichent dès que vous acceptez tous les deux.",
     "(estimated before you connect)": "(estimé avant la connexion)",
+    "(measured in your last match together)": "(mesuré lors de votre dernier match ensemble)",
+    "ping {ms} ms (measured in your last match together)":
+        "ping de {ms} ms (mesuré lors de votre dernier match ensemble)",
+    "probably a direct connection": "probablement une connexion directe",
+    "probably over the local network": "probablement via le réseau local",
+    "probably through a relay server": "probablement via un serveur relais",
     "Accepted. Waiting for your opponent...": "Accepté. En attente de ton adversaire...",
     "Match ready": "Match prêt",
     "Connecting the two games...": "Connexion des deux jeux...",

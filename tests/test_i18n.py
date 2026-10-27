@@ -932,7 +932,7 @@ class RenderTests(Base):
         app.update()
         app.nb.select(app.tabs["online"])
         app.update()
-        app.online.nb.select(2)                                 # the Online tab's own tabs: Profile
+        app.online.nb.select(app.online.prof_page)              # the Online tab's own tabs: Profile
         app.update()
         for notebook in (app.online.nb, app.nb):
             for tab in notebook.tabs():
@@ -1389,7 +1389,7 @@ class OnlineTabGermanTests(German):
             "requests_left": 20}
         t._set_account_view(True)
         t.on_event({"t": "friends"})
-        t.nb.select(3)
+        t.nb.select(t.friends_page)
         texts, english = self.shown()
         for expect in ("FREUNDE", "Zum Match einladen", "In den Raum einladen", "Entfernen", "FREUND HINZUFÜGEN",
                        "Anfrage senden", "ANFRAGEN", "möchte dein Freund sein", "wartet auf Antwort",

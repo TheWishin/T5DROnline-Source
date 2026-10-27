@@ -568,16 +568,16 @@ class OnlineView:
         prof = ttk.Frame(nb, padding=(0, px(10), 0, 0))
         friends = ttk.Frame(nb, padding=(0, px(10), 0, 0))
         tours = ttk.Frame(nb, padding=(0, px(10), 0, 0))
+        stats = ttk.Frame(nb, padding=(0, px(10), 0, 0))
         nb.add(lobby, text=t("Lobby"))
         nb.add(board, text=t("Leaderboard"))
+        nb.add(stats, text=t("Stats"))              # (next to the leaderboard: the community's numbers)
         nb.add(prof, text=t("Profile"))
-        nb.add(friends, text=t("Friends"))          # (last: the others keep their positions 0, 1, 2)
-        nb.add(tours, text=t("Tournaments"))        # (after Friends: 4)
-        stats = ttk.Frame(nb, padding=(0, px(10), 0, 0))
-        nb.add(stats, text=t("Stats"))              # (after Tournaments: 5)
-        tab.stats_page = stats
-        tab.friends_page = friends
-        tab.tours_page = tours
+        nb.add(friends, text=t("Friends"))
+        nb.add(tours, text=t("Tournaments"))
+        # (pages by name, not by position: tab._on_subtab, show_profile and the tests use these)
+        tab.lobby_page, tab.board_page, tab.stats_page = lobby, board, stats
+        tab.prof_page, tab.friends_page, tab.tours_page = prof, friends, tours
         nb.bind("<<NotebookTabChanged>>", lambda _e: tab._on_subtab())
         self._build_lobby_page(lobby)
         self._build_board_page(board)

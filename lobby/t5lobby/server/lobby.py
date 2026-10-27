@@ -914,7 +914,7 @@ class LobbyServer(SpectateMixin, RoomsMixin, CasualMixin, MatchRulesMixin):
         conn.build_id = bid
         conn.release = proto.clean_text(build.get("release", ""), 32)     # (shown to everybody in the lobby list)
         caps = msg.get("caps")
-        conn.caps = CAPS.intersection(str(c) for c in caps[:16]) if isinstance(caps, list) else frozenset()
+        conn.caps = CAPS.intersection(str(c) for c in caps[:32]) if isinstance(caps, list) else frozenset()  # (1.1.5: 32, a 1.1.5 launcher sends 16)
         conn.helloed = True
         return {"t": "welcome", "server": SERVER_NAME, "proto": proto.PROTO_VERSION,
                 "udp_port": self.udp.port, "udp_port2": self.udp.port2, "build": bid,

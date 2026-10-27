@@ -26,7 +26,7 @@ import tkinter as tk
 import tkinter.font as tkfont
 from tkinter import ttk
 
-from . import i18n, proto, ranks, theme, tk_charsel, tk_history, tk_rules, tk_stats, tk_tour
+from . import fighter_art, fighters, i18n, proto, ranks, theme, tk_charsel, tk_history, tk_rules, tk_stats, tk_tour
 from .i18n import N_, t
 from .lag import describe_event as describe_lag, lagged
 from .rank_art import ART
@@ -1425,11 +1425,49 @@ class OnlineView:
             self.me_main.configure(text=t("Main: {character}", character=tab.table.fighter_name(me["main"]))
                                    if me.get("main") else "")
         main = None if guest else me.get("main")
-        self.me_portrait.set(main, tab.table.fighter_name(main) if main else "")
+        self._show_portrait(main)
         conn = t("Server ping {ms} ms", ms=f"{c.server_rtt or 0:.0f}")
         if c.tls:
             conn += "  ·  " + t("encrypted")
         self.me_conn.configure(text=conn)
+
+    def _show_portrait(self, key):
+        """The account card's picture of fighter `key`: from the player's own game (fighter_art.py, made once in a
+        thread; the card is drawn again when it is there), the drawn placeholder until then or without it."""
+        tab = self.tab
+        if key == fighters.RANDOM:
+            key = None
+        name = tab.table.fighter_name(key) if key else ""
+        photo = None
+        faces, size = fighter_art.FACES, self.me_portrait.side
+        out = getattr(getattr(getattr(tab, "app", None), "settings", None), "out_dir", None)
+        try:
+            if out:
+                faces.set_folder(fighter_art.folder_for(out))
+            if key and faces.has(size):
+                f = tab.table._f.get(key) if hasattr(tab.table, "_f") else None
+                gid = f.get("id") if isinstance(f, dict) else None
+                photo = faces.image(self.box, gid, size) if isinstance(gid, int) else None
+            elif key and out and not getattr(self, "_portrait_asked", False):
+                self._portrait_asked = True
+                faces.listeners.append(self._portrait_ready)
+                from .tk_tab import _launcher_log
+                faces.prepare([size], out_dir=out, after=self.box.after, log=_launcher_log)
+        except (tk.TclError, RuntimeError, OSError):
+            photo = None
+        self.me_portrait.set(key, name, photo)
+
+    def _portrait_ready(self):
+        try:
+            alive = self.box.winfo_exists()
+        except tk.TclError:
+            alive = False
+        if not alive:
+            fighter_art.FACES.listeners[:] = [f for f in fighter_art.FACES.listeners if f != self._portrait_ready]
+            return
+        if not fighter_art.FACES.has(self.me_portrait.side):
+            self._portrait_asked = False             # (another size was made: ask for this one)
+        self._show_portrait(self.me_portrait.key)
 
     def _update_play(self):
         tab = self.tab

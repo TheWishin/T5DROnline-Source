@@ -1511,56 +1511,52 @@ class Band(tk.Canvas):
 
 
 class Portrait(tk.Canvas):
-    """The player's main fighter in the Play online account card: the fighter's portrait when the launcher has
-    one (t5lobby.portraits.photo(widget, key, height), made from the player's own game), else a drawn placeholder:
-    a silhouette on a warm gradient with the fighter's name across the bottom."""
+    """The player's main fighter in the Play online account card: a square picture (the fighter's head and
+    shoulders from the player's own game, fighter_art.py, when the launcher has it; else a drawn placeholder: a
+    silhouette on a warm gradient) over a bar with the fighter's name."""
 
-    def __init__(self, parent, width=78, height=104, bg=None, **kw):
+    def __init__(self, parent, side=80, bg=None, **kw):
         th = apply(parent)
         self.th = th
-        self.w, self.h = th.px(width), th.px(height)
+        self.side, self.bar = th.px(side), th.px(22)
+        self.w, self.h = self.side, self.side + self.bar
         super().__init__(parent, width=self.w, height=self.h, bg=bg or C["surface"], highlightthickness=0,
                          takefocus=0, **kw)
         self.key = self.photo = None
         self.set(None, "")
 
-    def set(self, key, name):
-        self.key = key
+    def set(self, key, name, photo=None):
+        """Fighter `key` (None: nobody / random) named `name`, its picture `photo` (a PhotoImage `side` px square)
+        or None for the placeholder."""
+        self.key, self.photo = key, photo
         self.delete("all")
-        w, h, px = self.w, self.h, self.th.px
-        img = None
-        if key:
-            try:
-                from . import portraits                     # (only once the player's game gave us the art)
-                img = portraits.photo(self, key, h)
-            except Exception:                                # noqa: BLE001 -- no portrait: the placeholder
-                img = None
-        self.photo = img
-        if img is not None:
-            self.create_image(w // 2, h, image=img, anchor="s")
+        w, s, h, px = self.w, self.side, self.h, self.th.px
+        if photo is not None:
+            n = 10
+            for i in range(n):                       # (behind the picture's transparent edges: a warm gradient)
+                self.create_rectangle(0, s * i / n, w, s * (i + 1) / n + 1, outline="",
+                                      fill=mix(mix(C["accent"], C["raised"], 0.7), C["raised"], i / (n - 1.0)))
+            self.create_image(w // 2, s, image=photo, anchor="s")
         else:
             n = 14
             for i in range(n):
-                y0, y1 = h * i / n, h * (i + 1) / n + 1
-                self.create_rectangle(0, y0, w, y1, outline="", fill=mix(mix(C["accent"], C["raised"], 0.72),
-                                                                         C["raised"], i / (n - 1.0)))
+                self.create_rectangle(0, s * i / n, w, s * (i + 1) / n + 1, outline="",
+                                      fill=mix(mix(C["accent"], C["raised"], 0.72), C["raised"], i / (n - 1.0)))
             sil = mix(C["raised"], "#000000", 0.35)
             cx = w / 2.0
-            self.create_oval(cx - w * 0.17, h * 0.2, cx + w * 0.17, h * 0.2 + w * 0.36, fill=sil, outline="")
-            self.create_polygon(cx - w * 0.42, h, cx - w * 0.34, h * 0.62, cx - w * 0.12, h * 0.55, cx + w * 0.12,
-                                h * 0.55, cx + w * 0.34, h * 0.62, cx + w * 0.42, h, fill=sil, outline="",
-                                smooth=True)
+            self.create_oval(cx - s * 0.18, s * 0.2, cx + s * 0.18, s * 0.56, fill=sil, outline="")
+            self.create_polygon(cx - s * 0.44, s, cx - s * 0.36, s * 0.74, cx - s * 0.12, s * 0.62, cx + s * 0.12,
+                                s * 0.62, cx + s * 0.36, s * 0.74, cx + s * 0.44, s, fill=sil, outline="", smooth=True)
             if not key:
-                self.create_text(cx, h * 0.36, text="?", fill=mix(C["text"], C["raised"], 0.5),
+                self.create_text(cx, s * 0.38, text="?", fill=mix(C["text"], C["raised"], 0.5),
                                  font=self.th.fonts["h1"])
+        self.create_rectangle(0, s, w, h, fill=mix(C["bg"], C["surface"], 0.3), outline="")
+        self.create_rectangle(0, s, px(3), h, fill=C["accent"], outline="")
         if name:
-            bar = px(20)
-            self.create_rectangle(0, h - bar, w, h, fill=mix(C["bg"], C["surface"], 0.3), outline="")
-            self.create_rectangle(0, h - bar, px(3), h, fill=C["accent"], outline="")
             f, text, room = self.th.fonts["caps"], name.upper(), w - px(12)
             while len(text) > 1 and f.measure(text) > room:
                 text = text[:-2].rstrip() + "…"
-            self.create_text(px(8), h - bar / 2.0, text=text, anchor="w", fill=C["text"], font=f)
+            self.create_text(px(8), s + self.bar / 2.0, text=text, anchor="w", fill=C["text"], font=f)
         self.create_rectangle(0, 0, w - 1, h - 1, outline=C["line_hi"])
 
 

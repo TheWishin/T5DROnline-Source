@@ -238,6 +238,24 @@ def contrast(a, b):
     return (la + 0.05) / (lb + 0.05)
 
 
+def name_color(name, on=None):
+    """A player's own colour in the chat (1.1.7): the same for the same name on every PC and every day (from the
+    name, not the order of arrival), readable on the card (contrast 4.5 or more), and never the accent's red-orange,
+    which is the player's own name. The hue comes from the name; lightness and saturation are fixed."""
+    import colorsys
+    on = on or C["surface"]
+    h = zlib.crc32(str(name).strip().casefold().encode("utf-8")) & 0xFFFFFFFF
+    hue = 40 + (h % 290)                  # 40..329 degrees: no red-orange (the accent, 330..40)
+    sat = (0.55, 0.65, 0.75)[(h >> 12) % 3]
+    light = 0.66
+    while True:
+        r, g, b = colorsys.hls_to_rgb(hue / 360.0, light, sat)
+        c = _hex((r * 255, g * 255, b * 255))
+        if contrast(c, on) >= 4.5 or light >= 0.9:
+            return c
+        light += 0.02
+
+
 def text_on(c):
     """Readable text colour on a fill."""
     return "#111318" if luminance(c) > 0.35 else "#ffffff"

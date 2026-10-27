@@ -25,6 +25,10 @@ part is in the README's status table.
   the Build tab and BUILD GAME say to extract the zip again with "Extract All" into a short path such as `C:\T5DR`,
   and "Install missing..." no longer offers Git or Visual Studio for it (1.1.6 offered Git; installing it changed
   nothing). A developer's checkout still gets Git offered.
+- Lobby chat: easier to see who wrote what (player feedback; `lobby/t5lobby/tk_tab.py`, `tk_views.py`, `theme.py`): the
+  sender's name in bold in a colour of their own (from the name, the same on every PC, readable on the dark card),
+  your own name in the accent colour, a name line with space above whenever another player writes, and the
+  launcher's and server's lines muted.
 
 ## v1.1.6 (2026-10-27)
 

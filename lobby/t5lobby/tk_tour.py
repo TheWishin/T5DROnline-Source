@@ -587,7 +587,7 @@ def build_page(view, page):
     fr.grid(row=2, column=0, sticky="nsew")
     fr.columnconfigure(0, weight=1)
     fr.rowconfigure(0, weight=1)
-    tv = ttk.Treeview(fr, columns=[c for c, _h, _w in LIST_COLUMNS], show="headings", height=6,
+    tv = ttk.Treeview(fr, columns=[c for c, _h, _w in LIST_COLUMNS], show="headings", height=4,
                       style="Lobby.Treeview", selectmode="browse")
     for c, h, w in LIST_COLUMNS:
         tv.heading(c, text=tr(h).upper(), anchor="w")

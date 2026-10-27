@@ -91,6 +91,9 @@ TIER_ABBR = {0: "B", 17: "SH", 18: "EX", 19: "WA", 20: "MA", 21: "VI", 22: "CH",
              26: "SG", 27: "LG", 28: "FJ", 29: "RJ", 30: "DT", 31: "LoW", 32: "DL", 33: "TL", 34: "DK", 35: "KR",
              36: "KN"}
 
+# what the result banners (Win. / Loss. / Even. styles) are drawn on: a canvas inside one takes this background
+GROUNDS = {"Win.": C["ok_bg"], "Loss.": C["bad_bg"], "Even.": C["raised"], "Tile.": C["raised"], "Card.": C["surface"]}
+
 PING_GOOD, PING_OK = 60, 120      # ms: green up to 60, yellow up to 120, red above
 _PNG_CACHE = {}                    # (image key, size, scale) -> PNG data: a second window reuses the drawing
 _DISK = {"loaded": None, "dirty": False}
@@ -441,7 +444,7 @@ class Theme:
             "h1": (disp, 20, heavy), "h2": (disp, 14, heavy), "h3": (disp, 11, heavy),
             "caps": (disp, 9, heavy), "hero": (disp, 14, heavy), "big": (disp, 26, heavy),
             "huge": (disp_reg, 30, "bold"), "num": (disp, 12, heavy), "mono": (mono, 10, "normal"),
-            "code": (mono, 14, "normal"),
+            "code": (mono, 14, "normal"), "brand": (disp, 16, heavy),
         }
         existing = set(tkfont.names(self.root))
         for key, (fam, size, weight) in spec.items():
@@ -566,6 +569,8 @@ class Theme:
             "Num.": dict(font=f["num"], foreground=C["text"]),
             "Mono.": dict(font=f["mono"], foreground=C["text"]),
             "Accent.": dict(font=f["bold"], foreground=C["accent_hi"]),
+            "Brand.": dict(font=f["brand"], foreground=C["text"]),           # the launcher's name in its header
+            "BrandAccent.": dict(font=f["brand"], foreground=C["accent_hi"]),
             "ok.": dict(foreground=C["ok"]), "warn.": dict(foreground=C["warn"]),
             "error.": dict(foreground=C["bad"]), "gold.": dict(font=f["bold"], foreground=C["gold"]),
         }
@@ -579,7 +584,8 @@ class Theme:
                                ("PillOk", mix(C["ok"], C["surface"], 0.2), "#08130c"),
                                ("PillBad", mix(C["bad"], C["surface"], 0.15), "#1a0707"),
                                ("PillGold", C["gold"], "#1d1704"), ("PillWarn", C["warn"], "#1d1404")):
-            for pre, bg in (("", C["bg"]), ("Card.", C["surface"]), ("Tile.", C["raised"])):
+            for pre, bg in (("", C["bg"]), ("Card.", C["surface"]), ("Tile.", C["raised"]),
+                            ("Win.", C["ok_bg"]), ("Loss.", C["bad_bg"]), ("Even.", C["raised"])):
                 img = self._rounded(f"pill_{name}_{pre}", *self._sliced("pill", psize), rp, fill, bg)
                 self._element(f"{pre}{name}.bg", img, border=rp + 1, padding=(rp + 1, max(1, px(1))), sticky="nsew",
                               width=psize, height=psize)

@@ -314,16 +314,26 @@ class App(tk.Tk):
 
     # ------------------------------------------------------------------ layout
     def _layout(self):
-        head = ttk.Frame(self, padding=(16, 12, 16, 4))
-        head.pack(fill="x")
-        if getattr(self, "theme", None) is not None:
-            self.theme.Mark(head, size=30).pack(side="left", padx=(0, 10))
-        ttk.Label(head, text="Tekken 5: Dark Resurrection Online", style="H1.TLabel").pack(side="left")
-        ttk.Label(head, style="Muted.TLabel",
-                  text="   " + t("native Windows build  ·  launcher {version}",
-                                 version=self.info.get("version", "?"))).pack(side="left")
-        self.updater = updater.attach(self, head)     # "Check for updates", the offer, the update itself
         dark = getattr(self, "theme", None) is not None
+        name = "Tekken 5: Dark Resurrection Online"
+        sub = t("native Windows build  ·  launcher {version}", version=self.info.get("version", "?"))
+        if dark:
+            # one slim bar: the mark, the name with "Online" in the accent colour, the build in small capitals, and
+            # Check for updates on the right
+            px = self.px
+            head = ttk.Frame(self, padding=(px(16), px(10), px(16), px(4)))
+            head.pack(fill="x")
+            self.theme.Mark(head, size=26).pack(side="left", padx=(0, px(10)))
+            first, last = name.rsplit(" ", 1)
+            ttk.Label(head, text=first + " ", style="Brand.TLabel").pack(side="left")
+            ttk.Label(head, text=last, style="BrandAccent.TLabel").pack(side="left")
+            ttk.Label(head, text=sub.upper(), style="Caps.TLabel").pack(side="left", padx=(px(14), 0), pady=(px(3), 0))
+        else:
+            head = ttk.Frame(self, padding=(16, 12, 16, 4))
+            head.pack(fill="x")
+            ttk.Label(head, text=name, style="H1.TLabel").pack(side="left")
+            ttk.Label(head, style="Muted.TLabel", text="   " + sub).pack(side="left")
+        self.updater = updater.attach(self, head)     # "Check for updates", the offer, the update itself
         self.nb = ttk.Notebook(self, style="Main.TNotebook") if dark else ttk.Notebook(self)
         self.nb.pack(fill="both", expand=True, padx=12, pady=(4, 0))
         self.tabs = {}

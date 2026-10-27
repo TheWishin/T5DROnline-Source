@@ -322,7 +322,8 @@ class App(tk.Tk):
                   text="   " + t("native Windows build  ·  launcher {version}",
                                  version=self.info.get("version", "?"))).pack(side="left")
         self.updater = updater.attach(self, head)     # "Check for updates", the offer, the update itself
-        self.nb = ttk.Notebook(self)
+        dark = getattr(self, "theme", None) is not None
+        self.nb = ttk.Notebook(self, style="Main.TNotebook") if dark else ttk.Notebook(self)
         self.nb.pack(fill="both", expand=True, padx=12, pady=(4, 0))
         self.tabs = {}
         for key, label in (("build", t("Build")), ("play", t("Play offline")), ("settings", t("Settings")),
@@ -469,7 +470,8 @@ class App(tk.Tk):
             sb = ttk.Scrollbar(self.log.frame, orient="vertical", command=self.log.yview)
             sb.pack(side="right", fill="y", before=self.log._w)   # (str(self.log) is its frame)
             self.log.configure(yscrollcommand=sb.set)
-            self.log.frame.configure(bg=COLORS["log_bg"])
+            self.log.frame.configure(bg=COLORS["log_bg"], highlightthickness=1,      # (framed like the cards)
+                                     highlightbackground=self.theme.C["line"], highlightcolor=self.theme.C["line"])
 
     def _play_tab(self, tab):
         box = ttk.Frame(tab, padding=24)

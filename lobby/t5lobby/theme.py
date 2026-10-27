@@ -579,7 +579,8 @@ class Theme:
                                ("PillGold", C["gold"], "#1d1704"), ("PillWarn", C["warn"], "#1d1404")):
             for pre, bg in (("", C["bg"]), ("Card.", C["surface"]), ("Tile.", C["raised"])):
                 img = self._rounded(f"pill_{name}_{pre}", *self._sliced("pill", psize), rp, fill, bg)
-                self._element(f"{pre}{name}.bg", img, border=rp + 1, sticky="nsew", width=psize, height=psize)
+                self._element(f"{pre}{name}.bg", img, border=rp + 1, padding=(rp + 1, max(1, px(1))), sticky="nsew",
+                              width=psize, height=psize)
                 st.layout(f"{pre}{name}.TLabel", [(f"{pre}{name}.bg", {"sticky": "nsew", "children": [
                     ("Label.padding", {"sticky": "nsew", "children": [("Label.label", {"sticky": "nsew"})]})]})])
                 st.configure(f"{pre}{name}.TLabel", background=bg, foreground=fg, font=f["caps"],
@@ -627,7 +628,8 @@ class Theme:
                 if col is None:
                     imgs[state] = self._blank(k, w, h, bg)
                 else:
-                    imgs[state] = self._rounded(k, w, h, r, col, bg, line=line if state != "disabled" else None)
+                    # (disabled: an outline, so the button keeps its shape but plainly cannot be pressed)
+                    imgs[state] = self._rounded(k, w, h, r, col, bg, line=line if state != "disabled" else C["line"])
             if fill is None:
                 imgs["focus"] = self._ring_only(f"btn_{name}_focus_{pre}", w, h, r, ring_col, rw, bg)
             else:
@@ -638,7 +640,8 @@ class Theme:
             el = f"{pre}{name}.bg"
             self._element(el, imgs["normal"], ("disabled", imgs["disabled"]), ("pressed", imgs["pressed"]),
                           ("focus", "active", imgs["focus_hover"]), ("focus", imgs["focus"]),
-                          ("active", imgs["hover"]), border=r + 2, sticky="nsew", width=size, height=size)
+                          ("active", imgs["hover"]), border=r + 2, padding=(r + 2, rw, r + 2, rw), sticky="nsew",
+                          width=size, height=size)
             style = (pre + "TButton") if name == "Base" else f"{pre}{name}.TButton"
             st.layout(style, [(el, {"sticky": "nsew", "children": [
                 ("Button.padding", {"sticky": "nsew", "children": [("Button.label", {"sticky": "nsew"})]})]})])
@@ -648,17 +651,20 @@ class Theme:
         st, px, f = self.style, self.px, self.fonts
         self._button_family("Base", C["raised"], C["hover"], C["pressed"], mix(C["raised"], C["bg"], 0.5),
                             C["accent"], line=C["line"])
-        self._button_family("Accent", C["accent"], C["accent_hi"], C["accent_lo"], C["accent_dim"], "#ffffff")
+        # (a primary button that cannot be pressed now looks like any disabled button: grey, not a dim red)
+        self._button_family("Accent", C["accent"], C["accent_hi"], C["accent_lo"], mix(C["raised"], C["bg"], 0.5),
+                            "#ffffff")
         self._button_family("Ghost", None, C["hover"], C["pressed"], None, C["accent"])
-        acc_dis = mix(C["on_accent"], C["accent_dim"], 0.55)
-        # (style suffix, layout family, font, padding, foreground, disabled / active foreground)
+        acc_dis = C["faint"]
+        # (style suffix, layout family, font, padding, foreground, disabled / active foreground); the heights:
+        # small 28, normal 34, hero 50 px at 100 % (the element adds only room for the focus ring)
         kinds = (("TButton", "Base", f["button"], (px(14), px(6)), C["text"], None),
                  ("Accent.TButton", "Accent", f["button"], (px(16), px(6)), C["on_accent"], acc_dis),
-                 ("Hero.TButton", "Accent", f["hero"], (px(22), px(13)), C["on_accent"], acc_dis),
-                 ("HeroAlt.TButton", "Base", f["hero"], (px(22), px(13)), C["text"], None),
-                 ("Ghost.TButton", "Ghost", f["button"], (px(8), px(4)), C["muted"], "active"),
-                 ("Link.TButton", "Ghost", f["small"], (px(6), px(2)), C["accent_hi"], "active"),
-                 ("Small.TButton", "Base", f["small"], (px(10), px(3)), C["text"], None),
+                 ("Hero.TButton", "Accent", f["hero"], (px(24), px(11)), C["on_accent"], acc_dis),
+                 ("HeroAlt.TButton", "Base", f["hero"], (px(24), px(11)), C["text"], None),
+                 ("Ghost.TButton", "Ghost", f["button"], (px(8), px(6)), C["muted"], "active"),
+                 ("Link.TButton", "Ghost", f["body"], (px(6), px(3)), C["accent_hi"], "active"),
+                 ("Small.TButton", "Base", f["small"], (px(10), px(4)), C["text"], None),
                  ("Danger.TButton", "Base", f["button"], (px(14), px(6)), C["bad"], None))
         for pre, key in self.BUTTON_GROUNDS:
             for suffix, fam, font, pad, fg, dis in kinds:
@@ -678,6 +684,7 @@ class Theme:
         r = px(4)
         pad = px(1)
         w = b + 2 * pad
+        gap = px(7)                       # between the box and its text (drawn into the image, on its right)
         chk = [(pad + b * 0.24, pad + b * 0.53), (pad + b * 0.43, pad + b * 0.72), (pad + b * 0.77, pad + b * 0.30)]
         sw = max(1.6, b * 0.14)
         box = rrect(pad, pad, pad + b, pad + b, r)
@@ -690,13 +697,13 @@ class Theme:
                 layers = [(box, line, True), (inner, fill, True)]
                 if check:
                     layers.append((stroke(chk, sw), check, False))
-                return self.photo(key + pre, w, w, layers, bg)
+                return self.photo(key + pre, w + gap, w, layers, bg)
 
             def rimg(key, fill, line, dot=None):
                 layers = [(circle(cx, cy, rr), line, True), (circle(cx, cy, rr - lw), fill, True)]
                 if dot:
                     layers.append((circle(cx, cy, rr * 0.42), dot, True))
-                return self.photo(key + pre, w, w, layers, bg)
+                return self.photo(key + pre, w + gap, w, layers, bg)
             self._element(f"{pre}Check.ind", img("chk_off", C["raised"], C["line_hi"]),
                           ("disabled", "selected", img("chk_on_d", C["accent_dim"], C["accent_dim"], C["muted"])),
                           ("disabled", img("chk_off_d", C["surface"], C["line"])),
@@ -730,7 +737,7 @@ class Theme:
                       ("selected", self._rounded("seg_on", sw, sh, rs, C["hover"], track)),
                       ("focus", self._ring_only("seg_f", sw, sh, rs, C["accent"], fw, track)),
                       ("active", self._rounded("seg_h", sw, sh, rs, mix(C["raised"], C["hover"], 0.5), track)),
-                      border=rs + 2, sticky="nsew", width=ssize, height=ssize)
+                      border=rs + 2, padding=(rs + 2, max(2, px(2))), sticky="nsew", width=ssize, height=ssize)
         st.layout("Seg.TRadiobutton", [("Seg.bg", {"sticky": "nsew", "children": [
             ("Radiobutton.padding", {"sticky": "nsew", "children": [("Radiobutton.label", {"sticky": "nsew"})]})]})])
         st.configure("Seg.TRadiobutton", background=track, foreground=C["muted"], font=self.fonts["button"],
@@ -770,7 +777,8 @@ class Theme:
                                                   line_w=max(2, px(2)))),
                           ("active", self._rounded("field_h" + pre, fw, fh, r, C["raised"], bg, line=C["muted"],
                                                    line_w=lw)),
-                          border=r + 2, sticky="nsew", width=size, height=size)
+                          border=r + 2, padding=(r + 2, max(2, px(2)), r + 2, max(2, px(2))), sticky="nsew",
+                          width=size, height=size)
             st.layout(pre + "TEntry", [(el, {"sticky": "nswe", "children": [
                 ("Entry.padding", {"sticky": "nswe", "children": [("Entry.textarea", {"sticky": "nswe"})]})]})])
             st.configure(pre + "TEntry", background=bg, foreground=C["text"], fieldbackground=C["raised"],
@@ -807,12 +815,24 @@ class Theme:
             ("Treeitem.focus", {"side": "left", "sticky": "", "children": [("Treeitem.text", {"side": "left",
                                                                                              "sticky": ""})]})]})])
         st.configure("Treeview.Item", padding=(px(6), 0))
+        # column headings: a hairline under them (lists sit on cards)
+        lw = max(1, px(1))
+        hw, hh = px(320), px(24)
+        self._element("Heading.line", self.photo("tv_head", hw, hh, [(lambda x, y: y >= hh - lw, C["line"], True)],
+                                                 C["surface"]),
+                      ("active", self.photo("tv_head_h", hw, hh, [(lambda x, y: y >= hh - lw, C["line_hi"], True)],
+                                            C["raised"])),
+                      border=(0, 0, 0, lw), padding=(0, 0, 0, lw), sticky="nsew", width=px(8), height=lw + 1)
+        st.layout("Treeview.Heading", [("Heading.line", {"sticky": "nswe", "children": [
+            ("Treeheading.padding", {"sticky": "nswe", "children": [
+                ("Treeheading.image", {"side": "right", "sticky": ""}),
+                ("Treeheading.text", {"sticky": "we"})]})]})])
         # thin scroll bars without arrows
         for orient in ("Vertical", "Horizontal"):
             st.layout(f"{orient}.TScrollbar", [(f"{orient}.Scrollbar.trough", {"sticky": "nswe", "children": [
                 (f"{orient}.Scrollbar.thumb", {"expand": "1", "sticky": "nswe"})]})])
-            st.configure(f"{orient}.TScrollbar", troughcolor=C["surface"], background=C["hover"],
-                         bordercolor=C["surface"], lightcolor=C["hover"], darkcolor=C["hover"],
+            st.configure(f"{orient}.TScrollbar", troughcolor=C["surface"], background=C["line"],
+                         bordercolor=C["surface"], lightcolor=C["line"], darkcolor=C["line"],
                          arrowsize=px(10), gripcount=0, relief="flat", borderwidth=0)
             st.map(f"{orient}.TScrollbar", background=[("pressed", C["line_hi"]), ("active", C["line_hi"])],
                    lightcolor=[("active", C["line_hi"])], darkcolor=[("active", C["line_hi"])])
@@ -838,7 +858,20 @@ class Theme:
                      padding=(px(14), px(7), px(14), px(7)), focuscolor=C["accent"], borderwidth=0)
         st.map("TNotebook.Tab", foreground=[("selected", C["text"]), ("active", C["text"])],
                background=[("selected", C["bg"])], expand=[("selected", (0, 0, 0, 0))])
-        st.layout("TNotebook", [("Notebook.client", {"sticky": "nswe"})])
+        # no box around the pages: one hairline under the tab row, the selected tab's accent bar standing on it
+        lw = max(1, px(1))
+        cw = px(64)
+        self._element("Line.client", self.photo("nb_client", cw, cw, [(lambda x, y: y < lw, C["line"], True)], bg),
+                      border=(0, lw, 0, 0), padding=(0, lw, 0, 0), sticky="nsew")
+        st.layout("TNotebook", [("Line.client", {"sticky": "nswe"})])
+        # the launcher's own tab row (Build, Play offline, ... : Main.TNotebook) a size larger than a page's tabs
+        st.layout("Main.TNotebook", [("Line.client", {"sticky": "nswe"})])
+        st.configure("Main.TNotebook", background=C["bg"], borderwidth=0, tabmargins=(0, 0, 0, 0), tabposition="nw")
+        st.layout("Main.TNotebook.Tab", st.layout("TNotebook.Tab"))
+        st.configure("Main.TNotebook.Tab", background=C["bg"], foreground=C["muted"], font=f["h3"],
+                     padding=(px(18), px(9), px(18), px(8)), focuscolor=C["accent"], borderwidth=0)
+        st.map("Main.TNotebook.Tab", foreground=[("selected", C["text"]), ("active", C["text"])],
+               background=[("selected", C["bg"])], expand=[("selected", (0, 0, 0, 0))])
 
     def _options(self):
         """Classic Tk widgets (Text, Listbox, the combobox drop-down, simple dialogs) in the same colours."""

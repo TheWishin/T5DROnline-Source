@@ -9,7 +9,7 @@ labelled frame per section). Here each labelled frame of the Build and Settings 
 moves inside, in the Online tab's section style (its text unchanged) -- and every ttk widget in it gets the card's variant of its style
 ("Muted.TLabel" -> "Card.Muted.TLabel", a wrapping check box "W440.TCheckbutton" -> "W440.Card.TCheckbutton", ...),
 which also holds for a style the launcher sets later (the build steps, the package check's colours): those
-widgets' configure() translates it. The Play offline tab's content becomes one card.
+widgets' configure() translates it. The Play offline and Replays tabs' content becomes one card each.
 """
 import tkinter as tk
 import tkinter.font as tkfont
@@ -18,6 +18,7 @@ from tkinter import ttk
 # ttk classes that keep their style in a card (they draw their own ground: lists, bars, scroll bars)
 KEEP = frozenset(("Treeview", "TScrollbar", "TProgressbar", "TNotebook", "TPanedwindow", "TSizegrip"))
 TK_GROUND = frozenset(("Label", "Frame", "Message", "Checkbutton", "Radiobutton", "Canvas"))
+MARGIN = 14             # px at 100 %: from the tab row's line and the window's sides to the cards (every tab)
 
 
 class Look:
@@ -169,23 +170,35 @@ def labelframes(w):
     return out
 
 
-def apply(app, keys=("build", "settings", "play")):
-    """Give the launcher's Build, Settings and Play offline tabs the Online tab's cards. -> the Look, or None
+def apply(app, keys=("build", "settings", "play", "replays")):
+    """Give the launcher's Build, Settings, Play offline and Replays tabs the Online tab's cards. -> the Look, or None
     without the dark theme (lobby/ missing: the plain look stays)."""
     theme = getattr(app, "theme", None)
     tabs = getattr(app, "tabs", None) or {}
     if theme is None or not tabs:
         return None
     look = Look(app, theme)
+    px = look.px
+    m = MARGIN
     for key in keys:
         tab = tabs.get(key)
         if tab is None:
             continue
-        if key == "play":
+        if key in ("play", "replays"):            # (one frame holds the whole tab: one card)
             kids = [c for c in tab.winfo_children() if c.winfo_class() == "TFrame"]
             if kids:
                 look.card_frame(kids[0])
+                if kids[0].winfo_manager() == "pack":
+                    kids[0].pack_configure(padx=px(m), pady=(px(m), px(8)))
             continue
+        # every tab's cards the same distance from the window's edges as the Online tab's (tk_views.OnlineView)
+        if key == "build":                         # (its cards keep their own 8 px apart)
+            tab.configure(padding=(px(m - 8), px(m - 8), px(m - 8), 0))
+        elif key == "settings":
+            inner = getattr(getattr(app, "settings_scroll", None), "inner", None)
+            box = [c for c in inner.winfo_children() if c.winfo_class() == "TFrame"][:1] if inner else []
+            if box:
+                box[0].configure(padding=(px(m), px(m), px(m), px(m)))
         for lf in labelframes(tab):
             look.card_labelframe(lf)
     app.tab_look = look

@@ -337,7 +337,7 @@ class OnlineView:
     # ------------------------------------------------------------------ build
     def _build(self):
         tab, px = self.tab, self.px
-        self.box = ttk.Frame(tab.parent, padding=(px(18), px(14), px(18), px(8)))
+        self.box = ttk.Frame(tab.parent, padding=(px(14), px(14), px(14), px(8)))   # (launcher/tab_look.MARGIN)
         self.box.pack(fill="both", expand=True)
         self.box.columnconfigure(0, weight=1)
         self.box.rowconfigure(0, weight=1)

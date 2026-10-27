@@ -135,7 +135,9 @@ class ReadOnlyTest(unittest.TestCase):
         """Every statement that names vm_base is one of the three read helpers or the research trace."""
         allowed = (r"^memcpy\(\s*&v\s*,\s*vm_base\s*\+\s*a\s*,\s*[24]\s*\)$",
                    r"^return\s+vm_base\[a\]$",
-                   r"^fwrite\(\s*vm_base\s*\+\s*0x[0-9A-Fa-f]+u?\s*,\s*1\s*,\s*(0x[0-9A-Fa-f]+|\d+)\s*,\s*g_cfg\.trace\s*\)$")
+                   r"^fwrite\(\s*vm_base\s*\+\s*0x[0-9A-Fa-f]+u?\s*,\s*1\s*,\s*(0x[0-9A-Fa-f]+|\d+)\s*,\s*g_cfg\.trace\s*\)$",
+                   r"^if\s*\(\s*k\s*%\s*r\.every\s*==\s*0\s*\)\s*fwrite\(\s*vm_base\s*\+\s*r\.base\s*,\s*1\s*,\s*r\.len\s*,"
+                   r"\s*g_cfg\.trace\s*\)$")
         stmts = [x.strip() for x in re.split(r"[;{}]", self.sources()["training.cpp"]) if "vm_base" in x]
         self.assertGreaterEqual(len(stmts), 3)
         for st in stmts:

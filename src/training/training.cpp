@@ -65,6 +65,7 @@ Sample read_fighter(uint32_t b)
     s.input    = rd16(b + 0x6D6);
     s.right    = rd8(b + 0x1D2) != 0;
     s.can_act  = (w220 & 0xFF) == 1 && ((w220 & 0x01000000u) || (w21c & 1));
+    s.end_window = (w220 & 0xFF) == 1 && (w220 & 0x01000000u);
     s.new_move = (rd32(b + 0x20C) >> 24) & 1;
     s.active   = (rd32(b + 0x214) & 0x30000u) != 0;
     s.cls      = rd32(b + 0x15C);
@@ -97,6 +98,8 @@ int parse_mode(const char* e)
     return kOff;
 }
 
+void parse_trace_ranges(const char* p);   /* T5_TRAINING_TRACE_RANGES, below */
+
 void init()
 {
     g_init = true;
@@ -118,7 +121,10 @@ void init()
     { const char* nm = getenv("T5_NET_MODE"); const char* ctl = getenv("T5_CTL_DIR");
       g_cfg.local_net = nm && !_stricmp(nm, "local");
       g_cfg.online_game = (nm && *nm && !g_cfg.local_net) || (ctl && *ctl); }
-    if (const char* f = getenv("T5_TRAINING_TRACE"); f && *f) g_cfg.trace = fopen(f, "wb");
+    if (const char* f = getenv("T5_TRAINING_TRACE"); f && *f) {
+        g_cfg.trace = fopen(f, "wb");
+        parse_trace_ranges(getenv("T5_TRAINING_TRACE_RANGES"));
+    }
     if (g_cfg.mode != kOff) {
         rsx_overlay_prepare();
         fprintf(stderr, "[training] overlay: %s, %s%s (F2 switches it)\n",
@@ -269,15 +275,44 @@ void log_result(const Result& r)
     fflush(g_cfg.log);
 }
 
+/* T5_TRAINING_TRACE_RANGES="addr:len[:every],..." (hex addresses and lengths,
+ * every in frames, default 1): more guest ranges for the research trace, each
+ * appended to the frames it is due in (n % every == 0), in the order given */
+struct TraceRange { uint32_t base, len, every; };
+TraceRange g_trace_extra[8];
+int g_trace_nextra = 0;
+
+void parse_trace_ranges(const char* p)
+{
+    while (p && *p && g_trace_nextra < 8) {
+        char* e;
+        const uint32_t a = (uint32_t)strtoul(p, &e, 16);
+        if (e == p || *e != ':') break;
+        p = e + 1;
+        const uint32_t l = (uint32_t)strtoul(p, &e, 16);
+        if (e == p) break;
+        p = e;
+        uint32_t every = 1;
+        if (*p == ':') { every = (uint32_t)strtoul(p + 1, &e, 10); p = e; if (!every) every = 1; }
+        if (a >= 0x10000000u && l && l <= 0x01000000u && a + l <= 0x20000000u) g_trace_extra[g_trace_nextra++] = { a, l, every };
+        while (*p == ',' || *p == ' ') p++;
+    }
+}
+
 void trace_frame()
 {
     static uint32_t n = 0;
+    const uint32_t k = n;
     struct { uint32_t magic, n; } h = { 0x54524331u, n++ };
     fwrite(&h, sizeof h, 1, g_cfg.trace);
     fwrite(vm_base + 0x1008E000u, 1, 0x4000, g_cfg.trace);
     fwrite(vm_base + 0x104CCDF0u, 1, 0x60, g_cfg.trace);
     fwrite(vm_base + 0x10099F00u, 1, 0x200, g_cfg.trace);
     fwrite(vm_base + 0x106D4D88u, 1, 8, g_cfg.trace);
+    for (int i = 0; i < g_trace_nextra; i++) {
+        const TraceRange& r = g_trace_extra[i];
+        if (k % r.every == 0) fwrite(vm_base + r.base, 1, r.len, g_cfg.trace);
+    }
     fflush(g_cfg.trace);
 }
 

@@ -20,7 +20,13 @@
  *                24 (the cancellable end of a move, of a block or of a hit
  *                reaction) or +0x21C bit 0 (idle, walking, crouching). Bit 24
  *                alone (low byte 0) is the window in which a press is kept for
- *                the end of the move: not yet able to act.
+ *                the end of the move: not yet able to act. In a hit
+ *                reaction (+0x15C >= 0x10000) only the cancellable end
+ *                counts: some reactions set the idle bit long before it
+ *                (Bryan's d+4 on hit, reaction 0x0307: +0x21C bit 0 nine
+ *                frames in, bit 24 at 29; a jab pressed from frame 9 on
+ *                still comes out at 30 -- the game's own answer, so +3 on
+ *                hit, not -17).
  *   +0x6BC  i16  health
  *   +0x6D4  u16  the pad input the fighter read this frame (the game's mask:
  *                UP 0x1000 RIGHT 0x2000 DOWN 0x4000 LEFT 0x8000, TRIANGLE 0x10
@@ -47,6 +53,7 @@ struct Sample {
     uint16_t input = 0;      /* +0x6D4 */
     bool     right = false;  /* +0x1D2: on the right side, facing left */
     bool     can_act = true; /* +0x220 / +0x21C, see above */
+    bool     end_window = false; /* +0x220 low byte 1 and bit 24: the cancellable end of a move or reaction */
     bool     new_move = false;
     bool     active = false; /* +0x214 bits 16-17 */
     bool     down = false;   /* +0x168 in the 0x8002..0x80FF family: lying on the ground */
@@ -145,7 +152,7 @@ public:
          *    (Before step 3: a string's next move may start in this frame.) */
         for (int p = 0; p < 2; p++) {
             const int o = 1 - p;
-            const bool reacts = prev_[p].active && s[o].new_move && !s[o].can_act && is_reaction_cls(s[o].cls);
+            const bool reacts = prev_[p].active && s[o].new_move && !acts(s[o]) && is_reaction_cls(s[o].cls);
             const bool damaged = s[o].hp < prev_[o].hp && (prev_[p].active || s[p].active);
             if (!reacts && !damaged) continue;
             if (ex_.open && ex_.att == p && !ex_.settled) {
@@ -159,7 +166,7 @@ public:
                 ex_.att = p;
                 ex_.contact = t;
                 ex_.startup = mv_[p].first_active && mv_[p].start ? (int)(mv_[p].first_active - mv_[p].start + 1) : 0;
-                ex_.counter = !prev_[o].can_act && is_attack_cls(prev_[o].cls);
+                ex_.counter = !acts(prev_[o]) && is_attack_cls(prev_[o].cls);
             }
             mv_[p].contacted = true;
         }
@@ -168,7 +175,7 @@ public:
         for (int p = 0; p < 2; p++) {
             const int o = 1 - p;
             const bool reaction = prev_[o].active && is_reaction_cls(s[p].cls);
-            if (s[p].new_move && !s[p].can_act && !reaction && !s[p].down) {   /* lying down is no move of its own */
+            if (s[p].new_move && !acts(s[p]) && !reaction && !s[p].down) {   /* lying down is no move of its own */
                 started[p] = true;
                 mv_[p] = Move{};
                 mv_[p].start = t;
@@ -187,10 +194,10 @@ public:
         if (ex_.open && !ex_.settled) {
             const int a = ex_.att, d = ex_.def();
             if (t > ex_.contact && (s[d].input & kButtons)) ex_.def_btn = true;
-            if (!ex_.att_act && t > ex_.contact && s[a].can_act) ex_.att_act = t;
+            if (!ex_.att_act && t > ex_.contact && acts(s[a])) ex_.att_act = t;
             if (!ex_.def_act && t > ex_.contact) {
                 if (started[d]) ex_.def_act = t - 1;
-                else if (s[d].can_act) {
+                else if (acts(s[d])) {
                     if (!ex_.def_btn) ex_.def_act = t;
                     else if (!ex_.def_flag) ex_.def_flag = t;
                 }
@@ -218,7 +225,7 @@ public:
         /* 6. whiffs: an attack whose active frames hit nothing, over */
         for (int p = 0; p < 2; p++) {
             if (!mv_[p].live) continue;
-            if (s[p].can_act && !prev_[p].can_act) {
+            if (acts(s[p]) && !acts(prev_[p])) {
                 if (mv_[p].first_active && !mv_[p].contacted) {
                     last_ = Result{};
                     last_.attacker = p;
@@ -240,6 +247,8 @@ public:
 
 private:
     static bool is_reaction_cls(uint32_t c) { return c == 0 || c >= 0x10000; }
+    /* able to act: in a hit reaction only at its cancellable end (see Sample) */
+    static bool acts(const Sample& x) { return x.can_act && (x.cls < 0x10000 || x.end_window); }
     static bool is_attack_cls(uint32_t c) { return c != 0 && c < 0x10000; }
     struct Move { uint64_t start = 0, first_active = 0; bool live = false, contacted = false; };
     struct Exchange {

@@ -2252,6 +2252,13 @@ void costume_set(const uint8_t* p, size_t n)
     s.cos_local_hash = cos_hash(s.cos_local.data(), s.cos_local.size());
     s.cos_local_set = true;
     s.cos_acked = 0; s.cos_next = 0;
+    if (s.mode == Mode::Local) {
+        /* both players on this PC (tests: tools/training_check.py): no peer to wait for, P2 gets the same table */
+        s.cos_peer = s.cos_local;
+        s.cos_peer_hash = s.cos_local_hash;
+        s.cos_peer_done = true;
+        return;
+    }
     if (s.connected && !s.peer_lost) send_costume_locked(0);
 }
 bool costume_local_set() { State& s = S(); std::lock_guard<std::mutex> lk(s.mu); return s.cos_local_set; }

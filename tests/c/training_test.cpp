@@ -96,7 +96,7 @@ struct Timeline {
     {
         f[(size_t)start].new_move = true;
         for (int t = start; t < act && t < (int)f.size(); t++) { f[(size_t)t].can_act = false; f[(size_t)t].cls = cls; }
-        if (act < (int)f.size()) f[(size_t)act].cls = cls;
+        if (act < (int)f.size()) { f[(size_t)act].cls = cls; f[(size_t)act].end_window = true; }
     }
     void active(int from, int to) { for (int t = from; t <= to; t++) f[(size_t)t].active = true; }
     void damage(int at, int d) { for (int t = at; t < (int)f.size(); t++) f[(size_t)t].hp -= d; }
@@ -279,6 +279,72 @@ static void test_down_and_counter()
     if (!r2.results.empty()) { CHECK(r2.results[0].kind == Kind::Counter); CHECK_EQ(r2.results[0].adv, 11); }
 }
 
+/* Moves whose hit reaction sets the idle flag early (traced: Bryan d+4 vs Jin,
+ * local lockstep, docs/TRAINING.md): the defender's reaction 0x0307 reads
+ * "can act" (+0x21C bit 0) 9 frames in, but its cancellable end (+0x220 bit
+ * 24) comes at 29 and a jab pressed from then on starts at 30. The game's own
+ * answer is +3 on hit; the overlay used to say -17. */
+static void test_special_hit_reaction()
+{
+    /* d+4 starts at 10, active at 24 (i15), Bryan can act from 51 */
+    auto attacker = [](Timeline& a) { a.move(10, 9, 51); a.active(24, 24); };
+    /* the reaction: 9 damage, class 0x10000 from 25, the idle flag from 34, the end at 54, standing at 55 */
+    auto reaction = [](Timeline& d) {
+        d.damage(24, 9);
+        d.move(25, 0x10000, 54);
+        for (int t = 34; t < 54; t++) d.f[(size_t)t].can_act = true;
+        for (int t = 54; t < 56; t++) d.f[(size_t)t].cls = 0x10000;
+        d.f[55].new_move = true;
+        d.f[55].cls = 0;
+    };
+    {
+        Timeline a(160), d(160);
+        attacker(a);
+        reaction(d);
+        const Run r = run(a, d);
+        CHECK_EQ(r.results.size(), 1);
+        if (r.results.size() == 1) {
+            CHECK(r.results[0].kind == Kind::Hit);
+            CHECK_EQ(r.results[0].startup, 15);
+            CHECK_EQ(r.results[0].adv, 3);
+        }
+    }
+    /* the defender mashing a jab from the hit on: the game opens its window early
+     * (bit 24 without the low byte at 50, both at 55) and the jab starts at 56 */
+    {
+        Timeline a(160), d(160);
+        attacker(a);
+        d.damage(24, 9);
+        d.move(25, 0x10000, 55);
+        for (int t = 34; t < 55; t++) d.f[(size_t)t].can_act = true;
+        for (int t = 26; t < 56; t += 2) d.input(t, t, kSquare);
+        d.move(56, 7, 80);
+        const Run r = run(a, d);
+        CHECK(!r.results.empty());
+        if (!r.results.empty()) { CHECK(r.results[0].kind == Kind::Hit); CHECK_EQ(r.results[0].adv, 4); }
+    }
+    /* the same move on block: a guard reaction (class 0) that can act from 37 -> -14 */
+    {
+        Timeline a(160), d(160);
+        attacker(a);
+        d.move(25, 0, 37);
+        const Run r = run(a, d);
+        CHECK_EQ(r.results.size(), 1);
+        if (r.results.size() == 1) { CHECK(r.results[0].kind == Kind::Block); CHECK_EQ(r.results[0].adv, -14); }
+    }
+    /* a hit reaction whose idle flag comes with its end (every other reaction traced) is unchanged */
+    {
+        Timeline a(80), d(80);
+        a.move(10, 7, 35); a.active(19, 19);
+        d.damage(19, 7); d.move(20, 0x10000, 44);
+        d.f[44].end_window = false;            /* idle flag only, after the reaction: class 0 there */
+        d.f[44].cls = 0;
+        const Run r = run(a, d);
+        CHECK_EQ(r.results.size(), 1);
+        if (r.results.size() == 1) CHECK_EQ(r.results[0].adv, 9);
+    }
+}
+
 /* ---- font and layout ------------------------------------------------------------ */
 static void test_font()
 {
@@ -391,6 +457,7 @@ int main()
     test_whiff_and_walk();
     test_string();
     test_down_and_counter();
+    test_special_hit_reaction();
     test_font();
     test_layout();
     if (g_fail) {

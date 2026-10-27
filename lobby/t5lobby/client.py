@@ -207,6 +207,7 @@ class LobbyClient(TourCalls, SpectateClientMixin):
         self.relay_bridge = relay_bridge
         self.relays = relays
         self.relay_rtts = {}         # regional relay id -> ms, as last measured and reported
+        self.peer_pings = {}         # (lower-case name, guest) -> (ms, path, monotonic): measured in a match (ping_to)
         self.tournaments = tournaments
         self._mapper = None          # portmap.GamePortMapper (port_mapping=True)
         self._router_factory = None  # tests / NAT simulator: a fake router for the mapper
@@ -659,6 +660,7 @@ class LobbyClient(TourCalls, SpectateClientMixin):
         await self._nat_relay(msg)
 
     async def _on_match_start(self, msg):
+        self._remember_peer_ping(msg)
         gs = self._gs
         if msg.get("continue") and self.match and self.match["match"] == msg["match"] and \
                 self.match.get("state") != "playing":
@@ -1010,6 +1012,66 @@ class LobbyClient(TourCalls, SpectateClientMixin):
         self.relay_rtts = rtts
         await self._safe(self._send({"t": "relay_rtt", "rtts": rtts}))
         self._emit({"t": "relay_rtts", "rtts": dict(rtts)})
+
+    # ================================================================ ping to another player (1.1.5)
+    PEER_PINGS_MAX = 500
+
+    @staticmethod
+    def _peer_key(p):
+        return (str(p.get("name") or "").lower(), bool(p.get("guest")))
+
+    def _remember_peer_ping(self, msg):
+        """match_start: the ping to this opponent was just measured (the lobby list shows it without "~" from now on)."""
+        opp, ms = msg.get("opponent"), msg.get("rtt_ms")
+        if not isinstance(opp, dict) or not opp.get("name") or isinstance(ms, bool) or not isinstance(ms, (int, float)):
+            return
+        if not 0 <= ms < 5000:
+            return
+        key = self._peer_key(opp)
+        self.peer_pings.pop(key, None)
+        self.peer_pings[key] = (float(ms), msg.get("path") if msg.get("path") in ("direct", "lan", "relay") else None,
+                                time.monotonic())
+        while len(self.peer_pings) > self.PEER_PINGS_MAX:
+            del self.peer_pings[next(iter(self.peer_pings))]
+
+    def ping_to(self, p):
+        """The ping to another player of the lobby list (a `players` entry): (ms, measured) -- measured in a match
+        with them since this launcher started, else the server's estimate made here: the smaller of the way through
+        the lobby server (both round trips to it) and the best regional relay both measured (the list's `relays`,
+        servers from 1.1.5). (None, False) for this player or when nothing is known."""
+        if not isinstance(p, dict) or (self.me and p.get("id") == self.me.get("id")):
+            return None, False
+        seen = self.peer_pings.get(self._peer_key(p))
+        if seen is not None:
+            return seen[0], True
+        est = None
+        if isinstance(p.get("rtt"), (int, float)):
+            est = p["rtt"] + (self.server_rtt or 0.0)
+        theirs = p.get("relays") if isinstance(p.get("relays"), dict) else {}
+        for rid, mine in (self.relay_rtts or {}).items():
+            other = theirs.get(rid)
+            if isinstance(other, (int, float)) and not isinstance(other, bool) and (est is None or mine + other < est):
+                est = mine + other
+        return est, False
+
+    def ping_info(self, ev, who="from"):
+        """The `ping` of a challenge / invite / found match (the server's, 1.1.5) -- or, from an older server, the same
+        shape made here from the lobby list: {ms, kind "estimate" | "measured", known[, path]}; None when unknown."""
+        ping = ev.get("ping") if isinstance(ev, dict) else None
+        if isinstance(ping, dict) and isinstance(ping.get("ms"), (int, float)):
+            return ping
+        other = (ev or {}).get(who) if isinstance(ev, dict) else None
+        if not isinstance(other, dict):
+            return None
+        entry = self._pmap.get(other.get("id")) or other
+        ms, measured = self.ping_to(entry)
+        if ms is None:
+            return None
+        out = {"ms": round(ms), "kind": "measured" if measured else "estimate", "known": True}
+        seen = self.peer_pings.get(self._peer_key(entry))
+        if measured and seen and seen[1]:
+            out["path"] = seen[1]
+        return out
 
     # ================================================================ public API (any thread)
     def _call(self, msg, timeout=None):

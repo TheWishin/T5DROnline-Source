@@ -1855,6 +1855,12 @@ MESSAGES = {
     "Opponent hidden": "Rival oculto",
     "Name and side are shown once you both accept.": "El nombre y el lado se muestran cuando ambos acepten.",
     "(estimated before you connect)": "(estimado antes de conectar)",
+    "(measured in your last match together)": "(medido en la última partida que jugaron juntos)",
+    "ping {ms} ms (measured in your last match together)":
+        "ping de {ms} ms (medido en la última partida que jugaron juntos)",
+    "probably a direct connection": "probablemente una conexión directa",
+    "probably over the local network": "probablemente por la red local",
+    "probably through a relay server": "probablemente a través de un servidor relay",
     "Accepted. Waiting for your opponent...": "Aceptado. Esperando a tu rival...",
     "Match ready": "Partida lista",
     "Connecting the two games...": "Conectando los dos juegos...",

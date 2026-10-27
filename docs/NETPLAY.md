@@ -222,7 +222,17 @@ match starts:
   suggestion; tests that start with 0 stay at 0);
 - **ranked matches** use a fixed value for everybody: the lobby server sends
   `T5L_RANKED_INPUT_DELAY` (default 2) in `match_start`, the launcher passes it
-  as `T5_RB_NET_DELAY` on both PCs, and it wins over the player's setting.
+  as `T5_RB_NET_DELAY` on both PCs, and it wins over the player's setting;
+- **far matches** (1.1.5, ranked or not): above 150 ms measured round trip the
+  lobby server sends at least 3 frames the same way, 4 above 250 ms
+  (`T5L_PING_DELAYS`, default `150:3,250:4`; ranked: the higher of the two
+  values), never above the session's lockstep delay. About a quarter of the
+  matches are relayed, many of them far: with 2 frames a 200 ms match predicts
+  ~4 frames of the opponent's input and rolls back that deep on every surprise;
+  3-4 frames of delay make the jumps smaller. Both PCs get the same number, so
+  the host's pick is that number ("both players set 3"); a launcher from 1.1.4
+  passes it on too (it passes any `input_delay` of `match_start`). A rematch
+  inside the running games keeps its session's delay.
 
 The round trip is measured by the game, not taken from the lobby: from the
 handshake to the match start both games send a PING every 200 ms when nothing

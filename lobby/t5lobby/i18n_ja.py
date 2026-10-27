@@ -1982,6 +1982,14 @@ MESSAGES = {
         "再戦は同じセッションのそれ以前の対戦の後に再生されます：その対戦が残した状態から始まるためです。",
     "Save online matches as replays":
         "オンライン対戦をリプレイとして保存する",
+    "Watch replay": "リプレイを見る",
+    "{count} of these matches have a replay on this PC ({mark}). Select one to watch it.":
+        "このうち{count}件の対戦はこのPCにリプレイがあります（{mark}）。選ぶと見られます。",
+    "None of these matches has a replay on this PC (replays are saved on the PC that played, while \"Save online matches as replays\" is on).":
+        "このPCにはどの対戦のリプレイもありません（リプレイは「オンライン対戦をリプレイとして保存する」がオンの間、対戦したPCに保存されます）。",
+    "No replay of this match on this PC.": "この対戦のリプレイはこのPCにありません。",
+    "{fighters}, saved on this PC.": "{fighters}、このPCに保存済み。",
+    "This replay is no longer on this PC.": "このリプレイはもうこのPCにありません。",
     "Keep the players' names in replays":
         "リプレイにプレイヤー名を残す",
     "Rollback":

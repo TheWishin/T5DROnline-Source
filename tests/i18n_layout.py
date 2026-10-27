@@ -537,6 +537,21 @@ class Walk:
         self.screen("online leaderboard")
         tab.show_profile("Me")
         self.screen("online profile")
+        # the match history with replays on this PC (tk_history.py): the play mark, the count, one selected
+        rp = getattr(self.app, "replays", None)
+        if rp is not None and getattr(tab, "history", None) is not None:
+            class _E:
+                fighters = "Roger Jr. vs Armor King"
+            had = rp.for_history
+            rp.for_history = lambda h, ids: _E() if h["result"] in ("won", "lost") else None
+            tab.show_profile("Me")
+            self.screen("online profile, replays")
+            first = tab.tv_hist.get_children()[:1]
+            tab.tv_hist.selection_set(first)
+            self.screen("online profile, a replay selected")
+            tab.tv_hist.selection_set(tab.tv_hist.get_children()[2:3])
+            self.screen("online profile, no replay of it")
+            rp.for_history = had
         tab.nb.select(tab.friends_page)
         tab.on_event({"t": "friends"})
         self.screen("online friends")

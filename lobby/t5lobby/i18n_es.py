@@ -2000,6 +2000,14 @@ MESSAGES = {
         "ellas quedaron.",
     "Save online matches as replays":
         "Guardar las partidas online como replays",
+    "Watch replay": "Ver replay",
+    "{count} of these matches have a replay on this PC ({mark}). Select one to watch it.":
+        "{count} de estas partidas tienen replay en este PC ({mark}). Elige una para verla.",
+    "None of these matches has a replay on this PC (replays are saved on the PC that played, while \"Save online matches as replays\" is on).":
+        "Ninguna de estas partidas tiene replay en este PC (los replays se guardan en el PC que jugó, mientras «Guardar las partidas online como replays» está activado).",
+    "No replay of this match on this PC.": "No hay replay de esta partida en este PC.",
+    "{fighters}, saved on this PC.": "{fighters}, guardado en este PC.",
+    "This replay is no longer on this PC.": "Este replay ya no está en este PC.",
     "Keep the players' names in replays":
         "Guardar los nombres de los jugadores en los replays",
     "Rollback":

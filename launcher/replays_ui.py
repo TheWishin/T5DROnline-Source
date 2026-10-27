@@ -145,6 +145,40 @@ class ReplaysTab:
                 pass
         return self._build_id
 
+    # ------------------------------------------------------------------ the Online tab's match history (1.1.5)
+    def entries_now(self, max_age=10.0):
+        """Every replay on this PC, read again when the last reading is older than max_age seconds."""
+        if time.time() - getattr(self, "_read_at", 0.0) > max_age:
+            self._listed = replays.list_replays(self.folder) if os.path.isdir(self.folder) else []
+            self._read_at = time.time()
+        return self._listed
+
+    def for_history(self, h, ids):
+        """The replay of a row of the profile's match history (server history: time, you_char, opp_char, opponent,
+        score), or None. ids: fighter key -> the replay's fighter id."""
+        try:
+            return replays.for_history(self.entries_now(), h["time"], ids.get(h.get("you_char")),
+                                       ids.get(h.get("opp_char")), h.get("opponent"), h.get("score"))
+        except (KeyError, TypeError, AttributeError):
+            return None
+
+    def watch_entry(self, e):
+        """Watch `e` from elsewhere (the profile's Watch replay): the Replays tab comes to the front with its row
+        selected, and plays it as WATCH would."""
+        nb, tabs = getattr(self.app, "nb", None), getattr(self.app, "tabs", None)
+        if nb is not None and tabs and "replays" in tabs:
+            nb.select(tabs["replays"])
+        self.refresh()
+        for i, x in enumerate(self.entries):
+            if x.path == e.path and x.index == e.index:
+                self.tv.selection_set(str(i))
+                self.tv.see(str(i))
+                break
+        else:
+            self.verdict.set(t("This replay is no longer on this PC."))
+            return
+        self.watch()
+
     # ------------------------------------------------------------------ actions
     def watch(self):
         e = self.selected()

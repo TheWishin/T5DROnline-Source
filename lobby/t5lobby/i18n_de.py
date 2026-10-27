@@ -2105,6 +2105,14 @@ MESSAGES = {
         "Replay. Ein Rematch wird nach den Matches davor in derselben Sitzung abgespielt: es beginnt dort, "
         "wo sie aufgehört haben.",
     "Save online matches as replays": "Online-Matches als Replays speichern",
+    "Watch replay": "Replay ansehen",
+    "{count} of these matches have a replay on this PC ({mark}). Select one to watch it.":
+        "{count} dieser Matches haben ein Replay auf diesem PC ({mark}). Wähle eins, um es anzusehen.",
+    "None of these matches has a replay on this PC (replays are saved on the PC that played, while \"Save online matches as replays\" is on).":
+        "Keins dieser Matches hat ein Replay auf diesem PC (Replays werden auf dem PC gespeichert, der gespielt hat, solange „Online-Matches als Replays speichern“ an ist).",
+    "No replay of this match on this PC.": "Kein Replay dieses Matches auf diesem PC.",
+    "{fighters}, saved on this PC.": "{fighters}, auf diesem PC gespeichert.",
+    "This replay is no longer on this PC.": "Dieses Replay ist nicht mehr auf diesem PC.",
     "Keep the players' names in replays": "Die Namen der Spieler in Replays behalten",
     "Rollback": "Rollback",
     "Lockstep": "Lockstep",

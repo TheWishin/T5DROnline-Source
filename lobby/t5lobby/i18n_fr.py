@@ -2022,6 +2022,14 @@ MESSAGES = {
         "ont laissé.",
     "Save online matches as replays":
         "Enregistrer les matchs en ligne comme replays",
+    "Watch replay": "Voir le replay",
+    "{count} of these matches have a replay on this PC ({mark}). Select one to watch it.":
+        "{count} de ces matchs ont un replay sur ce PC ({mark}). Choisissez-en un pour le voir.",
+    "None of these matches has a replay on this PC (replays are saved on the PC that played, while \"Save online matches as replays\" is on).":
+        "Aucun de ces matchs n'a de replay sur ce PC (les replays sont enregistrés sur le PC qui a joué, tant que « Enregistrer les matchs en ligne comme replays » est activé).",
+    "No replay of this match on this PC.": "Pas de replay de ce match sur ce PC.",
+    "{fighters}, saved on this PC.": "{fighters}, enregistré sur ce PC.",
+    "This replay is no longer on this PC.": "Ce replay n'est plus sur ce PC.",
     "Keep the players' names in replays":
         "Garder les noms des joueurs dans les replays",
     "Rollback":

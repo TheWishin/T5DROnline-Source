@@ -1489,6 +1489,8 @@ class OnlineTab:
                 self.tv_hist.insert("", "end", values=(when, _word(OUTCOME_WORD, h["result"]), h["opponent"], chars,
                                                        score, delta, st),
                                     tags=(h["result"],) if h.get("result") in ("won", "lost") else ())
+            if getattr(self, "history", None) is not None:
+                self.history.shown(p)                      # results coloured, replays on this PC (tk_history.py)
         self.call(self.client.profile, name, 20, then=done)
 
     # ------------------------------------------------------------------ server events

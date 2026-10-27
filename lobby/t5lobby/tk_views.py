@@ -25,7 +25,7 @@ import weakref
 import tkinter as tk
 from tkinter import ttk
 
-from . import i18n, proto, ranks, theme, tk_stats, tk_tour
+from . import i18n, proto, ranks, theme, tk_history, tk_stats, tk_tour
 from .i18n import N_, t
 from .lag import describe_event as describe_lag, lagged
 from .rank_art import ART
@@ -562,6 +562,7 @@ class OnlineView:
         self._build_lobby_page(lobby)
         self._build_board_page(board)
         self._build_profile_page(prof)
+        tk_history.attach(self)                      # the match history's Watch replay (tk_history.py)
         self._build_friends_page(friends)
         tk_tour.build_page(self, tours)              # tournaments: list, bracket (tk_tour.py)
         tk_stats.build_page(self, stats)             # the community's numbers, every fighter (tk_stats.py)

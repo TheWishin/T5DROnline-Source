@@ -1952,6 +1952,14 @@ MESSAGES = {
         "상태에서 시작하기 때문입니다.",
     "Save online matches as replays":
         "온라인 대전을 리플레이로 저장",
+    "Watch replay": "리플레이 보기",
+    "{count} of these matches have a replay on this PC ({mark}). Select one to watch it.":
+        "이 중 {count}개의 매치는 이 PC에 리플레이가 있습니다({mark}). 선택하면 볼 수 있습니다.",
+    "None of these matches has a replay on this PC (replays are saved on the PC that played, while \"Save online matches as replays\" is on).":
+        "이 PC에는 이 매치들의 리플레이가 없습니다(리플레이는 \"온라인 대전을 리플레이로 저장\"이 켜져 있을 때 플레이한 PC에 저장됩니다).",
+    "No replay of this match on this PC.": "이 PC에 이 매치의 리플레이가 없습니다.",
+    "{fighters}, saved on this PC.": "{fighters}, 이 PC에 저장됨.",
+    "This replay is no longer on this PC.": "이 리플레이는 더 이상 이 PC에 없습니다.",
     "Keep the players' names in replays":
         "리플레이에 플레이어 이름 남기기",
     "Rollback":

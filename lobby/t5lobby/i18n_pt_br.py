@@ -1983,6 +1983,14 @@ MESSAGES = {
         "reproduzida depois das partidas anteriores da mesma sessão: ela começa de onde elas pararam.",
     "Save online matches as replays":
         "Salvar partidas online como replays",
+    "Watch replay": "Ver replay",
+    "{count} of these matches have a replay on this PC ({mark}). Select one to watch it.":
+        "{count} destas partidas têm replay neste PC ({mark}). Escolha uma para assistir.",
+    "None of these matches has a replay on this PC (replays are saved on the PC that played, while \"Save online matches as replays\" is on).":
+        "Nenhuma destas partidas tem replay neste PC (os replays são salvos no PC que jogou, enquanto \"Salvar partidas online como replays\" está ativado).",
+    "No replay of this match on this PC.": "Não há replay desta partida neste PC.",
+    "{fighters}, saved on this PC.": "{fighters}, salvo neste PC.",
+    "This replay is no longer on this PC.": "Este replay não está mais neste PC.",
     "Keep the players' names in replays":
         "Guardar os nomes dos jogadores nos replays",
     "Rollback":

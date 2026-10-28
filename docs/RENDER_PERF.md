@@ -3678,6 +3678,41 @@ gate runs it on the candidate and compares with the 1.1.6 baseline (`build/w117/
 Every game run is one heavy step under the shared lock (taken per run, given back after it). The PC's other load is
 in every row; compare two builds measured under similar load.
 
+### The baseline: 1.1.6 (`build/int115/x-final`, patches 0001-0081)
+
+`perf_compare.py run --game build/int115/x-final`, 2 runs per row, RTX 3090, 2026-10-28 (other agents' games on the PC
+during most of it: "other" = processors busy besides the game). Offline, Lili vs Asuka (fps; frames over 20.9 ms; the
+game part / translation medians; `[gpu-pass]` GPU ms a frame; the game thread's CPU per frame):
+
+| | stage 17 | stage 19 | stage 4 (City at Sunset) | stage 13 (Poolside) |
+|---|---|---|---|---|
+| all 32, default | 59.9 fps; 12; 2.38 / 1.42; GPU 3.09; 2.12 ms | 59.8; 9; 3.04 / 1.80; 2.80; 2.42 | 59.8; 4; 2.44 / 1.69; 4.20; 2.17 | 59.9; 8; 2.70 / 1.42; 2.71; 2.31 |
+| all 32, Lowest | 59.9; 8; 2.38 / 1.12; 1.26; 2.11 | 59.7; 8; 3.01 / 1.06; 1.24; 2.43 | 59.8; 6; 2.40 / 1.44; 1.89; 2.15 | 59.9 / 48.0 (\*); 555; 2.78 / 1.36; 0.70; 2.39 |
+| 2 cores / 4 threads, default | 59.9; 6; 2.88 / 1.67; 3.09; 2.63 | 59.7; 10; 3.17 / 1.86; 2.69; 2.55 | 59.8; 6; 3.02 / 1.96; 3.61; 2.65 | 59.9; 3; 3.34 / 1.69; 2.66; 2.90 |
+| 2 cores / 4 threads, Lowest | 59.9; 6; 2.87 / 1.31; 1.26; 2.62 | 59.9; 8; 3.40 / 1.41; 1.09; 2.69 | 59.8; 6; 3.02 / 1.62; 1.82; 2.65 | 59.9; 4; 3.32 / 1.33; 1.19; 2.88 |
+
+(\*) One run GPU-bound (803 of 816 slow frames "GPU", GPU wait 12.9 ms): another agent's game on the same card; the
+second run 59.9. The GPU wait median is 0.0 everywhere else. On this PC 2 cores at full clock keep 60 fps on every
+stage and preset; the game's processor time grows from ~21-24 ms a frame on 32 processors (spinning workers) to 14-17
+ms on 2 cores (`cpu_ms_per_frame`), the game part from ~2.4 to ~3.0 ms. The `[slow-frames]` lines appear only where
+frames were slow (every 5 minutes otherwise), so the medians come from the frame and game-thread logs.
+
+Rollback pairs (per side and match, mean of 2 pairs; 4,229 presents while fighting each):
+
+| network (input delay) | pictures shown twice+ | present p99 | display lead | rollbacks | mismatching | fps |
+|---|---|---|---|---|---|---|
+| RTT 60 +-5, 1 % (by ping) | 18.0 | 18.9 ms | 13.1 ms | 116 | 0 | 60.0 |
+| RTT 120 +-8, 2 % (by ping) | 14.0 | 20.0 | 13.1 | 570 | 0 | 60.0 |
+| RTT 180 +-10, 3 % (3) | 18.2 | 20.9 | 13.5 | 569 | 0 | 60.0 |
+| RTT 260 +-12, 3 % (4) | 18.5 | 22.1 | 13.9 | 570 | 0 | 60.0 |
+
+With a warm shader cache (1.1.5's section 34 counted 36-40 at 60-180 ms, ~22 of them shader work in games whose cache
+never grew). What is left, by cause (`rollback_frame_times.py`): at 60 ms nearly all "nothing logged" (the machine:
+other agents' load); at 120-180 ms half rollbacks of depth 2-3 that ran past the display lock's lead, half the
+machine; at 260 ms (delay 4) ~80 intervals a side over 20 ms with a depth-4 rollback in them, of which ~12 cost a
+refresh. e2e: `net_rollback` PASS (300 checks, 11 matches, fps 57.3-60), `net_relay_smooth` at the four networks PASS
+(0 mismatching), `ranked_set` PASS (170 checks).
+
 ### Patch 0084 (timing and host code only; CODE_VERSION unchanged)
 
 - **The SPU signal log's `fflush`** (`runtime/spu/spu_workload.c`, upstream ps3recomp, found by the Mac build's
@@ -3693,6 +3728,15 @@ in every row; compare two builds measured under similar load.
   [2^-900, 2^901) keep the integer path. Checked against the instruction: `runtime/ppu/tests/test_fp_det.c` (new
   cases for the window, its edges, cancellation; 50 M random + 4,913 special: 0 differ), a 400 M-case stress (0
   differ), `tests/c/fma_soft_test.c` (`tests/test_weak_cpu_117.py`). CPUs with FMA3 never run it.
+
+**The full set, before and after** (`perf_compare.py compare`: before = integration-117 6f1074b, patches 0001-0083 +
+0085; after = the same + 0084; x86-64-v3 builds as on this PC, so the FMA path is not used; the PC quiet, one build after
+the other, 2 runs per row): every offline row within the run-to-run spread -- fps 59.8-59.9 before and after on all 32
+and on 2 cores, stages 17/19/4/13, default and Lowest (one 2-core stage 4 run at 58.0 with 1.8 processors of other load;
+its pair 59.9), the game thread's CPU per frame -1.6..+2.3 %, translation -6.7..+1.2 % except one 2-core stage 13 Lowest
+pair (1.34 -> 1.65 ms at 59.9 fps either way); rollback pairs 0 mismatching and the same result hash on both sides at
+every network, pictures shown twice 7.8 / 8.0 / 11.2 / 17.0 -> 6.2 / 9.0 / 10.8 / 14.5 at 60 / 120 / 180 / 260 ms (the
+patch does not touch pacing: noise); e2e `net_rollback`, `net_relay_smooth`, `ranked_set` PASS -> PASS.
 
 ### GitHub #12's PC on this one (the stand-in)
 

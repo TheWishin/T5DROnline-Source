@@ -3421,3 +3421,119 @@ set of asked). With
   ewgf_final_online_vs_offline.png`, local: game pictures stay out of the repo); with the dumps' long frames 1 of 8
   EWGFs lost it on the rollback host and 1 of 8 on the lockstep joiner.
 - Patch series 0001-0081 applies (`prepare_ps3recomp`) and gives the files built; unit tests, i18n checks.
+
+## City at Sunset: one black frame at a time (1.1.7, patch 0082, branch `sunset-117`)
+
+Player report (1.1.6, Ryzen 7 3800X = 16 logical processors, RTX 3060, a 165 Hz and a 75 Hz screen, borderless,
+Native, Stage blur / glow Off = the default): the picture of "City at Sunset" flickers and tears, VSync on or off;
+the owner: by day, not at night. "Day" and "night" are two stages: id 4 (`t5s05`, Tekken 5's City at Sunset, the
+sunset rooftop; needs the Tekken 5 stages unlocked) and id 21 (`s21`, Dark Resurrection's City Lights, the same
+rooftop at night); the game draws each the same way every time. The owner then saw the flicker on this PC in one of
+these test runs; on the Mac (Metal) the stage is fine.
+
+### What it was
+
+Single frames whose 3D picture is gone -- black with the HUD on it, sometimes with a slanted sliver of the floor
+(the "tear") -- a few times a second, during the fight. The 3D target (`0x017F0000`, 2048 x 1440, the scene drawn at
+1536 x 1440) is intact in those frames (read back at the same present); the draw that copies it into the display
+buffer, a full-screen quad, drew nothing or one wrong triangle.
+
+Stage 4 is the only stage with a glow pass on the sun (the 3D picture averaged into two 128 x 128 buffers, blurred
+twelve times, blended back with two draws; stage 21 and the others have none). With Stage blur / glow Off the
+renderer skips the second blend ("glow composites skipped", patch 0043) -- but `sink_end_impl` skipped it after the
+draw's vertex fetch had been queued to the vertex workers (patch 0023's asynchronous fetch: the walker reserves ring
+space, a worker fills it later). The ring cursors only move when a draw is recorded, so the next draw -- the
+full-screen copy -- reserved the same bytes, and two jobs wrote one place. Whichever finished last won: with three
+vertex workers (24 or more logical processors, this PC) the copy's job practically always finished last; with one
+(every PC below 24 logical processors, and power saving) the walker runs the frame's last jobs itself while the
+worker still runs the skipped one, and the copy got the glow quad's vertices and indices. Blur On never skips the
+draw (no black frame); a dropped PSO or a debug skip after the fetch had the same hole.
+
+Patch 0082: `sink_end` keeps such space -- when a draw returns after its job was queued and nothing reset the ring
+meanwhile, the cursors move past the job's vertices and indices as if the draw had been recorded (one `[rsx-vertex]
+a draw ended after its vertex job was queued ... its ring space is kept` line per run). `RSX_VERTEX_KEEP_SKIPPED=0`
+gives the old behaviour, for tests.
+
+Why it was missed first: frame dumps (`LD_FRAME_DUMP`) wait for the GPU at every dumped frame, and this PC has
+three vertex workers -- neither shows it. Glow on and off gave bit-identical pictures over 600 frames there, the
+glow's alpha is 0 in the fight's views. New for this: **`LD_FRAME_DUMP_ASYNC=1`** puts the copy of the presented
+picture into the frame's own command list (8 readback slots, a writer thread, nothing waits; frames whose slot is
+still busy are skipped and counted), `LD_FRAME_DUMP_ASYNC_SURF=<hex offset>` copies that render target too;
+**`tools/flicker_check.py`** runs a scripted fight with it and counts the frames whose 3D picture is less than half as
+bright as both neighbours (`--cpus 0xFF`: the game on 8 of this PC's processors, one vertex worker).
+
+### Checked
+
+Scripted direct fight (Kazuya vs Raven, both pads walking, jumping, punching), 6 s of every presented frame from
+9 s after the fight state, `LD_FRAME_DUMP_ASYNC=1`, Native, Stage blur / glow Off unless noted; dark-frame counts:
+
+| run | before (1.1.6 renderer / `RSX_VERTEX_KEEP_SKIPPED=0`) | after (patch 0082) |
+|---|---|---|
+| stage 4, 8 logical processors (1 vertex worker) | 7-17 in each of 15 runs (178 in all) | 0, 0, 0, 0, 0, 0 |
+| stage 4, 16 logical processors (the player's) | 10, 11 | 0, 0, 0, 0 |
+| stage 4, 4 logical processors | 18 | 0 |
+| stage 4, 32 processors with `RSX_VERTEX_THREADS=1` | 14 | -- |
+| stage 4, 8 processors, 2 / 3 vertex workers | 1 / 0 | -- |
+| stage 4, 8 processors, `RSX_VERTEX_THREADS=0` (fetch on the walker) | 0 | -- |
+| stage 4, 8 processors, Stage blur / glow On | 0 | -- |
+| stage 4, 32 processors (3 vertex workers) | 0, 0 | -- |
+| stages 21, 17, 19, 3 at 8 processors | 0 each | -- |
+
+Toggles that did not change it (stage 4, 8 processors): `RSX_FRAMES_IN_FLIGHT=1` (18), `RSX_XLAT_OVERLAP=1` (9),
+`GCM_SEMA_ACQUIRE=1` (11), `PS3_SHADOWS=0` (7), `PS3_EFFECTS=0` (11), `RSX_VERTEX_SPIN=0` / `200000` (14 / 14).
+`RSX_XLAT_OVERLAP=0` made it rarer (0-3). Ring reuse against the GPU fence (`RSX_RING_GUARD=1`): none; a source
+check of every job (indices and attributes hashed when queued, when the job starts and when it ends): the guest
+never changed them; no job finished after its list was submitted.
+
+- The other stages and the fix itself change no pixel: the same scripted fight with synchronous frame dumps from the
+  1.1.6 renderer (`build/int115/x-final`) and the new build, both starting the fight at frame 1058, compared frame by
+  frame over 152-163 frames each: stages 21, 19, 3 and 4 identical, 17 differing by 0.01-0.02 levels of 255 on average in
+  some frames. Glow On / Off gave identical pictures on stage 4 before too (the glow's strength is 0 in the fight's views).
+- `tools/flicker_check.py` (and its unit test `tests/test_flicker_check.py`): before, with `RSX_VERTEX_KEEP_SKIPPED=0`,
+  14 dark frames at 8 processors and 18 at 4; after 0.
+- `tools/smoke/run.py` quick on the new build: 5 of 5 PASS (83 checks). Patch series 0001-0082 applies on a fresh
+  `prepare_ps3recomp` and gives exactly the files built.
+- Not reproduced here: real scan-out tearing on the player's 165 Hz + 75 Hz screens. With VSync On the swap chain
+  presents with sync interval 1 and no tearing flag; VSync Off allows tearing by design. The "tearing" in the report
+  matches the slanted sliver of the black frames above, which VSync does not touch -- which is why VSync on or off
+  made no difference. If a player still sees tearing on 1.1.7 with VSync On, it is the display path (a driver
+  setting that forces VSync off, e.g. the NVIDIA control panel's Vertical sync = Off), not this.
+
+### Performance
+
+`tools/fight_bench.py --polite`, Kazuya vs Raven with P1 pressing buttons, 12-42 s after the fight start, Stage blur /
+glow Off, the builds' own warmed shader caches, the 1.1.6 renderer (old, `build/int115/x-final`) and patch 0082
+(new) run one after the other per stage; Native and Lowest (`PS3_INTERNAL_RES=lowest PS3_SHADOWS=0`); this PC (32
+logical processors, RTX 3090, a 500 Hz screen: the frame times step by the 2 ms refresh, hence the frames over
+17.5 ms at 60 fps). Game thread = its CPU time a frame; walker / translation = the renderer's medians; GPU = the
+timestamp median; `[gpu-pass]` = the last 600-frame window. No `[slow-frames]` line in any run.
+
+| preset | stage | build | fps | p50 / p95 / p99 ms | frames > 17.5 ms | game thread CPU p50 ms | walker / translation ms | GPU ms (timestamps) | [gpu-pass] ms |
+|---|---|---|---|---|---|---|---|---|---|
+| native | 4 | old | 59.79 | 16.68 / 19.83 / 20.86 | 190 | 2.05 | 1.45 / 1.44 | 2.721 | 2.956 |
+| native | 4 | new | 59.85 | 16.68 / 19.93 / 20.83 | 182 | 2.02 | 1.46 / 1.46 | 2.722 | 2.924 |
+| native | 21 | old | 59.95 | 16.68 / 19.66 / 20.68 | 169 | 2.03 | 1.44 / 1.43 | 2.827 | 2.932 |
+| native | 21 | new | 59.92 | 16.69 / 19.64 / 20.52 | 167 | 2.10 | 1.46 / 1.45 | 2.835 | 2.916 |
+| native | 17 | old | 59.00 | 16.69 / 19.18 / 20.28 | 128 | 2.18 | 1.18 / 1.18 | 2.521 | 2.748 |
+| native | 17 | new | 59.92 | 16.69 / 19.06 / 20.22 | 117 | 2.08 | 1.19 / 1.18 | 2.487 | 2.681 |
+| native | 19 | old | 59.79 | 16.69 / 18.36 / 19.88 | 130 | 2.29 | 1.56 / 1.56 | 2.308 | 2.633 |
+| native | 19 | new | 59.89 | 16.69 / 18.32 / 19.63 | 127 | 2.34 | 1.56 / 1.55 | 2.310 | 2.592 |
+| native | 3 | old | 59.91 | 16.68 / 18.63 / 19.88 | 125 | 2.54 | 1.02 / 1.02 | 2.254 | 2.415 |
+| native | 3 | new | 59.91 | 16.68 / 18.61 / 19.98 | 129 | 2.56 | 1.03 / 1.03 | 2.264 | 2.423 |
+| lowest | 4 | old | 59.77 | 16.68 / 19.83 / 20.79 | 177 | 2.04 | 1.41 / 1.40 | 2.073 | 2.226 |
+| lowest | 4 | new | 59.92 | 16.68 / 19.94 / 20.72 | 180 | 2.02 | 1.42 / 1.42 | 2.066 | 2.229 |
+| lowest | 21 | old | 59.92 | 16.67 / 19.52 / 20.64 | 161 | 2.04 | 1.39 / 1.38 | 1.934 | 2.026 |
+| lowest | 21 | new | 59.92 | 16.69 / 19.74 / 20.64 | 175 | 2.02 | 1.39 / 1.37 | 1.925 | 2.031 |
+| lowest | 17 | old | 59.92 | 16.68 / 19.18 / 20.42 | 119 | 2.05 | 1.14 / 1.13 | 1.517 | 1.588 |
+| lowest | 17 | new | 59.83 | 16.69 / 18.80 / 20.28 | 107 | 2.04 | 1.16 / 1.15 | 1.521 | 1.608 |
+| lowest | 19 | old | 59.79 | 16.67 / 18.21 / 19.71 | 127 | 2.31 | 1.50 / 1.50 | 1.471 | 1.663 |
+| lowest | 19 | new | 59.82 | 16.68 / 17.94 / 19.73 | 128 | 2.30 | 1.55 / 1.54 | 1.468 | 1.637 |
+| lowest | 3 | old | 59.88 | 16.69 / 18.72 / 20.10 | 133 | 2.51 | 0.98 / 0.98 | 1.194 | 1.194 |
+| lowest | 3 | new | 59.85 | 16.68 / 18.76 / 20.18 | 125 | 2.50 | 1.02 / 1.02 | 1.205 | 1.329 |
+
+Repeats where a number moved: Lowest stage 3 `[gpu-pass]` old 1.19 / 1.30 / 1.30 ms, new 1.33 / 1.32 / 1.32 (the
+GPU timestamps the same, 1.20-1.21; the patch adds no GPU work there -- nothing is skipped on stage 3), walker 0.98 /
+0.98 / 0.99 vs 1.02 / 0.99 / 1.00 ms; Lowest stage 19 walker 1.50 / 1.50 / 1.56 vs 1.55 / 1.51 / 1.51. Stage 4 on 16
+of the processors (the player's count, one vertex worker): fps 59.82 / 59.89 vs 59.85 / 59.76, p99 20.99 / 20.87 vs
+21.18 / 21.04 ms, game thread 2.00 / 2.03 vs 2.01 / 2.01, walker 1.42 / 1.42 vs 1.42 / 1.43, GPU 2.74 / 2.72 vs 2.74 /
+2.74 ms. The patch's work per draw is two stores and a compare: no regression beyond the run-to-run spread.

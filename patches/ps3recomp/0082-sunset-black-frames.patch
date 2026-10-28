@@ -1,0 +1,266 @@
+diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
+index 2a64312..5cbbdc1 100644
+--- a/libs/video/rsx_live_draw.c
++++ b/libs/video/rsx_live_draw.c
+@@ -8356,6 +8356,36 @@ static void* ld_vjob_arena_alloc(u32 bytes)
+     return p;
+ }
+ 
++/* Patch 0082: the ring space a queued job writes into belongs to its draw
++ * even when the draw then returns without being recorded -- with PS3_STAGE_BLUR=0
++ * the glow composite of Tekken 5's City at Sunset (stage 4) does that every
++ * frame (sink_end_impl skips it after the vertex fetch), and a dropped PSO or a
++ * debug skip can too. The cursors only advance when a draw is recorded, so the
++ * next draw used to reserve the same bytes: two jobs wrote one place, and when
++ * the skipped one finished last (one vertex worker: below 24 logical
++ * processors, or power saving) the next draw -- there, the full-screen copy of the 3D picture
++ * into the display buffer -- got its vertices and indices: a black picture with
++ * the HUD on it, sometimes a sliver of the scene, for one frame (7-17 in 6 s).
++ * sink_end now keeps such space: the cursors move past it as if the draw had
++ * been recorded. */
++static struct { int armed; u8* map; u32 vb_off, ib_off; u64 vb, ib; } g_vj_res;
++static u64 g_vj_res_kept;
++static void ld_vjob_reserve_keep(void)
++{
++    if (!g_vj_res.armed) return;
++    g_vj_res.armed = 0;
++    static int on = -1;   /* RSX_VERTEX_KEEP_SKIPPED=0: as before patch 0082 (tests) */
++    if (on < 0) { const char* e = getenv("RSX_VERTEX_KEEP_SKIPPED"); on = !(e && e[0] == '0'); }
++    if (!on) return;
++    /* the same ring, cursors where the job's space starts (nothing reset them) */
++    if (g.vb_mapped != g_vj_res.map || g.vb_used != g_vj_res.vb_off || g.ib_used != g_vj_res.ib_off) return;
++    g.vb_used += (u32)g_vj_res.vb;
++    g.ib_used += (u32)g_vj_res.ib;
++    if (g_vj_res_kept++ == 0)
++        fprintf(stderr, "[rsx-vertex] a draw ended after its vertex job was queued (frame %u): its ring space "
++                        "is kept, the next draw gets its own (patch 0082)\n", g_ld_frames);
++}
++
+ static u64 g_vj_barrier_drains;
+ void rsx_live_draw_guest_write_barrier(void)
+ {
+@@ -8456,6 +8486,9 @@ static int ld_vjob_submit(u32 prim, const rsx_vertex_layout_plan* layout,
+     j->vb_dst = g.vb_mapped + g.vb_used;
+     j->ib_dst = (u32*)((u8*)g.ib_mapped + g.ib_used);
+     j->ib_count = (u32)n_idx;
++    g_vj_res.armed = 1; g_vj_res.map = g.vb_mapped;   /* patch 0082: sink_end keeps it if not recorded */
++    g_vj_res.vb_off = g.vb_used; g_vj_res.ib_off = g.ib_used;
++    g_vj_res.vb = vb_bytes; g_vj_res.ib = ib_bytes;
+     g_vj_jobs_total++;
+     InterlockedExchange64(&g_vj_published, g_vj_published + 1);
+     if (g_vj_sleepers) WakeByAddressAll((PVOID)&g_vj_published);
+@@ -11647,6 +11680,7 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+     }
+     g.vb_used += (u32)draw_vb_bytes;
+     g.ib_used += (u32)draw_ib_bytes;
++    g_vj_res.armed = 0;   /* patch 0082: recorded, the space is used */
+     ld_profile_note_ring_highwater();
+     LD_PF_PHASE(ph_post_ticks);
+ }
+@@ -11656,7 +11690,9 @@ static void sink_end(void* user, const rsx_dispatch* r)
+     ld_begin_recording();
+     const LONGLONG begin = ld_pf_qpc();
+     g_pf_phase_t = begin;
++    g_vj_res.armed = 0;
+     sink_end_impl(user, r);
++    ld_vjob_reserve_keep();   /* patch 0082 */
+     const LONGLONG spent = ld_pf_qpc() - begin;
+     g_pf.draw_ticks += spent;
+     g_pf.draws++;
+@@ -13627,6 +13663,161 @@ static u64 ld_dump_surface_ppm(const char* path, const surface_t* surface)
+     return nonblack;
+ }
+ 
++/* LD_FRAME_DUMP_ASYNC=1 (patch 0082): LD_FRAME_DUMP without the wait. The
++ * synchronous dump above ends the command list and waits for the GPU at every
++ * dumped frame, so with LD_FRAME_DUMP_EVERY=1 no two frames ever overlap: a
++ * picture that goes wrong only while the next frame is recorded during this
++ * one's GPU work (two frames in flight) cannot show in it. Here the copy of
++ * the presented surface goes into the frame's own command list, into one of
++ * LD_ASYNC_SLOTS readback buffers, and is written out by a writer thread once
++ * the list's fence has passed -- nothing waits; a frame whose slot is still
++ * busy is not dumped (counted in "[frame-dump] async: ... skipped"). */
++#define LD_ASYNC_SLOTS 8
++static struct {
++    ID3D12Resource* rb;
++    UINT64 size;
++    u64 fence;                /* 0 = free */
++    u32 w, h, pitch, texel;
++    int fp16;
++    char path[MAX_PATH * 2];
++} g_ld_async[LD_ASYNC_SLOTS];
++static u64 g_ld_async_done, g_ld_async_skipped;
++typedef struct ld_async_job { struct ld_async_job* next; u8* px; u32 w, h, pitch, texel; int fp16;
++                              char path[MAX_PATH * 2]; } ld_async_job;
++static ld_async_job* volatile g_ld_async_head;
++static CRITICAL_SECTION g_ld_async_cs;
++static HANDLE g_ld_async_ev;
++static DWORD WINAPI ld_async_writer(LPVOID arg)
++{
++    (void)arg;
++    for (;;) {
++        WaitForSingleObject(g_ld_async_ev, INFINITE);
++        for (;;) {
++            EnterCriticalSection(&g_ld_async_cs);
++            ld_async_job* j = g_ld_async_head;
++            if (j) g_ld_async_head = j->next;
++            LeaveCriticalSection(&g_ld_async_cs);
++            if (!j) break;
++            FILE* f = fopen(j->path, "wb");
++            if (f) {
++                fprintf(f, "P6\n%u %u\n255\n", j->w, j->h);
++                u8* line = (u8*)malloc((size_t)j->w * 3);
++                for (u32 y = 0; line && y < j->h; y++) {
++                    const u8* row = j->px + (size_t)y * j->pitch;
++                    for (u32 x = 0; x < j->w; x++) ld_dump_texel_rgb(row + x * j->texel, j->fp16, line + x * 3);
++                    fwrite(line, 1, (size_t)j->w * 3, f);
++                }
++                free(line);
++                fclose(f);
++            }
++            free(j->px);
++            free(j);
++        }
++    }
++    return 0;
++}
++/* Finished copies to the writer thread (every present). */
++static void ld_dump_async_poll(void)
++{
++    if (!g.fence) return;
++    const u64 done = g.fence->lpVtbl->GetCompletedValue(g.fence);
++    for (u32 i = 0; i < LD_ASYNC_SLOTS; i++) {
++        if (!g_ld_async[i].fence || g_ld_async[i].fence > done) continue;
++        u8* px = NULL; D3D12_RANGE rr = {0, (SIZE_T)g_ld_async[i].size};
++        if (SUCCEEDED(g_ld_async[i].rb->lpVtbl->Map(g_ld_async[i].rb, 0, &rr, (void**)&px))) {
++            ld_async_job* j = (ld_async_job*)calloc(1, sizeof *j);
++            if (j) j->px = (u8*)malloc((size_t)g_ld_async[i].size);
++            if (j && j->px) {
++                memcpy(j->px, px, (size_t)g_ld_async[i].size);
++                j->w = g_ld_async[i].w; j->h = g_ld_async[i].h; j->pitch = g_ld_async[i].pitch;
++                j->texel = g_ld_async[i].texel; j->fp16 = g_ld_async[i].fp16;
++                memcpy(j->path, g_ld_async[i].path, sizeof j->path);
++                EnterCriticalSection(&g_ld_async_cs);
++                ld_async_job** t = (ld_async_job**)&g_ld_async_head;   /* keep the order */
++                while (*t) t = &(*t)->next;
++                *t = j;
++                LeaveCriticalSection(&g_ld_async_cs);
++                SetEvent(g_ld_async_ev);
++                g_ld_async_done++;
++            } else if (j) free(j);
++            D3D12_RANGE wr = {0, 0};
++            g_ld_async[i].rb->lpVtbl->Unmap(g_ld_async[i].rb, 0, &wr);
++        }
++        g_ld_async[i].fence = 0;
++    }
++}
++/* The copy of `surface` into a free slot, recorded into the open list. */
++static void ld_dump_async_record(const char* path, const surface_t* surface)
++{
++    static int inited;
++    if (!inited) {
++        inited = 1;
++        InitializeCriticalSection(&g_ld_async_cs);
++        g_ld_async_ev = CreateEventA(NULL, FALSE, FALSE, NULL);
++        HANDLE th = CreateThread(NULL, 0, ld_async_writer, NULL, 0, NULL);
++        if (th) { SetThreadPriority(th, THREAD_PRIORITY_BELOW_NORMAL); CloseHandle(th); }
++        fprintf(stderr, "[frame-dump] async (LD_FRAME_DUMP_ASYNC): copies in the frame's own list, %u readback "
++                        "slots, written once the GPU is past them; nothing waits\n", LD_ASYNC_SLOTS);
++    }
++    ID3D12Resource* rt = surface ? surface->tex : NULL;
++    if (!rt || !g.ready) return;
++    ld_begin_recording();
++    const u32 width = surface->pw ? surface->pw : surface->w;
++    const u32 height = surface->ph ? surface->ph : surface->h;
++    if (!width || !height) return;
++    const int fp16 = surface->fmt == DXGI_FORMAT_R16G16B16A16_FLOAT;
++    const u32 texel = fp16 ? 8u : 4u;
++    const u32 pitch = (width * texel + 255) & ~255u;
++    const UINT64 size = (UINT64)pitch * height;
++    int slot = -1;
++    for (u32 i = 0; i < LD_ASYNC_SLOTS && slot < 0; i++) if (!g_ld_async[i].fence) slot = (int)i;
++    if (slot < 0) {
++        if (g_ld_async_skipped++ % 60 == 0)
++            fprintf(stderr, "[frame-dump] async: %llu written, %llu skipped (every slot busy)\n",
++                    (unsigned long long)g_ld_async_done, (unsigned long long)g_ld_async_skipped);
++        return;
++    }
++    if (g_ld_async[slot].rb && g_ld_async[slot].size < size) {
++        g_ld_async[slot].rb->lpVtbl->Release(g_ld_async[slot].rb);
++        g_ld_async[slot].rb = NULL;
++    }
++    if (!g_ld_async[slot].rb) {
++        D3D12_HEAP_PROPERTIES hp = {0}; hp.Type = D3D12_HEAP_TYPE_READBACK;
++        D3D12_RESOURCE_DESC bd = {0};
++        bd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER; bd.Width = size;
++        bd.Height = 1; bd.DepthOrArraySize = 1; bd.MipLevels = 1;
++        bd.Format = DXGI_FORMAT_UNKNOWN; bd.SampleDesc.Count = 1;
++        bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
++        if (FAILED(g.dev->lpVtbl->CreateCommittedResource(g.dev, &hp, D3D12_HEAP_FLAG_NONE, &bd,
++                D3D12_RESOURCE_STATE_COPY_DEST, NULL, &IID_ID3D12Resource, (void**)&g_ld_async[slot].rb)))
++            return;
++        g_ld_async[slot].size = size;
++    }
++    D3D12_RESOURCE_BARRIER b = {0};
++    b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
++    b.Transition.pResource = rt;
++    b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
++    b.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
++    b.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
++    LDL->lpVtbl->ResourceBarrier(LDL, 1, &b);
++    D3D12_TEXTURE_COPY_LOCATION src = {0}, dst = {0};
++    src.pResource = rt; src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX; src.SubresourceIndex = 0;
++    dst.pResource = g_ld_async[slot].rb; dst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
++    dst.PlacedFootprint.Footprint.Format = surface->fmt;
++    dst.PlacedFootprint.Footprint.Width = width;
++    dst.PlacedFootprint.Footprint.Height = height;
++    dst.PlacedFootprint.Footprint.Depth = 1;
++    dst.PlacedFootprint.Footprint.RowPitch = pitch;
++    LDL->lpVtbl->CopyTextureRegion(LDL, &dst, 0, 0, 0, &src, NULL);
++    b.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
++    b.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
++    LDL->lpVtbl->ResourceBarrier(LDL, 1, &b);
++    g_ld_async[slot].w = width; g_ld_async[slot].h = height; g_ld_async[slot].pitch = pitch;
++    g_ld_async[slot].texel = texel; g_ld_async[slot].fp16 = fp16;
++    snprintf(g_ld_async[slot].path, sizeof g_ld_async[slot].path, "%s", path);
++    g_ld_async[slot].fence = g.fence_value + 1;   /* what the list being recorded will signal */
++}
++
+ #if !defined(YZ_PERF_CLEAN)
+ static void ld_parity_capture_surface(
+     const char* directory, const char* phase, u32 serial,
+@@ -13932,6 +14123,7 @@ static void ld_present_body(u32 buffer_id, int display_synced)
+               if (outp[0]) ld_dump_surface_ppm(outp, &g.surfaces[target]);
+           }
+       } }
++    if (dump_every > 0) ld_dump_async_poll();   /* patch 0082: finished async copies to the writer */
+     if (dump_now) {
+         char path[MAX_PATH * 2];
+         if (dump_gate && dump_gate[0])   /* named by the frame and the flip it shows, for lining up with the latency log */
+@@ -13939,7 +14131,25 @@ static void ld_present_body(u32 buffer_id, int display_synced)
+                      cellGcm_lat_walk_seq());
+         else
+             snprintf(path, sizeof(path), "%s\\frame_%06u.ppm", dump_dir, dump_n - 1u);
+-        const u64 nb = ld_dump_surface_ppm(path, &g.surfaces[target]);
++        static int async = -1;   /* LD_FRAME_DUMP_ASYNC=1 (patch 0082): no wait for the GPU */
++        if (async < 0) { const char* e = getenv("LD_FRAME_DUMP_ASYNC"); async = e && e[0] == '1'; }
++        if (async) ld_dump_async_record(path, &g.surfaces[target]);
++        /* LD_FRAME_DUMP_ASYNC_SURF=<hex offset>: that render target too (frame_<n>_s<offset>.ppm) */
++        { static long sx = -2;
++          if (sx == -2) { const char* e = getenv("LD_FRAME_DUMP_ASYNC_SURF"); sx = e ? (long)strtoul(e, NULL, 16) : -1; }
++          if (async && sx >= 0) {
++              int best = -1;
++              for (u32 i = 0; i < g.n_surfaces; i++)
++                  if (g.surfaces[i].offset == (u32)sx && g.surfaces[i].tex &&
++                      (best < 0 || g.surfaces[i].w > g.surfaces[best].w)) best = (int)i;
++              if (best >= 0) {
++                  char p2[MAX_PATH * 2];
++                  snprintf(p2, sizeof p2, "%s\\frame_%06u_s%08lX.ppm", dump_dir, g_ld_frames + 1u, sx);
++                  ld_dump_async_record(p2, &g.surfaces[best]);
++              }
++          } }
++        const u64 nb = async ? 0 : ld_dump_surface_ppm(path, &g.surfaces[target]);
++        if (!async)
+         fprintf(stderr, "[frame-dump] %s %ux%u nonblack=%llu\n", path,
+                 g.surfaces[target].w, g.surfaces[target].h,
+                 (unsigned long long)(nb == UINT64_MAX ? 0 : nb));

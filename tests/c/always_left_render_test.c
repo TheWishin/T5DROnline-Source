@@ -262,8 +262,20 @@ static al_quad Q(uint64_t tex, float x0, float x1, float y0, float y1, int uflip
     q.x0 = x0 / 640.0f - 1.0f; q.x1 = x1 / 640.0f - 1.0f;
     q.y0 = 1.0f - y1 / 360.0f; q.y1 = 1.0f - y0 / 360.0f;
     q.uflip = uflip;
+    q.u0 = uflip ? 1.0f : 0.0f;
+    q.u1 = uflip ? 0.0f : 1.0f;
     return q;
 }
+/* ... with its own texture coordinates at the left and right edge */
+static al_quad QU(uint64_t tex, float x0, float x1, float y0, float y1, float u0, float u1)
+{
+    al_quad q = Q(tex, x0, x1, y0, y1, u1 < u0);
+    q.u0 = u0;
+    q.u1 = u1;
+    return q;
+}
+static float placed_x0(const al_quad* q, int* m);
+static int placed_mirror(const al_quad* q) { int m = 0; (void)placed_x0(q, &m); return m; }
 /* where q's left edge lands this frame, in pixels; *m = mirrored */
 static float placed_x0(const al_quad* q, int* m)
 {
@@ -272,7 +284,7 @@ static float placed_x0(const al_quad* q, int* m)
     return (q->x0 + dx + 1.0f) * 640.0f;
 }
 
-enum { FONT = 1, BAR = 2, FILL = 3, ICON = 4 };
+enum { FONT = 1, BAR = 2, FILL = 3, ICON = 4, DIGIT5 = 5, DIGIT9 = 6, DIGIT4 = 7, MARKS = 8, PLATE = 9 };
 
 static void hud_frame(int with_extra)
 {
@@ -363,10 +375,59 @@ static void test_hud(void)
     CHECK(H.n_el == 1, "shadow and glyphs: one element (%u)", H.n_el);
 }
 
+/* what the game draws (1.1.8 test runs, RSX_ALWAYS_LEFT_DUMP): the timer one texture per digit, the round
+ * marks' plates one texture at mirrored places with the marks in different parts of it, the PLAYER DATA
+ * plates the same picture on both sides */
+static void test_hud_game_shapes(void)
+{
+    memset(&H, 0, sizeof H);
+    H.px_w = 640.0f; H.px_h = 360.0f;
+    int m;
+    al_quad d1 = Q(DIGIT5, 564.7f, 666.0f, 39.3f, 98.0f, 0), d2 = Q(DIGIT9, 618.0f, 719.3f, 39.3f, 98.0f, 0);
+    al_quad k1 = QU(MARKS, 396.7f, 575.3f, 68, 121.3f, 0.0f, 1.0f), k2 = QU(MARKS, 706.7f, 885.3f, 68, 121.3f, 1.0f, 0.0f);
+    al_quad p1 = Q(PLATE, 53.3f, 477.3f, 81.3f, 121.3f, 0), p2 = Q(PLATE, 804.0f, 1228.0f, 81.3f, 121.3f, 0);
+    /* two different letters of the font at mirrored places (other u, same direction): no pair */
+    al_quad g1 = QU(FONT, 100, 120, 600, 620, 0.10f, 0.12f), g2 = QU(FONT, 1160, 1180, 600, 620, 0.30f, 0.32f);
+    al_quad all[] = { d1, d2, k1, k2, p1, p2, g1, g2 };
+    for (int i = 0; i < 8; i++) al_hud_note(&H, &all[i]);
+    al_hud_frame_end(&H);
+    CHECK(H.n_el == 7, "timer one element, marks two, plates two, letters two: %u", H.n_el);
+    /* the timer (its digits across the middle) stays: "59" stays "59" */
+    const float x1 = placed_x0(&d1, &m), x2 = placed_x0(&d2, &m);
+    CHECK(near(x1, 564.7f) && near(x2, 618.0f) && !m, "timer digits stay: %f %f", x1, x2);
+    al_quad d3 = Q(DIGIT4, 564.7f, 666.0f, 39.3f, 98.0f, 0);
+    CHECK(near(placed_x0(&d3, &m), 564.7f) && !m, "a new digit texture stays too");
+    /* a big title across the middle, one quad per letter (FIGHT): every letter stays */
+    al_quad f = Q(ICON, 575.8f, 1330.9f, 254.1f, 591.2f, 0);
+    CHECK(near(placed_x0(&f, &m), 575.8f) && !m, "a letter of FIGHT stays");
+    CHECK(!placed_mirror(&g1) && !placed_mirror(&g2), "different letters at mirrored places are not mirrored");
+    CHECK(near(placed_x0(&g1, &m), 1160.0f), "a letter moves readable");
+    /* the marks: a flipped pair, mirrored (the marks stay next to the timer) */
+    {   /* "ROUND" across the middle and its "1", another quad touching it: both stay ("R1UND" otherwise) */
+        al_hud r2;
+        memcpy(&r2, &H, sizeof r2);
+        memset(&H, 0, sizeof H);
+        H.px_w = 640.0f; H.px_h = 360.0f;
+        al_quad rd = Q(ICON, 445, 695, 255, 300, 0), one = Q(FONT, 719, 785, 255, 300, 0);   /* 24 px away, as in the game */
+        al_quad far = Q(FONT, 900, 930, 255, 300, 0);
+        al_hud_note(&H, &rd); al_hud_note(&H, &one); al_hud_note(&H, &far);
+        al_hud_frame_end(&H);
+        CHECK(near(placed_x0(&rd, &m), 445.0f) && near(placed_x0(&one, &m), 719.0f), "ROUND 1 stays together");
+        CHECK(near(placed_x0(&far, &m), 350.0f), "something far from it on the line still moves");
+        memcpy(&H, &r2, sizeof r2);
+    }
+    CHECK(near(placed_x0(&k1, &m), 704.7f) && m == 1, "P1's marks mirrored to the right");
+    CHECK(near(placed_x0(&k2, &m), 394.7f) && m == 1, "P2's marks mirrored to the left");
+    /* the same picture on both sides: moved, not mirrored (writing on it stays readable) */
+    CHECK(near(placed_x0(&p2, &m), 52.0f) && !m, "P2's plate moved, not mirrored: %f", placed_x0(&p2, &m));
+    CHECK(near(placed_x0(&p1, &m), 802.7f) && !m, "P1's plate moved, not mirrored");
+}
+
 int main(void)
 {
     test_vp();
     test_hud();
+    test_hud_game_shapes();
     if (g_fails) { printf("FAILED %d of %d checks\n", g_fails, g_checks); return 1; }
     printf("PASS %d checks\n", g_checks);
     return 0;

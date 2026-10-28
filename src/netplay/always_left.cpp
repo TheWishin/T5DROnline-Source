@@ -65,15 +65,17 @@ bool t5_always_left_enabled()
 
 extern "C" void t5_always_left_frame(void)
 {
-    if (!t5_always_left_enabled()) return;
+    static int trace = -1;
+    if (trace < 0) { const char* t = getenv("T5_ALWAYS_LEFT_TRACE"); trace = t && *t == '1'; }
+    if (!t5_always_left_enabled() && !trace) return;
     static bool said = false;
-    if (!said) {
+    if (!said && t5_always_left_enabled()) {
         said = true;
         np::note("always left: on -- as P2 this PC shows the fight mirrored (you on the left) and swaps your left and "
                  "right; the game and the other PC are unchanged (offline: Versus fights, the P2 side)");
     }
     al::Frame f;
-    f.enabled = true;
+    f.enabled = t5_always_left_enabled();
     f.net = net_mode();
     f.replaying = np::replaying();
     f.local_slot = np::local_slot();
@@ -88,8 +90,6 @@ extern "C" void t5_always_left_frame(void)
                  f.net == al::Net::Off || f.net == al::Net::Local ? "offline" : f.local_slot == 1 ? "P2" : "P1",
                  f.game_type);
     }
-    static int trace = -1;
-    if (trace < 0) { const char* t = getenv("T5_ALWAYS_LEFT_TRACE"); trace = t && *t == '1'; }
     static uint32_t n = 0;
     if (trace && f.phase == al::kPhaseFight && n++ % 20 == 0) {
         const float x1 = rdf(kFighter[0] + 0x10), z1 = rdf(kFighter[0] + 0x18);

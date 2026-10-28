@@ -113,8 +113,8 @@ class Renderer(unittest.TestCase):
         self.assertEqual(sorted(files), ["libs/video/rsx_always_left.h", "libs/video/rsx_live_draw.c",
                                          "libs/video/rsx_live_draw.h"])
         self.assertIn("void rsx_live_draw_set_always_left(int on)", body)
-        # off unless the game asks: every change sits behind g_al.active
-        self.assertIn("if (g_al.active) ld_al_draw(", body)
+        # off unless the game asks: every change sits behind g_al.active or its request
+        self.assertIn("if (g_al.active || g_al_req) ld_al_draw(", body)
         self.assertIn("(al_mirror || al_dx_px != 0.0f)", body)
 
     def test_series_order(self):

@@ -1427,6 +1427,8 @@ class Run:
             w.wm_deiconify = lambda: None
         tk.Toplevel.__init__ = top_init
         self.root = tk.Tk()
+        import tkgc                       # launcher/tkgc.py: garbage freed on this thread only, as in the launcher
+        tkgc.install(self.root)
         self.root.withdraw()
         try:
             self.root.attributes("-alpha", 0.0)

@@ -1321,6 +1321,19 @@ always brings the same block; a new session (another opponent, a room's Ready,
 swapped sides -- a new session too, lobby.py) goes through the title first; a
 spectator's game is a process of its own per stream.
 
+**1.1.7: tried again, not reproduced as a fault.** The e2e scenario `int_fw_costumes` needs two offline system
+saves with customizations, named by `E2E_COSTUME_A` / `E2E_COSTUME_B` (the SYS-DATA files; game data, kept outside
+the repository -- on this PC `build/bugfix114/saves/col_sysdata` and `build/int113/saves/B_sysdata`). With both
+customized (a match moved onto the relay, a spectator watching): PASS, 45 checks, the same blocks hash on both PCs
+and the spectator. With mixed customization (B's save empty, `the save cannot be read`): A's block is written on both
+PCs and the spectator, B fights in the default costume (`nothing customized`) -- correct; the scenario's "both
+custom" check fails by design. What both runs show is the likeliest explanation of "fighters in white / plain
+costumes": in the in-game pick the confirm button is the costume, and both players confirmed with Square (costume 1)
+while their customization was on costume 2 -- `costumes worn: P1 costume 1 (model 0x24): nothing worn, customized:
+costume 2` on both PCs: the game shows the picked costume's own default look -- and the other way round (customized
+costume 1, picked with a button that gives costume 2) that look is white for many second costumes. So for a player
+report, ask for the game log of that match and read `costumes worn` (line 5 below) first.
+
 **Reading a player's log** (each line is in both PCs' logs, the same on both):
 
 1. `costumes: this player's table N bytes (...)`: `no save given` (the launcher

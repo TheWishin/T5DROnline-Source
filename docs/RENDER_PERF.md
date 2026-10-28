@@ -1149,6 +1149,16 @@ MB of 15164 MB` (from `RSX_TEST_DEVICE_REMOVED=1400` on the RTX 3090). A
 player's hang would then tell whether the GPU stopped inside a list or between
 two, how long after the last Present, and whether its memory was over budget.
 
+**1.1.7: still not reproduced.** A player's integrated GPU froze (no log yet). Eight fresh starts on this PC's
+integrated Radeon (`RSX_ADAPTER=radeon`, a new folder each: cold shader and pipeline cache), each straight into a
+scripted fight of ~40 s on stages 20, 30, 26, 20, 30, 26, 34 and 19 (the x-final 1.1.5/1.1.6 renderer; the screen on
+the RTX 3090, so every frame was copied across, the hybrid present of the four hangs above): 59.8-60.0 fps, 0 lines of
+`DEVICE_HUNG` / `DEVICE_REMOVED` / `device lost` / `GPU not done` / `state at the loss`. What to ask the player for:
+the game log of the session that froze (`logs/` in the game folder: the `[gpu] adapter` and `[gpu] display` lines,
+any `[gpu] GPU not done after 1 s ...`, `[gpu] state at the loss ...` and `[dred]` lines, patch 0076), whether the
+picture froze with the sound going on (the GPU) or both (the PC), the PC's model (a laptop with two GPUs, a mini PC)
+and the graphics driver's version.
+
 ## Late frames shown when ready (patch 0059, branch `weakpc-fps`)
 
 Why some players had 40-50 fps, and whether a Vulkan renderer would help:
@@ -3356,6 +3366,9 @@ visible ... other hit effects as well"); at 60 fps online only a stretch of long
 
 The two experiments (vblank rule, flip gate) are not in patch 0081: they change the runtime's pacing for nothing
 measurable (`build/int115/s-runs/cellGcmSys-experiments.diff`, local).
+
+**Found in 1.1.7** ("Hit effects on slow graphics cards: the walker passed the game's semaphore" below): not long
+frames but a card slower than the game; the FIFO walker did not wait for the game's semaphore ACQUIRE (patch 0085).
 
 **Next step** (after 1.1.5, with a player's clip and log): find what ends the effects. Watch the game's effect pool
 per frame (`PS3_LATENCY_WATCH`) once it is located, or compare the HLE calls of a 60 fps and a 29 fps fight (a time

@@ -1,0 +1,66 @@
+diff --git a/libs/input/cellPad.c b/libs/input/cellPad.c
+index c3a88bf..652cc87 100644
+--- a/libs/input/cellPad.c
++++ b/libs/input/cellPad.c
+@@ -412,13 +412,17 @@ static void pad_apply(PadHostState* hs, u16 btns, int lx, int ly, int rx, int ry
+  * It ADDS to the keyboard rather than replacing it (pad_poll_keys merges the
+  * two): replacing it left a person at the window unable to press anything
+  * while a script drove the pad. */
+-static void pad_poll_file(u16* out_btns, int* out_lx, int* out_ly, int* out_rx, int* out_ry)
++/* Patch 0102: PS3_PAD_FILE2=<path> scripts port 1 (player 2) the same way, as the Windows pad host
++ * has it (the smoke suite drives both players). `which` 0 = PS3_PAD_FILE, 1 = PS3_PAD_FILE2. */
++static void pad_poll_file_n(int which, u16* out_btns, int* out_lx, int* out_ly, int* out_rx, int* out_ry)
+ {
+-    static const char* path = (const char*)-1;
+-    if (path == (const char*)-1) path = getenv("PS3_PAD_FILE");
++    static const char* paths[2] = { (const char*)-1, (const char*)-1 };
++    if (paths[which] == (const char*)-1) paths[which] = getenv(which ? "PS3_PAD_FILE2" : "PS3_PAD_FILE");
++    const char* path = paths[which];
+     *out_btns = 0; *out_lx = *out_ly = *out_rx = *out_ry = 128;
+     if (!path) return;
+-    static u16 s_last_file_btns;
++    static u16 s_last_btns[2];
++    u16 s_last_file_btns = s_last_btns[which];
+     char buf[512]; size_t n = 0;
+     FILE* f = fopen(path, "r");
+     if (f) { n = fread(buf, 1, sizeof buf - 1, f); fclose(f); }
+@@ -443,11 +447,17 @@ static void pad_poll_file(u16* out_btns, int* out_lx, int* out_ly, int* out_rx,
+             if (!strcmp(tok, map[i].name)) btns |= map[i].btn;
+     }
+     if (btns != s_last_file_btns) {
+-        printf("[cellPad] file pad: buttons 0x%04X\n", btns); fflush(stdout);
+-        s_last_file_btns = btns;
++        if (which) printf("[cellPad] file pad 2: buttons 0x%04X\n", btns);
++        else       printf("[cellPad] file pad: buttons 0x%04X\n", btns);
++        fflush(stdout);
++        s_last_btns[which] = btns;
+     }
+     *out_btns = btns; *out_lx = lx; *out_ly = ly; *out_rx = rx; *out_ry = ry;
+ }
++static void pad_poll_file(u16* out_btns, int* out_lx, int* out_ly, int* out_rx, int* out_ry)
++{
++    pad_poll_file_n(0, out_btns, out_lx, out_ly, out_rx, out_ry);
++}
+ 
+ /* Keyboard pad (macOS window): the Metal window records key state by
+  * virtual keycode in g_pad_host_keys and swallows the events. One key, one
+@@ -527,6 +537,19 @@ static void pad_poll_backend(void)
+     { static int real0 = 0;
+       if (s_host_state[0].connected && !getenv("PS3_PAD_FILE")) real0 = 1;
+       if (!real0) pad_poll_keys(); }   /* keyboard, plus PS3_PAD_FILE if set */
++    /* Patch 0102: PS3_PAD_FILE2 is player 2 unless a real controller sits on that port. */
++    { static int on = -1;
++      if (on < 0) on = getenv("PS3_PAD_FILE2") ? 1 : 0;
++#if PAD_BACKEND_SDL2
++      const int real1 = s_sdl_controllers[1] != NULL;
++#else
++      const int real1 = 0;
++#endif
++      if (on && PAD_MAX_HOST_PORTS > 1 && !real1) {
++          u16 b; int lx, ly, rx, ry;
++          pad_poll_file_n(1, &b, &lx, &ly, &rx, &ry);
++          pad_apply(&s_host_state[1], b, lx, ly, rx, ry);
++      } }
+ }
+ #endif
+ 

@@ -151,8 +151,9 @@ def evaluate(run, known_nids=(), thresholds=None, strict=False):
 
     # --- expectations the scenario recorded (reached the title, fight started, ...)
     for e in run.get("expects", []):
-        out.append(check(f"reach.{e['name']}", "pass" if e["ok"] else "fail", e.get("detail", ""),
-                         evidence=e.get("evidence")))
+        st = "skip" if e.get("skip") else "pass" if e["ok"] else "fail"
+        out.append(check(f"reach.{e['name']}", st, e.get("detail", ""), evidence=e.get("evidence")))
+    dumps = run.get("frame_dumps", True)   # False: macOS, no frame dump (game.FRAMES)
 
     # --- per phase: fps, audio, picture
     audio = run.get("audio", [])
@@ -176,7 +177,10 @@ def evaluate(run, known_nids=(), thresholds=None, strict=False):
                     st = "warn" if noisy else "fail"
                     out.append(check(f"fps.{name}", st, desc + (f" -- unreliable: {noisy}" if noisy else ""),
                                      value=round(med, 1), limit=limit))
-        if kind in AUDIO_KINDS:
+        if kind in AUDIO_KINDS and not dumps and kind == "attract":
+            # the attract phase starts when a frame shows the demo; without frames it is the title's silence
+            out.append(check(f"audio.{name}", "skip", "phase start comes from dumped frames (none on macOS)"))
+        elif kind in AUDIO_KINDS:
             key = AUDIO_KINDS[kind]
             vals = [a[1] for a in phase_samples(audio, ph, span_of=lambda a: 5.0)]
             if not vals:
@@ -219,7 +223,9 @@ def evaluate(run, known_nids=(), thresholds=None, strict=False):
 
     # --- fighters: HUD seen, no spikes
     fight_phases = [p for p in phases if p[1] == "fight"]
-    if fight_phases:
+    if fight_phases and not dumps:
+        out.append(check("fighters", "skip", "needs dumped frames (none on macOS)"))
+    elif fight_phases:
         ff = [f for f in frames if f.get("t") is not None and any(p[2] <= f["t"] <= p[3] for p in fight_phases)]
         fights = [f for f in ff if f.get("fight", {}).get("is_fight")]
         if not fights:
@@ -239,6 +245,9 @@ def evaluate(run, known_nids=(), thresholds=None, strict=False):
         if exp == "any":
             continue
         fr = shot.get("frame")
+        if not dumps:
+            out.append(check(f"shot.{name}", "skip", "needs dumped frames (none on macOS)"))
+            continue
         if not fr:
             out.append(check(f"shot.{name}", "fail", "no frame was presented", evidence=None))
             continue

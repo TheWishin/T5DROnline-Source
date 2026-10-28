@@ -36,6 +36,10 @@ sys.path.insert(0, HERE)
 sys.path.insert(1, os.path.join(ROOT, "tools"))
 
 import frames as framelib  # noqa: E402
+# Screenshots and everything judged from them (the fight HUD, the attract demo, shots) need the runtime's
+# frame dump, which only the D3D12 renderer has; on macOS those checks are skipped, not faked.
+FRAMES = sys.platform != "darwin"
+NO_FRAMES = "the runtime's frame dump (LD_FRAME_DUMP) is D3D12-only: the Metal path on macOS dumps no frames"
 import logscan  # noqa: E402
 import procs  # noqa: E402
 from run_game import game_command  # noqa: E402  (the one place that knows how the game starts)
@@ -403,12 +407,16 @@ class Game:
                 self.event("abort", self.aborted)
             raise Abort(self.aborted)
 
-    def expect(self, name, ok, detail="", evidence=None):
+    def expect(self, name, ok, detail="", evidence=None, needs_frames=False):
         """Record a scenario milestone ("reached the title", "fight started");
-        it becomes the check reach.<name>."""
+        it becomes the check reach.<name>. needs_frames: judged from dumped
+        frames, so skipped where there are none (FRAMES)."""
+        skip = needs_frames and not FRAMES
+        if skip:
+            detail = NO_FRAMES
         self.expects.append({"name": name, "ok": bool(ok), "detail": detail, "evidence": evidence,
-                             "t": round(self.now(), 1), "phase": self.phase_name})
-        self.event("expect", f"{name}: {'ok' if ok else 'FAILED'} {detail}")
+                             "t": round(self.now(), 1), "phase": self.phase_name, "skip": skip})
+        self.event("expect", f"{name}: {'skipped' if skip else 'ok' if ok else 'FAILED'} {detail}")
         return ok
 
     def latest_frame(self):
@@ -422,6 +430,8 @@ class Game:
     def wait_frame(self, pred, timeout=30.0, need=1):
         """Wait for `need` consecutive dumped frames (presented after this
         call) for which pred(record) is true. Returns the last or None."""
+        if not FRAMES:
+            return None          # no frame dump on this platform: nothing to wait for
         t0 = self.now()
         end = time.perf_counter() + timeout
         while time.perf_counter() < end:
@@ -614,4 +624,5 @@ class Game:
             "contention": dict(self.contention),
             "events": [list(e) for e in self.events if e[2] not in ("fps", "audio")],
             "expects": list(self.expects),
+            "frame_dumps": FRAMES,
         }

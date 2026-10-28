@@ -43,7 +43,7 @@ def is_title(f):
 def back_to_title(g, timeout=15.0):
     f = g.wait_frame(is_title, timeout=timeout, need=2)
     g.expect("back-to-title", f is not None, "title menu again" if f else f"no title screen within {timeout:.0f}s",
-             evidence=(f or g.latest_frame() or {}).get("file"))
+             evidence=(f or g.latest_frame() or {}).get("file"), needs_frames=True)
     g.phase("title-again", "title")
     g.wait(6)
     g.shot("title-again")
@@ -71,7 +71,7 @@ def start_fight(g, taps=(("CROSS", 1),), timeout=60.0, skip=True):
             g.event("unpause", "no HUD right after the fight started: START once to close the menu")
             g.press("START", gap=800)
     g.expect("fight", t is not None, f"fight HUD after {t - g.phases[-1][2]:.0f}s" if t else
-             f"no fight HUD within {timeout:.0f}s", evidence=(g.latest_frame() or {}).get("file"))
+             f"no fight HUD within {timeout:.0f}s", evidence=(g.latest_frame() or {}).get("file"), needs_frames=True)
     return t is not None
 
 
@@ -171,7 +171,8 @@ def title_twice(ctx):
         # The title falls into the attract demo after ~20 s idle. The title is
         # mostly black; the demo is a full-screen fight.
         f = g.wait_frame(is_attract, timeout=60, need=2)
-        g.expect(f"attract{n}", f is not None, "attract demo started" if f else "no attract demo within 60 s")
+        g.expect(f"attract{n}", f is not None, "attract demo started" if f else "no attract demo within 60 s",
+                 needs_frames=True)
         g.phase(f"attract{n}", "attract")
         g.wait(2)
         g.shot(f"attract{n}", expect="any")

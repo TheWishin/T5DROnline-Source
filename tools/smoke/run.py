@@ -146,7 +146,7 @@ def parse_set(items):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--exe", help="t5dr.exe to test (default: <root>/build/cmake/t5dr.exe)")
+    ap.add_argument("--exe", help="the game to test (default: <root>/build/cmake/t5dr.exe; macOS: .../t5dr)")
     ap.add_argument("--root", help="tree with game/vfs (default: this checkout or the first parent that has one)")
     ap.add_argument("--suite", choices=("quick", "full"), default="quick")
     ap.add_argument("--only", help="comma-separated test names (any suite)")
@@ -166,7 +166,8 @@ def main(argv=None):
         return 0
 
     opts.root = os.path.abspath(opts.root) if opts.root else find_game_root()
-    opts.exe = os.path.abspath(opts.exe or os.path.join(opts.root, "build", "cmake", "t5dr.exe"))
+    opts.exe = os.path.abspath(opts.exe or os.path.join(opts.root, "build", "cmake",
+                                                        "t5dr.exe" if os.name == "nt" else "t5dr"))
     stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     opts.out = os.path.abspath(opts.out or os.path.join(opts.root, "build", "smoke", f"{stamp}-{opts.suite}"))
     if opts.shader_cache is None:

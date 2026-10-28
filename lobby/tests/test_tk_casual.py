@@ -171,6 +171,42 @@ class TkCasualTest(TkBase):
         self.assertIsNone(self.bar_button("Rematch: swap sides"))
         self.assertNotIn("(P", tab.match_var.get())
 
+    # ---------------------------------------------------------------- 1.1.9: "Always see me on the left", casual only
+    def test_always_left_in_the_casual_row_counts_in_casual_matches_only(self):
+        """The checkbox at the end of the casual row is the launcher's setting always_left; every match gets it as
+        T5_ALWAYS_LEFT and its kind as T5_NET_CASUAL (1 for a challenge, 0 for a Quick match): the game mirrors only
+        a casual match's P2 (docs/NETPLAY.md "Always left")."""
+        tab = self.tab
+        self.login()
+        cas = tab.casual
+        self.assertEqual(cas.left_check.cget("text"), "Always see me on the left")
+        self.assertIs(cas.left_check.master, cas.row)                 # in the row: hidden with it
+        self.assertFalse(cas.left_var.get())
+        cas.left_check.invoke()                                       # (a click: toggles and runs the command)
+        self.assertTrue(cas.left_var.get())
+        self.assertTrue(self.app.settings["always_left"])
+        # a challenge: casual
+        game, _text = self.challenge_from_rival()
+        self.assertEqual((game.env.get("T5_NET_CASUAL"), game.env.get("T5_ALWAYS_LEFT")), ("1", "1"))
+        self.play_to_the_rematch_question(game)
+        self.bar_button("Leave").invoke()
+        self.other.close()
+        self.other = None
+        self.pump(lambda: tab.actions["quick"].instate(["!disabled"]), timeout=30)
+        cas.left_check.invoke()                                       # off ...
+        self.assertFalse(self.app.settings["always_left"])
+        n = len(self.app.games)
+        self.other = client(self.s, "Rival2", auto_ready=True)
+        self.pump(lambda: len(tab.tv_players.get_children()) == 2)
+        cas.left_check.invoke()                                       # ... and on again before a Quick match
+        tab.actions["quick"].invoke()
+        self.other.quick_match()
+        self.pump(lambda: self.bar_button("Accept") is not None)
+        self.bar_button("Accept").invoke()
+        self.pump(lambda: len(self.app.games) == n + 1)
+        game = self.app.games[-1]
+        self.assertEqual((game.env.get("T5_NET_CASUAL"), game.env.get("T5_ALWAYS_LEFT")), ("0", "1"))
+
 
 @unittest.skipIf(tk is None, "no tkinter")
 class TkCasualOldServerTest(TkBase):

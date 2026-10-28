@@ -952,7 +952,7 @@ def settings_lines(settings, labels=None, env_overrides=None, out_dir=None):
          f"Unlock all stages (offline): {yesno(st.get('unlock_stages'))}",
          f"Unlock all customization items (offline): {yesno(st.get('unlock_items'))}",
          f"Unlock Jinpachi and Random select (offline): {yesno(st.get('unlock_jinpachi'))}",
-         f"Always see me on the left (test): {yesno(st.get('always_left'))}",
+         f"Always see me on the left (casual matches): {yesno(st.get('always_left'))}",
          f"Player name set: {yesno((st.get('nickname') or '').strip())}",
          f"Package and license chosen: {yesno(st.get('pkg') and st.get('rap'))}"]
     if out_dir:

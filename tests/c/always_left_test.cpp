@@ -43,11 +43,22 @@ int main()
     /* when */
     al::Frame f;
     f.enabled = true; f.net = al::Net::Join; f.local_slot = 1; f.phase = 17; f.game_type = 4;
-    CHECK(al::active(f), "online P2 in a fight");
+    f.casual = true; f.online_game = true;
+    CHECK(al::active(f), "online P2 in a casual fight");
     f.local_slot = 0;
     CHECK(!al::active(f), "online P1: normal");
     f.local_slot = 1; f.net = al::Net::Host;
     CHECK(al::active(f), "the host as P2 (a side chosen in the lobby)");
+    /* 1.1.9: casual matches only -- ranked, Quick and tournament sets keep the normal picture */
+    f.casual = false;
+    CHECK(!al::active(f), "online P2 (host) in a ranked / Quick match: normal");
+    f.net = al::Net::Join;
+    CHECK(!al::active(f), "online P2 (join) in a ranked / Quick match: normal");
+    f.net = al::Net::Off;
+    CHECK(!al::active(f), "a game started for online play between sessions (netplay off), Versus: never");
+    f.net = al::Net::Local;
+    CHECK(!al::active(f), "a game started for online play, netplay local: never");
+    f.net = al::Net::Join; f.casual = true; f.online_game = false;
     f.enabled = false;
     CHECK(!al::active(f), "the option off: never");
     f.enabled = true; f.phase = 6;

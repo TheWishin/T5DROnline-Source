@@ -1,7 +1,11 @@
 /*
- * "Always left" (a 1.1.8 test, always_left.h has the rule; docs/NETPLAY.md "Always left"):
+ * "Always left" (1.1.9, casual matches; always_left.h has the rule; docs/NETPLAY.md "Always left"):
  *
- *   T5_ALWAYS_LEFT=1   (launcher Settings "Always see me on the left") on; unset = off, nothing here runs.
+ *   T5_ALWAYS_LEFT=1   (launcher "Always see me on the left", Settings and the Online tab) on; unset = off.
+ *   T5_NET_CASUAL=1    (the launcher, from the lobby's match_start) this online match is casual: only then
+ *                      is an online P2 shown mirrored. Both are the SESSION's values (t5_env): a persistent
+ *                      game gets them again with every match, so a ranked match after a casual one is never
+ *                      mirrored, and the option changed in the launcher counts from the next match on.
  *
  * t5_always_left_frame() runs at the top of each frame (t5_hooks.cpp on_frame_start, main thread, never in a
  * re-simulated frame): it reads the fight phase and the game type (guest memory, read only) and tells the
@@ -39,6 +43,30 @@ constexpr uint32_t kPhase = 0x1008F070u, kGameType = 0x1008EBACu;
 std::atomic<bool> g_active{ false };
 int g_enabled = -1;
 
+/* The session's values (t5_env: a persistent game's match overlay, else the process environment), read again
+ * whenever the fight phase changes -- a new match always passes through the select screen -- not every frame. */
+struct Session { bool enabled = false, casual = false; };
+Session read_session()
+{
+    Session s;
+    s.enabled = al::parse_enabled(t5_env("T5_ALWAYS_LEFT"));
+    const char* c = t5_env("T5_NET_CASUAL");
+    s.casual = c && c[0] == '1' && c[1] == 0;
+    return s;
+}
+
+/* Started for online play (the lobby's persistent game, or one netplay session): never the offline rule. */
+bool online_game()
+{
+    static int v = -1;
+    if (v < 0) {
+        const char* ctl = getenv("T5_CTL_DIR");
+        const char* m = getenv("T5_NET_MODE");
+        v = (ctl && *ctl) || (m && (!_stricmp(m, "host") || !_stricmp(m, "join"))) ? 1 : 0;
+    }
+    return v == 1;
+}
+
 inline uint32_t rd32(uint32_t a) { uint32_t v; memcpy(&v, vm_base + a, 4); return _byteswap_ulong(v); }
 inline uint16_t rd16(uint32_t a) { uint16_t v; memcpy(&v, vm_base + a, 2); return _byteswap_ushort(v); }
 inline void wr16(uint32_t a, uint16_t x) { x = _byteswap_ushort(x); memcpy(vm_base + a, &x, 2); }
@@ -57,9 +85,10 @@ al::Net net_mode()
 
 }  // namespace
 
+/* The process's value (the offline pad hook is registered by it, from a static constructor). */
 bool t5_always_left_enabled()
 {
-    if (g_enabled < 0) g_enabled = al::parse_enabled(getenv("T5_ALWAYS_LEFT")) ? 1 : 0;   /* (also from a static constructor) */
+    if (g_enabled < 0) g_enabled = al::parse_enabled(getenv("T5_ALWAYS_LEFT")) ? 1 : 0;
     return g_enabled == 1;
 }
 
@@ -67,19 +96,32 @@ extern "C" void t5_always_left_frame(void)
 {
     static int trace = -1;
     if (trace < 0) { const char* t = getenv("T5_ALWAYS_LEFT_TRACE"); trace = t && *t == '1'; }
-    if (!t5_always_left_enabled() && !trace) return;
-    static bool said = false;
-    if (!said && t5_always_left_enabled()) {
-        said = true;
-        np::note("always left: on -- as P2 this PC shows the fight mirrored (you on the left) and swaps your left and "
-                 "right; the game and the other PC are unchanged (offline: Versus fights, the P2 side)");
+    /* one guest read per frame; the session's values only when the phase changes */
+    static uint32_t last_phase = ~0u;
+    static Session sess;
+    const uint32_t phase = rd32(kPhase);
+    if (phase != last_phase) {
+        last_phase = phase;
+        const Session was = sess;
+        sess = read_session();
+        if (sess.enabled != was.enabled || (sess.enabled && sess.casual != was.casual))
+            np::note("always left: %s", !sess.enabled ? "off"
+                     : online_game() ? (sess.casual ? "on -- this casual match: as P2 this PC shows the fight mirrored "
+                                                      "(you on the left) and swaps your left and right; the game and "
+                                                      "the other PC are unchanged"
+                                                    : "on, but not in this match (ranked, Quick or a tournament set: "
+                                                      "only casual matches)")
+                     : "on -- offline Versus fights show the P2 side mirrored");
     }
+    if (!sess.enabled && !g_active.load(std::memory_order_relaxed) && !trace) return;
     al::Frame f;
-    f.enabled = t5_always_left_enabled();
+    f.enabled = sess.enabled;
+    f.casual = sess.casual;
+    f.online_game = online_game();
     f.net = net_mode();
     f.replaying = np::replaying();
     f.local_slot = np::local_slot();
-    f.phase = rd32(kPhase);
+    f.phase = phase;
     f.game_type = rd32(kGameType);
     const bool a = al::active(f);
     if (a != g_active.load(std::memory_order_relaxed)) {

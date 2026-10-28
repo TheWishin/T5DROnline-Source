@@ -417,7 +417,8 @@ def _scan_for(paths, marker):
 
 class MatchDriver:
     def __init__(self, client, launch, workdir, table=None, mode="auto", game_files=(), extra_env=None,
-                 ask_manual=True, auto_rematch=0, fight_env=True, async_calls=False, input_delay=None):
+                 ask_manual=True, auto_rematch=0, fight_env=True, async_calls=False, input_delay=None,
+                 always_left=None):
         """client: LobbyClient. launch(env) -> game handle (.running(), .stop(), .proc, .log_path) or
         None. workdir: where result files and the control channel live. mode: auto | process |
         persistent. game_files: binaries to check for the control channel (mode auto).
@@ -425,7 +426,9 @@ class MatchDriver:
         auto_rematch: accept this many rematches by itself (scripted runs). async_calls: lobby
         requests on a worker thread (a UI must not wait for the network). input_delay: this
         player's rollback input delay setting ("auto", "0", "1", "2"; a ranked match's fixed value
-        wins), passed to every match as T5_RB_NET_DELAY."""
+        wins), passed to every match as T5_RB_NET_DELAY. always_left: () -> bool, this player's "Always see me on
+        the left" at the start of each match (T5_ALWAYS_LEFT in every match's environment: a persistent game
+        reads it again with each match; the game uses it in casual matches only, T5_NET_CASUAL)."""
         self.client = client
         self.launch = launch
         self.workdir = os.path.abspath(workdir)
@@ -443,6 +446,7 @@ class MatchDriver:
         self.mode = mode
         self.extra_env = dict(extra_env or {})
         self.input_delay = str(input_delay) if input_delay not in (None, "") else None
+        self.always_left = always_left
         self.ask_manual = ask_manual
         self.auto_rematch = auto_rematch
         self.fight_env = fight_env
@@ -537,6 +541,10 @@ class MatchDriver:
             # In-game identity (docs/DIRECTFIGHT.md): the lobby's names and rank tiers in the fight HUD.
             env["T5_HUD_NAMES"] = "|".join(hud[0])
             env["T5_HUD_RANKS"] = ",".join(str(t) for t in hud[1])
+        if self.always_left is not None:
+            # "Always see me on the left" as the player left it for this match (docs/NETPLAY.md "Always left"; the
+            # game mirrors only a casual match's P2, T5_NET_CASUAL from the ticket)
+            env["T5_ALWAYS_LEFT"] = "1" if self.always_left() else "0"
         env.update(self.extra_env)
         # Rollback input delay (docs/NETPLAY.md "Input delay"): a ranked match's fixed value wins
         # over everything; otherwise this player's setting, in every session's environment (a

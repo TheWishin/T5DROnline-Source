@@ -751,16 +751,16 @@ class App(tk.Tk):
         ttk.Label(pr, style="Muted.TLabel", wraplength=300, justify="left", text=t(core.PRACTICE_HELP)).pack(
             anchor="w", pady=(4, 0))
 
-        # "Always left" (T5_ALWAYS_LEFT, docs/NETPLAY.md): as P2 the fight is shown mirrored on this PC only.
+        # "Always left" (T5_ALWAYS_LEFT, docs/NETPLAY.md): as P2 in a casual match the fight is shown mirrored on
+        # this PC only (never ranked, Quick or a tournament set). The Online tab's casual row has the same checkbox
+        # on this variable (tk_casual.py).
         sd = ttk.LabelFrame(left, text="  " + t("Screen side") + "  ", padding=(12, 6))
         sd.pack(fill="x", pady=(6, 0))
         self.always_left_var = tk.BooleanVar(value=bool(self.settings.get("always_left", False)))
         ttk.Checkbutton(sd, text=t("Always see me on the left"), variable=self.always_left_var,
                         style=self.wrap_style("TCheckbutton", 300), command=self.save_settings).pack(anchor="w")
-        ttk.Label(sd, style="Muted.TLabel", wraplength=300, justify="left", text=t(
-            "Test: when you are P2, your screen shows the fight mirrored with you on the left, and your left and "
-            "right are swapped. Your opponent sees the normal picture. Offline: Versus fights show the P2 "
-            "side.")).pack(anchor="w", pady=(4, 0))
+        ttk.Label(sd, style="Muted.TLabel", wraplength=300, justify="left", text=t(core.ALWAYS_LEFT_HELP)).pack(
+            anchor="w", pady=(4, 0))
 
         right = ttk.Frame(box)
         right.grid(row=0, column=1, sticky="nwe")

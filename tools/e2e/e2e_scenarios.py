@@ -4990,3 +4990,112 @@ def net_casual_choice(ctx):
                           stage in fighters.table().stage_pool(old_stages=True), stage)
     for p in (a, b):
         leave(ctx, p)
+
+
+# ---------------------------------------------------------------------------- 1.1.9: always left (casual only)
+RE_AL_TRACE = re.compile(r"\[always-left\] trace (\d+) mirrored=(\d) P1 (-?\d+) (-?\d+) P2 (-?\d+) (-?\d+) dist (\d+)")
+
+
+def _al_script(path, frames=30000):
+    """'Always left' test presses (T5_NET_SCRIPT, netplay frames): the pad's RIGHT held all the time, an attack
+    (Square, 2 frames) every 24 frames."""
+    with open(path, "w") as f:
+        f.write(f"0 {frames} 0x20\n")
+        for fr in range(12, frames, 24):
+            f.write(f"{fr} 2 0x8000\n")
+    return path
+
+
+def _al_fight(ctx, p, mid):
+    """p's game log of match mid: (fights shown mirrored, [(trace n, mirrored, distance)] of its fight)."""
+    lines = p.log_segment(mid)
+    mirrored = sum("always left: the fight is shown mirrored" in ln for ln in lines)
+    trace = [(int(m.group(1)), int(m.group(2)), int(m.group(7))) for m in map(RE_AL_TRACE.search, lines) if m]
+    return mirrored, trace
+
+
+def _al_direction(ctx, trace, towards, label):
+    """The fighters' distance (T5_ALWAYS_LEFT_TRACE, every 20 fight frames) while A holds the pad's RIGHT: towards the
+    opponent it falls below half of the round start's within the first 6 s; away it never does."""
+    if len(trace) < 10:
+        ctx.check(f"{label}: the fighters' places traced", False, f"{len(trace)} trace lines")
+        return
+    first = trace[0][2]
+    early = [d for n, _m, d in trace if n <= 360]
+    near = min(early) if early else first
+    if towards:
+        ctx.check(f"{label}: A's RIGHT walks A towards the opponent (distance {first} -> {near} in 6 s)",
+                  near < first * 0.5, f"start {first}, closest in the first 6 s {near}")
+    else:
+        ctx.check(f"{label}: A's RIGHT walks A away from the opponent (distance {first}, closest {near} in 6 s)",
+                  near >= first * 0.9, f"start {first}, closest in the first 6 s {near}")
+
+
+@scenario("net_always_left", "6 netcode", game=True, suites=("game", "net"),
+          desc="1.1.9 'Always see me on the left', casual only: both players tick it under the Online tab's casual choices; "
+               "A (wants P2) challenges B: A's game shows the fight mirrored, B's never, and A's held RIGHT walks A "
+               "towards B on A's mirrored screen (the game's LEFT for P2); 0 mismatching frames. Then Quick matches "
+               "until A is P2: never mirrored, A's RIGHT walks away (the game's own sides); pictures of A's game")
+def net_always_left(ctx):
+    if "casual_choice" not in features():
+        raise Skip("no casual choices in this tree")
+    game_server(ctx)
+    shots = os.path.join(ctx.dir, "shots_A")
+    os.makedirs(shots, exist_ok=True)
+    idle = os.path.join(ctx.dir, "idle.txt")
+    open(idle, "w").close()
+    a = ctx.player("E2E LeftA", env={"T5_NET_SCRIPT": _al_script(os.path.join(ctx.dir, "right.txt")),
+                                     "T5_ALWAYS_LEFT_TRACE": "1", "LD_SURF_DUMP": shots,
+                                     "LD_SURF_DUMP_GATE": os.path.join(shots, "gate.txt"),
+                                     "T5_DF_SHOT": "++240,++600"})
+    b = ctx.player("E2E LeftB", env={"T5_NET_SCRIPT": idle, "T5_ALWAYS_LEFT_TRACE": "1"})
+    login(ctx, a)
+    login(ctx, b)
+    if not a.client.casual_ok():
+        raise Skip("the lobby server has no casual choices")
+    for p in (a, b):               # the checkbox at the end of the casual row, as a player ticks it
+        ui = p.tab.casual
+        ui.refresh()
+        if not ui.left_var.get():
+            ui.left_check.invoke()
+        ctx.check(f"{p.name}: 'Always see me on the left' ticked in the Online tab, saved in the settings",
+                  ui.left_var.get() and p.app.settings.get("always_left") is True, str(p.app.settings.get("always_left")))
+
+    # 1. a casual challenge, A is P2: mirrored on A's PC only
+    _casual_wish(ctx, a, 1, "random")
+    _casual_wish(ctx, b, None, "random")
+    mid, _bar = _casual_challenge(ctx, a, b)
+    _casual_play(ctx, a, b, mid, "casual challenge, A is P2")
+    ctx.check("casual: A is P2", a.matches[mid].get("slot") == 1, str(a.matches[mid].get("slot")))
+    ma, ta = _al_fight(ctx, a, mid)
+    mb, _tb = _al_fight(ctx, b, mid)
+    ctx.check("casual: A's game (P2) showed the fight mirrored", ma > 0, f"{ma} mirrored fight(s)")
+    ctx.check("casual: B's game (P1, option on too) never mirrored", mb == 0, f"{mb} mirrored fight(s)")
+    ctx.check("casual: the trace says mirrored on A's PC", any(m for _n, m, _d in ta), f"{len(ta)} lines")
+    _al_direction(ctx, ta, True, "casual, A mirrored P2")
+    for p in (a, b):
+        leave(ctx, p)
+    ctx.sleep(2.0)
+
+    # 2. Quick matches (not casual): never mirrored; until A is P2 (the coin), at most three
+    for k in range(3):
+        mid = queue_match(ctx, a, b, "quick")
+        if not wait_fight(ctx, mid, (a, b), timeout=150):
+            raise Abort("quick: no fight")
+        wait_results(ctx, mid, (a, b))
+        match_row(ctx, mid, (a, b), "confirmed", f"quick {k + 1}")
+        slot = a.matches[mid].get("slot")
+        ma, ta = _al_fight(ctx, a, mid)
+        mb, _tb = _al_fight(ctx, b, mid)
+        ctx.check(f"quick {k + 1}: neither game mirrored (A is P{slot + 1}, both have the option on)",
+                  ma == 0 and mb == 0, f"A {ma}, B {mb}")
+        _al_direction(ctx, ta, slot == 0, f"quick {k + 1}, A is P{slot + 1}, not mirrored")
+        for p in (a, b):
+            leave(ctx, p)
+        ctx.wait(lambda: a.action_on("quick") and b.action_on("quick"), 30, "free for the next pairing")
+        ctx.sleep(1.0)
+        if slot == 1:
+            break
+    else:
+        ctx.note("the coin made A P1 in all three Quick matches: the 'not mirrored as P2' case was not reached")
+    ctx.note(f"pictures of A's game (T5_DF_SHOT ++240,++600): {shots}")

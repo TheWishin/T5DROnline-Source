@@ -307,14 +307,24 @@ picks with the pad file in between). Checks: the presses are in the other PC's f
 frames, the same result hash. On 1.1.1's code: 695 presses sent, 0 frames with them on the other PC.
 `tests/test_local_pad.py` (tests/c/local_pad_test.cpp) checks the rule with fake ports.
 
-## Always left (a 1.1.8 test, branch always-left-118)
+## Always left (1.1.9, casual matches)
 
 Owner's wish: a player always sees themselves on the LEFT of their own screen, whether the game made them P1
-or P2. Launcher Settings -> "Screen side" -> **Always see me on the left** (off by default; `T5_ALWAYS_LEFT=1`
-for the game).
+or P2 -- in **casual** matches; ranked keeps the server's sides by coin and the game's own picture. Launcher
+Settings -> "Screen side" -> **Always see me on the left**, and the same checkbox under the Online tab's casual
+choices ("Challenges, invites, rooms: [side] [stage]", `tk_casual.py`; one setting, `always_left`, off by
+default).
 
-While this PC plays P2 in a fight (phase 17, round intros and win poses included; not the attract demo, not a
-replay being watched; offline: a Versus fight shows the P2 side, for trying it alone with a second pad):
+Which matches: the casual matches by choice -- the server's match_start says `casual` (a challenge, a friend's
+casual invite, a room that is not ranked, their rematches; `server/casual.py` `_casual_match`). The launcher
+gives the game `T5_NET_CASUAL=1` for those (`handover.match_casual`), `0` for everything else: ranked, the Quick
+queue, ranked rooms, tournament sets. The match driver gives every match `T5_ALWAYS_LEFT` = the setting as it is
+when the match starts (a persistent game reads both again with each match, `t5_env`; so the checkbox counts from
+the next match, and a ranked match after a casual one in the same game is never mirrored). The game mirrors only
+when both say 1 (`al::active`); a game started for online play never uses the offline rule below.
+
+While this PC plays P2 in a casual fight (phase 17, round intros and win poses included; not the attract demo,
+not a replay being watched; offline: a Versus fight shows the P2 side, for trying it alone with a second pad):
 
 - **Picture** (ps3recomp patch 0086, `libs/video/rsx_always_left.h`): the game draws its 3D scene into a
   2048 x 1440 target and copies it into the 1280 x 720 display buffer with one full-screen quad, then draws

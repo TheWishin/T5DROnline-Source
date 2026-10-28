@@ -2449,9 +2449,10 @@ MESSAGES = {
     # the fold button right of the Online tab's lists (tk_views.toggle_top)
     "Hide": "Ocultar",
     "Show": "Mostrar",
-    # launcher Settings "Screen side" ("Always left", a 1.1.8 test; docs/NETPLAY.md)
+    # launcher Settings "Screen side" and the Online tab's casual row ("Always left", 1.1.9, casual matches only;
+    # docs/NETPLAY.md)
     "Screen side": 'Lado da tela',
     "Always see me on the left": 'Sempre me ver à esquerda',
-    'Test: when you are P2, your screen shows the fight mirrored with you on the left, and your left and right are swapped. Your opponent sees the normal picture. Offline: Versus fights show the P2 side.':
-        'Teste: quando você é o P2, sua tela mostra a luta espelhada com você à esquerda, e sua esquerda e direita são trocadas. Seu oponente vê a imagem normal. Offline: as lutas Versus mostram o lado do P2.',
+    "Casual matches only (challenges, friends' invites, rooms): when you are P2, your screen shows the fight mirrored with you on the left, and your left and right are swapped. Your opponent sees the normal picture. Ranked and Quick matches stay as they are. Offline: Versus fights show the P2 side.":
+        'Somente partidas casuais (desafios, convites de amigos, salas): quando você é o P2, sua tela mostra a luta espelhada com você à esquerda, e sua esquerda e direita são trocadas. Seu oponente vê a imagem normal. Partidas Ranked e Quick Match ficam como estão. Offline: as lutas Versus mostram o lado do P2.',
 }

@@ -1,5 +1,5 @@
-""""Always left" (a 1.1.8 test; docs/NETPLAY.md "Always left"): the player the game made P2 sees the fight with
-themselves on the left. No game needed.
+""""Always left" (1.1.9, casual matches only; docs/NETPLAY.md "Always left"): the player the game made P2 sees the
+fight with themselves on the left. No game needed.
 
 * tests/c/always_left_test.cpp (src/netplay/always_left.h): when this PC shows a fight mirrored (online P2,
   offline Versus; never the attract demo, a replay or outside a fight) and the input mapping (left <-> right,
@@ -11,6 +11,8 @@ themselves on the left. No game needed.
 * The wiring: the swap is in the exchanged local sample (both PCs simulate the same input), the frame hook
   never runs in a re-simulated frame, the renderer patch writes no guest memory, the launcher setting
   (off by default) gives T5_ALWAYS_LEFT=1.
+* Casual only (1.1.9): the lobby's match kind -> T5_NET_CASUAL (a challenge / invite / unranked room: 1; ranked,
+  Quick, a tournament set: 0), the setting in every match's environment, the game reads both per session.
 """
 import os
 import re
@@ -181,12 +183,67 @@ class Setting(unittest.TestCase):
     def test_problem_report(self):
         self.assertIn("always_left", report.SETTING_KEYS)
         lines = report.settings_lines({"always_left": True})
-        self.assertIn("Always see me on the left (test): yes", lines)
+        self.assertIn("Always see me on the left (casual matches): yes", lines)
 
     def test_launcher_has_the_checkbox(self):
         ui = text("launcher", "t5dr_launcher.pyw")
         self.assertIn('t("Always see me on the left")', ui)
         self.assertIn('self.settings["always_left"] = bool(self.always_left_var.get())', ui)
+        self.assertIn("t(core.ALWAYS_LEFT_HELP)", ui)
+        self.assertIn("Casual matches only", core.ALWAYS_LEFT_HELP)
+
+
+LOBBY = os.path.join(ROOT, "lobby")
+if LOBBY not in sys.path:
+    sys.path.insert(0, LOBBY)
+
+
+class CasualOnly(unittest.TestCase):
+    """1.1.9: the owner's rule -- ranked keeps the server's sides by coin and the game's own picture; casual matches
+    get the choice."""
+
+    def test_match_kind(self):
+        from t5lobby.handover import match_casual
+        self.assertTrue(match_casual({"ranked": False, "casual": {"swap": True}}))          # challenge, invite, room
+        self.assertFalse(match_casual({"ranked": False}))                                   # the Quick queue
+        self.assertFalse(match_casual({"ranked": True}))
+        self.assertFalse(match_casual({"ranked": True, "casual": {"swap": True}}))          # (never, whatever it says)
+        self.assertFalse(match_casual({"casual": {"swap": True}, "set": {"tournament": "t1"}}))
+        self.assertFalse(match_casual(None))
+
+    def test_ticket_env(self):
+        from t5lobby.handover import MatchTicket
+        kw = dict(match_id="m", role="join", slot=1, local_port=1, peer=("127.0.0.1", 2), path="lan", rtt_ms=1.0,
+                  jitter_ms=0.0, delay=2)
+        self.assertEqual(MatchTicket(**kw).game_env()["T5_NET_CASUAL"], "0")
+        self.assertEqual(MatchTicket(casual=True, **kw).game_env()["T5_NET_CASUAL"], "1")
+
+    def test_client_ticket_from_match_start(self):
+        src = text("lobby", "t5lobby", "client.py")
+        self.assertIn("casual=match_casual(msg)", src)
+
+    def test_every_match_gets_the_setting(self):
+        from t5lobby.handover import MatchTicket
+        from t5lobby.match_driver import MatchDriver
+        d = tempfile.mkdtemp(prefix="t5dr-al")
+        self.addCleanup(shutil.rmtree, d, True)
+        on = [True]
+        drv = MatchDriver(client=None, launch=lambda env: None, workdir=d, mode="process", always_left=lambda: on[0])
+        tk = MatchTicket(match_id="m", role="join", slot=1, local_port=1, peer=("127.0.0.1", 2), path="lan",
+                         rtt_ms=1.0, jitter_ms=0.0, delay=2, casual=True)
+        env = drv.match_env({}, tk)
+        self.assertEqual((env["T5_ALWAYS_LEFT"], env["T5_NET_CASUAL"]), ("1", "1"))
+        on[0] = False                       # changed in the launcher: the next match has it
+        self.assertEqual(drv.match_env({}, tk)["T5_ALWAYS_LEFT"], "0")
+        plain = MatchDriver(client=None, launch=lambda env: None, workdir=d, mode="process")
+        self.assertNotIn("T5_ALWAYS_LEFT", plain.match_env({}, tk))      # (no launcher setting: the process's)
+
+    def test_game_reads_the_session_values(self):
+        src = text("src", "netplay", "always_left.cpp")
+        self.assertIn('t5_env("T5_ALWAYS_LEFT")', src)
+        self.assertIn('t5_env("T5_NET_CASUAL")', src)
+        hdr = text("src", "netplay", "always_left.h")
+        self.assertIn("return f.local_slot == 1 && f.casual;", hdr)
 
 
 if __name__ == "__main__":

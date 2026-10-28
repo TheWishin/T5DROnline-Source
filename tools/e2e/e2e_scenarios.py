@@ -727,7 +727,7 @@ def ranked_sides(ctx):
             a_slot = _set_sides(ctx, a, b, mid, label)
             sides.append(b.matches[mid].get("slot"))
             ctx.note(f"{label}: {b.name} (lower ping) is P{(sides[-1] or 0) + 1}, plan {plan}")
-            ea, eb = _play_set(ctx, a, b, mid, plan, label)
+            ea, eb, _mids = _play_set(ctx, a, b, mid, plan, label)
             winner, loser = (a, b) if plan.count("A") == 2 else (b, a)
             ew, el = (ea, eb) if winner is a else (eb, ea)
             wslot = a_slot if winner is a else 1 - a_slot
@@ -746,21 +746,22 @@ def ranked_sides(ctx):
             prof = profile(ctx, p) or {}
             ctx.check(f"{p.name}: profile counts {n_sets} ranked sets", prof.get("ranked_games") == n_sets,
                       f"ranked_games {prof.get('ranked_games')}, record {prof.get('record')}, rating {prof.get('rating')}")
-        # Rematch after a set: a new set, its sides drawn again (the same: inside the running games; other: new session)
+        # Rematch after a set: a new set, its sides drawn again. (A launcher lets its game's session go at the set's
+        # end -- match_driver._set_over, 1.1.5 -- so this rematch is a new netplay session whatever the coin says.)
         prev_slot = b.matches[mid].get("slot")
+        ctx.plan = (a, b, plans[:n_sets] + ["AA"])       # (before the rematch: a bot reads it at match_start)
         mid2 = rematch(ctx, a, b)
-        cont = bool(a.matches[mid2].get("cont"))
         now_slot = b.matches[mid2].get("slot")
         ctx.note(f"rematch: {b.name} P{(prev_slot or 0) + 1} -> P{(now_slot or 0) + 1}, "
-                 f"{'inside the running games' if cont else 'a new netplay session'}")
+                 f"{'inside the running games' if a.matches[mid2].get('cont') else 'a new netplay session'}")
         ctx.check("rematch: a new set", _set_of(a, mid2).get("id") != _set_of(a, mid).get("id"),
                   f"{_set_of(a, mid).get('id')} -> {_set_of(a, mid2).get('id')}")
-        ctx.check("rematch: the same sides continue in the running games, other sides come over a new session",
-                  cont == (now_slot == prev_slot), f"cont {cont}, slot {prev_slot} -> {now_slot}")
-        if not cont:
-            wait_fight(ctx, mid2, (a, b), timeout=150)
+        wait_fight(ctx, mid2, (a, b), timeout=150)
+        if not a.matches[mid2].get("cont"):
             _set_sides(ctx, a, b, mid2, "rematch set")
-        ctx.plan = (a, b, plans[:n_sets] + ["AA"])
+        else:
+            ctx.check("rematch inside the running games: the same sides", now_slot == prev_slot,
+                      f"{prev_slot} -> {now_slot}")
         _play_set(ctx, a, b, mid2, "AA", "rematch set")
     finally:
         far_udp.close()

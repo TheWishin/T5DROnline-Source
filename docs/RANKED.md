@@ -224,7 +224,7 @@ host), "more likely the better-connected PC". Since 1.1.7 the server draws the s
 |---|---|
 | ranked queue | drawn for each set (game 1); the set's next games keep them |
 | ranked room | drawn for each new set (not the room's order); the set's next games keep them |
-| ranked rematch (a new set; a launcher without sets: a new rated game) | drawn again; the same sides continue inside the running games, other sides come over a new netplay session (`match_found` `keep: false`, like Swap sides in casual) |
+| ranked rematch (a new set; a launcher without sets: a new rated game) | drawn again. After a set this costs nothing: launchers since 1.1.5 let their game's session go at the set's end (`match_driver._set_over`), so the next set comes over a new netplay session anyway. Without sets, other sides make the rematch a new session (`match_found` `keep: false`, like Swap sides in casual); the same sides continue inside the running games |
 | quick queue | drawn (the owner asked for ranked; nothing speaks for the old rule anywhere); a quick rematch keeps them, as before |
 | challenges, invites, casual rooms | the players' wishes (docs/ONLINE.md "Sides and stages by choice"), unchanged |
 | tournament sets | the bracket's order, unchanged (the organizer's question, not decided here) |

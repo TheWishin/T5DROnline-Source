@@ -21,15 +21,15 @@ to v1.1.6's), no database step.
 - **Settings: none.** No new `T5L_*` value; the env file stays as it is.
 - **Protocol: unchanged.** `match_found` / `match_reveal` / `match_start` carry `role` and `slot` as always; only
   who gets which differs. A ranked rematch whose coin swaps the sides comes with `keep: false` (a new netplay
-  session), which every launcher since 1.0 handles (the same as a rematch after a closed game).
+  session), which every launcher handles (the same as a rematch after a closed game); after a ranked set the
+  launchers since 1.1.5 start a new session anyway.
 - The server log has one line per drawn match: `sides: <P1> P1, <P2> P2 (drawn, ranked queue)`.
 
 ## What players see
 
 - In ranked and quick, the lower-ping player is no longer always P1: each set (each quick match) is a coin flip.
   Inside a ranked set the sides stay.
-- A Rematch after a ranked set is a new set with new sides: half the time it reconnects (some seconds more) instead
-  of continuing inside the running games.
+- A Rematch after a ranked set is a new set with its sides drawn again (it was a new connection before too).
 - Casual challenges, invites and rooms keep the players' side wishes; tournaments keep the bracket's order.
 
 ## C3 additions

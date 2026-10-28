@@ -61,6 +61,15 @@ update press **BUILD GAME** once, as the launcher asks.
   CHANGELOG's line breaks at 120 characters made lines break in the middle; paragraphs and list items are one line
   each now, wrapped by the window, with the lists and headings kept. A cached answer of an older launcher is asked
   again once.
+- Online tab: a challenge shows the challenger's ping before you answer (player feedback: "had no idea of this
+  guy's ping until after I accepted"; `lobby/t5lobby/tk_tab.py`, `tk_views.py`). The card was drawn before it had
+  read the challenge, so a first challenge showed no name and no ping, a later one the previous challenger's name
+  and still no ping. The ping is the server's estimate, or the launcher's own (the lobby list's number) when the
+  server has none or does not know it yet (`client.py` `ping_info`). The badge no longer stands apart from the
+  name on challenge and invite cards with a ping.
+- A challenge chimes and flashes the taskbar button like a found match or an invite (player feedback: "so I can
+  have it minimized and know I got challenged"; `lobby/t5lobby/notify.py`, `tk_tab.py`): only while you look
+  elsewhere, with the same setting, once per challenge and at most once a minute for the same challenger.
 - Tests: `test_controls_ui`'s runtime comparison failed on the main checkout's `deps/ps3recomp`, a patch series
   behind (0053; the series is at 0083); on a tree prepared fresh with `tools/prepare_ps3recomp.py` it passes, on
   a1bd816 and on this branch. A tree found on its own is now used only when its stamp names this series

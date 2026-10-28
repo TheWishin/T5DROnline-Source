@@ -767,17 +767,21 @@ a match):
 | Event | When |
 |---|---|
 | match found | `match_found` that shows Accept (quick, ranked, a room's pair, a tournament's next game); not a match that starts by itself (an accepted invite, a ranked set's next game) |
+| challenge | `challenged` (1.1.7): another player challenges this one; the same challenger at most once a minute |
 | someone joined | a new member in the room this player hosts (a visitor is not told who comes and goes) |
 | your turn | in a community room, the countdown to a match with this player began |
 | invite | `invited`: a friend's invite to a casual match or a room |
 | tournament set | `tour_call`: "Your tournament set is ready" |
 | rematch | the opponent's rematch question |
 
-Not for a challenge from a stranger in the lobby (anybody could ring the bell), chat, friend requests or any lobby
-update. Only while the player is elsewhere: another program (or a launcher dialog) in front, the launcher minimized,
-or another tab shown; never for a window that was never shown. At most once per event (the match id, the invite id,
-the tournament set -- a room's news is found by comparing one `room` message with the one before), and events within
-3 seconds of a chime make no second one (someone joins a classic room and the match starts: one chime).
+Not for chat, friend requests or any lobby update. (A challenge rings since 1.1.7 -- players minimize the launcher
+while they wait. Anybody can challenge, so the server's limits apply -- one pending challenge per challenger, 30 s
+before the same two again after a decline -- and the tab rings for the same challenger at most once a minute; Block
+stops one for good.) Only while the player is elsewhere: another program (or a launcher dialog) in front, the launcher
+minimized, or another tab shown; never for a window that was never shown. At most once per event (the match id, the
+challenge id, the invite id, the tournament set -- a room's news is found by comparing one `room` message with the one
+before), and events within 3 seconds of a chime make no second one (someone joins a classic room and the match starts:
+one chime).
 
 The sound is made in code: two soft bell tones (E5, then B5), about half a second, a 16-bit mono WAV built in memory --
 no game audio, no file. winsound cannot play a memory image asynchronously, so a daemon thread plays it and the Tk

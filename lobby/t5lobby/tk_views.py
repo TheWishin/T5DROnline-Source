@@ -189,7 +189,6 @@ class OnlineView:
         self._wrap_bound = set()
         self._wrap_after = None
         self.revealed = None               # the opponent once both accepted (match_reveal)
-        self.challenger = None
         self.match_ev = None               # match_start of the match being played
         self.game_phase = None
         self.fighters = None               # (p1, p2) once the game says who fights
@@ -1245,7 +1244,6 @@ class OnlineView:
 
     def reset(self):
         self.revealed = None
-        self.challenger = None
         self.match_ev = None
         self.result_info = None
         self.result_dismissed = True
@@ -1286,9 +1284,6 @@ class OnlineView:
                 self.room_label.grid()
             else:
                 self.room_label.grid_remove()
-        elif kind == "challenged":
-            self.challenger = ev.get("from")
-            self.challenge_ev = ev
         elif kind == "match_found":
             self.revealed = None
             self.rematch_pending = False
@@ -1789,17 +1784,22 @@ class OnlineView:
 
     def _visual_challenge(self, v):
         px = self.px
-        ch = self.challenger or {}
+        # (the tab's own event, set before it shows the bar -- 1.1.7: the view's after_event came after the card
+        # was drawn, so the first challenge had no name and no ping, a later one the previous challenger's name)
+        ev = getattr(self.tab, "challenge_ev", None) or {}
+        if ev.get("challenge") != self.tab.challenge:
+            ev = {}
+        ch = ev.get("from") or {}
         left = self.body(v)
         left.grid(row=0, column=0, sticky="nw")
+        left.columnconfigure(1, weight=1)       # (the wide ping row widens the name's column, not the badge's)
         ttk.Label(left, text=t("Challenge").upper(), style="Card.Caps.TLabel").grid(
             row=0, column=0, columnspan=2, sticky="w", pady=(0, px(8)))
         if ch:
             self._opponent_row(left, ch, 1)
         ttk.Label(left, text=t("wants to play you. Accept to start the match."), style="Card.TLabel").grid(
             row=3, column=0, columnspan=2, sticky="w", pady=(px(10), 0))
-        ev = getattr(self, "challenge_ev", None)
-        if ev is not None and ev.get("challenge") == self.tab.challenge:
+        if ev:
             self._ping_row(left, self._card_ping(ev, "from"), 4)        # (1.1.5: before the answer)
 
     def _visual_invite(self, v):
@@ -1808,6 +1808,7 @@ class OnlineView:
         inv = self.tab.invite or {}
         left = self.body(v)
         left.grid(row=0, column=0, sticky="nw")
+        left.columnconfigure(1, weight=1)       # (the wide ping row widens the name's column, not the badge's)
         ttk.Label(left, text=t("Invite from a friend").upper(), style="Card.Caps.TLabel").grid(
             row=0, column=0, columnspan=2, sticky="w", pady=(0, px(8)))
         if inv.get("from"):

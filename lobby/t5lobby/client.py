@@ -1070,10 +1070,19 @@ class LobbyClient(TourCalls, SpectateClientMixin):
 
     def ping_info(self, ev, who="from"):
         """The `ping` of a challenge / invite / found match (the server's, 1.1.5) -- or, from an older server, the same
-        shape made here from the lobby list: {ms, kind "estimate" | "measured", known[, path]}; None when unknown."""
+        shape made here from the lobby list: {ms, kind "estimate" | "measured", known[, path]}; None when unknown.
+        A server ping that is not known (a round trip to the server not measured yet) gives way to this launcher's
+        own estimate when it has one (1.1.7: the list showed ~321 ms, the challenge "? ms")."""
         ping = ev.get("ping") if isinstance(ev, dict) else None
         if isinstance(ping, dict) and isinstance(ping.get("ms"), (int, float)):
-            return ping
+            if ping.get("known"):
+                return ping
+            own = self.ping_info(dict(ev, ping=None), who)
+            if own is None:
+                return ping
+            if ping.get("path") and "path" not in own:
+                own["path"] = ping["path"]
+            return own
         other = (ev or {}).get(who) if isinstance(ev, dict) else None
         if not isinstance(other, dict):
             return None

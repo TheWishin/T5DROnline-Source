@@ -606,7 +606,9 @@ class Walk:
         self.screen("online found")
         tab.on_event({"t": "match_reveal", "opponent": RIVAL})
         self.screen("online ready")
-        tab.on_event({"t": "challenged", "challenge": "c1", "from": RIVAL})
+        # (the widest ping row a card gets: an estimate with the path, 1.1.7 -- the card shows it since then)
+        tab.on_event({"t": "challenged", "challenge": "c1", "from": RIVAL,
+                      "ping": {"ms": 321, "kind": "estimate", "known": True, "path": "relay"}})
         self.screen("online challenged")
         tab.hide_bar()
         tab.on_event({"t": "match_start", "ranked": True, "opponent": RIVAL, "rtt_ms": 41.6, "path": "relay",

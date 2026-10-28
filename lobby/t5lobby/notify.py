@@ -4,6 +4,7 @@ Players wait for an opponent in another window ("a sound effect when you find a 
 room. Most of us play while alt-tabbing"). The tab calls Notifier.notify() for the moments a person has to act:
 
     match       a match was found and asks for Accept (quick, ranked, a room's pair, a tournament's next game)
+    challenge   another player challenges this one (1.1.7)
     join        someone joined the room this player hosts
     turn        it is this player's turn in a community room (the countdown to their match began)
     invite      a friend invites this player (to a casual match or to a room)
@@ -13,9 +14,9 @@ room. Most of us play while alt-tabbing"). The tab calls Notifier.notify() for t
 Only when the player is not looking: another program is in front, the launcher is minimized, or its Online tab is
 not the one shown (tk_tab.OnlineTab._notify_away). Settings "Sound and taskbar flash ..." (launcher.json "notify",
 on by default) switches it off. Not on lobby updates, chat or the like, and at most once per event: a key (the match
-id, the invite id, ...) is told once; the news of a room (join / turn) comes from RoomWatch, which compares one
-`room` message with the one before. Events that come close together (a join and the match it starts, a turn and its
-first countdown tick) make one chime: nothing is played within COALESCE_S of the last one.
+id, the challenge id, the invite id, ...) is told once; the news of a room (join / turn) comes from RoomWatch,
+which compares one `room` message with the one before. Events that come close together (a join and the match it
+starts, a turn and its first countdown tick) make one chime: nothing is played within COALESCE_S of the last one.
 
 The sound is made here, from nothing: two soft bell tones in a 16-bit mono WAV that is built in memory (chime_wav),
 no game audio and no file anywhere. winsound cannot play a memory image asynchronously, so a daemon thread plays it
@@ -42,6 +43,7 @@ except ImportError:                      # not Windows
     winsound = None
 
 MATCH, JOIN, TURN, INVITE, TOUR, REMATCH = "match", "join", "turn", "invite", "tour", "rematch"
+CHALLENGE = "challenge"
 
 COALESCE_S = 3.0          # a second notification this soon after one that went out makes no second chime
 SEEN_MAX = 128            # keys of events told so far (a long session must not grow without end)

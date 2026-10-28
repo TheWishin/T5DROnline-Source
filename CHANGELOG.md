@@ -3,6 +3,108 @@
 All notable changes, newest first. The project is a test release. Short commit hashes are in parentheses. The state of each
 part is in the README's status table.
 
+## v1.1.7 (not released yet)
+
+### Launcher
+- Fighter pictures in the ranked character select and the profile's main-fighter portrait show again
+  (`lobby/t5lobby/fighter_art.py`, `rank_art.py`): 1.1.5/1.1.6 read them from the game but called `after(func)`
+  instead of `after(0, func)`, so no window heard of it; a second size asked meanwhile is made too. Checked in the
+  real launcher of the release layout with a local lobby.
+- The warning about an unsupported v01.01 package shows before the first build (GitHub #20/#21,
+  `launcher/core.py` `make_peek_keys`, `tools/build_game.py`): a fresh release folder has no `keys/ps3.keys` until
+  BUILD GAME's keys step, so the Build tab could not look inside the package. Choosing a package now makes that
+  key file in the background with the keys step's own `tools/make_keys.py` (same public data, a few KB, written to
+  the output folder where the build reuses it); the line under the package says it is checking, then turns red
+  for v01.01. That line also wraps instead of being cut off (German).
+- The launcher never closes because of its own helper code (`launcher/t5dr_launcher.pyw`): an error in a button,
+  timer or startup step -- `SystemExit` included, which Tk lets through and which closed 1.1.5 -- goes into
+  `launcher.log` and the window stays open; errors in the launcher's threads are logged too (they were printed
+  nowhere under pythonw). Only the player's close ends it.
+- An incomplete release folder (no `deps/ps3recomp`, `toolchain/llvm`, `runtime/` or `python/` -- the zip not fully
+  extracted, or run from inside it) is called that (`tools/prereqs.py`, `launcher/core.py`, `tools/build_game.py`):
+  the Build tab and BUILD GAME say to extract the zip again with "Extract All" into a short path such as `C:\T5DR`,
+  and "Install missing..." no longer offers Git or Visual Studio for it (1.1.6 offered Git; installing it changed
+  nothing). A developer's checkout still gets Git offered.
+- Lobby chat: easier to see who wrote what (player feedback; `lobby/t5lobby/tk_tab.py`, `tk_views.py`, `theme.py`): the
+  sender's name in bold in a colour of their own (from the name, the same on every PC, readable on the dark card),
+  your own name in the accent colour, a name line with space above whenever another player writes, and the
+  launcher's and server's lines muted.
+- A "Community Discord" button in the launcher's header, beside "Check for updates": it opens the players'
+  Discord (https://discord.gg/4DwDHAkk2x, `launcher/core.py` `DISCORD_URL`) in the browser; the report window
+  names it for questions too.
+- Updates are checked at every start and offered right away (`launcher/updater.py`): the launcher asks GitHub each
+  time instead of reusing an answer up to an hour old (why some 1.1.4 launchers kept offering the withdrawn 1.1.5
+  after 1.1.6 was out), conditionally with the cached ETag and Last-Modified so an unchanged answer is a 304 that
+  does not use up GitHub's 60 requests an hour; "Update available" opens by itself after the start -- once per
+  session, never during a build, a game or an online match (then when it ends). "Check for updates" stays.
+- Without the launcher's fonts (Bahnschrift, Segoe UI: Wine / Proton, some older Windows 10) nothing is cut off any
+  more (`lobby/t5lobby/theme.py` `width_factor`): a wider stand-in face is drawn smaller by how much wider it is
+  (es / fr / pt-BR were cut off in 1 to 43 places). The cut-off walk no longer skips on such a PC, and
+  `tests/i18n_layout.py --without-font NAME` checks it.
+- Online tab: "Strict (ranked: +-150 rating)" and the side / stage choices no longer run into each other (German,
+  Japanese at 100 % and 150 %): the choices move to a line of their own when both do not fit
+  (`lobby/t5lobby/tk_views.py`). The cut-off walk (`tests/i18n_layout.py`) now also reports widgets of one grid
+  row that overlap.
+- The update window shows the release notes as flowing paragraphs (`launcher/updater.py` `notes_summary`): the
+  CHANGELOG's line breaks at 120 characters made lines break in the middle; paragraphs and list items are one line
+  each now, wrapped by the window, with the lists and headings kept. A cached answer of an older launcher is asked
+  again once.
+- Tests: `test_controls_ui`'s runtime comparison failed on the main checkout's `deps/ps3recomp`, a patch series
+  behind (0053; the series is at 0083); on a tree prepared fresh with `tools/prepare_ps3recomp.py` it passes, on
+  a1bd816 and on this branch. A tree found on its own is now used only when its stamp names this series
+  (`tests/helpers.py` `ps3recomp_series_problem`); otherwise the test skips and says why.
+
+### Updates and releases
+- An update keeps the new launcher only once it has run for 15 seconds or was closed by hand
+  (`launcher/updater.py` `CONFIRM_AFTER_MS`, `App.on_close`): a new launcher that closes by itself before -- as
+  1.1.5's did 2 s after its start -- gets the old files back and the old launcher starts again. The confirmation
+  lives in the new launcher, so this guards the updates to 1.1.7 and later (the swap step of 1.1.4-1.1.6 already
+  rolls back a launcher that ends unconfirmed; 1.1.5's confirmed after 0.3 s). The swap step's marker leaves the
+  environment at the start, so nothing the launcher starts in those 15 s inherits it.
+- The release smoke test starts the launcher from the zip with a package chosen (a stand-in .pkg header) and
+  requires it alive after 15 s (`tools/smoke_release.py`); the preflight runs it with the GUI checks, the release
+  workflow requires this starter check (it was informational). On a PC without a package around, the old check
+  passed 1.1.5's zip; this one fails it and passes 1.1.6's.
+- `tools/update_drill.py`: the update a player makes, for real, from an older release zip with a real package, to a
+  release by its tag (a pre-release too) or to a local zip; `--close-after`, `--expect rollback`
+  (docs/RELEASING.md "Update drill").
+- The release order is mandatory (docs/RELEASING.md): PREFLIGHT OK with the GUI checks, CI green, tag, the draft
+  published as a pre-release (the workflow now makes every draft one), update drills from the last two releases
+  with a real package, then marked latest, then the lobby's release notice. Never a tag on a red or skipped check.
+
+### Developer tools
+- `tools/build_game.py`'s deps step no longer says "already done" for a ps3recomp checkout with an older patch series:
+  `tools/prepare_ps3recomp.py` notes the series it applied (`.git/t5dr-prepared.json`), and a checkout whose series
+  differs (or, unnoted, that a patch of the series still applies to) is prepared again; the old tree is kept aside
+  unless it is exactly what was prepared. A release's vendored copy is never touched. The preflight's unit tests run
+  against the tree the zip is built from.
+- `tools/build_game.py` checks the Python version before any step: with Python older than 3.10 it stops at once with
+  "T5DR needs Python 3.10 or newer; this is X.Y at <path>" and the macOS hint (brew install python@3.12, a venv made
+  with python3.12). A Mac's system python3 3.9 used to get through keys, decrypt and unpack and fail only in the lift.
+  `tools/prereqs.py`'s Python line says the same.
+- CI, Monday "runtime" job: ps3recomp patch 0083 (test shims, `tests/sync_stress` only) lets `sync_stress` and
+  `test_cond_semantics` link again (hooks of patches 0063 and later they do not link). Nothing built for players
+  changes; the code ID does (it covers every patch), so 1.1.7 asks for one build anyway.
+- CI, push job: `tests/ci_unittest.py` prints the time per module and why tests were skipped, annotates each failure
+  at once, and runs the tests in a child process so a test process that dies is named (exit code, the running test).
+  The launcher's cut-off walk skips its comparison, with the reason, on a PC without the launcher's fonts (Segoe UI,
+  Bahnschrift): without Bahnschrift es/fr/pt-BR "cut off" where no player's Windows does. (The push job's red run did
+  not reproduce here; docs/CI.md lists what was tried.)
+
+### Lobby server
+- Ranked: P1 and P2 are drawn by a fair coin for every set (queue, ranked rooms, a ranked rematch) instead of making
+  the player with the lower ping to the lobby server P1; quick matches are drawn too. The games of a set keep their
+  sides. Server-only: 1.1.6 launchers play the side they are given (docs/RANKED.md "Sides", docs/DEPLOY_1.1.7.md).
+
+### Picture
+- City at Sunset (the Tekken 5 stage, stage 4) no longer flashes black: with Stage blur / glow Off (the default) and
+  one vertex worker (every PC with fewer than 24 logical processors, and power saving) single frames showed only the HUD
+  on black, sometimes with a slanted sliver of the stage -- the "flicker" and "tearing" players saw, with VSync on
+  or off. The skipped glow draw had queued its vertices into ring space the next draw (the picture's copy to the
+  screen) then reused (ps3recomp patch 0082). Players need BUILD GAME once (the launcher asks).
+- `tools/flicker_check.py`: counts such frames in a real fight (frames read back without stopping the GPU,
+  `LD_FRAME_DUMP_ASYNC=1`).
+
 ## v1.1.6 (2026-10-27)
 
 **Hotfix: the 1.1.5 launcher closed right after it started.** On a PC with the game's package (.pkg) chosen in the

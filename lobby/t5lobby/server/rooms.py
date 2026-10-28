@@ -561,7 +561,13 @@ class RoomsMixin:
         gs = r.set if r.set is not None and r.set.state == "active" and \
             {id(q) for q in r.set.players} == {id(a), id(b)} else None
         ranked = r.ranked and not r.community
-        r.match = self.create_match(*self._casual_sides(a, b, ranked), ranked=ranked,
+        if not ranked:
+            sides = self._casual_sides(a, b)
+        elif gs is not None:
+            sides = tuple(gs.players)            # the next game of the room's set: its sides stay
+        else:
+            sides = self._drawn_sides(a, b, "ranked room")     # a new ranked set: a coin, not the members' order
+        r.match = self.create_match(*sides, ranked=ranked,
                                     origin="invite" if invited else "room", room=r, game_set=gs)
         r.match.line_order = (a, b)              # (the line's order, whatever sides the players asked for: casual.py)
         if r.match.state == "cancelled":

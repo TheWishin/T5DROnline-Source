@@ -17,7 +17,7 @@ import tempfile
 import time
 import unittest
 
-from helpers import ROOT
+from helpers import ROOT, ps3recomp_series_problem
 
 sys.path.insert(0, os.path.join(ROOT, "launcher"))
 sys.path.insert(0, os.path.join(ROOT, "lobby"))
@@ -583,8 +583,13 @@ class RuntimeAgreementTest(unittest.TestCase):
 
 def find_ps3recomp():
     """A ps3recomp tree that has the controls patch applied (PS3RECOMP_DIR, ./deps/ps3recomp, or the main
-    checkout's deps/ps3recomp when this is a git worktree)."""
-    cands = [os.environ.get("PS3RECOMP_DIR"), os.path.join(ROOT, "deps", "ps3recomp")]
+    checkout's deps/ps3recomp when this is a git worktree). PS3RECOMP_DIR is taken as it is; a tree found on its
+    own only when it was prepared with this checkout's patch series (helpers.ps3recomp_series_problem: the main
+    checkout's copy can be a series behind, and the runtime differential test then failed for that)."""
+    explicit = os.environ.get("PS3RECOMP_DIR")
+    if explicit:
+        return explicit if os.path.isfile(os.path.join(explicit, "libs", "input", "pad_host_win32.c")) else None
+    cands = [os.path.join(ROOT, "deps", "ps3recomp")]
     try:
         r = subprocess.run(["git", "-C", ROOT, "rev-parse", "--git-common-dir"], capture_output=True, text=True,
                            timeout=20)
@@ -595,8 +600,37 @@ def find_ps3recomp():
         pass
     for c in cands:
         if c and os.path.isfile(os.path.join(c, "libs", "input", "pad_host_win32.c")):
-            return c
+            why = ps3recomp_series_problem(c)
+            if why is None:
+                return c
+            SKIPPED_TREES.append(why)
     return None
+
+
+SKIPPED_TREES = []        # why trees that were found were not used (the skip message names them)
+
+
+class TreeChoice(unittest.TestCase):
+    """1.1.7: RuntimeDifferentialTest failed on the main checkout's deps/ps3recomp, which was at patch 0053 while
+    the series was at 0081; it passed on a tree prepared fresh (tools/prepare_ps3recomp.py). A tree found on its
+    own is used only with this checkout's series in its stamp."""
+
+    def test_a_stale_tree_is_not_taken(self):
+        import json
+        import tempfile
+        from helpers import load_tool
+        bg = load_tool("build_game")
+        d = tempfile.mkdtemp(prefix="t5dr-tree")
+        self.addCleanup(__import__("shutil").rmtree, d, True)
+        os.makedirs(os.path.join(d, ".git"))
+        self.assertIn("no stamp", ps3recomp_series_problem(d))                        # a checkout of old
+        with open(os.path.join(d, ".git", bg.PREPARED_STAMP), "w", encoding="utf-8") as f:
+            json.dump({"commit": bg.PS3RECOMP_COMMIT, "patches": "an older series"}, f)
+        self.assertIn("another commit or patch series", ps3recomp_series_problem(d))
+        with open(os.path.join(d, ".git", bg.PREPARED_STAMP), "w", encoding="utf-8") as f:
+            json.dump({"commit": bg.PS3RECOMP_COMMIT, "patches": bg.patch_digest(
+                os.path.join(ROOT, "patches", "ps3recomp"))}, f)
+        self.assertIsNone(ps3recomp_series_problem(d))
 
 
 def find_vcvars():
@@ -623,7 +657,9 @@ class RuntimeDifferentialTest(unittest.TestCase):
             raise unittest.SkipTest("the runtime's pad layer is Windows only")
         cls.tree = find_ps3recomp()
         if not cls.tree:
-            raise unittest.SkipTest("no patched ps3recomp tree (PS3RECOMP_DIR)")
+            raise unittest.SkipTest("no ps3recomp tree prepared with this patch series (PS3RECOMP_DIR; "
+                                    "tools/prepare_ps3recomp.py --dest DIR)"
+                                    + (": " + "; ".join(SKIPPED_TREES) if SKIPPED_TREES else ""))
         vcvars = find_vcvars()
         clang = shutil.which("clang-cl") or (r"C:\Program Files\LLVM\bin\clang-cl.exe"
                                              if os.path.isfile(r"C:\Program Files\LLVM\bin\clang-cl.exe") else None)

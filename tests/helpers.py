@@ -62,3 +62,23 @@ def write_keys(path, keys):
         f.write("# fake keys written by the tests\n")
         for name, val in keys.items():
             f.write(f"{name}={val.hex().upper()}\n")
+
+
+def ps3recomp_series_problem(tree):
+    """Why a ps3recomp tree is not this checkout's pinned commit + patches/ps3recomp series, or None. Read from the
+    stamp tools/prepare_ps3recomp.py / build_game's deps step write (.git/t5dr-prepared.json), or a release's
+    .t5dr-vendored.json. A tree without either is not trusted: the main checkout's deps/ps3recomp can be a series
+    behind (1.1.7: test_controls_ui failed on a tree at patch 0053 while the series was at 0081)."""
+    import json
+    bg = load_tool("build_game")
+    want = bg.patch_digest(os.path.join(ROOT, "patches", "ps3recomp"))
+    stamp = bg.read_prepared_stamp(tree)
+    if stamp is None:
+        try:
+            with open(os.path.join(tree, ".t5dr-vendored.json"), encoding="utf-8") as f:
+                stamp = json.load(f)
+        except (OSError, ValueError):
+            return f"{tree} has no stamp of the patch series it was prepared with"
+    if stamp.get("commit") != bg.PS3RECOMP_COMMIT or stamp.get("patches") != want:
+        return f"{tree} was prepared with another commit or patch series than this checkout's"
+    return None

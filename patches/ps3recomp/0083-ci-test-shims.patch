@@ -1,0 +1,64 @@
+diff --git a/tests/sync_stress/CMakeLists.txt b/tests/sync_stress/CMakeLists.txt
+index cc1bb6b..e1c22c2 100644
+--- a/tests/sync_stress/CMakeLists.txt
++++ b/tests/sync_stress/CMakeLists.txt
+@@ -95,7 +95,7 @@ set_tests_properties(sync_stress PROPERTIES
+ # needs the waitable-handle implementation supplied by the native host port.
+ if(WIN32)
+     add_executable(test_cond_semantics
+-        test_cond_semantics.c test_shims.c
++        test_cond_semantics.c test_shims.c test_cond_shims.c
+         "${RUNTIME_SYNC_DIR}/sys_mutex.c"
+         "${RUNTIME_SYNC_DIR}/sys_cond.c")
+     target_include_directories(test_cond_semantics PRIVATE
+diff --git a/tests/sync_stress/test_cond_shims.c b/tests/sync_stress/test_cond_shims.c
+new file mode 100644
+index 0000000..ff542c8
+--- /dev/null
++++ b/tests/sync_stress/test_cond_shims.c
+@@ -0,0 +1,17 @@
++/*
++ * T5DR patch 0083 (CI test shims): test_cond_semantics links sys_mutex.c and sys_cond.c without
++ * runtime/platform/host_sched.c. Patch 0063 brackets their blocking waits with these two calls (the main
++ * thread's wait accounting); without host_sched.c they count nothing, as host_sched.c's own fallback does.
++ */
++#include <stdint.h>
++
++int64_t host_sched_main_wait_begin(void)
++{
++    return 0;
++}
++
++void host_sched_main_wait_end(int kind, int64_t t0)
++{
++    (void)kind;
++    (void)t0;
++}
+diff --git a/tests/sync_stress/test_shims.c b/tests/sync_stress/test_shims.c
+index 9128ae9..125d900 100644
+--- a/tests/sync_stress/test_shims.c
++++ b/tests/sync_stress/test_shims.c
+@@ -55,3 +55,23 @@ int spu_dispatch_frame_by_queue(uint32_t comp_queue, uint32_t work_ea)
+  * never read back. */
+ __thread uint32_t g_spu_pending_evt[3];
+ __thread int      g_spu_pending_evt_valid;
++
++/* T5DR patch 0083 (CI test shims): hooks the patched sync sources call that live in files this suite does
++ * not link. sys_event.c asks cellSpurs (libs/spurs) whether a queue wait should help a SPURS workload first
++ * (0 = no SPURS wait to finish); host_sched.c sets each guest thread's floating-point state through fp_env.c
++ * (patch 0032), which the stress threads, plain Win32 threads, do not need. */
++long long cellSpurs_queue_wait_help(uint32_t queue_id)
++{
++    (void)queue_id;
++    return 0;
++}
++
++void cellSpurs_queue_wait_done(long long token)
++{
++    (void)token;
++}
++
++void ppu_fp_thread_init(const char* who)
++{
++    (void)who;
++}

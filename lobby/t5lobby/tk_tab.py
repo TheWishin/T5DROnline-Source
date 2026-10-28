@@ -496,11 +496,26 @@ class OnlineTab:
         self.view.hide_bar()
         self._pad_relabel()
 
-    def chat_line(self, text):
-        self.chat_log.configure(state="normal")
-        self.chat_log.insert("end", text + "\n")
-        self.chat_log.see("end")
-        self.chat_log.configure(state="disabled")
+    def chat_line(self, text, sender=None):
+        """A line in the lobby chat. `sender`: the player who wrote it -- their name in bold in their own colour
+        (yours in the accent colour) above their lines, again whenever another sender comes between; None: a line of
+        the launcher or the server, muted (tk_views draws the tags)."""
+        log = self.chat_log
+        log.configure(state="normal")
+        try:
+            if sender is None:
+                log.insert("end", text + "\n", ("chat_sys",))
+                self._chat_last = None
+            else:
+                me = (getattr(self.client, "me", None) or {}).get("name") if self.client is not None else None
+                if sender != getattr(self, "_chat_last", None):
+                    mine = bool(me) and sender.casefold() == str(me).casefold()
+                    log.insert("end", sender + "\n", ("chat_head", self.view.chat_name_tag(sender, mine)))
+                    self._chat_last = sender
+                log.insert("end", text + "\n", ("chat_msg",))
+            log.see("end")
+        finally:
+            log.configure(state="disabled")
 
     def _char_key(self):
         name = self.char_var.get()
@@ -1615,7 +1630,7 @@ class OnlineTab:
             self._fill_lists(ev)
             self._show_me()
         elif kind == "chat":
-            self.chat_line(f"{ev['from']['name']}: {ev['text']}")
+            self.chat_line(ev["text"], sender=ev["from"]["name"])
         elif kind == "challenged":
             self.challenge = ev["challenge"]
             ping = _event_ping(c, ev)    # (1.1.5: the ping and the likely path before an answer)

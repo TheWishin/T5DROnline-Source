@@ -1,6 +1,7 @@
 """Casual matches by choice (1.1.5, server/casual.py; docs/ONLINE.md "Sides and stages by choice"): the side and
 stage wishes of challenges, friends' casual invites and rooms (classic and community), Swap sides on a rematch, and
-what stays as it was: Quick and Ranked (server sides, random stage), ranked rooms, older launchers."""
+what stays as it was: Quick and Ranked (server sides -- a coin since 1.1.7, test_sides.py --, random stage), ranked
+rooms, older launchers."""
 import asyncio
 import io
 import os
@@ -193,10 +194,12 @@ class QueueTest(Base):
                 b = self.c(f"Bob{mode}", side=1, stage="s33", auto_ready=True, password="bob-pw1", register=True)
                 self.s.call(lambda: setattr(self.s.srv.players[a.me["id"]], "server_rtt", 5.0))
                 self.s.call(lambda: setattr(self.s.srv.players[b.me["id"]], "server_rtt", 50.0))
-                (a.quick_match if mode == "quick" else a.ranked_match)()
-                (b.quick_match if mode == "quick" else b.ranked_match)()
-                sa, sb = expect(a, "match_start", 20), expect(b, "match_start", 20)
-                self.assertEqual((sa["role"], sb["role"]), ("host", "join"))    # the lower server round trip
+                with mock.patch.object(casual, "_side_coin", return_value=0):
+                    (a.quick_match if mode == "quick" else a.ranked_match)()
+                    (b.quick_match if mode == "quick" else b.ranked_match)()
+                    sa, sb = expect(a, "match_start", 20), expect(b, "match_start", 20)
+                # the server's coin (test_sides.py; 0: the queue's order), not Alice's P2 wish
+                self.assertEqual((sa["role"], sb["role"]), ("host", "join"))
                 self.assertEqual(sa["fight"]["stage"], drawn_stage(sa["seed"]))
                 self.assertNotIn("casual", sa)
                 mid = self.finish(a, b, sa)
@@ -262,11 +265,12 @@ class RoomTest(Base):
     def test_a_ranked_room_keeps_the_server_s_choice(self):
         a = self.c("Alice", password="alice-pw1", register=True, side=1, stage="s33", auto_ready=True)
         b = self.c("Bob", password="bob-pw1", register=True, side=1, stage="s33", auto_ready=True)
-        room = a.create_room("ranked dojo", ranked=True)
-        b.join_room(room["id"])
-        sa, sb = expect(a, "match_start", 20), expect(b, "match_start", 20)
+        with mock.patch.object(casual, "_side_coin", return_value=0):
+            room = a.create_room("ranked dojo", ranked=True)
+            b.join_room(room["id"])
+            sa, sb = expect(a, "match_start", 20), expect(b, "match_start", 20)
         self.assertTrue(sa["ranked"])
-        self.assertEqual((sa["role"], sb["role"]), ("host", "join"))
+        self.assertEqual((sa["role"], sb["role"]), ("host", "join"))       # the server's coin, not the wishes
         self.assertEqual(sa["fight"]["stage"], drawn_stage(sa["seed"]))
         self.assertNotIn("casual", sa)
 

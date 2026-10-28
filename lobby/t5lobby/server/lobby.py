@@ -1616,10 +1616,10 @@ class LobbyServer(SpectateMixin, RoomsMixin, CasualMixin, MatchRulesMixin):
                     taken.update((a, best))
                     made.append((a, best, mode))
         for a, b, mode in made:
-            # Host: the one with the lower server RTT (more likely the better-connected PC).
-            ra = a.server_rtt if a.server_rtt is not None else 1e9
-            rb = b.server_rtt if b.server_rtt is not None else 1e9
-            host, join = (a, b) if ra <= rb else (b, a)
+            # P1 / P2 (= netplay host / joiner): a fair coin (casual.py "The server's sides"). Before 1.1.7 the one
+            # with the lower server RTT was P1; that RTT says nothing about the path between the two PCs and the
+            # host role nothing about the connection.
+            host, join = self._drawn_sides(a, b, f"{mode} queue")
             since = [host.queue_since, join.queue_since]
             self._leave_queue(a)
             self._leave_queue(b)
@@ -1810,8 +1810,8 @@ class LobbyServer(SpectateMixin, RoomsMixin, CasualMixin, MatchRulesMixin):
             raise LobbyError(proto.E_BUSY, "your opponent is no longer available")
         self.recent.pop(prev.id, None)
         # (sides swapped: a new netplay session -- a running game keeps its slot for the whole session)
-        swap = self._rematch_swapped(prev)
-        keep = (all(r["keep"] for r in prev.rematch) and prev.path is not None and not self._direct_again(prev)
+        swap = self._rematch_swapped(prev) or self._ranked_rematch_swap(prev)
+        keep =(all(r["keep"] for r in prev.rematch) and prev.path is not None and not self._direct_again(prev)
                 and not swap)
         host, join = (prev.players[1], prev.players[0]) if swap else (prev.players[0], prev.players[1])
         m = self.create_match(host, join, ranked=prev.ranked, origin="rematch",

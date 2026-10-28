@@ -708,9 +708,34 @@ class OnlineView:
         row = tab.casual.build(f, px)
         row.grid(row=3, column=0, columnspan=2, sticky="e", pady=(px(6), 0))
         row.grid_remove()                    # (shown after a login on a server that has them)
+        # ... or on a line of its own below when both do not fit (1.1.6 drew them over each other in German and
+        # Japanese at 100 % and 150 %)
+        self.casual_row = row
+        for w in (f, row, tab.strict_check):
+            w.bind("<Configure>", lambda _e: self.place_casual_row(), add="+")
         self.wrap(ttk.Label(f, textvariable=tab.hint_var, style="Card.Faint.TLabel", justify="left"),
-                  card, 40).grid(row=4, column=0, columnspan=2, sticky="w", pady=(px(6), 0))
+                  card, 40).grid(row=5, column=0, columnspan=2, sticky="w", pady=(px(6), 0))
         return f
+
+    def place_casual_row(self):
+        """The side / stage row (tk_casual.py) right of "Strict" when both fit in the card's width, else below it.
+        The width: the card's on screen (never less than it asks for)."""
+        row, strict = getattr(self, "casual_row", None), getattr(self.tab, "strict_check", None)
+        if row is None or strict is None:
+            return
+        try:
+            if row.winfo_manager() != "grid":
+                return
+            f = row.master
+            below = strict.winfo_reqwidth() + row.winfo_reqwidth() + self.px(16) > max(f.winfo_width(),
+                                                                                       f.winfo_reqwidth())
+            at = int(row.grid_info()["row"])
+            if below and at == 3:
+                row.grid_configure(row=4, column=0, columnspan=2, sticky="w")
+            elif not below and at == 4:
+                row.grid_configure(row=3, column=0, columnspan=2, sticky="e")
+        except (tk.TclError, KeyError, ValueError):
+            pass
 
     def _build_search(self, card):
         tab, px = self.tab, self.px
@@ -871,6 +896,19 @@ class OnlineView:
                                bg=C["surface"], fg=C["text"], relief="flat", borderwidth=0, highlightthickness=0,
                                padx=px(2), pady=px(2), cursor="arrow", takefocus=0)
         tab.chat_log.grid(row=1, column=0, sticky="nsew")
+        # who wrote what (1.1.7, players asked for it): a sender's name in bold in their own colour above their lines
+        # (your own in the accent colour), space before another sender, the launcher's and the server's lines muted
+        log, fonts = tab.chat_log, self.th.fonts
+        log.tag_configure("chat_head", font=fonts["bold"], spacing1=px(9), spacing3=px(1))
+        log.tag_configure("chat_msg", foreground=C["text"], lmargin1=px(8), lmargin2=px(8), spacing1=px(1))
+        log.tag_configure("chat_sys", foreground=C["muted"], font=fonts["small"], spacing1=px(9), spacing3=px(1))
+
+    def chat_name_tag(self, name, mine=False):
+        """The chat log's tag for a sender's name: bold (chat_head) in theme.name_color(name), the accent for you."""
+        color = theme.C["accent_hi"] if mine else theme.name_color(name)
+        tag = "chat_name_" + color.lstrip("#")
+        self.tab.chat_log.tag_configure(tag, foreground=color)
+        return tag
         row = self.body(cc)
         row.grid(row=2, column=0, sticky="we", pady=(px(8), 0))
         row.columnconfigure(0, weight=1)

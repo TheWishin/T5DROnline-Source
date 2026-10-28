@@ -5,7 +5,9 @@
 
 Steps (each skipped when its output is already there, unless --force):
   deps     clone ps3recomp at the pinned commit into deps/ps3recomp (a release
-           zip already contains it, patched)
+           zip already contains it, patched); a developer's checkout whose patch
+           series is not this tree's any more (.git/t5dr-prepared.json, else the
+           patches tried one by one) is prepared again (tools/prepare_ps3recomp.py)
   keys     write keys/ps3.keys (tools/make_keys.py)
   decrypt  take EBOOT.BIN and PARAM.SFO out of the package, decrypt EBOOT.BIN
            with the .rap and check it is the supported version -- before the
@@ -202,20 +204,41 @@ def self_content_id(data):
 _PKG_TOOL = {}
 
 
-def _pkg_tool(deps):
+def peek_key_file(keys=None):
+    """The keys/ps3.keys the package peek can use: `keys` (the launcher passes its output folder's), this build's
+    (P.keys), <ROOT>/native/keys/ps3.keys; None when none is there yet."""
+    for k in ([keys] if keys else []) + [P.keys, os.path.join(ROOT, "native", "keys", "ps3.keys")]:
+        if k and os.path.isfile(k):
+            return k
+    return None
+
+
+def peek_needs_keys(deps=None, keys=None):
+    """True when the package peek waits for keys/ps3.keys: a release's pkg_extract.py (the package keys are not
+    shipped: package_release.strip_pkg_keys) and no key file yet -- a fresh release folder before BUILD GAME's keys
+    step (1.1.5/1.1.6: the version warning never showed there; GitHub #20/#21)."""
+    if os.environ.get("T5DR_KEYS") or peek_key_file(keys):
+        return False
+    try:
+        with open(os.path.join(deps or P.deps, "tools", "pkg_extract.py"), encoding="utf-8", errors="replace") as f:
+            return "_t5dr_key(" in f.read()
+    except OSError:
+        return False
+
+
+def _pkg_tool(deps, keys=None):
     """ps3recomp's pkg_extract.py as a module (for its keystream: the package key stays in ps3recomp), or None."""
     path = os.path.join(deps, "tools", "pkg_extract.py")
-    if path not in _PKG_TOOL:
+    # A release's pkg_extract.py reads the package key from T5DR_KEYS while it is imported, and without it
+    # raises SystemExit: in 1.1.5 that closed the launcher right after its start (the Build tab peeks into the
+    # chosen package). So the key file's path for the import, and SystemExit is one more "cannot peek".
+    old = os.environ.get("T5DR_KEYS")
+    key = old or peek_key_file(keys)
+    slot = (path, key)                    # (a key file made later -- the launcher makes one -- is tried again)
+    if slot not in _PKG_TOOL:
         mod = None
-        # A release's pkg_extract.py reads the package key from T5DR_KEYS while it is imported, and without it
-        # raises SystemExit: in 1.1.5 that closed the launcher right after its start (the Build tab peeks into the
-        # chosen package). So the key file's path for the import, and SystemExit is one more "cannot peek".
-        old = os.environ.get("T5DR_KEYS")
-        if not old:
-            for k in (P.keys, os.path.join(ROOT, "native", "keys", "ps3.keys")):
-                if os.path.exists(k):
-                    os.environ["T5DR_KEYS"] = k
-                    break
+        if not old and key:
+            os.environ["T5DR_KEYS"] = key
         try:
             import importlib.util
             spec = importlib.util.spec_from_file_location("t5dr_pkg_extract", path)
@@ -230,15 +253,15 @@ def _pkg_tool(deps):
                 os.environ["T5DR_KEYS"] = old
             else:
                 os.environ.pop("T5DR_KEYS", None)
-        _PKG_TOOL[path] = mod
-    return _PKG_TOOL[path]
+        _PKG_TOOL[slot] = mod
+    return _PKG_TOOL[slot]
 
 
-def pkg_peek(path, want=("PARAM.SFO", "EBOOT.BIN"), limit=1 << 16, deps=None):
+def pkg_peek(path, want=("PARAM.SFO", "EBOOT.BIN"), limit=1 << 16, deps=None, keys=None):
     """{file name: its first `limit` bytes} for the files named in `want`, read straight from a retail PS3 package:
     its file table and a few KB, nothing unpacked, well under a second. None when that is not possible (not a
     package, a debug package, ps3recomp's pkg_extract.py or pycryptodome missing)."""
-    mod = _pkg_tool(deps or P.deps)
+    mod = _pkg_tool(deps or P.deps, keys)
     if mod is None:
         return None
     try:
@@ -272,10 +295,10 @@ def pkg_peek(path, want=("PARAM.SFO", "EBOOT.BIN"), limit=1 << 16, deps=None):
         return None
 
 
-def package_facts(path, deps=None):
+def package_facts(path, deps=None, keys=None):
     """What a package says about itself before anything is unpacked: {"title", "title_id", "version" (PARAM.SFO),
     "program" (the content ID of its program, whose license it needs)}, or None when it cannot be read that way."""
-    files = pkg_peek(path, deps=deps)
+    files = pkg_peek(path, deps=deps, keys=keys)
     if not files:
         return None
     s = parse_sfo(files.get("PARAM.SFO", b""))
@@ -301,9 +324,13 @@ def deps_stamp_ok():
     return s.get("commit") == PS3RECOMP_COMMIT and s.get("patches") == want
 
 
-def patch_digest():
+PATCH_DIR = os.path.join(ROOT, "patches", "ps3recomp")
+PREPARED_STAMP = "t5dr-prepared.json"     # in a git checkout's .git/: the series step_deps / prepare_ps3recomp applied
+
+
+def patch_digest(d=None):
     h = hashlib.sha1()
-    d = os.path.join(ROOT, "patches", "ps3recomp")
+    d = d or PATCH_DIR
     for name in sorted(os.listdir(d)):
         if name.endswith(".patch"):
             h.update(name.encode())
@@ -373,6 +400,146 @@ def rmtree(path):
     shutil.rmtree(path, onerror=onerror)
 
 
+def patch_series(d=None):
+    d = d or PATCH_DIR
+    return sorted(n for n in os.listdir(d) if n.endswith(".patch"))
+
+
+def _git_out(deps, *args):
+    r = subprocess.run(["git", "-c", "core.longpaths=true", "-C", deps, *args], capture_output=True)
+    if r.returncode:
+        raise OSError(f"git {' '.join(args)} in {deps}: {r.stderr.decode('utf-8', 'replace').strip()}")
+    return r.stdout
+
+
+def tree_digest(deps):
+    """The state of a checkout's files against its HEAD: the diff, the untracked files and their content. Equal
+    to the stamp's: nothing was changed by hand since the series was applied."""
+    h = hashlib.sha1()
+    h.update(_git_out(deps, "rev-parse", "HEAD"))
+    h.update(_git_out(deps, "diff", "HEAD", "--binary").replace(b"\r\n", b"\n"))
+    for rel in sorted(_git_out(deps, "ls-files", "--others", "--exclude-standard", "-z").split(b"\0")):
+        if rel:
+            h.update(rel)
+            try:
+                with open(os.path.join(deps, rel.decode("utf-8", "replace")), "rb") as f:
+                    h.update(hashlib.sha1(f.read()).digest())
+            except OSError:
+                pass
+    return h.hexdigest()
+
+
+def write_prepared_stamp(deps, commit=None, patches=None, adopted=False):
+    """Note in deps/.git which commit + patch series this checkout has (prepare_ps3recomp.py, step_deps)."""
+    stamp = {"commit": commit or PS3RECOMP_COMMIT, "patches": patch_digest(patches), "series": patch_series(patches),
+             "tree": tree_digest(deps), "adopted": adopted, "time": time.strftime("%Y-%m-%d %H:%M:%S")}
+    with open(os.path.join(deps, ".git", PREPARED_STAMP), "w", encoding="utf-8") as f:
+        json.dump(stamp, f, indent=1)
+    return stamp
+
+
+def note_prepared(deps, adopted=False):
+    """write_prepared_stamp, where a failure only costs the check next time (the step's work is done)."""
+    try:
+        write_prepared_stamp(deps, adopted=adopted)
+    except OSError as e:
+        print(f"  (could not note the patch series in {deps}: {e})", flush=True)
+
+
+def read_prepared_stamp(deps):
+    try:
+        with open(os.path.join(deps, ".git", PREPARED_STAMP), encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def checkout_state(deps):
+    """A developer's git checkout of ps3recomp against this tree's pin and patch series: ('current', None, stamp),
+    ('changed', why, stamp), or ('unknown', why, None) for one prepared before this check existed -- then every
+    patch is tried (one that still applies is not in the checkout; why is None when all are in). ('foreign', why,
+    None): deps/.git is no repository of its own (git would answer for a repository around it) -- not checked."""
+    try:
+        top = _git_out(deps, "rev-parse", "--show-toplevel").decode("utf-8", "replace").strip()
+    except OSError as e:
+        return "foreign", f"not a git checkout ({e})", None
+    if os.path.normcase(os.path.abspath(top)) != os.path.normcase(os.path.abspath(deps)):
+        return "foreign", f"its .git is not a repository (git sees {top})", None
+    stamp = read_prepared_stamp(deps)
+    if stamp is not None:
+        if stamp.get("commit") == PS3RECOMP_COMMIT and stamp.get("patches") == patch_digest():
+            return "current", None, stamp
+        have, want = stamp.get("series") or [], patch_series()
+        added = [n for n in want if n not in have]
+        gone = [n for n in have if n not in want]
+        if stamp.get("commit") != PS3RECOMP_COMMIT:
+            why = f"the pinned commit changed ({stamp.get('commit')} -> {PS3RECOMP_COMMIT})"
+        elif added or gone:
+            why = "the patch series changed" + (f": new {', '.join(added)}" if added else "") \
+                + (f"; removed {', '.join(gone)}" if gone else "")
+        else:
+            why = "a patch of the series was edited"
+        return "changed", why, stamp
+    missing = []
+    for name in patch_series():
+        r = subprocess.run(["git", "-c", "core.longpaths=true", "-C", deps, "apply", "--check", "--whitespace=nowarn",
+                            os.path.join(PATCH_DIR, name)], capture_output=True)
+        if r.returncode == 0:                    # it still applies: the checkout does not have it
+            missing.append(name)
+    return "unknown", (f"patches missing (at least): {', '.join(missing)}" if missing else None), None
+
+
+def reprepare_checkout(deps, why, stamp):
+    """Prepare the pin + this series afresh (tools/prepare_ps3recomp.py, cloned from the checkout itself, else from
+    PS3RECOMP_URL) and put it in the place of `deps`. The old tree is deleted when it is exactly what its stamp says
+    was prepared, else kept next to it (it may hold changes of the developer's own)."""
+    deps = os.path.abspath(deps)
+    new = deps + ".new"
+    if os.path.isdir(new):
+        rmtree(new)
+    base = [PY, os.path.join(ROOT, "tools", "prepare_ps3recomp.py"), "--dest", new, "--commit", PS3RECOMP_COMMIT,
+            "--branch", PS3RECOMP_BRANCH, "--patches", PATCH_DIR]
+    print(f"  {deps} is out of date: {why}. Preparing ps3recomp {PS3RECOMP_COMMIT} + {len(patch_series())} "
+          "patches again.", flush=True)
+    try:
+        run(base + ["--source", deps])
+    except subprocess.CalledProcessError:
+        if os.path.isdir(new):
+            rmtree(new)
+        print("  (it cannot be cloned from the checkout; fetching from the pinned repository)", flush=True)
+        try:
+            run(base + ["--source", PS3RECOMP_URL])
+        except subprocess.CalledProcessError:
+            if os.path.isdir(new):
+                rmtree(new)
+            # (a developer's checkout only -- a release has its vendored copy --, so English, not in the catalogs)
+            raise BuildError(f"Could not prepare ps3recomp with the current patch series (tools/prepare_ps3recomp.py, see "
+                 f"above); {deps} is unchanged.")
+    pristine = False
+    if stamp and not stamp.get("adopted"):
+        try:
+            pristine = tree_digest(deps) == stamp.get("tree")
+        except OSError:
+            pristine = False
+    keep = None
+    try:
+        if pristine:
+            rmtree(deps)
+        else:
+            keep = deps + time.strftime(".old-%Y%m%d-%H%M%S")
+            os.replace(deps, keep)
+    except OSError as e:
+        rmtree(new)
+        raise BuildError(f"Could not move {deps} aside ({e.strerror or e}); close the programs that use files in it and run "
+             "the step again.")
+    os.replace(new, deps)
+    if read_prepared_stamp(deps) is None:
+        write_prepared_stamp(deps)
+    print("  the old checkout had no changes of its own: removed" if keep is None else
+          f"  the old checkout is kept as {keep} (it may hold changes of your own; delete it when it does not)",
+          flush=True)
+
+
 def step_deps(a):
     vend = deps_stamp_ok()
     if vend is True:
@@ -382,8 +549,25 @@ def step_deps(a):
     elif vend is False:
         fail("The ps3recomp copy in this folder does not match this version of the port. "
              "Download the release again and extract it into an empty folder.")
+    elif prereqs.release_folder() and os.name == "nt" and not os.path.isdir(os.path.join(P.deps, ".git")):
+        # a release folder without its ps3recomp copy: the zip was not fully extracted -- never clone with Git there
+        fail("This folder is incomplete ({folders} missing). Extract the release zip again with \"Extract All\" "
+             "into a short path such as {example}, then start T5DR Online.exe from there -- not from inside the "
+             "zip.".format(folders=", ".join(prereqs.release_missing()) or os.path.join("deps", "ps3recomp"),
+                           example=prereqs.INCOMPLETE_EXAMPLE))
     elif os.path.isdir(os.path.join(P.deps, ".git")) and not a.force:
-        print("  already done")
+        # A developer's checkout: "already done" only with the pin and this tree's patch series (1.1.6: the main
+        # checkout lacked 0071-0081, and every test and build against it used a stale runtime).
+        state, why, stamp = checkout_state(P.deps)
+        if state == "current":
+            print("  already done")
+        elif state == "foreign":
+            print(f"  already done ({why}: the patch series is not checked)")
+        elif state == "unknown" and why is None:
+            note_prepared(P.deps, adopted=True)            # every patch is in: from now on the stamp tells
+            print("  already done (every patch of the series is in the checkout)")
+        else:
+            reprepare_checkout(P.deps, why, stamp)
     else:
         if not shutil.which("git"):
             fail("Git is needed to download ps3recomp (the recompiler). Install Git, or use a release "
@@ -396,10 +580,11 @@ def step_deps(a):
              "-b", PS3RECOMP_BRANCH, PS3RECOMP_URL, P.deps])
         run(["git", "-C", P.deps, "checkout", "-q", PS3RECOMP_COMMIT])
         # Our fixes on top of the pinned commit (Windows build gaps and the like).
-        patches = os.path.join(ROOT, "patches", "ps3recomp")
+        patches = PATCH_DIR
         for name in sorted(os.listdir(patches)):
             if name.endswith(".patch"):
                 run(["git", "-C", P.deps, "apply", "--whitespace=nowarn", os.path.join(patches, name)])
+        note_prepared(P.deps)
     if not prereqs.python_crypto():
         if vend:
             fail("This package's Python is missing pycryptodome. Download the release again.")
@@ -792,6 +977,12 @@ def step_compile(a):
 
 def main():
     global P
+    # First of all: an older Python got through keys/decrypt/unpack and stopped only in the lift (ps3recomp's
+    # elf_parser.py: `int | None`, TypeError) -- the owner's Mac, system python3 3.9.
+    problem = prereqs.python_problem()
+    if problem:
+        print(f"ERROR: {problem}", file=sys.stderr, flush=True)
+        sys.exit(2)
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--pkg", help="the PSN package (.pkg)")
     ap.add_argument("--rap", help="the license (.rap)")

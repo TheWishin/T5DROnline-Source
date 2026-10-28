@@ -674,8 +674,7 @@ class MatchmakerTest(unittest.IsolatedAsyncioTestCase):
         made = self.srv.match_queue(now)
         self.assertEqual(len(made), 1)
         self.assertEqual({made[0][0].name, made[0][1].name}, {"A", "Near"})
-        host = made[0][0] if made[0][0].server_rtt <= made[0][1].server_rtt else made[0][1]
-        self.assertEqual(host.match.players[0], host)  # lower server RTT hosts
+        self.assertEqual(set(made[0][0].match.players), {a, near})   # (P1 / P2: a coin, test_sides.py)
         self.assertEqual(x.status, "queue")
 
 

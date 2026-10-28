@@ -466,7 +466,8 @@ class StrictAndCooldownE2ETest(Base):
         ea, eb = self.ranked(a, b)
         ra, rb = self.finish(a, b, ea)
         a.rematch(ra["match"], True, keep=True)
-        b.rematch(rb["match"], True, keep=True)
+        with util.coin_keeps_the_sides():                           # (other sides: a new session, test_sides.py)
+            b.rematch(rb["match"], True, keep=True)
         self.assertTrue(expect(a, "match_start")["continue"])       # the rematch dialog is the players' own choice
         self.finish(a, b, ea)
         a.quick_match()
@@ -822,7 +823,8 @@ class LagCheckTest(Base):
         b.report_lag(ra["match"], 3000, 3000 * 40.0, 60.0)
         expect(a, "lag_check")
         a.rematch(ra["match"], True, keep=True)
-        b.rematch(ra["match"], True, keep=True)
+        with util.coin_keeps_the_sides():
+            b.rematch(ra["match"], True, keep=True)
         self.assertTrue(expect(a, "match_start")["continue"])
 
     def test_leave_set_rules(self):

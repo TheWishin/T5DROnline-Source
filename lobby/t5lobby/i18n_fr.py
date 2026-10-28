@@ -216,6 +216,7 @@ MESSAGES = {
     "Cannot read the file: {error}": "Impossible de lire le fichier : {error}",
     "This is not a PS3 package (.pkg).": "Ce n'est pas un paquet PS3 (.pkg).",
     "{id}  ({size} bytes) -- the supported version": "{id}  ({size} octets) -- la version prise en charge",
+    "checking the game version inside the package…": "vérification de la version du jeu dans le paquet…",
     "{id}  ({size} bytes) -- Tekken 5 DR, but not the supported package ({supported}). "
     "The build will most likely refuse it.":
         "{id}  ({size} octets) -- Tekken 5 DR, mais pas le paquet pris en charge ({supported}). La compilation le "
@@ -713,6 +714,9 @@ MESSAGES = {
     "A build is running. Stop it and quit?": "Une compilation est en cours. L'arrêter et quitter ?",
     # ---- launcher/updater.py
     "Check for updates": "Rechercher des mises à jour",
+    "Community Discord": "Discord de la communauté",
+    "Could not open a browser. The address: {url}": "Impossible d'ouvrir un navigateur. L'adresse : {url}",
+    "Questions? Ask the players in the community Discord: {url}": "Des questions ? Demande aux joueurs sur le Discord de la communauté : {url}",
     "Updated from {old} to {new}.": "Mis à jour de {old} vers {new}.",
     "the new version": "la nouvelle version",
     "The update to {version} failed and could not be undone completely: {error}.\n\nThe "
@@ -1143,8 +1147,11 @@ MESSAGES = {
     "not present -- will be downloaded with Git": "absent -- sera téléchargé avec Git",
     "not present and Git is missing": "absent, et Git manque",
     "precompiled, included in this package": "précompilé, inclus dans ce paquet",
-    "missing from toolchain\\llvm -- download the release again":
-        "manquant dans toolchain\\llvm -- télécharge à nouveau la release",
+    "missing from toolchain\\llvm -- extract the release zip again": "manquant dans toolchain\\llvm -- extrais à nouveau le zip de la release",
+    "missing from this folder -- extract the release zip again": "manquant dans ce dossier -- extrais à nouveau le zip de la release",
+    "This folder is incomplete ({folders} missing). Extract the release zip again with \"Extract All\" into a short path such as {example}, then start T5DR Online.exe from there -- not from inside the zip.":
+        "Ce dossier est incomplet ({folders} manquant). Extrais à nouveau le zip de la release avec \"Extraire tout\" dans un chemin court comme {example}, puis lance T5DR Online.exe depuis là -- pas depuis l'intérieur du zip.",
+    "This folder is incomplete: extract the release zip again (see the Build tab).": "Ce dossier est incomplet : extrais à nouveau le zip de la release (voir l'onglet Compiler).",
     "not found": "introuvable",
     "missing {tools}": "manquant : {tools}",
     "System information and the settings you use": "Infos système et les réglages que tu utilises",

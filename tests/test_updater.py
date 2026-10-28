@@ -7,6 +7,7 @@ import io
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -289,6 +290,38 @@ class Release(unittest.TestCase):
             with self.assertRaises(updater.UpdateError):
                 updater.parse_release(d)
 
+    def test_notes_are_reflowed(self):
+        # 1.1.7: the CHANGELOG wraps at 120 characters; 1.1.6's update window kept those breaks, so its lines broke
+        # in the middle. Every paragraph and list item is one line now (the window wraps it); headings, lists and
+        # the blank lines between paragraphs stay. With the real notes of 1.1.6 and 1.1.5.
+        sys.path.insert(0, os.path.join(ROOT, "tools"))
+        import release_notes
+        with open(os.path.join(ROOT, "CHANGELOG.md"), encoding="utf-8") as f:
+            changelog = f.read()
+        six = updater.notes_summary(release_notes.find_section(changelog, "1.1.6"), max_chars=10 ** 6)
+        lines = six.split("\n")
+        self.assertTrue(lines[0].startswith("Hotfix: the 1.1.5 launcher closed right after it started. On a PC"))
+        self.assertTrue(lines[0].endswith("as before 1.1.5). Nothing else changed."), lines[0])
+        self.assertEqual(lines[1], "")
+        self.assertTrue(lines[2].startswith("Stuck on 1.1.5?") and lines[2].endswith("as the launcher asks."))
+        self.assertIn("Launcher", lines)
+        items = [x for x in lines if x.startswith("• ")]
+        self.assertEqual(len(items), 3)
+        self.assertTrue(items[0].endswith("A test runs the check with the release's pkg_extract.py."), items[0])
+        self.assertNotIn("**", six)
+        self.assertNotIn("`", six)
+        five = updater.notes_summary(release_notes.find_section(changelog, "1.1.5"), max_lines=10 ** 4,
+                                     max_chars=10 ** 6)
+        body = release_notes.find_section(changelog, "1.1.5")
+        n_items = sum(1 for x in body.split("\n") if x.startswith("- "))
+        self.assertEqual(sum(1 for x in five.split("\n") if x.startswith("• ")), n_items)
+        for x in five.split("\n"):                              # no line ends in the middle of a sentence
+            if x and not x.endswith((".", ":", ")", "!", "?", '"', "…")) and x not in ("Online", "Offline"):
+                self.assertFalse(x.startswith("• ") or len(x) > 60, x)
+        # numbered lists and a list right after a paragraph
+        text = updater.notes_summary("Intro line one\ncontinues here.\n- first\n  wrapped\n1. one\n2. two\n\nEnd.")
+        self.assertEqual(text, "Intro line one continues here.\n\n• first wrapped\n1. one\n2. two\n\nEnd.")
+
     def test_notes_are_cut(self):
         text = updater.notes_summary("\n".join(f"- line {i}" for i in range(200)))
         self.assertTrue(text.endswith("…"))
@@ -311,18 +344,44 @@ class Check(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def test_cached_for_an_hour_then_conditional(self):
-        gh = FakeGitHub(api=self.data)
+    def test_every_start_asks_conditionally(self):
+        # 1.1.7: every start asks GitHub (1.1.4's launchers reused an hour-old answer and kept offering the
+        # withdrawn 1.1.5 after 1.1.6 was out) -- with the cached ETag and Last-Modified, so an unchanged release
+        # is a 304, which does not use up the 60 requests an hour
+        gh = FakeGitHub(api=self.data, api_headers={"ETag": 'W/"1"', "Last-Modified": "Tue, 27 Oct 2026 16:50:00 GMT"})
         rel, problem = updater.check_latest(self.cache, opener=gh, now=1000)
         self.assertEqual((rel["version"], problem), ("1.0.1", None))
-        rel, _ = updater.check_latest(self.cache, opener=gh, now=1000 + 3500)
-        self.assertEqual(len(gh.calls), 1)                         # from the cache
+        self.assertNotIn("If-None-Match", gh.calls[0][1])
         gh.api_status = 304
-        rel, problem = updater.check_latest(self.cache, opener=gh, now=1000 + 3700)
+        rel, problem = updater.check_latest(self.cache, opener=gh, now=1000 + 60)      # the next start, a minute on
         self.assertEqual((rel["version"], problem), ("1.0.1", None))
         self.assertEqual(len(gh.calls), 2)
-        self.assertEqual(gh.calls[1][1].get("If-None-Match"), 'W/"1"')   # 304s do not use up the limit
         self.assertEqual(gh.calls[1][0], updater.API_LATEST)
+        self.assertEqual(gh.calls[1][1].get("If-None-Match"), 'W/"1"')
+        self.assertEqual(gh.calls[1][1].get("If-Modified-Since"), "Tue, 27 Oct 2026 16:50:00 GMT")
+
+    def test_a_new_release_is_seen_at_the_next_start(self):
+        gh = FakeGitHub(api=self.data)
+        self.assertEqual(updater.check_latest(self.cache, opener=gh, now=1000)[0]["version"], "1.0.1")
+        gh.api, _ = release("1.0.2", b"y")                                              # published meanwhile
+        gh.api_headers = {"ETag": 'W/"2"'}
+        rel, problem = updater.check_latest(self.cache, opener=gh, now=1000 + 60)
+        self.assertEqual((rel["version"], problem), ("1.0.2", None))
+
+    def test_a_cache_with_unreflowed_notes_is_asked_again(self):
+        # (1.1.6 and older parsed the notes with their hard line breaks: a 304 would keep showing them)
+        rel = updater.parse_release(self.data)
+        with open(self.cache, "w", encoding="utf-8") as f:
+            json.dump({"fmt": 2, "checked": 1000, "etag": 'W/"1"', "release": rel}, f)
+        gh = FakeGitHub(api=self.data)
+        updater.check_latest(self.cache, opener=gh, now=1001)
+        self.assertNotIn("If-None-Match", gh.calls[0][1])                       # unconditional: a fresh 200
+
+    def test_max_age_reuses_a_young_answer(self):
+        gh = FakeGitHub(api=self.data)
+        updater.check_latest(self.cache, opener=gh, now=1000)
+        rel, _ = updater.check_latest(self.cache, opener=gh, now=1000 + 30, max_age=60)
+        self.assertEqual((rel["version"], len(gh.calls)), ("1.0.1", 1))
 
     def test_button_forces_a_new_check(self):
         gh = FakeGitHub(api=self.data)
@@ -357,6 +416,18 @@ class Check(unittest.TestCase):
         self.assertEqual(len(gh.calls), 1)
         rel, problem = updater.check_latest(self.cache, opener=gh, now=5001)
         self.assertEqual(rel["version"], "1.0.1")
+
+    def test_rate_limited_start_uses_only_a_young_answer(self):
+        gh = FakeGitHub(api=self.data)
+        updater.check_latest(self.cache, opener=gh, now=1000)
+        gh.api_status, gh.api_headers = 403, {"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "20000"}
+        self.assertEqual(updater.check_latest(self.cache, opener=gh, now=1100)[1],
+                         "GitHub limits update checks right now. Try again later.")
+        rel, problem = updater.check_latest(self.cache, opener=gh, now=1200)            # limited, answer 200 s old
+        self.assertEqual((rel["version"], problem), ("1.0.1", None))
+        rel, problem = updater.check_latest(self.cache, opener=gh, now=1000 + updater.CHECK_INTERVAL + 1)
+        self.assertEqual((rel, problem), (None, None))                                  # too old to stand in
+        self.assertEqual(len(gh.calls), 2)
 
 
 # --------------------------------------------------------------------------- download, check, unpack
@@ -838,6 +909,171 @@ class SwapStep(unittest.TestCase):
         self.assertFalse(res["changed"])
         self.assertIn("t5dr.exe", res["error"])
         self.assertEqual(tree(self.install), self.before)
+
+
+# The old release's launcher in ConfirmAfterStart: notes that it was started (the swap step starts it after a
+# rollback) and ends.
+OLD_LAUNCHER = r'''
+import os
+here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+with open(os.path.join(here, "native", "old-launcher-started"), "w") as f:
+    f.write(open(os.path.join(here, "release.json")).read())
+'''
+
+# The new release's launcher: a real Tk main loop with the real Updater of this tree (launcher/updater.py is
+# copied into the new release), App.on_close as t5dr_launcher.App's (it confirms), and one of three ends.
+NEW_LAUNCHER = r'''
+import json, os, sys, tkinter as tk
+here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(here, "launcher"))
+import updater
+MODE = %r
+
+class App(tk.Tk):
+    readonly = True                 # no update check and no report: the test reads the swap step's result
+
+    def on_close(self):             # t5dr_launcher.App.on_close: closed by hand, the update stays
+        updater.confirm_started()
+        self.destroy()
+
+app = App()
+app.withdraw()
+updater.Updater(app, root=here)
+
+def note():                         # what a game or a build started now would inherit
+    with open(os.path.join(here, "native", "new-launcher.json"), "w") as f:
+        json.dump({"env": os.environ.get(updater.CONFIRM_ENV), "pid": os.getpid()}, f)
+
+app.after(1000, note)
+if MODE == "dies":                  # 1.1.5: SystemExit out of a Tk callback 2 s after the start
+    app.after(2000, lambda: sys.exit(1))
+elif MODE == "closed":              # the player closes it after 3 s (WM_DELETE_WINDOW -> on_close)
+    app.after(3000, app.on_close)
+else:                               # runs on, ends by itself later
+    app.after(updater.CONFIRM_AFTER_MS + 2000, app.destroy)
+app.mainloop()
+'''
+
+
+def bundled_python(folder):
+    """folder/python/pythonw.exe that really runs: the venv redirector of this Python plus a pyvenv.cfg (the
+    release's python/ is a whole CPython; this starts in milliseconds and is a few hundred KB). None if this
+    Python has no redirector."""
+    nt = os.path.join(sys.base_prefix, "Lib", "venv", "scripts", "nt")
+    if os.name != "nt" or not os.path.exists(os.path.join(nt, "pythonw.exe")):
+        return None
+    d = os.path.join(folder, "python")
+    shutil.rmtree(d, ignore_errors=True)
+    os.makedirs(d)
+    for exe in ("python.exe", "pythonw.exe"):
+        shutil.copy2(os.path.join(nt, exe), os.path.join(d, exe))
+    with open(os.path.join(d, "pyvenv.cfg"), "w") as f:
+        f.write(f"home = {sys.base_prefix}\ninclude-system-site-packages = false\n")
+    return os.path.join(d, "pythonw.exe")
+
+
+@unittest.skipUnless(os.name == "nt", "the swap step starts pythonw.exe")
+class ConfirmAfterStart(unittest.TestCase):
+    """1.1.5's launcher closed 2 s after its start but had confirmed the update after 0.3 s, so the swap step
+    kept it. Now the new launcher confirms after CONFIRM_AFTER_MS or when closed by hand. Real processes: the
+    swap step (updater.py --apply), the new launcher (a Tk main loop with the real Updater) and, after a
+    rollback, the old launcher -- both started by the swap step from the folder's own python\\pythonw.exe."""
+
+    def setUp(self):
+        try:
+            import tkinter
+            tkinter.Tcl()
+        except Exception as e:      # noqa: BLE001
+            self.skipTest(f"no Tcl/Tk: {e}")
+        self.tmp = tempfile.mkdtemp(prefix="t5dr_confirm_test_")
+        self.install = os.path.join(self.tmp, "T5DR-Online-1.0.0")
+        make_install(self.install)
+        self.sroot = self.install + ".update"
+        self.new = os.path.join(self.sroot, "new", "T5DR-Online-1.0.1")
+        make_new(self.new)
+        if not bundled_python(self.install) or not bundled_python(self.new):
+            shutil.rmtree(self.tmp, ignore_errors=True)
+            self.skipTest("this Python has no venv redirector (Lib/venv/scripts/nt/pythonw.exe)")
+        write(os.path.join(self.install, "launcher", "t5dr_launcher.pyw"), OLD_LAUNCHER)
+        shutil.copy2(os.path.join(ROOT, "launcher", "updater.py"), os.path.join(self.new, "launcher", "updater.py"))
+        self.before = {k: v for k, v in tree(self.install).items() if not k.startswith("native/")}
+
+    def tearDown(self):
+        end = time.time() + 30                 # the launchers the swap step started end by themselves
+        while time.time() < end and updater.processes_under([self.tmp]):
+            time.sleep(0.25)
+        for pid, _ in updater.processes_under([self.tmp]):
+            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True)
+        for _ in range(100):
+            shutil.rmtree(self.tmp, ignore_errors=True)
+            if not os.path.exists(self.tmp):
+                break
+            time.sleep(0.1)
+
+    def update(self, mode):
+        write(os.path.join(self.new, "launcher", "t5dr_launcher.pyw"), NEW_LAUNCHER % mode)
+        staged = {"sroot": self.sroot, "new": self.new}
+        t0 = time.time()
+        proc = updater.start_swap(staged, "1.0.0", "1.0.1", out_dir=os.path.join(self.install, "native"),
+                                  root=self.install, wait_pid=0, python=sys.executable)
+        proc.wait(updater.CONFIRM_WAIT + 60)
+        with open(os.path.join(self.sroot, "swap.log"), encoding="utf-8") as f:
+            log = f.read()
+        with open(os.path.join(self.sroot, "result.json"), encoding="utf-8") as f:
+            return proc.returncode, json.load(f), log, time.time() - t0
+
+    def native(self, name, timeout=20.0):
+        p = os.path.join(self.install, "native", name)
+        end = time.time() + timeout
+        while time.time() < end and not os.path.exists(p):
+            time.sleep(0.1)
+        if not os.path.exists(p):
+            return None
+        time.sleep(0.2)                         # (written at once, but let the writer close it)
+        with open(p, encoding="utf-8") as f:
+            return f.read()
+
+    def test_a_launcher_that_ends_after_2_s_is_rolled_back(self):
+        rc, res, log, _ = self.update("dies")
+        self.assertEqual(rc, 6, log)
+        self.assertFalse(res["ok"])
+        self.assertEqual(res["phase"], "undone", log)
+        self.assertTrue(res["rolled_back"], log)
+        self.assertIn("ended without starting up", log)
+        self.assertEqual({k: v for k, v in tree(self.install).items() if not k.startswith("native/")},
+                         self.before)                                   # the old program files, byte for byte
+        self.assertEqual(json.loads(self.native("old-launcher-started"))["version"], "1.0.0", log)
+        # the marker left the environment at the start: what the launcher started meanwhile does not confirm
+        self.assertIsNone(json.loads(self.native("new-launcher.json"))["env"])
+
+    def test_closed_by_hand_after_3_s_keeps_the_update(self):
+        rc, res, log, secs = self.update("closed")
+        self.assertEqual(rc, 0, log)
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["phase"], "done", log)
+        self.assertIn("the launcher confirmed", log)
+        self.assertLess(secs, updater.CONFIRM_AFTER_MS / 1000, log)      # did not wait for the 15 s
+        self.assertEqual(updater.local_version(self.install), "1.0.1")
+        self.assertFalse(os.path.exists(os.path.join(self.sroot, "backup")))
+        self.assertIsNone(self.native("old-launcher-started", timeout=2))
+
+    def test_a_launcher_that_runs_on_confirms_after_15_s(self):
+        rc, res, log, secs = self.update("runs")
+        self.assertEqual(rc, 0, log)
+        self.assertEqual(res["phase"], "done", log)
+        self.assertIn("the launcher confirmed", log)
+        self.assertGreaterEqual(secs, updater.CONFIRM_AFTER_MS / 1000, log)
+        self.assertEqual(updater.local_version(self.install), "1.0.1")
+        self.assertIsNone(self.native("old-launcher-started", timeout=2))
+
+    def test_the_launcher_confirms_on_close(self):
+        with open(os.path.join(ROOT, "launcher", "t5dr_launcher.pyw"), encoding="utf-8") as f:
+            src = f.read()
+        body = src[src.index("    def on_close(self):"):]
+        body = body[:body.index("\n    def ", 10) if "\n    def " in body[10:] else len(body)]
+        self.assertIn("updater.confirm_started()", body)
+        # before anything that could raise on the way out (the tabs' own on_close, the settings file)
+        self.assertLess(body.index("updater.confirm_started()"), body.index("self.save_settings()"))
 
 
 # --------------------------------------------------------------------------- never while playing

@@ -668,6 +668,105 @@ def ranked_room(ctx):
     _play_set(ctx, a, b, mid, "BB", "room set")
 
 
+def _set_sides(ctx, a, b, mid, label):
+    """The lobby's sides of a set's first game against the games' own (netplay "connected (host, P1)"). -> a's slot."""
+    ma, mb = a.matches[mid], b.matches[mid]
+    sa, sb = ma.get("slot"), mb.get("slot")
+    ctx.check(f"{label}: one P1, one P2 ({a.name} P{(sa or 0) + 1}, {b.name} P{(sb or 0) + 1})",
+              sa in (0, 1) and sb == 1 - sa, f"{sa} / {sb}")
+    want = {p.name: ("host" if s == 0 else "join", f"P{s + 1}") for p, s in ((a, sa), (b, sb)) if s in (0, 1)}
+    got = {p.name: tuple((parse_segment(p.log_segment(mid))["connected"] or (None, None, None))[:2]) for p in (a, b)}
+    ctx.check(f"{label}: the games connected with the lobby's sides", got == want, str(got))
+    return sa
+
+
+@scenario("ranked_sides", "3 ranked", game=True, suites=("game",),
+          desc="1.1.7 random sides with the 1.1.6 launcher code (git tag v1.1.6 = the release zip's lobby/t5lobby): A's "
+               "UDP round trip to the lobby 60 ms through a delay proxy, B's ~0 (1.1.6 server: B always P1); ranked "
+               "sets from the queue until B has been P2 (at most 6, T5_E2E_SIDES_SETS), each set's sides from the lobby = the games' "
+               "netplay roles, kept through the set, in sync, rated once for its winner whichever side; then Rematch = a "
+               "new set with its sides drawn again")
+def ranked_sides(ctx):
+    from e2e_harness import LegShaper, ShapedDelay
+    game_server(ctx, T5L_PLACEMENT=1, T5L_PAIR_COOLDOWN=1)
+    leg = LegShaper()
+    leg.rtt = 60.0                                  # (ShapedDelay holds each way leg.rtt / 2: a 60 ms round trip)
+    far_udp = ShapedDelay(("127.0.0.1", ctx.server.udp), leg, "A to the lobby's UDP port")
+    far_udp.start()
+    try:
+        old = os.environ.get("T5_E2E_SIDES_LOBBY", "v1.1.6")
+        a = ctx.player("E2E SideFar", password="far-pass-1", char="jin", bot=True, lobby=old or None)
+        b = ctx.player("E2E SideNear", password="near-pass-1", char="lili", bot=True, lobby=old or None)
+        # A measures the lobby server (and its own relay) through the delay proxy: what the queue knows as its ping
+        ctx.relay_routes[a.name] = {"main": far_udp.addr}
+        login(ctx, a, "register")
+        login(ctx, b, "register")
+        if old:
+            ctx.check(f"both run the {old} lobby code (the release's launcher)",
+                      all(type(p.client).__module__.startswith("t5lobby_" + re.sub(r"[^A-Za-z0-9]", "", old))
+                          for p in (a, b)), [type(p.client).__module__ for p in (a, b)])
+        ctx.wait(lambda: (a.client.server_rtt or 0) >= 45 and b.client.server_rtt is not None, 40,
+                 "server round trips measured")
+        ra, rb = a.client.server_rtt, b.client.server_rtt
+        ctx.check(f"B has the lower server round trip (A {ra} ms, B {rb} ms)",
+                  ra is not None and rb is not None and rb + 30 < ra, f"A {ra}, B {rb}")
+        plans = ["BB", "AA", "ABA", "BB", "AA", "BAB"][:max(1, int(os.environ.get("T5_E2E_SIDES_SETS") or 6))]
+        ctx.plan = (a, b, plans)
+        sides = []                                  # B's slot per set
+        mid = None
+        for k, plan in enumerate(plans):
+            label = f"set {k + 1}"
+            if k:
+                for p in (a, b):
+                    leave(ctx, p)
+                ctx.wait(lambda: a.action_on("ranked") and b.action_on("ranked"), 30, f"{label}: Ranked match available")
+                ctx.sleep(1.5)                      # (T5L_PAIR_COOLDOWN 1 s)
+            mid = queue_match(ctx, a, b, "ranked")
+            ctx.check(f"{label}: a rated best-of-3 set", _set_of(a, mid).get("rated"), _set_of(a, mid))
+            wait_fight(ctx, mid, (a, b), timeout=150)
+            a_slot = _set_sides(ctx, a, b, mid, label)
+            sides.append(b.matches[mid].get("slot"))
+            ctx.note(f"{label}: {b.name} (lower ping) is P{(sides[-1] or 0) + 1}, plan {plan}")
+            ea, eb, _mids = _play_set(ctx, a, b, mid, plan, label)
+            winner, loser = (a, b) if plan.count("A") == 2 else (b, a)
+            ew, el = (ea, eb) if winner is a else (eb, ea)
+            wslot = a_slot if winner is a else 1 - a_slot
+            ctx.check(f"{label}: the winner ({winner.name}, P{wslot + 1}) gains, the loser loses",
+                      ew.get("result") == "win" and (ew.get("rating") or {}).get("delta", 0) > 0 and
+                      el.get("result") == "loss" and (el.get("rating") or {}).get("delta", 0) < 0,
+                      f"{winner.name} {ew.get('result')} {(ew.get('rating') or {}).get('delta')}, "
+                      f"{loser.name} {el.get('result')} {(el.get('rating') or {}).get('delta')}")
+            if 1 in sides and 0 in sides:
+                break
+        ctx.check("the lower-ping player was P2 in at least one set (1.1.6: P1 every time)", 1 in sides,
+                  f"{b.name}'s side per set: {['P%d' % (s + 1) for s in sides if s in (0, 1)]}")
+        ctx.note(f"{b.name} (lower ping): P1 in {sides.count(0)} set(s), P2 in {sides.count(1)}")
+        n_sets = len(sides)
+        for p in (a, b):
+            prof = profile(ctx, p) or {}
+            ctx.check(f"{p.name}: profile counts {n_sets} ranked sets", prof.get("ranked_games") == n_sets,
+                      f"ranked_games {prof.get('ranked_games')}, record {prof.get('record')}, rating {prof.get('rating')}")
+        # Rematch after a set: a new set, its sides drawn again. (A launcher lets its game's session go at the set's
+        # end -- match_driver._set_over, 1.1.5 -- so this rematch is a new netplay session whatever the coin says.)
+        prev_slot = b.matches[mid].get("slot")
+        ctx.plan = (a, b, plans[:n_sets] + ["AA"])       # (before the rematch: a bot reads it at match_start)
+        mid2 = rematch(ctx, a, b)
+        now_slot = b.matches[mid2].get("slot")
+        ctx.note(f"rematch: {b.name} P{(prev_slot or 0) + 1} -> P{(now_slot or 0) + 1}, "
+                 f"{'inside the running games' if a.matches[mid2].get('cont') else 'a new netplay session'}")
+        ctx.check("rematch: a new set", _set_of(a, mid2).get("id") != _set_of(a, mid).get("id"),
+                  f"{_set_of(a, mid).get('id')} -> {_set_of(a, mid2).get('id')}")
+        wait_fight(ctx, mid2, (a, b), timeout=150)
+        if not a.matches[mid2].get("cont"):
+            _set_sides(ctx, a, b, mid2, "rematch set")
+        else:
+            ctx.check("rematch inside the running games: the same sides", now_slot == prev_slot,
+                      f"{prev_slot} -> {now_slot}")
+        _play_set(ctx, a, b, mid2, "AA", "rematch set")
+    finally:
+        far_udp.close()
+
+
 # ============================================================================== 4. rooms
 @scenario("room_flow", "4 rooms", game=True, suites=("game",),
           desc="room: create, join, ready, match, Rematch, then Ready again (a new session), match, Rematch "

@@ -170,8 +170,63 @@ def enable_dpi_awareness():
         pass
 
 
+class _GuardedCall(tk.CallWrapper):
+    """Tk's CallWrapper lets SystemExit out of a button, timer or binding: mainloop() then ends and the launcher
+    closes (1.1.5: a helper's SystemExit in the Build tab's package check closed it 2 s after its start). Here it is
+    reported like any other error (App.report_callback_exception: launcher.log) and the window stays open; only the
+    player's close ends the launcher. Installed by App (guard_tk_callbacks) for every callback made after it."""
+
+    def __call__(self, *args):
+        try:
+            return super().__call__(*args)
+        except SystemExit:
+            try:
+                self.widget._report_exception()
+            except Exception:     # noqa: BLE001 -- reporting must not end the launcher either
+                pass
+            return None
+
+
+def guard_tk_callbacks():
+    if tk.CallWrapper is not _GuardedCall:
+        tk.CallWrapper = _GuardedCall
+
+
+def log_thread_errors():
+    """An error in one of the launcher's threads (a check, a download, a picture reader) goes into launcher.log;
+    under pythonw it was printed nowhere (1.1.5/1.1.6's fighter pictures failed that way unseen)."""
+    import traceback
+
+    def hook(args):
+        if args.exc_type is SystemExit:
+            return
+        name = getattr(args.thread, "name", "?")
+        core.log(f"error in the launcher's thread {name}:\n"
+                 + "".join(traceback.format_exception(args.exc_type, args.exc_value, args.exc_traceback)))
+    threading.excepthook = hook
+
+
+def run_mainloop(app):
+    """app.mainloop() until the window is closed. Should anything still end the loop with an error while the window
+    is there (a Tcl-level callback outside CallWrapper), it is logged and the loop goes on."""
+    import traceback
+    while True:
+        try:
+            app.mainloop()
+            return
+        except (Exception, SystemExit) as e:     # noqa: BLE001 -- (Ctrl+C in a console still ends it)
+            core.log("error in the launcher's main loop (the window stays open):\n"
+                     + "".join(traceback.format_exception(type(e), e, e.__traceback__)))
+            try:
+                if not app.winfo_exists():
+                    return
+            except tk.TclError:
+                return
+
+
 class App(tk.Tk):
     def __init__(self, offscreen=False, settings=None):
+        guard_tk_callbacks()         # (before the first callback: a SystemExit in one must not close the window)
         super().__init__()
         self.readonly = offscreen
         self.settings = settings if settings is not None else core.Settings()
@@ -220,8 +275,23 @@ class App(tk.Tk):
         into launcher.log, so a problem report shows it."""
         import traceback
         if not self.readonly:
-            core.log("error in the launcher:\n" + "".join(traceback.format_exception(exc, val, tb)))
-        super().report_callback_exception(exc, val, tb)
+            core.log("error in the launcher (the window stays open):\n"
+                     + "".join(traceback.format_exception(exc, val, tb)))
+        try:
+            super().report_callback_exception(exc, val, tb)
+        except Exception:     # noqa: BLE001 -- (no stderr under pythonw)
+            pass
+
+    def open_discord(self):
+        """The community Discord (core.DISCORD_URL) in the default browser."""
+        import webbrowser
+        try:
+            opened = webbrowser.open(core.DISCORD_URL)
+        except Exception as e:      # noqa: BLE001 -- no browser on this PC
+            opened = False
+            core.log(f"Community Discord: no browser ({e})")
+        if not opened:
+            self.status.set(t("Could not open a browser. The address: {url}", url=core.DISCORD_URL))
 
     def _click_through(self):
         """WS_EX_TRANSPARENT on the (layered) frame: mouse clicks go to the windows below."""
@@ -346,6 +416,13 @@ class App(tk.Tk):
         self.updater = updater.attach(self, head)     # "Check for updates", the offer, the update itself
         if dark and getattr(self.updater, "button", None) is not None:
             self.updater.button.pack_configure(padx=(0, self.px(16)))
+        # the players' community on Discord (1.1.7, the owner's wish): one click from every tab, left of the updates
+        self.discord_btn = ttk.Button(head, text=t("Community Discord"), command=self.open_discord, cursor="hand2")
+        self.discord_btn.pack(side="right", padx=(0, self.px(8)))
+        if dark:
+            # the band asks for room for its texts and both buttons (the window is never narrower than that)
+            buttons = sum(b.winfo_reqwidth() for b in (self.discord_btn, getattr(self.updater, "button", None)) if b)
+            head.configure(width=int(head.cget("width")) + buttons + self.px(8 + 16))
         self.nb = ttk.Notebook(self, style="Main.TNotebook") if dark else ttk.Notebook(self)
         self.nb.pack(fill="both", expand=True, padx=12, pady=(4, 0))
         self.tabs = {}
@@ -395,8 +472,10 @@ class App(tk.Tk):
             e.bind("<FocusOut>", lambda _e: self.refresh_inputs())
             ttk.Button(files, text=t("Browse…"), command=lambda k=kind: self.browse(k)).grid(
                 row=row * 2, column=2, padx=(8, 0))
-            lbl = ttk.Label(files, textvariable=info, style="Muted.TLabel")
-            lbl.grid(row=row * 2 + 1, column=1, columnspan=2, sticky="w", pady=(0, 4))
+            lbl = ttk.Label(files, textvariable=info, style="Muted.TLabel", justify="left")
+            lbl.grid(row=row * 2 + 1, column=1, columnspan=2, sticky="we", pady=(0, 4))
+            # (wraps at its width: the v01.01 warning was cut off in German at 100 %)
+            lbl.bind("<Configure>", lambda e: e.widget.configure(wraplength=max(1, e.width - 4)))
             if kind == "pkg":
                 self.pkg_lbl = lbl
             else:
@@ -922,7 +1001,9 @@ class App(tk.Tk):
                 except (RuntimeError, tk.TclError):
                     pass
             threading.Thread(target=work, name="find-game-files", daemon=True).start()
-        _ok, lvl, txt = core.describe_pkg(pkg)
+        _ok, lvl, txt = core.describe_pkg(pkg, self.settings.out_dir)
+        if pkg and lvl != "error" and self._peek_keys():
+            txt += "  ·  " + t("checking the game version inside the package…")
         self.pkg_info.set(("✔ " if lvl == "ok" else "⚠ " if lvl == "warn" else "") + txt)
         self.pkg_lbl.configure(style=f"{lvl}.TLabel" if pkg else "Muted.TLabel")
         _ok, lvl, txt = core.describe_rap(rap, pkg)
@@ -930,6 +1011,33 @@ class App(tk.Tk):
         self.rap_lbl.configure(style=f"{lvl}.TLabel" if rap else "Muted.TLabel")
         self.settings["pkg"], self.settings["rap"] = pkg, rap
         self.settings.save()
+
+    def _peek_keys(self):
+        """A release folder before its first build has no keys/ps3.keys, so the Build tab could not look inside the
+        chosen package and a v01.01 package showed no warning until the build failed (1.1.5/1.1.6, GitHub #20/#21).
+        Make the key file in the background, as BUILD GAME's keys step would (core.make_peek_keys), then check the
+        package again. Once per output folder; True while it runs."""
+        out = self.settings.out_dir
+        job = getattr(self, "_peek_job", None)
+        if job is not None and job["out"] == out:
+            return job["running"]
+        if self.readonly or not core.peek_needs_keys(out):
+            return False
+        job = self._peek_job = {"out": out, "running": True}
+
+        def work():
+            ok, detail = core.make_peek_keys(out)
+            core.log(f"package check: key file {'made' if ok else 'NOT made'} before the build ({detail})")
+
+            def done():
+                job["running"] = False
+                self.refresh_inputs()
+            try:
+                self.after(0, done)
+            except (RuntimeError, tk.TclError):
+                pass
+        threading.Thread(target=work, name="peek-keys", daemon=True).start()
+        return True
 
     # ------------------------------------------------------------------ prerequisites
     def refresh_prereqs(self):
@@ -958,6 +1066,10 @@ class App(tk.Tk):
         else:
             self.tools_sum.set("✔ " + t("Everything the build needs is installed."))
             self.tools_sum_lbl.configure(style="ok.TLabel")
+        if missing and not any(it["install"] for it in missing) and core.prereqs.release_missing():
+            # (a release folder lacking parts of the zip: nothing to install -- the Build tab says to extract again)
+            self.status.set(t("This folder is incomplete: extract the release zip again (see the Build tab)."))
+            return
         self.status.set(t("All build tools found.") if not missing else
                         t("{count} build tool(s) missing -- click 'Install missing…'.", count=len(missing)))
 
@@ -1471,7 +1583,8 @@ class App(tk.Tk):
                                   online_dir=online_dir, online_info=online_info, build_problem=build_problem)
         core.log("report window opened")
         self._report_dlg = report_ui.ReportDialog(self, make_context, core.desktop_dir(), reveal=core.reveal_file,
-                                                  issues_url=core.ISSUES_URL, log=core.log)
+                                                  issues_url=core.ISSUES_URL, log=core.log,
+                                                  discord_url=core.DISCORD_URL)
         return self._report_dlg
 
     def _speed_notes(self):
@@ -1581,6 +1694,7 @@ class App(tk.Tk):
             return                              # unsaved button changes: the person chose to stay
         if self.build:
             self.build.cancel()
+        updater.confirm_started()          # closed by hand (or restarting): it did start, the update stays
         self.save_settings()
         self.nb.unbind("<<NotebookTabChanged>>")          # (destroying the tabs would fire it with none selected)
         self.online.on_close()
@@ -1714,7 +1828,14 @@ def main():
                          "(Quick match). Without a saved login the tab opens with a hint")
     a, unknown = ap.parse_known_args()      # (an unknown option from an old shortcut must not stop the launcher)
     enable_dpi_awareness()
-    app = App(offscreen=bool(a.screenshots))
+    if not a.screenshots:
+        log_thread_errors()
+    try:
+        app = App(offscreen=bool(a.screenshots))
+    except (Exception, SystemExit) as e:     # noqa: BLE001 -- no window to keep: launcher.log at least says why
+        import traceback
+        core.log("the launcher could not start:\n" + "".join(traceback.format_exception(type(e), e, e.__traceback__)))
+        raise
     if a.low_priority:
         app.lowprio_var.set(True)
     if a.force:
@@ -1730,7 +1851,7 @@ def main():
             app.after(300, lambda: app.search_on_start(a.search.strip().lower()))
         else:
             core.log(f"command line: --search {a.search} is neither ranked nor casual, ignored")
-    app.mainloop()
+    run_mainloop(app)
     if app.restart_requested:
         # (without --search: a restart after an update or a language change must not start searching again)
         subprocess.Popen([sys.executable] + without_search(sys.argv), cwd=os.getcwd())

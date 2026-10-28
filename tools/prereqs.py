@@ -119,6 +119,20 @@ def cmake_ninja():
     return cm, nj
 
 
+MIN_PYTHON = (3, 10)      # ps3recomp's tools use 3.10 syntax (`int | None`): 3.9 fails only in the lift step
+
+
+def python_problem(version_info=None, executable=None):
+    """None when this Python is new enough, else the sentence that says what to do (build_game.py stops with it
+    before any step; the Python line below shows it)."""
+    v = tuple(version_info or sys.version_info)
+    if v[:2] >= MIN_PYTHON:
+        return None
+    return (f"T5DR needs Python {MIN_PYTHON[0]}.{MIN_PYTHON[1]} or newer; this is {v[0]}.{v[1]} at "
+            f"{executable or sys.executable}. On macOS: brew install python@3.12 and make the venv with python3.12 "
+            "(python3.12 -m venv .venv).")
+
+
 def python_crypto():
     try:
         import Crypto.Cipher.AES  # noqa: F401  (pycryptodome)
@@ -137,6 +151,34 @@ def ps3recomp_source():
     return None
 
 
+INCOMPLETE_EXAMPLE = r"C:\T5DR"       # a short path to extract the release zip into again
+
+
+def release_folder(root=None):
+    """This folder came from a release zip (its release.json), not from a developer's checkout."""
+    return os.path.isfile(os.path.join(root or ROOT, "release.json"))
+
+
+def release_missing(root=None):
+    """The parts a release zip ships that this folder lacks -- an "Extract All" cut short, or files taken out of the
+    zip one by one or run from inside it: e.g. ["deps\\ps3recomp", "toolchain\\llvm", "runtime", "python"]; [] for a
+    complete release and for a developer's checkout. Git, Visual Studio and the like cannot replace them."""
+    root = root or ROOT
+    if not release_folder(root) or os.name != "nt":
+        return []
+    out = []
+    if not os.path.exists(os.path.join(root, "deps", "ps3recomp", ".t5dr-vendored.json")):
+        out.append(os.path.join("deps", "ps3recomp"))
+    llvm = os.path.join(root, "toolchain", "llvm", "bin")
+    if not all(os.path.exists(os.path.join(llvm, n)) for n in ("clang-cl.exe", "lld-link.exe")):
+        out.append(os.path.join("toolchain", "llvm"))
+    if not all(os.path.exists(os.path.join(root, "runtime", n)) for n in ("t5dr.exe", "t5dr.lib")):
+        out.append("runtime")
+    if not os.path.exists(os.path.join(root, "python", "python.exe")):
+        out.append("python")
+    return out
+
+
 def check():
     """List of dicts: id, name, ok, detail, needed_for, install (winget id or None)."""
     items = []
@@ -144,22 +186,34 @@ def check():
     def add(id_, name, ok, detail, needed_for, install=None):
         items.append(dict(id=id_, name=name, ok=bool(ok), detail=detail, needed_for=needed_for, install=install))
 
-    add("python", "Python 3.10+", sys.version_info >= (3, 10),
-        f"{sys.version.split()[0]} at {sys.executable}", "all steps")
+    add("python", "Python 3.10+", python_problem() is None,                  # (MIN_PYTHON)
+        python_problem() or f"{sys.version.split()[0]} at {sys.executable}", "all steps")
     add("pycryptodome", "pycryptodome (Python AES)", python_crypto(),
         "installed" if python_crypto() else "missing -- pip install pycryptodome", "unpack, decrypt")
     src = ps3recomp_source()
-    git = shutil.which("git")
-    add("ps3recomp", "ps3recomp source", src or git,
-        {"vendored": "included in this package", "git": "git checkout in deps/"}.get(
-            src, "not present -- will be downloaded with Git" if git else "not present and Git is missing"),
-        "lift, compile", None if src or git else "Git.Git")
-    if prebuilt_host():
+    release = release_folder() and os.name == "nt"
+    if release:
+        # A release ships ps3recomp, the compiler and the runtime: a missing one means the zip was not fully
+        # extracted. Never offer Git there (1.1.6: a player pressed "Install missing..." for it; nothing changed).
+        vendored = src == "vendored"
+        add("ps3recomp", "ps3recomp source", vendored,
+            "included in this package" if vendored else
+            "missing from this folder -- extract the release zip again", "lift, compile")
+    else:
+        git = shutil.which("git")
+        add("ps3recomp", "ps3recomp source", src or git,
+            {"vendored": "included in this package", "git": "git checkout in deps/"}.get(
+                src, "not present -- will be downloaded with Git" if git else "not present and Git is missing"),
+            "lift, compile", None if src or git else "Git.Git")
+    if prebuilt_host() or release:
+        # (a release folder: never Visual Studio either -- its runtime and compiler are in the zip)
         llvm = portable_llvm()
-        add("runtime", "Game runtime (t5dr.exe)", True, "precompiled, included in this package", "compile")
+        add("runtime", "Game runtime (t5dr.exe)", prebuilt_host(),
+            "precompiled, included in this package" if prebuilt_host() else
+            "missing from this folder -- extract the release zip again", "compile")
         add("llvm", "clang-cl + lld-link", llvm,
             ("included in this package" if llvm and llvm.startswith(ROOT) else llvm) if llvm
-            else "missing from toolchain\\llvm -- download the release again", "compile")
+            else "missing from toolchain\\llvm -- extract the release zip again", "compile")
         return items
     vs = vs_install()
     add("msvc", "C++ build tools (MSVC x64)", vs, vs or "not found", "compile",

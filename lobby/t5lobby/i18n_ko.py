@@ -213,6 +213,7 @@ MESSAGES = {
     "Cannot read the file: {error}": "파일을 읽을 수 없습니다: {error}",
     "This is not a PS3 package (.pkg).": "PS3 패키지(.pkg)가 아닙니다.",
     "{id}  ({size} bytes) -- the supported version": "{id}  ({size}바이트) -- 지원 버전",
+    "checking the game version inside the package…": "패키지 안의 게임 버전을 확인하는 중…",
     "{id}  ({size} bytes) -- Tekken 5 DR, but not the supported package ({supported}). "
     "The build will most likely refuse it.":
         "{id}  ({size}바이트) -- Tekken 5 DR이지만 지원 패키지({supported})가 아닙니다. 빌드에서 거부될 가능성이 큽니"
@@ -684,6 +685,9 @@ MESSAGES = {
     "A build is running. Stop it and quit?": "빌드가 진행 중입니다. 중지하고 종료할까요?",
     # ---- launcher/updater.py
     "Check for updates": "업데이트 확인",
+    "Community Discord": "커뮤니티 Discord",
+    "Could not open a browser. The address: {url}": "브라우저를 열 수 없습니다. 주소: {url}",
+    "Questions? Ask the players in the community Discord: {url}": "질문이 있나요? 커뮤니티 Discord에서 플레이어들에게 물어보세요: {url}",
     "Updated from {old} to {new}.": "{old}에서 {new}(으)로 업데이트했습니다.",
     "the new version": "새 버전",
     "The update to {version} failed and could not be undone completely: {error}.\n\nThe "
@@ -1095,7 +1099,11 @@ MESSAGES = {
     "not present -- will be downloaded with Git": "없음 -- Git으로 다운로드합니다",
     "not present and Git is missing": "없고 Git도 없음",
     "precompiled, included in this package": "미리 컴파일됨, 이 패키지에 포함",
-    "missing from toolchain\\llvm -- download the release again": "toolchain\\llvm에 없음 -- 릴리스를 다시 받으세요",
+    "missing from toolchain\\llvm -- extract the release zip again": "toolchain\\llvm에 없음 -- 릴리스 zip을 다시 압축 해제하세요",
+    "missing from this folder -- extract the release zip again": "이 폴더에 없음 -- 릴리스 zip을 다시 압축 해제하세요",
+    "This folder is incomplete ({folders} missing). Extract the release zip again with \"Extract All\" into a short path such as {example}, then start T5DR Online.exe from there -- not from inside the zip.":
+        "이 폴더는 불완전합니다({folders} 없음). 릴리스 zip을 \"모두 압축 풀기\"로 {example} 같은 짧은 경로에 다시 풀고, 거기서 T5DR Online.exe를 실행하세요. zip 안에서 실행하지 마세요.",
+    "This folder is incomplete: extract the release zip again (see the Build tab).": "이 폴더는 불완전합니다: 릴리스 zip을 다시 압축 해제하세요(빌드 탭 참고).",
     "not found": "찾을 수 없음",
     "missing {tools}": "없음: {tools}",
     "System information and the settings you use": "시스템 정보와 사용 중인 설정",

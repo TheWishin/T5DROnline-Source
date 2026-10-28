@@ -330,7 +330,10 @@ class StubSetTest(Base):
         self.assertEqual(starts[0][0]["fight"]["pick"], 30)
         self.assertEqual((results[0][0]["fight"]["p1"], results[0][0]["fight"]["p2"]), ("kazuya", "lili"))
         self.assertNotIn("pick", starts[0][1]["fight"])                    # game 2: locked, no select screen
-        self.assertEqual((starts[0][1]["fight"]["p1"], starts[0][1]["fight"]["p2"]), ("kazuya", "lili"))
+
+        def alices(game, ev):    # Alice's fighter in that game, whichever side (a ranked rematch draws the sides again)
+            return ev["fight"]["p1" if starts[0][game]["slot"] == 0 else "p2"]
+        self.assertEqual(alices(1, starts[0][1]), alices(0, results[0][0]))
         self.assertEqual(drivers[0].history[0][1].get("chars"), ["kazuya", "lili"])
 
 

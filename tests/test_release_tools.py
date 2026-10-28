@@ -268,6 +268,37 @@ class FetchLlvmExtract(unittest.TestCase):
 
 
 @unittest.skipUnless(os.name == "nt", "PE files and System32 exist on Windows only")
+class ReleaseGates(unittest.TestCase):
+    """What stops a 1.1.5 (docs/RELEASING.md, the release order): the workflow requires the starter check, the
+    preflight runs the smoke test with its GUI checks, and every draft is a pre-release."""
+
+    def read(self, *parts):
+        with open(os.path.join(os.path.dirname(TOOLS), *parts), encoding="utf-8") as f:
+            return f.read()
+
+    def test_workflow_requires_the_starter_check(self):
+        build = self.read(".github", "workflows", "release.yml").split("\n  publish:", 1)[0]
+        steps = build.split("\n      - ")
+        (starter,) = [s for s in steps if "--gui-checks starter" in s]
+        self.assertNotIn("continue-on-error", starter)
+        self.assertIn("smoke_release.py", starter)
+        self.assertIn("--no-gui", [s for s in steps if "Smoke test -- unpacked zip" in s][0])
+
+    def test_every_draft_is_a_pre_release(self):
+        publish = self.read(".github", "workflows", "release.yml").split("\n  publish:", 1)[1]
+        create = publish[publish.index("gh release create"):]
+        create = create[:create.index("\n          else")]
+        self.assertRegex(create, r"--prerelease\s*$")
+        self.assertNotIn("--prerelease=", publish)
+
+    def test_preflight_smoke_has_the_gui_checks(self):
+        pf = self.read("tools", "release_preflight.py")
+        smoke = pf[pf.index('"tools/smoke_release.py"'):]
+        smoke = smoke[:smoke.index("\n    step(")]
+        self.assertNotIn("--no-gui", smoke)
+        self.assertNotIn("--gui-checks", smoke)
+
+
 class PeImports(unittest.TestCase):
     def test_python_exe(self):
         smoke = load_tool("smoke_release")

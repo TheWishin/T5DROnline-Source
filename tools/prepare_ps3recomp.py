@@ -24,11 +24,17 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
-def pin():
-    """(url, branch, commit) from tools/build_game.py, without running it."""
+def build_game():
+    """tools/build_game.py as a module, without running it (the pin, the series stamp)."""
     spec = importlib.util.spec_from_file_location("build_game", os.path.join(ROOT, "tools", "build_game.py"))
     bg = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(bg)
+    return bg
+
+
+def pin():
+    """(url, branch, commit) from tools/build_game.py."""
+    bg = build_game()
     return bg.PS3RECOMP_URL, bg.PS3RECOMP_BRANCH, bg.PS3RECOMP_COMMIT
 
 
@@ -101,6 +107,9 @@ def main():
         done.append(name)
 
     changed = git("-C", dest, "status", "--short", capture=True).stdout
+    # What this tree is (.git/t5dr-prepared.json): build_game.py's deps step re-prepares a checkout whose series
+    # is not the repository's any more.
+    build_game().write_prepared_stamp(dest, commit=a.commit, patches=a.patches)
     print(f"\n{len(done)} patch(es) applied, {len(changed.splitlines())} file(s) changed in {dest}")
 
 

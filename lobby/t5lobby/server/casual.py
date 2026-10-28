@@ -4,7 +4,17 @@ A player's wishes -- the side (P1, P2 or any) and the stage (one of the server's
 setting of their launcher: `casual_prefs {side, stage}`, sent after every login and whenever the player changes
 them, like spec_prefs. They count in the casual matches the two players chose each other for: an accepted
 challenge, a friend's casual invite, a room's match (not a ranked room's), and the rematches of those. Ranked and
-Quick keep the server's sides (queue: the lower server round trip is P1) and a random stage, their rematches too.
+Quick get the server's sides and a random stage.
+
+The server's sides (1.1.7; owner: "never the one with the lower ping is P1"): a fair coin (`_side_coin`, secrets)
+orders the two players of every queue match (ranked and quick), of a ranked room's new set, and of a ranked rematch
+(a new set; with launchers without sets a new rated game). The games of a rated set keep the sides of its first
+game (they continue inside the running games; a game keeps its slot for its whole netplay session), a quick
+rematch keeps them too, and a tournament set has its bracket's order. Before 1.1.7 the queue made the player with
+the lower server round trip P1 ("more likely the better-connected PC"): that round trip is to the lobby server, not
+between the two PCs, and the host role carries nothing that makes a better connection (docs/ONLINE.md "The side is
+the netplay role"). The role is in match_found / match_reveal / match_start as always, so this needs no launcher
+change: every launcher plays the side the server names.
 
 Sides. The side is the netplay role: the game makes the host P1 (slot 0) and the joiner P2 (netplay_core.cpp,
 `slot = join ? 1 : 0`); setting up the connection is the same for both (both launchers punch, both games get
@@ -41,6 +51,11 @@ SIDES = (None, 0, 1)                                # any, P1, P2
 
 def _coin():
     """A fair coin for two players who want the same side (tests replace it)."""
+    return secrets.randbelow(2)
+
+
+def _side_coin():
+    """The fair coin for the server's sides: 0 keeps the order it is given, 1 swaps it (tests replace it)."""
     return secrets.randbelow(2)
 
 
@@ -103,6 +118,26 @@ class CasualMixin:
             first, how = (b, a), "wish"
         log.info("casual sides: %s P1, %s P2 (%s)", first[0].name, first[1].name, how)
         return first
+
+    @staticmethod
+    def _drawn_sides(a, b, why):
+        """(P1, P2) of a match whose sides the server decides (a queue match, a ranked room's new set): a fair
+        coin, never the server round trip, the queue order or the room's order."""
+        first = (a, b) if _side_coin() == 0 else (b, a)
+        log.info("sides: %s P1, %s P2 (drawn, %s)", first[0].name, first[1].name, why)
+        return first
+
+    @staticmethod
+    def _ranked_rematch_swap(prev):
+        """A ranked rematch starts a new set (a launcher without sets: a new rated game), so its sides are drawn
+        again: True = P1 and P2 the other way round (a new netplay session, like Swap sides). The next game of a
+        running rated set is not a rematch (_set_next keeps the set's sides)."""
+        gs = prev.set
+        if not prev.ranked or (gs is not None and gs.rated and gs.state == "active"):
+            return False
+        swap = _side_coin() == 1
+        log.info("ranked rematch of %s: sides drawn again (%s)", prev.id, "swapped" if swap else "as before")
+        return swap
 
     def _rematch_swap(self, prev, msg):
         """Does this rematch answer ask for P1 and P2 the other way round? Only in a casual match by choice."""

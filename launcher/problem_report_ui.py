@@ -63,8 +63,10 @@ def _work(q, make_context, dest_dir, note, enabled):
 
 
 class ReportDialog:
-    def __init__(self, parent, make_context, dest_dir, reveal=None, issues_url="", log=None, visible=True):
+    def __init__(self, parent, make_context, dest_dir, reveal=None, issues_url="", log=None, visible=True,
+                 discord_url=""):
         self.parent = parent
+        self.discord_url = discord_url
         self.make_context = make_context
         self.dest_dir = dest_dir
         self.reveal = reveal
@@ -195,7 +197,9 @@ class ReportDialog:
         ttk.Label(b, wraplength=600, justify="left", text=(
             t("Send this zip to the person who gave you the game, or attach it to an issue at {url}.",
               url=self.issues_url) if self.issues_url
-            else t("Send this zip to the person who gave you the game."))).grid(
+            else t("Send this zip to the person who gave you the game."))
+            + ("\n" + t("Questions? Ask the players in the community Discord: {url}", url=self.discord_url)
+               if self.discord_url else "")).grid(
             row=3, column=0, sticky="w", pady=(8, 8))
         lines = []
         for m in res.members:

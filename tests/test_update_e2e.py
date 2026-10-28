@@ -203,5 +203,97 @@ class OneClickUpdate(unittest.TestCase):
         self.check_refused(FakeGitHub(files, api=data), "not signed")
 
 
+@unittest.skipIf(tk is None, "no tkinter")
+class OfferAtStart(unittest.TestCase):
+    """1.1.7, the owner's wish: at every start the launcher asks GitHub (conditionally) and opens "Update available"
+    right away -- not while a build, the game or a match runs (then when it ends), once per session; the button
+    opens it again. The Updater as the launcher makes it (its own start check), a real main loop, FakeGitHub."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="t5dr_start_offer_")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.install = os.path.join(self.tmp, "T5DR-Online-1.1.4")
+        for rel, data in PROGRAM_FILES.items():
+            write(os.path.join(self.install, rel), data)
+        try:
+            self.app = tk.Tk()
+        except tk.TclError as e:
+            self.skipTest(f"no display: {e}")
+        self.app.withdraw()
+        self.app.settings = Settings(os.path.join(self.install, "native"))
+        self.app.readonly = False
+        self.app.build = None
+        self.app.game = None
+        self.app.statuses = []
+        self.app.set_status = self.app.statuses.append
+
+        def close():
+            try:
+                for job in self.app.tk.splitlist(self.app.tk.call("after", "info")):
+                    self.app.after_cancel(job)
+                self.app.destroy()
+            except tk.TclError:
+                pass
+        self.addCleanup(close)
+        for p in (mock.patch.object(updater, "processes_under", lambda dirs, exclude=(): []),
+                  mock.patch.object(updater, "START_CHECK_MS", 50), mock.patch.object(updater, "FREE_POLL_MS", 100)):
+            p.start()
+            self.addCleanup(p.stop)
+        os.environ.pop(updater.NO_CHECK_ENV, None)
+        self.gh = FakeGitHub(api=release("1.1.6", b"z")[0])
+        p = mock.patch.object(updater, "open_url", self.gh)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def run_loop(self, cond, seconds):
+        t_end = time.monotonic() + seconds
+
+        def poll():
+            if cond() or time.monotonic() > t_end:
+                self.app.quit()
+            else:
+                self.app.after(50, poll)
+        self.app.after(50, poll)
+        self.app.mainloop()
+        return cond()
+
+    def test_offered_right_after_start(self):
+        up = updater.Updater(self.app, root=self.install)
+        self.assertTrue(self.run_loop(lambda: up.win is not None, 10), "no offer after the start")
+        self.assertEqual(up.release["version"], "1.1.6")
+        self.assertEqual(len(self.gh.calls), 1)
+        up.close_window()
+        up.check(manual=False)                                    # a second automatic check: no second window
+        self.run_loop(lambda: len(self.gh.calls) == 2, 5)
+        self.assertFalse(self.run_loop(lambda: up.win is not None, 1))
+        self.assertIsNone(up.win)
+        self.assertEqual(self.gh.calls[1][1].get("If-None-Match"), 'W/"1"')       # conditional
+        up.on_button()                                             # the button opens it again
+        self.assertIsNotNone(up.win)
+
+    def test_waits_for_the_build_to_end(self):
+        self.app.build = object()                                 # a build runs
+        up = updater.Updater(self.app, root=self.install)
+        self.assertFalse(self.run_loop(lambda: up.win is not None, 1.5))
+        self.assertEqual(up.release["version"], "1.1.6")
+        self.assertTrue(any("1.1.6" in s for s in self.app.statuses), self.app.statuses)
+        self.app.build = None                                     # the build ends
+        self.assertTrue(self.run_loop(lambda: up.win is not None, 5), "no offer after the build")
+
+    def test_unchanged_answer_is_a_304(self):
+        updater.check_latest(os.path.join(self.install, updater.CACHE_FILE), opener=self.gh)     # an earlier start
+        self.gh.api_status = 304
+        up = updater.Updater(self.app, root=self.install)
+        self.assertTrue(self.run_loop(lambda: up.win is not None, 10))
+        self.assertEqual(self.gh.calls[-1][1].get("If-None-Match"), 'W/"1"')
+
+    def test_rate_limited_start_is_quiet(self):
+        self.gh.api_status, self.gh.api_headers = 403, {"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "1"}
+        up = updater.Updater(self.app, root=self.install)
+        self.run_loop(lambda: len(self.gh.calls) == 1, 5)
+        self.assertFalse(self.run_loop(lambda: up.win is not None, 1))
+        self.assertEqual(self.app.statuses, [])
+
+
 if __name__ == "__main__":
     unittest.main()

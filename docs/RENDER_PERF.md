@@ -3706,6 +3706,11 @@ Rollback pairs (per side and match, mean of 2 pairs; 4,229 presents while fighti
 | RTT 180 +-10, 3 % (3) | 18.2 | 20.9 | 13.5 | 569 | 0 | 60.0 |
 | RTT 260 +-12, 3 % (4) | 18.5 | 22.1 | 13.9 | 570 | 0 | 60.0 |
 
+The same 1.1.6 pairs again on the quiet PC (11:00-12:00, no other agent's games): 12.8 / 12.0 / 9.8 / 12.2 pictures
+shown twice per side and match at 60 / 120 / 180 / 260 ms, p99 18.8 / 19.6 / 20.5 / 21.9 ms, 0 mismatching -- so the
+first set's 14-18.5 were mostly the other load, and 1.1.7 (6.2-17.0, table below) is the same as 1.1.6 within the
+spread. The gate should compare pairs measured under similar load.
+
 With a warm shader cache (1.1.5's section 34 counted 36-40 at 60-180 ms, ~22 of them shader work in games whose cache
 never grew). What is left, by cause (`rollback_frame_times.py`): at 60 ms nearly all "nothing logged" (the machine:
 other agents' load); at 120-180 ms half rollbacks of depth 2-3 that ran past the display lock's lead, half the

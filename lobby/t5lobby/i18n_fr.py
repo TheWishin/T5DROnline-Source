@@ -2445,6 +2445,7 @@ MESSAGES = {
     "training rooms are casual (unranked)": "les salles d'entraînement sont amicales (non classées)",
     "the health handicap needs a newer launcher; update it": "le handicap de vie demande un launcher plus récent ; mets-le à jour",
     "life is 30 to 100 in steps of 10": "la vie va de 30 à 100 par pas de 10",
+    "life is 30 to 150 in steps of 10": "la vie va de 30 à 150 par pas de 10",
     "this server has no training rooms": "ce serveur n'a pas de salles d'entraînement",
     "this server has no health handicap": "ce serveur n'a pas de handicap de vie",
     # Settings -> Graphics (patch 0079)

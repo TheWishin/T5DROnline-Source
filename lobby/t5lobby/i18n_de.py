@@ -2515,6 +2515,7 @@ MESSAGES = {
     "training rooms are casual (unranked)": "Trainingsräume sind locker (ohne Wertung)",
     "the health handicap needs a newer launcher; update it": "Das Gesundheits-Handicap braucht einen neueren Launcher; aktualisiere ihn",
     "life is 30 to 100 in steps of 10": "Die Gesundheit ist 30 bis 100 in Zehnerschritten",
+    "life is 30 to 150 in steps of 10": "Die Gesundheit ist 30 bis 150 in Zehnerschritten",
     "this server has no training rooms": "Dieser Server hat keine Trainingsräume",
     "this server has no health handicap": "Dieser Server hat kein Gesundheits-Handicap",
     # Settings -> Graphics (patch 0079)

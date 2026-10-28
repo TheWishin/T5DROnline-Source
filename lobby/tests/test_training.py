@@ -4,7 +4,8 @@ when it joins or is invited), its matches carry `training` and one round in matc
 them they have no result -- no rating, no record, no history, no blame; the rematch keeps the room's rules. The
 health handicap: `set_life` (30-100 in steps of 10, the `handicap` cap), shown in the lobby list, in match_found
 (this side's view) and in match_start's `fight` as [P1, P2]; never in ranked matches, never against a launcher
-without the cap."""
+without the cap. 1.1.7: up to 150 % from a launcher with the `life150` cap; a launcher without it (1.1.5, 1.1.6)
+never gets a value above 100 (a higher value plays as 100 in a match against it)."""
 
 import unittest
 
@@ -208,6 +209,88 @@ class HandicapTest(Base):
         self.assertIsNone(self.s.call(lambda: fn(p("alice"), p("bob"), False, "queue")))
 
 
+class Handicap150Test(Base):
+    """1.1.7: the health handicap up to 150 % (the player request: "my friends and I like to play at 120 %")."""
+
+    def new(self, name, **kw):
+        kw.setdefault("life150", True)
+        return self.c(name, **kw)
+
+    def test_set_life_up_to_150(self):
+        a = self.new("Alice")
+        self.assertEqual(a.life_max(), 150)
+        for v in (110, 120, 150, 30, 100):
+            self.assertEqual(a.set_life(v), v)
+        for bad in (160, 105, 155, 200):
+            with self.assertRaises(LobbyError):
+                a._call({"t": "set_life", "life": bad})
+        self.assertEqual(self.player("Alice").life, 100)
+        a.set_life(120)
+        self.assertEqual(self.s.call(lambda: self.srv().by_name["alice"].public())["life"], 120)
+
+    def test_an_older_launcher_stays_at_100(self):
+        """A 1.1.6 launcher (match_rules, no life150): the server refuses more than 100 from it, and the 1.1.7
+        client never asks for more than the server and its game allow."""
+        old = self.new("Old", life150=False)
+        self.assertEqual(old.life_max(), 100)
+        with self.assertRaises(LobbyError) as e:
+            old._call({"t": "set_life", "life": 120})
+        self.assertIn("30 to 100", e.exception.msg)
+        self.assertEqual(old.set_life(150), 100)          # (the client sends what it may: 100)
+        self.assertEqual(self.player("Old").life, 100)
+
+    def test_150_against_100(self):
+        a, b = self.new("Alice", auto_ready=True), self.new("Bob", auto_ready=True)
+        a.set_life(150)
+        room = a.create_room("Handicap")
+        b.join_room(room["id"])
+        fa, fb = expect(a, "match_found", 15), expect(b, "match_found", 15)
+        self.assertEqual(fa["life"], {"you": 150, "opponent": 100})
+        self.assertEqual(fb["life"], {"you": 100, "opponent": 150})
+        ea, eb = expect(a, "match_start", 30), expect(b, "match_start", 30)
+        life = [150, 100] if ea["slot"] == 0 else [100, 150]
+        self.assertEqual(ea["fight"]["life"], life)
+        self.assertEqual(eb["fight"]["life"], life)
+
+    def test_never_above_100_to_a_launcher_without_the_cap(self):
+        """Alice (1.1.7) at 120 % meets Old (a 1.1.6 launcher at 50 %): the match plays 100 / 50 -- Old's
+        launcher and game never see 120 (a 1.1.6 launcher would drop the whole life= from its fight line, its game
+        would clamp it at 100)."""
+        a, old = self.new("Alice", auto_ready=True), self.new("Old", auto_ready=True, life150=False)
+        a.set_life(120)
+        old.set_life(50)
+        room = a.create_room("Mixed")
+        old.join_room(room["id"])
+        fa, fo = expect(a, "match_found", 15), expect(old, "match_found", 15)
+        self.assertEqual(fa["life"], {"you": 100, "opponent": 50})
+        self.assertEqual(fo["life"], {"you": 50, "opponent": 100})
+        ea, eo = expect(a, "match_start", 30), expect(old, "match_start", 30)
+        self.assertEqual(ea["fight"]["life"], eo["fight"]["life"])
+        self.assertTrue(all(x <= 100 for x in eo["fight"]["life"]), eo["fight"])
+
+    def test_the_guard_on_its_own(self):
+        a, b, old = self.new("Alice"), self.new("Bob"), self.new("Old", life150=False)
+        p = self.srv().by_name.get
+        a.set_life(150)
+        b.set_life(110)
+        fn = self.srv()._rules_apply_life
+        self.assertEqual(self.s.call(lambda: fn(p("alice"), p("bob"), False, "queue")), [150, 110])
+        self.assertEqual(self.s.call(lambda: fn(p("bob"), p("alice"), False, "room")), [110, 150])
+        self.assertIsNone(self.s.call(lambda: fn(p("alice"), p("old"), False, "queue")))   # 100 / 100
+        self.assertIsNone(self.s.call(lambda: fn(p("alice"), p("bob"), True, "queue")))    # ranked: always 100
+        self.assertIsNone(self.s.call(lambda: fn(p("alice"), p("bob"), False, "tournament")))
+
+    def test_the_cap_fits_in_a_full_hello(self):
+        a = self.new("Alice", blind_ready=True, ingame_pick=True, sets=True, tournaments=True, spectate=True)
+        self.assertTrue(a.handicap_ok())
+        self.assertEqual(a.life_max(), 150)
+
+    def test_no_cap_without_match_rules(self):
+        a = self.c("Alice", rules=False, life150=True)
+        self.assertEqual(a.life_max(), 100)
+        self.assertNotIn("life150", (a.welcome or {}).get("caps") or ())
+
+
 class FightLineTest(unittest.TestCase):
     """The launcher's side: match_start's `fight` -> the fight line's train= / life= (match_driver.fight_rules)."""
 
@@ -220,6 +303,10 @@ class FightLineTest(unittest.TestCase):
         self.assertEqual(f({"life": [100, 100]}), "")
         for bad in ({"training": 1}, {"life": [5, 100]}, {"life": [True, 50]}, {"life": "70|100"}, {"life": [70]}, None):
             self.assertEqual(f(bad), "", bad)
+        # 1.1.7: up to 150 %
+        self.assertEqual(f({"life": [150, 100]}), " life=150|100")
+        self.assertEqual(f({"life": [110, 120]}), " life=110|120")
+        self.assertEqual(f({"life": [160, 100]}), "")
 
     def test_hud_names_say_the_handicap(self):
         from t5lobby import match_driver
@@ -230,6 +317,10 @@ class FightLineTest(unittest.TestCase):
         self.assertTrue(all(len(n) <= 16 for n in names))
         ev["fight"] = {}
         self.assertEqual(match_driver.hud_values(ev)[0], ["A_Very_Long_Name", "Bob"])
+        ev["fight"] = {"life": [150, 120]}                       # 1.1.7: three digits still fit in 16 characters
+        names, _tiers = match_driver.hud_values(ev)
+        self.assertEqual(names, ["A_Very_Long 150%", "Bob 120%"])
+        self.assertTrue(all(len(n) <= 16 for n in names))
 
     def test_ui_texts(self):
         from t5lobby import tk_rules
@@ -243,6 +334,17 @@ class FightLineTest(unittest.TestCase):
         self.assertEqual(tk_rules.parse_life(tk_rules.life_label(80)), 80)
         self.assertEqual(tk_rules.parse_life("nonsense"), 100)
         self.assertEqual(tk_rules.clean_life(35), 100)
+        # 1.1.7: 150 down to 30; 100 down to 30 for an older game or server
+        self.assertEqual(tk_rules.parse_life(tk_rules.life_label(150)), 150)
+        self.assertEqual(tk_rules.clean_life(120), 120)
+        self.assertEqual(tk_rules.clean_life(160), 100)
+        self.assertEqual(tk_rules.picker_values(150)[0], tk_rules.life_label(150))
+        self.assertEqual(len(tk_rules.picker_values(150)), 13)
+        self.assertEqual(tk_rules.picker_values(100)[0], tk_rules.life_label(100))
+        self.assertEqual(len(tk_rules.picker_values(100)), 8)
+        found = tk_rules.rules_parts({"life": {"you": 120, "opponent": 100}})
+        self.assertEqual(len(found), 1)
+        self.assertIn("120", found[0])
 
 
 if __name__ == "__main__":

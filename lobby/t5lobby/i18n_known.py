@@ -174,6 +174,7 @@ SERVER = (
     N_("training rooms are casual (unranked)"),
     N_("the health handicap needs a newer launcher; update it"),
     N_("life is 30 to 100 in steps of 10"),
+    N_("life is 30 to 150 in steps of 10"),      # 1.1.7: up to 150 % (the cap life150)
 )
 
 # lobby/t5lobby/server/tournaments.py: errors answering a tournament request (docs/TOURNAMENTS.md)

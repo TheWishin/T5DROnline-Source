@@ -561,18 +561,29 @@ launcher; update it"). The match: `match_found {training: true}`, `match_start.f
 rounds: 1}`; the launchers put `train=1` on the fight line. A training match is never saved
 (`_save`), and `_finish` turns any status into `training` with no winner and no blame.
 
-**Health handicap.** Online tab -> **My health (casual)**: 100 % down to 30 % in steps of 10, remembered in
-online.json (`life`) and sent after every login (`set_life {life}`; 30-100 in steps of
-10, else "life is 30 to 100 in steps of 10"; the same `match_rules` cap). It applies to every casual match -- quick matches, challenges,
+**Health handicap.** Online tab -> **My health (casual)**: 150 % down to 30 % in steps of 10 (1.1.7; 1.1.5 and
+1.1.6: 100 % down to 30 %), remembered in online.json (`life`) and sent after every login (`set_life {life}`; 30-150
+in steps of 10, else "life is 30 to 150 in steps of 10"; the same `match_rules` cap). **Above 100 %** (a player
+request: "my friends and I like to play at 120 %") needs the cap `life150`, which a 1.1.7 launcher announces when its
+game build plays it (the game's status text `"life_max": 150` in its binary, `match_driver.game_supports_life150`),
+and the server's FEATURES entry `handicap150`; without either the picker offers 100 % down to 30 % and a remembered
+higher choice shows and is sent as 100 %. A launcher without the cap (1.1.5, 1.1.6) gets "life is 30 to 100 in
+steps of 10" for more, and **never receives a value above 100**: in a match against it a player's 110-150 % plays
+as 100 % (`matchrules._rules_apply_life`; a 1.1.6 launcher would drop such a value from the fight line and a 1.1.6
+game would clamp it at 100). 1.1.6 and 1.1.7 games never meet anyway (the game's code id differs). It applies to every casual match -- quick matches, challenges,
 invites, rooms (training rooms too) -- and never to ranked or tournament matches, nor against a launcher
 without the cap (both games must play it). The server fixes it per match at create_match and shows it to
 both players: the lobby list's player entry has `life` when it is not 100, `match_found` has `life {you,
 opponent}` (also in a blind ready check), `match_start.fight` has `life [P1, P2]`; the launcher shows it in
-the ready check and on the match card, and puts `life=P1|P2` on the fight line.
+the ready check and on the match card ("health: you 120 %, opponent 100 %"), puts `life=P1|P2` on the fight line
+and the percent after the name under the health bar ("Alice 150%", 16 characters at most).
 
 Tests: `lobby/tests/test_training.py` (caps, a training match without result or history, leaving without a
 loss, an older launcher refused and not invitable, never ranked; set_life's rules, both values in a room
-match, none without the cap, none in ranked or tournament matches), e2e `net_training` (real games).
+match, none without the cap, none in ranked or tournament matches; 1.1.7: 110-150 % with `life150`, refused
+without it, a 150 % player against a launcher without the cap plays 100 %), `lobby/tests/test_tk_handicap.py`
+(the picker in a real Tk main loop: 150 down to 30 with a game that plays it, 100 down to 30 and a remembered 150
+sent as 100 with an older one; the binary marker), e2e `net_training` and `net_handicap150` (real games).
 
 ## Friends and invites
 

@@ -522,6 +522,29 @@ Two match rules that change what the game simulates, so both PCs must apply them
   against each fighter's own maximum (both look full at a round's start), so the launchers put the percent after
   the name under the bar ("Alice 70%").
 
+  **Above 100 % (1.1.7, up to 150 %; `MatchRules::kLifeMax`).** The game's set-up takes a percent above 100 the
+  same way: no clamp, the same code (`func_00012544`, a division by 100) writes 145.0 x percent -- 217.5 at
+  150 % (0x00D98000), 174.0 at 120 %, 159.5 at 110 % -- into +0x6C0 and fills +0x6BC with it at every round
+  start. 16.16 fixed point holds up to 32767.0, so 217.5 is far from any limit; the hashed fighter blocks carry
+  it like any other value. Few guest functions touch P1's health or maximum in a fight (hardware watchpoints on
+  reads and writes, `T5_DF_WATCHPOINT_RW=1`: the set-up 0x12544 and round start 0x126D4 through the copy
+  0xAA320, then 0x3C5B40, 0x44398, 0x133374, 0x452C0); what they do with it was checked by its effects. The HUD bar is health / the
+  fighter's own maximum: at 150 % it starts full and never overflows its frame; 88.5 / 217.5 drew 40.8 % of the
+  bar, 159.5 / 217.5 73 % (measured in pictures of both PCs, run `H-scratch/runs/ff150`). KO, round wins and
+  the match result are unchanged. This is exact and deterministic, so no damage scale (taking less damage) is
+  needed: a damage scale would have to hook every hit and round each one, which gives other numbers than the
+  game's own handicap. In a training room the refill goes back to the fighter's own maximum (217.5 at 150 %:
+  15 refills seen in a real pair, give-ups by SELECT as before). Tested (2026-10-28, real pairs on this PC, rollback):
+  `fight_flow_test --line-extra "life=150|100"` 2 matches of 2 rounds, `train=1 life=150|100` 2 training fights,
+  e2e `net_handicap150` (150/100 then a rematch at 120/110 through the lobby, RTT 80 ms with 2 % loss) -- all 0
+  mismatching frames, results counted, every replay identical; the build before (limit 100) fought `life=150|100`
+  as 100/100. Not looked at: who wins a time-out between 150 % and 100 % (the game's own rule for its handicap;
+  the same on both PCs either way).
+  A 1.1.5 / 1.1.6 game clamps `life=` at 100 and a 1.1.6 launcher drops a value above 100 from the fight line,
+  so the lobby sends more than 100 only to launchers with the cap `life150` (docs/ONLINE.md); 1.1.6 and 1.1.7
+  games never pair anyway (other code id). No CODE_VERSION bump: at 30-100 % the game simulates exactly what
+  1.1.5 / 1.1.6 simulate, and 1.1.7 changes the code id already (patches 0082-0085).
+
 **The training rule** (`np::TrainingRule`, called by `training_rule()` in `t5_hooks.cpp` right after the
 no-pause rule): on the game state at the boundary of every frame that runs -- live, re-simulated by the
 rollback loop, played back from a replay or a live stream -- after that run's inputs are final:

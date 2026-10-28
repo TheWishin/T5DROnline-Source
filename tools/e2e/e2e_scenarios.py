@@ -1182,6 +1182,96 @@ def net_training(ctx):
             ctx.players.remove(p)
 
 
+HANDICAP_MAX = {150: 0x00D98000, 120: 0x00AE0000, 110: 0x009F8000, 100: 0x00910000}   # 145.0 x percent, 16.16
+
+
+def _handicap_pick(ctx, p, life):
+    """The Online tab's health picker, as a player uses it (tk_rules.py)."""
+    from t5lobby import tk_rules
+    label = tk_rules.life_label(life)
+    ctx.check(f"{p.name}: the health picker offers {label}",
+              label in p.tab.life_cb.tk.splitlist(p.tab.life_cb.cget("values")), p.tab.life_cb.cget("values"))
+    p.tab.life_var.set(label)
+    p.tab.life_cb.event_generate("<<ComboboxSelected>>")
+    ctx.wait(lambda: p.client.life == life, 10, f"{p.name}: health {life} % set")
+
+
+def _handicap_match(ctx, a, b, mid, la, lb, label):
+    """One casual match with A at la % and B at lb %: lobby, fight line, both games' set-up (the fighters' maximum
+    health in the hashed fighter blocks), the HUD names, result counted, 0 mismatching frames."""
+    for p, me, other in ((a, la, lb), (b, lb, la)):
+        st = [e for e in p.events_of("match_start", 0.0) if e.get("match") == mid]
+        fight = (st[-1].get("fight") if st else None) or {}
+        slot = st[-1].get("slot") if st else None
+        want = [me, other] if slot == 0 else [other, me]
+        ctx.check(f"{label}: {p.name}'s match_start carries the health [P1, P2] = {want}",
+                  fight.get("life") == want, str(fight.get("life")))
+    if not wait_fight(ctx, mid, (a, b), timeout=180):
+        raise Abort("no fight")
+    wait_results(ctx, mid, (a, b), timeout=400)
+    row = match_row(ctx, mid, (a, b), "confirmed", label)
+    a_slot = a.matches.get(mid, {}).get("slot")
+    life = [la, lb] if a_slot == 0 else [lb, la]
+    for p in (a, b):
+        seg = p.log_segment(mid)
+        fs = [ln for ln in seg if "FIGHT START" in ln and mid in ln]
+        ctx.check(f"{label}: {p.name}'s game fought with health P1 {life[0]} % / P2 {life[1]} %",
+                  any(f"health P1 {life[0]} % / P2 {life[1]} % (handicap words {life[0]} / {life[1]})" in ln for ln in fs),
+                  (fs or ["no FIGHT START line"])[-1][-200:])
+        # the game's own set-up: the fighters' maximum health (T5_DF_WATCH on +0x6C0 of both fighter blocks)
+        for side, addr in ((0, "0x100906F0"), (1, "0x10090FC0")):
+            want = HANDICAP_MAX.get(life[side])
+            got = [ln.rsplit("-> ", 1)[1].strip() for ln in seg if f"[{addr}]" in ln and "-> " in ln]
+            ctx.check(f"{label}: {p.name}'s game: P{side + 1}'s maximum health is {life[side]} % of 145.0",
+                      want is not None and f"0x{want:08X}" in got, f"{got[-4:]} (want 0x{want or 0:08X})")
+        names = [ln for ln in seg if "HUD" in ln and "%" in ln]
+        ctx.note(f"{label}: {p.name}: {(names or ['no HUD line'])[-1][-160:]}")
+    ctx.check(f"{label}: the result counts (not a training or void match)", row.get("status") == "confirmed",
+              row.get("status"))
+    ctx.note(f"{label}: match card {a.tab.match_var.get()!r}")
+    return row
+
+
+@scenario("net_handicap150", "6 netcode", game=True, suites=("game", "net"),
+          desc="1.1.7 health handicap above 100 % (a player request: 'my friends and I like to play at 120 %'): a "
+               "quick match with A at 150 % and B at 100 %, fought to the KO; then A at 120 % and B at 110 % in the "
+               "rematch; both games build the fighters with those maximums (217.5 / 145.0, 174.0 / 159.5), the "
+               "result counts, 0 mismatching frames (rollback, RTT 80 with 2 % loss); pictures of the bars")
+def net_handicap150(ctx):
+    if "handicap150" not in features():
+        raise Skip("this tree has no health handicap above 100 % (handicap-117)")
+    game_server(ctx)
+    shots = os.path.join(ctx.dir, "shots_A")
+    os.makedirs(shots, exist_ok=True)
+    watch = {"T5_DF_WATCH": "100906F0,10090FC0"}
+    a = ctx.player("E2E Hc150A", char="kazuya",
+                   env=dict(watch, LD_SURF_DUMP=shots, LD_SURF_DUMP_GATE=os.path.join(shots, "gate.txt"),
+                            T5_DF_SHOT="++420,++1200,++2000"))
+    b = ctx.player("E2E Hc150B", char="heihachi", env=watch)
+    login(ctx, a)
+    login(ctx, b)
+    if not (a.client.handicap_ok() and a.client.life_max() == 150 and b.client.life_max() == 150):
+        raise Skip("this game build or server has no health handicap above 100 %")
+    ctx.shaper.set(80, 10, 2, on=True)
+    _handicap_pick(ctx, a, 150)
+    mid = queue_match(ctx, a, b, "quick")
+    fa = latest(a, "match_found", 0.0) or {}
+    ctx.check("match_found shows A's 150 % to A", (fa.get("life") or {}) == {"you": 150, "opponent": 100}, fa.get("life"))
+    rows = [_handicap_match(ctx, a, b, mid, 150, 100, "A 150 % / B 100 %")]
+    # the players change their health between two fights: the rematch takes the new values
+    _handicap_pick(ctx, a, 120)
+    _handicap_pick(ctx, b, 110)
+    mid2 = rematch(ctx, a, b)
+    rows.append(_handicap_match(ctx, a, b, mid2, 120, 110, "rematch: A 120 % / B 110 %"))
+    for p in (a, b):
+        leave(ctx, p)
+    for p in (a, b):
+        _handicap_pick(ctx, p, 100)
+    ctx.note(f"pictures of A's game (T5_DF_SHOT): {shots}")
+    ctx.note(f"proxy {ctx.shaper.stats()}")
+    return rows
+
+
 @scenario("net_internal_res", "6 netcode", game=True, suites=("game", "net"),
           desc="different internal resolutions on the two PCs (4K against Lowest, the launcher's setting): a match and "
                "a rematch stay in sync")

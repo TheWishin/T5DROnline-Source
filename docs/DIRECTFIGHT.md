@@ -52,10 +52,11 @@ T5_DF_RULES="train=1 life=70|100"                    train= / life= for fight li
   select in the game"). The costume is the button that confirms the character.
 - `train=1` (key=value, 1.1.5): a training room's fight -- endless health (damage never KOs), no round timer, a
   player who holds SELECT for a second gives up (KO); one round (`rounds` is forced to 1). `life=<P1>|<P2>`: each side's
-  health in percent (the health handicap, 10-100). Both are part of what the two PCs simulate: the driver
+  health in percent (the health handicap, 10-150; 1.1.5 / 1.1.6: 10-100). Both are part of what the two PCs simulate: the driver
   writes the handicap into the battle config at the game mode's first frame (below) and latches both at
   FIGHT START; netplay's training rule acts on every frame after that (docs/NETPLAY.md "Online training and
-  the health handicap"). The status file says `"training"` and `"life"`.
+  the health handicap"). The status file says `"training"`, `"life"` and `"life_max": 150` (1.1.7; the launcher
+  looks for that text in the game binary to know the build plays more than 100 %).
 - `pick=<seconds>` (key=value): the in-game select -- both players pick
   character and costume on the select screen within that many seconds; `p1`,
   `p2` are what a player gets who does not pick in time (the launcher's
@@ -114,7 +115,7 @@ T5_DF_RULES="train=1 life=70|100"                    train= / life= for fight li
   that frame), `T5_DF_FRESH_LOG`, `T5_DF_FRESH_AT`, `T5_DF_GUARD`,
   `T5_DF_WATCHPOINT=addr,...` + `T5_DF_WATCHPOINT_AT=frame` (x64 debug registers on the main thread: every
   write to those words with the new value and the lifted writer; the writer's name is only as exact as the
-  host-to-guest map of the optimised game code),
+  host-to-guest map of the optimised game code; `T5_DF_WATCHPOINT_RW=1`: reads too, each function once),
   `T5_DF_STUCK_SECONDS` (persistent game, "After a session ends"),
   `T5_DF_SELECT_STUCK_SECONDS`, `T5_DF_READER_GUARD=0` ("Select stall after a fight").
 
@@ -162,7 +163,7 @@ param)`; the factory is `func_0025E6AC`.
    a transient desync); now the hashed state never sees them.
 3. First frame in mode 4: rounds to win -> 0x1008EBD4 (u8), each side's health handicap (percent, u32) ->
    0x1008EBF4 (P1) / 0x1008EBF8 (P2) -- the game mode's set-up builds the fighters' maximum health from them
-   in this frame (fighter block +0x6C0, 16.16 fixed point: 145.0 at 100 %, 72.5 at 50 %; health +0x6BC) --, stage id ->
+   in this frame (fighter block +0x6C0, 16.16 fixed point: 145.0 at 100 %, 72.5 at 50 %, 217.5 at 150 %; health +0x6BC) --, stage id ->
    0x1008F088 (the stage confirm writes the panel's pick there; the game-mode
    loader copies it to 0x10053A08 later, so the overwrite wins), then
    `t5_netplay_start()`. This frame is "FIGHT START" in the log/status.

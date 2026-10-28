@@ -96,7 +96,15 @@ static void test_rules()
     const uint32_t w = r.pack();
     CHECK(w == (1u | 70u << 8 | 100u << 16), "pack 0x%X", w);
     CHECK(MatchRules::unpack(w) == r, "round trip");
-    CHECK(MatchRules::clamp_life(0) == MatchRules::kLifeMin && MatchRules::clamp_life(250) == 100, "clamp");
+    CHECK(MatchRules::clamp_life(0) == MatchRules::kLifeMin && MatchRules::clamp_life(250) == 150, "clamp");
+    /* 1.1.7: up to 150 % (a 1.1.6 game clamped the fight line's life= at 100) */
+    CHECK(MatchRules::kLifeMax == 150 && MatchRules::clamp_life(150) == 150 && MatchRules::clamp_life(160) == 150,
+          "life up to 150");
+    for (int v : { 110, 120, 150 }) {
+        MatchRules hi; hi.life[0] = v;
+        const uint32_t wh = hi.pack();
+        CHECK(wh == ((uint32_t)v << 8 | 100u << 16) && MatchRules::unpack(wh) == hi, "%d %% round trip 0x%X", v, wh);
+    }
     MatchRules h; h.life[1] = 50;
     CHECK(MatchRules::unpack(h.pack()).life[1] == 50 && !MatchRules::unpack(h.pack()).training, "handicap only");
     printf("rules ok\n");
@@ -125,6 +133,19 @@ static void test_refill()
      * without damage (frame 61) refills */
     CHECK(refilled_at == 1 + TrainingRule::kRefillFrames, "refilled at frame %u", refilled_at);
     CHECK(g.hp[1] == g.max[1], "refilled to the handicapped maximum");
+    /* 1.1.7: P1 at 150 % (217.5, above the game's 145.0): a hit, then the refill goes back to 217.5, not 145 */
+    {
+        TrainingRule r2;
+        Game g2;
+        g2.max[0] = (217 << 16) | 0x8000; g2.hp[0] = g2.max[0];
+        PadInput i2[2] = { pad(0), pad(kAttack) };
+        uint32_t f2 = 0;
+        apply_rule(r2, f2, g2, i2); g2.run(i2); f2++;
+        i2[1] = pad(0);
+        CHECK(g2.hp[0] == g2.max[0] - kHit, "the hit lands at 150 %% (%d)", g2.hp[0]);
+        for (; f2 < 200; f2++) { apply_rule(r2, f2, g2, i2); g2.run(i2); }
+        CHECK(g2.hp[0] == g2.max[0] && g2.hp[0] > kFull, "refilled to the 150 %% maximum (%d)", g2.hp[0]);
+    }
     printf("refill ok\n");
 }
 

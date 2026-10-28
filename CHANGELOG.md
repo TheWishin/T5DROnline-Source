@@ -95,6 +95,13 @@ part is in the README's status table.
 - Ranked: P1 and P2 are drawn by a fair coin for every set (queue, ranked rooms, a ranked rematch) instead of making
   the player with the lower ping to the lobby server P1; quick matches are drawn too. The games of a set keep their
   sides. Server-only: 1.1.6 launchers play the side they are given (docs/RANKED.md "Sides", docs/DEPLOY_1.1.7.md).
+- **My health (casual) up to 150 %** (a player request: "my friends and I like to play at 120 %"): 150 % down to
+  30 % in steps of 10 for quick matches, challenges, invites and rooms (training rooms too); ranked and tournaments
+  stay 100 %. The game's own handicap takes it as it is (217.5 health at 150 %, the bar drawn against each fighter's
+  own maximum, KO and results unchanged; `src/netplay/match_rules.h` limit 150). Only a 1.1.7 launcher whose game
+  plays it may ask for more than 100 (cap `life150`, server feature `handicap150`); a launcher without it (1.1.6) is
+  never sent a value above 100 (`server/matchrules.py`, `tk_rules.py`, docs/ONLINE.md, docs/NETPLAY.md "Above 100 %").
+  Real pairs at 150/100 and 120/110: 0 mismatching frames, results counted, replays identical.
 
 ### Picture
 - City at Sunset (the Tekken 5 stage, stage 4) no longer flashes black: with Stage blur / glow Off (the default) and

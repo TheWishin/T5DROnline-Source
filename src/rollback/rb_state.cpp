@@ -14,6 +14,7 @@
 
 extern "C" uint8_t* vm_base;
 extern "C" int cellGcm_pump_hold(int on, unsigned timeout_ms);   /* ps3recomp patch 0029 */
+extern "C" void cellGcm_set_sema_acquire_geq(int on);              /* ps3recomp patch 0085 */
 
 namespace rb {
 
@@ -89,8 +90,20 @@ const Range kKeepLive[] = {
      * had closed and lost the one it held (write-fault trace w1). The rest of
      * the two pages stays in the state. */
     { 0x106CECD0u, 0x000005B8u },
+    /* The graphics object's frame counter (0x106D4A00 + 0x28C): the present (0x34B9D8) stores it into label 0xFD
+     * and puts a semaphore ACQUIRE of counter + 1 into the GCM ring, which the FIFO walker waits for since ps3recomp
+     * patch 0085. The ring is not in the state and keeps every frame's acquire; a restored counter made the
+     * re-simulated frames put acquires of values the label had already passed, and the walker waited for each
+     * (GCM_SEMA_ACQUIRE_MS, 200 ms). Kept live it only ever counts up, live or re-simulated, as the ring does.
+     * The main thread is its only writer; not in either hash. */
+    { 0x106D4C8Cu, 0x00000004u },
     { 0x10752000u, 0x00000040u },   /* the file manager's node pool, its last 0x34 bytes (the page's other words are the main thread's lwmutexes and draw handshake) */
 };
+/* ...and the walker takes that label as a count (patch 0085, cellGcm_set_sema_acquire_geq): an ACQUIRE of v is
+ * satisfied by any count at or past v. A re-simulated frame runs its present without waiting for a flip, so the
+ * label steps over values the walker has not reached yet; waiting for each exact value cost 200 ms apiece (e2e
+ * net_rollback at RTT 80: 9 fps, FIFO recycle stalls). Set once, before the game's first present. */
+struct SemaCount { SemaCount() { cellGcm_set_sema_acquire_geq(1); } } g_sema_count;
 const Range kHashExclude[] = {
     { 0x0FEF0000u, 0x00010000u },   /* main thread stack: only the present chain's locals live there at the boundary */
     { 0x10532000u, 0x00001000u },   /* engine bookkeeping: request counters, vblank copies (follow the draw phase) */

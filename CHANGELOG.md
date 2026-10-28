@@ -104,6 +104,18 @@ part is in the README's status table.
   screen) then reused (ps3recomp patch 0082). Players need BUILD GAME once (the launcher asks).
 - `tools/flicker_check.py`: counts such frames in a real fight (frames read back without stopping the GPU,
   `LD_FRAME_DUMP_ASYNC=1`).
+- **Hit effects no longer vanish on slow graphics cards (GitHub #12: the EWGF's lightning).** On a card slower than
+  the game (an old GT 730 at ~30 fps) the lightning of the Electric Wind God Fist and the other hit effects ended
+  after a few frames (3-13 pictures instead of 60-70). The renderer read the game's commands before the game had
+  finished the frame: it now waits for the game's own "frame finished" signal (its semaphore ACQUIRE), as the PS3's
+  graphics chip does and as the Mac build already did (ps3recomp patch 0085). With a card slowed to ~29 fps on this PC
+  the EWGF's lightning lasts 68-85 pictures again; frame rates unchanged (stages 17, 19 and 4; stage 4 also on 4 and
+  8 logical processors).
+  Online nothing changes for the game: the rollback keeps the frame counter behind that signal counting forward and
+  the renderer takes it as a count (`src/rollback/rb_state.cpp`); e2e rollback and relay matches 0 mismatching frames,
+  replays identical. `GCM_SEMA_ACQUIRE=0` under Extra settings goes back. Players need BUILD GAME once.
+- `tools/effects_test.py`: scripted EWGFs with a slowed card in a real fight; PASS when every one shows its effect
+  for 40+ pictures.
 
 ## v1.1.6 (2026-10-27)
 

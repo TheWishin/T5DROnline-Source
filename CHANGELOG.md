@@ -3,6 +3,21 @@
 All notable changes, newest first. The project is a test release. Short commit hashes are in parentheses. The state of each
 part is in the README's status table.
 
+## v1.1.8 (2026-10-28)
+
+**Hotfix: the lobby chat's input field and Send button are back.** In 1.1.7 the chat card was built without its
+input row, so players could read the chat but not write. Nothing else changed: the game code is the same as 1.1.7's,
+so there is no BUILD GAME after this update, and 1.1.7 and 1.1.8 players play each other.
+
+### Launcher
+- The chat's input row is built again (`lobby/t5lobby/tk_views.py`: a method added in 1.1.7 had ended up in the
+  middle of the chat card's build, and the lines after its `return` never ran).
+
+### Tests
+- A real launcher tab types a line, presses Send, and a second player receives it (`test_tk_tab.ChatInputTest`).
+- No code after a `return`, `raise`, `continue` or `break` anywhere in the launcher, the lobby client and the tools
+  (`tests/test_no_dead_code.py`).
+
 ## v1.1.7 (2026-10-28)
 
 **Handicap up to 150 %, City at Sunset without black frames, the EWGF lightning on slow graphics cards, fighter

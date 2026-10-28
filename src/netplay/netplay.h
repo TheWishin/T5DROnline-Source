@@ -91,6 +91,11 @@ PadInput poll_now(int player);
  * Live samples only -- never from a re-simulated frame. */
 int   local_player_sample(HostPadData* out);
 
+/* "Always left" (always_left.cpp, docs/NETPLAY.md "Always left"): this player's input with left and right
+ * swapped while this PC shows the fight mirrored (P2 seeing themselves on the left), else unchanged. Live
+ * samples only. */
+PadInput always_left_input(PadInput in);
+
 void  note(const char* fmt, ...);
 
 /* ---- session health (docs/NETPLAY.md "Connection problems") ---------------

@@ -923,7 +923,7 @@ def system_text(ctx, now=None, game_log=None):
 
 
 SETTING_KEYS = ("display", "internal_res", "vsync", "stage_blur", "shadows", "effects", "power_saving", "input_delay",
-                "mute", "background", "low_priority", "unlock_stages", "unlock_items", "unlock_jinpachi")
+                "mute", "background", "low_priority", "unlock_stages", "unlock_items", "unlock_jinpachi", "always_left")
 
 
 def settings_lines(settings, labels=None, env_overrides=None, out_dir=None):
@@ -952,6 +952,7 @@ def settings_lines(settings, labels=None, env_overrides=None, out_dir=None):
          f"Unlock all stages (offline): {yesno(st.get('unlock_stages'))}",
          f"Unlock all customization items (offline): {yesno(st.get('unlock_items'))}",
          f"Unlock Jinpachi and Random select (offline): {yesno(st.get('unlock_jinpachi'))}",
+         f"Always see me on the left (test): {yesno(st.get('always_left'))}",
          f"Player name set: {yesno((st.get('nickname') or '').strip())}",
          f"Package and license chosen: {yesno(st.get('pkg') and st.get('rap'))}"]
     if out_dir:

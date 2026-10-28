@@ -486,7 +486,7 @@ PadInput sample_local(uint32_t f)
     if (g_script_gate.load()) in.buttons |= script_mask(s.script, f);
     in.buttons |= s.padfile.poll(f);
     in.buttons |= g_test_buttons.load(std::memory_order_relaxed);
-    return in;
+    return always_left_input(in);   /* "Always left" (always_left.cpp): as P2 in a mirrored fight, left <-> right */
 }
 
 /* sample_local(t) for the per-frame sample -- only if frame t's local input

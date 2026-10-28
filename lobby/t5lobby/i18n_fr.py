@@ -2493,4 +2493,9 @@ MESSAGES = {
     # the fold button right of the Online tab's lists (tk_views.toggle_top)
     "Hide": "Masquer",
     "Show": "Afficher",
+    # launcher Settings "Screen side" ("Always left", a 1.1.8 test; docs/NETPLAY.md)
+    "Screen side": "Côté de l'écran",
+    "Always see me on the left": 'Toujours me voir à gauche',
+    'Test: when you are P2, your screen shows the fight mirrored with you on the left, and your left and right are swapped. Your opponent sees the normal picture. Offline: Versus fights show the P2 side.':
+        "Test : quand vous êtes P2, votre écran montre le combat en miroir avec vous à gauche, et votre gauche et votre droite sont inversées. Votre adversaire voit l'image normale. Hors ligne : les combats Versus montrent le côté P2.",
 }

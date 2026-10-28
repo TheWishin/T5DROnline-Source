@@ -104,6 +104,7 @@ DEFAULTS = {
     "training_online": False,  # ... also online, this PC's own inputs only (T5_TRAINING_ONLINE=1)
     "practice": True,          # practice tools in Practice (offline): SELECT combos, dummy, recordings, T5_PRACTICE
     "practice_dummy": "game",  # the dummy's behaviour at the start: game | block | crouch | walk | step, T5_PRACTICE_DUMMY
+    "always_left": False,      # as P2 this PC shows the fight mirrored, you on the left (T5_ALWAYS_LEFT=1, a 1.1.8 test)
     "router_ports": True,      # online: forward the game's port on the router for a match (PCP / NAT-PMP / UPnP)
     "language": "auto",        # auto (the Windows language) | en | de | es | ko | ja | pt-BR | fr -- applies at start
     "discord_presence": False, # online: show the lobby / search / match in Discord (Rich Presence, docs/ONLINE.md)
@@ -267,6 +268,9 @@ class Settings(dict):
         if self["practice"]:
             env["T5_PRACTICE_DUMMY"] = self["practice_dummy"] if self["practice_dummy"] in PRACTICE_DUMMY else "game"
             env.setdefault("T5_TRAINING_LANG", i18n.resolve(self["language"]) if I18N else "en")
+        # "Always left" (docs/NETPLAY.md): this PC's picture and pad only, so the two players may choose differently
+        if self["always_left"]:
+            env["T5_ALWAYS_LEFT"] = "1"
         # Unlocks count offline only: a game started for online play answers as a fresh save does,
         # whatever it is given (both PCs must build the same select screens and stage lists); online, Jinpachi
         # and the random cell come with the match kind instead (T5_NET_UNLOCKS from the lobby's match event).

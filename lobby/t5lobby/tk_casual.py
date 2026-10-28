@@ -103,7 +103,12 @@ class CasualUI:
     # ------------------------------------------------------------------ texts
     def wish_text(self, wish):
         """' -- wants to be P1 on Scrapyard' for a challenger's or a friend's wishes ('' when they leave both open)."""
-        wish = wish or {}
+        text = self.wish_line(wish)
+        return " -- " + text if text else ""
+
+    def wish_line(self, wish):
+        """'wants to be P1 on Scrapyard' (the challenge / invite card's line, 1.1.7); '' when they leave both open."""
+        wish = wish if isinstance(wish, dict) else {}
         side, stage = wish.get("side"), wish.get("stage") or fighters.RANDOM
         name = self.tab.table.stage_name(stage) if stage != fighters.RANDOM else None
         if side in (0, 1) and name:
@@ -114,7 +119,7 @@ class CasualUI:
             text = t("wants to play on {stage}", stage=name)
         else:
             return ""
-        return " -- " + text
+        return text
 
     def head_suffix(self, ev):
         """For the match card's head ("Casual match vs X"): the side and the stage, when the players' choices

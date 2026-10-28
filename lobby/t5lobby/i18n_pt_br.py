@@ -567,7 +567,7 @@ MESSAGES = {
         "mesmos cenários; Jinpachi e Random aparecem nas partidas casuais e nas salas, não no Ranked.",
     "Sound and start": "Som e início",
     "Mute sound": "Silenciar som",
-    "Sound and taskbar flash when a match is found or someone joins my room": "Som e piscada na barra de tarefas quando uma partida é encontrada ou alguém entra na minha sala",
+    "Sound and taskbar flash when a match is found, I am challenged or invited, or someone joins my room": "Som e piscada na barra de tarefas quando uma partida é encontrada, quando me desafiam ou me convidam, ou quando alguém entra na minha sala",
     "Start minimized, without taking focus (for testing)": "Iniciar minimizado, sem pegar o foco (para testes)",
     "Advanced: extra settings, one NAME=VALUE per line": "Avançado: configurações extras, uma NOME=VALOR por linha",
     "Internal resolution": "Resolução interna",

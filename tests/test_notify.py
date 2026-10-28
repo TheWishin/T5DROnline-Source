@@ -373,7 +373,7 @@ class RoomWatchTests(unittest.TestCase):
 @unittest.skipIf(tk is None, "no tkinter")
 class SettingsTests(unittest.TestCase):
     """The Settings tab: the checkbox is there, on by default, and saves "notify" in launcher.json."""
-    TEXT = "Sound and taskbar flash when a match is found or someone joins my room"
+    TEXT = "Sound and taskbar flash when a match is found, I am challenged or invited, or someone joins my room"
 
     def checkbuttons(self, w):
         out = [w] if w.winfo_class() == "TCheckbutton" else []

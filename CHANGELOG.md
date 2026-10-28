@@ -70,6 +70,11 @@ update press **BUILD GAME** once, as the launcher asks.
 - A challenge chimes and flashes the taskbar button like a found match or an invite (player feedback: "so I can
   have it minimized and know I got challenged"; `lobby/t5lobby/notify.py`, `tk_tab.py`): only while you look
   elsewhere, with the same setting, once per challenge and at most once a minute for the same challenger.
+  The setting now says so: "Sound and taskbar flash when a match is found, I am challenged or invited, or
+  someone joins my room" (all languages).
+- The challenge and a friend's casual invite show the sender's side / stage wish on the card ("wants to be P2 on
+  Aurora Australis"; `lobby/t5lobby/tk_views.py`, `tk_casual.py`): since the redesigned Online tab only the
+  hidden bar text had it, so you saw it only after accepting.
 - Tests: `test_controls_ui`'s runtime comparison failed on the main checkout's `deps/ps3recomp`, a patch series
   behind (0053; the series is at 0083); on a tree prepared fresh with `tools/prepare_ps3recomp.py` it passes, on
   a1bd816 and on this branch. A tree found on its own is now used only when its stamp names this series

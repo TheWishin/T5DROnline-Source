@@ -1800,7 +1800,18 @@ class OnlineView:
         ttk.Label(left, text=t("wants to play you. Accept to start the match."), style="Card.TLabel").grid(
             row=3, column=0, columnspan=2, sticky="w", pady=(px(10), 0))
         if ev:
-            self._ping_row(left, self._card_ping(ev, "from"), 4)        # (1.1.5: before the answer)
+            self._wish_row(left, ev.get("wish"), 4)
+            self._ping_row(left, self._card_ping(ev, "from"), 5)        # (1.1.5: before the answer)
+
+    def _wish_row(self, parent, wish, row):
+        """A challenger's / friend's side and stage wishes ("wants to be P1 on Ghetto Pit", tk_casual.py) on the card,
+        before the answer (1.1.7: only the bar's text had them, which the card does not show); nothing when they leave
+        both open."""
+        casual = getattr(self.tab, "casual", None)
+        text = casual.wish_line(wish) if casual is not None else ""
+        if text:
+            ttk.Label(parent, text=text, style="Card.Bold.TLabel").grid(row=row, column=0, columnspan=2, sticky="w",
+                                                                        pady=(self.px(4), 0))
 
     def _visual_invite(self, v):
         """A friend invites this player: their badge and name, and to what (a casual match, or their room)."""
@@ -1824,8 +1835,10 @@ class OnlineView:
             text = t("invites you to a casual match. Accept to start it.")
         ttk.Label(left, text=text, style="Card.TLabel").grid(row=3, column=0, columnspan=2, sticky="w",
                                                               pady=(px(10), 0))
+        if inv.get("kind") == "casual":
+            self._wish_row(left, inv.get("wish"), 4)
         if inv and (inv.get("room") or {}).get("size", 2) <= 2:    # (1.1.5; a bigger room: others play there too)
-            self._ping_row(left, self._card_ping(inv, "from"), 4)
+            self._ping_row(left, self._card_ping(inv, "from"), 5)
 
     # --- the result
     def _outcome(self):

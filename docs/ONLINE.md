@@ -663,7 +663,8 @@ community, not a ranked room's) and the rematches of those -- each player can as
 **stage** (Random or one of the stages). The two choices are in the play card, right of Strict ("Challenges,
 invites, rooms: [Any side] [Random stage]"); the launcher keeps them in online.json and sends them to the server after
 every login and whenever they change (`casual_prefs`). A challenge and a friend's casual invite carry the sender's
-wishes ("Alice (2nd Dan) challenges you -- wants to be P1 on Ghetto Pit"), and the match card says what this player got
+wishes: the challenge / invite card has a line under the question ("wants to be P1 on Ghetto Pit", 1.1.7; before
+only the bar's text had it, which the redesigned card does not show), and the match card says what this player got
 ("Casual match vs Alice (P2 on All Hollow's Eve)"; when a coin flip went against a wish, the status line says so).
 
 | | rule |
@@ -758,11 +759,11 @@ shows it to anyone who looks).
 
 ## Chime and taskbar flash
 
-(1.1.4; code: `notify.py`, the hooks in `tk_tab.py`, Settings -> "Sound and taskbar flash when a match is found or
-someone joins my room", launcher.json `"notify"`, on by default.) Players wait for a match in another window, so the
-tab tells them when something needs them -- one chime and the launcher's taskbar button flashing until its window is
-in front (FlashWindowEx, `FLASHW_TRAY | FLASHW_TIMERNOFG`; it also ends when the launcher brings itself forward after
-a match):
+(1.1.4; code: `notify.py`, the hooks in `tk_tab.py`, Settings -> "Sound and taskbar flash when a match is found, I am
+challenged or invited, or someone joins my room" (1.1.7; before: "... found or someone joins my room"), launcher.json
+`"notify"`, on by default.) Players wait for a match in another window, so the tab tells them when something needs
+them -- one chime and the launcher's taskbar button flashing until its window is in front
+(FlashWindowEx, `FLASHW_TRAY | FLASHW_TIMERNOFG`; it also ends when the launcher brings itself forward after a match):
 
 | Event | When |
 |---|---|

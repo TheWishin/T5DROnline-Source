@@ -559,7 +559,7 @@ MESSAGES = {
         "にバックアップします）。オンラインでは両プレイヤーが常に同じステージになります。Jinpachi と Random はカジュアルマッチとルームで使えますが、Ranked では使えません。",
     "Sound and start": "サウンドと起動",
     "Mute sound": "ミュート",
-    "Sound and taskbar flash when a match is found or someone joins my room": "対戦相手が見つかったとき、または誰かが自分のルームに入ったとき、音を鳴らしてタスクバーを点滅させる",
+    "Sound and taskbar flash when a match is found, I am challenged or invited, or someone joins my room": "対戦相手が見つかったとき、対戦の申し込みや招待を受けたとき、誰かが自分のルームに入ったときに、音を鳴らしてタスクバーを点滅させる",
     "Start minimized, without taking focus (for testing)": "最小化して起動、フォーカスを奪わない（テスト用）",
     "Advanced: extra settings, one NAME=VALUE per line": "詳細：追加設定（1行に1つ、NAME=VALUE）",
     "Internal resolution": "内部解像度",

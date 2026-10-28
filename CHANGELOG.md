@@ -96,6 +96,15 @@ part is in the README's status table.
   the player with the lower ping to the lobby server P1; quick matches are drawn too. The games of a set keep their
   sides. Server-only: 1.1.6 launchers play the side they are given (docs/RANKED.md "Sides", docs/DEPLOY_1.1.7.md).
 
+### Picture
+- City at Sunset (the Tekken 5 stage, stage 4) no longer flashes black: with Stage blur / glow Off (the default) and
+  one vertex worker (every PC with fewer than 24 logical processors, and power saving) single frames showed only the HUD
+  on black, sometimes with a slanted sliver of the stage -- the "flicker" and "tearing" players saw, with VSync on
+  or off. The skipped glow draw had queued its vertices into ring space the next draw (the picture's copy to the
+  screen) then reused (ps3recomp patch 0082). Players need BUILD GAME once (the launcher asks).
+- `tools/flicker_check.py`: counts such frames in a real fight (frames read back without stopping the GPU,
+  `LD_FRAME_DUMP_ASYNC=1`).
+
 ## v1.1.6 (2026-10-27)
 
 **Hotfix: the 1.1.5 launcher closed right after it started.** On a PC with the game's package (.pkg) chosen in the

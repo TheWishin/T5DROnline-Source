@@ -3693,3 +3693,89 @@ in every row; compare two builds measured under similar load.
   [2^-900, 2^901) keep the integer path. Checked against the instruction: `runtime/ppu/tests/test_fp_det.c` (new
   cases for the window, its edges, cancellation; 50 M random + 4,913 special: 0 differ), a 400 M-case stress (0
   differ), `tests/c/fma_soft_test.c` (`tests/test_weak_cpu_117.py`). CPUs with FMA3 never run it.
+
+### GitHub #12's PC on this one (the stand-in)
+
+The player: Intel i3-3240 (Ivy Bridge, 2 cores / 4 threads, 3.4 GHz, AVX but no AVX2 and no FMA3: the game is
+built for `-march=none` there and every fused multiply-add runs in software), GT 730 4 GB (Fermi, resource binding
+tier 1), 1440x900. His Practice screenshots: 24 fps at the defaults with the CPU at 79 % and the card at 46 %, 34 fps
+with lighter settings and the CPU at 97 %. His 1.1.6 warm-up log averages ~49 fps, but that average is mostly menus and
+loading: the warm-up fights are 4 s each (frames 1099-1338 of a 500-frame cycle) and their own 5-second windows ran at
+34-52 fps with an empty shader cache; the `[gpu-pass]` lines there average ~100 draws a frame against ~830 in a fight,
+so the card's 2-7 ms in them says little about a fight (1.1.5's fight log: 32-37 ms on that card). So: at the defaults
+the old card is the limit (tier-1 binding per draw), with the lighter settings the CPU (97 %, both cores saturated).
+The training overlay is not it (16-21 us a frame, docs/TRAINING.md "Cost").
+
+Stand-in: the 1.1.7 tree built with `T5DR_LIFTED_ARCH=none` (his build), 2 cores / 4 threads by affinity (`0xF000`,
+the game's 2-core mode on by itself), `tools/slow_core.py --busy 78` on them, `PS3_FP_SOFT_FMA=1 PS3_CRT_FMA3=0` (his
+CPU's software FMA and C runtime paths), `RSX_TIER1_PATH=1`, the training overlay on (`T5_TRAINING=frames
+T5_TRAINING_ALL=1`), Kazuya vs Jin on stage 25 (his screenshot's stage), Native, `fight_bench.py --polite`. It runs at
+41-53 fps with the 4 processors saturated -- the game asks ~19 ms of CPU a frame -- like his 97 %.
+
+Where the CPU goes there (ms of processor time a fight frame, the thread table of `fight_bench.py`): the SPU sound core
+5.8-6.4, the game's main thread 3.9-4.3, the translation (`ticker`) 1.7-3.4, the vertex worker 0.3-1.8, the game's
+draw thread `NU::Draw::RequestManager` 1.3-1.5, the skinning (`spurs-chain` + `spurs-job`) 2.1-2.3, the renderer thread
+0.5-0.7, the pad sampler 0.7-1.1 (most of it the bench's pad *file*, read every millisecond; a real pad costs 1-3 % of a
+core). The main thread's own profile (`PS3_HOST_PROF`): 90 % lifted game code, of which the software FMA
+(`ppu_fma_soft`) 7.6 % and the VMX multiply-add (`vmx_vmaddfp`, its four lanes through the single-precision software
+FMA) 4.4 %.
+
+**Patch 0084 on the stand-in** (A = 0001-0083+0085, B = the same + 0084; both baseline arch, alternated):
+
+| slow_core | runs A / B | fps A / B | main thread CPU a frame (game thread log) | game part median | main thread (thread table) |
+|---|---|---|---|---|---|
+| 78 %, 1 ms period (not CPU-bound: 60 fps) | 4 / 4 | 59.9 / 59.9 | 3.85 -> **3.68 ms (-4.4 %)** | 7.28 -> 7.13 ms | 3.81 -> 3.57 ms (-6 %) |
+| 78 %, 4 ms period (CPU-bound) | 3 / 2 | 43.4-52.8 / 41.3-52.4 | 4.22 -> 4.10 ms (-3 %) | 16.08 -> 15.86 ms | 4.04 -> 3.79 ms |
+
+The fps of the CPU-bound stand-in cannot show 3-4 %: it is bimodal -- the same build runs at 41-45 or at 51-53 fps from
+run to run, with the translation's median at 4.5-7 ms or at 1.7 ms. A stack profile of the translation thread in a slow
+run shows it waiting for nothing of ours (71 % idle in `cellGcm_fifo_kick_wait_us`, 24 % walking), so most likely the
+walk lands in slow_core's taken part of its 4 ms period or does not (the game's frame and the period beat); with a
+1 ms period the stand-in is no longer CPU-bound. So the stand-in's
+fps compares builds only over many runs; the processor time per frame compares them in every run. On his i3 the main
+thread's ~17 ms of processor time a frame (1.1.5 log) would lose ~0.5-0.7 ms; at 34 fps with the CPU saturated that is
+worth ~1 fps. Not the "clearly faster" the owner asked for: see "What is left" below.
+
+All 32 processors (v3 build, hardware FMA; Lili vs Asuka stage 20, 2 + 2 runs): 59.92 / 59.95 fps either way, game thread
+2.61 / 2.60 ms, translation 1.59 / 1.57 ms -- no change, as expected (the patch's FMA path runs only without FMA3).
+
+**Same game.** Rollback pair (RTT 150 +-5, 3 % loss, Asuka vs Lili on stage 20, one match): host the tree without 0084
+built for x86-64-v3 (hardware FMA), joiner the tree with 0084 built for the baseline with the software FMA
+(`PS3_FP_SOFT_FMA=1 PS3_CRT_FMA3=0`): sync through frame 4,199, 0 mismatching on both sides, the same result hash
+`a796b74ae16a32f9`; the same pair in lockstep (RTT 30, 1 % loss, Kazuya vs Jin on stage 25): 0 mismatching through 3,599,
+hash `f72fd0da7d742ca4`. With 0001-0081 + 0084 (before 0082/0085 were merged): the same kind of pair at RTT 120 (+-8, 2 %
+loss) 0 mismatching, hash `678e64fd4412b0d4` on both; e2e `net_rollback` with the 0084 build: PASS (300 checks, 11
+matches). The patch changes no result: the FMA path is bit-exact, the log fix is logging.
+
+### Tried and dropped (2-core stand-in)
+
+| what | result |
+|---|---|
+| the sound core one step down (`PS3_SCHED_PRIO_SPU=1`) | 44.4 against 44.1 fps (1 run each), audio as before: nothing |
+| `PS3_TWO_CORE_OWN=1` (the game thread's core for it alone) | **30.1** fps against 44 (everything else on one core): as in 1.1.5, slower |
+| no spinning (`PS3_TICKER_SPIN_US=0 RSX_VERTEX_SPIN=0`) | 44.8 fps: nothing |
+| no vertex worker (`RSX_VERTEX_THREADS=0`: the walker fetches each draw's vertices itself) | **37.2 / 37.8** fps, translation 11.4 ms: slower (as in 1.1.5) |
+| the vertex worker on the translation's processor in 2-core mode (a CPU set; drafted as part of 0084) | 51.5, 50.7, 40.0 fps against 52.1, 44.1, 45.1 and 43.7, 52.8, 43.4: the stand-in's two modes above, not the placement -- dropped |
+| the vertex worker at the game's priority (`PS3_SCHED_PRIO_VERTEX=2`) | 43.9 fps: nothing |
+| the lifted code for x86-64-v2 (SSE4.2, POPCNT: what an i3-3240 has) / v2 + AVX | 46.0 against 46.7 fps, main thread 4.08 against 4.13 ms, sound core 5.89 against 5.84: nothing -- the baseline build stays for CPUs without AVX2 |
+
+### 16 logical processors (a Ryzen 7 3700X player: 52-56 fps, 60 with Internal resolution 0.75x)
+
+Below 24 logical processors the renderer runs one vertex worker (32 here: three). On 16 processors of this PC (`0xFFFF`,
+8 cores / 16 threads), Lili vs Asuka stage 20, Native and 1440p, one and two vertex workers (`RSX_VERTEX_THREADS=2`),
+two runs each, also with slow_core 40 on them (a slower core): **59.9-59.95 fps in all 16 runs**, translation 1.59-1.76
+ms, GPU 2.9-3.2 ms (RTX 3090). A second worker only doubled the workers' processor time (1.5 -> 3.0 ms a frame) with
+the same translation. So neither the single worker nor the translation is the limit on 16 processors; that 0.75x
+fixed it points at the graphics side (his Internal resolution before, his display's refresh rate or scaling, the
+driver). Not changed; his game log's `[slow-frames]` verdict and `[gpu-pass]` lines would say which.
+
+### What is left for #12
+
+- His defaults are bound by the old card: per draw on resource binding tier 1 (1.1.5 log: 32-37 ms GPU a fight
+  frame). Shadows and Effects Off cut the draws by ~40 % (the "lighter settings" 24 -> 34 fps). Nothing here can
+  measure a Fermi card; see "Online pictures and old graphics cards" above.
+- With lighter settings his CPU is saturated: the biggest single consumer is the SPU sound core (~6 ms of the ~19 ms a
+  frame on the stand-in, ~30 % of the game's processor time; a fixed amount per second of audio). It is exact lifted
+  DSP code (FFT butterflies) already on patch 0064's fast float path; making it cheaper is lifter/runtime work for a
+  feature release, not a minor update. Next on the main thread: `vmx_vmaddfp`'s four scalar lanes (4.4 %), which a
+  vectorised single-precision software FMA would cut -- not done (needs the same bit-exact proof as 0084's double path).

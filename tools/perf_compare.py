@@ -341,7 +341,7 @@ def run_rollback(a, lock, results):
                 res = [json.loads(x) for x in open(os.path.join(d, who, "results.jsonl"))] \
                     if os.path.exists(os.path.join(d, who, "results.jsonl")) else []
                 s["hash"] = res[-1].get("hash") if res else None
-                s["delay"] = (re.search(r"input delay (\d+)", txt) or [None, None])[1]
+                s["delay"] = str(delay_for(rtt) or "by ping")
                 row[who] = s
             results[key] = row
             save(a, results)
@@ -564,6 +564,7 @@ def main():
     r.add_argument("--rb-cpus2", default="0xFF000000")
     r.add_argument("--lock", default="", help="the shared lock file (taken per game run)")
     r.add_argument("--lock-name", default="perf")
+    r.add_argument("--lock-gap", type=float, default=35.0, help="seconds between giving the lock back and taking it again")
     r.add_argument("--redo", action="store_true", help="measure again what results.json already has")
     r.add_argument("--env", action="append", default=[], help="extra NAME=VALUE for every game")
     t = sub.add_parser("table")
@@ -583,6 +584,7 @@ def main():
     path = os.path.join(a.out, "results.json")
     results = json.load(open(path)) if os.path.exists(path) else {}
     lock = Lock(a.lock, a.lock_name)
+    lock.GAP = a.lock_gap
     parts = a.parts.split(",")
     with lock:
         if "offline" in parts or "rollback" in parts:

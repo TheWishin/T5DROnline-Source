@@ -111,8 +111,9 @@ part is in the README's status table.
   graphics chip does and as the Mac build already did (ps3recomp patch 0085). With a card slowed to ~29 fps on this PC
   the EWGF's lightning lasts 68-85 pictures again; frame rates unchanged (stages 17, 19 and 4; stage 4 also on 4 and
   8 logical processors).
-  Online it is the same game: rollback keeps the frame counter behind that signal running forward
-  (`src/rollback/rb_state.cpp`). `GCM_SEMA_ACQUIRE=0` under Extra settings goes back. Players need BUILD GAME once.
+  Online nothing changes for the game: the rollback keeps the frame counter behind that signal counting forward and
+  the renderer takes it as a count (`src/rollback/rb_state.cpp`); e2e rollback and relay matches 0 mismatching frames,
+  replays identical. `GCM_SEMA_ACQUIRE=0` under Extra settings goes back. Players need BUILD GAME once.
 - `tools/effects_test.py`: scripted EWGFs with a slowed card in a real fight; PASS when every one shows its effect
   for 40+ pictures.
 

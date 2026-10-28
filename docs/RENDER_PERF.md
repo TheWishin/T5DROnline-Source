@@ -1149,6 +1149,16 @@ MB of 15164 MB` (from `RSX_TEST_DEVICE_REMOVED=1400` on the RTX 3090). A
 player's hang would then tell whether the GPU stopped inside a list or between
 two, how long after the last Present, and whether its memory was over budget.
 
+**1.1.7: still not reproduced.** A player's integrated GPU froze (no log yet). Eight fresh starts on this PC's
+integrated Radeon (`RSX_ADAPTER=radeon`, a new folder each: cold shader and pipeline cache), each straight into a
+scripted fight of ~40 s on stages 20, 30, 26, 20, 30, 26, 34 and 19 (the x-final 1.1.5/1.1.6 renderer; the screen on
+the RTX 3090, so every frame was copied across, the hybrid present of the four hangs above): 59.8-60.0 fps, 0 lines of
+`DEVICE_HUNG` / `DEVICE_REMOVED` / `device lost` / `GPU not done` / `state at the loss`. What to ask the player for:
+the game log of the session that froze (`logs/` in the game folder: the `[gpu] adapter` and `[gpu] display` lines,
+any `[gpu] GPU not done after 1 s ...`, `[gpu] state at the loss ...` and `[dred]` lines, patch 0076), whether the
+picture froze with the sound going on (the GPU) or both (the PC), the PC's model (a laptop with two GPUs, a mini PC)
+and the graphics driver's version.
+
 ## Late frames shown when ready (patch 0059, branch `weakpc-fps`)
 
 Why some players had 40-50 fps, and whether a Vulkan renderer would help:
@@ -3357,6 +3367,9 @@ visible ... other hit effects as well"); at 60 fps online only a stretch of long
 The two experiments (vblank rule, flip gate) are not in patch 0081: they change the runtime's pacing for nothing
 measurable (`build/int115/s-runs/cellGcmSys-experiments.diff`, local).
 
+**Found in 1.1.7** ("Hit effects on slow graphics cards: the walker passed the game's semaphore" below): not long
+frames but a card slower than the game; the FIFO walker did not wait for the game's semaphore ACQUIRE (patch 0085).
+
 **Next step** (after 1.1.5, with a player's clip and log): find what ends the effects. Watch the game's effect pool
 per frame (`PS3_LATENCY_WATCH`) once it is located, or compare the HLE calls of a 60 fps and a 29 fps fight (a time
 source the game reads per frame -- `sys_time_get_system_time`, the timebase, `cellGcmGetLastFlipTime` -- is the next
@@ -3537,6 +3550,103 @@ GPU timestamps the same, 1.20-1.21; the patch adds no GPU work there -- nothing 
 of the processors (the player's count, one vertex worker): fps 59.82 / 59.89 vs 59.85 / 59.76, p99 20.99 / 20.87 vs
 21.18 / 21.04 ms, game thread 2.00 / 2.03 vs 2.01 / 2.01, walker 1.42 / 1.42 vs 1.42 / 1.43, GPU 2.74 / 2.72 vs 2.74 /
 2.74 ms. The patch's work per draw is two stores and a compare: no regression beyond the run-to-run spread.
+
+## Hit effects on slow graphics cards: the walker passed the game's semaphore (1.1.7, patch 0085, branch `fx-117`)
+
+GitHub #12 (a GT 730 at ~29 fps: "the electricity effect for the EWGF isn't visible") and 1.1.5's open question above
+("Long frames, not rollback -- still open"). Found and fixed: the FIFO walker did not wait for the game's semaphore
+ACQUIRE, which a real RSX does.
+
+**Not long frames: a slow graphics card.** The scripted EWGFs/WGFs of 1.1.5 (Kazuya vs Heihachi, stage 20, offline;
+`tools/effects_test.py` now does it in the repository), effect pictures per hit (40 or more effect draws above the
+count before the press, `RSX_FX_COUNT=1`), attempts 3-6, x-final (1.1.5/1.1.6 renderer):
+
+| run | fps | effect pictures per hit |
+|---|---|---|
+| RTX 3090 | 60.0 | 63, 70, 59, 67 |
+| graphics card slowed (`RSX_TEST_SLOW_GPU=16000000,256`, ~33 ms of GPU a frame) | 29.2 | 13, 5, 11, 3 |
+| the same with the game's own effect time budgets set out of reach (below) | 29.1 | 13, 5, 11, 3 |
+| the game's frame made long on the processor (`PS3_TEST_SLOW_GAME_US=25000`) | 34.3 | 64, 67, 71, 62 |
+| the translation made long (`PS3_TEST_SLOW_XLAT_US=25000`) | 34.3 | 64, 67, 71, 62 |
+| slowed card, one frame in flight (`RSX_FRAMES_IN_FLIGHT=1`) | 28.4 | 13, 5, 11, 3 |
+| **slowed card, `GCM_SEMA_ACQUIRE=1`** | **29.6** | **68, 83, 84, 78** |
+
+Frames of 29-34 ms keep the effects when the processor makes them long; only a card slower than the game ends them,
+and it does so the same way in every run. Ruled out on the way: the effect worker's time budgets -- the side thread at
+0x1230AC (the "particle" thread) asks the game's frame meter (0x259BB8: time since the frame started, in % of a
+60 Hz refresh, from the timebase) before each piece of work and stops past 194.5 % or 94.5 % (float constants at
+0x46BCD8, 0x46BD78, 0x46BE4C, 0x46BEEC, 0x46BF6C, 0x46BFE4); poked to 1.7e38 (`T5_DF_POKE`) they changed nothing.
+The main thread waits in the flip wait (0x34BA30) in both slow runs; with the slowed card the walker waits for the
+card at the start of the next frame's recording (`[slow-frames]`: "GPU wait 29.7 ms", frame log `flush_wait_us`),
+in the middle of what the game is writing.
+
+**The cause.** Tekken 5 DR's present (0x34BA30 -> 0x34B9D8) stores its frame counter (graphics object 0x106D4A00
++ 0x28C) into label 0xFD and puts a semaphore ACQUIRE of counter + 1 into the GCM ring (0x39AD48: NV406E
+SEMAPHORE_OFFSET 0xFD0, SEMAPHORE_ACQUIRE): the RSX must not run past the end of frame N until the processor has
+finished frame N + 1 and stored the next count. The walker honoured that only on macOS (patch 0071, where it was
+measured: "no stale reads and full hit effects at 60 fps"); on Windows it passed every acquire, so with a card slower
+than the game it translated parts of frames the game was still writing, and the game's effects did not survive it.
+Patch 0085 makes the wait the default on every platform (`GCM_SEMA_ACQUIRE=0` passes it again; a wait longer than
+`GCM_SEMA_ACQUIRE_MS`, 200 ms, is given up and logged as `[SEMA] acquire ... gave up`; the log says
+`[cellGcmSys] semaphore ACQUIRE: the walker waits for the label, as the RSX does` at the first wait).
+
+**Rollback.** Two things, both found with this patch's first build in e2e `net_rollback` (RTT 80 ms: 9.4 fps on
+both PCs, "FIFO recycle: drain stalled", the match never finished; 53 `[SEMA] acquire off=0xFD0 == 0x00003098 gave
+up after 200 ms (label 0x0000309A)` lines in the two games):
+
+- A re-simulated frame runs its present without waiting for a flip (the rollback answers the flip status itself), so
+  the game stores several counts into the label while the walker is still behind the acquire of the first: the label
+  steps over the value the walker waits for, and an acquire of exactly that value waited 200 ms. A PS3 never sees
+  this (the game cannot get two presents ahead of the RSX). The walker now takes Tekken 5 DR's label as a count: an
+  ACQUIRE of v is satisfied by any count at or past v (`cellGcm_set_sema_acquire_geq(1)`, set by
+  `src/rollback/rb_state.cpp` at start-up; the runtime's default for other titles stays equality).
+- The counter is in the rollback state, the GCM ring is not (docs/ROLLBACK.md section 26): a restore put an older
+  count back and the label would go backwards. `rb_state.cpp` keeps the counter live (`kKeepLive`, never restored;
+  written by the main thread only, in neither hash), so it only counts up, live or re-simulated, like the ring.
+  Watched in a run (`T5_DF_WATCH=106D4C8C`): +1 every frame.
+
+**Checked** (the 1.1.7 tree: integration-117 0c92208 with patches 0082/0083, built from branch `fx-117` as
+`w117/E-native`, against agent G's build of the same tree without this change, `w117/G-native1`):
+
+- `tools/effects_test.py` (card slowed to ~29 fps): old 29.6 fps, 13, 7, 11, 2 pictures -- FAIL; new 29.6 fps, 68,
+  85, 85, 85 -- PASS; new with `GCM_SEMA_ACQUIRE=0` 29.4 fps, 13, 7, 11, 2 -- FAIL. At 60 fps (not slowed): new 65,
+  70, 66, 67 -- PASS.
+- The rollback test mode (`tools/rollback_test.py --fight kaz,hei,20,3 T5_RB_MODE=test`, a restore every 60 frames,
+  120 s): old tree with `GCM_SEMA_ACQUIRE=1` -- 37 rollbacks in the time (the walker kept waiting), the `[SEMA] ...
+  gave up` line at its cap of 12; new -- 93 rollbacks, gameplay hash 0 mismatches in 744 re-simulated boundaries, 0
+  acquires given up.
+- e2e `net_rollback --replays` (RTT 20/80/150/250 ms, input delay Auto/0/1/2, 2 % and 10 % loss, jitter, the relay
+  path): PASS, 323 checks, 11 matches with 0 mismatching frames, 58.2-60.2 fps, all 22 replays identical to their
+  live matches. e2e `net_relay_smooth --replays`: PASS, 311 checks, 12 matches with 0 mismatching frames, 58.2-59.6
+  fps, all 24 replays identical. 0 acquires given up in all their games (the first build: 53, see above).
+- `tools/smoke/run.py --suite quick` (boot and intro, menus, Arcade, VS with two pads, Practice, the title twice):
+  PASS, 83 checks; the wait was on in all five games, 0 acquires given up.
+- `tools/fight_bench.py` (Kazuya vs Raven, stage blur off, 2 runs each, old / new; the first build of the patch,
+  before the label was taken as a count -- offline the label never steps past a value, so that part changes nothing
+  there):
+
+| stage, processors | fps | p95 / p99 ms | game thread ms | walker ms |
+|---|---|---|---|---|
+| 17, all | 59.83, 59.82 / 59.88, 59.88 | 18.9, 18.9 / 18.9, 18.9 -- 20.3, 20.4 / 20.5, 20.4 | 2.06 / 2.06 | 1.18 / 1.16 |
+| 19, all | 59.79, 59.85 / 59.79, 59.82 | 18.1, 18.6 / 18.3, 18.4 -- 19.6, 20.1 / 19.9, 20.3 | 2.29 / 2.26 | 1.60 / 1.55 |
+| 4, all | 59.85, 59.92 / 59.85, 59.89 | 19.9, 20.0 / 20.1, 20.1 -- 20.9, 20.8 / 21.0, 21.0 | 2.01 / 2.02 | 1.46 / 1.44 |
+| 4, 8 (0xFF) | 59.75, 59.82 / 59.82, 59.82 | 19.7, 19.9 / 20.0, 20.0 -- 20.9, 20.8 / 21.0, 21.1 | 2.13 / 2.11 | 1.45 / 1.43 |
+| 4, 4 (0xF) | 59.89, 59.85 / 58.77, 59.88 | 19.2, 19.3 / 19.6, 19.5 -- 20.0, 20.6 / 21.0, 20.5 | 2.52 / 2.49 | 1.58 / 1.57 |
+| 20, slowed card | 29.84, 29.54 / 29.62, 29.33 | 34.8, 35.1 / 34.7, 35.1 -- 35.4, 36.0 / 35.5, 35.5 | 2.60 / 2.59 | 1.37 / 1.37 |
+
+  No regression beyond the run-to-run spread. The one low run (4 processors, new, 58.77) had one stall of ~0.9 s
+  mid-fight (game thread, no acquire given up, other programs on 2.1-2.4 of its 4 processors); its repeat ran 59.88.
+  With the slowed card the new build draws the effects again (684 draws a frame against 679) and the card needs
+  ~0.2 ms more a frame (33.37 / 33.60 against 33.16 / 33.39 ms): ~0.2 fps, the price of the effects being there.
+- `tools/flicker_check.py --stage 4 --cpus 0xFF` (patch 0082's case), two runs: 0 dark frames of 362 and of 362
+  (the first build: 0 of 359 and of 362).
+- `tests/test_sema_acquire.py` (no game): the patch's default and the "at or past" compare, the series order, the
+  counter kept live and in neither hash -- 3 of 3 fail on 0c92208, pass on `fx-117`.
+
+**For a player's log:** `[cellGcmSys] semaphore ACQUIRE: the walker waits for the label, as the RSX does
+(GCM_SEMA_ACQUIRE=1); the title's label counts up: at or past the value` at the first wait; `[SEMA] acquire off=0xFD0
+== ... gave up after 200 ms` would mean a stall of 200 ms (none in any run here). `GCM_SEMA_ACQUIRE=0` under Extra
+settings is the old behaviour.
 
 ## 1.1.7: before/after measurements, 2-core PCs and GitHub #12 (patch 0084, branch `perf-117`)
 

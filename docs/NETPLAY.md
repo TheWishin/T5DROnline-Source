@@ -533,8 +533,13 @@ Two match rules that change what the game simulates, so both PCs must apply them
   bar, 159.5 / 217.5 73 % (measured in pictures of both PCs, run `H-scratch/runs/ff150`). KO, round wins and
   the match result are unchanged. This is exact and deterministic, so no damage scale (taking less damage) is
   needed: a damage scale would have to hook every hit and round each one, which gives other numbers than the
-  game's own handicap. Not looked at: who wins a time-out between 150 % and 100 % (the game's own rule for its
-  handicap; the same on both PCs either way).
+  game's own handicap. In a training room the refill goes back to the fighter's own maximum (217.5 at 150 %:
+  15 refills seen in a real pair, give-ups by SELECT as before). Tested (2026-10-28, real pairs on this PC, rollback):
+  `fight_flow_test --line-extra "life=150|100"` 2 matches of 2 rounds, `train=1 life=150|100` 2 training fights,
+  e2e `net_handicap150` (150/100 then a rematch at 120/110 through the lobby, RTT 80 ms with 2 % loss) -- all 0
+  mismatching frames, results counted, every replay identical; the build before (limit 100) fought `life=150|100`
+  as 100/100. Not looked at: who wins a time-out between 150 % and 100 % (the game's own rule for its handicap;
+  the same on both PCs either way).
   A 1.1.5 / 1.1.6 game clamps `life=` at 100 and a 1.1.6 launcher drops a value above 100 from the fight line,
   so the lobby sends more than 100 only to launchers with the cap `life150` (docs/ONLINE.md); 1.1.6 and 1.1.7
   games never pair anyway (other code id). No CODE_VERSION bump: at 30-100 % the game simulates exactly what

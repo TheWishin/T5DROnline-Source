@@ -457,6 +457,43 @@ class TkTabTest(TkBase):
 
 
 @unittest.skipIf(tk is None, "no tkinter")
+class ChatInputTest(TkBase):
+    """1.1.7 shipped without the chat's entry and Send button: chat_name_tag was added in the middle of the chat
+    card's build, so the lines that make the input row came after its return and never ran (players could read
+    but not write). Here: the card has the entry and the button, and a line typed and sent reaches another player."""
+
+    def test_type_and_send_reaches_the_other_player(self):
+        tab = self.tab
+        tab.server_var.set(self.s.addr)
+        tab.do_login("guest")
+        self.pump(lambda: tab.client is not None and tab.client.me is not None)
+        other = client(self.s, "ChatPeer")
+        try:
+            card = tab.chat_log.master
+            entries, buttons = [], []
+
+            def walk(w):
+                for c in w.winfo_children():
+                    cls = c.winfo_class()
+                    if cls == "TEntry":
+                        entries.append(c)
+                    elif cls == "TButton":
+                        buttons.append(c)
+                    walk(c)
+            walk(card)
+            self.assertEqual(len(entries), 1, "the chat card has no input field")
+            send = [b for b in buttons if str(b.cget("text")) == "Send"]
+            self.assertEqual(len(send), 1, "the chat card has no Send button")
+            self.assertEqual(str(entries[0].cget("textvariable")), str(tab.chat_var))
+            tab.chat_var.set("hello from the tab")
+            send[0].invoke()
+            ev = expect(other, "chat", timeout=10)
+            self.assertEqual(ev["text"], "hello from the tab")
+            self.assertEqual(tab.chat_var.get(), "")
+        finally:
+            other.close()
+
+
 class TkT6Test(TkBase):
     server_cfg = {"blind_ready": True, "ready_timeout": 8.0}
 

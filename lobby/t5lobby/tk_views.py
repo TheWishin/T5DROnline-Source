@@ -902,12 +902,6 @@ class OnlineView:
         log.tag_configure("chat_msg", foreground=C["text"], lmargin1=px(8), lmargin2=px(8), spacing1=px(1))
         log.tag_configure("chat_sys", foreground=C["muted"], font=fonts["small"], spacing1=px(9), spacing3=px(1))
 
-    def chat_name_tag(self, name, mine=False):
-        """The chat log's tag for a sender's name: bold (chat_head) in theme.name_color(name), the accent for you."""
-        color = theme.C["accent_hi"] if mine else theme.name_color(name)
-        tag = "chat_name_" + color.lstrip("#")
-        self.tab.chat_log.tag_configure(tag, foreground=color)
-        return tag
         row = self.body(cc)
         row.grid(row=2, column=0, sticky="we", pady=(px(8), 0))
         row.columnconfigure(0, weight=1)
@@ -916,6 +910,13 @@ class OnlineView:
         ce.bind("<Return>", lambda _e: tab.do_chat())
         ttk.Button(row, text=t("Send"), style="Card.TButton", command=tab.do_chat).grid(row=0, column=1,
                                                                                         padx=(px(6), 0))
+
+    def chat_name_tag(self, name, mine=False):
+        """The chat log's tag for a sender's name: bold (chat_head) in theme.name_color(name), the accent for you."""
+        color = theme.C["accent_hi"] if mine else theme.name_color(name)
+        tag = "chat_name_" + color.lstrip("#")
+        self.tab.chat_log.tag_configure(tag, foreground=color)
+        return tag
 
     def _build_board_page(self, page):
         tab, px = self.tab, self.px

@@ -91,6 +91,11 @@ part is in the README's status table.
   Bahnschrift): without Bahnschrift es/fr/pt-BR "cut off" where no player's Windows does. (The push job's red run did
   not reproduce here; docs/CI.md lists what was tried.)
 
+### Lobby server
+- Ranked: P1 and P2 are drawn by a fair coin for every set (queue, ranked rooms, a ranked rematch) instead of making
+  the player with the lower ping to the lobby server P1; quick matches are drawn too. The games of a set keep their
+  sides. Server-only: 1.1.6 launchers play the side they are given (docs/RANKED.md "Sides", docs/DEPLOY_1.1.7.md).
+
 ## v1.1.6 (2026-10-27)
 
 **Hotfix: the 1.1.5 launcher closed right after it started.** On a PC with the game's package (.pkg) chosen in the

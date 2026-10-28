@@ -525,7 +525,8 @@ class RematchTest(Base):
         self.assertGreater(ra["rematch_window"], 0)
         self.assertEqual(a.rematch(ra["match"], True, keep=True)["state"], "waiting")
         self.assertEqual(expect(b, "rematch")["state"], "offered")
-        r = b.rematch(ra["match"], True, keep=True)
+        with util.coin_keeps_the_sides():                    # (other sides: a new session, test_sides.py)
+            r = b.rematch(ra["match"], True, keep=True)
         self.assertEqual(r["state"], "accepted")
         s = expect(a, "match_start")
         self.assertTrue(s["continue"])
@@ -562,7 +563,8 @@ class RelayRematchTest(Base):
         ra = expect(a, "match_result")
         self.assertEqual(self.s.call(lambda: len(self.s.srv.udp.relays)), 1)    # still open after the match
         a.rematch(ra["match"], True, keep=True)
-        b.rematch(ra["match"], True, keep=True)
+        with util.coin_keeps_the_sides():
+            b.rematch(ra["match"], True, keep=True)
         s = expect(a, "match_start")
         self.assertTrue(s["continue"])
         self.assertEqual(s["path"], "relay")
@@ -629,7 +631,9 @@ class DriverTest(Base):
 
     def test_process_mode_with_rematch_in_the_same_game(self):
         stub = {"T5_STUB_SECONDS": "1", "T5_STUB_MATCHES": "2", "T5_STUB_GAP": "2", "T5_STUB_LINGER": "10"}
-        results, drivers = self.run_pair("process", stub, stub, matches=2)
+        # (a ranked rematch draws the sides again since 1.1.7 -- other sides are a new session: the coin keeps them)
+        with util.coin_keeps_the_sides():
+            results, drivers = self.run_pair("process", stub, stub, matches=2)
         self.assertEqual([r["status"] for r in results[0]], ["confirmed", "confirmed"])
         self.assertEqual(len(drivers[0].history), 2)
         self.assertEqual(drivers[0].history[0][1]["source"], "game")

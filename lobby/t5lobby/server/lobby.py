@@ -238,7 +238,8 @@ class GameSet:
 
     def __init__(self, a, b, ranked, wins_needed=0):
         self.id = "s" + _rid()
-        self.players = [a, b]           # P1 and P2 of every game of a rated set (sides stay)
+        self.players = [a, b]           # P1 and P2 of every game of a ranked set: its sides, drawn once when it begins
+                                        # (1.1.9 owner: they stay for the whole set; casual.py "The server's sides")
         self.locked = bool(ranked)
         self.ranked = bool(ranked)
         self.picks = {}                 # player id -> the character picked for the whole (locked) set
@@ -259,7 +260,9 @@ class GameSet:
         self.next_due = 0.0             # (monotonic) when it ends
         self.next_keep = {}             # player id -> True: that player's game still runs, connected (set_next)
         self.fresh = False              # the next game needs a new connection (after a desync)
-        self.grace = {}                 # player id -> timer: lost the lobby between two games
+        self.grace = {}                 # player id -> timer: away between two games (crash, launcher closed, connection)
+        self.grace_marks = {}           # player id -> [timers]: the opponent is told the time left (_away_marks)
+        self.restarts = {}              # player id (or "net") -> next games left before their fight began (_set_restart)
         self.outcome = None             # at the end: {status, winner, reason, blame (Players or None), changes}
 
     @property
@@ -367,6 +370,7 @@ class Match:
         self.stream_id = self.id             # the live stream of its netplay session (a continued rematch: the first's)
         self.training = bool(getattr(room, "training", False))   # a training room's match (matchrules.py)
         self.life = None                     # [P1, P2] health handicap in percent, None = 100/100 (matchrules.py)
+        self.no_return = None                # the player who did not come back to its ranked set in time (1.1.9)
 
     def side(self, player):
         return 0 if self.players[0] is player else 1 if self.players[1] is player else None
@@ -1213,6 +1217,8 @@ class LobbyServer(SpectateMixin, RoomsMixin, CasualMixin, MatchRulesMixin):
         if m is not None and m.state == "playing":
             side = m.side(p)
             h = m.timers.pop(f"grace{side}", None)
+            for k in [k for k in m.timers if k.startswith(f"mark{side}_")]:
+                m.timers.pop(k).cancel()
             if h:
                 h.cancel()
                 m.players[1 - side].send({"t": "notice", "code": "opponent_back", "match": m.id,
@@ -1234,9 +1240,10 @@ class LobbyServer(SpectateMixin, RoomsMixin, CasualMixin, MatchRulesMixin):
             conn.player = None
             m = p.match
             if m is not None and m.state == "playing":
-                # Logging out (or closing the launcher) mid-match is leaving it.
+                # Logging out (or closing the launcher) mid-match is leaving it (the next game of a ranked set
+                # before its fight began: away from the set, h_leave_match).
                 await self.h_leave_match(_ConnOf(p), {"match": m.id})
-            self.player_dropped(p, final=True)
+            self.player_dropped(p, final=True, logout=True)
         conn.send({"t": "bye", "re": msg.get("rid")})
         return False
 
@@ -1359,8 +1366,11 @@ class LobbyServer(SpectateMixin, RoomsMixin, CasualMixin, MatchRulesMixin):
                 q.conn.send_raw(data)
 
     # ------------------------------------------------------------------ player removal
-    def player_dropped(self, p, final=False):
-        """Connection gone (or logout). Keep the player resumable while a match needs them."""
+    def player_dropped(self, p, final=False, logout=False):
+        """Connection gone (or logout). Keep the player resumable while a match needs them -- or a running ranked
+        set (1.1.9): a crash, a closed launcher (it logs out) or a lost connection between two games gives the
+        player T5L_SET_AWAY_SECONDS to come back (_set_dropped). final without logout (kicked, logged in elsewhere):
+        gone for good."""
         p.conn = None
         p.dropped_at = time.monotonic()
         self._spec_player_gone(p)
@@ -1378,14 +1388,24 @@ class LobbyServer(SpectateMixin, RoomsMixin, CasualMixin, MatchRulesMixin):
             # grace period -> the match is lost (docs/RANKED.md, disconnects).
             side = m.side(p)
             m.lost_lobby[side] = True
-            self._timer(m, f"grace{side}", self.cfg.reconnect_grace, self._grace_expired, m, side)
-            m.players[1 - side].send({"t": "notice", "code": "opponent_dropped", "match": m.id,
-                                      "grace": self.cfg.reconnect_grace,
-                                      "msg": f"{p.name} lost the lobby connection; waiting "
-                                             f"{self.cfg.reconnect_grace:.0f} s for them to return"})
-        if not final and self._between_set_games(p):
-            # Between two games of a ranked set: the launcher reconnects on its own, like mid-match. Not back
-            # within the grace period -> the set is lost (docs/RANKED.md "Ranked sets").
+            if self._set_running(m.set):
+                # a game of a running ranked set: the set's away window (and the time left told to the opponent)
+                grace = self.cfg.set_away_seconds
+                self._timer(m, f"grace{side}", grace, self._grace_expired, m, side)
+                for x in self._away_marks(grace):
+                    self._timer(m, f"mark{side}_{x}", grace - x, self._match_away_mark, m, side, x)
+                self._away_notice(m.players[1 - side], p, grace, "opponent_dropped", match=m.id, set=m.set.id)
+            else:
+                self._timer(m, f"grace{side}", self.cfg.reconnect_grace, self._grace_expired, m, side)
+                m.players[1 - side].send({"t": "notice", "code": "opponent_dropped", "match": m.id,
+                                          "grace": self.cfg.reconnect_grace,
+                                          "msg": f"{p.name} lost the lobby connection; waiting "
+                                                 f"{self.cfg.reconnect_grace:.0f} s for them to return"})
+        if (not final or logout) and self._between_set_games(p):
+            # Between two games of a ranked set: the launcher reconnects on its own, like mid-match, or the player
+            # starts it again and logs in. Not back within T5L_SET_AWAY_SECONDS -> the set is lost (docs/RANKED.md
+            # "Ranked sets"). A logout is the launcher closing (or Log out), not the Leave set button: 1.1.8 made it
+            # a loss at once (the 2026-10-28 set lost by a player who was back 5 s later).
             self._set_dropped(p.set, p)
         elif final or p.match is None:
             self._forget(p)
@@ -1816,6 +1836,9 @@ class LobbyServer(SpectateMixin, RoomsMixin, CasualMixin, MatchRulesMixin):
         keep =(all(r["keep"] for r in prev.rematch) and prev.path is not None and not self._direct_again(prev)
                 and not swap)
         host, join = (prev.players[1], prev.players[0]) if swap else (prev.players[0], prev.players[1])
+        if self._ranked_set_going(prev):
+            host, join = gs.players          # the next game of a running ranked set: the set's sides (casual.py)
+            keep = keep and prev.players[0] is host
         m = self.create_match(host, join, ranked=prev.ranked, origin="rematch",
                               room=prev.room, rematch_of=prev, keep=keep)
         r = prev.room
@@ -2067,7 +2090,8 @@ class LobbyServer(SpectateMixin, RoomsMixin, CasualMixin, MatchRulesMixin):
         """Abort a match that has not started. Players who did nothing wrong go back where they were."""
         if m.state in ("done", "cancelled"):
             return
-        culprit = self._setup_culprit(m, reason, by) if m.set is not None and m.set.rated else None
+        culprit = self._setup_culprit(m, reason, by) if (m.set is not None and m.set.rated
+                                                          and reason != "set_restart") else None
         m.state = "cancelled"
         self._cancel_timers(m)
         self._release(m)
@@ -2090,7 +2114,10 @@ class LobbyServer(SpectateMixin, RoomsMixin, CasualMixin, MatchRulesMixin):
             if gs.current is m:
                 gs.current = None
             if gs.state == "active":
-                if gs.rated and by is not None and reason in ("opponent_left", "declined"):
+                if reason == "set_restart":
+                    gs.fresh = True                  # (_set_restart) the set's game again, over a new connection
+                    self._set_schedule_next(gs)
+                elif gs.rated and by is not None and reason in ("opponent_left", "declined"):
                     if by.online:
                         self._end_set(gs, "left", by=by)     # the next game of a ranked set: leaving it
                     # else: `by` lost the lobby while the game was set up -- player_dropped gives the set its
@@ -2823,6 +2850,11 @@ class LobbyServer(SpectateMixin, RoomsMixin, CasualMixin, MatchRulesMixin):
                 rep["costumes"] = list(costumes)
         if m.reports[side] is not None and m.reports[side]["source"] != "quit":
             return {"t": "result_ack", "match": m.id}        # first report stands
+        if source in ("quit", "crash", "disconnect") and self._set_prefight(m) and self._set_restart(
+                m, side if source != "disconnect" else None):
+            # a game of a running ranked set closed, crashed or lost the other one before the fight began: that game
+            # starts again (1.1.9; a crash used to void the whole set, a quit to lose it)
+            return {"t": "result_ack", "match": m.id}
         m.reports[side] = rep
         # A desync report waits for the other side's report like any other (it used to void the match at
         # once): both games compare the same state hashes, so a real desync is reported by both, and one
@@ -2840,10 +2872,15 @@ class LobbyServer(SpectateMixin, RoomsMixin, CasualMixin, MatchRulesMixin):
         `quit` (a loss, or no result at all before the minimum match length)."""
         p = conn.player
         m = self._get_match(p, msg)
+        side = m.side(p)
+        if self._set_prefight(m) and self._set_restart(m, side):
+            # The next game of a running ranked set, before its fight began: never the Leave set button (that is
+            # leave_set) -- the launcher's game is gone (closed or crashed between two games, could not start) or the
+            # launcher is closing. Not a loss: that game starts again once the player is back (1.1.9).
+            return None
         if m.state != "playing":
             self.cancel_match(m, "opponent_left", by=p)
             return None
-        side = m.side(p)
         if m.reports[side] is None or m.reports[side]["source"] not in ("game", "manual"):
             m.reports[side] = {"winner": 1 - side, "score": None, "source": "quit", "desync": None, "hash": None,
                                "frames": None, "reason": "quit", "at": time.time()}
@@ -3085,6 +3122,11 @@ class LobbyServer(SpectateMixin, RoomsMixin, CasualMixin, MatchRulesMixin):
             return
         if not m.players[1 - side].online:
             self._finish(m, "void", None, None, reason="both_left")
+            return
+        if self._set_prefight(m):
+            # the next game of a ranked set, its fight not begun: the player did not come back to the set in time
+            m.no_return = m.players[side]           # (no strike: the set is lost, _set_game_over)
+            self._finish(m, "void", None, None, reason="no_return")
             return
         if self._duration(m) < self.cfg.min_match_seconds:
             self._void_blame(m, side, "disconnect")
@@ -3743,6 +3785,10 @@ class LobbyServer(SpectateMixin, RoomsMixin, CasualMixin, MatchRulesMixin):
         for h in gs.grace.values():
             h.cancel()
         gs.grace.clear()
+        for hs in gs.grace_marks.values():
+            for h in hs:
+                h.cancel()
+        gs.grace_marks.clear()
         for q in gs.players:
             if q.set is gs:
                 q.set = None
@@ -3753,6 +3799,7 @@ class LobbyServer(SpectateMixin, RoomsMixin, CasualMixin, MatchRulesMixin):
                    "by": None if by is None else ("you" if q is by else "opponent")}
             if gs.rated:
                 msg.update(gs.view(q))
+                msg["away_seconds"] = self.cfg.set_away_seconds     # ("did not come back within 90 s", sets.py)
             q.send(msg)
         self.note("set_end", set=gs.id, reason=reason)
         if gs.rated:
@@ -3780,6 +3827,16 @@ class LobbyServer(SpectateMixin, RoomsMixin, CasualMixin, MatchRulesMixin):
     def _set_game_over(self, gs, m, status, winner, score, reason, blame):
         """One game of a rated set ended (`_finish`): count it, then the next game or the end of the set."""
         self.tours.match_live(m)                 # (a tournament set: its live score in the bracket)
+        if status == "void" and reason == "set_restart":
+            # a player left this game before its fight began, not on purpose (_set_restart): not played, not in the
+            # set's log; the same game again over a new connection, when both are in the lobby (_set_next waits)
+            gs.fresh = True
+            self._set_schedule_next(gs)
+            return
+        if status == "void" and reason == "no_return":
+            # ... and did not come back within T5L_SET_AWAY_SECONDS: that player leaves the set
+            self._set_abort(gs, "no_return", m.no_return)
+            return
         same = m.players[0] is gs.players[0]                 # (always: the games keep the set's sides)
         win_side = None if winner is None else (winner if same else 1 - winner)
         gs.log.append({"match": m.id, "number": gs.number, "status": status,
@@ -3821,7 +3878,9 @@ class LobbyServer(SpectateMixin, RoomsMixin, CasualMixin, MatchRulesMixin):
         a lag check that found more lag than the ping explains lets a player out for free (h_leave_set)."""
         if reason == "lag" and by is not None:
             self._set_conclude(gs, "void", reason="lag")
-        elif by is not None and reason in ("left", "declined", "disconnect", "no_connection") and (
+        elif by is not None and not gs.other(by).online and reason in ("no_return", "disconnect"):
+            self._set_conclude(gs, "void", reason="both_left")      # both gone: nobody gets the set (1.1.9)
+        elif by is not None and reason in ("left", "declined", "disconnect", "no_connection", "no_return") and (
                 any(gs.wins.values()) or getattr(gs, "forfeit_at_zero", False)):     # (a tournament set: at 0-0 too)
             self._set_conclude(gs, "forfeit", winner=gs.other(by), reason=reason, blame=by)
         else:
@@ -3921,32 +3980,109 @@ class LobbyServer(SpectateMixin, RoomsMixin, CasualMixin, MatchRulesMixin):
         if room is not None and m.state != "cancelled":
             room.match = m
 
+    # ------------------------------------------------------------------ away from a ranked set (1.1.9)
+    # Owner (2026-10-28): leaving a running ranked set must be judged smartly, and the player who stays gets the
+    # points. The Leave set button (leave_set) is a decision: it counts at once. A crash, a closed launcher (it
+    # logs out) or a lost connection is not: the player has T5L_SET_AWAY_SECONDS (90) to come back -- the launcher
+    # reconnects by itself, or the player starts it again and logs in -- and the set goes on where it was (the same
+    # score, sides and characters; the opponent is told the time left). Not back in time: that player loses the
+    # set and the other one wins it (rated, like any decided set; 0-0: void as before). Both gone: void. The next
+    # game, when it already started but its fight has not begun (_set_prefight), counts as "between two games":
+    # it is played again over a new connection once the player is back (_set_restart). Once the fight runs, the
+    # match rules decide that game as before (quit = forfeit, crash = void with a strike); the lobby connection
+    # gets the same away window there.
+    AWAY_MARKS = (60, 30, 10)           # seconds left at which the remaining player is told again
+    SET_RESTARTS = 3                    # next games per player (and for lost connections) that may start again
+
+    def _set_running(self, gs):
+        return gs is not None and gs.rated and gs.state == "active" and gs.outcome is None
+
+    def _set_prefight(self, m):
+        """Is `m` a later game of a running rated set whose fight has not begun -- no game has run the fight
+        (game_started playing), nobody reported a result -- with at least one game of the set played before?"""
+        gs = m.set
+        return (self._set_running(gs) and gs.current is m and bool(gs.log) and m.state not in ("done", "cancelled")
+                and not any(m.game_playing)
+                and not any(r is not None and self._kind(r) == "result" for r in m.reports))
+
+    def _set_restart(self, m, side):
+        """The set's next game was left before its fight began, not on purpose (side: whose game; None: the games
+        lost each other): it is not played; the set starts it again over a new connection -- after the countdown,
+        and only when both are in the lobby (an absent player has the away window). -> False once that side has
+        used up SET_RESTARTS in this set: the caller goes on with the old rules (a quit is then leaving the set)."""
+        gs = m.set
+        key = "net" if side is None else m.players[side].id
+        if gs.restarts.get(key, 0) >= self.SET_RESTARTS:
+            return False
+        gs.restarts[key] = gs.restarts.get(key, 0) + 1
+        self._count("set_restarts")
+        log.info("set %s: game %d started again (%s left it before the fight)", gs.id, gs.number,
+                 "the connection" if side is None else m.players[side].name)
+        if m.state == "playing":
+            self._finish(m, "void", None, None, reason="set_restart")    # (no blame: not a strike)
+        else:
+            self.cancel_match(m, "set_restart", by=None if side is None else m.players[side])
+        return True
+
+    def _away_marks(self, window):
+        return [x for x in self.AWAY_MARKS if x < window]
+
+    def _away_notice(self, other, p, left, code, **ref):
+        """Tell the remaining player that `p` is away, with the seconds left (the launcher shows notices in its
+        status line; `left`/`grace` for a launcher that counts down itself)."""
+        other.send({"t": "notice", "code": code, **ref, "grace": round(left), "left": round(left),
+                    "msg": f"{p.name} is reconnecting -- {left:.0f} s left"})
+
+    def _match_away_mark(self, m, side, left):
+        m.timers.pop(f"mark{side}_{left}", None)
+        if m.state == "playing" and f"grace{side}" in m.timers and not m.players[side].online:
+            self._away_notice(m.players[1 - side], m.players[side], left, "opponent_away", match=m.id,
+                              set=m.set.id if m.set is not None else None)
+
+    def _set_away_mark(self, gs, p, left):
+        if gs.state == "active" and p.id in gs.grace and not p.online:
+            self._away_notice(gs.other(p), p, left, "opponent_away", set=gs.id)
+
     def _set_dropped(self, gs, p):
-        """`p` lost the lobby between two games of a rated set: like mid-match, T5L_RECONNECT_GRACE to return."""
+        """`p` is away between two games of a rated set (lost the lobby, crashed, closed the launcher):
+        T5L_SET_AWAY_SECONDS to return."""
         if p.id in gs.grace:
             return
-        gs.grace[p.id] = asyncio.get_running_loop().call_later(self.cfg.reconnect_grace, self._set_grace_expired,
-                                                               gs, p)
-        gs.other(p).send({"t": "notice", "code": "opponent_dropped", "set": gs.id, "grace": self.cfg.reconnect_grace,
-                          "msg": f"{p.name} lost the lobby connection; waiting "
-                                 f"{self.cfg.reconnect_grace:.0f} s for them to return"})
+        loop = asyncio.get_running_loop()
+        window = self.cfg.set_away_seconds
+        gs.grace[p.id] = loop.call_later(window, self._set_grace_expired, gs, p)
+        gs.grace_marks[p.id] = [loop.call_later(window - x, self._set_away_mark, gs, p, x)
+                                for x in self._away_marks(window)]
+        log.info("set %s: %s is away, %.0f s to come back", gs.id, p.name, window)
+        self.note("set_away", set=gs.id, player=p.id)
+        self._away_notice(gs.other(p), p, window, "opponent_dropped", set=gs.id)
 
     def _set_grace_expired(self, gs, p):
         gs.grace.pop(p.id, None)
+        for h in gs.grace_marks.pop(p.id, ()):
+            h.cancel()
         if gs.state != "active" or p.online or gs.current is not None:
             return
         if not gs.other(p).online:
             self._end_set(gs, "both_left")
         else:
-            self._end_set(gs, "disconnect", by=p)
+            self._end_set(gs, "no_return", by=p)     # not back in time: the remaining player wins the set
 
     def _set_back(self, gs, p):
-        """`p` is back in the lobby (resumed) between two games: the set goes on."""
+        """`p` is back in the lobby (resumed, or logged in again) between two games: the set goes on."""
         h = gs.grace.pop(p.id, None)
+        for x in gs.grace_marks.pop(p.id, ()):
+            x.cancel()
         if h is not None:
             h.cancel()
             gs.other(p).send({"t": "notice", "code": "opponent_back", "set": gs.id,
-                              "msg": f"{p.name} is back in the lobby"})
+                              "msg": f"{p.name} is back; the set goes on"})
+            a, b = gs.wins[p.id], gs.wins[gs.other(p).id]
+            # (after the login's answer, like the other notices of a login)
+            asyncio.get_running_loop().call_soon(p.send, {
+                "t": "notice", "code": "set_resumed", "set": gs.id, "info": gs.info(), "slot": gs.side(p),
+                "msg": f"you are back in the ranked set ({a}-{b}); the next game starts soon"})
+            log.info("set %s: %s is back", gs.id, p.name)
         if gs.next_timer is None and gs.current is None:
             asyncio.get_running_loop().call_soon(self._set_next, gs)
 

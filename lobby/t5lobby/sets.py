@@ -10,6 +10,8 @@ through t5lobby.i18n (German in i18n_de.py).
     result_text(set_end)          "You won the set 2-1; rating 1532 (+32) -- PROMOTED to 1st Dan!"
                                   (the set_end event of a rated set); "" otherwise
     history_text(row_set)         " -- set game 2, set won 2-1" for a history row's `set`; "" otherwise
+                                  (" -- set game 1, set lost 1-0 (you did not come back within 90 s)")
+    leave_text(reason, by)        "your opponent left the set": who ended a set by leaving it, and how
 """
 import math
 
@@ -35,8 +37,33 @@ REASON_TEXT = {
     "left": lambda: t("a player left before a game counted"),
     "disconnect": lambda: t("a player lost the lobby connection"),
     "declined": lambda: t("a player left"),
+    "no_return": lambda: t("a player did not come back in time"),
 }
 SET_RESULT = {"win": lambda: t("set won"), "loss": lambda: t("set lost")}
+AWAY_SECONDS = 90      # the server's T5L_SET_AWAY_SECONDS (set_end says it; older history rows: the default)
+
+
+def leave_text(reason, by, seconds=None):
+    """Who ended a ranked set by leaving it, and how (1.1.9): 'your opponent left the set' (the Leave set button),
+    'you did not come back within 90 s' (a crash, a closed launcher, a lost connection, not back in time),
+    'your opponent quit a game' ... -- `reason` and `by` (you | opponent) of set_end or of a history row's set;
+    '' when the set did not end that way."""
+    if by not in ("you", "opponent"):
+        return ""
+    you = by == "you"
+    if reason in ("left", "declined"):
+        return t("you left the set") if you else t("your opponent left the set")
+    if reason == "no_return":
+        n = int(round(float(seconds or AWAY_SECONDS)))
+        return (t("you did not come back within {seconds} s", seconds=n) if you
+                else t("your opponent did not come back within {seconds} s", seconds=n))
+    if reason in ("quit", "early_quit", "early_quit_repeat"):
+        return t("you quit a game") if you else t("your opponent quit a game")
+    if reason in ("disconnect", "connection"):
+        return t("you lost the connection") if you else t("your opponent lost the connection")
+    if reason == "no_connection":
+        return t("your side could not connect") if you else t("your opponent's side could not connect")
+    return ""
 
 
 def status_text(info, slot=0):
@@ -91,8 +118,13 @@ def result_text(ev):
         return t("The set does not count; no rating change")
     w = ev.get("wins") or [0, 0]
     if ev.get("status") == "forfeit":
-        you_left = (ev.get("blame") or ev.get("by")) == "you"
-        if res == "win":
+        who = ev.get("blame") or ev.get("by")
+        you_left = who == "you"
+        why = ev.get("outcome_reason") or ev.get("reason")
+        how = leave_text(why, who, ev.get("away_seconds")) if why not in ("left", "declined") else ""
+        if how:
+            text = t("You won the set ({how})", how=how) if res == "win" else t("You lost the set ({how})", how=how)
+        elif res == "win":
             text = t("You won the set (your opponent left it)") if not you_left else t("You won the set")
         else:
             text = t("You lost the set (you left it)") if you_left else t("You lost the set")
@@ -111,4 +143,7 @@ def history_text(sv):
     sc = sv.get("score")
     if sv.get("result") in SET_RESULT and sc:
         text += ", " + SET_RESULT[sv["result"]]() + f" {sc[0]}-{sc[1]}"
+    how = leave_text(sv.get("reason"), sv.get("by"), sv.get("away_seconds")) if sv.get("status") == "forfeit" else ""
+    if how:
+        text += " (" + how + ")"          # 1.1.9: who left the set, and how
     return text

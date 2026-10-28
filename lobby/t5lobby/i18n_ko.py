@@ -1334,6 +1334,43 @@ MESSAGES = {
     "You won the set {mine}-{theirs}": "세트 {mine}-{theirs} 승리",
     "You lost the set {mine}-{theirs}": "세트 {mine}-{theirs} 패배",
     "set game {number}": "세트 {number}경기",
+    # 1.1.9: who left a ranked set, and how; a player away from the set (sets.py, tk_tab.py, the server)
+    "You won the set ({how})":
+        "세트 승리 ({how})",
+    "You lost the set ({how})":
+        "세트 패배 ({how})",
+    "you left the set":
+        "내가 세트를 나감",
+    "your opponent left the set":
+        "상대가 세트를 나감",
+    "you did not come back within {seconds} s":
+        "내가 {seconds}초 안에 돌아오지 않음",
+    "your opponent did not come back within {seconds} s":
+        "상대가 {seconds}초 안에 돌아오지 않음",
+    "you quit a game":
+        "내가 경기를 그만둠",
+    "your opponent quit a game":
+        "상대가 경기를 그만둠",
+    "you lost the connection":
+        "내 연결이 끊김",
+    "your opponent lost the connection":
+        "상대의 연결이 끊김",
+    "your side could not connect":
+        "내 쪽이 연결하지 못함",
+    "your opponent's side could not connect":
+        '상대 쪽이 연결하지 못함',
+    "a player did not come back in time":
+        "한 플레이어가 제시간에 돌아오지 않았습니다",
+    "played again: a player was away":
+        "다시 진행: 한 플레이어가 자리에 없었음",
+    "A player was away; the set's game starts again.":
+        '한 플레이어가 자리에 없었습니다. 세트 경기를 다시 시작합니다.',
+    "{name} is reconnecting -- {seconds} s left":
+        "{name}님이 다시 연결 중 -- {seconds}초 남음",
+    "{name} is back; the set goes on":
+        "{name}님이 돌아왔습니다. 세트를 계속합니다",
+    "you are back in the ranked set ({mine}-{theirs}); the next game starts soon":
+        "랭크 세트로 돌아왔습니다 ({mine}-{theirs}). 다음 경기가 곧 시작됩니다",
     # ---- lobby/t5lobby/tk_tour.py, tour_text.py (tournaments)
     "A set is played like a casual set with the in-game select; results come from the games. Players who do not accept a called set in time are out.": "세트는 게임 안 캐릭터 선택이 있는 일반 세트처럼 진행되고, 결과는 게임에서 가져옵니다. 호출된 세트를 제때 수락하지 않으면 탈락합니다.",
     "Accepted. Waiting for {name}...": "수락했습니다. {name}님을 기다리는 중...",

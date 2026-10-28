@@ -8,9 +8,12 @@ Quick get the server's sides and a random stage.
 
 The server's sides (1.1.7; owner: "never the one with the lower ping is P1"): a fair coin (`_side_coin`, secrets)
 orders the two players of every queue match (ranked and quick), of a ranked room's new set, and of a ranked rematch
-(a new set; with launchers without sets a new rated game). The games of a rated set keep the sides of its first
-game (they continue inside the running games; a game keeps its slot for its whole netplay session), a quick
-rematch keeps them too, and a tournament set has its bracket's order. Before 1.1.7 the queue made the player with
+after a finished set (a new set). The coin is thrown once per ranked set (1.1.9, owner: "the sides within a set
+stay the same"): every later game of the set keeps the sides of its first game -- the next game of a rated set
+(they continue inside the running games; a game keeps its slot for its whole netplay session), a game started
+again after a player came back (_set_restart), and with launchers without sets the ranked rematch inside the set
+(1.1.7 threw the coin again for each). The set's sides are GameSet.players. A quick rematch keeps the sides too,
+and a tournament set has its bracket's order. Before 1.1.7 the queue made the player with
 the lower server round trip P1 ("more likely the better-connected PC"): that round trip is to the lobby server, not
 between the two PCs, and the host role carries nothing that makes a better connection (docs/ONLINE.md "The side is
 the netplay role"). The role is in match_found / match_reveal / match_start as always, so this needs no launcher
@@ -128,12 +131,19 @@ class CasualMixin:
         return first
 
     @staticmethod
-    def _ranked_rematch_swap(prev):
-        """A ranked rematch starts a new set (a launcher without sets: a new rated game), so its sides are drawn
-        again: True = P1 and P2 the other way round (a new netplay session, like Swap sides). The next game of a
-        running rated set is not a rematch (_set_next keeps the set's sides)."""
+    def _ranked_set_going(prev):
+        """Is the game after `prev` one more game of the same running ranked set? (Its sides stay.)"""
         gs = prev.set
-        if not prev.ranked or (gs is not None and gs.rated and gs.state == "active"):
+        return gs is not None and gs.ranked and gs.state == "active" and gs.outcome is None
+
+    def _ranked_rematch_swap(self, prev):
+        """A ranked rematch after a finished set starts a new set, so its sides are drawn again: True = P1 and P2 the
+        other way round (a new netplay session, like Swap sides). Not inside a running ranked set (1.1.9, owner:
+        the sides of a set stay the same in all its games): the next game of a rated set is not a rematch at all
+        (_set_next keeps the set's sides), and with a launcher without sets the ranked rematch is the set's next
+        game -- each rated on its own, but the coin only at the set's first game (it used to be thrown again for
+        every rematch)."""
+        if not prev.ranked or self._ranked_set_going(prev):
             return False
         swap = _side_coin() == 1
         log.info("ranked rematch of %s: sides drawn again (%s)", prev.id, "swapped" if swap else "as before")

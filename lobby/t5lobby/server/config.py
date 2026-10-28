@@ -78,6 +78,9 @@ class Config:
     set_next_seconds: float = 6.0   # T5L_SET_NEXT_SECONDS: countdown from a game's result to the set's next game
     set_replays: int = 2            # T5L_SET_REPLAYS: games without a winner (desync, draw, too short) played again
                                     # per set; one more and the set is void
+    set_away_seconds: float = 90.0  # T5L_SET_AWAY_SECONDS (1.1.9): a player of a running ranked set who crashed, closed
+                                    # the launcher or lost the connection may come back this long; the set goes on.
+                                    # Not back: that player loses the set (both gone: void). Leave set counts at once.
     ranked_rooms: bool = True       # T5L_RANKED_ROOMS: rooms may be ranked (else only the ranked queue is)
     # rooms (docs/ONLINE.md "Rooms"): community rooms take turns, private rooms need a password or an invite code
     room_max_size: int = 8          # T5L_ROOM_MAX_SIZE: most players a community room may hold (2 = no community rooms)

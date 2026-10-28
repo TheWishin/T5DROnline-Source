@@ -38,6 +38,8 @@ FAST = dict(host="127.0.0.1", port=0, udp_port=0, udp_port2=-1, db=":memory:", s
             blind_ready=False,              # switch these two on; everything older runs the way it always did)
             ranked_same_ip=True,            # every test player is on 127.0.0.1 (test_abuse switches it off)
             max_match_seconds=0.0)          # lone reports are settled after result_timeout (test_abuse: the wait)
+# Settings of this tree's server only (FAST also starts older servers' code, test_casual / test_deploy ...).
+FAST_NEW = dict(set_away_seconds=2.0)       # a ranked set's away window: 90 s on a real server, short in tests
 
 
 def coin_keeps_the_sides():
@@ -50,7 +52,7 @@ def coin_keeps_the_sides():
 
 class ServerThread:
     def __init__(self, **cfg):
-        kw = dict(FAST)
+        kw = dict(FAST, **FAST_NEW)
         kw.update(cfg)
         self.cfg = Config(**kw)
         self.loop = proto.new_event_loop()

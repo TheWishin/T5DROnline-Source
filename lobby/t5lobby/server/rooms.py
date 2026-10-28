@@ -682,7 +682,8 @@ class RoomsMixin:
         m = r.match
         if m is not None and p in m.players and m.state not in ("playing", "done"):
             self.cancel_match(m, "opponent_left", by=p)
-        if r.set is not None and r.set.state == "active" and r.set.current is None and p in r.set.players:
+        if r.set is not None and r.set.state == "active" and r.set.current is None and p in r.set.players and not (
+                r.set.rated and not p.online):       # (lost the lobby: the ranked set's away window decides, 1.1.9)
             self._decline_recent(r.set, p)
             self._end_set(r.set, "left", by=p)
         if r.private and p.watching is not None and getattr(p.watching.match, "room", None) is r:

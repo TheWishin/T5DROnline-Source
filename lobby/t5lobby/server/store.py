@@ -442,8 +442,14 @@ class Store:
         rows = [dict(r) for r in self._x(
             "SELECT id, name, rating, rd, games, ranked_games, wins, losses, draws, tier, tier_peak FROM accounts "
             "WHERE ranked_games > 0 ORDER BY rating - 2 * rd DESC, rating DESC LIMIT ? OFFSET ?", (limit, offset))]
+        # 1.1.9: wins and losses split into ranked and casual (the leaderboard's columns), as the profile counts them
+        # (match_stats: counted matches -- every game of a ranked set is a ranked match); the old fields stay
+        split = self.match_stats_of([r["id"] for r in rows])
         for i, r in enumerate(rows):
             r["place"] = offset + i + 1
+            st = split[r["id"]]
+            for kind in ("ranked", "casual"):
+                r[kind + "_wins"], r[kind + "_losses"] = st[kind]["wins"], st[kind]["losses"]
             r["main"] = self.main_char(r.pop("id"))
         return rows
 
@@ -537,7 +543,8 @@ class Store:
         out = []
         for r in self._x(
                 "SELECT m.*, s.status AS s_status, s.winner AS s_winner, s.score AS s_score, s.rating AS s_rating, "
-                "s.games AS s_games FROM matches m LEFT JOIN sets s ON s.id = m.set_id "
+                "s.games AS s_games, s.reason AS s_reason, s.blame AS s_blame "
+                "FROM matches m LEFT JOIN sets s ON s.id = m.set_id "
                 "WHERE (m.p1_account = ? OR m.p2_account = ?) AND m.status != 'playing' "
                 "ORDER BY COALESCE(m.ended, m.created) DESC LIMIT ? OFFSET ?", (aid, aid, limit, offset)):
             r = dict(r)
@@ -563,7 +570,7 @@ class Store:
                 "path": r["path"], "rtt_ms": r["rtt_ms"], "delay": r["delay"]})
             if r.get("set_id"):
                 view = _set_view(r["set_id"], r["set_game"], r["s_status"], r["s_winner"], r["s_score"],
-                                 r["s_rating"], side)
+                                 r["s_rating"], side, r["s_reason"], r["s_blame"])
                 out[-1]["set"] = view
                 games = json.loads(r["s_games"]) if r.get("s_games") else []
                 if view["delta"] is not None and games and games[-1].get("match") == r["id"]:
@@ -599,7 +606,8 @@ class Store:
                 "ORDER BY COALESCE(ended, created) DESC LIMIT ? OFFSET ?", (aid, aid, limit, offset)):
             r = dict(r)
             side = 0 if r["p1_account"] == aid else 1
-            d = _set_view(r["id"], None, r["status"], r["winner"], r["score"], r["rating"], side)
+            d = _set_view(r["id"], None, r["status"], r["winner"], r["score"], r["rating"], side, r["reason"],
+                          r["blame"])
             d.pop("game")
             games = []
             for g in json.loads(r["games"]) if r["games"] else []:
@@ -637,16 +645,26 @@ class Store:
 
     def match_stats(self, aid):
         """{ranked: {games, wins, losses, draws}, casual: {...}} over counted matches (as char_usage counts them)."""
-        out = {k: {"games": 0, "wins": 0, "losses": 0, "draws": 0} for k in ("ranked", "casual")}
+        return self.match_stats_of([aid])[aid]
+
+    def match_stats_of(self, aids):
+        """match_stats for several accounts in one query (the leaderboard's page): {aid: {ranked: {...}, casual:
+        {...}}}; an account without counted matches has zeros."""
+        aids = list(dict.fromkeys(aids))
+        out = {a: {k: {"games": 0, "wins": 0, "losses": 0, "draws": 0} for k in ("ranked", "casual")} for a in aids}
+        if not aids:
+            return out
+        marks = ",".join("?" * len(aids))
+        played = "status IN ('confirmed','onesided','forfeit','resolved')"
         for r in self._x(
-                "SELECT ranked, COUNT(*) AS games, "
-                "SUM(CASE WHEN (p1_account = ? AND winner = 0) OR (p2_account = ? AND winner = 1) THEN 1 ELSE 0 END) "
-                "AS wins, SUM(CASE WHEN winner IS NULL THEN 1 ELSE 0 END) AS draws FROM matches "
-                "WHERE (p1_account = ? OR p2_account = ?) AND status IN ('confirmed','onesided','forfeit','resolved') "
-                "GROUP BY ranked", (aid, aid, aid, aid)):
+                "SELECT acc, ranked, COUNT(*) AS games, SUM(won) AS wins, SUM(drawn) AS draws FROM ("
+                "SELECT p1_account AS acc, ranked, winner = 0 AS won, winner IS NULL AS drawn FROM matches "
+                f"WHERE p1_account IN ({marks}) AND {played} UNION ALL "
+                "SELECT p2_account AS acc, ranked, winner = 1 AS won, winner IS NULL AS drawn FROM matches "
+                f"WHERE p2_account IN ({marks}) AND {played}) GROUP BY acc, ranked", (*aids, *aids)):
             games, wins, draws = r["games"], r["wins"] or 0, r["draws"] or 0
-            out["ranked" if r["ranked"] else "casual"] = {"games": games, "wins": wins, "draws": draws,
-                                                          "losses": games - wins - draws}
+            out[r["acc"]]["ranked" if r["ranked"] else "casual"] = {"games": games, "wins": wins, "draws": draws,
+                                                                    "losses": games - wins - draws}
         return out
 
     def community_stats(self, now=None):
@@ -1000,12 +1018,15 @@ COUNTED = ("confirmed", "onesided", "forfeit", "resolved")
 SET_COUNTED = ("confirmed", "forfeit")
 
 
-def _set_view(sid, game, status, winner, score, rating, side):
-    """A ranked set from one player's side (history rows)."""
+def _set_view(sid, game, status, winner, score, rating, side, reason=None, blame=None):
+    """A ranked set from one player's side (history rows). 1.1.9: its `reason` and `by` (you | opponent | None:
+    the player it blames -- who left it, did not come back, crashed) for the history's "your opponent left the
+    set" (t5lobby/sets.py history_text)."""
     score = json.loads(score) if isinstance(score, str) else score
     rating = json.loads(rating) if isinstance(rating, str) else rating
     counted = status in SET_COUNTED and winner is not None
     return {"id": sid, "game": game, "status": status,
             "result": ("win" if winner == side else "loss") if counted else "-",
             "score": (score if side == 0 else score[::-1]) if score else None,
-            "delta": rating[side]["delta"] if rating else None}
+            "delta": rating[side]["delta"] if rating else None, "reason": reason,
+            "by": None if blame is None else ("you" if blame == side else "opponent")}

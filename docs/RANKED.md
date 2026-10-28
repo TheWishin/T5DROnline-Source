@@ -222,9 +222,9 @@ host), "more likely the better-connected PC". Since 1.1.7 the server draws the s
 
 | | P1 / P2 |
 |---|---|
-| ranked queue | drawn for each set (game 1); the set's next games keep them |
+| ranked queue | drawn for each set (game 1); the set's next games keep them (1.1.9, owner: "the sides within a set stay the same" -- also a game played again after a player came back, "Away from a set") |
 | ranked room | drawn for each new set (not the room's order); the set's next games keep them |
-| ranked rematch (a new set; a launcher without sets: a new rated game) | drawn again. After a set this costs nothing: launchers since 1.1.5 let their game's session go at the set's end (`match_driver._set_over`), so the next set comes over a new netplay session anyway. Without sets, other sides make the rematch a new session (`match_found` `keep: false`, like Swap sides in casual); the same sides continue inside the running games |
+| ranked rematch after a set (a new set) | drawn again. With a launcher without sets the ranked rematch is the set's next game: since 1.1.9 it keeps the set's sides (1.1.7 drew them again for each). After a set this costs nothing: launchers since 1.1.5 let their game's session go at the set's end (`match_driver._set_over`), so the next set comes over a new netplay session anyway. Without sets, other sides make the rematch a new session (`match_found` `keep: false`, like Swap sides in casual); the same sides continue inside the running games |
 | quick queue | drawn (the owner asked for ranked; nothing speaks for the old rule anywhere); a quick rematch keeps them, as before |
 | challenges, invites, casual rooms | the players' wishes (docs/ONLINE.md "Sides and stages by choice"), unchanged |
 | tournament sets | the bracket's order, unchanged (the organizer's question, not decided here) |
@@ -468,7 +468,8 @@ matches" on the profile count sets.
 |---|---|
 | a game is confirmed (or onesided / resolved) | the winner gets a game; 2 games = the set is won (status `confirmed`) |
 | a player quits a game, closes the game, or loses the lobby for good mid-game (the game is a forfeit) | lost by that player at once (`forfeit`), whatever the score |
-| a player leaves **between** two games: Leave set, declines, logs out, blocks the opponent, leaves the ranked room, does not come back to the lobby within 60 s | lost by that player (`forfeit`) once a game has counted; before that the set is void, no rating change |
+| a player leaves **between** two games on purpose: Leave set, declines, blocks the opponent, leaves the ranked room | lost by that player at once (`forfeit`, reason `left`), the other player wins it and gets the points -- once a game has counted; before that the set is void, no rating change |
+| a player is **away** between two games -- the launcher crashed or was closed (it logs out), the connection broke, or its game is gone when the next game starts -- (1.1.9, "Away from a set" below) | the set waits `T5L_SET_AWAY_SECONDS` (90 s); back in time (the launcher reconnects, or the player starts it again and logs in): the set goes on, same score, sides and characters. Not back: lost by that player (`forfeit`, reason `no_return`), the other player wins it and gets the points (before a game counted: void). Both away: void (`both_left`) |
 | queueing, a room or a challenge between two games | refused ("you are in a ranked set (1-0); leave it first") |
 | a game voided by a **desync** | the game is played again (the same number, "game 2 of 3 again"), over a **new connection** so both games reset first |
 | a game without a winner: a draw, too short, no result | played again as well |
@@ -477,7 +478,7 @@ matches" on the profile count sets.
 | ... and the evidence names nobody (both sides failed, the server's relay is full, two NATs that cannot punch with the relay off) | the set is void, no rating change |
 | a later game voided with blame for a **desync claim** the other game contradicts, **no report** while online, or the only **lobby connection that dropped** (RANKED.md "Results") | leaving: the set is lost by that player |
 | a game voided by a **crash** (blame), a dispute, a broken connection nobody is blamed for, no reports | the set is void, no rating change; the crash is still a strike for the crasher (and a loss from the third strike on, which loses the set) |
-| an early quit (within `T5L_MIN_MATCH_SECONDS`) | in game 1: void with a strike, as for a single game; in a later game: leaving, the set is lost |
+| an early quit (within `T5L_MIN_MATCH_SECONDS`) | in game 1: void with a strike, as for a single game; in a later game: leaving, the set is lost -- once its fight began (before: away from the set, 1.1.9) |
 | "Leave: too laggy" after a lag check that found more lag than the ping explains | the set is void, no penalty for anyone |
 | the lobby server restarts in the middle of a set | the set is void (below) |
 
@@ -489,8 +490,37 @@ crashed, or after a desync) the next game gets a new connection (punch or relay,
 ready check). In a persistent game the last session's end ("peer lost (peer_quit)" when the other game went
 idle first) may reach the log after the next game was handed over; the match driver counts a lost opponent
 only from the new session's own lines (found in the first real-game runs: the replay after a desync was
-reported as a disconnect). A player whose lobby connection drops between two games has the same 60 s
-(`T5L_RECONNECT_GRACE`) as in a match; the launcher reconnects by itself and the set goes on.
+reported as a disconnect). A player whose lobby connection drops between two games has `T5L_SET_AWAY_SECONDS`
+(90 s, 1.1.9; before: the 60 s of `T5L_RECONNECT_GRACE`); the launcher reconnects by itself and the set goes on.
+
+**Away from a set (1.1.9).** Owner (2026-10-28): leaving a set must be judged smartly, and the player who stays
+gets the points. The case: a player won game 1 of a set 3-0, his launcher closed between the games and he was back
+5 s later -- 1.1.8 scored the set as his forfeit (-40, demoted). Only the **Leave set** button (`leave_set`) is a
+decision; it counts at once. Everything else the launcher does when it goes away is not: closing the window and
+Log out send `logout`, a crash or a broken line just ends the connection, and a launcher whose game is gone (closed
+or crashed between two games, or it could not start) answers the next game with `leave_match` or a `quit` /
+`crash` result before its fight. For all of these the set waits `T5L_SET_AWAY_SECONDS` (90):
+
+- the remaining player is told at once and at 60, 30 and 10 s left (`notice` `opponent_dropped` / `opponent_away`
+  with `left`: "Alice is reconnecting -- 60 s left"), and when the player is back ("Alice is back; the set goes on");
+- the player comes back by the launcher's own reconnect, or by starting the launcher again and logging in (the same
+  account takes its set over, `h_login`): `notice` `set_resumed` with the set, then the next game -- the same score,
+  the set's sides and locked characters, over a new connection. The player's rating is the one in memory (nothing
+  was rated during the set);
+- the next game that had already started but whose fight had not begun (no game said `game_started` `playing`,
+  nobody reported a result) is not played: it ends `void` with reason `set_restart` (no blame, no strike) and is
+  started again; at most 3 times per player in one set (`SET_RESTARTS`), then the old rules apply (an early quit is
+  leaving the set);
+- not back in time: the set is lost by that player (`forfeit`, reason `no_return`; a set at 0-0 is void), rated at
+  once like any decided set; the history shows "your opponent did not come back within 90 s";
+- both away (the other one's window runs out while the first is still away): the set is void, no rating change.
+
+Once a game's fight runs, that game's rules decide it as before (closing the game is a quit = the set lost, a crash
+is void with a strike); only its lobby connection gets the same away window (`T5L_SET_AWAY_SECONDS` instead of
+`T5L_RECONNECT_GRACE`). A ranked room's set waits too: the away player leaves the room, the set's next game is still
+played in it. History rows of a set's games carry the set's `reason` and `by` (you / opponent) since 1.1.9, so the
+history says who left and how ("set lost 1-0 (you did not come back within 90 s)", "set won 0-1 (your opponent
+left the set)").
 
 **Server restart.** A running set lives in the server's memory, like a running match. When the server
 starts, every set its database still shows as `playing` is made **void** (reason `server_restart`), and so is
@@ -934,6 +964,7 @@ New `T5L_*` variables (all in `server/config.py`):
 | `T5L_RANKED_SET_WINS` | 2 | games to win a ranked set (2 = best of 3), rated once at its end; 1 = every ranked game rated on its own (as before) |
 | `T5L_SET_NEXT_SECONDS` | 6 | countdown from a game's result to the set's next game |
 | `T5L_SET_REPLAYS` | 2 | games without a winner (desync, draw, too short) played again per set; one more and the set is void |
+| `T5L_SET_AWAY_SECONDS` | 90 | 1.1.9: a player of a running ranked set who crashed, closed the launcher or lost the connection may come back this long; not back: that player loses the set (both away: void). Leave set counts at once ("Away from a set") |
 | `T5L_RANKED_ROOMS` | 1 | rooms may be ranked |
 | `T5L_ROUNDS` | 3 | rounds to win (`T5_FIGHT`) |
 | `T5L_INGAME_PICK` | 30 | seconds to pick on the game's own select screen when both clients can (`fight.pick`); 0 = the launchers' characters |
@@ -974,7 +1005,7 @@ in `hello.caps`, and an older client gets the old messages.
 | `recover` (no login needed) `name`, `code`, `password` | `recovered {name, codes_left}` |
 | `recovery_codes` `password` | `recovery_codes {codes}` |
 | `set_char` `char`; `queue` + `char` | |
-| `profile` `name`, `history`; `history` `name`, `limit`, `offset`; `leaderboard` `limit`, `offset` | `profile {profile}`, `history {rows}`, `leaderboard {rows}` (+ rank, provisional, main, online) |
+| `profile` `name`, `history`; `history` `name`, `limit`, `offset`; `leaderboard` `limit`, `offset` | `profile {profile}`, `history {rows}`, `leaderboard {rows}` (+ rank, provisional, main, online; 1.1.9: + `ranked_wins`, `ranked_losses`, `casual_wins`, `casual_losses` -- counted matches split as the profile's `stats` counts them, every game of a set a ranked match) |
 | `result` + `source`, `desync`, `hash`, `frames`, `reason`, `chars` ([P1, P2] fighter keys or game ids: what the game fought with), `costumes` ([P1, P2] confirm buttons 0-4) | `result_ack` |
 | `perf` `fps` (this PC's speed in its last match; re-sent after every login) | -- |
 | `rematch` `match`, `accept`, `keep` | `rematch {state: waiting\|accepted, next}` |

@@ -708,9 +708,34 @@ class OnlineView:
         row = tab.casual.build(f, px)
         row.grid(row=3, column=0, columnspan=2, sticky="e", pady=(px(6), 0))
         row.grid_remove()                    # (shown after a login on a server that has them)
+        # ... or on a line of its own below when both do not fit (1.1.6 drew them over each other in German and
+        # Japanese at 100 % and 150 %)
+        self.casual_row = row
+        for w in (f, row, tab.strict_check):
+            w.bind("<Configure>", lambda _e: self.place_casual_row(), add="+")
         self.wrap(ttk.Label(f, textvariable=tab.hint_var, style="Card.Faint.TLabel", justify="left"),
-                  card, 40).grid(row=4, column=0, columnspan=2, sticky="w", pady=(px(6), 0))
+                  card, 40).grid(row=5, column=0, columnspan=2, sticky="w", pady=(px(6), 0))
         return f
+
+    def place_casual_row(self):
+        """The side / stage row (tk_casual.py) right of "Strict" when both fit in the card's width, else below it.
+        The width: the card's on screen (never less than it asks for)."""
+        row, strict = getattr(self, "casual_row", None), getattr(self.tab, "strict_check", None)
+        if row is None or strict is None:
+            return
+        try:
+            if row.winfo_manager() != "grid":
+                return
+            f = row.master
+            below = strict.winfo_reqwidth() + row.winfo_reqwidth() + self.px(16) > max(f.winfo_width(),
+                                                                                       f.winfo_reqwidth())
+            at = int(row.grid_info()["row"])
+            if below and at == 3:
+                row.grid_configure(row=4, column=0, columnspan=2, sticky="w")
+            elif not below and at == 4:
+                row.grid_configure(row=3, column=0, columnspan=2, sticky="e")
+        except (tk.TclError, KeyError, ValueError):
+            pass
 
     def _build_search(self, card):
         tab, px = self.tab, self.px

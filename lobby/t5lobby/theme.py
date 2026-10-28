@@ -434,6 +434,29 @@ DISPLAY_REGULAR = ["Rajdhani", "Barlow Condensed", "Bahnschrift Condensed", "Bah
 CAPS_FONTS = ["Rajdhani SemiBold", "Barlow SemiBold", "Bahnschrift SemiBold"]   # small capitals: not condensed
 
 
+# How wide the launcher's own faces are: the average width of WIDTH_SAMPLES per pixel of font size (measured on
+# Windows 11: Segoe UI, Segoe UI Semibold, Bahnschrift SemiBold Condensed, Bahnschrift SemiBold). Every width in the
+# layout was made for these. Where a face is missing (Wine / Proton, an old Windows 10 without Bahnschrift) the
+# stand-in is drawn smaller by the ratio when it is wider -- es / fr / pt-BR texts were cut off in 1 to 43 places
+# with Bahnschrift hidden (1.1.7).
+WIDTH_SAMPLES = ("Ranked match  Quick Match  POSICAO  Herausforderungen 0123456789 abcdefghijklmnopqrstuvwxyz",
+                 "RANKED MATCH  POSICAO  HERAUSFORDERUNGEN  JOGADOR  CLASSIFICACAO 0123456789")   # (headings: capitals)
+WIDTH_EM = {"text": (0.4945, 0.5569), "semi": (0.5069, 0.5689), "display": (0.3657, 0.3824),
+            "caps": (0.4957, 0.5569)}
+
+
+def width_factor(root, family, role, weight="normal"):
+    """1.0 for the launcher's own faces; for a stand-in that is wider than the face of `role` (in mixed text or in
+    capitals, whichever is worse) the factor (< 1) its sizes are multiplied by, so a text takes the room the layout
+    has for it."""
+    try:
+        f = tkfont.Font(root=root, family=family, size=-100, weight=weight)
+        ems = [f.measure(x) / 100.0 / len(x) for x in WIDTH_SAMPLES]
+    except (tk.TclError, ZeroDivisionError):
+        return 1.0
+    return min([1.0] + [ref / em for ref, em in zip(WIDTH_EM[role], ems) if em > 0])
+
+
 def pick(families, wanted):
     """The first of `wanted` that is installed (or loaded by load_fonts), else None."""
     for name in wanted:
@@ -524,10 +547,18 @@ class Theme:
         mono = "Consolas" if "Consolas" in fams or not fams else "TkFixedFont"
         heavy = "normal"                  # the weight of semi / disp (they are semibold families already)
         cjk = i18n.ui_family(None, fams)  # Korean / Japanese: a font with their glyphs (i18n.FONTS)
+        # a stand-in for a missing face of ours is drawn smaller when it is wider (width_factor; 1.0 otherwise)
+        own = {"text": TEXT_FONTS, "semi": [f + " Semibold" for f in TEXT_FONTS] + [f + " SemiBold" for f in TEXT_FONTS],
+               "display": DISPLAY_FONTS, "caps": CAPS_FONTS}
+        chosen = {"text": ui, "semi": semi, "display": disp, "caps": caps}
+        factor = {role: 1.0 if (chosen[role] in own[role] or not fams) else
+                  width_factor(self.root, chosen[role], role) for role in own}
         if cjk:
             ui = disp_reg = cjk
             semi = disp = caps = cjk + " Semibold" if cjk + " Semibold" in fams else cjk
             heavy = "normal" if semi != cjk else "bold"
+            factor = dict.fromkeys(factor, 1.0)       # (their own fonts: the layout was checked with them)
+        self.width_factors = factor
         spec = {
             "body": (ui, 10, "normal"), "small": (ui, 9, "normal"), "bold": (semi, 10, heavy),
             "button": (semi, 10, heavy), "tab": (disp, 12, heavy), "maintab": (disp, 13, heavy),
@@ -536,8 +567,17 @@ class Theme:
             "huge": (disp, 32, heavy), "num": (disp, 14, heavy), "mono": (mono, 10, "normal"),
             "code": (mono, 14, "normal"), "brand": (disp, 20, heavy),
         }
+        role_of = {"body": "text", "small": "text", "bold": "semi", "button": "semi", "caps": "caps",
+                   "mono": None, "code": None}
+        try:
+            px_per_pt = float(self.root.tk.call("tk", "scaling"))
+        except (tk.TclError, ValueError):
+            px_per_pt = 96.0 / 72.0
         existing = set(tkfont.names(self.root))
         for key, (fam, size, weight) in spec.items():
+            k = factor.get(role_of.get(key, "display"), 1.0) if role_of.get(key, "display") else 1.0
+            if k < 0.995:
+                size = -max(6, int(size * px_per_pt * k))       # (pixels: finer than whole points)
             name = "T5" + key.capitalize()
             if name in existing:
                 f = tkfont.nametofont(name, root=self.root)

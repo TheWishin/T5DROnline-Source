@@ -290,6 +290,38 @@ class Release(unittest.TestCase):
             with self.assertRaises(updater.UpdateError):
                 updater.parse_release(d)
 
+    def test_notes_are_reflowed(self):
+        # 1.1.7: the CHANGELOG wraps at 120 characters; 1.1.6's update window kept those breaks, so its lines broke
+        # in the middle. Every paragraph and list item is one line now (the window wraps it); headings, lists and
+        # the blank lines between paragraphs stay. With the real notes of 1.1.6 and 1.1.5.
+        sys.path.insert(0, os.path.join(ROOT, "tools"))
+        import release_notes
+        with open(os.path.join(ROOT, "CHANGELOG.md"), encoding="utf-8") as f:
+            changelog = f.read()
+        six = updater.notes_summary(release_notes.find_section(changelog, "1.1.6"), max_chars=10 ** 6)
+        lines = six.split("\n")
+        self.assertTrue(lines[0].startswith("Hotfix: the 1.1.5 launcher closed right after it started. On a PC"))
+        self.assertTrue(lines[0].endswith("as before 1.1.5). Nothing else changed."), lines[0])
+        self.assertEqual(lines[1], "")
+        self.assertTrue(lines[2].startswith("Stuck on 1.1.5?") and lines[2].endswith("as the launcher asks."))
+        self.assertIn("Launcher", lines)
+        items = [x for x in lines if x.startswith("• ")]
+        self.assertEqual(len(items), 3)
+        self.assertTrue(items[0].endswith("A test runs the check with the release's pkg_extract.py."), items[0])
+        self.assertNotIn("**", six)
+        self.assertNotIn("`", six)
+        five = updater.notes_summary(release_notes.find_section(changelog, "1.1.5"), max_lines=10 ** 4,
+                                     max_chars=10 ** 6)
+        body = release_notes.find_section(changelog, "1.1.5")
+        n_items = sum(1 for x in body.split("\n") if x.startswith("- "))
+        self.assertEqual(sum(1 for x in five.split("\n") if x.startswith("• ")), n_items)
+        for x in five.split("\n"):                              # no line ends in the middle of a sentence
+            if x and not x.endswith((".", ":", ")", "!", "?", '"', "…")) and x not in ("Online", "Offline"):
+                self.assertFalse(x.startswith("• ") or len(x) > 60, x)
+        # numbered lists and a list right after a paragraph
+        text = updater.notes_summary("Intro line one\ncontinues here.\n- first\n  wrapped\n1. one\n2. two\n\nEnd.")
+        self.assertEqual(text, "Intro line one continues here.\n\n• first wrapped\n1. one\n2. two\n\nEnd.")
+
     def test_notes_are_cut(self):
         text = updater.notes_summary("\n".join(f"- line {i}" for i in range(200)))
         self.assertTrue(text.endswith("…"))
@@ -335,6 +367,15 @@ class Check(unittest.TestCase):
         gh.api_headers = {"ETag": 'W/"2"'}
         rel, problem = updater.check_latest(self.cache, opener=gh, now=1000 + 60)
         self.assertEqual((rel["version"], problem), ("1.0.2", None))
+
+    def test_a_cache_with_unreflowed_notes_is_asked_again(self):
+        # (1.1.6 and older parsed the notes with their hard line breaks: a 304 would keep showing them)
+        rel = updater.parse_release(self.data)
+        with open(self.cache, "w", encoding="utf-8") as f:
+            json.dump({"fmt": 2, "checked": 1000, "etag": 'W/"1"', "release": rel}, f)
+        gh = FakeGitHub(api=self.data)
+        updater.check_latest(self.cache, opener=gh, now=1001)
+        self.assertNotIn("If-None-Match", gh.calls[0][1])                       # unconditional: a fresh 200
 
     def test_max_age_reuses_a_young_answer(self):
         gh = FakeGitHub(api=self.data)

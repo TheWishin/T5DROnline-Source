@@ -78,6 +78,9 @@ class CasualUI:
         if self.row is not None:
             if on:
                 self.row.grid()
+                place = getattr(getattr(self.tab, "view", None), "place_casual_row", None)
+                if place is not None:
+                    place()                  # (beside "Strict" or below it: whichever fits)
             else:
                 self.row.grid_remove()
 

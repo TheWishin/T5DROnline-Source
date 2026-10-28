@@ -37,6 +37,22 @@ part is in the README's status table.
   after 1.1.6 was out), conditionally with the cached ETag and Last-Modified so an unchanged answer is a 304 that
   does not use up GitHub's 60 requests an hour; "Update available" opens by itself after the start -- once per
   session, never during a build, a game or an online match (then when it ends). "Check for updates" stays.
+- Without the launcher's fonts (Bahnschrift, Segoe UI: Wine / Proton, some older Windows 10) nothing is cut off any
+  more (`lobby/t5lobby/theme.py` `width_factor`): a wider stand-in face is drawn smaller by how much wider it is
+  (es / fr / pt-BR were cut off in 1 to 43 places). The cut-off walk no longer skips on such a PC, and
+  `tests/i18n_layout.py --without-font NAME` checks it.
+- Online tab: "Strict (ranked: +-150 rating)" and the side / stage choices no longer run into each other (German,
+  Japanese at 100 % and 150 %): the choices move to a line of their own when both do not fit
+  (`lobby/t5lobby/tk_views.py`). The cut-off walk (`tests/i18n_layout.py`) now also reports widgets of one grid
+  row that overlap.
+- The update window shows the release notes as flowing paragraphs (`launcher/updater.py` `notes_summary`): the
+  CHANGELOG's line breaks at 120 characters made lines break in the middle; paragraphs and list items are one line
+  each now, wrapped by the window, with the lists and headings kept. A cached answer of an older launcher is asked
+  again once.
+- Tests: `test_controls_ui`'s runtime comparison failed on the main checkout's `deps/ps3recomp`, a patch series
+  behind (0053; the series is at 0083); on a tree prepared fresh with `tools/prepare_ps3recomp.py` it passes, on
+  a1bd816 and on this branch. A tree found on its own is now used only when its stamp names this series
+  (`tests/helpers.py` `ps3recomp_series_problem`); otherwise the test skips and says why.
 
 ### Updates and releases
 - An update keeps the new launcher only once it has run for 15 seconds or was closed by hand

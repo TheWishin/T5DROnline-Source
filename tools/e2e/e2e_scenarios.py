@@ -2998,10 +2998,16 @@ def _update_check(ctx, up, release_sig, seed):
     ctx.check("published newer release offered", rel and rel["version"] == "1.0.1" and up.is_newer(rel["version"],
               up.local_version(inst)) and prob is None, f"{rel and rel['version']} {prob}")
     ctx.check("release notes summary and code id read", rel and "rematch" in rel["notes"] and rel["code_id"] == "0123456789abcdef")
+    # 1.1.7: every start asks again (conditionally); only an explicit max_age reuses a younger answer.
+    plan["api"] = (304, None)
     n = len(calls)
     rel2, _ = up.check_latest(cache, opener=opener, now=now + 60)
-    ctx.check("within the hour: cached, no request", len(calls) == n and rel2 and rel2["version"] == "1.0.1")
-    plan["api"] = (304, None)
+    ctx.check("next start within the hour: asks again, conditionally (ETag), 304 keeps the release",
+              len(calls) == n + 1 and calls[-1][1].get("If-None-Match") == '"e2e-etag"' and rel2
+              and rel2["version"] == "1.0.1")
+    n = len(calls)
+    rel2b, _ = up.check_latest(cache, opener=opener, now=now + 90, max_age=3600)
+    ctx.check("max_age: a younger answer reused, no request", len(calls) == n and rel2b and rel2b["version"] == "1.0.1")
     rel3, prob3 = up.check_latest(cache, force=True, opener=opener, now=now + 120)
     ctx.check("forced check: conditional request (ETag), 304 keeps the release",
               calls[-1][1].get("If-None-Match") == '"e2e-etag"' and rel3 and rel3["version"] == "1.0.1", prob3)

@@ -124,6 +124,18 @@ part is in the README's status table.
 - `tools/effects_test.py`: scripted EWGFs with a slowed card in a real fight; PASS when every one shows its effect
   for 40+ pictures.
 
+### Speed
+- PCs without FMA3 (Intel up to Ivy Bridge and many Pentium / Celeron, GitHub #12's i3-3240; AMD before Piledriver): the game's fused
+  multiply-adds run in software there; the common case now takes a double-precision path, 1.7x faster and bit for bit
+  the same as the instruction (ps3recomp patch 0084). The main thread needs 3-6 % less processor time on a 2-core
+  stand-in of that PC; nothing changes on CPUs with FMA3. Online unaffected (0 mismatching frames against a 1.1.7
+  build without it).
+- The SPU signal log flushed the game log on every signal (found by the Mac build's compiler); it now flushes only for
+  the 24 lines it writes (patch 0084).
+- `tools/perf_compare.py`: the release gate's speed check -- offline fights on all and on 2 cores, rollback pairs
+  (pictures shown twice, mismatches, fps) and the e2e netcode and ranked scenarios, then a before/after table
+  (docs/RENDER_PERF.md "1.1.7: before/after measurements").
+
 ## v1.1.6 (2026-10-27)
 
 **Hotfix: the 1.1.5 launcher closed right after it started.** On a PC with the game's package (.pkg) chosen in the

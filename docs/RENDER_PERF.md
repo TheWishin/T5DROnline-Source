@@ -3647,3 +3647,184 @@ up after 200 ms (label 0x0000309A)` lines in the two games):
 (GCM_SEMA_ACQUIRE=1); the title's label counts up: at or past the value` at the first wait; `[SEMA] acquire off=0xFD0
 == ... gave up after 200 ms` would mean a stall of 200 ms (none in any run here). `GCM_SEMA_ACQUIRE=0` under Extra
 settings is the old behaviour.
+
+## 1.1.7: before/after measurements, 2-core PCs and GitHub #12 (patch 0084, branch `perf-117`)
+
+### Repeating the measurements: `tools/perf_compare.py`
+
+One command measures a built game the same way every time and a second prints the before/after table; the 1.1.7
+gate runs it on the candidate and compares with the 1.1.6 baseline (`build/w117/perf-scratch/base116*`, local):
+
+    python tools/perf_compare.py run --game <built game folder> --out <dir> [--runs 2]
+        [--lock C:/T5DROnline/build/int115/HEAVY.lock --lock-name <name>] [--parts offline,rollback,e2e]
+    python tools/perf_compare.py table <dir>/results.json
+    python tools/perf_compare.py compare <before>/results.json <after>/results.json
+
+- **offline**: `fight_bench.py --polite` direct fights, Lili vs Asuka, stages 17, 19, 4 (City at Sunset) and 13
+  (Poolside), 720p Native with the launcher's defaults and with the Lowest preset, on all processors and on 2 cores /
+  4 threads by affinity (`--two-core-mask`, default LP 12-15; the game's 2-core mode turns on by itself:
+  `PS3_TWO_CORE` auto on 2 physical cores or fewer, `[sched] processors: ... 2-core mode`), `--runs` times each, after
+  one unmeasured fight per stage and preset into one shader cache (a player's cache is warm after BUILD GAME). Per
+  run: fps, frame p99, frames over 20.9 ms (the `[slow-frames]` limit), the game part / translation / GPU wait
+  medians, `[gpu-pass]` GPU ms a frame (`RSX_GPU_PASSES=1`), the game thread's CPU per frame, every thread's CPU.
+- **rollback**: `rollback_net_test.py --latlog` pairs (one whole match, Asuka vs Lili on stage 20, both sides
+  attacking) through the proxy at RTT 60 +-5 / 1 %, 120 +-8 / 2 %, 180 +-10 / 3 %, 260 +-12 / 3 % (input delay by
+  ping, the lobby's 3 above 150 ms and 4 above 250): pictures shown twice or longer while fighting per side and
+  match (docs/ROLLBACK.md section 34's measure), present-to-present p99, mismatching frames, fps, rollbacks, the
+  display lock's lead (tick -> present: the screen part of input-to-screen, on top of the input delay).
+- **e2e**: `tools/e2e/run.py` with real games and a local lobby: `net_rollback` (RTT 20-250, delays, loss, jitter,
+  the relay), `net_relay_smooth` on the direct path at the four networks above, `ranked_set`.
+
+Every game run is one heavy step under the shared lock (taken per run, given back after it). The PC's other load is
+in every row; compare two builds measured under similar load.
+
+### The baseline: 1.1.6 (`build/int115/x-final`, patches 0001-0081)
+
+`perf_compare.py run --game build/int115/x-final`, 2 runs per row, RTX 3090, 2026-10-28 (other agents' games on the PC
+during most of it: "other" = processors busy besides the game). Offline, Lili vs Asuka (fps; frames over 20.9 ms; the
+game part / translation medians; `[gpu-pass]` GPU ms a frame; the game thread's CPU per frame):
+
+| | stage 17 | stage 19 | stage 4 (City at Sunset) | stage 13 (Poolside) |
+|---|---|---|---|---|
+| all 32, default | 59.9 fps; 12; 2.38 / 1.42; GPU 3.09; 2.12 ms | 59.8; 9; 3.04 / 1.80; 2.80; 2.42 | 59.8; 4; 2.44 / 1.69; 4.20; 2.17 | 59.9; 8; 2.70 / 1.42; 2.71; 2.31 |
+| all 32, Lowest | 59.9; 8; 2.38 / 1.12; 1.26; 2.11 | 59.7; 8; 3.01 / 1.06; 1.24; 2.43 | 59.8; 6; 2.40 / 1.44; 1.89; 2.15 | 59.9 / 48.0 (\*); 555; 2.78 / 1.36; 0.70; 2.39 |
+| 2 cores / 4 threads, default | 59.9; 6; 2.88 / 1.67; 3.09; 2.63 | 59.7; 10; 3.17 / 1.86; 2.69; 2.55 | 59.8; 6; 3.02 / 1.96; 3.61; 2.65 | 59.9; 3; 3.34 / 1.69; 2.66; 2.90 |
+| 2 cores / 4 threads, Lowest | 59.9; 6; 2.87 / 1.31; 1.26; 2.62 | 59.9; 8; 3.40 / 1.41; 1.09; 2.69 | 59.8; 6; 3.02 / 1.62; 1.82; 2.65 | 59.9; 4; 3.32 / 1.33; 1.19; 2.88 |
+
+(\*) One run GPU-bound (803 of 816 slow frames "GPU", GPU wait 12.9 ms): another agent's game on the same card; the
+second run 59.9. The GPU wait median is 0.0 everywhere else. On this PC 2 cores at full clock keep 60 fps on every
+stage and preset; the game's processor time grows from ~21-24 ms a frame on 32 processors (spinning workers) to 14-17
+ms on 2 cores (`cpu_ms_per_frame`), the game part from ~2.4 to ~3.0 ms. The `[slow-frames]` lines appear only where
+frames were slow (every 5 minutes otherwise), so the medians come from the frame and game-thread logs.
+
+Rollback pairs (per side and match, mean of 2 pairs; 4,229 presents while fighting each):
+
+| network (input delay) | pictures shown twice+ | present p99 | display lead | rollbacks | mismatching | fps |
+|---|---|---|---|---|---|---|
+| RTT 60 +-5, 1 % (by ping) | 18.0 | 18.9 ms | 13.1 ms | 116 | 0 | 60.0 |
+| RTT 120 +-8, 2 % (by ping) | 14.0 | 20.0 | 13.1 | 570 | 0 | 60.0 |
+| RTT 180 +-10, 3 % (3) | 18.2 | 20.9 | 13.5 | 569 | 0 | 60.0 |
+| RTT 260 +-12, 3 % (4) | 18.5 | 22.1 | 13.9 | 570 | 0 | 60.0 |
+
+The same 1.1.6 pairs again on the quiet PC (11:00-12:00, no other agent's games): 12.8 / 12.0 / 9.8 / 12.2 pictures
+shown twice per side and match at 60 / 120 / 180 / 260 ms, p99 18.8 / 19.6 / 20.5 / 21.9 ms, 0 mismatching -- so the
+first set's 14-18.5 were mostly the other load, and 1.1.7 (6.2-17.0, table below) is the same as 1.1.6 within the
+spread. The gate should compare pairs measured under similar load.
+
+With a warm shader cache (1.1.5's section 34 counted 36-40 at 60-180 ms, ~22 of them shader work in games whose cache
+never grew). What is left, by cause (`rollback_frame_times.py`): at 60 ms nearly all "nothing logged" (the machine:
+other agents' load); at 120-180 ms half rollbacks of depth 2-3 that ran past the display lock's lead, half the
+machine; at 260 ms (delay 4) ~80 intervals a side over 20 ms with a depth-4 rollback in them, of which ~12 cost a
+refresh. e2e: `net_rollback` PASS (300 checks, 11 matches, fps 57.3-60), `net_relay_smooth` at the four networks PASS
+(0 mismatching), `ranked_set` PASS (170 checks).
+
+### Patch 0084 (timing and host code only; CODE_VERSION unchanged)
+
+- **The SPU signal log's `fflush`** (`runtime/spu/spu_workload.c`, upstream ps3recomp, found by the Mac build's
+  `-Wmisleading-indentation`): `if (n++ < 24) fprintf(...); fflush(stderr);` flushed stderr on *every* SPU task signal
+  and every task dispatch; the same in the `[persist-ls]` line. Both now inside the throttle, and the counter is
+  read before its locked add. On Windows stderr is unbuffered, so the flush itself cost ~2 ns uncontended
+  (measured): neutral, a correctness fix of the logging.
+- **The software fused multiply-add of PCs without FMA3** (`ppu_fma_soft`, `runtime/ppu/ppu_fp_det.h`): GitHub #12's
+  i3-3240 (Ivy Bridge: AVX, no FMA3) runs it for every `fmadd` of the game; on the 2-core stand-in below it was ~8 %
+  of the main thread's time (`PS3_HOST_PROF`). A double-only path for the common case (Boldo & Melquiond's emulated
+  FMA: Dekker's exact product, TwoSum, round to odd) gives the same bits as `vfmadd` and is 1.7x faster than the
+  128-bit integer path (12.2 against 20.5 ns a call); operands outside |x|, |y| in [2^-450, 2^451), |z| in
+  [2^-900, 2^901) keep the integer path. Checked against the instruction: `runtime/ppu/tests/test_fp_det.c` (new
+  cases for the window, its edges, cancellation; 50 M random + 4,913 special: 0 differ), a 400 M-case stress (0
+  differ), `tests/c/fma_soft_test.c` (`tests/test_weak_cpu_117.py`). CPUs with FMA3 never run it.
+
+**The full set, before and after** (`perf_compare.py compare`: before = integration-117 6f1074b, patches 0001-0083 +
+0085; after = the same + 0084; x86-64-v3 builds as on this PC, so the FMA path is not used; the PC quiet, one build after
+the other, 2 runs per row): every offline row within the run-to-run spread -- fps 59.8-59.9 before and after on all 32
+and on 2 cores, stages 17/19/4/13, default and Lowest (one 2-core stage 4 run at 58.0 with 1.8 processors of other load;
+its pair 59.9), the game thread's CPU per frame -1.6..+2.3 %, translation -6.7..+1.2 % except one 2-core stage 13 Lowest
+pair (1.34 -> 1.65 ms at 59.9 fps either way); rollback pairs 0 mismatching and the same result hash on both sides at
+every network, pictures shown twice 7.8 / 8.0 / 11.2 / 17.0 -> 6.2 / 9.0 / 10.8 / 14.5 at 60 / 120 / 180 / 260 ms (the
+patch does not touch pacing: noise); e2e `net_rollback`, `net_relay_smooth`, `ranked_set` PASS -> PASS.
+
+### GitHub #12's PC on this one (the stand-in)
+
+The player: Intel i3-3240 (Ivy Bridge, 2 cores / 4 threads, 3.4 GHz, AVX but no AVX2 and no FMA3: the game is
+built for `-march=none` there and every fused multiply-add runs in software), GT 730 4 GB (Fermi, resource binding
+tier 1), 1440x900. His Practice screenshots: 24 fps at the defaults with the CPU at 79 % and the card at 46 %, 34 fps
+with lighter settings and the CPU at 97 %. His 1.1.6 warm-up log averages ~49 fps, but that average is mostly menus and
+loading: the warm-up fights are 4 s each (frames 1099-1338 of a 500-frame cycle) and their own 5-second windows ran at
+34-52 fps with an empty shader cache; the `[gpu-pass]` lines there average ~100 draws a frame against ~830 in a fight,
+so the card's 2-7 ms in them says little about a fight (1.1.5's fight log: 32-37 ms on that card). So: at the defaults
+the old card is the limit (tier-1 binding per draw), with the lighter settings the CPU (97 %, both cores saturated).
+The training overlay is not it (16-21 us a frame, docs/TRAINING.md "Cost").
+
+Stand-in: the 1.1.7 tree built with `T5DR_LIFTED_ARCH=none` (his build), 2 cores / 4 threads by affinity (`0xF000`,
+the game's 2-core mode on by itself), `tools/slow_core.py --busy 78` on them, `PS3_FP_SOFT_FMA=1 PS3_CRT_FMA3=0` (his
+CPU's software FMA and C runtime paths), `RSX_TIER1_PATH=1`, the training overlay on (`T5_TRAINING=frames
+T5_TRAINING_ALL=1`), Kazuya vs Jin on stage 25 (his screenshot's stage), Native, `fight_bench.py --polite`. It runs at
+41-53 fps with the 4 processors saturated -- the game asks ~19 ms of CPU a frame -- like his 97 %.
+
+Where the CPU goes there (ms of processor time a fight frame, the thread table of `fight_bench.py`): the SPU sound core
+5.8-6.4, the game's main thread 3.9-4.3, the translation (`ticker`) 1.7-3.4, the vertex worker 0.3-1.8, the game's
+draw thread `NU::Draw::RequestManager` 1.3-1.5, the skinning (`spurs-chain` + `spurs-job`) 2.1-2.3, the renderer thread
+0.5-0.7, the pad sampler 0.7-1.1 (most of it the bench's pad *file*, read every millisecond; a real pad costs 1-3 % of a
+core). The main thread's own profile (`PS3_HOST_PROF`): 90 % lifted game code, of which the software FMA
+(`ppu_fma_soft`) 7.6 % and the VMX multiply-add (`vmx_vmaddfp`, its four lanes through the single-precision software
+FMA) 4.4 %.
+
+**Patch 0084 on the stand-in** (A = 0001-0083+0085, B = the same + 0084; both baseline arch, alternated):
+
+| slow_core | runs A / B | fps A / B | main thread CPU a frame (game thread log) | game part median | main thread (thread table) |
+|---|---|---|---|---|---|
+| 78 %, 1 ms period (not CPU-bound: 60 fps) | 4 / 4 | 59.9 / 59.9 | 3.85 -> **3.68 ms (-4.4 %)** | 7.28 -> 7.13 ms | 3.81 -> 3.57 ms (-6 %) |
+| 78 %, 4 ms period (CPU-bound) | 3 / 2 | 43.4-52.8 / 41.3-52.4 | 4.22 -> 4.10 ms (-3 %) | 16.08 -> 15.86 ms | 4.04 -> 3.79 ms |
+
+The fps of the CPU-bound stand-in cannot show 3-4 %: it is bimodal -- the same build runs at 41-45 or at 51-53 fps from
+run to run, with the translation's median at 4.5-7 ms or at 1.7 ms. A stack profile of the translation thread in a slow
+run shows it waiting for nothing of ours (71 % idle in `cellGcm_fifo_kick_wait_us`, 24 % walking), so most likely the
+walk lands in slow_core's taken part of its 4 ms period or does not (the game's frame and the period beat); with a
+1 ms period the stand-in is no longer CPU-bound. So the stand-in's
+fps compares builds only over many runs; the processor time per frame compares them in every run. On his i3 the main
+thread's ~17 ms of processor time a frame (1.1.5 log) would lose ~0.5-0.7 ms; at 34 fps with the CPU saturated that is
+worth ~1 fps. Not the "clearly faster" the owner asked for: see "What is left" below.
+
+All 32 processors (v3 build, hardware FMA; Lili vs Asuka stage 20, 2 + 2 runs): 59.92 / 59.95 fps either way, game thread
+2.61 / 2.60 ms, translation 1.59 / 1.57 ms -- no change, as expected (the patch's FMA path runs only without FMA3).
+
+**Same game.** Rollback pair (RTT 150 +-5, 3 % loss, Asuka vs Lili on stage 20, one match): host the tree without 0084
+built for x86-64-v3 (hardware FMA), joiner the tree with 0084 built for the baseline with the software FMA
+(`PS3_FP_SOFT_FMA=1 PS3_CRT_FMA3=0`): sync through frame 4,199, 0 mismatching on both sides, the same result hash
+`a796b74ae16a32f9`; the same pair in lockstep (RTT 30, 1 % loss, Kazuya vs Jin on stage 25): 0 mismatching through 3,599,
+hash `f72fd0da7d742ca4`. With 0001-0081 + 0084 (before 0082/0085 were merged): the same kind of pair at RTT 120 (+-8, 2 %
+loss) 0 mismatching, hash `678e64fd4412b0d4` on both; e2e `net_rollback` with the 0084 build: PASS (300 checks, 11
+matches). The patch changes no result: the FMA path is bit-exact, the log fix is logging.
+
+### Tried and dropped (2-core stand-in)
+
+| what | result |
+|---|---|
+| the sound core one step down (`PS3_SCHED_PRIO_SPU=1`) | 44.4 against 44.1 fps (1 run each), audio as before: nothing |
+| `PS3_TWO_CORE_OWN=1` (the game thread's core for it alone) | **30.1** fps against 44 (everything else on one core): as in 1.1.5, slower |
+| no spinning (`PS3_TICKER_SPIN_US=0 RSX_VERTEX_SPIN=0`) | 44.8 fps: nothing |
+| no vertex worker (`RSX_VERTEX_THREADS=0`: the walker fetches each draw's vertices itself) | **37.2 / 37.8** fps, translation 11.4 ms: slower (as in 1.1.5) |
+| the vertex worker on the translation's processor in 2-core mode (a CPU set; drafted as part of 0084) | 51.5, 50.7, 40.0 fps against 52.1, 44.1, 45.1 and 43.7, 52.8, 43.4: the stand-in's two modes above, not the placement -- dropped |
+| the vertex worker at the game's priority (`PS3_SCHED_PRIO_VERTEX=2`) | 43.9 fps: nothing |
+| the lifted code for x86-64-v2 (SSE4.2, POPCNT: what an i3-3240 has) / v2 + AVX | 46.0 against 46.7 fps, main thread 4.08 against 4.13 ms, sound core 5.89 against 5.84: nothing -- the baseline build stays for CPUs without AVX2 |
+
+### 16 logical processors (a Ryzen 7 3700X player: 52-56 fps, 60 with Internal resolution 0.75x)
+
+Below 24 logical processors the renderer runs one vertex worker (32 here: three). On 16 processors of this PC (`0xFFFF`,
+8 cores / 16 threads), Lili vs Asuka stage 20, Native and 1440p, one and two vertex workers (`RSX_VERTEX_THREADS=2`),
+two runs each, also with slow_core 40 on them (a slower core): **59.9-59.95 fps in all 16 runs**, translation 1.59-1.76
+ms, GPU 2.9-3.2 ms (RTX 3090). A second worker only doubled the workers' processor time (1.5 -> 3.0 ms a frame) with
+the same translation. So neither the single worker nor the translation is the limit on 16 processors; that 0.75x
+fixed it points at the graphics side (his Internal resolution before, his display's refresh rate or scaling, the
+driver). Not changed; his game log's `[slow-frames]` verdict and `[gpu-pass]` lines would say which.
+
+### What is left for #12
+
+- His defaults are bound by the old card: per draw on resource binding tier 1 (1.1.5 log: 32-37 ms GPU a fight
+  frame). Shadows and Effects Off cut the draws by ~40 % (the "lighter settings" 24 -> 34 fps). Nothing here can
+  measure a Fermi card; see "Online pictures and old graphics cards" above.
+- With lighter settings his CPU is saturated: the biggest single consumer is the SPU sound core (~6 ms of the ~19 ms a
+  frame on the stand-in, ~30 % of the game's processor time; a fixed amount per second of audio). It is exact lifted
+  DSP code (FFT butterflies) already on patch 0064's fast float path; making it cheaper is lifter/runtime work for a
+  feature release, not a minor update. Next on the main thread: `vmx_vmaddfp`'s four scalar lanes (4.4 %), which a
+  vectorised single-precision software FMA would cut -- not done (needs the same bit-exact proof as 0084's double path).

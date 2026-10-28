@@ -1,0 +1,95 @@
+diff --git a/runtime/ppu/ppu_fp_det.h b/runtime/ppu/ppu_fp_det.h
+index 2d88ba1..41ddc98 100644
+--- a/runtime/ppu/ppu_fp_det.h
++++ b/runtime/ppu/ppu_fp_det.h
+@@ -205,6 +205,38 @@ static inline __attribute__((noinline)) double ppu_fma_soft(double x, double y,
+     if (bz) mz |= 1ull << 52;
+     if (!mx || !my) { const double p = x * y; return p + z; }   /* exact zero product */
+     if (!mz) return x * y;    /* z = +-0 never changes a nonzero exact product: one rounding */
++    /* Patch 0084: the common case in double arithmetic only (a PC without FMA3 runs this
++     * for every fused multiply-add of the game: ~8 % of the main thread's time on a
++     * 2-core stand-in with the integer path below). Boldo & Melquiond's emulated FMA
++     * ("Emulation of FMA and correctly rounded sums: proved algorithms using rounding to
++     * odd", IEEE TC 57(4), 2008, algorithm 5.2): the exact product uh + ul (Dekker, with
++     * Veltkamp's split), the exact sum th + tl = z + uh (TwoSum), v = tl + ul rounded to
++     * odd, the result th + v rounded to nearest -- the correctly rounded x*y + z when
++     * nothing underflows or overflows. With |x|, |y| in [2^-450, 2^451) and |z| in
++     * [2^-900, 2^901) every intermediate value and every nonzero result is a normal double
++     * (the exact result's lowest bit is >= 2^-1004) far below the overflow threshold; all
++     * else takes the integer path. Checked against vfmadd: runtime/ppu/tests/test_fp_det.c.
++     * PPU_FMA_SOFT_INT_ONLY (tests) compiles the integer path alone. */
++#ifndef PPU_FMA_SOFT_INT_ONLY
++    if ((unsigned)(bx - (1023 - 450)) <= 900u && (unsigned)(by - (1023 - 450)) <= 900u &&
++        (unsigned)(bz - (1023 - 900)) <= 1800u) {
++        const double C = 134217729.0;                               /* 2^27 + 1 */
++        const double cx = C * x, xh = cx - (cx - x), xl = x - xh;
++        const double cy = C * y, yh = cy - (cy - y), yl = y - yh;
++        const double uh = x * y;
++        const double ul = (((xh * yh - uh) + xh * yl) + xl * yh) + xl * yl;   /* x*y = uh + ul exactly */
++        const double th = z + uh, tb = th - z;
++        const double tl = (z - (th - tb)) + (uh - tb);                     /* z + uh = th + tl exactly */
++        double v = tl + ul;
++        const double vb = v - tl, ve = (tl - (v - vb)) + (ul - vb);       /* tl + ul = v + ve exactly */
++        if (ve != 0.0) {                                                   /* round to odd */
++            uint64_t uv = ppu_fp_u64(v);
++            if (!(uv & 1)) uv = ((ve > 0.0) == (v > 0.0)) ? uv + 1 : uv - 1;
++            v = ppu_fp_f64(uv);
++        }
++        return th + v;
++    }
++#endif
+     const int sp = (int)((ux ^ uy) >> 63), sz = (int)(uz >> 63);
+     /* value = m * 2^(b - 1075), a subnormal's b counted as 1 */
+     ppu_fp_u128 P = (ppu_fp_u128)mx * my, Z = mz;
+diff --git a/runtime/ppu/tests/test_fp_det.c b/runtime/ppu/tests/test_fp_det.c
+index d85f200..ccb7e7a 100644
+--- a/runtime/ppu/tests/test_fp_det.c
++++ b/runtime/ppu/tests/test_fp_det.c
+@@ -80,7 +80,12 @@ int main(int argc, char** argv)
+     long bad = 0, badhw = 0, nanonly = 0;
+     for (long i = 0; i < n; i++) {
+         double a, b, c;
+-        switch (i % 8) {
++        switch (i % 11) {
++        /* patch 0084: ppu_fma_soft's double-only path (|x|, |y| in [2^-450, 2^451), |z| in
++         * [2^-900, 2^901)): the whole window, near-cancellation and its edges */
++        case 8: a = gd(1, 1023, 450); b = gd(1, 1023, 450); c = gd(1, 1023, 900); break;
++        case 9: a = gd(1, 1023, 400); b = gd(1, 1023, 400); c = d_of(u_of(-(a * b)) + (rnd() % 7) - 3); break;
++        case 10: a = gd(1, 573 + (int)(rnd() % 3), 1); b = gd(1, 1473 - (int)(rnd() % 3), 1); c = gd(1, 123 + (int)(rnd() % 1801), 0); break;
+         case 0: a = gd(0, 0, 0); b = gd(0, 0, 0); c = gd(0, 0, 0); break;
+         case 1: a = gd(1, 1023, 40); b = gd(1, 1023, 40); c = gd(1, 1023, 80); break;
+         case 2: a = gd(1, 1023, 3); b = gd(1, 1023, 3); c = -a * b; if (rnd() & 1) c = d_of(u_of(c) + (rnd() % 5) - 2); break;
+diff --git a/runtime/spu/spu_workload.c b/runtime/spu/spu_workload.c
+index 76e3e57..03fb15d 100644
+--- a/runtime/spu/spu_workload.c
++++ b/runtime/spu/spu_workload.c
+@@ -461,10 +461,12 @@ static void spu_async_run(spu_async_job* j)
+ #endif
+         if (!ts_slot->ls) ts_slot->ls = (uint8_t*)calloc(1, SPU_LS_SIZE);
+         ls = ts_slot->ls;
+-        { static int _n = 0; if (__atomic_fetch_add(&_n, 1, __ATOMIC_RELAXED) < 24)
++        /* patch 0084: the fflush inside the log throttle (it ran on every dispatch) */
++        { static int _n = 0;
++          if (__atomic_load_n(&_n, __ATOMIC_RELAXED) < 24 && __atomic_fetch_add(&_n, 1, __ATOMIC_RELAXED) < 24) {
+             fprintf(stderr, "[persist-ls] taskset=0x%08X task=%u image=%d %s\n",
+                     j->taskset_ea, j->taskid, j->image_id,
+-                    ts_slot->loaded ? "REUSE (state retained)" : "first load"); fflush(stderr); }
++                    ts_slot->loaded ? "REUSE (state retained)" : "first load"); fflush(stderr); } }
+     } else {
+         ls = (uint8_t*)calloc(1, SPU_LS_SIZE);
+     }
+@@ -1000,9 +1002,12 @@ void spu_taskset_signal_task(uint32_t taskset_ea, uint32_t taskId)
+     pthread_cond_broadcast(&s_sig_cv);
+     pthread_mutex_unlock(&s_sig_lock);
+ #endif
+-    { static int _n = 0; if (__atomic_fetch_add(&_n, 1, __ATOMIC_RELAXED) < 24)
++    /* patch 0084: the fflush inside the log throttle -- it ran on every signal (-Wmisleading-indentation);
++     * and the counter is only read once it is past the limit (no locked add on every signal) */
++    { static int _n = 0;
++      if (__atomic_load_n(&_n, __ATOMIC_RELAXED) < 24 && __atomic_fetch_add(&_n, 1, __ATOMIC_RELAXED) < 24) {
+         fprintf(stderr, "[spu_workload] signal task %u (taskset 0x%08X)\n",
+-                taskId, taskset_ea); fflush(stderr); }
++                taskId, taskset_ea); fflush(stderr); } }
+     /* SPU_SIG_STATS=1: signals per second per (taskset, task, caller). */
+     { static _Atomic int s_on = -1; if (s_on < 0) s_on = getenv("SPU_SIG_STATS") ? 1 : 0;
+       if (s_on) {

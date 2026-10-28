@@ -1,8 +1,40 @@
 diff --git a/libs/video/cellGcmSys.c b/libs/video/cellGcmSys.c
-index c4a7dec..16029ce 100644
+index c4a7dec..db44bea 100644
 --- a/libs/video/cellGcmSys.c
 +++ b/libs/video/cellGcmSys.c
-@@ -2227,15 +2227,17 @@ static void gcm_rsx_process_fifo_unlocked(void)
+@@ -907,6 +907,13 @@ void cellGcm_request_tick(void)
+  * the guest writes with a plain store, which nothing signals. The label it
+  * waits for, or 0; the pump below wakes the drain once the label matches. */
+ static volatile u32 s_sema_wait_ea = 0, s_sema_wait_val = 0;
++/* Patch 0085: a title whose semaphore label only counts up (cellGcm_set_sema_acquire_geq, Tekken 5 DR's frame
++ * counter on label 0xFD) has an ACQUIRE of v satisfied by any label at or past v, not only by v itself. A real
++ * RSX sees every value because the title never gets two presents ahead of it; a rollback re-simulates frames
++ * without waiting for their flips, so the label steps over values the walker is still to reach. Off: equality. */
++static int s_sema_geq = 0;
++void cellGcm_set_sema_acquire_geq(int on) { s_sema_geq = on; }
++static int gcm_sema_ok(u32 label, u32 v) { return s_sema_geq ? (s32)(label - v) >= 0 : label == v; }
+ /* The label and value the current wait started on, and when: a wait that
+  * outlasts GCM_SEMA_ACQUIRE_MS is given up. Reset whenever a wait ends, or a
+  * title that waits for the same value every frame would inherit the first
+@@ -927,7 +934,7 @@ void ppu_gcm_pump(void)
+      * The drain runs on the vblank ticker, so it cannot wait inside a pass --
+      * that holds the vblank the guest's own frame loop waits for. */
+     { const u32 ea = __atomic_load_n(&s_sema_wait_ea, __ATOMIC_ACQUIRE);
+-      if (ea && vm_read32(ea) == s_sema_wait_val) {
++      if (ea && gcm_sema_ok(vm_read32(ea), s_sema_wait_val)) {
+           s_sema_wait_ea = 0;
+           SetEvent((HANDLE)cellGcm_fifo_kick_event());
+       } }
+@@ -2211,7 +2218,7 @@ static void gcm_rsx_process_fifo_unlocked(void)
+                         fprintf(stderr, "[SEMA] m=0x%02X v=0x%08X off=0x%X\n", m, v, s_sema_offset); }
+                     if (m == 0x64u)      s_sema_offset = v;
+                     else if (m == 0x6Cu) vm_write32(la, v);
+-                    else if (m == 0x68u && vm_read32(la) == v) { s_sema_wait_ea = 0; s_sema_b_t0 = 0; }
++                    else if (m == 0x68u && gcm_sema_ok(vm_read32(la), v)) { s_sema_wait_ea = 0; s_sema_b_t0 = 0; }
+                     else if (m == 0x68u) {
+             /* GCM_SEMA_ACQUIRE=1 makes ACQUIRE actually block, which is what
+              * the hardware does. Off by default except on macOS: a title whose
+@@ -2227,15 +2234,18 @@ static void gcm_rsx_process_fifo_unlocked(void)
               * acquire that has waited that long on the same label and value,
               * and says so. On by default on macOS, where it was measured: no
               * stale reads and full hit effects at 60 fps.
@@ -22,8 +54,9 @@ index c4a7dec..16029ce 100644
 -                           const char* t = getenv("GCM_SEMA_ACQUIRE_MS"); blk_ms = t ? (unsigned)atoi(t) : 200; }
 +                           blk = e ? atoi(e) : 1;   /* patch 0085: every platform (was macOS only) */
 +                           const char* t = getenv("GCM_SEMA_ACQUIRE_MS"); blk_ms = t ? (unsigned)atoi(t) : 200;
-+                           fprintf(stderr, "[cellGcmSys] semaphore ACQUIRE: the walker %s (GCM_SEMA_ACQUIRE=%d)%c",
-+                                   blk ? "waits for the label, as the RSX does" : "passes it", blk, 10); }
++                           fprintf(stderr, "[cellGcmSys] semaphore ACQUIRE: the walker %s (GCM_SEMA_ACQUIRE=%d)%s%c",
++                                   blk ? "waits for the label, as the RSX does" : "passes it", blk,
++                                   s_sema_geq ? "; the title's label counts up: at or past the value" : "", 10); }
              if (blk) {
                  const unsigned long long now = ps3_ms_now();
                  if (!s_sema_b_t0 || s_sema_b_off != s_sema_offset || s_sema_b_val != v) {

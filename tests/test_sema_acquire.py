@@ -29,6 +29,12 @@ class SemaAcquire(unittest.TestCase):
         self.assertNotIn("__APPLE__", added)
         self.assertIn('getenv("GCM_SEMA_ACQUIRE")', p)             # GCM_SEMA_ACQUIRE=0 still passes it
         self.assertEqual(sorted(set(re.findall(r"^diff --git a/(\S+) ", p, re.M))), ["libs/video/cellGcmSys.c"])
+        # a title whose label counts up may ask for "at or past the value" (both places the walker compares)
+        self.assertIn("void cellGcm_set_sema_acquire_geq(int on)", added)
+        self.assertIn("(s32)(label - v) >= 0 : label == v", added)
+        self.assertIn("gcm_sema_ok(vm_read32(ea), s_sema_wait_val)", added)
+        self.assertIn("gcm_sema_ok(vm_read32(la), v)", added)
+        self.assertIn("vm_read32(la) == v", removed)
 
     def test_series_order(self):
         names = sorted(n for n in os.listdir(os.path.join(ROOT, "patches", "ps3recomp")) if n.endswith(".patch"))
@@ -37,6 +43,8 @@ class SemaAcquire(unittest.TestCase):
     def test_rollback_keeps_the_counter_live(self):
         with open(os.path.join(ROOT, "src", "rollback", "rb_state.cpp"), encoding="utf-8") as f:
             src = f.read()
+        # Tekken 5 DR's label 0xFD only counts up: a rollback's re-simulated presents step over values
+        self.assertRegex(src, r"struct SemaCount \{ SemaCount\(\) \{ cellGcm_set_sema_acquire_geq\(1\); \} \}")
         live = ranges(src, "kKeepLive")
         self.assertIn((COUNTER, 4), live)
         self.assertEqual(live, sorted(live), "kKeepLive must stay sorted by address")

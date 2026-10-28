@@ -106,6 +106,46 @@ class TkCasualTest(TkBase):
                   and tab.driver.ticket.role == "host", timeout=30)
         self.pump(lambda: "(P1 on Industrial Complex)" in tab.match_var.get())
 
+    def card(self):
+        """Every text on the bar's card (the challenge / invite question)."""
+        self.root.update()
+        out = []
+
+        def walk(w):
+            for c in w.winfo_children():
+                if "text" in c.keys():
+                    out.append(str(c.cget("text")))
+                walk(c)
+        walk(self.tab.view.bar_visual)
+        return out
+
+    def test_the_card_shows_the_wishes(self):
+        """1.1.7: the challenger's and a friend's side / stage wishes are on the card before the answer (they were only
+        in the bar's text, which the redesigned card does not show)."""
+        tab = self.tab
+        self.login()
+        self.other = client(self.s, "Rival")
+        self.other.set_casual_prefs(1, "s27")
+        self.pump(lambda: len(tab.tv_players.get_children()) == 2)
+        self.other.challenge(tab.client.me["id"])
+        self.pump(lambda: self.bar_button("Accept") is not None)
+        self.assertIn("wants to be P2 on Aurora Australis", self.card())
+        self.assertIn("wants to be P2 on Aurora Australis", tab.bar_text.get())        # (and the text, as before)
+        self.bar_button("Decline").invoke()
+        self.pump(lambda: tab.challenge is None)
+        friend = {"id": "p-fr", "name": "Friend", "guest": False, "rating": 1500, "rank": "1st Dan", "tier": 10,
+                  "provisional": False, "placement": None}
+        for i, (wish, line) in enumerate(((None, None), ({"side": None, "stage": "random"}, None),
+                                          ({"side": 0, "stage": "random"}, "wants to be P1"),
+                                          ({"side": None, "stage": "s20"}, "wants to play on Ghetto Pit"))):
+            tab.client.events.put({"t": "invited", "invite": f"i{i}", "kind": "casual", "from": friend, "wish": wish})
+            self.pump(lambda: (tab.invite or {}).get("invite") == f"i{i}")
+            card = self.card()
+            self.assertIn("Friend", card)
+            wishes = [x for x in card if x.startswith("wants to") and not x.startswith("wants to play you")]
+            self.assertEqual(wishes, [line] if line else [])                   # nothing when both are left open
+            tab._answer_invite(False)
+
     def test_the_opponent_asks_for_the_swap(self):
         tab = self.tab
         self.login()

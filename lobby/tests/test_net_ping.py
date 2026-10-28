@@ -234,6 +234,13 @@ class ClientPingTest(unittest.TestCase):
                          {"ms": 50, "kind": "estimate", "known": True})
         self.assertIsNone(self.c.ping_info({"t": "challenged", "from": {"id": "p2", "name": "Nobody"}}))
         self.assertIsNone(self.c.ping_info({"t": "match_found", "opponent": None}, "opponent"))
+        # 1.1.7: a server ping it does not know (a round trip not measured yet) gives way to the launcher's own
+        unknown = {"ms": 100, "kind": "estimate", "known": False, "path": "relay"}
+        self.assertEqual(self.c.ping_info({"t": "challenged", "from": {"id": "p1", "name": "Friend"}, "ping": unknown}),
+                         {"ms": 50, "kind": "estimate", "known": True, "path": "relay"})
+        self.assertIs(self.c.ping_info({"t": "challenged", "from": {"id": "p2", "name": "Nobody"}, "ping": unknown}),
+                      unknown)                                                 # nothing better here: the server's
+        self.assertIs(self.c.ping_info({"t": "match_found", "opponent": None, "ping": unknown}, "opponent"), unknown)
 
     def test_the_bar_text(self):
         from t5lobby.tk_views import ping_text

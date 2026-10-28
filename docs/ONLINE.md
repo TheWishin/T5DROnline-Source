@@ -663,7 +663,8 @@ community, not a ranked room's) and the rematches of those -- each player can as
 **stage** (Random or one of the stages). The two choices are in the play card, right of Strict ("Challenges,
 invites, rooms: [Any side] [Random stage]"); the launcher keeps them in online.json and sends them to the server after
 every login and whenever they change (`casual_prefs`). A challenge and a friend's casual invite carry the sender's
-wishes ("Alice (2nd Dan) challenges you -- wants to be P1 on Ghetto Pit"), and the match card says what this player got
+wishes: the challenge / invite card has a line under the question ("wants to be P1 on Ghetto Pit", 1.1.7; before
+only the bar's text had it, which the redesigned card does not show), and the match card says what this player got
 ("Casual match vs Alice (P2 on All Hollow's Eve)"; when a coin flip went against a wish, the status line says so).
 
 | | rule |
@@ -758,26 +759,30 @@ shows it to anyone who looks).
 
 ## Chime and taskbar flash
 
-(1.1.4; code: `notify.py`, the hooks in `tk_tab.py`, Settings -> "Sound and taskbar flash when a match is found or
-someone joins my room", launcher.json `"notify"`, on by default.) Players wait for a match in another window, so the
-tab tells them when something needs them -- one chime and the launcher's taskbar button flashing until its window is
-in front (FlashWindowEx, `FLASHW_TRAY | FLASHW_TIMERNOFG`; it also ends when the launcher brings itself forward after
-a match):
+(1.1.4; code: `notify.py`, the hooks in `tk_tab.py`, Settings -> "Sound and taskbar flash when a match is found, I am
+challenged or invited, or someone joins my room" (1.1.7; before: "... found or someone joins my room"), launcher.json
+`"notify"`, on by default.) Players wait for a match in another window, so the tab tells them when something needs
+them -- one chime and the launcher's taskbar button flashing until its window is in front
+(FlashWindowEx, `FLASHW_TRAY | FLASHW_TIMERNOFG`; it also ends when the launcher brings itself forward after a match):
 
 | Event | When |
 |---|---|
 | match found | `match_found` that shows Accept (quick, ranked, a room's pair, a tournament's next game); not a match that starts by itself (an accepted invite, a ranked set's next game) |
+| challenge | `challenged` (1.1.7): another player challenges this one; the same challenger at most once a minute |
 | someone joined | a new member in the room this player hosts (a visitor is not told who comes and goes) |
 | your turn | in a community room, the countdown to a match with this player began |
 | invite | `invited`: a friend's invite to a casual match or a room |
 | tournament set | `tour_call`: "Your tournament set is ready" |
 | rematch | the opponent's rematch question |
 
-Not for a challenge from a stranger in the lobby (anybody could ring the bell), chat, friend requests or any lobby
-update. Only while the player is elsewhere: another program (or a launcher dialog) in front, the launcher minimized,
-or another tab shown; never for a window that was never shown. At most once per event (the match id, the invite id,
-the tournament set -- a room's news is found by comparing one `room` message with the one before), and events within
-3 seconds of a chime make no second one (someone joins a classic room and the match starts: one chime).
+Not for chat, friend requests or any lobby update. (A challenge rings since 1.1.7 -- players minimize the launcher
+while they wait. Anybody can challenge, so the server's limits apply -- one pending challenge per challenger, 30 s
+before the same two again after a decline -- and the tab rings for the same challenger at most once a minute; Block
+stops one for good.) Only while the player is elsewhere: another program (or a launcher dialog) in front, the launcher
+minimized, or another tab shown; never for a window that was never shown. At most once per event (the match id, the
+challenge id, the invite id, the tournament set -- a room's news is found by comparing one `room` message with the one
+before), and events within 3 seconds of a chime make no second one (someone joins a classic room and the match starts:
+one chime).
 
 The sound is made in code: two soft bell tones (E5, then B5), about half a second, a 16-bit mono WAV built in memory --
 no game audio, no file. winsound cannot play a memory image asynchronously, so a daemon thread plays it and the Tk

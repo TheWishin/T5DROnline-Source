@@ -642,5 +642,119 @@ class TkT6Test(TkBase):
         self.assertNotIn("198.51.100.4", tab.status_var.get())
 
 
+@unittest.skipIf(tk is None, "no tkinter")
+class ChallengeCardTest(TkBase):
+    """1.1.7, a player's report (screenshot): the challenge card said "Tazaz / Beginner (placement 3/5) · rating 1283 /
+    wants to play you" with no ping, while the lobby list showed his 321 ms. The tab drew the card (show_bar) before
+    the view had read the event (after_event, at the end of on_event): the first challenge had no name and no ping
+    row, a later one the previous challenger's name and still no ping. The card now reads the tab's own event."""
+
+    TAZAZ = {"id": "p-tazaz", "name": "Tazaz", "guest": False, "rating": 1283, "rd": 220, "main": None, "fps": None,
+             "tier": 0, "rank": "Beginner", "provisional": True, "placement": [3, 5]}
+
+    def login(self):
+        tab = self.tab
+        tab.server_var.set(self.s.addr)
+        tab.do_login("guest")
+        self.pump(lambda: tab.client is not None and tab.client.me is not None)
+
+    def card(self):
+        self.root.update()
+        out = []
+
+        def walk(w):
+            for c in w.winfo_children():
+                try:
+                    out.append(str(c.cget("text")))
+                except tk.TclError:
+                    pass
+                walk(c)
+        walk(self.tab.view.bar_visual)
+        return out
+
+    def feed(self, ev):
+        """An event the way the lobby delivers it: the client's queue, read by the tab's own poll."""
+        self.tab.client.events.put(ev)
+        self.pump(lambda: self.tab.challenge == ev["challenge"])
+        self.root.update()
+
+    def challenged(self, cid, frm=None, **extra):
+        ev = {"t": "challenged", "challenge": cid, "from": dict(frm or self.TAZAZ), "wish": None}
+        ev.update(extra)
+        return ev
+
+    def test_a_real_challenge_shows_who_and_the_ping(self):
+        tab = self.tab
+        self.login()
+        self.other = client(self.s, "Tazaz")
+        self.pump(lambda: len(tab.tv_players.get_children()) == 2)
+        self.other.challenge(tab.client.me["id"])
+        self.pump(lambda: self.bar_button("Accept") is not None)
+        card = self.card()
+        self.assertIn("Tazaz", card)
+        self.assertIn("Guest", card)
+        ping = tab.client.ping_info(tab.challenge_ev)
+        self.assertIsNotNone(ping)
+        self.assertIn(f"~{ping['ms']:.0f} ms", card)                          # the ping row, before the answer
+        self.assertIn("  (estimated before you connect)", card)
+        self.assertIn("challenges you -- ping about", tab.bar_text.get())   # (the text line has it too)
+
+    def test_the_servers_ping(self):
+        tab = self.tab
+        self.login()
+        self.feed(self.challenged("c1", ping={"ms": 321, "kind": "estimate", "known": True, "path": "relay"}))
+        self.assertIsNotNone(self.bar_button("Accept"))
+        card = self.card()
+        for text in ("Tazaz", "Beginner (placement 3/5)  ·  rating 1283",
+                     "wants to play you. Accept to start the match.", "~321 ms", "  (estimated before you connect)",
+                     "  ·  probably through a relay server"):
+            self.assertIn(text, card)
+        # the badge's column stays as wide as the badge: the wide ping row widens the name's (no gap between the two)
+        left = tab.view.bar_visual.winfo_children()[0]
+        self.root.update_idletasks()
+        badge = [w for w in left.grid_slaves(row=1, column=0)][0]
+        self.assertLessEqual(left.grid_bbox(0, 1)[2], badge.winfo_reqwidth() + tab.view.px(12) + 2)
+        self.assertEqual(tab.bar_text.get(), "Tazaz (Beginner (placement 3/5)) challenges you -- ping about 321 ms "
+                         "(estimated; measured directly once you both accept), probably through a relay server")
+        self.feed(self.challenged("c1-measured", ping={"ms": 42, "kind": "measured", "known": True, "path": "direct"}))
+        card = self.card()
+        self.assertIn("42 ms", card)
+        self.assertIn("  (measured in your last match together)", card)
+
+    def test_only_the_launchers_own_estimate(self):
+        """An older server sends no ping, or one it does not know (a round trip not measured yet): the card shows
+        the launcher's own estimate, the number of the lobby list."""
+        tab = self.tab
+        self.login()
+        tab.client.server_rtt, tab.client.relay_rtts = 171.0, {}
+        frm = dict(self.TAZAZ, rtt=150.0)                                   # (their round trip, as the list has it)
+        self.feed(self.challenged("c2", frm))                                # no `ping` at all
+        self.assertIn("~321 ms", self.card())
+        self.assertIn("ping about 321 ms", tab.bar_text.get())
+        self.feed(self.challenged("c3", frm, ping={"ms": 100, "kind": "estimate", "known": False, "path": "relay"}))
+        card = self.card()
+        self.assertIn("~321 ms", card)                                       # not "? ms"
+        self.assertIn("  ·  probably through a relay server", card)          # (the server's path guess stays)
+        self.feed(self.challenged("c4", dict(self.TAZAZ, id="p-new", name="Nobody"),
+                                  ping={"ms": 100, "kind": "estimate", "known": False}))
+        card = self.card()
+        self.assertIn("Nobody", card)
+        self.assertIn("? ms", card)                                          # nothing known anywhere: said so
+
+    def test_the_next_challenge_shows_its_own_challenger(self):
+        tab = self.tab
+        self.login()
+        self.feed(self.challenged("c5", ping={"ms": 321, "kind": "estimate", "known": True}))
+        self.bar_button("Decline").invoke()
+        self.root.update()
+        self.assertIsNone(tab.challenge)
+        self.feed(self.challenged("c6", dict(self.TAZAZ, id="p-amy", name="Amy"),
+                                  ping={"ms": 35, "kind": "estimate", "known": True}))
+        card = self.card()
+        self.assertIn("Amy", card)
+        self.assertNotIn("Tazaz", card)
+        self.assertIn("~35 ms", card)
+
+
 if __name__ == "__main__":
     unittest.main()

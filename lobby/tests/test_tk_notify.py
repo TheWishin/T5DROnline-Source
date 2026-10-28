@@ -1,7 +1,8 @@
-"""The Online tab's chime and taskbar flash (t5lobby/notify.py) on the events of a real lobby: a match found (the
-Accept prompt), someone joining the room this player hosts, this player's turn in a community room, a friend's
-invite, a tournament set that is ready, the opponent's rematch question -- each tells a player who is elsewhere once,
-a player who looks nothing, and the setting switches it off. Lobby updates, chat and the like never do.
+"""The Online tab's chime and taskbar flash (t5lobby/notify.py) on the events of a real lobby: a match found (the Accept
+prompt), a challenge (1.1.7), someone joining the room this player hosts, this player's turn in a community room, a
+friend's invite, a tournament set that is ready, the opponent's rematch question -- each tells a player who is
+elsewhere once, a player who looks nothing, and the setting switches it off. Lobby updates, chat and the like never
+do.
 
 Nothing makes a sound or flashes a window here: the tab's notifier gets a fake player and a fake flash, the clock is
 the test's, and "the player is elsewhere" is a switch (the tab's own rule: test_the_players_attention). The windows
@@ -350,6 +351,84 @@ class TournamentTest(NotifyMixin, TkTourBase):
 
 
 @unittest.skipIf(tk is None, "no tkinter")
+class ChallengeTest(NotifyMixin, TkBase):
+    """1.1.7, a player: "in the challenge request make it play a sound so I can have it minimized and know I got
+    challenged"."""
+
+    def setUp(self):
+        super().setUp()
+        self.hook_up()
+
+    def login_and_get_challenged(self):
+        tab = self.tab
+        tab.server_var.set(self.s.addr)
+        tab.do_login("guest")
+        self.pump(lambda: tab.client is not None and tab.client.me is not None)
+        self.other = client(self.s, "Tazaz")
+        self.pump(lambda: len(tab.tv_players.get_children()) == 2)
+        self.settle()
+        self.assertEqual(self.calls, [])                          # logging in, the list, a player coming: quiet
+        self.other.challenge(tab.client.me["id"])
+        self.pump(lambda: self.bar_button("Accept") is not None)
+        return tab.challenge
+
+    def test_a_challenge_chimes_once_and_flashes(self):
+        tab = self.tab
+        cid = self.login_and_get_challenged()
+        self.assertEqual(self.told(), 1)
+        self.assertEqual(self.logged, ["notify: challenge"])
+        self.assertEqual(self.calls, [("challenge", cid, True)])
+        self.later()
+        tab.on_event(dict(tab.challenge_ev))                      # the very same challenge again: not news
+        self.settle(30)
+        self.assertEqual(self.told(), 1)
+        self.bar_button("Decline").invoke()
+        self.settle()
+        self.assertEqual(self.told(), 1)
+
+    def test_a_player_who_looks_hears_nothing(self):
+        self.elsewhere = False
+        cid = self.login_and_get_challenged()
+        self.assertEqual(self.told(), 0)
+        self.assertEqual(self.logged, [])
+        self.assertEqual(self.calls, [("challenge", cid, False)])
+
+    def test_off_in_settings(self):
+        self.app.settings["notify"] = False
+        self.login_and_get_challenged()
+        self.assertEqual(self.told(), 0)
+
+    def test_the_same_challenger_rings_once_a_minute(self):
+        """Anybody in the lobby can challenge: one challenger cannot ring the bell over and over."""
+        tab = self.tab
+        self.login_and_get_challenged()
+        self.assertEqual(self.told(), 1)
+        frm = dict(tab.challenge_ev["from"])
+        for i, wait in enumerate((30, 25)):                        # 30 s, 55 s later: new challenges, same player
+            self.later(wait)
+            tab.on_event({"t": "challenged", "challenge": f"again-{i}", "from": dict(frm, name=frm["name"].upper())})
+            self.assertEqual(self.told(), 1)
+        self.later(6)                                              # a minute after the chime
+        tab.on_event({"t": "challenged", "challenge": "again-2", "from": frm})
+        self.assertEqual(self.told(), 2)
+        self.later(5)                                              # another player: their own minute
+        tab.on_event({"t": "challenged", "challenge": "amy-1", "from": dict(frm, id="p-amy", name="Amy")})
+        self.assertEqual(self.told(), 3)
+        self.assertEqual(self.kinds(fired=True), ["challenge"] * 3)
+
+    def test_unheard_does_not_count(self):
+        """A challenge the player saw (no chime) does not start the minute: the next one rings."""
+        tab = self.tab
+        self.elsewhere = False
+        self.login_and_get_challenged()
+        frm = dict(tab.challenge_ev["from"])
+        self.elsewhere = True
+        self.later(5)
+        tab.on_event({"t": "challenged", "challenge": "again", "from": frm})
+        self.assertEqual(self.told(), 1)
+
+
+@unittest.skipIf(tk is None, "no tkinter")
 class AttentionTest(TkBase):
     """The tab's own rule for 'the player is elsewhere' and its hooks."""
 
@@ -391,6 +470,7 @@ class AttentionTest(TkBase):
         tab = self.tab
         tab.notifier.notify = mock.Mock(side_effect=RuntimeError("boom"))
         tab._notify_event({"t": "invited", "invite": 1})
+        tab._notify_event({"t": "challenged", "challenge": 1, "from": None})
         tab._notify_event({"t": "match_found", "match": "m", "ready_check": True})
         tab._notify_event({"t": "room", "room": "not a room"})
         tab._notify_driver({"kind": "rematch_offer", "match": "m"})

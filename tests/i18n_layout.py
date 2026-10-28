@@ -606,7 +606,10 @@ class Walk:
         self.screen("online found")
         tab.on_event({"t": "match_reveal", "opponent": RIVAL})
         self.screen("online ready")
-        tab.on_event({"t": "challenged", "challenge": "c1", "from": RIVAL})
+        # (the widest ping row a card gets: an estimate with the path, 1.1.7 -- the card shows it since then)
+        tab.on_event({"t": "challenged", "challenge": "c1", "from": RIVAL,
+                      "ping": {"ms": 321, "kind": "estimate", "known": True, "path": "relay"},
+                      "wish": {"side": 1, "stage": "s33"}})          # (1.1.7: the wishes on the card)
         self.screen("online challenged")
         tab.hide_bar()
         tab.on_event({"t": "match_start", "ranked": True, "opponent": RIVAL, "rtt_ms": 41.6, "path": "relay",
@@ -671,6 +674,11 @@ class Walk:
         tab.on_event({"t": "invited", "invite": "i2", "kind": "room", "from": RIVAL,
                       "room": {"name": "Friday Night Community", "private": True}})
         self.screen("online friend's invite, private room")
+        tab.hide_bar()
+        tab.on_event({"t": "invited", "invite": "i3", "kind": "casual", "from": RIVAL,
+                      "wish": {"side": 0, "stage": "s33"},
+                      "ping": {"ms": 321, "kind": "estimate", "known": True, "path": "relay"}})
+        self.screen("online friend's invite, casual with wishes")
         tab.hide_bar()
         # this player's room (tk_rooms.py): the row under the rooms list, the code in its field, the next match; the
         # Create room and Room settings windows (withdrawn)

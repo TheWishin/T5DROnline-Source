@@ -760,7 +760,9 @@ class App(tk.Tk):
         ttk.Checkbutton(other, text=t("Mute sound"), variable=self.mute_var, command=self.save_settings).pack(anchor="w")
         # The Online tab's chime and flashing taskbar button (lobby/t5lobby/notify.py): a match to accept, someone in the room
         self.notify_var = tk.BooleanVar(value=bool(self.settings.get("notify", True)))
-        ttk.Checkbutton(other, text=t("Sound and taskbar flash when a match is found or someone joins my room"),
+        # (1.1.7: challenges ring too; the label names them and invites)
+        ttk.Checkbutton(other, text=t(
+            "Sound and taskbar flash when a match is found, I am challenged or invited, or someone joins my room"),
                         variable=self.notify_var, style=self.wrap_style("TCheckbutton", 440),
                         command=self.save_settings).pack(anchor="w", pady=(4, 0))
         ttk.Checkbutton(other, text=t("Start minimized, without taking focus (for testing)"), variable=self.bg_var,

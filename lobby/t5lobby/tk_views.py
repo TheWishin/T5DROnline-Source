@@ -189,7 +189,6 @@ class OnlineView:
         self._wrap_bound = set()
         self._wrap_after = None
         self.revealed = None               # the opponent once both accepted (match_reveal)
-        self.challenger = None
         self.match_ev = None               # match_start of the match being played
         self.game_phase = None
         self.fighters = None               # (p1, p2) once the game says who fights
@@ -1245,7 +1244,6 @@ class OnlineView:
 
     def reset(self):
         self.revealed = None
-        self.challenger = None
         self.match_ev = None
         self.result_info = None
         self.result_dismissed = True
@@ -1286,9 +1284,6 @@ class OnlineView:
                 self.room_label.grid()
             else:
                 self.room_label.grid_remove()
-        elif kind == "challenged":
-            self.challenger = ev.get("from")
-            self.challenge_ev = ev
         elif kind == "match_found":
             self.revealed = None
             self.rematch_pending = False
@@ -1789,18 +1784,34 @@ class OnlineView:
 
     def _visual_challenge(self, v):
         px = self.px
-        ch = self.challenger or {}
+        # (the tab's own event, set before it shows the bar -- 1.1.7: the view's after_event came after the card
+        # was drawn, so the first challenge had no name and no ping, a later one the previous challenger's name)
+        ev = getattr(self.tab, "challenge_ev", None) or {}
+        if ev.get("challenge") != self.tab.challenge:
+            ev = {}
+        ch = ev.get("from") or {}
         left = self.body(v)
         left.grid(row=0, column=0, sticky="nw")
+        left.columnconfigure(1, weight=1)       # (the wide ping row widens the name's column, not the badge's)
         ttk.Label(left, text=t("Challenge").upper(), style="Card.Caps.TLabel").grid(
             row=0, column=0, columnspan=2, sticky="w", pady=(0, px(8)))
         if ch:
             self._opponent_row(left, ch, 1)
         ttk.Label(left, text=t("wants to play you. Accept to start the match."), style="Card.TLabel").grid(
             row=3, column=0, columnspan=2, sticky="w", pady=(px(10), 0))
-        ev = getattr(self, "challenge_ev", None)
-        if ev is not None and ev.get("challenge") == self.tab.challenge:
-            self._ping_row(left, self._card_ping(ev, "from"), 4)        # (1.1.5: before the answer)
+        if ev:
+            self._wish_row(left, ev.get("wish"), 4)
+            self._ping_row(left, self._card_ping(ev, "from"), 5)        # (1.1.5: before the answer)
+
+    def _wish_row(self, parent, wish, row):
+        """A challenger's / friend's side and stage wishes ("wants to be P1 on Ghetto Pit", tk_casual.py) on the card,
+        before the answer (1.1.7: only the bar's text had them, which the card does not show); nothing when they leave
+        both open."""
+        casual = getattr(self.tab, "casual", None)
+        text = casual.wish_line(wish) if casual is not None else ""
+        if text:
+            ttk.Label(parent, text=text, style="Card.Bold.TLabel").grid(row=row, column=0, columnspan=2, sticky="w",
+                                                                        pady=(self.px(4), 0))
 
     def _visual_invite(self, v):
         """A friend invites this player: their badge and name, and to what (a casual match, or their room)."""
@@ -1808,6 +1819,7 @@ class OnlineView:
         inv = self.tab.invite or {}
         left = self.body(v)
         left.grid(row=0, column=0, sticky="nw")
+        left.columnconfigure(1, weight=1)       # (the wide ping row widens the name's column, not the badge's)
         ttk.Label(left, text=t("Invite from a friend").upper(), style="Card.Caps.TLabel").grid(
             row=0, column=0, columnspan=2, sticky="w", pady=(0, px(8)))
         if inv.get("from"):
@@ -1823,8 +1835,10 @@ class OnlineView:
             text = t("invites you to a casual match. Accept to start it.")
         ttk.Label(left, text=text, style="Card.TLabel").grid(row=3, column=0, columnspan=2, sticky="w",
                                                               pady=(px(10), 0))
+        if inv.get("kind") == "casual":
+            self._wish_row(left, inv.get("wish"), 4)
         if inv and (inv.get("room") or {}).get("size", 2) <= 2:    # (1.1.5; a bigger room: others play there too)
-            self._ping_row(left, self._card_ping(inv, "from"), 4)
+            self._ping_row(left, self._card_ping(inv, "from"), 5)
 
     # --- the result
     def _outcome(self):

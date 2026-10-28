@@ -34,10 +34,11 @@ Discord Rich Presence (optional, launcher Settings, off by default): t5lobby.dis
 "Searching ranked" or "In match: Jin vs Kazuya (Ranked, Set 1-0)" with a timer in the player's Discord status,
 through the Discord app on this PC; without Discord running it does nothing.
 
-Chime and taskbar flash (notify.py, launcher Settings, on by default): when a match asks for Accept, someone joins the
-player's room, a community room's turn comes, a friend invites, a tournament set is ready or the opponent asks for a
-rematch -- and the player is elsewhere (another program in front, the launcher minimized, another tab) -- a short
-chime plays and the launcher's taskbar button flashes until the window is in front. Once per event.
+Chime and taskbar flash (notify.py, launcher Settings, on by default): when a match asks for Accept, someone challenges
+the player (1.1.7), someone joins the player's room, a community room's turn comes, a friend invites, a tournament set
+is ready or the opponent asks for a rematch -- and the player is elsewhere (another program in front, the launcher
+minimized, another tab) -- a short chime plays and the launcher's taskbar button flashes until the window is in
+front. Once per event.
 
 Firewall hint (docs/TROUBLESHOOTING.md "The firewall blocks the game"): a read-only look at Windows Firewall's rules
 for the exact t5dr.exe the launcher starts and for the launcher itself (t5lobby.fwcheck, on a worker thread when the tab
@@ -128,6 +129,7 @@ BAR_ARM_S = 0.4
 # copies docs/TROUBLESHOOTING.md there; the release zip has the same file under docs\).
 FW_HELP_URL = "https://github.com/TheWishin/T5DROnline/blob/main/TROUBLESHOOTING.md#the-firewall-blocks-the-game"
 FW_CHECK_GAP_S = 30.0   # the firewall's rules are read again at most this often (tab shown, a match ended)
+CHALLENGE_CHIME_S = 60.0  # the same challenger rings (chime + flash) at most this often (_notify_event)
 
 
 def _word(table, key):
@@ -245,7 +247,8 @@ class OnlineTab:
         self.host_info = None
         self.host_args = []              # extra arguments for it (tests)
         self.match = None                # match_found event
-        self.challenge = None            # pending incoming challenge
+        self.challenge = None            # pending incoming challenge (its id)
+        self.challenge_ev = None         # ... and its `challenged` event (the card: who, the ping)
         self.last_result = None
         self.profile_name = None
         self._auto_tried = False
@@ -266,6 +269,7 @@ class OnlineTab:
         self.notifier = notify.Notifier(enabled=self._notify_enabled, away=self._notify_away,
                                         flash=self._notify_flash, log=_launcher_log)
         self.room_watch = notify.RoomWatch()
+        self._challenge_rung = {}        # challenger's name (lower case) -> notifier clock of the last chime for them
         self.codes_window = None
         self.ready_deadline = None       # monotonic time the ready check ends (accepting is still possible)
         self.ready_sent = False          # we accepted: waiting for the opponent
@@ -1640,7 +1644,9 @@ class OnlineTab:
         elif kind == "chat":
             self.chat_line(ev["text"], sender=ev["from"]["name"])
         elif kind == "challenged":
-            self.challenge = ev["challenge"]
+            # (both before show_bar: it draws the card at once -- who and the ping, 1.1.7; the view's own
+            # after_event comes later, too late for the card's first and only drawing)
+            self.challenge, self.challenge_ev = ev["challenge"], ev
             ping = _event_ping(c, ev)    # (1.1.5: the ping and the likely path before an answer)
             self.show_bar(t("{name} ({rank}) challenges you", name=ev["from"]["name"], rank=rank_text(ev["from"]))
                           + (" -- " + ping_text(ping) if ping else ""),
@@ -1842,13 +1848,26 @@ class OnlineTab:
         return notify.flash_window(padnav.toplevel_hwnd(self.parent.winfo_toplevel()))
 
     def _notify_event(self, ev):
-        """The lobby events that want the player (a match to accept, a friend's invite, a tournament set, news in
-        their room). Never an error for the tab."""
+        """The lobby events that want the player (a match to accept, a challenge, a friend's invite, a tournament set,
+        news in their room). Never an error for the tab."""
         try:
             kind, n = ev.get("t"), self.notifier
             if kind == "match_found":
                 if ev.get("blind") or ev.get("ready_check"):         # (the Accept bar; not a match that starts itself)
                     n.notify(notify.MATCH, ev.get("match"))
+            elif kind == "challenged":
+                # (1.1.7, a player: "so I can have it minimized".) Anybody in the lobby can challenge, so one
+                # challenger rings at most once a minute (the server: one pending challenge each, 30 s after a
+                # decline; Block ends it); the taskbar button flashes on until the window is in front anyway.
+                who = str((ev.get("from") or {}).get("name") or "").lower()
+                last = self._challenge_rung.get(who)
+                now = n.clock()
+                if last is not None and 0 <= now - last < CHALLENGE_CHIME_S:
+                    return
+                if n.notify(notify.CHALLENGE, ev.get("challenge")):
+                    if len(self._challenge_rung) > 256:
+                        self._challenge_rung.clear()
+                    self._challenge_rung[who] = now
             elif kind == "invited":
                 n.notify(notify.INVITE, ev.get("invite"))
             elif kind == "tour_call":

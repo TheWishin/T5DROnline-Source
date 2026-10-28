@@ -7,7 +7,7 @@ index c4a7dec..16029ce 100644
               * and says so. On by default on macOS, where it was measured: no
               * stale reads and full hit effects at 60 fps.
 -             * TODO: measure the Windows build and turn it on there too. */
-+             * Patch 0082: on by default on Windows too. Without it the
++             * Patch 0085: on by default on Windows too. Without it the
 +             * walker could translate a frame before the game had finished it,
 +             * and on a graphics card slower than the game (~30 fps: GitHub #12,
 +             * the GT 730) the hit effects -- the EWGF's lightning -- ended after
@@ -20,7 +20,7 @@ index c4a7dec..16029ce 100644
 -                           blk = e ? atoi(e) : 0;
 -#endif
 -                           const char* t = getenv("GCM_SEMA_ACQUIRE_MS"); blk_ms = t ? (unsigned)atoi(t) : 200; }
-+                           blk = e ? atoi(e) : 1;   /* patch 0082: every platform (was macOS only) */
++                           blk = e ? atoi(e) : 1;   /* patch 0085: every platform (was macOS only) */
 +                           const char* t = getenv("GCM_SEMA_ACQUIRE_MS"); blk_ms = t ? (unsigned)atoi(t) : 200;
 +                           fprintf(stderr, "[cellGcmSys] semaphore ACQUIRE: the walker %s (GCM_SEMA_ACQUIRE=%d)%c",
 +                                   blk ? "waits for the label, as the RSX does" : "passes it", blk, 10); }

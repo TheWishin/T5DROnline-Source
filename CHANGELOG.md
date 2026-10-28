@@ -3,7 +3,19 @@
 All notable changes, newest first. The project is a test release. Short commit hashes are in parentheses. The state of each
 part is in the README's status table.
 
-## v1.1.7 (not released yet)
+## v1.1.7 (2026-10-28)
+
+**Handicap up to 150 %, City at Sunset without black frames, the EWGF lightning on slow graphics cards, fighter
+pictures in the character select, a fair coin for ranked sides, and an update that can never strand you again.**
+Casual matches take a health handicap from 30 % up to 150 % (each player their own); City at Sunset no longer
+drops single black frames on PCs below 24 threads; Kazuya's and Jin's lightning lasts as on the PS3 on slow
+graphics cards; the ranked character select and your profile show the fighters' pictures; ranked and quick
+matches draw P1 / P2 by a coin; the lobby chat shows clearly who wrote what; a Community Discord button. A new
+launcher that closes by itself right after an update now gets the old one back automatically. This release also
+contains everything of 1.1.5 (training rooms, side and stage choice, the real ping, practice tools, stats, graphics
+settings for weak PCs -- see v1.1.5 below), which was withdrawn, and 1.1.6's fix. Both players need 1.1.7. After the
+update press **BUILD GAME** once, as the launcher asks.
+
 
 ### Launcher
 - Fighter pictures in the ranked character select and the profile's main-fighter portrait show again

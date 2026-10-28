@@ -20,6 +20,7 @@ where English is not), which comes to the same now that English has nothing cut 
 filled with has the widest texts each column can get: a placement rank, a player and a room of another version,
 friends that cannot be invited, the longest reasons a void game has.
 """
+import gc
 import importlib.machinery
 import importlib.util
 import os
@@ -468,6 +469,12 @@ class Walk:
                 p.stop()
             if app is not None:
                 self._close(app)
+                # Free the walk's Tk objects here, on the Tk thread: left to the garbage collector, they can be
+                # freed later in a launcher worker thread (pictures, update check), which Tk refuses -- the
+                # unittest process then dies at exit with "Tcl_AsyncDelete: async handler deleted by the wrong
+                # thread" (1.1.7's release check, after the walk grew by two screens).
+                app = self.app = None
+                gc.collect()
             log.stop()
             env.stop()
             i18n.set_language("en")

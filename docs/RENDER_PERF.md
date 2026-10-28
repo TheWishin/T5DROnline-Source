@@ -3537,3 +3537,49 @@ GPU timestamps the same, 1.20-1.21; the patch adds no GPU work there -- nothing 
 of the processors (the player's count, one vertex worker): fps 59.82 / 59.89 vs 59.85 / 59.76, p99 20.99 / 20.87 vs
 21.18 / 21.04 ms, game thread 2.00 / 2.03 vs 2.01 / 2.01, walker 1.42 / 1.42 vs 1.42 / 1.43, GPU 2.74 / 2.72 vs 2.74 /
 2.74 ms. The patch's work per draw is two stores and a compare: no regression beyond the run-to-run spread.
+
+## 1.1.7: before/after measurements, 2-core PCs and GitHub #12 (patch 0084, branch `perf-117`)
+
+### Repeating the measurements: `tools/perf_compare.py`
+
+One command measures a built game the same way every time and a second prints the before/after table; the 1.1.7
+gate runs it on the candidate and compares with the 1.1.6 baseline (`build/w117/perf-scratch/base116*`, local):
+
+    python tools/perf_compare.py run --game <built game folder> --out <dir> [--runs 2]
+        [--lock C:/T5DROnline/build/int115/HEAVY.lock --lock-name <name>] [--parts offline,rollback,e2e]
+    python tools/perf_compare.py table <dir>/results.json
+    python tools/perf_compare.py compare <before>/results.json <after>/results.json
+
+- **offline**: `fight_bench.py --polite` direct fights, Lili vs Asuka, stages 17, 19, 4 (City at Sunset) and 13
+  (Poolside), 720p Native with the launcher's defaults and with the Lowest preset, on all processors and on 2 cores /
+  4 threads by affinity (`--two-core-mask`, default LP 12-15; the game's 2-core mode turns on by itself:
+  `PS3_TWO_CORE` auto on 2 physical cores or fewer, `[sched] processors: ... 2-core mode`), `--runs` times each, after
+  one unmeasured fight per stage and preset into one shader cache (a player's cache is warm after BUILD GAME). Per
+  run: fps, frame p99, frames over 20.9 ms (the `[slow-frames]` limit), the game part / translation / GPU wait
+  medians, `[gpu-pass]` GPU ms a frame (`RSX_GPU_PASSES=1`), the game thread's CPU per frame, every thread's CPU.
+- **rollback**: `rollback_net_test.py --latlog` pairs (one whole match, Asuka vs Lili on stage 20, both sides
+  attacking) through the proxy at RTT 60 +-5 / 1 %, 120 +-8 / 2 %, 180 +-10 / 3 %, 260 +-12 / 3 % (input delay by
+  ping, the lobby's 3 above 150 ms and 4 above 250): pictures shown twice or longer while fighting per side and
+  match (docs/ROLLBACK.md section 34's measure), present-to-present p99, mismatching frames, fps, rollbacks, the
+  display lock's lead (tick -> present: the screen part of input-to-screen, on top of the input delay).
+- **e2e**: `tools/e2e/run.py` with real games and a local lobby: `net_rollback` (RTT 20-250, delays, loss, jitter,
+  the relay), `net_relay_smooth` on the direct path at the four networks above, `ranked_set`.
+
+Every game run is one heavy step under the shared lock (taken per run, given back after it). The PC's other load is
+in every row; compare two builds measured under similar load.
+
+### Patch 0084 (timing and host code only; CODE_VERSION unchanged)
+
+- **The SPU signal log's `fflush`** (`runtime/spu/spu_workload.c`, upstream ps3recomp, found by the Mac build's
+  `-Wmisleading-indentation`): `if (n++ < 24) fprintf(...); fflush(stderr);` flushed stderr on *every* SPU task signal
+  and every task dispatch; the same in the `[persist-ls]` line. Both now inside the throttle, and the counter is
+  read before its locked add. On Windows stderr is unbuffered, so the flush itself cost ~2 ns uncontended
+  (measured): neutral, a correctness fix of the logging.
+- **The software fused multiply-add of PCs without FMA3** (`ppu_fma_soft`, `runtime/ppu/ppu_fp_det.h`): GitHub #12's
+  i3-3240 (Ivy Bridge: AVX, no FMA3) runs it for every `fmadd` of the game; on the 2-core stand-in below it was ~8 %
+  of the main thread's time (`PS3_HOST_PROF`). A double-only path for the common case (Boldo & Melquiond's emulated
+  FMA: Dekker's exact product, TwoSum, round to odd) gives the same bits as `vfmadd` and is 1.7x faster than the
+  128-bit integer path (12.2 against 20.5 ns a call); operands outside |x|, |y| in [2^-450, 2^451), |z| in
+  [2^-900, 2^901) keep the integer path. Checked against the instruction: `runtime/ppu/tests/test_fp_det.c` (new
+  cases for the window, its edges, cancellation; 50 M random + 4,913 special: 0 differ), a 400 M-case stress (0
+  differ), `tests/c/fma_soft_test.c` (`tests/test_weak_cpu_117.py`). CPUs with FMA3 never run it.

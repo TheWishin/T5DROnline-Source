@@ -472,6 +472,8 @@ std::vector<uint32_t> g_wp_addr;
 uint32_t g_wp_at = UINT32_MAX;
 bool g_wp_armed = false;
 std::atomic<int> g_wp_hits{ 0 };
+bool g_wp_rw = false;                   /* T5_DF_WATCHPOINT_RW=1: reads too, each reading/writing function logged once */
+std::vector<uint64_t> g_wp_seen;        /* (word << 32 | lifted function) already logged in RW mode */
 #if defined(_WIN32) && defined(T5P_X64)
 LONG CALLBACK wp_veh(EXCEPTION_POINTERS* ep)
 {
@@ -486,6 +488,12 @@ LONG CALLBACK wp_veh(EXCEPTION_POINTERS* ep)
     const uintptr_t pc = (uintptr_t)T5P_CTX_PC(c);
     uint32_t off = 0;
     const uint32_t top = rb::guest_of_host(pc, &off);
+    if (g_wp_rw) {   /* reads fire every frame: each (word, function) once */
+        const uint64_t key = (uint64_t)which << 32 | top;
+        for (uint64_t k : g_wp_seen) if (k == key) return EXCEPTION_CONTINUE_EXECUTION;
+        if (g_wp_seen.size() >= 400) return EXCEPTION_CONTINUE_EXECUTION;
+        g_wp_seen.push_back(key);
+    }
     if (g_wp_hits++ < 400)
         note("frame %u: WATCH [0x%08X] = 0x%08X by lifted %s%06X+0x%X <- %s", g_frame.load(), g_wp_addr[which],
              rd32(g_wp_addr[which] & ~3u), top ? "func_" : "none ", top, off, rb::guest_backtrace(8).c_str());
@@ -506,7 +514,8 @@ DWORD WINAPI wp_setter(void* arg)
         DWORD64 d7 = 0;
         for (size_t i = 0; i < g_wp_addr.size() && i < 4; i++) {
             *dr[i] = (DWORD64)(uintptr_t)(vm_base + (g_wp_addr[i] & ~3u));
-            d7 |= (1ull << (2 * i)) | (1ull << (16 + 4 * i)) | (3ull << (18 + 4 * i));   /* local, on write, 4 bytes */
+            /* local, on write (T5_DF_WATCHPOINT_RW=1: on read or write), 4 bytes */
+            d7 |= (1ull << (2 * i)) | ((g_wp_rw ? 3ull : 1ull) << (16 + 4 * i)) | (3ull << (18 + 4 * i));
         }
         c.Dr7 = d7;
         c.ContextFlags = CONTEXT_DEBUG_REGISTERS;
@@ -733,6 +742,7 @@ struct Register {
             g_wp_addr.push_back(a);
             p = e; while (*p == ',' || *p == ' ') p++;
         }
+        { const char* rw = getenv("T5_DF_WATCHPOINT_RW"); g_wp_rw = rw && *rw == '1'; }
         if (const char* wa = getenv("T5_DF_WATCHPOINT_AT")) g_wp_at = (uint32_t)atoi(wa);
         else if (!g_wp_addr.empty()) g_wp_at = 0;
         if (const char* fd = getenv("T5_DF_FIND")) {

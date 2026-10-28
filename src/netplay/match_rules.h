@@ -14,8 +14,9 @@
  * 0x1008EBF8 P2, u32, 100 after the select screen's handicap bar), which the game mode's set-up turns into the
  * fighters' maximum health (fighter block +0x6C0, 16.16 fixed point: 145.0 at 100 %, 72.5 at 50 %) and their
  * health at every round start (+0x6BC). The driver writes both words at the game mode's first frame, before that
- * set-up runs (docs/DIRECTFIGHT.md "How the game is driven"), the same values on both PCs; the HUD's health bars
- * show the shorter maximum as an empty part (build/int115 probes p2, p5).
+ * set-up runs (docs/DIRECTFIGHT.md "How the game is driven"), the same values on both PCs; each HUD health bar is
+ * health / that fighter's own maximum. 1.1.7: up to 150 % -- the set-up takes it unclamped (217.5 at 150 %), the
+ * bar starts full and never overflows, KO and results are unchanged (docs/NETPLAY.md "Above 100 %").
  *
  * The training rule, per frame f, with the game state at f's boundary (live, re-simulated and played-back frames
  * alike, after the inputs are final for that run):
@@ -51,7 +52,7 @@
 namespace np {
 
 struct MatchRules {
-    static constexpr int kLifeMin = 10, kLifeMax = 100;
+    static constexpr int kLifeMin = 10, kLifeMax = 150;   /* 1.1.7: up to 150 % (docs/NETPLAY.md) */
     bool training = false;
     int life[2] = { 100, 100 };
 

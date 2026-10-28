@@ -261,6 +261,7 @@ bool parse_fight(const char* s0, Fight& out)
             const std::string v = cur.substr(eq + 1);
             const size_t bar = v.find('|');
             const int a = atoi(v.c_str()), b = bar == std::string::npos ? 100 : atoi(v.c_str() + bar + 1);
+            /* 10-150 (1.1.7; 1.1.5 / 1.1.6: 10-100) */
             f.rules.life[0] = a > 0 ? np::MatchRules::clamp_life(a) : 100;
             f.rules.life[1] = b > 0 ? np::MatchRules::clamp_life(b) : 100;
         }
@@ -379,16 +380,19 @@ void ctl_report(uint32_t f)
 }
 
 std::string status_extra();   /* the in-game select's part of the status (below) */
+/* "life_max": 150 in the status: the launcher looks for this text in the game binary to know the build can play a
+ * health handicap above 100 % (1.1.7; lobby/t5lobby/match_driver.py LIFE150_MARKER) */
+static_assert(np::MatchRules::kLifeMax == 150, "the status's life_max and the launcher's marker say 150");
 void status(const char* state, uint32_t f)
 {
     g_state_name = state;
     note("frame %u: state %s", f, state);
     ctl_report(f);
     if (g_status_file.empty()) return;
-    char buf[640];
+    char buf[768];
     snprintf(buf, sizeof buf,
              "{\"state\": \"%s\", \"frame\": %u, \"match\": %u, \"p1\": %d, \"p2\": %d, \"stage\": %d, \"rounds\": %d, "
-             "\"last_winner\": %s, \"last_score\": [%d, %d], \"pick\": %d, \"b1\": %d, \"b2\": %d, \"training\": %s, \"life\": [%d, %d]%s}\n",
+             "\"last_winner\": %s, \"last_score\": [%d, %d], \"pick\": %d, \"b1\": %d, \"b2\": %d, \"training\": %s, \"life\": [%d, %d], \"life_max\": 150%s}\n",
              state, f, g_match, g_cfg.chr[0], g_cfg.chr[1], g_cfg.stage, g_cfg.rounds,
              g_last_winner == -2 ? "null" : g_last_winner == -1 ? "null" : (g_last_winner == 0 ? "0" : "1"),
              g_last_score[0], g_last_score[1], g_cfg.pick, g_cfg.btn[0], g_cfg.btn[1],

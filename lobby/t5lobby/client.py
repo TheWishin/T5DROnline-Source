@@ -102,7 +102,7 @@ class LobbyClient(TourCalls, SpectateClientMixin):
                  reconnect=60.0, plain_passwords=False, blind_ready=False, ingame_pick=False, sets=False,
                  port_mapping=False, nat2=True, relay_bridge=True, relays=True, friends=True, old_stages=True,
                  tournaments=False, spectate=False, live_dir=None, watch_dir=None, test_inbound=None,
-                 private_rooms=True, match_rules=False):
+                 private_rooms=True, match_rules=False, life150=False):
         """server: "host[:port]". build: BuildInfo. on_event: optional callable(event) run on the
         client thread (use the `events` queue from a UI). game_port: local UDP port for the game
         (0 = any free one; set it when the player forwarded a port on the router).
@@ -149,7 +149,9 @@ class LobbyClient(TourCalls, SpectateClientMixin):
         locked room for it).
         match_rules: this player's game can play training rooms (endless health) and the health handicap
         (docs/ONLINE.md "Training rooms and the health handicap"; the cap "match_rules"). Off by default:
-        the launcher turns it on when its game build has them (match_driver.game_supports_rules)."""
+        the launcher turns it on when its game build has them (match_driver.game_supports_rules).
+        life150: this player's game can play a health handicap above 100 % (up to 150; 1.1.7, the cap "life150";
+        match_driver.game_supports_life150)."""
         self.host, self.port = proto.parse_hostport(server)
         self.build = build
         self.on_event = on_event
@@ -174,6 +176,7 @@ class LobbyClient(TourCalls, SpectateClientMixin):
         self.invite_waits = {}       # friend's name (lower case) -> monotonic time this player may invite them again
         self.private_rooms = private_rooms
         self.match_rules = match_rules
+        self.life150 = bool(match_rules and life150)
         self.life = 100              # this player's health handicap (set_life), as the server confirmed it
         self.casual_prefs = None     # (side None/0/1, stage key or "random"): casual wishes, sent after every login
         self.my_room = None          # this player's room as its members see it (the last `room` message)
@@ -320,7 +323,9 @@ class LobbyClient(TourCalls, SpectateClientMixin):
                                                 + (["game_fallback"] if self._can_fallback() else [])
                                                 + ["boss_chars", "lag_wait"]
                                                 # (last: a server reads a client's first 16 caps)
-                                                + (["match_rules"] if self.match_rules else [])})
+                                                + (["match_rules"] if self.match_rules else [])
+                                                # (1.1.7; a 1.1.5+ server reads 32 caps)
+                                                + (["life150"] if self.life150 else [])})
         except LobbyError:
             # Refused (version) or no answer (e.g. TLS on one side only): leave nothing half open.
             closing, self._closing = self._closing, True
@@ -1436,12 +1441,20 @@ class LobbyClient(TourCalls, SpectateClientMixin):
         """Can this player set a health handicap for casual matches?"""
         return self._rules_ok("handicap")
 
+    def life_max(self):
+        """The highest health this player may pick: 150 when the server and this game have it (1.1.7), else 100."""
+        w = self.welcome or {}
+        ok = (self.life150 and self.handicap_ok() and "handicap150" in (w.get("features") or ())
+              and "life150" in (w.get("caps") or ()))
+        return 150 if ok else 100
+
     def set_life(self, life):
-        """The health this player fights with in casual matches, in percent (30-100 in steps of 10; 100 = none).
-        Ranked and tournament matches are always 100 %. -> the value the server took."""
+        """The health this player fights with in casual matches, in percent (30-150 in steps of 10; 100 = none;
+        above life_max() it is sent as life_max()). Ranked and tournament matches are always 100 %. -> the value
+        the server took."""
         if not self.handicap_ok():
             raise LobbyError(proto.E_NOT_ALLOWED, "this server has no health handicap")
-        r = self._call({"t": "set_life", "life": int(life)})
+        r = self._call({"t": "set_life", "life": min(int(life), self.life_max())})
         self.life = int(r.get("life", life))
         return self.life
 

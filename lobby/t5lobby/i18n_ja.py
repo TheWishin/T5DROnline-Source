@@ -2387,6 +2387,7 @@ MESSAGES = {
     "training rooms are casual (unranked)": "トレーニングルームはカジュアル（ランクなし）です",
     "the health handicap needs a newer launcher; update it": "体力ハンデには新しいランチャーが必要です。アップデートしてください",
     "life is 30 to 100 in steps of 10": "体力は 30〜100 の 10 刻みです",
+    "life is 30 to 150 in steps of 10": "体力は 30〜150 の 10 刻みです",
     "this server has no training rooms": "このサーバーにはトレーニングルームがありません",
     "this server has no health handicap": "このサーバーには体力ハンデがありません",
     # Settings -> Graphics (patch 0079)

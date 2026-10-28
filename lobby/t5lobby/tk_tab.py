@@ -70,7 +70,8 @@ from . import discord_rpc, fighters, fwcheck, lag, notify, padmap, padnav, proto
 from .buildid import BuildInfo
 from .client import LobbyClient
 from .i18n import N_, stamp, t, translate_message
-from .match_driver import MatchDriver, fps_from_logs, game_files, game_supports_pick, game_supports_rules
+from .match_driver import MatchDriver, fps_from_logs, game_files, game_supports_pick, game_supports_rules, \
+    game_supports_life150
 from .proto import DEFAULT_PORT, LobbyError
 from . import theme, tk_casual, tk_rooms, tk_rules, tk_spectate, tk_tour, tk_views, tklist, winfront
 from .ranks import record_label as _record
@@ -708,6 +709,7 @@ class OnlineTab:
                         plain_passwords=bool(self.cfg.get("plain_passwords")), blind_ready=True,
                         ingame_pick=self._game_can_pick(),
                         match_rules=self._game_has_rules(),     # training rooms, the health handicap
+                        life150=self._game_has_life150(),       # the handicap above 100 % (1.1.7)
                         sets=bool(self.cfg.get("sets", True)),   # online.json "sets": false: no ranked sets
                         # launcher Settings -> "Open the game's port on my router" (docs/NETPLAY.md)
                         port_mapping=bool(getattr(self.app, "settings", {}).get("router_ports", True)),
@@ -736,6 +738,12 @@ class OnlineTab:
         out = getattr(self.app.settings, "out_dir", os.getcwd())
         return game_supports_rules([os.path.join(out, "build", "cmake", "t5dr.exe"),
                                     os.path.join(out, "build", "cmake", "t5dr_game.dll")])
+
+    def _game_has_life150(self):
+        """This PC's game can play a health handicap above 100 % (up to 150; 1.1.7)."""
+        out = getattr(self.app.settings, "out_dir", os.getcwd())
+        return game_supports_life150([os.path.join(out, "build", "cmake", "t5dr.exe"),
+                                      os.path.join(out, "build", "cmake", "t5dr_game.dll")])
 
     def do_login(self, mode, session=None):
         if mode != "session":

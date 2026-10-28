@@ -45,3 +45,17 @@ to v1.1.6's), no database step.
   rating / record / history / profile, rematches, ranked rooms, the v1.1.6 client), the lobby test modules each in
   their own process, and the real-game e2e scenario `ranked_sides` with the v1.1.6 launcher code (RANKED.md
   "Sides").
+
+## The health handicap up to 150 % (handicap-117)
+
+A second 1.1.7 lobby change: casual players may set **My health (casual)** up to 150 % (was 30-100; docs/ONLINE.md
+"Training rooms and the health handicap").
+
+- Files: `lobby/t5lobby/server/matchrules.py`, `server/lobby.py` (one new cap, `life150`, and one new FEATURES entry,
+  `handicap150`). No database change, no setting.
+- Older launchers are not affected: `set_life` above 100 needs the `life150` cap (only a 1.1.7 launcher whose game
+  build plays it sends it; a 1.1.6 launcher still gets "life is 30 to 100 in steps of 10"), and a match between a
+  player at 110-150 % and a launcher without the cap plays that value as 100 % -- the server never sends a value
+  above 100 to a launcher without the cap (1.1.6 and 1.1.7 games never pair anyway: the game's code id differs).
+- Until the server runs this code, a 1.1.7 launcher offers only 30-100 % (it asks for the feature).
+- C3: with two 1.1.7 launchers, one at 120 %: the ready check and the match card say "you 120 %, opponent 100 %".

@@ -2355,6 +2355,7 @@ MESSAGES = {
     "training rooms are casual (unranked)": "트레이닝 방은 캐주얼(랭크 없음)입니다",
     "the health handicap needs a newer launcher; update it": "체력 핸디캡은 더 새로운 런처가 필요합니다. 런처를 업데이트하세요",
     "life is 30 to 100 in steps of 10": "체력은 30~100, 10 단위입니다",
+    "life is 30 to 150 in steps of 10": "체력은 30~150, 10 단위입니다",
     "this server has no training rooms": "이 서버에는 트레이닝 방이 없습니다",
     "this server has no health handicap": "이 서버에는 체력 핸디캡이 없습니다",
     # Settings -> Graphics (patch 0079)

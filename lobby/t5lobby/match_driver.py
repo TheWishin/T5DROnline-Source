@@ -83,6 +83,8 @@ def game_files(out):
 
 PICK_MARKER = b"T5_DF_PICK"     # a game build with the in-game select (src/directfight, docs/DIRECTFIGHT.md)
 RULES_MARKER = b"T5_DF_RULES"   # a game build with training rooms and the health handicap (src/netplay/match_rules.h)
+LIFE150_MARKER = b'"life_max": 150'   # 1.1.7: a game build that plays a health handicap up to 150 % (df_fight.cpp status)
+LIFE_MAX = 150                  # the highest health handicap a fight line may carry (percent; 1.1.5 / 1.1.6: 100)
 
 RE_SYNC = re.compile(r"\[netplay\] sync check through frame (\d+): (\d+) mismatching")
 RE_DESYNC = re.compile(r"\[netplay\] DESYNC at frame (\d+)")
@@ -361,6 +363,11 @@ def game_supports_rules(paths):
     return _has_marker(paths, RULES_MARKER)
 
 
+def game_supports_life150(paths):
+    """Can this game build play a health handicap above 100 % (up to 150; 1.1.7)?"""
+    return _has_marker(paths, LIFE150_MARKER)
+
+
 def fight_rules(fight):
     """The fight line's rules from match_start's `fight`: " train=1" for a training room's match, " life=P1|P2" for
     the health handicap (both games must write the same: the server sends them only when both can)."""
@@ -371,7 +378,7 @@ def fight_rules(fight):
         out += " train=1"
     life = fight.get("life")
     if (isinstance(life, list) and len(life) == 2 and all(isinstance(x, int) and not isinstance(x, bool)
-                                                           and 10 <= x <= 100 for x in life) and life != [100, 100]):
+                                                           and 10 <= x <= LIFE_MAX for x in life) and life != [100, 100]):
         out += f" life={life[0]}|{life[1]}"
     return out
 
@@ -1243,7 +1250,7 @@ def hud_values(ev):
     life = ((ev or {}).get("fight") or {}).get("life")
     if isinstance(life, list) and len(life) == 2 and all(isinstance(x, int) for x in life) and life != [100, 100]:
         # the health handicap (docs/ONLINE.md "Training rooms and the health handicap"): the game's bars show health
-        # against each fighter's own (smaller) maximum, so the name says it -- "Alice 70%" (outside the hashed state)
+        # against each fighter's own maximum, so the name says it -- "Alice 70%", "Bob 120%" (outside the hashed state)
         names = [n if x == 100 else f"{n[:11]} {x}%" for n, x in zip(names, life)]
     tiers = []
     for p in players:

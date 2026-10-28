@@ -68,6 +68,7 @@ SERVER_NAME = "t5lobby/0.2"
 CAPS = frozenset(("delta", "blind_ready", "notices", "sets", "ingame_pick", "nat2", "relays", "friends", "old_stages",
                   "tournaments", "spectate", "game_fallback", "private_rooms", "boss_chars", "lag_wait",
                   "match_rules"))     # (a server reads 16 caps: one cap for training rooms and the handicap)
+CAPS |= {"life150"}            # 1.1.7: the health handicap above 100 % (matchrules.py; a 1.1.5+ server reads 32 caps)
 QUEUE_MODES = ("quick", "ranked")
 # What this server supports beyond protocol 1's base (the client checks before using them).
 FEATURES = ["ranks", "sessions", "recovery", "passwd", "profile", "history", "chars", "integrity", "rematch",
@@ -77,6 +78,7 @@ FEATURES += ["casual_choice"]       # 1.1.5: P1 / P2 and the stage by choice in 
 FEATURES.append("stats")       # 1.1.5: the Online tab's stats page (h_stats)
 STATS_SECONDS = 300.0          # the stats page's numbers are computed again at most this often
 FEATURES += ["training", "handicap"]   # 1.1.5: training rooms and the health handicap (matchrules.py)
+FEATURES.append("handicap150")         # 1.1.7: the health handicap up to 150 % (matchrules.py CAP_150)
 REPORT_SOURCES = ("game", "manual", "quit", "crash", "disconnect")
 DAY = 86400.0
 

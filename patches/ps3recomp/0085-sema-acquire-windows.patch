@@ -1,0 +1,29 @@
+diff --git a/libs/video/cellGcmSys.c b/libs/video/cellGcmSys.c
+index c4a7dec..16029ce 100644
+--- a/libs/video/cellGcmSys.c
++++ b/libs/video/cellGcmSys.c
+@@ -2227,15 +2227,17 @@ static void gcm_rsx_process_fifo_unlocked(void)
+              * acquire that has waited that long on the same label and value,
+              * and says so. On by default on macOS, where it was measured: no
+              * stale reads and full hit effects at 60 fps.
+-             * TODO: measure the Windows build and turn it on there too. */
++             * Patch 0082: on by default on Windows too. Without it the
++             * walker could translate a frame before the game had finished it,
++             * and on a graphics card slower than the game (~30 fps: GitHub #12,
++             * the GT 730) the hit effects -- the EWGF's lightning -- ended after
++             * 3-13 frames instead of 60-70; with it they last as at 60 fps. */
+             static int blk = -1; static unsigned blk_ms;
+             if (blk < 0) { const char* e = getenv("GCM_SEMA_ACQUIRE");
+-#ifdef __APPLE__
+-                           blk = e ? atoi(e) : 1;
+-#else
+-                           blk = e ? atoi(e) : 0;
+-#endif
+-                           const char* t = getenv("GCM_SEMA_ACQUIRE_MS"); blk_ms = t ? (unsigned)atoi(t) : 200; }
++                           blk = e ? atoi(e) : 1;   /* patch 0082: every platform (was macOS only) */
++                           const char* t = getenv("GCM_SEMA_ACQUIRE_MS"); blk_ms = t ? (unsigned)atoi(t) : 200;
++                           fprintf(stderr, "[cellGcmSys] semaphore ACQUIRE: the walker %s (GCM_SEMA_ACQUIRE=%d)%c",
++                                   blk ? "waits for the label, as the RSX does" : "passes it", blk, 10); }
+             if (blk) {
+                 const unsigned long long now = ps3_ms_now();
+                 if (!s_sema_b_t0 || s_sema_b_off != s_sema_offset || s_sema_b_val != v) {

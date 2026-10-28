@@ -89,6 +89,13 @@ const Range kKeepLive[] = {
      * had closed and lost the one it held (write-fault trace w1). The rest of
      * the two pages stays in the state. */
     { 0x106CECD0u, 0x000005B8u },
+    /* The graphics object's frame counter (0x106D4A00 + 0x28C): the present (0x34B9D8) stores it into label 0xFD
+     * and puts a semaphore ACQUIRE of counter + 1 into the GCM ring, which the FIFO walker waits for since ps3recomp
+     * patch 0085. The ring is not in the state and keeps every frame's acquire; a restored counter made the
+     * re-simulated frames put acquires of values the label had already passed, and the walker waited for each
+     * (GCM_SEMA_ACQUIRE_MS, 200 ms). Kept live it only ever counts up, live or re-simulated, as the ring does.
+     * The main thread is its only writer; not in either hash. */
+    { 0x106D4C8Cu, 0x00000004u },
     { 0x10752000u, 0x00000040u },   /* the file manager's node pool, its last 0x34 bytes (the page's other words are the main thread's lwmutexes and draw handshake) */
 };
 const Range kHashExclude[] = {

@@ -1,0 +1,91 @@
+diff --git a/libs/video/rsx_draw_engine.c b/libs/video/rsx_draw_engine.c
+index 3198e2a..af78c8a 100644
+--- a/libs/video/rsx_draw_engine.c
++++ b/libs/video/rsx_draw_engine.c
+@@ -1986,6 +1986,20 @@ static void eng_present(u32 buffer_id)
+           if (g.surfaces[i].offset == off) { g.be->present(g.be->user, g.surfaces[i].handle); goto presented; } }
+     g.be->present(g.be->user, g.surfaces[target].handle);
+ presented:;
++#ifdef __APPLE__
++    /* Patch 0101: the D3D12 renderer's [fps] line (rsx_live_draw.c), same format and pace (every ~5 s),
++     * for the Metal path: frames presented per second. */
++    { static unsigned long long fps_t0; static u32 fps_f0, fps_n;
++      struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
++      const unsigned long long now = (unsigned long long)ts.tv_sec * 1000ull + (unsigned long long)ts.tv_nsec / 1000000ull;
++      fps_n++;
++      if (fps_t0 == 0) { fps_t0 = now; fps_f0 = fps_n; }
++      else if (now - fps_t0 >= 5000) {
++          fprintf(stderr, "[fps] %.1f (frames %u..%u over %.1fs)\n",
++                  (fps_n - fps_f0) * 1000.0 / (double)(now - fps_t0), fps_f0, fps_n, (now - fps_t0) / 1000.0);
++          fps_t0 = now; fps_f0 = fps_n;
++      } }
++#endif
+     /* PS3RECOMP_ENG_FPSLOG=1: presents and world frames (>1000 draws) per 10 s. */
+     { static int on = -1; static u32 wf, pf; static time_t t0;
+       if (on < 0) on = getenv("PS3RECOMP_ENG_FPSLOG") ? 1 : 0;
+diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
+index 5cbbdc1..0591657 100644
+--- a/libs/video/rsx_live_draw.c
++++ b/libs/video/rsx_live_draw.c
+@@ -86,10 +86,32 @@ void rsx_pf_guest_flip(void)
+     }
+ }
+ #else
+-void rsx_pf_stamp(int slot) { (void)slot; }
+-void rsx_pf_guest_flip(void) {}
++#include <time.h>
++/* Patch 0101: the same stamps off Windows, on the clock the compat QueryPerformanceCounter uses
++ * (CLOCK_MONOTONIC in ns, win32_compat.h), so [slow-frames] (boot_main.cpp) sees the flip request:
++ * the game part (release -> flip request) and the translation (flip request -> present) were 0. */
++void rsx_pf_stamp(int slot)
++{
++    struct timespec ts;
++    clock_gettime(CLOCK_MONOTONIC, &ts);
++    __atomic_store_n(&g_rsx_pf[slot], (long long)ts.tv_sec * 1000000000LL + ts.tv_nsec, __ATOMIC_RELAXED);
++}
++void rsx_pf_guest_flip(void)
++{
++    rsx_pf_stamp(RSX_PF_GUEST_FLIP_QPC);
++    host_sched_main_flip_requested();   /* the game part ends (host_sched.c) */
++}
++/* No GPU waits to count off Windows: the Metal backend never blocks the frame on the GPU (its
++ * frame buffers are throttled by a semaphore in the completion handler instead). */
+ void rsx_live_draw_wait_totals(long long* g, long long* p) { *g = 0; *p = 0; }
++#ifdef __APPLE__
++/* GPU time from the Metal command buffers' GPUStartTime/GPUEndTime (rsx_metal_backend.m); weak, so a
++ * test binary without the backend still links. */
++double rsx_metal_backend_gpu_ms(void) __attribute__((weak));
++double rsx_live_draw_gpu_ms(void) { return rsx_metal_backend_gpu_ms ? rsx_metal_backend_gpu_ms() : -1.0; }
++#else
+ double rsx_live_draw_gpu_ms(void) { return -1.0; }
++#endif
+ void rsx_live_draw_gpu_info(int* uma, unsigned* tier, int* fif) { *uma = -1; *tier = 0; *fif = 1; }
+ int  rsx_live_draw_display_hybrid(void) { return -1; }
+ /* The ticker (boot_main.cpp) publishes its next tick here for the D3D12 present; nothing reads it
+diff --git a/libs/video/rsx_metal_backend.m b/libs/video/rsx_metal_backend.m
+index c0570b9..bbf1d97 100644
+--- a/libs/video/rsx_metal_backend.m
++++ b/libs/video/rsx_metal_backend.m
+@@ -3273,6 +3273,11 @@ static void eng_blit_to_display(id<MTLCommandBuffer> cb, id<MTLTexture> src,
+  * in-flight semaphore instead, the same bound the vtable path uses, because
+  * waiting on every frame is the one pattern where a driver cannot hide its
+  * encoding work. */
++/* Patch 0101: GPU time of the frame command buffers so far, in microseconds (completion handlers add to
++ * it); rsx_live_draw_gpu_ms() hands it to the [slow-frames] line's GPU-busy estimate. */
++static long long s_eng_gpu_us;
++double rsx_metal_backend_gpu_ms(void) { return __atomic_load_n(&s_eng_gpu_us, __ATOMIC_RELAXED) / 1000.0; }
++
+ static void eng_encode_and_commit(id<MTLTexture> present_dst)
+ {
+     @autoreleasepool {
+@@ -3331,6 +3336,10 @@ static void eng_encode_and_commit(id<MTLTexture> present_dst)
+         eng_encode_records(cb, stage);
+         if (present_dst && dst) eng_blit_to_display(cb, present_dst, dst);
+         if (drawable) [cb presentDrawable:drawable];
++        [cb addCompletedHandler:^(id<MTLCommandBuffer> done) {   /* patch 0101: GPU time for [slow-frames] */
++            const double s = done.GPUEndTime - done.GPUStartTime;
++            if (s > 0 && s < 1.0) __atomic_fetch_add(&s_eng_gpu_us, (long long)(s * 1e6), __ATOMIC_RELAXED);
++        }];
+         if (windowed_present) {
+             dispatch_semaphore_t sem = s_inflight;
+             volatile int* busy = slot >= 0 ? &s_eng_slot_busy[slot] : NULL;

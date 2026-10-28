@@ -1,0 +1,17 @@
+diff --git a/libs/video/rsx_metal_backend.m b/libs/video/rsx_metal_backend.m
+index a3a9e5d..c0570b9 100644
+--- a/libs/video/rsx_metal_backend.m
++++ b/libs/video/rsx_metal_backend.m
+@@ -2271,9 +2271,10 @@ static int eng_stage_reserve(u32 bytes, u32* out_off)
+     if (s_eng_slot < 0) {                       /* first data of this submission: take a slot */
+         const int k = (int)(s_eng_slot_next++ % ENG_STAGE_SLOTS);
+         if (__atomic_load_n(&s_eng_slot_busy[k], __ATOMIC_ACQUIRE)) {
+-            if ((++s_eng_slot_waits & (s_eng_slot_waits - 1)) == 0)    /* 1, 2, 4, ... */
++            const unsigned long w = ++s_eng_slot_waits;   /* patch 0100: one read (was -Wunsequenced) */
++            if ((w & (w - 1)) == 0)    /* 1, 2, 4, ... */
+                 fprintf(stderr, "[rsx engine/metal] staging slot still in flight: waited %lu time(s)\n",
+-                        s_eng_slot_waits);
++                        w);
+             while (__atomic_load_n(&s_eng_slot_busy[k], __ATOMIC_ACQUIRE)) usleep(50);
+         }
+         s_eng_slot = k;

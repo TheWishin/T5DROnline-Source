@@ -289,10 +289,27 @@ def folder_for(out_dir):
     return os.path.join(out_dir, "cache", "ranks")
 
 
+# 1.1.9: the European releases are other builds of the game (src/platform/t5_game.h): their data table is elsewhere in
+# the program and numbered differently (NPEA00019 v01.00: one entry fewer before the fighter renders, no online lobby
+# layout), so the offsets above would read other pictures. Told by the ELF header's e_entry; the UI then draws its
+# own badges and names.
+OTHER_PROGRAMS = {0x356980: "NPEA00019 v01.00", 0x457898: "NPEA00019 v02.00"}
+
+
+def other_program(elf):
+    """The name of a known other program than NPUB30009 v01.00 in the ELF at `elf`, or None."""
+    try:
+        with open(elf, "rb") as f:
+            hdr = f.read(0x20)
+    except OSError:
+        return None
+    return OTHER_PROGRAMS.get(struct.unpack_from(">Q", hdr, 0x18)[0]) if len(hdr) == 0x20 else None
+
+
 def find_sources(out_dir):
-    """(EBOOT.elf, T55DATA1.BIN) of an install's output folder, or None."""
+    """(EBOOT.elf, T55DATA1.BIN) of an install's output folder, or None (also for a European program)."""
     elf = os.path.join(out_dir, ELF_REL)
-    if not os.path.isfile(elf):
+    if not os.path.isfile(elf) or other_program(elf):
         return None
     for rel in DATA_REL:
         p = os.path.join(out_dir, rel)

@@ -45,6 +45,8 @@ part is in the README's status table.
   or wake-up is no longer taken for the opponent's move (Nina d/f+2 showed HIT +24); a crouch is no knockdown.
 - New launcher setting Settings -> Training overlay -> Position: Top (default) or Bottom of the picture.
 
+- **The European PSN release builds and plays offline** (TEKKEN 5 DARK RESURRECTION, NPEA00019 v01.00, with its .rap): BUILD GAME takes it next to the US package; its Arcade, Ghost and VS battles, with sound and movies. It plays offline only for now -- online play for it comes in a later update (the Build tab, the Online tab and "Check my problem" say so); European and US games are never matched (other build ID). The US version is unchanged. docs/EU.md.
+
 ### Tests
 - `tests/launcher_challenges_click.py`: four real launcher processes in a real Tk main loop against a local lobby
   server; clicks on rows, headings, buttons (challenge, cancel, accept, sort) and checks both sides.

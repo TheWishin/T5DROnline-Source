@@ -269,6 +269,8 @@ BUILD_TOOL = (
        "ID ({id})."),
     N_("Decrypting the game program failed (see the log above). Tick \"Redo every step\" and press BUILD GAME "
        "again; if it fails again, check that the package is {size} bytes."),
+    N_("The decrypted game program is missing or not a supported version. Tick \"Redo every step\" and press BUILD "
+       "GAME again."),
     N_("The package is {size} bytes, the supported one is {supported} bytes: the download is incomplete or it is "
        "a different file. Download it again."),
     N_("The ps3recomp copy in this folder does not match this version of the port. Download the release again and "

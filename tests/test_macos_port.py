@@ -175,7 +175,8 @@ class SourceLayout(unittest.TestCase):
         bg = read(os.path.join(ROOT, "tools", "build_game.py"))
         self.assertIn('f"-DT5DR_MACOS_ONLINE={\'ON\' if modules else \'OFF\'}"', bg)
         self.assertIn('online = modules and bool(getattr(a, "macos_online", False))', bg)
-        self.assertIn('write_stamp((cc[0] if cc else "cc") + " (CMake)", {"online": online, "modules": modules})', bg)
+        self.assertIn('write_stamp((cc[0] if cc else "cc") + " (CMake)", '
+                      '{"online": online and need_program()["online"], "modules": modules})', bg)
         self.assertIn('ap.add_argument("--macos-online", action="store_true"', bg)
         self.assertIn('ap.add_argument("--macos-offline", action="store_true"', bg)
         # and a Mac that has them still offers no rollback unless asked (lockstep first)

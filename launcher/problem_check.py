@@ -19,6 +19,7 @@ templates marked N_() with their values; the window translates them.
 """
 import argparse
 import glob
+import json
 import os
 import re
 import sys
@@ -38,12 +39,16 @@ DOCS = "https://github.com/TheWishin/T5DROnline/blob/main/TROUBLESHOOTING.md"
 SUPPORTED_VERSION = "01.00"
 PKG_SIZE = "619,430,240"
 RAP_NAME = "UP0700-NPUB30009_00-UPDATE0000010000.rap"
-OTHER_PROGRAMS = {"UP0700-NPUB30009_00-0000000000000000": "01.01"}     # (tools/build_game.py OTHER_VERSIONS)
+# 1.1.9: the European release, version 01.00, builds too (tools/build_game.py PROGRAMS; it plays offline)
+EU_PKG_SIZE = "599,050,576"
+EU_RAP_NAME = "EP9000-NPEA00019_00-0000000000000000.rap"
+OTHER_PROGRAMS = {"UP0700-NPUB30009_00-0000000000000000": "01.01",     # (tools/build_game.py OTHER_VERSIONS)
+                  "UP0700-NPEA00019_00-TEKKEN5DRO000000": "02.00"}     # the European "Online" edition
 
 RE_SFO = re.compile(r"PARAM\.SFO: .*? / (\S+) / version (\S+)")
 RE_VERSION_FAIL = re.compile(r"This (?:package|copy) is (?:a different )?version (\d\d\.\d\d)"
                              r"|\"[^\"]*\" version (\d\d\.\d\d)")
-RE_PROGRAM_ID = re.compile(r"(UP0700-NPUB30009_00-\d{16})")
+RE_PROGRAM_ID = re.compile(r"((?:UP0700|EP9000)-NP(?:UB30009|EA00019)_00-[0-9A-Z]{16})")
 RE_PKG_SHORT = re.compile(r"the download is incomplete|Decrypting the game program failed", re.I)
 RE_MEMORY = re.compile(r"\bMemoryError\b|Unable to allocate|out of memory", re.I)
 RE_UNPACK_STEP = re.compile(r"pkg_extract|unpack", re.I)
@@ -104,10 +109,13 @@ def check_build(out_dir):
         out.append(Finding(
             "package_version", N_("Your game package is version {version}"),
             N_("The port works only with version {supported} of the game: TEKKEN 5 DARK RESURRECTION ONLINE, US PSN "
-               "(NPUB30009), a .pkg of {size} bytes, with its license {rap}. Version {version} cannot be used, "
-               "whatever the license. Choose the {supported} package on the Build tab and press BUILD GAME."),
+               "(NPUB30009), a .pkg of {size} bytes, with its license {rap}; or TEKKEN 5 DARK RESURRECTION, European "
+               "PSN (NPEA00019), a .pkg of {eu_size} bytes, with its license {eu_rap} (offline only for now). "
+               "Version {version} cannot be used, whatever the license. Choose a {supported} package on the Build tab "
+               "and press BUILD GAME."),
             N_("build.log: the package says version {version}."),
-            {"version": ver, "supported": SUPPORTED_VERSION, "size": PKG_SIZE, "rap": RAP_NAME},
+            {"version": ver, "supported": SUPPORTED_VERSION, "size": PKG_SIZE, "rap": RAP_NAME,
+             "eu_size": EU_PKG_SIZE, "eu_rap": EU_RAP_NAME},
             help="this-copy-is-a-different-version-of-the-game"))
         return out                     # (everything after it follows from the wrong version)
     tail = text[-200_000:]
@@ -130,6 +138,23 @@ def check_build(out_dir):
 
 
 # ---------------------------------------------------------------------------- the game
+def check_edition(out_dir):
+    """1.1.9: a game built from the European release (build stamp "title": NPEA00019) plays offline only for now."""
+    try:
+        with open(os.path.join(out_dir, "build", "t5dr_build.json"), encoding="utf-8") as f:
+            title = json.load(f).get("title")
+    except (OSError, ValueError, AttributeError):
+        return []
+    if not title or title == "NPUB30009":
+        return []
+    return [Finding(
+        "eu_offline", N_("Your game is the European version: offline only for now"),
+        N_("The European version ({title_id}) plays its offline modes. Online play for it comes in a later update; "
+           "until then online play needs the US version (NPUB30009). European and US games never play each other "
+           "online."),
+        N_("Build stamp: the game is {title_id}."), {"title_id": title}, kind="hint")]
+
+
 def dialog_text(line):
     """The message of a game log's dialog line: '[DIALOG] text' or "[cellMsgDialog] Open2(..., msg='text')"."""
     m = re.search(r"msg='([^']*)", line)
@@ -264,6 +289,7 @@ def check(out_dir, facts=None, fw=None):
     """Every finding, problems first."""
     out = []
     out += check_build(out_dir)
+    out += check_edition(out_dir)
     out += check_game_log(out_dir)
     out += check_firewall(out_dir, fw)
     out += check_pc(facts if facts is not None else system_facts(), out_dir)

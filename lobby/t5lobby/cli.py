@@ -51,8 +51,13 @@ def main(argv=None):
 
     build = BuildInfo.from_out_dir(a.build_out) if a.build_out else BuildInfo(a.elf_sha1, a.code_id)
     if a.build_out and not a.list and not BuildInfo.has_online(a.build_out):
-        print("this game build has no online modules (a macOS build: tools/build_game.py --macos-online, "
-              "docs/MACOS_ONLINE_TEST.md)")
+        title = BuildInfo.game_title(a.build_out)
+        if title and title != "NPUB30009":
+            print(f"this game build is {title}, the European version: it plays offline only for now, online play "
+                  "for it comes in a later update (docs/EU.md)")
+        else:
+            print("this game build has no online modules (a macOS build: tools/build_game.py --macos-online, "
+                  "docs/MACOS_ONLINE_TEST.md)")
         return 1
     c = LobbyClient(a.server, build, auto_ready=True, game_port=a.game_port,
                     tls=a.tls, tls_fingerprint=a.tls_fingerprint, blind_ready=True)

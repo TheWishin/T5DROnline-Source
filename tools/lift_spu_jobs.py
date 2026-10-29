@@ -72,6 +72,33 @@ JOBS = [
      [], "job-chain completion: throws an SPU user event to the attached queue"),
 ]
 
+# The European release (NPEA00019 v01.00, 1.1.9; docs/EU.md) is another build of the game: its job images sit
+# elsewhere in its read-only segment (the game's own (ea, size) descriptor table at 0x37504C lists the two skinning
+# jobs, 0x3757A8 the signal job) and both skinning jobs are other builds of them (skin4x shares ~43 % of its bytes
+# with the US one, skin1x ~98 %; the mode tables and handler stubs are at the same offsets, skin4x's rodata starts
+# 0x20 sooner); the signal job is the US one byte for byte. Fingerprints and code ends measured on that program.
+JOBS_EU = [
+    ("skin4x",   0x10074400, 0x4480, 0x424802180B8459E7, 0x3390, 32,
+     [0x160, 0x1A0, 0x1E0, 0x220], "vertex skinning, modes 0x40-0x4F"),
+    ("skin1x",   0x10078900, 0x4200, 0x556986E3221A6466, 0x30E0, 33,
+     [0x130, 0x170, 0x1B0, 0x1F0], "vertex skinning, modes 0x10-0x13"),
+    ("jcsignal", 0x1007CB80, 0x00B0, 0xE79EA03E65964477, 0x00B0, 34,
+     [], "job-chain completion: throws an SPU user event to the attached queue"),
+]
+
+# Every program the build accepts (tools/build_game.py PROGRAMS) with its job table; the one whose fingerprints
+# all match the ELF is lifted. None matching: the US table's first mismatch is reported.
+JOBS_BY_PROGRAM = [("NPUB30009 v01.00", JOBS), ("NPEA00019 v01.00", JOBS_EU)]
+
+
+def pick_jobs(segs):
+    """(program label, job table) of the program in `segs`, or (None, JOBS) when no table matches it."""
+    for label, jobs in JOBS_BY_PROGRAM:
+        if all(fnv1a64(read_guest(segs, ea, size) or b"") == fp for _n, ea, size, fp, *_ in jobs):
+            return label, jobs
+    return None, JOBS
+
+
 REG_MARK = "/* ---- t5dr job registration (appended by tools/lift_spu_jobs.py) ---- */"
 
 
@@ -168,14 +195,17 @@ def main():
     images = os.path.join(a.spu, "images")
     os.makedirs(images, exist_ok=True)
 
-    for name, ea, size, want_fp, code_end, image_id, targets, desc in JOBS:
+    label, jobs = pick_jobs(segs)
+    if label:
+        print(f"[lift_spu_jobs] the job images of {label}", flush=True)
+    for name, ea, size, want_fp, code_end, image_id, targets, desc in jobs:
         img = read_guest(segs, ea, size)
         if img is None:
             sys.exit(f"[lift_spu_jobs] {name}: 0x{ea:08X}+0x{size:X} is not file-backed in {a.elf}")
         fp = fnv1a64(img)
         if fp != want_fp:
             sys.exit(f"[lift_spu_jobs] {name}: fingerprint 0x{fp:016X} != expected 0x{want_fp:016X} "
-                     f"(not NPUB30009 v01.00?)")
+                     f"(not NPUB30009 v01.00 or NPEA00019 v01.00?)")
 
         prefix = f"t5job_{name}_"
         outdir = os.path.join(a.spu, "lifted", name)

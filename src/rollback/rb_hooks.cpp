@@ -17,6 +17,7 @@
  */
 #define WIN32_LEAN_AND_MEAN
 #include "../platform/t5_win.h"
+#include "../platform/t5_game.h"   /* hooks_ok: only for NPUB30009 v01.00 */
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -436,6 +437,7 @@ struct Register {
         if ((!m || !*m) && getenv("T5_CTL_DIR") && *getenv("T5_CTL_DIR")) m = "net";   /* a persistent game: sessions come later */
         if (!m || !*m) return;
         if (!strcmp(m, "lockstep") || !strcmp(m, "off")) return;
+        if (!t5game::hooks_ok("rollback")) return;   /* the EU release: not its addresses (t5_game.h) */
         /* The rollback state needs the guest memory reserved with write
          * watch, which the runtime decides in main() from PS3_VM_WRITE_WATCH:
          * whenever this side will offer rollback (or a test mode runs), it is

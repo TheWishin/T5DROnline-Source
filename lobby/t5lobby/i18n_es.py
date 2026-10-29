@@ -217,6 +217,8 @@ MESSAGES = {
     "Cannot read the file: {error}": "No se puede leer el archivo: {error}",
     "This is not a PS3 package (.pkg).": "Esto no es un paquete de PS3 (.pkg).",
     "{id}  ({size} bytes) -- the supported version": "{id}  ({size} bytes) -- la versión compatible",
+    "{id}  ({size} bytes) -- the European version: it plays offline only for now. Online play for it comes in a later update.":
+        "{id}  ({size} bytes) -- la versión europea: por ahora solo se juega sin conexión. El juego en línea para ella llegará en una actualización posterior.",
     "checking the game version inside the package…": "comprobando la versión del juego dentro del paquete…",
     "{id}  ({size} bytes) -- Tekken 5 DR, but not the supported package ({supported}). "
     "The build will most likely refuse it.":
@@ -500,8 +502,8 @@ MESSAGES = {
     "The launcher looks in this PC's logs and settings for the problems other players had, and says how to fix them. Nothing is changed and nothing is sent.":
         "El launcher busca en los logs y ajustes de este PC los problemas que tuvieron otros jugadores y te dice cómo arreglarlos. No se cambia nada y no se envía nada.",
     "Your game package is version {version}": "Tu paquete del juego es la versión {version}",
-    "The port works only with version {supported} of the game: TEKKEN 5 DARK RESURRECTION ONLINE, US PSN (NPUB30009), a .pkg of {size} bytes, with its license {rap}. Version {version} cannot be used, whatever the license. Choose the {supported} package on the Build tab and press BUILD GAME.":
-        "El port solo funciona con la versión {supported} del juego: TEKKEN 5 DARK RESURRECTION ONLINE, PSN de EE. UU. (NPUB30009), un .pkg de {size} bytes, con su licencia {rap}. La versión {version} no sirve con ninguna licencia. Elige el paquete {supported} en la pestaña Compilar y pulsa BUILD GAME.",
+    "The port works only with version {supported} of the game: TEKKEN 5 DARK RESURRECTION ONLINE, US PSN (NPUB30009), a .pkg of {size} bytes, with its license {rap}; or TEKKEN 5 DARK RESURRECTION, European PSN (NPEA00019), a .pkg of {eu_size} bytes, with its license {eu_rap} (offline only for now). Version {version} cannot be used, whatever the license. Choose a {supported} package on the Build tab and press BUILD GAME.":
+        "El port solo funciona con la versión {supported} del juego: TEKKEN 5 DARK RESURRECTION ONLINE, PSN de EE. UU. (NPUB30009), un .pkg de {size} bytes, con su licencia {rap}; o TEKKEN 5 DARK RESURRECTION, PSN europea (NPEA00019), un .pkg de {eu_size} bytes, con su licencia {eu_rap} (por ahora solo sin conexión). La versión {version} no sirve con ninguna licencia. Elige un paquete {supported} en la pestaña Compilar y pulsa BUILD GAME.",
     "build.log: the package says version {version}.": "build.log: el paquete indica la versión {version}.",
     "Unpacking the game ran out of memory": "Al desempaquetar el juego se acabó la memoria",
     "Close other programs (browser, games, launchers) and press BUILD GAME again; since 1.1.5 the launcher unpacks the game in small pieces. If it fails again, check that Windows has a page file (System > About > Advanced system settings > Performance > Virtual memory: automatic).":
@@ -1065,6 +1067,8 @@ MESSAGES = {
     "the package's content ID ({id}).":
         "La licencia (.rap) no pertenece a este paquete. Usa el .rap cuyo nombre coincide con el content ID del "
         "paquete ({id}).",
+    "The decrypted game program is missing or not a supported version. Tick \"Redo every step\" and press BUILD GAME again.":
+        "Falta el programa del juego descifrado o no es una versión compatible. Marca \"Rehacer todos los pasos\" y pulsa BUILD GAME otra vez.",
     "Decrypting the game program failed (see the log above). Tick \"Redo every step\" and press BUILD GAME "
     "again; if it fails again, check that the package is {size} bytes.":
         "Falló el descifrado del programa del juego (ver el log arriba). Marca “Rehacer todos los pasos” y presiona "
@@ -1704,6 +1708,14 @@ MESSAGES = {
     "[Server: {notice}]": "[Servidor: {notice}]",
     "Server notice: {notice}": "Aviso del servidor: {notice}",
     "The game is not built.": "El juego no está compilado.",
+    "This game is the European version ({title_id}): it plays offline only for now. Online play for the European version comes in a later update; it never plays against the US version (NPUB30009).":
+        "Este juego es la versión europea ({title_id}): por ahora solo se juega sin conexión. El juego en línea para la versión europea llegará en una actualización posterior; nunca juega contra la versión de EE. UU. (NPUB30009).",
+    "Your game is the European version: offline only for now":
+        "Tu juego es la versión europea: por ahora solo sin conexión",
+    "The European version ({title_id}) plays its offline modes. Online play for it comes in a later update; until then online play needs the US version (NPUB30009). European and US games never play each other online.":
+        "La versión europea ({title_id}) juega sus modos sin conexión. El juego en línea para ella llegará en una actualización posterior; hasta entonces el juego en línea necesita la versión de EE. UU. (NPUB30009). Los juegos europeos y de EE. UU. nunca juegan entre sí en línea.",
+    "Build stamp: the game is {title_id}.":
+        "Sello de la compilación: el juego es {title_id}.",
     "This Mac build has no online play. For a test match: tools/build_game.py --macos-online (docs/MACOS_ONLINE_TEST.md).":
         "Esta compilación para Mac no tiene juego en línea. Para una partida de prueba: tools/build_game.py --macos-online (docs/MACOS_ONLINE_TEST.md).",
     "Cannot read the build's identity: {error}": "No se puede leer la identidad de la build: {error}",

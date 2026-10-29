@@ -96,6 +96,20 @@ class RankArtTest(unittest.TestCase):
         self.addCleanup(shutil.rmtree, d, True)
         return d
 
+    def test_european_program_has_no_sources(self):
+        # 1.1.9: the European program's table sits elsewhere and is numbered differently (fighter renders one entry
+        # sooner, no rank plates): the US offsets must not read it -- the UI draws its own badges
+        fake_install(self.d)
+        self.assertIsNotNone(RA.find_sources(self.d))
+        elf = os.path.join(self.d, "game", "EBOOT.elf")
+        with open(elf, "r+b") as f:
+            f.seek(0x18)
+            f.write(struct.pack(">Q", 0x356980))           # e_entry of NPEA00019 v01.00
+        self.assertEqual(RA.other_program(elf), "NPEA00019 v01.00")
+        self.assertIsNone(RA.find_sources(self.d))
+        with self.assertRaises(RA.ArtError):
+            RA.extract(self.d, self.folder)
+
     def test_extract_and_scale(self):
         fake_install(self.d)
         self.assertEqual(RA.extract(self.d), self.folder)

@@ -66,6 +66,16 @@ class BuildInfo:
         except (OSError, ValueError):
             return True
 
+    @staticmethod
+    def game_title(out):
+        """The title ID of the game built in `out` (its build stamp's "title": NPUB30009 for the US release,
+        NPEA00019 for the European one, 1.1.9), or None when the stamp cannot be read or has none."""
+        try:
+            with open(os.path.join(out, "build", "t5dr_build.json"), encoding="utf-8") as f:
+                return json.load(f).get("title") or None
+        except (OSError, ValueError, AttributeError):
+            return None
+
     @classmethod
     def from_out_dir(cls, out, release="dev"):
         """From a build made by tools/build_game.py: <out>/game/EBOOT.elf and

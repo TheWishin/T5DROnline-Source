@@ -693,6 +693,11 @@ only the bar's text had it, which the redesigned card does not show), and the ma
 | stage | the same wish on both sides: that stage (Random: drawn as before, the same stage for the same seed); different wishes: one of the two, by the match's seed -- Random against a stage gives that stage half the time, else a random one. A Tekken 5 stage only when the server draws those too (`T5L_OLD_STAGES`) and both launchers know them (`old_stages`); the welcome lists the stages a launcher may offer (`casual.stages`) |
 | Swap sides | after a casual match by choice the rematch question has **Rematch: swap sides** (Triangle / Y on a pad): the rematch has P1 and P2 the other way round. Either player may ask; the other one's offer then says "with the sides swapped". It comes over a new netplay session (the persistent game goes back to its select screen), a few seconds more than a rematch inside the running games |
 
+**Always see me on the left** (1.1.9, under the two choices; the same setting as Settings -> Screen side): in these
+casual matches only, a player who is P2 sees the fight mirrored with themselves on the left -- on their own PC; the
+sides, the opponent's picture and the game stay as they are (docs/NETPLAY.md "Always left"). Never in Ranked, Quick
+or a tournament set.
+
 **Ranked and Quick** (and their rematches, ranked rooms, tournament sets) keep the server's sides and a random stage;
 a quick match's rematch has no Swap sides. The server's sides are a coin since 1.1.7 (each queue match, each new
 ranked set, a ranked rematch; docs/RANKED.md "Sides: P1 and P2 by a coin"); up to 1.1.6 the queue made the player

@@ -16,6 +16,9 @@ branch `netplay`) reads it. Read by netplay today:
     T5_NET_UNLOCKS  open | closed       Jinpachi and the random cell on both select grids: "open" for casual
                                         matches (quick, rooms, invites), "closed" for ranked matches and
                                         tournament sets (match_unlocks(); docs/DIRECTFIGHT.md "Unlocks")
+    T5_NET_CASUAL   1 | 0               a casual match by choice (match_casual(): a challenge, a friend's invite,
+                                        a room that is not ranked, their rematches): only there may a player's
+                                        "Always see me on the left" mirror the fight (docs/NETPLAY.md)
 
 Passed for the game side to pick up (not read yet; see docs/ONLINE.md):
 
@@ -56,6 +59,17 @@ def match_unlocks(msg):
     return "open"
 
 
+def match_casual(msg):
+    """Is this a casual match, where "Always see me on the left" counts (T5_NET_CASUAL, docs/NETPLAY.md "Always
+    left")? The matches the players chose each other for -- the server marks them with match_start "casual" (a
+    challenge, a friend's invite, a room that is not ranked, and their rematches; server/casual.py _casual_match).
+    Never ranked, the Quick queue or a tournament set's game: there the sides stay the server's coin and both
+    players see the game's own picture (the owner's rule, 1.1.9)."""
+    if not isinstance(msg, dict) or msg.get("ranked") or ((msg.get("set") or {}).get("tournament")):
+        return False
+    return bool(msg.get("casual"))
+
+
 @dataclass
 class MatchTicket:
     match_id: str
@@ -78,6 +92,7 @@ class MatchTicket:
     input_delay: object = None   # ranked: the server's fixed rollback input delay (frames); None = the player's setting
     relay_name: str = ""         # path relay through a regional relay node: its name (the lobby server's own relay: "")
     unlocks: str = "closed"      # T5_NET_UNLOCKS: match_unlocks() of the match_start event
+    casual: bool = False         # T5_NET_CASUAL: match_casual() of the match_start event
     _dup_socket: object = field(default=None, repr=False)
 
     def game_env(self, result_file=None):
@@ -94,6 +109,7 @@ class MatchTicket:
             "T5_NET_SEED": str(self.seed),
             "T5_NET_BUILD": self.build,
             "T5_NET_UNLOCKS": "open" if self.unlocks == "open" else "closed",
+            "T5_NET_CASUAL": "1" if self.casual else "0",
         }
         if self.key:
             env["T5_NET_KEY"] = self.key

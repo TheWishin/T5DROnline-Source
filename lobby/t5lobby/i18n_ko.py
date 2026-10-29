@@ -2477,4 +2477,10 @@ MESSAGES = {
     "you challenged that player already": "이미 그 플레이어에게 도전했습니다",
     "too many challenges at once": "한 번에 너무 많은 도전을 보냈습니다",
     "bad field: delay": "잘못된 항목: delay",
+    # launcher Settings "Screen side" and the Online tab's casual row ("Always left", 1.1.9, casual matches only;
+    # docs/NETPLAY.md)
+    "Screen side": '화면 방향',
+    "Always see me on the left": '항상 내가 왼쪽에 보이게',
+    "Casual matches only (challenges, friends' invites, rooms): when you are P2, your screen shows the fight mirrored with you on the left, and your left and right are swapped. Your opponent sees the normal picture. Ranked and Quick matches stay as they are. Offline: Versus fights show the P2 side.":
+        '일반 매치에서만 (도전, 친구 초대, 방): P2일 때 내 화면에서 대전이 좌우 반전되어 내가 왼쪽에 보이고, 좌우 입력도 바뀝니다. 상대는 평소 화면을 봅니다. Ranked 매치와 Quick Match는 그대로입니다. 오프라인: Versus 대전은 P2 쪽 화면으로 보입니다.',
 }

@@ -15,6 +15,8 @@ Options: --exe (default: build/cmake/t5dr.exe of this tree or of the main tree a
 --rounds N (rounds to win in real matches, default 1), --short (fewer netcode cases), --keep-going
 (the runner never stops at a failed scenario anyway; this also keeps going after a Ctrl+C'd one),
 --skip a,b. Exit code 0 = no FAIL, 1 = a FAIL, 2 = the runner itself broke.
+E2E_ALWAYS_LEFT=1 (environment): every real match is played as a casual one with "Always see me on the left" on
+both PCs, so the joiner (P2) plays every case mirrored (docs/NETPLAY.md "Always left"; e.g. --suite net).
 
 Rules it keeps (build/AGENT_BRIEF.md): local server only (127.0.0.1; a guard refuses anything else),
 games minimized + muted + below-normal priority, nothing on the desktop takes the focus, the

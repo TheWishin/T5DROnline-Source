@@ -307,6 +307,46 @@ picks with the pad file in between). Checks: the presses are in the other PC's f
 frames, the same result hash. On 1.1.1's code: 695 presses sent, 0 frames with them on the other PC.
 `tests/test_local_pad.py` (tests/c/local_pad_test.cpp) checks the rule with fake ports.
 
+## Always left (1.1.9, casual matches)
+
+Owner's wish: a player always sees themselves on the LEFT of their own screen, whether the game made them P1
+or P2 -- in **casual** matches; ranked keeps the server's sides by coin and the game's own picture. Launcher
+Settings -> "Screen side" -> **Always see me on the left**, and the same checkbox under the Online tab's casual
+choices ("Challenges, invites, rooms: [side] [stage]", `tk_casual.py`; one setting, `always_left`, off by
+default).
+
+Which matches: the casual matches by choice -- the server's match_start says `casual` (a challenge, a friend's
+casual invite, a room that is not ranked, their rematches; `server/casual.py` `_casual_match`). The launcher
+gives the game `T5_NET_CASUAL=1` for those (`handover.match_casual`), `0` for everything else: ranked, the Quick
+queue, ranked rooms, tournament sets. The match driver gives every match `T5_ALWAYS_LEFT` = the setting as it is
+when the match starts (a persistent game reads both again with each match, `t5_env`; so the checkbox counts from
+the next match, and a ranked match after a casual one in the same game is never mirrored). The game mirrors only
+when both say 1 (`al::active`); a game started for online play never uses the offline rule below.
+
+While this PC plays P2 in a casual fight (phase 17, round intros and win poses included; not the attract demo,
+not a replay being watched; offline: a Versus fight shows the P2 side, for trying it alone with a second pad):
+
+- **Picture** (ps3recomp patch 0086, `libs/video/rsx_always_left.h`): the game draws its 3D scene into a
+  2048 x 1440 target and copies it into the 1280 x 720 display buffer with one full-screen quad, then draws
+  the HUD on top. The renderer mirrors that copy (its viewport transform, x -> -x). Every HUD draw after it
+  (one quad each in Tekken 5 DR) is run through its vertex program on the CPU (`al_vp_eval`) to find where
+  it lands; the quads of the frame are grouped into elements (a string's letters: same texture, same line,
+  next to each other) and flipped pairs (one texture on both sides with the art flipped on one: the bars'
+  frames). The next frame moves each quad to its element's mirrored place -- a name stays readable and its
+  letters stay in order -- and mirrors the quads of a flipped pair, so P2's frame on the left looks like P1's
+  did. A quad that is an element by itself (a bar's fill, an icon) moves by its own box in the frame it is
+  drawn. A guest scissor narrower than the screen follows its draw.
+- **Controller** (`src/netplay/always_left.cpp`): online, this player's sample has LEFT and RIGHT swapped and
+  the sticks' X mirrored (`np::always_left_input`, in `sample_local`) *before* it is exchanged, so both PCs
+  simulate the same input and "towards the opponent" stays the direction the player sees the opponent in.
+  Offline, port 2's data is mirrored as the game reads it (the late-input pad hook, or the direct fight's).
+- **Nothing else**: no guest memory is written except the pad data the game reads; the opponent sees the
+  normal picture; replays record the exchanged (game-side) input. Character select, menus and loading
+  screens stay as they are.
+
+Known limits: everything in the 3D scene is mirrored -- one-sided details (scars, writing on clothes or
+stages, a character's dominant hand) appear the other way round. Text and HUD stay readable.
+
 ## Design
 
 **Lockstep core** (`netplay_core.cpp`, game-independent). Frame f uses the

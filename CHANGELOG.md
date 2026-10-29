@@ -59,6 +59,13 @@ part is in the README's status table.
 - `controls.ini`: a key given twice in a section, or a section given twice, is reported in the log with both
   line numbers (patch 0087).
 
+- **Always see me on the left** (casual matches): as P2 in a challenge, a friend's invite or a room that is not
+  ranked, your screen shows the fight mirrored with you on the left (HUD halves swapped, names and timer readable)
+  and your left and right are swapped; your opponent sees the normal picture and the game simulates the same
+  (ps3recomp patch 0086, `src/netplay/always_left.cpp`). Ranked, Quick and tournament matches stay as they are.
+  Settings -> Screen side, and the same checkbox in the Online tab's casual row; offline, Versus fights show the
+  P2 side. Known: one-sided details (scars, writing on clothes) appear the other way round.
+
 ### Tests
 - `tests/launcher_challenges_click.py`: four real launcher processes in a real Tk main loop against a local lobby
   server; clicks on rows, headings, buttons (challenge, cancel, accept, sort) and checks both sides.

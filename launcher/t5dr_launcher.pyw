@@ -761,6 +761,17 @@ class App(tk.Tk):
         ttk.Label(pr, style="Muted.TLabel", wraplength=300, justify="left", text=t(core.PRACTICE_HELP)).pack(
             anchor="w", pady=(4, 0))
 
+        # "Always left" (T5_ALWAYS_LEFT, docs/NETPLAY.md): as P2 in a casual match the fight is shown mirrored on
+        # this PC only (never ranked, Quick or a tournament set). The Online tab's casual row has the same checkbox
+        # on this variable (tk_casual.py).
+        sd = ttk.LabelFrame(left, text="  " + t("Screen side") + "  ", padding=(12, 6))
+        sd.pack(fill="x", pady=(6, 0))
+        self.always_left_var = tk.BooleanVar(value=bool(self.settings.get("always_left", False)))
+        ttk.Checkbutton(sd, text=t("Always see me on the left"), variable=self.always_left_var,
+                        style=self.wrap_style("TCheckbutton", 300), command=self.save_settings).pack(anchor="w")
+        ttk.Label(sd, style="Muted.TLabel", wraplength=300, justify="left", text=t(core.ALWAYS_LEFT_HELP)).pack(
+            anchor="w", pady=(4, 0))
+
         right = ttk.Frame(box)
         right.grid(row=0, column=1, sticky="nwe")
         other = ttk.LabelFrame(right, text="  " + t("Sound and start") + "  ", padding=(12, 6))
@@ -1435,6 +1446,8 @@ class App(tk.Tk):
                 (k for k, v in self._practice_dummy_labels.items() if v == label), "game")
         if hasattr(self, "router_ports_var"):
             self.settings["router_ports"] = bool(self.router_ports_var.get())
+        if hasattr(self, "always_left_var"):
+            self.settings["always_left"] = bool(self.always_left_var.get())
         if hasattr(self, "discord_var"):
             self.settings["discord_presence"] = bool(self.discord_var.get())
         if hasattr(self, "spectators_var"):

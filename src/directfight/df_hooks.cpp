@@ -54,6 +54,7 @@ uint64_t ppu_guest_call_ct(uint32_t code, uint32_t toc, uint64_t a0, uint64_t a1
                            uint64_t a3, uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7);
 void    t5_netplay_inject(int port, int on, unsigned buttons);   /* src/netplay/t5_hooks.cpp */
 int     t5_netplay_enabled(void);
+void    t5_always_left_pad_fix(uint32_t port, uint32_t ea);   /* src/netplay/always_left.cpp */
 }
 typedef int64_t (*df_lv2_fn)(ppu_context*);
 
@@ -677,10 +678,16 @@ void h_cellPadGetData(ppu_context* ctx)
         PadInput in = kNeutral;
         in.buttons = script_mask(g_script[port], g_frame.load());
         write_pad_data(ea, in);
+        t5_always_left_pad_fix(port, ea);   /* "Always left" (src/netplay/always_left.cpp): offline Versus, port 2 */
         ctx->gpr[3] = 0;
         return;
     }
-    if (port < 2) { ctx->gpr[3] = (uint64_t)(int64_t)cellPadGetData(port, (void*)(uintptr_t)ea); return; }
+    if (port < 2) {
+        const int32_t r = cellPadGetData(port, (void*)(uintptr_t)ea);
+        if (r == 0) t5_always_left_pad_fix(port, ea);
+        ctx->gpr[3] = (uint64_t)(int64_t)r;
+        return;
+    }
     wr32(ea, 0);
     ctx->gpr[3] = 0;
 }

@@ -105,6 +105,7 @@ DEFAULTS = {
     "training_pos": "top",     # where the training display sits: top | bottom (T5_TRAINING_POS)
     "practice": True,          # practice tools in Practice (offline): SELECT combos, dummy, recordings, T5_PRACTICE
     "practice_dummy": "game",  # the dummy's behaviour at the start: game | block | crouch | walk | step, T5_PRACTICE_DUMMY
+    "always_left": False,      # as P2 in a casual match this PC shows the fight mirrored, you on the left (T5_ALWAYS_LEFT=1)
     "router_ports": True,      # online: forward the game's port on the router for a match (PCP / NAT-PMP / UPnP)
     "language": "auto",        # auto (the Windows language) | en | de | es | ko | ja | pt-BR | fr -- applies at start
     "discord_presence": False, # online: show the lobby / search / match in Discord (Rich Presence, docs/ONLINE.md)
@@ -271,6 +272,9 @@ class Settings(dict):
         if self["practice"]:
             env["T5_PRACTICE_DUMMY"] = self["practice_dummy"] if self["practice_dummy"] in PRACTICE_DUMMY else "game"
             env.setdefault("T5_TRAINING_LANG", i18n.resolve(self["language"]) if I18N else "en")
+        # "Always left" (docs/NETPLAY.md): this PC's picture and pad only, so the two players may choose differently
+        if self["always_left"]:
+            env["T5_ALWAYS_LEFT"] = "1"
         # Unlocks count offline only: a game started for online play answers as a fresh save does,
         # whatever it is given (both PCs must build the same select screens and stage lists); online, Jinpachi
         # and the random cell come with the match kind instead (T5_NET_UNLOCKS from the lobby's match event).
@@ -1355,6 +1359,12 @@ PRACTICE_DUMMY = {       # English; t(label) where it is shown -- the dummy's be
     "walk": N_("Walks forward and back"),
     "step": N_("Sidesteps"),
 }
+# Settings -> Screen side (docs/NETPLAY.md "Always left"); the Online tab's casual row has the same checkbox
+ALWAYS_LEFT_HELP = N_(
+    "Casual matches only (challenges, friends' invites, rooms): when you are P2, your screen shows the fight mirrored "
+    "with you on the left, and your left and right are swapped. Your opponent sees the normal picture. Ranked and "
+    "Quick matches stay as they are. Offline: Versus fights show the P2 side.")
+
 PRACTICE_HELP = N_(
     "In Practice, hold SELECT and press: 3 round start; f+3 / b+3 the dummy against the wall in front of / "
     "behind you; df+3 / db+3 you against the wall in front of / behind you. 1 records the dummy (you play it), "

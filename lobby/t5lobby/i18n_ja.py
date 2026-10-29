@@ -2509,4 +2509,10 @@ MESSAGES = {
     "you challenged that player already": "そのプレイヤーにはすでに申し込み済みです",
     "too many challenges at once": "一度に申し込みすぎです",
     "bad field: delay": "不正な項目: delay",
+    # launcher Settings "Screen side" and the Online tab's casual row ("Always left", 1.1.9, casual matches only;
+    # docs/NETPLAY.md)
+    "Screen side": '画面の向き',
+    "Always see me on the left": '自分を常に左側に表示',
+    "Casual matches only (challenges, friends' invites, rooms): when you are P2, your screen shows the fight mirrored with you on the left, and your left and right are swapped. Your opponent sees the normal picture. Ranked and Quick matches stay as they are. Offline: Versus fights show the P2 side.":
+        'カジュアル対戦のみ（対戦申し込み・フレンドの招待・ルーム）：P2 のとき、自分の画面だけ対戦が左右反転して自分が左側に表示され、左右の入力も入れ替わります。相手には通常の画面が表示されます。Ranked 対戦と Quick Match はそのままです。オフライン：Versus の対戦は P2 側の視点になります。',
 }

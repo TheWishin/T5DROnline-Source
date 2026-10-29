@@ -1,0 +1,581 @@
+diff --git a/libs/video/rsx_always_left.h b/libs/video/rsx_always_left.h
+new file mode 100644
+index 0000000..fe31f2c
+--- /dev/null
++++ b/libs/video/rsx_always_left.h
+@@ -0,0 +1,313 @@
++/*
++ * ps3recomp patch 0086 (T5DR Online 1.1.8 test, "Always left"): the pure part of showing the fight to the P2
++ * player as if they were P1 -- the 3D picture mirrored, the HUD's halves swapped but every element readable.
++ * Presentation only: nothing here reads or writes guest memory or changes what the game simulates; the live
++ * renderer (rsx_live_draw.c) calls it with the draw's own vertex program, constants and vertices, and moves or
++ * mirrors that draw on the host.
++ *
++ *   al_vp_eval    runs a vertex program (NV40 microcode, the layout rsx_vp_decompiler.c documents) on the CPU
++ *                 for one vertex, with the decompiler's semantics (the legacy 0 * x = 0 multiply, the vector
++ *                 unit's store before the scalar unit reads): the HUD quad's position (o0) and texture
++ *                 coordinate (o7). Straight-line programs only: flow control, an indexed constant or a
++ *                 conditional write -> 0 (the caller leaves that draw alone).
++ *   al_hud_*      the HUD of one frame: each quad drawn after the 3D picture is recorded; at the frame's end
++ *                 the quads are grouped into elements (the glyphs of one string: same texture, same line, next
++ *                 to each other; the timer's digits, one texture each) and flipped pairs (one texture drawn
++ *                 at mirrored places with the art flipped on one side: the bars, the round marks). The next frame moves each quad by its element's mirrored place
++ *                 (dx = -(x0 + x1) in clip space), so a name stays a readable name on the other side, and
++ *                 mirrors a pair's quads instead, so the P2 frame on the left looks like P1's did. A quad that
++ *                 is an element by itself (a bar's fill, an icon), or that no element of the previous frame
++ *                 covers, moves by its own box -- exactly, in the frame it is drawn. A quad across the middle
++ *                 of the screen stays (the timer, ROUND / FIGHT / K.O.), with what touches it on its line.
++ *
++ * T5DR's tests/c/always_left_render_test.c includes this header and checks it with programs and HUDs made for
++ * the test.
++ */
++#ifndef PS3RECOMP_RSX_ALWAYS_LEFT_H
++#define PS3RECOMP_RSX_ALWAYS_LEFT_H
++
++#include <math.h>
++#include <stdint.h>
++#include <string.h>
++
++/* ---- the vertex program on the CPU ------------------------------------------------------------------- */
++
++static uint32_t al_rd_le(const uint8_t* p)
++{
++    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
++}
++
++static float al_mul1(float a, float b) { return (a == 0.0f || b == 0.0f) ? 0.0f : a * b; }
++static float al_u2f(uint32_t u) { float f; memcpy(&f, &u, 4); return f; }
++
++/* one 17-bit source field, read (swizzle, abs, negate) */
++static void al_src(uint32_t src, int is_abs, uint32_t input_src, uint32_t const_src,
++                   const float r[32][4], const float in[16][4], const uint32_t (*c)[4], float out[4])
++{
++    const uint32_t type = src & 3u, tmp = (src >> 2) & 0x3Fu;
++    float base[4];
++    if (type == 2) memcpy(base, in[input_src & 15u], sizeof base);
++    else if (type == 3) for (int k = 0; k < 4; k++) base[k] = al_u2f(c[const_src & 511u][k]);
++    else memcpy(base, r[tmp & 31u], sizeof base);
++    const uint32_t sw[4] = { (src >> 14) & 3u, (src >> 12) & 3u, (src >> 10) & 3u, (src >> 8) & 3u };
++    const int neg = (int)((src >> 16) & 1u);
++    for (int k = 0; k < 4; k++) {
++        float v = base[sw[k]];
++        if (is_abs) v = fabsf(v);
++        out[k] = neg ? -v : v;
++    }
++}
++
++static float al_sat(float v) { return v < 0.0f ? 0.0f : v > 1.0f ? 1.0f : v; }
++
++/* Runs the program at `uc` for one vertex: in[16] = its attributes (float4 each, as the shader gets them),
++ * c = the 512 vec4 constants (bit patterns). out[16][4] = the output registers (o0 = position, o7 = TEX0).
++ * -> 1, or 0 for a program this does not model (the draw is left as it is). */
++static int al_vp_eval(const uint8_t* uc, uint32_t max_bytes, const float in[16][4], const uint32_t (*c)[4],
++                      float out[16][4])
++{
++    float r[32][4];
++    memset(r, 0, sizeof r);
++    for (int i = 0; i < 16; i++) { out[i][0] = out[i][1] = out[i][2] = 0.0f; out[i][3] = 1.0f; }
++    for (uint32_t off = 0, n = 0; off + 16 <= max_bytes && n < 512; off += 16, n++) {
++        const uint32_t d0 = al_rd_le(uc + off), d1 = al_rd_le(uc + off + 4);
++        const uint32_t d2 = al_rd_le(uc + off + 8), d3 = al_rd_le(uc + off + 12);
++        const uint32_t vec_op = (d1 >> 22) & 0x1Fu, sca_op = (d1 >> 27) & 0x1Fu;
++        const uint32_t input_src = (d1 >> 8) & 0xFu, const_src = (d1 >> 12) & 0x3FFu;
++        if ((d3 >> 1) & 1u) return 0;                                   /* indexed constant (ARL) */
++        if (((d0 >> 13) & 1u) && ((d0 >> 10) & 7u) != 7u) return 0;    /* conditional write */
++        if (sca_op == 0x08 || sca_op == 0x09 || sca_op == 0x0A || sca_op == 0x0B || sca_op == 0x0C ||
++            sca_op == 0x11 || sca_op == 0x12 || sca_op > 0x12)
++            return 0;                                                   /* flow control / unknown */
++        const uint32_t src0 = ((d2 >> 23) & 0x1FFu) | ((d1 & 0xFFu) << 9);
++        const uint32_t src1 = (d2 >> 6) & 0x1FFFFu;
++        const uint32_t src2 = ((d3 >> 21) & 0x7FFu) | ((d2 & 0x3Fu) << 11);
++        const int saturate = (int)((d0 >> 26) & 1u), vec_result = (int)((d0 >> 30) & 1u);
++        const uint32_t dst_tmp = (d0 >> 15) & 0x3Fu, dst_out = (d3 >> 2) & 0x1Fu, sca_tmp = (d3 >> 7) & 0x3Fu;
++        const int vm[4] = { (int)((d3 >> 16) & 1u), (int)((d3 >> 15) & 1u), (int)((d3 >> 14) & 1u),
++                            (int)((d3 >> 13) & 1u) };
++        const int sm[4] = { (int)((d3 >> 20) & 1u), (int)((d3 >> 19) & 1u), (int)((d3 >> 18) & 1u),
++                            (int)((d3 >> 17) & 1u) };
++        float A[4], B[4], C[4], v[4];
++        al_src(src0, (int)((d0 >> 21) & 1u), input_src, const_src, r, in, c, A);
++        al_src(src1, (int)((d0 >> 22) & 1u), input_src, const_src, r, in, c, B);
++        al_src(src2, (int)((d0 >> 23) & 1u), input_src, const_src, r, in, c, C);
++        if ((vm[0] | vm[1] | vm[2] | vm[3]) && vec_op) {
++            float d;
++            switch (vec_op) {
++            case 0x01: memcpy(v, A, sizeof v); break;                                          /* MOV */
++            case 0x02: for (int k = 0; k < 4; k++) v[k] = al_mul1(A[k], B[k]); break;           /* MUL */
++            case 0x03: for (int k = 0; k < 4; k++) v[k] = A[k] + C[k]; break;                   /* ADD */
++            case 0x04: for (int k = 0; k < 4; k++) v[k] = al_mul1(A[k], B[k]) + C[k]; break;    /* MAD */
++            case 0x05: d = al_mul1(A[0], B[0]) + al_mul1(A[1], B[1]) + al_mul1(A[2], B[2]);     /* DP3 */
++                       v[0] = v[1] = v[2] = v[3] = d; break;
++            case 0x06: d = al_mul1(A[0], B[0]) + al_mul1(A[1], B[1]) + al_mul1(A[2], B[2]) + B[3]; /* DPH */
++                       v[0] = v[1] = v[2] = v[3] = d; break;
++            case 0x07: d = al_mul1(A[0], B[0]) + al_mul1(A[1], B[1]) + al_mul1(A[2], B[2]) +      /* DP4 */
++                           al_mul1(A[3], B[3]);
++                       v[0] = v[1] = v[2] = v[3] = d; break;
++            case 0x08: v[0] = 1.0f; v[1] = A[1] * B[1]; v[2] = A[2]; v[3] = B[3]; break;         /* DST */
++            case 0x09: for (int k = 0; k < 4; k++) v[k] = A[k] < B[k] ? A[k] : B[k]; break;     /* MIN */
++            case 0x0A: for (int k = 0; k < 4; k++) v[k] = A[k] > B[k] ? A[k] : B[k]; break;     /* MAX */
++            case 0x0B: for (int k = 0; k < 4; k++) v[k] = A[k] < B[k] ? 1.0f : 0.0f; break;     /* SLT */
++            case 0x0C: for (int k = 0; k < 4; k++) v[k] = A[k] >= B[k] ? 1.0f : 0.0f; break;    /* SGE */
++            case 0x0E: for (int k = 0; k < 4; k++) v[k] = A[k] - floorf(A[k]); break;           /* FRC */
++            case 0x0F: for (int k = 0; k < 4; k++) v[k] = floorf(A[k]); break;                  /* FLR */
++            case 0x10: for (int k = 0; k < 4; k++) v[k] = A[k] == B[k] ? 1.0f : 0.0f; break;    /* SEQ */
++            case 0x11: v[0] = v[1] = v[2] = v[3] = 0.0f; break;                                 /* SFL */
++            case 0x12: for (int k = 0; k < 4; k++) v[k] = A[k] > B[k] ? 1.0f : 0.0f; break;     /* SGT */
++            case 0x13: for (int k = 0; k < 4; k++) v[k] = A[k] <= B[k] ? 1.0f : 0.0f; break;    /* SLE */
++            case 0x14: for (int k = 0; k < 4; k++) v[k] = A[k] != B[k] ? 1.0f : 0.0f; break;    /* SNE */
++            case 0x15: v[0] = v[1] = v[2] = v[3] = 1.0f; break;                                 /* STR */
++            case 0x16: for (int k = 0; k < 4; k++) v[k] = A[k] > 0 ? 1.0f : A[k] < 0 ? -1.0f : 0.0f; break;
++            default: return 0;                                                                  /* ARL, TXL */
++            }
++            if (saturate) for (int k = 0; k < 4; k++) v[k] = al_sat(v[k]);
++            for (int k = 0; k < 4; k++) {
++                if (!vm[k]) continue;
++                if (vec_result && dst_out != 0x1Fu) out[dst_out & 15u][k] = v[k];
++                if (dst_tmp != 0x3Fu) r[dst_tmp & 31u][k] = v[k];
++            }
++            /* the HLSL reads the scalar unit's source after this store (the decompiler's order) */
++            al_src(src2, (int)((d0 >> 23) & 1u), input_src, const_src, r, in, c, C);
++        }
++        if ((sm[0] | sm[1] | sm[2] | sm[3]) && sca_op) {
++            const float x = C[0];
++            float s;
++            switch (sca_op) {
++            case 0x01: memcpy(v, C, sizeof v); s = 0; break;                                    /* MOV */
++            case 0x02: s = 1.0f / x; break;                                                     /* RCP */
++            case 0x03: s = 1.0f / x; if (s < 5.42101e-20f) s = 5.42101e-20f;                    /* RCC */
++                       if (s > 1.884467e19f) s = 1.884467e19f; break;
++            case 0x04: s = 1.0f / sqrtf(fmaxf(fabsf(x), 1e-10f)); break;                        /* RSQ */
++            case 0x05: case 0x0E: s = exp2f(x); break;                                          /* EXP EX2 */
++            case 0x06: case 0x0D: s = log2f(fmaxf(fabsf(x), 1e-10f)); break;                    /* LOG LG2 */
++            case 0x0F: s = sinf(x); break;
++            case 0x10: s = cosf(x); break;
++            case 0x07: s = 0;                                                                   /* LIT */
++                       v[0] = 1.0f; v[1] = fmaxf(C[0], 0.0f);
++                       v[2] = C[0] > 0.0f ? exp2f(fminf(fmaxf(C[3], -127.996f), 127.996f) *
++                                                  log2f(fmaxf(C[1], 1e-10f))) : 0.0f;
++                       v[3] = 1.0f; break;
++            default: return 0;
++            }
++            if (sca_op != 0x01 && sca_op != 0x07) v[0] = v[1] = v[2] = v[3] = s;
++            if (saturate) for (int k = 0; k < 4; k++) v[k] = al_sat(v[k]);
++            for (int k = 0; k < 4; k++) {
++                if (!sm[k]) continue;
++                if (!vec_result && dst_out != 0x1Fu) out[dst_out & 15u][k] = v[k];
++                if (sca_tmp != 0x3Fu) r[sca_tmp & 31u][k] = v[k];
++            }
++        }
++        if (d3 & 1u) return 1;                                          /* end */
++    }
++    return 0;                                                           /* no end bit */
++}
++
++/* ---- the HUD of a frame -------------------------------------------------------------------------------- */
++
++/* One quad (or one HUD draw) after the 3D picture, in clip space after the viewport transform
++ * (x right, -1..1 across the target; y as the shader has it). uflip: its texture runs right to left;
++ * u0 / u1: the texture coordinate at its left / right edge. */
++typedef struct { uint64_t tex; float x0, x1, y0, y1; int uflip; float u0, u1; } al_quad;
++/* An element of the previous frame: its box, whether its quads are mirrored (one half of a pair), how many
++ * quads it has, whether they come from more than one texture (the timer: one texture per digit), and the
++ * size of its last quad. */
++typedef struct { uint64_t tex; float x0, x1, y0, y1; int uflip, mirror, n, mixed, across; float lw, lh; } al_elem;
++
++#define AL_HUD_MAX 768
++typedef struct {
++    al_quad cur[AL_HUD_MAX]; uint32_t n_cur;     /* this frame, so far */
++    al_elem el[AL_HUD_MAX];  uint32_t n_el;      /* the previous frame's elements */
++    float px_w, px_h;                            /* pixels per clip unit (target width / 2, height / 2) */
++} al_hud;
++
++static void al_hud_note(al_hud* h, const al_quad* q)
++{
++    if (h->n_cur < AL_HUD_MAX) h->cur[h->n_cur++] = *q;
++}
++
++static float al_minf(float a, float b) { return a < b ? a : b; }
++static float al_maxf(float a, float b) { return a > b ? a : b; }
++
++/* q joins e: same texture, same line (centres within half the smaller height), next to it (a gap of at most
++ * one glyph height, overlapping counts). Or, from another texture, a glyph of exactly the size of e's last
++ * one on exactly its line, touching it (the timer's digits). Measured in pixels. */
++static int al_joins(const al_hud* h, const al_elem* e, const al_quad* q)
++{
++    if (e->mirror) return 0;
++    if (e->tex != q->tex) {
++        const float qw = (q->x1 - q->x0) * h->px_w, qh = (q->y1 - q->y0) * h->px_h;
++        if (fabsf(qw - e->lw) > 1.5f || fabsf(qh - e->lh) > 1.5f) return 0;
++        if (fabsf(q->y0 - e->y0) * h->px_h > 1.5f || fabsf(q->y1 - e->y1) * h->px_h > 1.5f) return 0;
++        return al_maxf(q->x0 - e->x1, e->x0 - q->x1) * h->px_w <= 2.0f;
++    }
++    const float eh = (e->y1 - e->y0) * h->px_h, qh = (q->y1 - q->y0) * h->px_h;
++    const float hmin = al_minf(eh, qh);
++    if (hmin <= 0.5f) return 0;
++    const float dy = fabsf((e->y0 + e->y1) - (q->y0 + q->y1)) * 0.5f * h->px_h;
++    if (dy > 0.5f * hmin) return 0;
++    if (fabsf(eh - qh) > 0.5f * al_maxf(eh, qh)) return 0;              /* a big title and a small line */
++    const float gap = al_maxf(q->x0 - e->x1, e->x0 - q->x1) * h->px_w;
++    return gap <= hmin;
++}
++
++/* The frame ended: its quads become the elements the next frame is placed by. */
++static void al_hud_frame_end(al_hud* h)
++{
++    uint32_t n = 0;
++    const float tol = 4.0f;                                             /* pixels (the game is off by 2) */
++    /* 1. flipped pairs: one texture on both sides at mirrored places, the art flipped on one (the bars and
++     *    their frames, the round marks, the PLAYER DATA bars): the game's own mirror image of each other.
++     *    Anything else at mirrored places -- the same picture, two different letters of the font -- is no
++     *    pair: it moves, and stays readable. */
++    static uint8_t paired[AL_HUD_MAX];
++    memset(paired, 0, h->n_cur);
++    for (uint32_t i = 0; i < h->n_cur; i++)
++        for (uint32_t j = i + 1; j < h->n_cur && !paired[i]; j++) {
++            const al_quad *a = &h->cur[i], *b = &h->cur[j];
++            if (paired[j] || a->tex != b->tex || a->uflip == b->uflip) continue;
++            if (fabsf(a->x0 + b->x1) * h->px_w > tol || fabsf(a->x1 + b->x0) * h->px_w > tol) continue;
++            if (fabsf(a->y0 - b->y0) * h->px_h > tol || fabsf(a->y1 - b->y1) * h->px_h > tol) continue;
++            if (fabsf(a->x0 + a->x1) * h->px_w <= tol) continue;        /* centred: nothing to swap */
++            paired[i] = paired[j] = 1;
++        }
++    for (uint32_t i = 0; i < h->n_cur; i++) {
++        const al_quad* q = &h->cur[i];
++        if (paired[i]) {
++            if (n >= AL_HUD_MAX) break;
++            al_elem* e = &h->el[n++];
++            e->tex = q->tex; e->x0 = q->x0; e->x1 = q->x1; e->y0 = q->y0; e->y1 = q->y1;
++            e->uflip = q->uflip; e->mirror = 1; e->n = 1; e->mixed = 0;
++            e->lw = (q->x1 - q->x0) * h->px_w; e->lh = (q->y1 - q->y0) * h->px_h;
++            continue;
++        }
++        /* 2. strings: the quad joins an element it continues (in drawing order, any earlier one) */
++        uint32_t k = n;
++        for (uint32_t e = 0; e < n; e++)
++            if (al_joins(h, &h->el[e], q)) { k = e; break; }
++        if (k < n) {
++            al_elem* e = &h->el[k];
++            e->x0 = al_minf(e->x0, q->x0); e->x1 = al_maxf(e->x1, q->x1);
++            e->y0 = al_minf(e->y0, q->y0); e->y1 = al_maxf(e->y1, q->y1);
++            e->n++;
++            if (e->tex != q->tex) e->mixed = 1;
++            e->lw = (q->x1 - q->x0) * h->px_w; e->lh = (q->y1 - q->y0) * h->px_h;
++            continue;
++        }
++        if (n >= AL_HUD_MAX) break;
++        al_elem* e = &h->el[n++];
++        e->tex = q->tex; e->x0 = q->x0; e->x1 = q->x1; e->y0 = q->y0; e->y1 = q->y1;
++        e->uflip = q->uflip; e->mirror = 0; e->n = 1; e->mixed = 0;
++        e->lw = (q->x1 - q->x0) * h->px_w; e->lh = (q->y1 - q->y0) * h->px_h;
++    }
++    /* 3. what stays: an element across the middle of the screen (the timer, ROUND, FIGHT), and everything
++     *    on its line next to it (the "1" of "ROUND 1", its own quad half a letter away) -- moved alone it would land inside */
++    for (uint32_t i = 0; i < n; i++) h->el[i].across = !h->el[i].mirror && h->el[i].x0 < 0.0f && h->el[i].x1 > 0.0f;
++    for (int pass = 0, changed = 1; changed && pass < 8; pass++) {
++        changed = 0;
++        for (uint32_t i = 0; i < n; i++) {
++            al_elem* f = &h->el[i];
++            if (f->mirror || f->across) continue;
++            for (uint32_t j = 0; j < n && !f->across; j++) {
++                const al_elem* a = &h->el[j];
++                if (!a->across) continue;
++                const float oy = (al_minf(a->y1, f->y1) - al_maxf(a->y0, f->y0)) * h->px_h;
++                const float hmin = al_minf(a->y1 - a->y0, f->y1 - f->y0) * h->px_h;
++                const float gap = al_maxf(f->x0 - a->x1, a->x0 - f->x1) * h->px_w;
++                if (oy >= 0.5f * hmin && gap <= 0.6f * hmin) { f->across = 1; changed = 1; }
++            }
++        }
++    }
++    h->n_el = n;
++    h->n_cur = 0;
++}
++
++/* Where quad q goes this frame: *mirror = 1 -> mirror it (x -> -x, its art flips with it); else move it by
++ * the returned dx (clip units) -- its element's mirrored place, or its own when no element covers it. A quad
++ * across the middle of the screen stays where it is (the timer's digits, ROUND / FIGHT / K.O. and their
++ * letters, one big quad each: moved one by one they would swap places). */
++static float al_hud_place(const al_hud* h, const al_quad* q, int* mirror)
++{
++    const float cx = (q->x0 + q->x1) * 0.5f, cy = (q->y0 + q->y1) * 0.5f;
++    const float ex = 1.0f / h->px_w, ey = 1.0f / h->px_h;               /* one pixel of slack */
++    *mirror = 0;
++    int across = q->x0 < 0.0f && q->x1 > 0.0f;
++    for (uint32_t i = 0; i < h->n_el; i++) {
++        const al_elem* e = &h->el[i];
++        if ((e->tex != q->tex && !e->mixed) || cx < e->x0 - ex || cx > e->x1 + ex || cy < e->y0 - ey ||
++            cy > e->y1 + ey)
++            continue;
++        if (e->mirror) {
++            if (e->uflip != q->uflip) continue;                         /* the other side's quad of the pair */
++            *mirror = 1;
++            return 0.0f;
++        }
++        if (across || e->across) return 0.0f;
++        if (e->n > 1) return -(e->x0 + e->x1);                          /* a string: as a whole */
++        break;                                                          /* one quad: by its own box, exactly */
++    }
++    return across ? 0.0f : -(q->x0 + q->x1);
++}
++
++#endif
+diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
+index 5cbbdc1..03ff043 100644
+--- a/libs/video/rsx_live_draw.c
++++ b/libs/video/rsx_live_draw.c
+@@ -133,6 +133,7 @@ void rsx_live_draw_xo_info(long long* e, unsigned* d, long long* w) { *e = 0; *d
+ int  rsx_live_draw_dwm_vblank(long long* v, long long* p) { (void)v; (void)p; return 0; }
+ int  rsx_live_draw_display_lockable(void) { return 0; }
+ void rsx_live_draw_set_display_lock(int on) { (void)on; }
++void rsx_live_draw_set_always_left(int on) { (void)on; }
+ void rsx_live_draw_set_movie_mode(int on) { (void)on; }
+ void rsx_live_draw_present_rgba(const uint8_t* r, u32 w, u32 h) { (void)r; (void)w; (void)h; }
+ u32  rsx_live_draw_get_frames(void) { return 0; }
+@@ -10604,6 +10605,203 @@ static void ld_fx_count(void)
+     const u32 f = t0.format & 0x9Fu;
+     if (t0.enabled && t0.width == 64 && t0.height == 64 && f >= 0x86u && f <= 0x88u) g_ld_fx64_n++;
+ }
++/* ---------------------------------------------------------------------------
++ * Patch 0086 (T5DR "Always left", a 1.1.8 test): the player the game made P2 sees the fight as P1 would --
++ * the 3D picture mirrored, the HUD's two halves swapped with every element readable (rsx_always_left.h has
++ * the rules). The game asks for it per frame (rsx_live_draw_set_always_left, T5DR src/netplay/
++ * always_left.cpp: only in a fight, only for the P2 side); the walker takes it at the next 3D copy. Host pixels
++ * only: the draws are moved or mirrored through their viewport transform (xf) and scissor, nothing
++ * guest-visible changes, so the two PCs of a match may show it differently.
++ *
++ *   the 3D picture   the draw into the display buffer that samples a render target larger than it (the
++ *                    game's filtered copy of its 2048 x 1440 3D target, one full-screen quad): mirrored.
++ *   the HUD          every later draw into the display buffer in that frame: its vertices run through its
++ *                    vertex program on the CPU (al_vp_eval), and the quad is moved to its element's mirrored
++ *                    place, or mirrored when it is one half of a flipped pair (the bars' frames).
++ * -----------------------------------------------------------------------*/
++#include "rsx_always_left.h"
++static volatile LONG g_al_req;               /* the game's request (any thread) */
++static struct {
++    int active, copy_seen;
++    al_hud hud;
++    u64 frames, copies, moved, mirrored, left_alone;
++} g_al;
++
++void rsx_live_draw_set_always_left(int on) { InterlockedExchange(&g_al_req, on ? 1 : 0); }
++
++/* The frame boundary, on the walker thread that records the draws: the 3D picture's copy (once per frame,
++ * before the HUD). The last frame's HUD becomes this frame's layout, and the game's request is taken -- on
++ * only here, off at once (any draw). */
++static void ld_al_state(int want, int at_copy)
++{
++    if (at_copy && g_al.active) {
++        g_al.frames++;
++        if (g_al.frames % 600 == 0)
++            fprintf(stderr, "[always-left] %llu frames mirrored: %llu pictures, HUD quads %llu moved / %llu mirrored / "
++                            "%llu left as they were, %u elements last frame (frame %u)\n", (unsigned long long)g_al.frames,
++                    (unsigned long long)g_al.copies, (unsigned long long)g_al.moved, (unsigned long long)g_al.mirrored,
++                    (unsigned long long)g_al.left_alone, g_al.hud.n_el, g_ld_frames);
++        /* RSX_ALWAYS_LEFT_DUMP=<n> (diagnostics): the HUD quads of the frame at renderer frame n, then its elements */
++        { static long dump = -2;
++          if (dump == -2) { const char* e = getenv("RSX_ALWAYS_LEFT_DUMP"); dump = e ? atol(e) : -1; }
++          if (dump >= 0 && (long)g_ld_frames >= dump) { dump = -1;
++              const al_hud* h = &g_al.hud;
++              for (u32 i = 0; i < h->n_cur; i++)
++                  fprintf(stderr, "[always-left] quad %u tex %llx x %.1f..%.1f y %.1f..%.1f u %.3f..%.3f uflip %d\n", i,
++                          (unsigned long long)h->cur[i].tex, (h->cur[i].x0 + 1) * h->px_w, (h->cur[i].x1 + 1) * h->px_w,
++                          (1 - h->cur[i].y1) * h->px_h, (1 - h->cur[i].y0) * h->px_h, h->cur[i].u0, h->cur[i].u1, h->cur[i].uflip);
++          } }
++        al_hud_frame_end(&g_al.hud);
++        { static long dump2 = -2;
++          if (dump2 == -2) { const char* e = getenv("RSX_ALWAYS_LEFT_DUMP"); dump2 = e ? atol(e) : -1; }
++          if (dump2 >= 0 && (long)g_ld_frames >= dump2) { dump2 = -1;
++              const al_hud* h = &g_al.hud;
++              for (u32 i = 0; i < h->n_el; i++)
++                  fprintf(stderr, "[always-left] element %u tex %llx x %.1f..%.1f y %.1f..%.1f quads %d%s\n", i,
++                          (unsigned long long)h->el[i].tex, (h->el[i].x0 + 1) * h->px_w, (h->el[i].x1 + 1) * h->px_w,
++                          (1 - h->el[i].y1) * h->px_h, (1 - h->el[i].y0) * h->px_h, h->el[i].n,
++                          h->el[i].mirror ? " (flipped pair: mirrored)" : "");
++          } }
++    }
++    if (want != g_al.active) {
++        fprintf(stderr, "[always-left] %s at frame %u (so far: %llu frames, %llu pictures mirrored, HUD quads "
++                        "%llu moved / %llu mirrored / %llu left as they were)\n", want ? "on" : "off", g_ld_frames,
++                (unsigned long long)g_al.frames, (unsigned long long)g_al.copies, (unsigned long long)g_al.moved,
++                (unsigned long long)g_al.mirrored, (unsigned long long)g_al.left_alone);
++        g_al.hud.n_cur = g_al.hud.n_el = 0;
++        g_al.active = want;
++    }
++    g_al.copy_seen = at_copy && want;
++}
++
++static int ld_al_is_display(u32 target)
++{
++    for (u32 b = 0; b < 8; b++) {
++        const display_buffer_t* d = &g.display_buffers[b];
++        if (d->valid && d->location == g.surfaces[target].location && d->offset == g.surfaces[target].offset)
++            return 1;
++    }
++    return 0;
++}
++/* A draw onto the whole picture: a display buffer drawn at its own size (the game also draws 512 x 512
++ * pictures into the display buffer's memory between frames -- not the screen). */
++static int ld_al_is_screen(u32 target, float W, float H)
++{
++    for (u32 b = 0; b < 8; b++) {
++        const display_buffer_t* d = &g.display_buffers[b];
++        if (d->valid && d->location == g.surfaces[target].location && d->offset == g.surfaces[target].offset)
++            return (float)d->width == W && (float)d->height == H;
++    }
++    return 0;
++}
++
++/* This draw's vertices (at most 64), with every attribute as the vertex shader gets it. -> count, 0 = no. */
++static u32 ld_al_vertices(float (*v)[16][4])
++{
++    u32 ids[64], bidx[64], n = 0;
++    for (u32 r = 0; r < dc.n_arr; r++)
++        for (u32 i = 0; i < dc.arr[r].count; i++) {
++            if (n >= 64) return 0;
++            ids[n] = dc.arr[r].first + i; bidx[n] = 0; n++;
++        }
++    if (dc.n_idx) {
++        const u32 base_index = rsx_dsp_vertex_data_base_index(&g.rsx);
++        rsx_dsp_index_array ia; rsx_dsp_get_index_array(&g.rsx, &ia);
++        const u32 esz = ia.is_u32 ? 4 : 2;
++        const int restart_en = rsx_dsp_restart_index_enabled(&g.rsx, ia.is_u32);
++        const u32 restart_val = rsx_dsp_restart_index(&g.rsx);
++        for (u32 r = 0; r < dc.n_idx; r++)
++            for (u32 i = 0; i < dc.idx[r].count; i++) {
++                const u8* ip = guest_ptr(ia.location, ia.offset + (dc.idx[r].first + i) * esz, esz);
++                if (!ip) return 0;
++                const u32 index = ia.is_u32 ? (((u32)ip[0] << 24) | ((u32)ip[1] << 16) | ((u32)ip[2] << 8) | ip[3])
++                                            : (u32)((ip[0] << 8) | ip[1]);
++                if (restart_en && index == restart_val) continue;
++                if (n >= 64) return 0;
++                ids[n] = index; bidx[n] = base_index; n++;
++            }
++    }
++    const u32 base = rsx_dsp_vertex_data_base_offset(&g.rsx);
++    for (u32 k = 0; k < n; k++)
++        for (u32 i = 0; i < 16; i++) {
++            rsx_dsp_vertex_attr a;
++            rsx_dsp_get_vertex_attr(&g.rsx, i, &a);
++            if (a.type && a.size && fetch_attr(i, base, ids[k], bidx[k], v[k][i])) continue;
++            if (i == 0) return 0;
++            rsx_dsp_vertex_default(&g.rsx, i, v[k][i]);
++        }
++    return n;
++}
++
++/* One draw while the fight is shown mirrored: changes xf (the viewport transform the vertex shader applies:
++ * clip x = o0.x * xf[0] + o0.w * xf[4]) and says how the scissor follows -- *mirror, or a move by *dx_px
++ * guest pixels. */
++static void ld_al_draw(u32 target, const u32* surf_used, u32 n_surf_used, float W, float H, float xf[8],
++                       int* mirror, float* dx_px)
++{
++    *mirror = 0; *dx_px = 0.0f;
++    const int want = InterlockedCompareExchange(&g_al_req, 0, 0) != 0;
++    if (!want) { if (g_al.active) ld_al_state(0, 0); return; }
++    if (!ld_al_is_screen(target, W, H)) return;
++    /* the 3D picture: texture unit 0 is a render target larger than the display buffer (the 2048 x 1440 3D
++     * target). Only unit 0: other units keep stale bindings that the HUD's programs never read. */
++    rsx_dsp_texture t0;
++    rsx_dsp_get_texture(&g.rsx, 0, &t0);
++    for (u32 i = 0; t0.enabled && i < n_surf_used; i++) {
++        const surface_t* s = &g.surfaces[surf_used[i]];
++        if (s->location == t0.location && s->offset == t0.offset && !ld_al_is_display(surf_used[i]) &&
++            ((float)s->w > W || (float)s->h > H)) {
++            /* a new frame -- unless the picture is drawn in several passes (no HUD quad between them) */
++            if (!g_al.active || !g_al.copy_seen || g_al.hud.n_cur > 0) ld_al_state(1, 1);
++            xf[0] = -xf[0]; xf[4] = -xf[4];          /* the 3D picture */
++            *mirror = 1;
++            g_al.copies++;
++            return;
++        }
++    }
++    if (!g_al.active || !g_al.copy_seen) return;    /* before the 3D picture: not the fight's HUD */
++    static float v[64][16][4];
++    const u32 n = ld_al_vertices(v);
++    const u32 start = rsx_dsp_vp_start(&g.rsx);
++    if (!n || start >= RSX_DSP_VP_INSTR) { g_al.left_alone++; return; }
++    const u8* uc = (const u8*)(g.rsx.vp + start * 4);
++    al_quad q = { 0, 1e30f, -1e30f, 1e30f, -1e30f, 0, 0.0f, 0.0f };
++    /* the texture coordinate at the left and right edge, from the first of TEX0..TEX7 that changes across the
++     * quad (the HUD's program puts a constant in TEX0 and the coordinate in TEX1) */
++    float ul[8] = { 0 }, ur[8] = { 0 };
++    for (u32 k = 0; k < n; k++) {
++        float o[16][4];
++        if (!al_vp_eval(uc, (RSX_DSP_VP_INSTR - start) * 16, (const float (*)[4])v[k],
++                        (const uint32_t (*)[4])g.rsx.constants, o) || !(o[0][3] > 0.0f)) {
++            g_al.left_alone++;
++            return;
++        }
++        const float x = (o[0][0] * xf[0] + o[0][3] * xf[4]) / o[0][3];
++        const float y = (o[0][1] * xf[1] + o[0][3] * xf[5]) / o[0][3];
++        if (x < q.x0) { q.x0 = x; for (u32 t = 0; t < 8; t++) ul[t] = o[7 + t][0]; }
++        if (x > q.x1) { q.x1 = x; for (u32 t = 0; t < 8; t++) ur[t] = o[7 + t][0]; }
++        if (y < q.y0) q.y0 = y;
++        if (y > q.y1) q.y1 = y;
++    }
++    for (u32 t = 0; t < 8; t++)
++        if (fabsf(ur[t] - ul[t]) > 1e-6f) { q.u0 = ul[t]; q.u1 = ur[t]; break; }
++    q.uflip = q.u1 < q.u0;
++    q.tex = t0.enabled ? (((u64)t0.location << 32) | t0.offset) : 0;
++    g_al.hud.px_w = W * 0.5f; g_al.hud.px_h = H * 0.5f;
++    int m = 0;
++    const float dx = al_hud_place(&g_al.hud, &q, &m);
++    al_hud_note(&g_al.hud, &q);
++    if (m) {
++        xf[0] = -xf[0]; xf[4] = -xf[4];
++        *mirror = 1;
++        g_al.mirrored++;
++    } else {
++        xf[4] += dx;
++        *dx_px = dx * W * 0.5f;
++        g_al.moved++;
++    }
++}
++
+ static void sink_end_impl(void* user, const rsx_dispatch* r)
+ {
+     (void)user; (void)r;
+@@ -11400,6 +11598,9 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+         xf[5] = -((vp.translate[1] - H * 0.5f) / (H * 0.5f));
+         xf[6] = vp.translate[2];
+     }
++    int al_mirror = 0;                    /* patch 0086: the fight shown mirrored (ld_al_draw) */
++    float al_dx_px = 0.0f;
++    if (g_al.active || g_al_req) ld_al_draw(target, surf_used, n_surf_used, W, H, xf, &al_mirror, &al_dx_px);
+     /* The vertex constant block (8 KB + viewport) is re-uploaded per draw.
+      * When no constant was written since the previous draw and the viewport
+      * transform is the same, point this draw at the block already uploaded --
+@@ -11505,6 +11706,19 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+             if (sc.bottom < sc.top)      sc.bottom = sc.top;
+         }
+     }
++    /* Patch 0086: a guest scissor narrower than the target moves or mirrors with its draw. */
++    if ((al_mirror || al_dx_px != 0.0f) && (sc.left > 0 || sc.right < (LONG)W)) {
++        if (al_mirror) {
++            const LONG l = (LONG)W - sc.right, rr = (LONG)W - sc.left;
++            sc.left = l; sc.right = rr;
++        } else {
++            const LONG d = (LONG)floorf(al_dx_px + 0.5f);
++            sc.left += d; sc.right += d;
++        }
++        if (sc.left < 0) sc.left = 0;
++        if (sc.right > (LONG)W) sc.right = (LONG)W;
++        if (sc.right < sc.left) sc.right = sc.left;
++    }
+     if (tscale != 1.0f) {   /* guest pixels -> host pixels */
+         sc.left = (LONG)ld_pxs((u32)sc.left, tscale);   sc.top = (LONG)ld_pxs((u32)sc.top, tscale);
+         sc.right = (LONG)ld_pxs((u32)sc.right, tscale); sc.bottom = (LONG)ld_pxs((u32)sc.bottom, tscale);
+diff --git a/libs/video/rsx_live_draw.h b/libs/video/rsx_live_draw.h
+index 97d720b..08bc90f 100644
+--- a/libs/video/rsx_live_draw.h
++++ b/libs/video/rsx_live_draw.h
+@@ -61,6 +61,11 @@ void rsx_live_draw_seed_registers(const u32* regs, u32 count);
+ void rsx_live_draw_seed_transform_program(const u32* words, u32 count);
+ void rsx_live_draw_seed_transform_constants(const u32* words, u32 count);
+ 
++/* Patch 0086 (T5DR "Always left", a 1.1.8 test): on = the fights from now on are shown mirrored -- the 3D
++ * picture flipped left to right, the HUD's halves swapped with every element readable (rsx_always_left.h).
++ * Presentation only; the game calls it at the top of each frame. */
++void rsx_live_draw_set_always_left(int on);
++
+ /* Register a scanout buffer from sys_rsx_context_attribute(0x104). A flip's
+  * argument indexes this table; it is not necessarily the current render
+  * target when the frame is submitted. */

@@ -940,7 +940,8 @@ class OnlineTab:
         self.driver = MatchDriver(self.client, self._launch, os.path.join(out, "logs", "online"),
                                   table=self.table, mode=self.cfg.get("game_mode", "auto"), game_files=game_files(out),
                                   async_calls=True,
-                                  input_delay=(getattr(self.app, "settings", None) or {}).get("input_delay"))
+                                  input_delay=(getattr(self.app, "settings", None) or {}).get("input_delay"),
+                                  always_left=lambda: bool((getattr(self.app, "settings", None) or {}).get("always_left")))
 
     def _launch(self, env):
         g = getattr(self.app, "game", None)

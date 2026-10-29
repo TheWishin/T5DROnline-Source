@@ -95,6 +95,10 @@ extern "C" uint32_t t5_df_mode_cur(void);  /* src/directfight/df_fight.cpp: the 
 extern "C" uint32_t t5_df_mode_next(void); /* src/directfight/df_fight.cpp: the mode the manager was asked for (14 = none) */
 extern "C" void t5_df_window_closed(void);   /* src/directfight/df_fight.cpp: state.json "quit" (persistent game) */
 extern "C" void t5_training_frame(ppu_context* ctx);   /* src/training/training.cpp: the training overlay */
+extern "C" void t5_always_left_frame(void);              /* always_left.cpp: "Always left" (T5_ALWAYS_LEFT) */
+extern "C" void t5_always_left_pad_read(ppu_context* ctx);   /* always_left.cpp: offline port 2, mirrored */
+bool t5_always_left_enabled();
+bool t5_always_left_df_pads();
 extern "C" void t5_practice_pads(uint16_t* p1, uint16_t* p2);   /* src/training/practice.cpp: offline Practice only */
 /* ps3recomp patch 0035 (boot_main.cpp, rsx_null_backend.c): the game window was closed; Esc asks twice */
 extern "C" void ps3_set_window_closed_handler(void (*fn)(void));
@@ -1519,6 +1523,7 @@ void offline_frame(ppu_context* ctx)
 void on_frame_start(ppu_context* ctx)
 {
     if (!rb::net::bypass()) t5_training_frame(ctx);   /* src/training: reads the frame that just ran (read only) */
+    if (!rb::net::bypass()) t5_always_left_frame();   /* "Always left": this PC's picture and pad only */
     rb::rand_install();   /* the game-DLL build: once the lifted table is out (no-op after the first time) */
     t5_unlock_install();  /* likewise */
     if (!g_main_tls && ctx->thread_id == (g_main_tid != ~0ull ? g_main_tid : 1) && ctx->gpr[13] >= 0x7000)
@@ -2165,6 +2170,8 @@ struct Register {
             if ((li && *li == '0') || (rm && (!strcmp(rm, "test") || !strcmp(rm, "measure")))) return;
             g_offline = true;
             ps3_hle_register_ctx(NID_cellPadInit, "cellPadInit(late input)", h_cellPadInit);
+            if (t5_always_left_enabled() && !t5_always_left_df_pads())   /* offline Versus: port 2 (always_left.cpp) */
+                ps3_hle_register_ctx(NID_cellPadGetData, "cellPadGetData(always left)", t5_always_left_pad_read);
             return;
         }
         const char* t = getenv("T5_NET_TRACE");

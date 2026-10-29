@@ -3,6 +3,31 @@
 All notable changes, newest first. The project is a test release. Short commit hashes are in parentheses. The state of each
 part is in the README's status table.
 
+## v1.1.9 (not released yet)
+
+### Launcher
+- Python's garbage collector runs on the Tk thread only (`launcher/tkgc.py`): closed windows' pictures, variables and
+  fonts were freed in whatever thread allocated (the lobby client, workers), and a Tk interpreter freed there aborts
+  the process (Tcl_AsyncDelete). Stress test of the real launcher: `tests/launcher_gc_stress.py` (also from a release folder).
+- Several open challenges at once (up to five, to different players) with a Cancel button each; the first one accepted
+  starts the match and the others are withdrawn on both sides; the lobby chat has a line for each step.
+- The challenger chooses the input delay (Auto, 0, 1, 2) in a box left of Challenge; the challenged player sees it on the
+  card; the match and its rematches use it (needs a 1.1.9 server).
+- The player list sorts by player, rank, status or ping (click the heading, remembered); players you cannot play right
+  now come below an "Unavailable" line.
+- The leaderboard shows ranked and casual wins and losses in their own sortable columns (an older server: the Record column).
+- Texts in all seven languages.
+
+### Lobby server
+- Up to five open challenges per player, 0.7 s apart; a second challenge to the same player is refused; accepting one
+  withdraws the rest (`challenge_update` state `withdrawn`); the challenger's input delay is part of the challenge
+  (feature `challenges2`).
+
+### Tests
+- `tests/launcher_challenges_click.py`: four real launcher processes in a real Tk main loop against a local lobby
+  server; clicks on rows, headings, buttons (challenge, cancel, accept, sort) and checks both sides.
+- `lobby/tests/test_challenges.py`; `tests/i18n_layout.py` walks the open challenges, the sorted lists and the split board.
+
 ## v1.1.8 (2026-10-28)
 
 **Hotfix: the lobby chat's input field and Send button are back.** In 1.1.7 the chat card was built without its

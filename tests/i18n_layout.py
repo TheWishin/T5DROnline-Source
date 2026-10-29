@@ -285,6 +285,11 @@ class Client:
     def casual_ok(self):
         return True
 
+    def multi_challenge_ok(self):
+        return True                  # (1.1.9: open challenges, the challenger's input delay: tk_challenges.py)
+
+    split_board = True
+
     def casual_stages(self):
         """Every stage, the Tekken 5 ones too: the widest names the casual stage choice can get (tk_casual.py)."""
         from t5lobby import fighters
@@ -319,10 +324,14 @@ class Client:
         pass
 
     def leaderboard(self, n):
-        return [{"place": i + 1, "name": nm, "online": i % 2 == 0, "rank": rk, "provisional": i == 2,
+        rows = [{"place": i + 1, "name": nm, "online": i % 2 == 0, "rank": rk, "provisional": i == 2,
                  "rating": 1500 + 37 * i, "wins": 12 + i, "losses": 7, "main": "jin", "tier": tier}
                 for i, (nm, rk, tier) in enumerate((("Rival_Long_Name", "Lord of War", 31), ("Bob", "2nd Dan", 11),
                                                     ("Ccc", "Beginner", 0)))]
+        if self.split_board:            # (a 1.1.9 server: ranked and casual in their own columns)
+            for i, r in enumerate(rows):
+                r.update(ranked_wins=12345 + i, ranked_losses=9999, casual_wins=123456, casual_losses=99999)
+        return rows
 
     def tour_list(self):
         return {"rows": [TOUR], "can_create": True, "rated": False}
@@ -567,6 +576,21 @@ class Walk:
         tab._set_account_view(True)
         tab.on_event({"t": "lobby_state", "players": PLAYERS, "rooms": ROOMS, "queue": {"ranked": 3, "quick": 1}})
         self.screen("online lobby")
+        # 1.1.9: five open challenges (the longest names, the delay), the input delay box with Auto's number for the
+        # selected player, the players that cannot be played below their own line, sorted by each heading
+        tab.chal.out = {f"c{i}": {"pid": "p4", "name": n, "delay": {"frames": 4, "auto": i % 2 == 0}}
+                        for i, n in enumerate(_LONG[:5])}
+        tab.chal._show_open()
+        tab.tv_players.selection_set("p3")
+        tab.chal._auto_for = 4
+        tab.chal._fill_delay()
+        self.screen("online lobby, open challenges")
+        for key in ("name", "rank", "status", "ping"):
+            tab.chal._sort_players(key)
+            self.screen(f"online lobby, sorted by {key}")
+        tab.chal.out.clear()
+        tab.chal._show_open()
+        tab.tv_players.selection_remove(*tab.tv_players.selection())
         # the character select grid over the tab (tk_charsel.py), the player's main starred
         if getattr(tab, "charsel", None) is not None:
             if isinstance(tab.client.me, dict):
@@ -642,6 +666,11 @@ class Walk:
         tab.nb.select(1)
         tab.load_leaderboard()
         self.screen("online leaderboard")
+        tab.client.split_board = False             # (an older server: the one Record column)
+        tab.load_leaderboard()
+        self.screen("online leaderboard, old server")
+        tab.client.split_board = True
+        tab.load_leaderboard()
         tab.show_profile("Me")
         self.screen("online profile")
         # the match history with replays on this PC (tk_history.py): the play mark, the count, one selected

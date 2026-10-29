@@ -1509,8 +1509,22 @@ class LobbyClient(TourCalls, SpectateClientMixin):
                 stage = "random"                 # (a stage this server does not offer, e.g. a Tekken 5 one)
             await self._safe(self._send({"t": "casual_prefs", "side": side, "stage": stage}))
 
-    def challenge(self, player_id):
-        return self._call({"t": "challenge", "player": player_id})["challenge"]
+    def challenge(self, player_id, delay=None):
+        """-> the challenge's id (send_challenge: the whole reply)."""
+        return self.send_challenge(player_id, delay)["challenge"]
+
+    def send_challenge(self, player_id, delay=None):
+        """-> the server's reply: {"challenge": id, "ping": ..., and from a 1.1.9 server "delay": {"frames", "auto"},
+        "to": the player}. `delay`: the input delay the challenger chose (frames 0-2), None = auto -- sent only to a
+        server that takes it (multi_challenge_ok)."""
+        msg = {"t": "challenge", "player": player_id}
+        if delay is not None and self.multi_challenge_ok():
+            msg["delay"] = int(delay)
+        return self._call(msg)
+
+    def multi_challenge_ok(self):
+        """Does the server take several open challenges at once and the challenger's input delay (1.1.9)?"""
+        return "challenges2" in ((self.welcome or {}).get("features") or ())
 
     def answer_challenge(self, challenge_id, accept=True):
         return self._call({"t": "challenge_reply", "challenge": challenge_id, "accept": bool(accept)})

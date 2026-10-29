@@ -42,7 +42,12 @@ int32_t cellSysutilRegisterCallback(int32_t slot, uint32_t func, uint32_t userda
 int32_t cellPadGetInfo(void* info_guest);
 int32_t cellPadGetData(uint32_t port, void* data_guest);
 /* runtime/syscalls/sys_semaphore.h (Windows layout), read-only: stuck_dump() */
-struct df_sys_semaphore_info { int active; char name[8]; uint32_t protocol; int32_t value, max_value, waiters; HANDLE h; CRITICAL_SECTION cs; };
+struct df_sys_semaphore_info { int active; char name[8]; uint32_t protocol; int32_t value, max_value, waiters;
+#ifdef _WIN32
+    HANDLE h; CRITICAL_SECTION cs; };
+#else   /* mac-119: the runtime's tail off Windows (rsx_posted, pthread mutex + cond), as in t5_hooks.cpp */
+    int32_t rsx_posted; pthread_mutex_t mtx; pthread_cond_t cv; };
+#endif
 extern df_sys_semaphore_info g_sys_semaphores[];
 uint64_t ppu_guest_call_ct(uint32_t code, uint32_t toc, uint64_t a0, uint64_t a1, uint64_t a2,
                            uint64_t a3, uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7);

@@ -121,10 +121,28 @@ struct np_sys_semaphore_info {
     int32_t  value;
     int32_t  max_value;
     int32_t  waiters;
+#ifdef _WIN32
     HANDLE   sem_handle;
     CRITICAL_SECTION value_lock;
+#else
+    /* mac-119: the runtime's layout off Windows (runtime/syscalls/sys_semaphore.h) -- patch 0063's
+     * rsx_posted, then a pthread mutex and condition variable. The Windows tail made every element
+     * after the first land at the wrong place on a Mac: the keyread thread was never seen parked, so
+     * the offline late input -- and the practice tools that run inside it -- never started.
+     * (On Windows rsx_posted sits in the padding before HANDLE: the layout there is unchanged.) */
+    int32_t  rsx_posted;
+    pthread_mutex_t mtx;
+    pthread_cond_t  cv;
+#endif
 };
 extern np_sys_semaphore_info g_sys_semaphores[];
+#ifdef _WIN32
+#define NP_SEM_LOCK(s)   EnterCriticalSection(&(s).value_lock)
+#define NP_SEM_UNLOCK(s) LeaveCriticalSection(&(s).value_lock)
+#else   /* mac-119: the runtime guards value with the pthread mutex there (sys_semaphore.c) */
+#define NP_SEM_LOCK(s)   pthread_mutex_lock(&(s).mtx)
+#define NP_SEM_UNLOCK(s) pthread_mutex_unlock(&(s).mtx)
+#endif
 extern np_lv2_fn g_lv2_syscalls[];                   /* lv2_syscall_table { handlers[1024] } */
 }
 
@@ -2250,9 +2268,9 @@ extern "C" int32_t t5_sem_count(uint32_t id)
     if (id == 0 || id > 256) return -1;
     np_sys_semaphore_info& s = g_sys_semaphores[id - 1];
     if (!s.active) return -1;
-    EnterCriticalSection(&s.value_lock);
+    NP_SEM_LOCK(s);
     const int32_t v = s.value;
-    LeaveCriticalSection(&s.value_lock);
+    NP_SEM_UNLOCK(s);
     return v;
 }
 /* Set it -- only while nobody waits on it (the reader's completion semaphore
@@ -2262,10 +2280,10 @@ extern "C" int t5_sem_set_count(uint32_t id, int32_t v)
     if (id == 0 || id > 256 || v < 0) return 0;
     np_sys_semaphore_info& s = g_sys_semaphores[id - 1];
     if (!s.active) return 0;
-    EnterCriticalSection(&s.value_lock);
+    NP_SEM_LOCK(s);
     const bool ok = s.waiters == 0 && v <= s.max_value;
     if (ok) s.value = v;
-    LeaveCriticalSection(&s.value_lock);
+    NP_SEM_UNLOCK(s);
     return ok ? 1 : 0;
 }
 

@@ -25,7 +25,7 @@ import tempfile
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "tools", "smoke"))
 sys.path.insert(0, os.path.join(ROOT, "tools"))
-from game import Game, find_game_root  # noqa: E402
+from game import FRAMES, Game, find_game_root  # noqa: E402
 import scenarios as sc  # noqa: E402
 
 PLACE = re.compile(r"^(\d+) (.+?) P1 (-?[\d.]+) (-?[\d.]+) (-?[\d.]+) dummy (-?[\d.]+) (-?[\d.]+) (-?[\d.]+)$")
@@ -141,7 +141,8 @@ def main():
     ap.add_argument("--keep", action="store_true", help="keep the working directory")
     a = ap.parse_args()
     root = os.path.abspath(a.root) if a.root else find_game_root()
-    exe = os.path.abspath(a.exe) if a.exe else os.path.join(root, "build", "cmake", "t5dr.exe")
+    exe = os.path.abspath(a.exe) if a.exe else os.path.join(root, "build", "cmake",
+                                                            "t5dr.exe" if os.name == "nt" else "t5dr")
     out = os.path.abspath(a.out) if a.out else tempfile.mkdtemp(prefix="practice_check_")
     log = os.path.join(out, "practice.log")
     env = {"T5_PRACTICE": "1", "T5_PRACTICE_LOG": log, "T5_TRAINING": "frames", "PS3_AUDIO_MUTE": "1"}
@@ -152,7 +153,9 @@ def main():
         if sc.to_title(g):
             g.phase("practice-select", "menu")
             sc.pick_mode(g, sc.PRACTICE, wait=3.0)
-            if sc.start_fight(g, skip=False):
+            # macOS has no frame dump to see the fight HUD in: the menu driver has confirmed through to the
+            # fight by its timeout, so drive anyway -- the practice log below is the evidence either way
+            if sc.start_fight(g, skip=False) or not FRAMES:
                 drive(g)
     finally:
         g.stop()

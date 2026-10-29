@@ -4050,6 +4050,7 @@ class LobbyServer(SpectateMixin, RoomsMixin, CasualMixin, MatchRulesMixin):
             return
         loop = asyncio.get_running_loop()
         window = self.cfg.set_away_seconds
+        gs.fresh = True      # (their game is gone or cut off: the next game needs a new connection, not set_next keep)
         gs.grace[p.id] = loop.call_later(window, self._set_grace_expired, gs, p)
         gs.grace_marks[p.id] = [loop.call_later(window - x, self._set_away_mark, gs, p, x)
                                 for x in self._away_marks(window)]

@@ -314,6 +314,9 @@ class Field:
         if what == "hold":
             return                                     # the game goes on (and on)
         winner, loser = (p0, p1)[w], (p1, p0)[w]
+        if what in ("quit", "crash") and number > 1:   # (1.1.9: leaving a later game before its fight is being away from
+            for c in (p0, p1):                         # the set, not a quit or crash: the fight has begun here)
+                c.game_playing(mid)
         if what == "quit":                             # the loser quits the game (closes it)
             loser.leave_match(mid)
         elif what == "crash":                          # the loser's game dies; the winner's lost its opponent

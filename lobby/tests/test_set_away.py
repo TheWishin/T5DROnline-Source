@@ -139,6 +139,8 @@ class AwayAndBackTest(Base):
         ea, eb = self.start(a, b, coin=1)                     # (the coin: Alice P2)
         slot, sid = ea["slot"], ea["set"]["id"]
         self.game(a, b, ea, slot)                             # Alice wins game 1 3-0
+        for c in (a, b):
+            c.set_next(None, keep=True)                       # both games still ran, connected, when it ended
         how(a)                                                # ... and her launcher closes / crashes
         n = self.notice(b, "opponent_dropped")
         self.assertEqual((n["set"], n["left"]), (sid, AWAY))
@@ -155,6 +157,7 @@ class AwayAndBackTest(Base):
             ea2, eb2 = expect(a2, "match_start", 20.0), expect(b, "match_start", 20.0)
         self.assertEqual((ea2["set"]["id"], ea2["set"]["number"], ea2["slot"]), (sid, 2, slot))   # the same sides
         self.assertEqual(ea2["set"]["wins"][slot], 1)                                           # the same score
+        self.assertFalse(ea2["continue"])                     # Alice's game is gone: a new connection, not the old one
         self.assertEqual(ea2["fight"][("p1", "p2")[slot]], ea["fight"][("p1", "p2")[slot]])      # the same characters
         ra, _ = self.game(a2, b, ea2, slot)                   # 2-0 Alice
         se = expect(a2, "set_end")

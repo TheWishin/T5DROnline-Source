@@ -3728,7 +3728,7 @@ def _start_again(ctx, p, env):
                "(within the 90 s): the set goes on (same set, score, sides), the other player is told the time left; "
                "then the launcher is closed (logout) in the next game and comes back too")
 def bo3_away_back(ctx):
-    w = {"T5_STUB_WINNERS": "0,0,0,0,0", "T5_STUB_SECONDS": "20"}
+    w = {"T5_STUB_WINNERS": "0,0,0,0,0"}
     a, b = _bo3_pair(ctx, "E2E Awa1", "E2E Awa2", w, w, T5L_SET_NEXT_SECONDS=8)
     mid = queue_match(ctx, a, b, "ranked")
     sid = _set_of(a, mid).get("id")

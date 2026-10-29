@@ -19,7 +19,9 @@ part is in the README's status table.
   set begins. Best-of-3 sets already kept them in 1.1.7; now also a game played again after a player came back,
   and the ranked rematches of launchers without sets (they drew the sides again each time). Quick matches keep
   their coin per match.
-- Leaderboard rows carry `ranked_wins`, `ranked_losses`, `casual_wins`, `casual_losses` (the old fields stay).
+- The leaderboard counts ranked and casual games apart: each row now has ranked wins/losses and casual wins/losses
+  (games, as on the profile; every game of a ranked set counts). The old fields stay, so older launchers show the
+  board as before; the columns appear with the 1.1.9 launcher.
 
 ## v1.1.8 (2026-10-28)
 

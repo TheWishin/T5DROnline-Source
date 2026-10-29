@@ -16,7 +16,8 @@ measurement runs the real game; nothing is faked. Parts (--parts, comma list, de
             --runs times each, on all processors ("all") and on 2 cores / 4 threads by affinity ("2c":
             --two-core-mask, the game's own 2-core mode turns on by itself: PS3_TWO_CORE auto on <= 2
             physical cores) and, with --slow-core N, the same 2 cores with tools/slow_core.py taking N % of
-            them ("2c-slow": an older 2-core CPU such as GitHub #12's i3-3240). Per run: fps, frame p99,
+            them ("2c-slow": an older 2-core CPU such as GitHub #12's i3-3240); --cpu-configs names other
+            sets (all=,2c=0xF000,4c=0x5500,2c2t=0x5000: 4 and 2 cores without SMT, low-end PCs). Per run: fps, frame p99,
             frames over 20.9 ms (the [slow-frames] threshold), medians of the frame log's game part,
             translation and GPU wait (the [slow-frames] medians), the game thread's CPU per frame, GPU ms
             per frame from the [gpu-pass] lines (RSX_GPU_PASSES=1) and the D3D12 timestamps, every
@@ -220,6 +221,8 @@ def run_offline(a, lock, results):
     exe = os.path.join(a.game, "build", "cmake", "t5dr.exe")
     vfs = os.path.join(a.game, "game", "vfs")
     cfgs = [("all", "")] + [("2c", a.two_core_mask)]
+    if a.cpu_configs:     # NAME=MASK,... instead (an empty mask = every processor)
+        cfgs = [tuple(c.split("=", 1)) if "=" in c else (c, "") for c in a.cpu_configs.split(",") if c]
     if a.slow_core:
         cfgs.append(("2c-slow", a.two_core_mask))
     stages = [s for s in STAGES if not a.stages or str(s[0]) in a.stages.split(",")]
@@ -557,6 +560,9 @@ def main():
     r.add_argument("--runs", type=int, default=2)
     r.add_argument("--stages", default="", help="only these stage ids (comma list)")
     r.add_argument("--two-core-mask", default="0xF000", help="2 cores / 4 threads (default LP 12-15)")
+    r.add_argument("--cpu-configs", default="",
+                   help="offline processor sets NAME=MASK,... (default all=,2c=--two-core-mask); e.g. "
+                        "all=,2c=0xF000,4c=0x5500,2c2t=0x5000: 4 cores without SMT, 2 cores without SMT")
     r.add_argument("--slow-core", type=int, default=0, help="also 2c-slow: slow_core.py --busy N on those cores")
     r.add_argument("--skip", type=float, default=8.0)
     r.add_argument("--secs", type=float, default=50.0)

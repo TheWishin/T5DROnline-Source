@@ -89,6 +89,14 @@ class Base(unittest.TestCase):
             c.set_next(None, keep=keep)
         return expect(a, "match_start", 20.0), expect(b, "match_start", 20.0)
 
+    def fight(self, c, ev):
+        """`c`'s game has run the fight of match `ev` for a while (game_started playing): the fight began. (Before
+        that, leaving a later game of a set is being away from the set, 1.1.9: test_set_away.py.)"""
+        c.game_playing(ev["match"])
+        mid, me = ev["match"], ev["slot"]
+        self.assertTrue(self.s.wait_for(lambda: (self.s.srv.matches.get(mid) is None
+                                                 or self.s.srv.matches[mid].game_playing[me])))
+
 
 # ============================================================================== 1. 2-0 and 2-1
 class SetResultTest(Base):
@@ -213,6 +221,8 @@ class SetLeaveTest(Base):
             self.game(a, b, ea, winner)
             ea, eb = self.next_game(a, b)
         self.assertEqual(ea["set"]["number"], n)
+        if n > 1:
+            self.fight(a, ea)                                 # (the fight runs: quitting it is not being away)
         a.leave_match(ea["match"])                            # Alice quits game n
         rb = expect(b, "match_result")
         self.assertEqual((rb["status"], rb["winner"]), ("forfeit", eb["slot"]))
@@ -251,14 +261,17 @@ class SetLeaveTest(Base):
             a.set_char("law")                                 # still locked
         expect(a, "match_start", 20.0)                        # and the set goes on
 
-    def test_logging_out_between_games_loses_the_set(self):
+    def test_logging_out_between_games_and_not_coming_back_loses_the_set(self):
+        # 1.1.9: a logout is the launcher closing (or Log out), not Leave set: the away window (2 s in tests), then
+        # the set is lost (test_set_away.py has the return)
         a, b = self.acc("Alice"), self.acc("Bob")
         ea, _ = self.start(a, b)
         self.game(a, b, ea, ea["slot"])
         a.logout()
         self.clients.remove(a)
+        self.assertEqual(expect(b, "notice")["code"], "opponent_dropped")
         sb = expect(b, "set_end")
-        self.assertEqual((sb["reason"], sb["result"]), ("left", "win"))
+        self.assertEqual((sb["outcome_reason"], sb["status"], sb["result"]), ("no_return", "forfeit", "win"))
 
     def test_leaving_before_any_game_counted_is_no_loss(self):
         a, b = self.acc("Alice"), self.acc("Bob")
@@ -289,7 +302,7 @@ class SetLeaveTest(Base):
         n = expect(a, "notice")
         self.assertEqual(n["code"], "opponent_dropped")
         se = expect(a, "set_end", 10)                         # grace (2 s in tests) runs out
-        self.assertEqual((se["reason"], se["status"], se["result"]), ("disconnect", "forfeit", "win"))
+        self.assertEqual((se["reason"], se["status"], se["result"]), ("no_return", "forfeit", "win"))
 
 
 class SetEarlyQuitTest(Base):
@@ -313,6 +326,7 @@ class SetEarlyQuitTest(Base):
         time.sleep(1.1)
         self.game(a, b, ea, eb["slot"])                       # Bob leads 1-0 ...
         ea, eb = self.next_game(a, b)
+        self.fight(a, ea)                                     # (the fight began)
         a.leave_match(ea["match"])                            # ... and Alice quits game 2 at once
         se = expect(a, "set_end")
         self.assertEqual((se["status"], se["result"], se["outcome_reason"]), ("forfeit", "loss", "early_quit"))
@@ -357,6 +371,7 @@ class SetReplayTest(Base):
         ea, eb = self.start(a, b)
         self.game(a, b, ea, ea["slot"])
         ea, eb = self.next_game(a, b)
+        self.fight(b, eb)                                     # (in the fight: before it, the game starts again)
         b.report_result(None, None, match_id=eb["match"], source="crash")
         a.report_result(None, None, match_id=ea["match"], source="disconnect", reason="peer_timeout")
         se = expect(a, "set_end")

@@ -1353,6 +1353,43 @@ MESSAGES = {
     "You won the set {mine}-{theirs}": "セット {mine}-{theirs} で勝ちました",
     "You lost the set {mine}-{theirs}": "セット {mine}-{theirs} で負けました",
     "set game {number}": "セット第{number}試合",
+    # 1.1.9: who left a ranked set, and how; a player away from the set (sets.py, tk_tab.py, the server)
+    "You won the set ({how})":
+        "セットに勝ちました（{how}）",
+    "You lost the set ({how})":
+        "セットに負けました（{how}）",
+    "you left the set":
+        "自分がセットから退出",
+    "your opponent left the set":
+        "相手がセットから退出",
+    "you did not come back within {seconds} s":
+        "自分が{seconds}秒以内に戻らなかった",
+    "your opponent did not come back within {seconds} s":
+        "相手が{seconds}秒以内に戻らなかった",
+    "you quit a game":
+        "自分が試合を中断",
+    "your opponent quit a game":
+        "相手が試合を中断",
+    "you lost the connection":
+        "自分の接続が切れた",
+    "your opponent lost the connection":
+        "相手の接続が切れた",
+    "your side could not connect":
+        "自分側が接続できなかった",
+    "your opponent's side could not connect":
+        '相手側が接続できなかった',
+    "a player did not come back in time":
+        "プレイヤーが時間内に戻りませんでした",
+    "played again: a player was away":
+        "再試合：プレイヤーが不在でした",
+    "A player was away; the set's game starts again.":
+        'プレイヤーが不在でした。セットの試合をやり直します。',
+    "{name} is reconnecting -- {seconds} s left":
+        "{name} さんが再接続中 -- 残り {seconds} 秒",
+    "{name} is back; the set goes on":
+        "{name} さんが戻りました。セットを続けます",
+    "you are back in the ranked set ({mine}-{theirs}); the next game starts soon":
+        "ランクセットに戻りました（{mine}-{theirs}）。次の試合がまもなく始まります",
     # ---- lobby/t5lobby/tk_tour.py, tour_text.py (tournaments)
     "A set is played like a casual set with the in-game select; results come from the games. Players who do not accept a called set in time are out.": "セットはゲーム内でキャラクターを選ぶカジュアルのセットと同じように行われ、結果はゲームから取られます。呼ばれたセットを時間内に受けないと失格です。",
     "Accepted. Waiting for {name}...": "受けました。{name} さんを待っています...",

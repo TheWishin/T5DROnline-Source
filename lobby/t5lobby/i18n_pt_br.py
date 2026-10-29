@@ -1363,6 +1363,43 @@ MESSAGES = {
     "You won the set {mine}-{theirs}": "Você venceu o set por {mine}-{theirs}",
     "You lost the set {mine}-{theirs}": "Você perdeu o set por {mine}-{theirs}",
     "set game {number}": "partida {number} do set",
+    # 1.1.9: who left a ranked set, and how; a player away from the set (sets.py, tk_tab.py, the server)
+    "You won the set ({how})":
+        "Você venceu o set ({how})",
+    "You lost the set ({how})":
+        "Você perdeu o set ({how})",
+    "you left the set":
+        "você saiu do set",
+    "your opponent left the set":
+        "seu oponente saiu do set",
+    "you did not come back within {seconds} s":
+        "você não voltou em {seconds} s",
+    "your opponent did not come back within {seconds} s":
+        "seu oponente não voltou em {seconds} s",
+    "you quit a game":
+        "você abandonou uma partida",
+    "your opponent quit a game":
+        "seu oponente abandonou uma partida",
+    "you lost the connection":
+        "você perdeu a conexão",
+    "your opponent lost the connection":
+        "seu oponente perdeu a conexão",
+    "your side could not connect":
+        "seu lado não conseguiu conectar",
+    "your opponent's side could not connect":
+        'o lado do seu oponente não conseguiu conectar',
+    "a player did not come back in time":
+        "um jogador não voltou a tempo",
+    "played again: a player was away":
+        "jogada de novo: um jogador estava ausente",
+    "A player was away; the set's game starts again.":
+        'Um jogador estava ausente; a partida do set começa de novo.',
+    "{name} is reconnecting -- {seconds} s left":
+        "{name} está reconectando -- faltam {seconds} s",
+    "{name} is back; the set goes on":
+        "{name} voltou; o set continua",
+    "you are back in the ranked set ({mine}-{theirs}); the next game starts soon":
+        "você voltou ao set ranqueado ({mine}-{theirs}); a próxima partida começa em breve",
     # ---- lobby/t5lobby/tk_tour.py, tour_text.py (tournaments)
     "A set is played like a casual set with the in-game select; results come from the games. Players who do not accept a called set in time are out.": "Um set é jogado como um set casual com a seleção no jogo; os resultados vêm das partidas. Quem não aceitar a tempo um set chamado está fora.",
     "Accepted. Waiting for {name}...": "Aceito. Esperando {name}...",

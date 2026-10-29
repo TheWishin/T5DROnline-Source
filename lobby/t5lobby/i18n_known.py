@@ -125,6 +125,10 @@ SERVER = (
     # notices during a match
     N_("{name} is back in the lobby"),
     N_("{name} lost the lobby connection; waiting {seconds} s for them to return"),
+    # a running ranked set (1.1.9): a player away, back
+    N_("{name} is reconnecting -- {seconds} s left"),
+    N_("{name} is back; the set goes on"),
+    N_("you are back in the ranked set ({mine}-{theirs}); the next game starts soon"),
     N_("your PC ran its last match at {fps} fps"),
     N_("your opponent's PC ran its last match at {fps} fps"),
     N_("{name}'s PC ran its last match at {fps} fps"),

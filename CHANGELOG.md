@@ -3,6 +3,26 @@
 All notable changes, newest first. The project is a test release. Short commit hashes are in parentheses. The state of each
 part is in the README's status table.
 
+## v1.1.9 (not released yet)
+
+### Lobby server
+- Leaving a ranked set is judged smartly (owner's decision). Only the **Leave set** button counts at once: the
+  leaver loses the set, the other player wins it and gets the points. A crash, a closed launcher or a lost
+  connection between two games (or before the next game's fight began) gives the player **90 s** to come back
+  (`T5L_SET_AWAY_SECONDS`): the launcher reconnects, or the player starts it again and logs in, and the set goes on
+  with the same score, sides and characters. The other player sees "Alice is reconnecting -- 60 s left". Not back
+  in time: the leaver loses the set and the other player gets the points; both gone: the set does not count. 1.1.8
+  scored a closed launcher as a lost set at once, even when the player was back 5 s later.
+- The history says who left a set and how: "set won 0-1 (your opponent left the set)", "set lost 1-0 (you did not
+  come back within 90 s)".
+- The sides of a ranked set stay the same in all its games (owner's decision): the coin is thrown once, when the
+  set begins. Best-of-3 sets already kept them in 1.1.7; now also a game played again after a player came back,
+  and the ranked rematches of launchers without sets (they drew the sides again each time). Quick matches keep
+  their coin per match.
+- The leaderboard counts ranked and casual games apart: each row now has ranked wins/losses and casual wins/losses
+  (games, as on the profile; every game of a ranked set counts). The old fields stay, so older launchers show the
+  board as before; the columns appear with the 1.1.9 launcher.
+
 ## v1.1.8 (2026-10-28)
 
 **Hotfix: the lobby chat's input field and Send button are back.** In 1.1.7 the chat card was built without its

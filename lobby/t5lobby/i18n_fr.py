@@ -1388,6 +1388,43 @@ MESSAGES = {
     "You won the set {mine}-{theirs}": "Tu as gagné le set {mine}-{theirs}",
     "You lost the set {mine}-{theirs}": "Tu as perdu le set {mine}-{theirs}",
     "set game {number}": "partie {number} du set",
+    # 1.1.9: who left a ranked set, and how; a player away from the set (sets.py, tk_tab.py, the server)
+    "You won the set ({how})":
+        "Tu as gagné le set ({how})",
+    "You lost the set ({how})":
+        "Tu as perdu le set ({how})",
+    "you left the set":
+        "tu as quitté le set",
+    "your opponent left the set":
+        "ton adversaire a quitté le set",
+    'you did not come back within {seconds} s':
+        "tu n'es pas revenu en {seconds} s",
+    'your opponent did not come back within {seconds} s':
+        "ton adversaire n'est pas revenu en {seconds} s",
+    "you quit a game":
+        "tu as abandonné une partie",
+    "your opponent quit a game":
+        "ton adversaire a abandonné une partie",
+    "you lost the connection":
+        "tu as perdu la connexion",
+    "your opponent lost the connection":
+        "ton adversaire a perdu la connexion",
+    'your side could not connect':
+        "ton côté n'a pas pu se connecter",
+    "your opponent's side could not connect":
+        "le côté de ton adversaire n'a pas pu se connecter",
+    'a player did not come back in time':
+        "un joueur n'est pas revenu à temps",
+    "played again: a player was away":
+        "rejouée : un joueur était absent",
+    "A player was away; the set's game starts again.":
+        'Un joueur était absent ; la partie du set recommence.',
+    "{name} is reconnecting -- {seconds} s left":
+        "{name} se reconnecte -- encore {seconds} s",
+    "{name} is back; the set goes on":
+        "{name} est de retour ; le set continue",
+    "you are back in the ranked set ({mine}-{theirs}); the next game starts soon":
+        "tu es de retour dans le set classé ({mine}-{theirs}) ; la prochaine partie commence bientôt",
     # ---- lobby/t5lobby/tk_tour.py, tour_text.py (tournaments)
     "A set is played like a casual set with the in-game select; results come from the games. Players who do not accept a called set in time are out.": "Un set se joue comme un set amical avec la sélection dans le jeu ; les résultats viennent des parties. Qui n'accepte pas à temps un set appelé est éliminé.",
     "Accepted. Waiting for {name}...": "Accepté. En attente de {name}...",

@@ -104,13 +104,17 @@ REASON_TEXT = {"desync": N_("the two games went out of sync"), "too_short": N_("
                "both_left": N_("both players left"), "timeout": N_("no result in time"),
                "crash_repeat": N_("repeated crashes count as losses"), "early_quit_repeat": N_("repeated early quits"),
                "no_report_repeat": N_("repeated missing reports"), "score_mismatch": N_("scores differed"),
-               "no_result": N_("the fight ended without a winner")}
+               "no_result": N_("the fight ended without a winner"),
+               # 1.1.9: the next game of a ranked set, left before its fight began (a crash, a closed launcher)
+               "set_restart": N_("played again: a player was away"),
+               "no_return": N_("a player did not come back in time")}
 CANCEL_TEXT = {"declined": N_("Match declined."), "ready_timeout": N_("Nobody accepted in time."),
                "opponent_left": N_("Your opponent left."),
                "udp_unreachable": N_("No UDP connection to the lobby server (firewall?)."),
                "no_connection": N_("Could not connect the two PCs, not even through the relay."),
                "relay_full": N_("The lobby server's relay is full; try again in a moment."),
-               "organizer": N_("The organizer decided the set.")}
+               "organizer": N_("The organizer decided the set."),
+               "set_restart": N_("A player was away; the set's game starts again.")}
 CHALLENGE_TEXT = {"declined": N_("Challenge declined."), "cancelled": N_("Challenge cancelled."),
                   "expired": N_("Challenge expired.")}
 # A friend's state in the Friends list: the lobby status when online (STATUS_TEXT), else these.

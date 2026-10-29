@@ -341,7 +341,7 @@ the update the fighter node (`0x2683F4`) calls each model's draw through a
 vtable (`0x352F80` -> slot +0x34 -> `0x387324` / `0x3872A8`: matrices,
 materials, skinning kick; 3-4 calls per frame, ~2.5 ms exclusive each on this
 CPU), and the stage, effects and shadows push their packets through
-`0x158D6C`, `0x1357A0`, `0x1EC6FC`, `0x9DC04`, `0x264220`. All of them end in
+`0x158D6C`, `0x1357A0` (no longer cut since 1.1.9, see section 35), `0x1EC6FC`, `0x9DC04`, `0x264220`. All of them end in
 the NU::Draw packet writers (`0x355C70` 16-byte move, `0x355B34`, `0x389788`,
 `0x389820`, `0x3898D0`, `0x389A88`, `0x389A0C`, `0x389AA0`, `0x38988C`,
 `0x397AF8`, `0x354160`, `0x353E68`, `0x3559E4`, `0x357F88`) -- confirmed by the
@@ -2590,3 +2590,27 @@ displays differ (59.94 against 60.00 Hz) one side gains a frame every ~17 s
 and gives it up then, one refresh each time. Input delay is not changed by
 this branch (1 / 2 by ping, the lobby's 3 above 150 ms, 4 above 250 ms); the
 3-frame rollbacks at 180 ms are what 3 frames of delay leave.
+
+## 35. HUD health bars (1.1.9)
+
+Player report: the HP bars flicker online when the ping is unsteady. After a hit, the lost part of a bar turns
+orange and drains for about a second. The vtable target `0x1357A0` was in the draw cut (section 6). It is listed
+with the stage, effect and shadow passes, but it also moves that drain on. The drain's state is in the rollback
+state, so a rollback set it back to the restored frame, and the re-simulated frames, with `0x1357A0` cut, did not
+move it on. Each rollback cost the drain as many steps as frames were re-simulated: it stalled (1 frame) or
+stepped back (2 or more). The health itself (the teal part) was never wrong: on live frames it never went up
+(`T5_DF_WATCH` on +0x6BC of both fighter blocks, 0 increases in every run).
+
+Measured with `tools/hp_bar_check.py` (the joiner's presented frames, 20 s of a 3-round match, the same seeded
+input at RTT 0 and at RTT 120 +-20 ms, ~1,100 rollbacks per side):
+
+| build | frames that differ from the run without rollbacks | bar reversals in 20 s |
+|---|---|---|
+| without rollbacks (RTT 0) | -- | 2 (the KO light at the round's end) |
+| cut as before | 116 of 1,196 | 15 |
+| `T5_RB_CUT=none` (no vtable cut) | 0 | 2 |
+| the cut without `0x1357A0` (1.1.9) | 0 | 2 |
+
+Cost: re-simulated frames 1.10-1.12 ms of game time against 1.09-1.12 before; the displayed frame time p99
+stayed at 18.5 / 19.0 ms (the whole cut off: 4.0 ms and 26.5 ms). 0 mismatching frames in every run; the cut
+never changed the gameplay hash, and it is local to each PC, so 1.1.9 plays 1.1.8 the same as before.

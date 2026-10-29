@@ -47,10 +47,27 @@ part is in the README's status table.
 
 - **The European PSN release builds and plays offline** (TEKKEN 5 DARK RESURRECTION, NPEA00019 v01.00, with its .rap): BUILD GAME takes it next to the US package; its Arcade, Ghost and VS battles, with sound and movies. It plays offline only for now -- online play for it comes in a later update (the Build tab, the Online tab and "Check my problem" say so); European and US games are never matched (other build ID). The US version is unchanged. docs/EU.md.
 
+### Game
+- Phantom DirectInput pad (a second player pressing Up or buttons by itself, ports flipping): a DirectInput
+  device gets a port only after it has read well for 1 s; one lost 3 times within 30 s, each time soon after
+  it was found, is ignored until it has been gone for 5 s (one log line); a lost device is dropped before the
+  rescan; buttons held when a device gets its port count only after they were released (ps3recomp patch 0087).
+- Online: the HP bars no longer flicker when the ping is unsteady. After a hit, the orange part of a bar stalled
+  and stepped back at every rollback, because the re-simulated frames skipped the pass that drains it (the draw cut,
+  `src/rollback/rb_icall.cpp`). Now the bars look the same as in a match without rollbacks, frame for frame. This
+  costs ~0.02 ms per re-simulated frame and does not change the netplay sync.
+- `controls.ini`: a key given twice in a section, or a section given twice, is reported in the log with both
+  line numbers (patch 0087).
+
 ### Tests
 - `tests/launcher_challenges_click.py`: four real launcher processes in a real Tk main loop against a local lobby
   server; clicks on rows, headings, buttons (challenge, cancel, accept, sort) and checks both sides.
 - `lobby/tests/test_challenges.py`; `tests/i18n_layout.py` walks the open challenges, the sorted lists and the split board.
+- `tests/test_pad_flap.py` (`tests/c/pad_flap_test.c`): a fake DirectInput with a real stick and a phantom
+  that flaps, through the real hot-plug and sampler threads.
+- `tools/hp_bar_check.py`: the HP bars of a rollback pair at RTT 120 +-20 ms against the same match without
+  rollbacks, frame for frame (before: 116 of 1,196 frames differed; now 0).
+
 
 ## v1.1.8 (2026-10-28)
 

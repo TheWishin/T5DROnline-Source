@@ -1,0 +1,380 @@
+diff --git a/libs/input/pad_host_win32.c b/libs/input/pad_host_win32.c
+index c5539cf..2c7ed2c 100644
+--- a/libs/input/pad_host_win32.c
++++ b/libs/input/pad_host_win32.c
+@@ -280,8 +280,8 @@ static void mask_names(u16 m, char* out, size_t cap)
+ 
+ #define INI_MAX_KV  768
+ #define INI_MAX_SEC 96
+-typedef struct { char key[40]; char val[200]; } IniKV;
+-typedef struct { char name[48]; int first, count; } IniSec;
++typedef struct { char key[40]; char val[200]; int line; } IniKV;
++typedef struct { char name[48]; int first, count, line; } IniSec;
+ static IniKV  g_kv[INI_MAX_KV];
+ static IniSec g_sec[INI_MAX_SEC];
+ static int    g_nkv, g_nsec;
+@@ -295,22 +295,30 @@ static char* trim(char* s)
+     return s;
+ }
+ 
++static const IniSec* ini_section(const char* name);
++
+ static int ini_load(const char* path)
+ {
+     FILE* f = fopen(path, "rb");
+     if (!f) return 0;
+     char line[512];
+     IniSec* cur = NULL;
++    int ln = 0;
+     while (fgets(line, sizeof line, f)) {
++        ln++;
+         char* s = trim(line);
+         if (!*s || *s == ';' || *s == '#') continue;
+         if (*s == '[') {
+             char* e = strchr(s, ']');
+             if (!e || g_nsec >= INI_MAX_SEC) { cur = NULL; continue; }
+             *e = 0;
++            const IniSec* first = ini_section(trim(s + 1));
++            if (first)        /* ini_section finds the first one only (patch 0087: say so) */
++                printf("[pad] %s: [%s] appears twice (lines %d and %d) -- the second one is not used;"
++                       " put its lines into the first\n", path, first->name, first->line, ln);
+             cur = &g_sec[g_nsec++];
+             snprintf(cur->name, sizeof cur->name, "%s", trim(s + 1));
+-            cur->first = g_nkv; cur->count = 0;
++            cur->first = g_nkv; cur->count = 0; cur->line = ln;
+             continue;
+         }
+         char* eq = strchr(s, '=');
+@@ -324,9 +332,26 @@ static int ini_load(const char* path)
+         IniKV* kv = &g_kv[g_nkv++];
+         snprintf(kv->key, sizeof kv->key, "%s", trim(s));
+         snprintf(kv->val, sizeof kv->val, "%s", trim(v));
++        kv->line = ln;
+         cur->count++;
+     }
+     fclose(f);
++    /* Patch 0087: a key given twice in a section -- the last one wins (ini_get, and a binding line replaces
++     * the target's earlier one). A player's "tap_latch = 0" at the top of [general] lost to the file's own
++     * "tap_latch = 1" further down without a word: one line per repeated key, naming the value used. */
++    for (int si = 0; si < g_nsec; si++) {
++        const IniSec* sec = &g_sec[si];
++        for (int i = sec->first; i < sec->first + sec->count; i++) {
++            int earlier = 0, later = -1;
++            for (int k = sec->first; k < i; k++) if (name_eq(g_kv[k].key, g_kv[i].key)) earlier = 1;
++            if (earlier) continue;                         /* reported with its first occurrence */
++            for (int k = i + 1; k < sec->first + sec->count; k++) if (name_eq(g_kv[k].key, g_kv[i].key)) later = k;
++            if (later < 0) continue;
++            printf("[pad] %s: [%s] %s is given more than once (line %d: \"%s\", line %d: \"%s\") -- the last one"
++                   " is used: %s = %s\n", path, sec->name, g_kv[i].key, g_kv[i].line, g_kv[i].val, g_kv[later].line,
++                   g_kv[later].val, g_kv[later].key, g_kv[later].val);
++        }
++    }
+     return 1;
+ }
+ 
+@@ -891,6 +916,14 @@ typedef struct {
+     struct HidDev* hid;        /* DEV_HID: the reader */
+     int  hid_failed;           /* DEV_HID: its death was counted (hid_fail_add) */
+     WCHAR path[MAX_PATH];      /* DEV_DINPUT / DEV_HID: HID device path ("" = unknown) */
++    /* Patch 0087 (DEV_DINPUT): a device is on probation from when it was found until it read well for
++     * DI_PROBATION_MS -- read by the hot-plug thread, on no port, so one that is lost again at once never
++     * makes a port flip; and the inputs that were down at its first read on a port are ignored until they
++     * are released (hold), so its first reads cannot be presses. */
++    LONGLONG found_t;          /* qpc when it was created */
++    int  probation;
++    int  hold_set;
++    u32  hold[(CID_COUNT + 31) / 32];
+ } PadDev;
+ 
+ static PadDev   g_dev[MAX_DEVS];
+@@ -1571,11 +1604,94 @@ static BOOL CALLBACK di_axis_cb(LPCDIDEVICEOBJECTINSTANCEW obj, LPVOID ctx)
+     return DIENUM_CONTINUE;
+ }
+ 
++/* Patch 0087: DirectInput devices that are lost again soon after they were found. A Razer Panthera PS4 in
++ * PS4 mode (1532:0401) showed two DirectInput devices of the same name: the stick, and one that failed its
++ * reads at once and was found again every ~0.5 s -- port 2 flipped disconnected / connected ~200 times
++ * and its first reads reached the menus as presses (the Practice menu's TRAINING DUMMY option changed on
++ * its own, focused or not). A loss within DI_FLAP_LIFE_MS of being found is a flap; DI_FLAP_N flaps within
++ * DI_FLAP_WINDOW_MS put the device (its instance GUID, or its HID path) in quarantine: never created
++ * again, one log line. Forgotten when it has been gone from the device list for DI_FLAP_FORGET_MS
++ * (unplugged), like g_hid_fail for the HID path. Hot-plug thread / init only. */
++#ifndef DI_PROBATION_MS
++  #define DI_PROBATION_MS    1000
++#endif
++#ifndef DI_FLAP_LIFE_MS
++  #define DI_FLAP_LIFE_MS    10000
++#endif
++#ifndef DI_FLAP_WINDOW_MS
++  #define DI_FLAP_WINDOW_MS  30000
++#endif
++#ifndef DI_FLAP_FORGET_MS
++  #define DI_FLAP_FORGET_MS  5000
++#endif
++#define DI_FLAP_N   3
++#define DI_FLAP_MAX 8
++typedef struct {
++    int used, n, quarantined, seen;
++    GUID inst;
++    WCHAR path[MAX_PATH];
++    LONGLONG t[DI_FLAP_N];     /* the last flaps, newest last */
++    LONGLONG absent_t;         /* first scan that did not list it (0 = listed) */
++} DiFlap;
++static DiFlap g_di_flap[DI_FLAP_MAX];
++
++static DiFlap* di_flap_find(const GUID* inst, const WCHAR* path)
++{
++    for (int i = 0; i < DI_FLAP_MAX; i++) {
++        DiFlap* e = &g_di_flap[i];
++        if (!e->used) continue;
++        if ((inst && IsEqualGUID(inst, &e->inst)) || (path && path[0] && !_wcsicmp(path, e->path))) return e;
++    }
++    return NULL;
++}
++
++/* d (DEV_DINPUT) is being dropped as lost: a flap if it was found a short while ago. Lock held. */
++static void di_flap_note(const PadDev* d, LONGLONG now)
++{
++    if (now - d->found_t >= qpc_from_us((u64)DI_FLAP_LIFE_MS * 1000u)) return;
++    DiFlap* e = di_flap_find(&d->inst, d->path);
++    if (!e) {
++        int o = 0;
++        for (int i = 0; i < DI_FLAP_MAX; i++) {
++            if (!g_di_flap[i].used) { o = i; break; }
++            if (!g_di_flap[i].quarantined && g_di_flap[i].t[DI_FLAP_N - 1] < g_di_flap[o].t[DI_FLAP_N - 1]) o = i;
++        }
++        e = &g_di_flap[o];
++        memset(e, 0, sizeof *e);
++        e->used = 1;
++    }
++    e->inst = d->inst;                        /* the newest instance GUID, should it change */
++    if (d->path[0]) wcscpy_s(e->path, MAX_PATH, d->path);
++    e->seen = 1; e->absent_t = 0;
++    memmove(e->t, e->t + 1, sizeof e->t[0] * (DI_FLAP_N - 1));
++    e->t[DI_FLAP_N - 1] = now;
++    if (e->n < DI_FLAP_N) e->n++;
++    const int burst = e->n >= DI_FLAP_N && now - e->t[0] < qpc_from_us((u64)DI_FLAP_WINDOW_MS * 1000u);
++    if (burst && !e->quarantined) {
++        e->quarantined = 1;
++        printf("[pad] DInput '%s' %04X:%04X lost %d times within %d s of being found -- ignored from now on"
++               " (a phantom or broken device; unplug it for %d s to try it again)\n", d->name, d->vid, d->pid,
++               DI_FLAP_N, DI_FLAP_WINDOW_MS / 1000, (DI_FLAP_FORGET_MS + 999) / 1000);
++    } else if (!e->quarantined && d->port < 0) {
++        printf("[pad] DInput '%s' %04X:%04X lost again %.1f s after it was found (%d of %d)\n", d->name, d->vid,
++               d->pid, qpc_to_us(now - d->found_t) / 1e6, e->n, DI_FLAP_N);
++    }
++}
++
+ static void di_scan(void)
+ {
+     if (!g_di) return;
+     EnumList list; list.n = 0;
+     g_di->lpVtbl->EnumDevices(g_di, DI8DEVCLASS_GAMECTRL, di_enum_cb, &list, DIEDFL_ATTACHEDONLY);
++    const LONGLONG now = qpc_now();
++    for (int i = 0; i < DI_FLAP_MAX; i++) {
++        DiFlap* e = &g_di_flap[i];
++        if (!e->used) continue;
++        e->seen = 0;
++        for (int k = 0; k < list.n; k++) if (IsEqualGUID(&list.inst[k].guidInstance, &e->inst)) e->seen = 1;
++        /* gone long enough: unplugged, a fresh start when it comes back */
++        if (e->absent_t && now - e->absent_t >= qpc_from_us((u64)DI_FLAP_FORGET_MS * 1000u)) memset(e, 0, sizeof *e);
++    }
+     /* Drop devices that are no longer attached. */
+     AcquireSRWLockExclusive(&g_dev_lock);
+     for (int i = 0; i < MAX_DEVS; i++) {
+@@ -1593,6 +1709,8 @@ static void di_scan(void)
+             if (g_dev[i].kind == DEV_DINPUT && !g_dev[i].lost && IsEqualGUID(&in->guidInstance, &g_dev[i].inst)) known = 1;
+         ReleaseSRWLockShared(&g_dev_lock);
+         if (known) continue;
++        DiFlap* q = di_flap_find(&in->guidInstance, NULL);
++        if (q && q->quarantined) continue;
+         IDirectInputDevice8W* di = NULL;
+         if (FAILED(g_di->lpVtbl->CreateDevice(g_di, &in->guidInstance, &di, NULL)) || !di) continue;
+         char name[80];
+@@ -1600,6 +1718,12 @@ static void di_scan(void)
+         u16 vid = LOWORD(in->guidProduct.Data1), pid = HIWORD(in->guidProduct.Data1);
+         WCHAR path[MAX_PATH];
+         di_path(di, path, MAX_PATH);
++        q = path[0] ? di_flap_find(NULL, path) : NULL;
++        if (q && q->quarantined) {                 /* the same device under a new instance GUID */
++            q->inst = in->guidInstance; q->seen = 1;
++            di->lpVtbl->Release(di);
++            continue;
++        }
+         if (!g_cfg.dinput_all && path_is_xinput(path)) {
+             static int said;
+             if (said++ < 8) printf("[pad] DInput '%s' %04X:%04X is an XInput device -- read through XInput\n", name, vid, pid);
+@@ -1649,10 +1773,18 @@ static void di_scan(void)
+         d->ps_trig = ps_model(vid, pid) != PSM_NONE;
+         snprintf(d->name, sizeof d->name, "%s", name);
+         wcscpy_s(d->path, MAX_PATH, path);
++        d->found_t = now; d->probation = 1;
+         ReleaseSRWLockExclusive(&g_dev_lock);
+         printf("[pad] found DInput '%s' %04X:%04X%s\n", name, vid, pid,
+                SUCCEEDED(ahr) ? "" : " (acquire failed, will retry)");
+     }
++    /* Flap entries of devices that are gone: forgotten once gone for DI_FLAP_FORGET_MS (unplugged). */
++    for (int i = 0; i < DI_FLAP_MAX; i++) {
++        DiFlap* e = &g_di_flap[i];
++        if (!e->used) continue;
++        if (e->seen) e->absent_t = 0;
++        else if (!e->absent_t) e->absent_t = now;
++    }
+ }
+ 
+ /* --- PlayStation pads: HID enumeration (hot-plug thread / init only) --- */
+@@ -1913,21 +2045,29 @@ static int spec_matches(const PortCfg* pc, const PadDev* d)
+ /* Drop lost devices, give unassigned ones a port. Called with the lock held
+  * exclusively. Pinned ports ([portN] device = ...) first, then the lowest
+  * free "auto" port, in order of arrival. */
+-static void assign_ports(void)
++static void drop_lost(int dinput_only)
+ {
++    const LONGLONG now = qpc_now();
+     for (int i = 0; i < MAX_DEVS; i++) {
+         PadDev* d = &g_dev[i];
+-        if (!d->kind || !d->lost) continue;
++        if (!d->kind || !d->lost || (dinput_only && d->kind != DEV_DINPUT)) continue;
+         char desc[128]; dev_describe(d, desc, sizeof desc);
+         if (d->port >= 0) printf("[pad] port %d: %s disconnected\n", d->port + 1, desc);
+-        else printf("[pad] %s disconnected\n", desc);
++        else if (!d->probation) printf("[pad] %s disconnected\n", desc);
++        if (d->kind == DEV_DINPUT) di_flap_note(d, now);
+         dev_release(d);
+     }
++}
++
++static void assign_ports(void)
++{
++    drop_lost(0);
+     if (!g_cfg.devices) return;
+     for (;;) {
+         PadDev* next = NULL;
+         for (int i = 0; i < MAX_DEVS; i++)
+-            if (g_dev[i].kind && g_dev[i].port < 0 && !g_dev[i].lost && (!next || g_dev[i].order < next->order))
++            if (g_dev[i].kind && g_dev[i].port < 0 && !g_dev[i].lost && !g_dev[i].probation &&
++                (!next || g_dev[i].order < next->order))
+                 next = &g_dev[i];
+         if (!next) break;
+         int port = -1;
+@@ -1962,26 +2102,58 @@ static UINT raw_device_count(void)
+     return n;
+ }
+ 
++/* DirectInput devices on probation: read here (they are on no port, nothing else reads them); one that read
++ * well and was found DI_PROBATION_MS ago gets a port at the next assign_ports. 1 = some are still on it. */
++static void di_probation_reads(void)
++{
++    const LONGLONG now = qpc_now();
++    AcquireSRWLockShared(&g_dev_lock);
++    for (int i = 0; i < MAX_DEVS; i++) {
++        PadDev* d = &g_dev[i];
++        if (d->kind != DEV_DINPUT || !d->probation || d->lost) continue;
++        RawState r;
++        if (!dev_read(d, &r)) continue;                   /* lost: dropped and counted by assign_ports */
++        if (now - d->found_t >= qpc_from_us((u64)DI_PROBATION_MS * 1000u)) d->probation = 0;
++    }
++    ReleaseSRWLockShared(&g_dev_lock);
++}
++
++/* One pass of the hot-plug thread; the milliseconds to wait before the next. */
++static DWORD hotplug_tick(UINT* last_raw)
++{
++    xi_scan();
++    di_probation_reads();
++    /* DInput enumeration is slow (milliseconds); only when the system's
++     * input device list changed, or when a device was lost. */
++    UINT raw = raw_device_count();
++    int lost = 0;
++    for (int i = 0; i < MAX_DEVS; i++)
++        if ((g_dev[i].kind == DEV_DINPUT && g_dev[i].lost) || (g_dev[i].kind == DEV_HID && (g_dev[i].lost || g_dev[i].hid->dead)))
++            lost = 1;
++    /* Lost DirectInput devices go before the scan, so one that just made its last flap is not created again
++     * (HID ones stay for hid_scan, which counts a dead reader of a pad still there). */
++    AcquireSRWLockExclusive(&g_dev_lock);
++    drop_lost(1);
++    ReleaseSRWLockExclusive(&g_dev_lock);
++    /* HID first: DirectInput then leaves the PlayStation pads it reads alone */
++    if ((g_cfg.dinput || g_cfg.hid) && (raw != *last_raw || lost)) { *last_raw = raw; hid_scan(); di_scan(); }
++    else if (g_cfg.hid && g_cfg.hid_fake[0]) hid_scan();       /* the fake pad's file may (re)appear */
++    AcquireSRWLockExclusive(&g_dev_lock);
++    assign_ports();
++    int probation = 0;
++    for (int i = 0; i < MAX_DEVS; i++) if (g_dev[i].kind == DEV_DINPUT && g_dev[i].probation) probation = 1;
++    ReleaseSRWLockExclusive(&g_dev_lock);
++    return probation ? 100 : 500;                              /* a found pad gets its port ~DI_PROBATION_MS later */
++}
++
+ static DWORD WINAPI hotplug_main(LPVOID arg)
+ {
+     (void)arg;
+     UINT last_raw = raw_device_count();
++    DWORD wait = 100;                                          /* the pads found at init are on probation */
+     for (;;) {
+-        if (WaitForSingleObject(g_hotplug_stop, 500) == WAIT_OBJECT_0) break;
+-        xi_scan();
+-        /* DInput enumeration is slow (milliseconds); only when the system's
+-         * input device list changed, or when a device was lost. */
+-        UINT raw = raw_device_count();
+-        int lost = 0;
+-        for (int i = 0; i < MAX_DEVS; i++)
+-            if ((g_dev[i].kind == DEV_DINPUT && g_dev[i].lost) || (g_dev[i].kind == DEV_HID && (g_dev[i].lost || g_dev[i].hid->dead)))
+-                lost = 1;
+-        /* HID first: DirectInput then leaves the PlayStation pads it reads alone */
+-        if ((g_cfg.dinput || g_cfg.hid) && (raw != last_raw || lost)) { last_raw = raw; hid_scan(); di_scan(); }
+-        else if (g_cfg.hid && g_cfg.hid_fake[0]) hid_scan();       /* the fake pad's file may (re)appear */
+-        AcquireSRWLockExclusive(&g_dev_lock);
+-        assign_ports();
+-        ReleaseSRWLockExclusive(&g_dev_lock);
++        if (WaitForSingleObject(g_hotplug_stop, wait) == WAIT_OBJECT_0) break;
++        wait = hotplug_tick(&last_raw);
+     }
+     return 0;
+ }
+@@ -2233,6 +2405,38 @@ static u8 axis_u8(s32 v) { int u = (v + 32768) >> 8; return (u8)(u < 0 ? 0 : u >
+ #define DIRS_LR (CELL_PAD_CTRL_LEFT | CELL_PAD_CTRL_RIGHT)
+ #define DIRS_UD (CELL_PAD_CTRL_UP | CELL_PAD_CTRL_DOWN)
+ 
++/* Patch 0087: a DirectInput device's first read on a port is its baseline, never a press: whatever is down
++ * in it (a button, a hat or axis direction -- a phantom's zeroed state reads as the hat up and both stick
++ * axes at their end) is ignored until it has been seen released, an axis held so reads centred, and the
++ * taps of that read are dropped. A player holding a button while plugging in presses it again. Port lock. */
++static void di_hold(PadDev* d, RawState* r)
++{
++    if (!d->hold_set) {
++        d->hold_set = 1;
++        memcpy(d->hold, r->bits, sizeof d->hold);
++        memset(r->tap, 0, sizeof r->tap);
++        int any = 0;
++        for (int w = 0; w < (CID_COUNT + 31) / 32; w++) any |= d->hold[w] != 0;
++        if (any) {
++            char sn[24] = "";
++            for (unsigned id = 0; id < CID_COUNT && !sn[0]; id++)
++                if ((d->hold[id >> 5] >> (id & 31)) & 1) source_name(CLS_DINPUT, (int)id, sn, sizeof sn);
++            printf("[pad] port %d %s: %s (and maybe more) down at its first read -- ignored until released\n",
++                   d->port + 1, d->name, sn);
++            fflush(stdout);
++        }
++    }
++    for (int w = 0; w < (CID_COUNT + 31) / 32; w++) {
++        d->hold[w] &= r->bits[w];
++        r->bits[w] &= ~d->hold[w];
++        r->tap[w] &= ~d->hold[w];
++    }
++    for (int a = 0; a < NAXES; a++) {               /* both directions of an axis sit in one word */
++        const unsigned id = CID_AXIS + (unsigned)a * 2;
++        if ((d->hold[id >> 5] >> (id & 31)) & 3) r->axis[a] = 0;
++    }
++}
++
+ /* Sample `port` now (devices, keyboard, file), merge into ps->last and, with
+  * the tap latch on, record the buttons that went down since the previous
+  * sample for every reader. Port lock held. Runs on the sampler thread every
+@@ -2255,6 +2459,7 @@ static void sample_locked(u32 port, PortState* ps, LONGLONG t0)
+             }
+             RawState r;
+             if (!dev_read(d, &r)) continue;
++            if (d->kind == DEV_DINPUT) di_hold(d, &r);
+             apply_table(&m, &d->bind, &r, d->kind == DEV_XINPUT ? CLS_XINPUT : CLS_DINPUT);
+             if (g_cfg.log >= 2) log_presses(d, &r);
+         }

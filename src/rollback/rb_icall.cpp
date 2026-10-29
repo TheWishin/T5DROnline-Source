@@ -54,7 +54,12 @@ const uint32_t kDrawCut[] = {
     0x00355C70, 0x00355B34, 0x003559E4, 0x00357F88,                 /* 16-byte packet moves / packet header */
     0x00389788, 0x00389820, 0x003898D0, 0x00389A88, 0x00389A0C,     /* packet builders */
     0x00389AA0, 0x0038988C, 0x00397AF8, 0x00354160, 0x00353E68,     /* packet builders, draw-list append */
-    0x00158D6C, 0x001357A0, 0x001EC6FC, 0x0009DC04, 0x00264220,     /* stage / effect / shadow draw passes (vtable targets; gameplay hash unchanged without them) */
+    0x00158D6C, 0x001EC6FC, 0x0009DC04, 0x00264220,                 /* stage / effect / shadow draw passes (vtable targets; gameplay hash unchanged without them) */
+    /* Not 0x001357A0 (1.1.9): it also advances the HUD's health bars -- the orange part that drains after a hit.
+     * Cut, a rollback put that animation back to the restored frame and the re-simulated frames did not move it
+     * on, so with an unsteady ping the drain stalled and stepped back (HP bars flickering). Running it costs
+     * ~0.02 ms per re-simulated frame (rollback pair RTT 120 +-20 ms: game 1.10 vs 1.09 ms) and the bars match a
+     * pair without rollbacks frame for frame (docs/ROLLBACK.md "HUD health bars"; tools/hp_bar_check.py). */
 };
 /* The draw thread's side of it (NU::Draw request manager, the thread that
  * turns the lists into GCM commands): its per-packet handlers, cut on every

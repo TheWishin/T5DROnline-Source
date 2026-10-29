@@ -10,12 +10,18 @@ part is in the README's status table.
   device gets a port only after it has read well for 1 s; one lost 3 times within 30 s, each time soon after
   it was found, is ignored until it has been gone for 5 s (one log line); a lost device is dropped before the
   rescan; buttons held when a device gets its port count only after they were released (ps3recomp patch 0087).
+- Online: the HP bars no longer flicker when the ping is unsteady. After a hit, the orange part of a bar stalled
+  and stepped back at every rollback, because the re-simulated frames skipped the pass that drains it (the draw cut,
+  `src/rollback/rb_icall.cpp`). Now the bars look the same as in a match without rollbacks, frame for frame. This
+  costs ~0.02 ms per re-simulated frame and does not change the netplay sync.
 - `controls.ini`: a key given twice in a section, or a section given twice, is reported in the log with both
   line numbers (patch 0087).
 
 ### Tests
 - `tests/test_pad_flap.py` (`tests/c/pad_flap_test.c`): a fake DirectInput with a real stick and a phantom
   that flaps, through the real hot-plug and sampler threads.
+- `tools/hp_bar_check.py`: the HP bars of a rollback pair at RTT 120 +-20 ms against the same match without
+  rollbacks, frame for frame (before: 116 of 1,196 frames differed; now 0).
 
 ## v1.1.8 (2026-10-28)
 

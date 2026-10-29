@@ -321,6 +321,10 @@ class PositionClickTest(ti.Base if ti else unittest.TestCase):
         st["out"] = os.path.join(d, "native")
         st["language"] = lang
         mod = ti.load_launcher()
+        # the App sets the process-wide language (i18n.set_language): give English back, or every later test module of
+        # the same run reads German texts (1.1.9 gate: test_updater / test_update_e2e failed after this test in discover)
+        from t5lobby import i18n
+        self.addCleanup(i18n.set_language, "en")
         try:
             app = mod.App(offscreen=False, settings=st)
         except ti.tk.TclError as e:

@@ -46,9 +46,9 @@ class RelayRttsInTheListTest(Base):
         self.assertEqual(a.public()["relays"], {"usw": 25})
 
 
-def fake_match(a, b, rtt, path, ranked=False, delay=None):
+def fake_match(a, b, rtt, path, ranked=False, delay=None, casual_delay=None):
     from t5lobby import proto
-    return types.SimpleNamespace(players=[a, b], rtt=rtt, path=path, ranked=ranked,
+    return types.SimpleNamespace(players=[a, b], rtt=rtt, path=path, ranked=ranked, casual_delay=casual_delay,
                                  delay=proto.suggest_delay(rtt) if delay is None else delay)
 
 
@@ -184,6 +184,11 @@ class InputDelayTest(Base):
         self.srv.cfg.ranked_input_delay = 5
         self.assertEqual(d(fake_match(a, b, 160.0, "relay", ranked=True)), 5)   # (never lower than ranked's own)
         self.assertEqual(d(fake_match(a, b, 260.0, "relay", delay=3)), 3)       # never above the lockstep delay
+        # 1.1.9: an accepted challenge's input delay (the challenger's choice) for both, ping floor or not; the
+        # lockstep delay stays the ceiling; ranked ignores it
+        self.assertEqual(d(fake_match(a, b, 260.0, "relay", casual_delay=0)), 0)
+        self.assertEqual(d(fake_match(a, b, 80.0, "direct", casual_delay=2, delay=1)), 1)
+        self.assertEqual(d(fake_match(a, b, 80.0, "direct", ranked=True, casual_delay=0)), 5)
         self.srv.cfg.ping_delays = ""
         self.assertIsNone(d(fake_match(a, b, 400.0, "relay")))
 

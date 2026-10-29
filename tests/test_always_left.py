@@ -121,7 +121,10 @@ class Renderer(unittest.TestCase):
 
     def test_series_order(self):
         names = sorted(n for n in os.listdir(os.path.join(ROOT, "patches", "ps3recomp")) if n.endswith(".patch"))
-        self.assertEqual(names[-1], "0086-always-left.patch")
+        # in the series, its number taken once (the Mac patches 0100-0102 come later)
+        self.assertIn("0086-always-left.patch", names)
+        nums = [n[:4] for n in names]
+        self.assertEqual(len(nums), len(set(nums)), "a patch number used twice")
 
 
 class Wiring(unittest.TestCase):

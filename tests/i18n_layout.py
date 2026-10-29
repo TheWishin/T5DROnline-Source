@@ -421,6 +421,22 @@ RIVAL = {"name": "Rival_Long_Name", "guest": False, "rating": 1520, "rank": "Lor
          "tier": 31}
 
 
+def remove_when_free(path, seconds=10.0):
+    """os.remove, waiting while another thread still has the file open: the check window's own check reads
+    build.log in a worker thread, and on a slow PC (a 2-processor CI runner, 1.1.9) it is not done yet when the
+    walk moves on -- Windows then refuses the removal (WinError 32)."""
+    end = time.monotonic() + seconds
+    while True:
+        try:
+            os.remove(path)
+            return
+        except PermissionError:
+            if time.monotonic() > end:
+                raise
+            gc.collect()
+            time.sleep(0.1)
+
+
 class Walk:
     """The launcher built (withdrawn) in one language at one display scale, taken through its screens. For each
     screen: what is cut off (problems), the natural width against the window's, texts the catalog lacks and
@@ -834,7 +850,7 @@ class Walk:
             self.screen(name, cd.top)
             cd.close()
         for p in (os.path.join(d, "build.log"), os.path.join(d, "logs", "game-1.log")):
-            os.remove(p)
+            remove_when_free(p)
         import updater
         up = updater.Updater(app)
         cancel_timers(app)

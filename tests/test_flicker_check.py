@@ -6,6 +6,11 @@ import unittest
 
 from helpers import load_tool
 
+try:
+    import numpy as np
+except ImportError:            # the dark-frame count needs numpy (a CI runner may not have it)
+    np = None
+
 fc = load_tool("flicker_check")
 
 
@@ -17,6 +22,7 @@ def ppm(path, w, h, rgb_rows):
             f.write(bytes(rgb_rows(y)) * w)
 
 
+@unittest.skipIf(np is None, "numpy not installed")
 class DarkFrames(unittest.TestCase):
     def setUp(self):
         self.d = tempfile.mkdtemp()

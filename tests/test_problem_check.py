@@ -142,8 +142,11 @@ class PcTest(Base):
     def test_command_line(self):
         import contextlib
         import io
+        from unittest import mock
+        # this PC's facts and firewall stand in fixed (a 2-processor CI runner is itself a finding: "few cores")
+        real = pc.check
         buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
+        with contextlib.redirect_stdout(buf),                 mock.patch.object(pc, "check", lambda out: real(out, FOUR, no_fw)):
             self.assertEqual(pc.main(["--out", self.out]), 0)
         self.assertIn("No known problem found.", buf.getvalue())
 

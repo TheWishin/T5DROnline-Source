@@ -102,6 +102,9 @@ struct Timeline {
     void damage(int at, int d) { for (int t = at; t < (int)f.size(); t++) f[(size_t)t].hp -= d; }
     void input(int from, int to, uint16_t m) { for (int t = from; t <= to && t < (int)f.size(); t++) f[(size_t)t].input = m; }
     void act_from(int t) { for (int i = t; i < (int)f.size(); i++) f[(size_t)i].can_act = true; }
+    /* standing idle (+0x168 0x8001) with the hips at y until frame `to` */
+    void stand_until(int to, float y) { for (int t = 0; t < to; t++) { f[(size_t)t].stand = true; f[(size_t)t].y = y; } }
+    void height(int from, int to, float y) { for (int t = from; t <= to && t < (int)f.size(); t++) f[(size_t)t].y = y; }
 };
 
 struct Run {
@@ -114,7 +117,9 @@ static Run run(const Timeline& p1, const Timeline& p2)
     Run r;
     for (size_t t = 0; t < p1.f.size(); t++) {
         Sample s[2] = { p1.f[t], p2.f[t] };
-        if (tr.frame(s)) { r.results.push_back(tr.last()); r.at.push_back((int)t); }
+        const int n = tr.frame(s);
+        for (int i = 0; i < n; i++) { r.results.push_back(tr.result(i)); r.at.push_back((int)t); }
+        if (n) CHECK(tr.last().startup == tr.result(n - 1).startup && tr.last().kind == tr.result(n - 1).kind);
     }
     return r;
 }
@@ -221,19 +226,27 @@ static void test_whiff_and_walk()
 
 static void test_string()
 {
-    /* 1,2 on block: the second hit cancels the first before the attacker could
-     * act; the result is the last hit's advantage with the first hit's startup */
+    /* 1,2 on block: the second hit (2 pressed at 15) cancels the first before the attacker
+     * could act. Each hit is a line with its own startup (1.1.9; before, one line with the
+     * first hit's startup for the whole string): the 1 i10 without a number of its own (the
+     * string went on), the 2 i10 from its own animation (20, active 29) with the advantage */
     Timeline a(120), d(120);
     a.move(10, 7, 20); a.active(19, 19);
+    a.input(15, 15, kTriangle);
     a.move(20, 0xC, 60); a.active(29, 29);
     d.move(20, 0, 30);
     d.move(30, 0, 48);
     const Run r = run(a, d);
-    CHECK_EQ(r.results.size(), 1);
-    if (r.results.size() == 1) {
+    CHECK_EQ(r.results.size(), 2);
+    if (r.results.size() == 2) {
         CHECK_EQ(r.results[0].startup, 10);
         CHECK(r.results[0].kind == Kind::Block);
-        CHECK_EQ(r.results[0].adv, -12);
+        CHECK(r.results[0].no_adv);
+        CHECK_EQ(r.at[0], 30);
+        CHECK_EQ(r.results[1].startup, 10);
+        CHECK(r.results[1].kind == Kind::Block);
+        CHECK(!r.results[1].no_adv);
+        CHECK_EQ(r.results[1].adv, -12);
     }
     /* the attacker mashing the same jab after it could act: two exchanges, +3 each */
     Timeline m(140), g(140);
@@ -260,7 +273,8 @@ static void test_down_and_counter()
         CHECK_EQ(r.at[0], 50 + (int)Tracker::kDownAfter + 1);
     }
     /* a sweep or a throw: the defender lies on the ground (+0x168 0x8004..) and can
-     * act again soon after, still lying: a knockdown, no number */
+     * act again soon after, still lying: a knockdown, no number -- shown as soon as it lies
+     * (40), not when it is up again */
     Timeline k(150), l(150);
     k.move(10, 0x7, 50); k.active(25, 26);
     l.damage(25, 30); l.move(26, 0x10000, 40);
@@ -268,7 +282,7 @@ static void test_down_and_counter()
     l.move(40, 0, 55);
     const Run r3 = run(k, l);
     CHECK_EQ(r3.results.size(), 1);
-    if (r3.results.size() == 1) { CHECK(r3.results[0].kind == Kind::Down); CHECK_EQ(r3.results[0].startup, 16); CHECK_EQ(r3.at[0], 55); }
+    if (r3.results.size() == 1) { CHECK(r3.results[0].kind == Kind::Down); CHECK_EQ(r3.results[0].startup, 16); CHECK_EQ(r3.results[0].active_end, 17); CHECK_EQ(r3.at[0], 40); }
     /* a counter hit: the defender was in its own attack when hit */
     Timeline c(100), e(100);
     c.move(10, 7, 35); c.active(19, 19);
@@ -430,6 +444,177 @@ static void test_cancellable_taunt()
         CHECK_EQ(r.results.size(), 2);
         if (r.results.size() == 2) { CHECK(r.results[1].kind == Kind::Block); CHECK_EQ(r.results[1].adv, 14); }
     }
+}
+
+/* ---- 1.1.9: knockdowns, string hits, active windows (players' reports 2026-10-28) ----------------
+ * Shaped like local-lockstep traces (Nina vs Jin, Devil Jin vs Jin, Jin vs Jin, NPUB30009 v01.00):
+ * +0x734 is the hips' height, ~1,030 for Jin standing. */
+
+/* Nina's d/f+2 launches Jin (traced: active 743-744 = i15~16, Jin airborne from 744, his hips at 2,375
+ * at the top, back on the ground at 792). Mashing all four buttons he tech-rolls: new animations of
+ * his reaction (class 0x20000 / 0x30000, never "lying" in +0x168) and able to act 81 frames after the
+ * hit. The overlay said "HIT +24" (the tech roll's first animation counted as a move he started) or,
+ * after the tech roll, a big number; it is a knockdown, shown at once. */
+static void test_launch_and_tech_roll()
+{
+    Timeline a(200), d(200);
+    a.input(9, 9, kDown | kRight | kTriangle);
+    a.move(10, 0xC, 50); a.active(24, 25);          /* i15~16, Nina can act from 50 */
+    d.stand_until(25, 1030.0f);
+    d.damage(24, 12);
+    d.move(25, 0x10000, 106);                       /* the air reaction */
+    for (int t = 26; t < 60; t++) d.height(t, t, 1030.0f + (float)(t - 25) * 40.0f);   /* up ... */
+    d.height(60, 73, 1500.0f); d.height(74, 75, 185.0f);                                /* ... down */
+    for (int t = 69; t < 106; t += 2) d.input(t, t, kSquare | kTriangle | kCross | kCircle);
+    d.f[75].new_move = true; for (int t = 75; t < 106; t++) d.f[(size_t)t].cls = 0x20000;   /* the tech roll */
+    d.height(76, 93, 400.0f);
+    d.f[94].new_move = true; for (int t = 94; t < 106; t++) d.f[(size_t)t].cls = 0x30000;
+    d.height(94, 199, 900.0f);
+    for (int t = 94; t < 106; t++) d.f[(size_t)t].can_act = true;   /* the idle bit, not the end */
+    const Run r = run(a, d);
+    CHECK_EQ(r.results.size(), 1);
+    if (r.results.size() == 1) {
+        CHECK(r.results[0].kind == Kind::Down);
+        CHECK_EQ(r.results[0].startup, 15);
+        CHECK_EQ(r.results[0].active_end, 16);
+        CHECK(r.at[0] < 40);                        /* in the air, not after the roll */
+    }
+    /* the same without heights (none read): a tech roll's animations are still no move of the
+     * defender's: the advantage is from the reaction's real end (106), not from the roll's first
+     * animation -- and that is a knockdown nobody saw, so the number stays (the old fallback) */
+    Timeline d2 = d;
+    for (auto& s : d2.f) { s.y = 0; s.stand = false; }
+    const Run r2 = run(a, d2);
+    CHECK_EQ(r2.results.size(), 1);
+    if (r2.results.size() == 1) { CHECK(r2.results[0].kind == Kind::Hit); CHECK_EQ(r2.results[0].adv, 106 - 50); }
+}
+
+/* Crouching is +0x168 0x8002 (traced), not lying: a low blocked crouching is a block with its number.
+ * training.cpp reads "down" only from 0x8004 on; the hips at ~840 of 1,030 are no knockdown either. */
+static void test_crouch_block()
+{
+    Timeline a(120), d(120);
+    a.move(10, 0xF, 59); a.active(25, 27);
+    d.stand_until(10, 1030.0f);
+    d.height(10, 119, 840.0f);
+    d.move(26, 0, 44);
+    const Run r = run(a, d);
+    CHECK_EQ(r.results.size(), 1);
+    if (r.results.size() == 1) { CHECK(r.results[0].kind == Kind::Block); CHECK_EQ(r.results[0].adv, -15); CHECK_EQ(r.results[0].active_end, 18); }
+}
+
+/* Devil Jin's 1,2,3 on hit (traced, frames - 720): the 1 from 10, its active frame 19 opens an animation
+ * of its own, the 2 from 20 (active 29), the 3 from 30 (active 54-60, it hits in its 5th active frame,
+ * 58: Jin had been able to act at 56-57), Devil Jin can act from 84, Jin's hips below half his height
+ * from 91. Each hit its own startup: i10, i10, i25~31 KND (the overlay said i10 for all of them). */
+static void test_dj_string()
+{
+    Timeline a(160), d(160);
+    a.input(9, 9, kSquare); a.input(15, 15, kTriangle); a.input(21, 21, kCross);
+    a.move(10, 5, 84);
+    a.f[19].new_move = true; a.active(19, 19);
+    a.f[20].new_move = true; a.active(29, 29);
+    a.f[30].new_move = true; a.active(54, 60);
+    d.stand_until(19, 1030.0f); d.height(19, 159, 1000.0f);
+    d.damage(19, 6); d.move(20, 0x10000, 56);
+    d.damage(29, 8); d.f[30].new_move = true; for (int t = 30; t < 59; t++) d.f[(size_t)t].cls = 0x20000;
+    d.f[56].end_window = true; d.f[57].end_window = true; d.f[56].can_act = true; d.f[57].can_act = true;
+    d.damage(58, 25); d.f[59].new_move = true;
+    for (int t = 58; t < 160; t++) { d.f[(size_t)t].can_act = false; d.f[(size_t)t].cls = 0x30000; }
+    d.height(91, 159, 390.0f);
+    const Run r = run(a, d);
+    CHECK_EQ(r.results.size(), 3);
+    if (r.results.size() == 3) {
+        CHECK_EQ(r.results[0].startup, 10); CHECK(r.results[0].kind == Kind::Hit); CHECK(r.results[0].no_adv);
+        CHECK_EQ(r.results[1].startup, 10); CHECK(r.results[1].kind == Kind::Hit); CHECK(r.results[1].no_adv);
+        CHECK_EQ(r.results[2].startup, 25); CHECK_EQ(r.results[2].active_end, 31);
+        CHECK(r.results[2].kind == Kind::Down); CHECK_EQ(r.at[2], 91);
+    }
+    /* 1,2 alone on hit: i10 (no number), then i10 with the advantage of the 2 */
+    Timeline a2(120), d2(120);
+    a2.input(9, 9, kSquare); a2.input(15, 15, kTriangle);
+    a2.move(10, 5, 52);
+    a2.f[19].new_move = true; a2.active(19, 19);
+    a2.f[20].new_move = true; a2.active(29, 29);
+    d2.damage(19, 6); d2.move(20, 0x10000, 30);
+    d2.damage(29, 8); d2.move(30, 0x20000, 60);
+    const Run r2 = run(a2, d2);
+    CHECK_EQ(r2.results.size(), 2);
+    if (r2.results.size() == 2) {
+        CHECK(r2.results[0].no_adv); CHECK_EQ(r2.results[0].startup, 10);
+        CHECK(!r2.results[1].no_adv); CHECK_EQ(r2.results[1].startup, 10); CHECK_EQ(r2.results[1].adv, 8);
+        CHECK(r2.results[1].kind == Kind::Hit);
+    }
+    /* a string's first hit into the air, the second blocked: WHIFF (no total), then the block */
+    Timeline a3(120), d3(120);
+    a3.input(9, 9, kSquare); a3.input(15, 15, kTriangle);
+    a3.move(10, 5, 55);
+    a3.f[19].new_move = true; a3.active(19, 19);
+    a3.f[20].new_move = true; a3.active(29, 29);
+    d3.move(30, 0, 50);
+    const Run r3 = run(a3, d3);
+    CHECK_EQ(r3.results.size(), 2);
+    if (r3.results.size() == 2) {
+        CHECK(r3.results[0].kind == Kind::Whiff); CHECK(r3.results[0].no_adv); CHECK_EQ(r3.at[0], 20);
+        CHECK(r3.results[1].kind == Kind::Block); CHECK_EQ(r3.results[1].adv, -5);
+    }
+}
+
+/* Jin's d/f+1 (traced: active in its 13th and 14th frame): Jin walking into it is hit in the 14th.
+ * The startup is the first active frame and the window is shown: i13~14 (the overlay showed one
+ * number). A single active frame stays i10. */
+static void test_active_window()
+{
+    Timeline a(100), d(100);
+    a.move(10, 0x9, 50); a.active(22, 23);
+    d.damage(23, 10); d.move(24, 0x10000, 49);
+    const Run r = run(a, d);
+    CHECK_EQ(r.results.size(), 1);
+    if (r.results.size() == 1) { CHECK_EQ(r.results[0].startup, 13); CHECK_EQ(r.results[0].active_end, 14); CHECK_EQ(r.results[0].adv, -1); }
+    Timeline w(100), i(100);
+    w.move(10, 0x9, 50); w.active(22, 23);
+    const Run rw = run(w, i);
+    CHECK_EQ(rw.results.size(), 1);
+    if (rw.results.size() == 1) { CHECK(rw.results[0].kind == Kind::Whiff); CHECK_EQ(rw.results[0].startup, 13); CHECK_EQ(rw.results[0].active_end, 14); }
+    char lead[64], tail[16];
+    Tone tone;
+    Result x; x.startup = 13; x.active_end = 14; x.kind = Kind::Block; x.adv = -1;
+    format_result(x, false, lead, sizeof lead, tail, sizeof tail, &tone);
+    CHECK(!strcmp(lead, "P1  i13~14  BLOCK")); CHECK(!strcmp(tail, "-1")); CHECK(tone == Tone::Red);
+    x.active_end = 13; x.kind = Kind::Hit; x.adv = 9; x.attacker = 1;
+    format_result(x, false, lead, sizeof lead, tail, sizeof tail, &tone);
+    CHECK(!strcmp(lead, "P2  i13  HIT")); CHECK(!strcmp(tail, "+9")); CHECK(tone == Tone::Green);
+    x.kind = Kind::Down; x.counter = true; x.startup = 15; x.active_end = 16;
+    format_result(x, false, lead, sizeof lead, tail, sizeof tail, &tone);
+    CHECK(!strcmp(lead, "P2  i15~16  COUNTER HIT")); CHECK(!strcmp(tail, "KND"));
+    format_result(x, true, lead, sizeof lead, tail, sizeof tail, &tone);
+    CHECK(!strcmp(lead, "P2  i15~16  KONTER")); CHECK(!strcmp(tail, "KND"));
+    x.kind = Kind::Hit; x.counter = false; x.no_adv = true;
+    format_result(x, true, lead, sizeof lead, tail, sizeof tail, &tone);
+    CHECK(!strcmp(lead, "P2  i15~16  TREFFER")); CHECK(!strcmp(tail, ""));
+    x.kind = Kind::Whiff; x.no_adv = false; x.total = 25; x.startup = 10; x.active_end = 10;
+    format_result(x, false, lead, sizeof lead, tail, sizeof tail, &tone);
+    CHECK(!strcmp(lead, "P2  i10  WHIFF")); CHECK(!strcmp(tail, "25F")); CHECK(tone == Tone::Grey);
+    x.startup = 0;
+    format_result(x, false, lead, sizeof lead, tail, sizeof tail, &tone);
+    CHECK(!strcmp(lead, "P2  WHIFF"));
+}
+
+/* T5_TRAINING_POS: top as before; bottom inside the 720-unit canvas, nothing overlapping */
+static void test_overlay_layout()
+{
+    const float rh = 18.0f;
+    const Layout top = overlay_layout(false, 14, 3, rh);
+    CHECK_EQ(top.hist_y, 190); CHECK_EQ(top.results_y, 176); CHECK_EQ(top.status_y, 176 + 54 + 14);
+    for (int rows = 4; rows <= 24; rows++)
+        for (int n = 1; n <= 3; n++) {
+            const Layout b = overlay_layout(true, rows, n, rh);
+            CHECK(b.hist_y + rh * rows + 4 <= 720 - 16);                        /* above the edge */
+            CHECK(b.hist_y - 4 >= 0);
+            CHECK_EQ(b.results_y + rh * n, b.hist_y + rh * rows);              /* both end on one line */
+            CHECK(b.status_y + rh + 4 <= b.results_y - 4 - rh * (3 - n));       /* above three lines */
+            CHECK(b.status_y > 360);
+        }
 }
 
 /* ---- practice tools ----------------------------------------------------------------- */
@@ -880,6 +1065,11 @@ int main()
     test_special_hit_reaction();
     test_two_animation_move();
     test_cancellable_taunt();
+    test_launch_and_tech_roll();
+    test_crouch_block();
+    test_dj_string();
+    test_active_window();
+    test_overlay_layout();
     test_combos();
     test_dummy();
     test_recorder();

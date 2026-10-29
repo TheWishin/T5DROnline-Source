@@ -253,6 +253,21 @@ class LauncherSettingTest(unittest.TestCase):
         self.assertEqual((env["T5_TRAINING_ALL"], env["T5_TRAINING_ONLINE"]), ("1", "1"))
         self.assertIn(env["T5_TRAINING_LANG"], ("de", "en"))
 
+    def test_display_position(self):
+        # top is the default; bottom reaches the game as T5_TRAINING_POS; junk falls back to top
+        self.assertEqual(self.settings()["training_pos"], "top")
+        self.assertEqual(self.settings().env_overrides()["T5_TRAINING_POS"], "top")
+        self.assertEqual(self.settings(training_pos="bottom").env_overrides()["T5_TRAINING_POS"], "bottom")
+        self.assertNotIn("T5_TRAINING_POS", self.settings(training="off").env_overrides())
+        path = os.path.join(self.tmp.name, "launcher.json")
+        with open(path, "w") as f:
+            f.write('{"training_pos": "left"}')
+        self.assertEqual(self.core.Settings(path)["training_pos"], "top")
+        from t5lobby import i18n_de
+        for label in self.core.TRAINING_POS.values():
+            self.assertIn(label, i18n_de.MESSAGES)
+        self.assertIn("Position:", i18n_de.MESSAGES)
+
     def test_unknown_saved_value_falls_back(self):
         path = os.path.join(self.tmp.name, "launcher.json")
         with open(path, "w") as f:
@@ -282,6 +297,68 @@ class LauncherSettingTest(unittest.TestCase):
             f.write('{"practice": "yes", "practice_dummy": "dance"}')
         s = self.core.Settings(path)
         self.assertEqual((s["practice"], s["practice_dummy"]), (True, "game"))
+
+
+try:
+    import test_i18n as ti
+except Exception:                      # no tkinter
+    ti = None
+
+
+@unittest.skipIf(ti is None or ti.tk is None, "no tkinter")
+class PositionClickTest(ti.Base if ti else unittest.TestCase):
+    """The real launcher (a Tk mainloop's widgets): the Position radio buttons in Settings, clicked."""
+
+    def _app(self, lang):
+        import shutil
+        import tempfile
+        import core
+        d = tempfile.mkdtemp(prefix="t5dr-trpos")
+        self.addCleanup(shutil.rmtree, d, True)
+        os.environ["T5_ONLINE_DIR"] = os.path.join(d, "user")
+        self.addCleanup(os.environ.pop, "T5_ONLINE_DIR", None)
+        st = core.Settings(os.path.join(d, "launcher.json"))
+        st["out"] = os.path.join(d, "native")
+        st["language"] = lang
+        mod = ti.load_launcher()
+        try:
+            app = mod.App(offscreen=False, settings=st)
+        except ti.tk.TclError as e:
+            self.skipTest(f"no display: {e}")
+        app.withdraw()
+        ti.cancel_timers(app)
+
+        def close():
+            ti.cancel_timers(app)
+            app.online.on_close()
+            app.destroy()
+        self.addCleanup(close)
+        return app
+
+    @staticmethod
+    def _radios(w, out):
+        for c in w.winfo_children():
+            if c.winfo_class() == "TRadiobutton":
+                out[str(c.cget("text"))] = c
+            PositionClickTest._radios(c, out)
+        return out
+
+    def _click(self, lang, bottom, top):
+        app = self._app(lang)
+        radios = self._radios(app, {})
+        self.assertIn(bottom, radios)
+        self.assertEqual(app.settings["training_pos"], "top")
+        radios[bottom].invoke()
+        self.assertEqual(app.settings["training_pos"], "bottom")
+        self.assertEqual(app.settings.env_overrides()["T5_TRAINING_POS"], "bottom")
+        radios[top].invoke()
+        self.assertEqual(app.settings.env_overrides()["T5_TRAINING_POS"], "top")
+
+    def test_click_bottom_and_back_english(self):
+        self._click("en", "Bottom", "Top")
+
+    def test_click_bottom_and_back_german(self):
+        self._click("de", "Unten", "Oben")
 
 
 class DocsTest(unittest.TestCase):

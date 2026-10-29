@@ -39,6 +39,12 @@ part is in the README's status table.
   withdraws the rest (`challenge_update` state `withdrawn`); the challenger's input delay is part of the challenge
   (feature `challenges2`).
 
+### Practice
+- Frame data: a string or juggle shows every hit on its own line (Devil Jin 1,2,3 was one line, or startup 0);
+  moves with several active frames show them (Jin d/f+1 is i13~14); a knockdown reads KND at once; a tech roll
+  or wake-up is no longer taken for the opponent's move (Nina d/f+2 showed HIT +24); a crouch is no knockdown.
+- New launcher setting Settings -> Training overlay -> Position: Top (default) or Bottom of the picture.
+
 ### Tests
 - `tests/launcher_challenges_click.py`: four real launcher processes in a real Tk main loop against a local lobby
   server; clicks on rows, headings, buttons (challenge, cancel, accept, sort) and checks both sides.

@@ -102,6 +102,7 @@ DEFAULTS = {
     "training": "frames",      # training overlay in Practice: off | inputs | frames (inputs + frame data), T5_TRAINING
     "training_all": False,     # ... also in the other offline modes (T5_TRAINING_ALL=1)
     "training_online": False,  # ... also online, this PC's own inputs only (T5_TRAINING_ONLINE=1)
+    "training_pos": "top",     # where the training display sits: top | bottom (T5_TRAINING_POS)
     "practice": True,          # practice tools in Practice (offline): SELECT combos, dummy, recordings, T5_PRACTICE
     "practice_dummy": "game",  # the dummy's behaviour at the start: game | block | crouch | walk | step, T5_PRACTICE_DUMMY
     "router_ports": True,      # online: forward the game's port on the router for a match (PCP / NAT-PMP / UPnP)
@@ -188,6 +189,8 @@ class Settings(dict):
                 self[key] = default
         if not isinstance(self["training"], str) or self["training"] not in TRAINING_MODES:
             self["training"] = "frames"
+        if not isinstance(self["training_pos"], str) or self["training_pos"] not in TRAINING_POS:
+            self["training_pos"] = "top"
         if not isinstance(self["practice"], bool):
             self["practice"] = True
         if not isinstance(self["practice_dummy"], str) or self["practice_dummy"] not in PRACTICE_DUMMY:
@@ -260,6 +263,7 @@ class Settings(dict):
                     env["T5_TRAINING_ALL"] = "1"
                 if self["training_online"]:
                     env["T5_TRAINING_ONLINE"] = "1"
+                env["T5_TRAINING_POS"] = self["training_pos"] if self["training_pos"] in TRAINING_POS else "top"
                 env["T5_TRAINING_LANG"] = i18n.resolve(self["language"]) if I18N else "en"
         # Practice tools (docs/TRAINING.md "Practice tools"): offline Practice only -- the game never uses
         # them online, in a replay or while spectating, whatever this says.
@@ -1321,6 +1325,10 @@ TRAINING_MODES = {       # English; t(label) where it is shown
     "off": N_("Off"),
     "inputs": N_("Inputs"),
     "frames": N_("Inputs + frame data"),
+}
+TRAINING_POS = {        # where the training display sits on the picture (T5_TRAINING_POS)
+    "top": N_("Top"),
+    "bottom": N_("Bottom"),
 }
 
 # Practice tools (docs/TRAINING.md "Practice tools"): in Practice, offline only, P1 holds SELECT and

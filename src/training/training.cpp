@@ -10,13 +10,14 @@
  * therefore unaffected: the game state is the same with the overlay on or off
  * (checked with rollback and lockstep pairs, docs/TRAINING.md).
  *
- * Environment (the launcher sets the first three from Settings -> Training):
+ * Environment (the launcher sets the first three and _POS from Settings -> Training):
  *   T5_TRAINING          off (default) | inputs | frames (inputs and frame data)
  *   T5_TRAINING_ALL=1    also outside Practice (every offline fight)
  *   T5_TRAINING_ONLINE=1 also in online matches: this PC's own inputs only, no
  *                        frame data
  *   T5_TRAINING_LANG     de | en (default: the Windows display language)
  *   T5_TRAINING_ROWS     input rows per player (4..24, default 14)
+ *   T5_TRAINING_POS      top (default) | bottom: where the lists sit on the screen
  *   T5_TRAINING_LOG      file: one line per frame-data result and per new input
  *                        row (tests)
  *   T5_TRAINING_STATS=1  every 600 fight frames: the main thread's time in this
@@ -74,7 +75,11 @@ Sample read_fighter(uint32_t b)
     s.cls      = rd32(b + 0x15C);
     s.hp       = (int16_t)rd16(b + 0x6BC);
     const uint32_t mv = rd32(b + 0x168) >> 16;
-    s.down     = (mv & 0xFF00) == 0x8000 && mv != 0x8001 && mv != 0x8000;
+    s.down     = (mv & 0xFF00) == 0x8000 && mv >= 0x8004;    /* lying; 0x8002 is crouching */
+    s.stand    = mv == 0x8001;
+    const uint32_t yu = rd32(b + 0x734);
+    memcpy(&s.y, &yu, 4);
+    if (!(s.y > 0 && s.y < 100000.0f)) s.y = 0;               /* not a height (NaN, garbage): not used */
     return s;
 }
 
@@ -84,6 +89,7 @@ struct Config {
     int  mode = kOff;
     bool all = false, online = false, de = false;
     int  rows = 14;
+    bool bottom = false;        /* T5_TRAINING_POS=bottom */
     bool stats = false;
     int  ab = 0;                /* T5_TRAINING_AB=<frames>: cost measurement, on and off in turns */
     bool online_game = false;   /* started for online play (T5_NET_MODE / T5_CTL_DIR): online rules all the time */
@@ -122,6 +128,7 @@ void init()
         const int n = atoi(r);
         if (n >= 4 && n <= 24) g_cfg.rows = n;
     }
+    if (const char* ps = getenv("T5_TRAINING_POS")) g_cfg.bottom = !_stricmp(ps, "bottom");
     if (const char* f = getenv("T5_TRAINING_LOG"); f && *f) g_cfg.log = fopen(f, "w");
     { const char* st = getenv("T5_TRAINING_STATS"); g_cfg.stats = st && *st == '1'; }
     if (const char* ab = getenv("T5_TRAINING_AB")) g_cfg.ab = atoi(ab) > 0 ? atoi(ab) : 0;
@@ -134,10 +141,10 @@ void init()
     }
     if (g_cfg.mode != kOff || t5_practice_on()) rsx_overlay_prepare();
     if (g_cfg.mode != kOff) {
-        fprintf(stderr, "[training] overlay: %s, %s%s (F2 switches it)\n",
+        fprintf(stderr, "[training] overlay: %s, %s%s %s of the screen (F2 switches it)\n",
                 g_cfg.mode == kFrames ? "inputs and frame data" : "inputs",
                 g_cfg.all ? "every offline fight" : "Practice",
-                g_cfg.online ? ", online: own inputs" : "");
+                g_cfg.online ? ", online: own inputs," : ",", g_cfg.bottom ? "bottom" : "top");
     }
 }
 
@@ -151,8 +158,6 @@ bool g_shown = false;           /* a list is published */
 bool g_in_fight = false;
 int g_f2_mode = -1;             /* F2's choice for this session (-1: the setting) */
 bool g_f2_down = false;
-
-const char* tr(const char* en, const char* de) { return g_cfg.de ? de : en; }
 
 #if defined(_WIN32)
 bool window_focused()
@@ -212,31 +217,18 @@ void draw_history(int p, float x, float y)
     }
 }
 
-void result_line(const Result& r, char* lead, size_t nl, char* tail, size_t nt, uint32_t* tail_col)
+uint32_t tone_rgba(Tone t)
 {
-    const char* who = r.attacker ? "P2" : "P1";
-    char su[16] = "";
-    if (r.startup > 0) snprintf(su, sizeof su, "  i%d", r.startup);
-    switch (r.kind) {
-    case Kind::Whiff:
-        snprintf(lead, nl, "%s%s  %s", who, su, tr("WHIFF", "DANEBEN"));
-        snprintf(tail, nt, "%dF", r.total);
-        *tail_col = kGrey;
-        return;
-    case Kind::Down:
-        snprintf(lead, nl, "%s%s  %s", who, su, tr("KNOCKDOWN", "AM BODEN"));
-        tail[0] = 0;
-        *tail_col = kWhite;
-        return;
-    default: break;
+    switch (t) {
+    case Tone::Grey: return kGrey;
+    case Tone::Green: return kGreen;
+    case Tone::Red: return kRed;
+    case Tone::Yellow: return kYellow;
+    default: return kWhite;
     }
-    const char* k = r.kind == Kind::Hit ? tr("HIT", "TREFFER") : r.kind == Kind::Counter ? tr("COUNTER HIT", "KONTER")
-                                                                                        : tr("BLOCK", "GEBLOCKT");
-    snprintf(lead, nl, "%s%s  %s", who, su, k);
-    snprintf(tail, nt, "%+d", r.adv);
-    *tail_col = r.adv > 0 ? kGreen : r.adv < 0 ? kRed : kWhite;
 }
 
+/* the frame-data panel: y_top of its first line; at the bottom it grows upward from y_bottom */
 void draw_results(float cx, float y)
 {
     if (!g_nresults) return;
@@ -244,20 +236,20 @@ void draw_results(float cx, float y)
     rsx_overlay_rect(cx - w / 2, y - 4, w, kRowH * (float)g_nresults + 8, kPanel);
     for (int i = 0; i < g_nresults; i++) {
         char lead[64], tail[16];
-        uint32_t col;
-        result_line(g_results[i], lead, sizeof lead, tail, sizeof tail, &col);
+        Tone tone;
+        format_result(g_results[i], g_cfg.de, lead, sizeof lead, tail, sizeof tail, &tone);
         const uint32_t a = i == 0 ? 255u : 150u;
         const float lw = rsx_overlay_text_width(lead, kPx), tw = rsx_overlay_text_width(tail, kPx);
         const float x0 = cx - (lw + (tail[0] ? 12.0f + tw : 0.0f)) / 2;
         const float ry = y + kRowH * (float)i;
         rsx_overlay_text(x0, ry, kPx, (kWhite & 0xFFFFFF00u) | a, RSX_OVL_SHADOW, lead);
-        if (tail[0]) rsx_overlay_text(x0 + lw + 12.0f, ry, kPx, (col & 0xFFFFFF00u) | a, RSX_OVL_SHADOW, tail);
+        if (tail[0]) rsx_overlay_text(x0 + lw + 12.0f, ry, kPx, (tone_rgba(tone) & 0xFFFFFF00u) | a, RSX_OVL_SHADOW, tail);
     }
 }
 
-void draw_status(const char* st)
+void draw_status(const char* st, float y)
 {
-    const float w = rsx_overlay_text_width(st, kPx) + 24.0f, y = 176.0f + kRowH * 3 + 14.0f;
+    const float w = rsx_overlay_text_width(st, kPx) + 24.0f;
     rsx_overlay_rect(640.0f - w / 2, y - 4, w, kRowH + 8, kPanel);
     rsx_overlay_text(640.0f, y, kPx, kYellow, RSX_OVL_CENTER | RSX_OVL_SHADOW, st);
 }
@@ -266,17 +258,19 @@ void draw_status(const char* st)
 void publish(int mode, bool show_p1, bool show_p2, bool frames, const char* status = "")
 {
     if (!g_shown && g_cfg.log) {
-        fprintf(g_cfg.log, "%llu show game type %u%s%s%s\n", (unsigned long long)g_live, rd32(kGameType),
-                show_p1 ? " P1" : "", show_p2 ? " P2" : "", frames && mode == kFrames ? " frames" : "");
+        fprintf(g_cfg.log, "%llu show game type %u%s%s%s%s\n", (unsigned long long)g_live, rd32(kGameType),
+                show_p1 ? " P1" : "", show_p2 ? " P2" : "", frames && mode == kFrames ? " frames" : "",
+                g_cfg.bottom ? " bottom" : "");
         fflush(g_cfg.log);
     }
+    const Layout lay = overlay_layout(g_cfg.bottom, g_cfg.rows, g_nresults, kRowH);
     rsx_overlay_begin();
     if (mode != kOff) {
-        if (show_p1) draw_history(0, 16.0f, 190.0f);
-        if (show_p2) draw_history(1, 1280.0f - 16.0f - 156.0f, 190.0f);
-        if (frames && mode == kFrames) draw_results(640.0f, 176.0f);
+        if (show_p1) draw_history(0, 16.0f, lay.hist_y);
+        if (show_p2) draw_history(1, 1280.0f - 16.0f - 156.0f, lay.hist_y);
+        if (frames && mode == kFrames) draw_results(640.0f, lay.results_y);
     }
-    if (status[0]) draw_status(status);
+    if (status[0]) draw_status(status, lay.status_y);
     rsx_overlay_end();
     g_shown = true;
 }
@@ -294,8 +288,12 @@ void log_result(const Result& r)
 {
     if (!g_cfg.log) return;
     static const char* kinds[] = { "block", "hit", "counter", "whiff", "down" };
-    fprintf(g_cfg.log, "%llu result P%d startup %d %s adv %+d total %d\n", (unsigned long long)g_live, r.attacker + 1,
-            r.startup, kinds[(int)r.kind], r.adv, r.total);
+    char lead[64], tail[16];
+    Tone tone;
+    format_result(r, g_cfg.de, lead, sizeof lead, tail, sizeof tail, &tone);
+    fprintf(g_cfg.log, "%llu result P%d startup %d %s adv %+d total %d active %d-%d%s%s | %s %s\n",
+            (unsigned long long)g_live, r.attacker + 1, r.startup, kinds[(int)r.kind], r.adv, r.total, r.startup,
+            r.active_end, r.no_adv ? " noadv" : "", r.counter ? " counter" : "", lead, tail);
     fflush(g_cfg.log);
 }
 
@@ -446,12 +444,15 @@ static bool frame_body()
             fprintf(g_cfg.log, "%llu input P%d %d%s%s\n", (unsigned long long)g_live, p + 1, n.dir, b[0] ? "+" : "", b);
         }
     }
-    if (!online && g_track.frame(s)) {
-        const Result& r = g_track.last();
-        memmove(&g_results[1], &g_results[0], sizeof(Result) * 2);
-        g_results[0] = r;
-        if (g_nresults < 3) g_nresults++;
-        log_result(r);
+    if (!online) {
+        const int n = g_track.frame(s);
+        for (int i = 0; i < n; i++) {        /* oldest first: the newest ends on top */
+            const Result& r = g_track.result(i);
+            memmove(&g_results[1], &g_results[0], sizeof(Result) * 2);
+            g_results[0] = r;
+            if (g_nresults < 3) g_nresults++;
+            log_result(r);
+        }
     }
 
     bool show = mode != kOff;

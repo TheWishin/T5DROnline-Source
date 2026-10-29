@@ -12,8 +12,9 @@
  *                upper half (0x10000, 0x20000, ...) -- a hit even without
  *                damage (Bryan's taunt 1+3+4 stuns for 0)
  *   +0x168  u32  the current move/animation; 0x8001xxxx = standing, 0x8002..
- *                0x80FF = the defaults of other stances, among them lying on
- *                the ground after a knockdown or a throw (0x8004..0x8007 seen)
+ *                0x80FF = the defaults of other stances: 0x8002 crouching,
+ *                0x8004 and up lying on the ground after a knockdown, a throw
+ *                or a slide (0x8004..0x8007, 0x8009, 0x800A seen)
  *   +0x1D2  u8   1 = this fighter stands on the right side (faces left)
  *   +0x20C  u32  bit 24: a new move (animation) started this frame
  *   +0x214  u32  bits 16-17: the move's attack is active this frame
@@ -30,7 +31,12 @@
  *                still comes out at 30 -- the game's own answer, so +3 on
  *                hit, not -17).
  *   +0x6BC  i16  health
- *   +0x6D4  u16  the pad input the fighter read this frame (the game's mask:
+ *   +0x734  f32  the height of the fighter's root (its hips: row 3 of the root's
+ *                world matrix at +0x700): ~1,000-1,150 standing (Kuma ~850),
+ *                ~840 crouching, 650-1,100 in the hit and guard reactions that
+ *                end on the feet, 140-300 lying on the ground or landing in a
+ *                tech roll, up to ~2,400 in the air after a launcher
+ *   +0x6D6  u16  the pad input the fighter read this frame (the game's mask:
  *                UP 0x1000 RIGHT 0x2000 DOWN 0x4000 LEFT 0x8000, TRIANGLE 0x10
  *                CIRCLE 0x20 CROSS 0x40 SQUARE 0x80)
  * Frame advantage = the frame the defender can act again minus the frame the
@@ -42,6 +48,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <math.h>
+#include <stdio.h>
 
 namespace training {
 
@@ -59,9 +66,11 @@ struct Sample {
     bool     end_window = false; /* +0x220 low byte 1 and bit 24: the cancellable end of a move or reaction */
     bool     new_move = false;
     bool     active = false; /* +0x214 bits 16-17 */
-    bool     down = false;   /* +0x168 in the 0x8002..0x80FF family: lying on the ground */
+    bool     down = false;   /* +0x168 in the 0x8004..0x80FF family: lying on the ground */
+    bool     stand = false;  /* +0x168 0x8001: standing (its height is the fighter's own measure) */
     uint32_t cls = 0;        /* +0x15C */
     int      hp = 0;         /* +0x6BC */
+    float    y = 0;          /* +0x734: the hips' height (0: not read) */
 };
 
 /* Tekken notation for an input: direction 1..9 (numpad, 5 = neutral) as the
@@ -121,9 +130,15 @@ enum class Kind : uint8_t { Block, Hit, Counter, Whiff, Down };
 
 struct Result {
     int      attacker = 0;   /* 0 = P1, 1 = P2 */
-    int      startup = 0;    /* first active frame of the move that made contact (0 = unknown) */
+    int      startup = 0;    /* first active frame of the hit that made contact, counted from the start of
+                              * its move (0 = unknown) */
+    int      active_end = 0; /* last frame of that active window (the same count; == startup: one frame) */
     Kind     kind = Kind::Block;
-    int      adv = 0;        /* attacker's frame advantage (Block/Hit/Counter) */
+    bool     counter = false;/* Down: the knockdown came from a counter hit */
+    bool     no_adv = false; /* no advantage of its own (Whiff: no total): a string's (or a juggle's) hit
+                              * that the attacker's next hit followed before either could act, or a hit
+                              * after which the attacker lies on the ground (Nina's slide d/b+4) */
+    int      adv = 0;        /* attacker's frame advantage (Block/Hit/Counter, not no_adv) */
     int      total = 0;      /* Whiff: frames until the attacker could act again */
     uint64_t frame = 0;      /* the frame it was settled in */
 };
@@ -133,167 +148,320 @@ inline bool acts(const Sample& x) { return x.can_act && (x.cls < 0x10000 || x.en
 
 class Tracker {
 public:
-    /* knockdowns: the defender not able to act this long after the attacker */
+    /* knockdowns that were not seen (no height): the defender not able to act this long after the attacker */
     static constexpr uint64_t kDownAfter = 90;
     /* a defender's press that started nothing: its can-act frame after all */
     static constexpr uint64_t kPressWait = 20;
     static constexpr uint16_t kButtons = kSquare | kTriangle | kCross | kCircle;
+    /* knocked down: the defender's hips below this share of its standing height (lying, a tech roll:
+     * <= 0.3 traced; crouching 0.8, the lowest reaction that ends on the feet 0.75) or above this one
+     * (launched: up to 2.3; the highest reaction on the feet 1.1) */
+    static constexpr float kLowShare = 0.5f, kAirShare = 1.4f;
+    static constexpr int kQueue = 4;
 
-    /* One live frame, both fighters (index 0 = P1). Returns true when a new
-     * Result is in last(). */
-    bool frame(const Sample s[2])
+    /* One live frame, both fighters (index 0 = P1). Returns the number of new
+     * Results (0 = none): result(0) .. result(n - 1), oldest first; last() is the newest. */
+    int frame(const Sample s[2])
     {
-        bool out = false;
+        nnew_ = 0;
         const uint64_t t = t_++;
+        for (int p = 0; p < 2; p++)
+            if (s[p].stand && s[p].y > 0 && acts(s[p])) stand_y_[p] = s[p].y;
         if (!have_prev_) {
             prev_[0] = s[0]; prev_[1] = s[1];
             have_prev_ = true;
-            return false;
+            return 0;
         }
-        for (int p = 0; p < 2; p++)
+        for (int p = 0; p < 2; p++) {
             if (s[p].new_move) anim_[p] = t;
-        /* 1. first active frame of each fighter's current move. An attack can also
-         *    come out of an animation in which its fighter can act all along (step 3
-         *    then saw no move start): Bryan's taunt 1+3+4 -- cancellable from its
-         *    first frame to its last active frame, active 28 frames in. Its move
-         *    began with that animation. */
+            /* button presses not yet taken by a new move: each new animation started with one is a
+             * move of its own (a string's next hit), one without continues the move (its wind-up, its
+             * next animation, its recovery). Presses while the fighter can act start its next move. */
+            if (acts(s[p])) presses_[p] = 0;
+            if (s[p].input & ~prev_[p].input & kButtons) presses_[p]++;
+        }
+        /* 1. the active windows of each fighter's current move. An attack can also come out of an
+         *    animation in which its fighter can act all along (step 3 then saw no move start):
+         *    Bryan's taunt 1+3+4 -- cancellable from its first frame to its last active frame, active
+         *    28 frames in. Its move began with that animation. */
         for (int p = 0; p < 2; p++) {
             if (!s[p].active) continue;
-            if (!mv_[p].live) {
-                mv_[p] = Move{};
-                mv_[p].start = anim_[p] ? anim_[p] : t;
-                mv_[p].live = true;
+            Move& m = mv_[p];
+            if (!m.live) {
+                m = Move{};
+                m.start = anim_[p] ? anim_[p] : t;
+                m.live = true;
             }
-            if (!mv_[p].first_active) mv_[p].first_active = t;
+            if (!m.first_active) m.first_active = t;
+            if (m.win_end && m.win_end + 1 == t) m.win_end = t;
+            else m.win_start = m.win_end = t;
         }
-        /* 2. contact: the other one starts a block/hit reaction right after
-         *    this one's active frame, or loses health while it is active.
-         *    (Before step 3: a string's next move may start in this frame.) */
+        /* 2. contact: the other one starts a block/hit reaction right after this one's active frame,
+         *    or loses health while it is active. (Before step 3: a string's next hit may start in
+         *    this frame.) */
+        bool hit_now[2] = { false, false };
         for (int p = 0; p < 2; p++) {
             const int o = 1 - p;
             const bool reacts = prev_[p].active && s[o].new_move && !acts(s[o]) && is_reaction_cls(s[o].cls);
             const bool damaged = s[o].hp < prev_[o].hp && (prev_[p].active || s[p].active);
             if (!reacts && !damaged) continue;
-            /* a hit reaction (+0x15C >= 0x10000, a guard has 0) is a hit even
-             * without damage: Bryan's taunt stuns for 0 damage, guard or not */
+            hit_now[o] = true;
+            const Move& m = mv_[p];
+            const bool known = m.live && m.win_start && m.start;
+            /* a hit reaction (+0x15C >= 0x10000, a guard has 0) is a hit even without damage: Bryan's
+             * taunt stuns for 0 damage, guard or not */
             const bool stun = s[o].cls >= 0x10000;
             if (ex_.open && ex_.att == p && !ex_.settled) {
-                /* the same attacker again (a string, a juggle): recoveries start over */
+                if (!known || m.start != ex_.move || m.win_start != ex_.win) {
+                    /* the same attacker's next hit (a string, a juggle) before either could act: the
+                     * hit before is shown without an advantage, recoveries start over */
+                    emit_part(t);
+                    ex_.first = false;
+                    ex_.hit = ex_.down = false;
+                    start_part(m, known);
+                }
                 ex_.att_act = ex_.def_act = ex_.def_flag = 0;
                 ex_.def_btn = false;
                 ex_.contact = t;
             } else {
                 ex_ = Exchange{};
                 ex_.open = true;
+                ex_.first = true;
                 ex_.att = p;
                 ex_.contact = t;
                 /* only the move going on now: an older one's startup is no answer */
-                ex_.startup = mv_[p].live && mv_[p].first_active && mv_[p].start ? (int)(mv_[p].first_active - mv_[p].start + 1) : 0;
+                start_part(m, known);
                 ex_.counter = !acts(prev_[o]) && is_attack_cls(prev_[o].cls);
             }
             if (stun) ex_.hit = true;
             mv_[p].contacted = true;
         }
-        /* 3. moves started by a fighter (not a reaction to the other's attack). A move
-         *    made of several animations -- a wind-up without active frames, then the
-         *    attack (Bryan's f+1+2: 18 frames of wind-up, active 3 frames into the
-         *    second animation) -- is one move: a new animation before the first active
-         *    frame, with no button pressed since the move began and no frame in which
-         *    the fighter could act, goes on with the same startup. */
+        /* the defender's own move ended with the hit (a counter hit) */
+        for (int p = 0; p < 2; p++)
+            if (hit_now[p]) mv_[p].live = false;
+        /* the window of the open hit may go on after the contact (DJ's 1,2,3: the 3 active 7 frames,
+         * blocked in its 6th) */
+        if (ex_.open && !ex_.settled) {
+            const Move& m = mv_[ex_.att];
+            if (m.live && m.start == ex_.move && m.win_start == ex_.win && m.win_end >= ex_.win)
+                ex_.active_end = (int)(m.win_end - m.start + 1);
+        }
+        /* 3. moves started by a fighter (not a reaction to the other's attack, not one of its own hit
+         *    reactions, not lying down). A new animation without a press for it continues the move:
+         *    a wind-up without active frames, then the attack (Bryan's f+1+2: 18 frames of wind-up,
+         *    active 3 frames into the second animation), an attack whose active frame opens an
+         *    animation (Devil Jin's jab), a recovery. */
         bool started[2] = { false, false };
         for (int p = 0; p < 2; p++) {
             const int o = 1 - p;
             const bool reaction = prev_[o].active && is_reaction_cls(s[p].cls);
-            if (mv_[p].live && t > mv_[p].start && (s[p].input & ~prev_[p].input & kButtons)) mv_[p].pressed = true;
-            if (s[p].new_move && !acts(s[p]) && !reaction && !s[p].down) {   /* lying down is no move of its own */
-                if (mv_[p].live && !mv_[p].first_active && !mv_[p].pressed && !acts(prev_[p])) continue;
-                started[p] = true;
-                mv_[p] = Move{};
-                mv_[p].start = t;
-                mv_[p].live = true;
+            Move& m = mv_[p];
+            if (s[p].down && m.live) {                      /* lying on the ground ends the fighter's own move */
+                if (m.first_active && !m.contacted) whiff_part(p, t);
+                m.live = false;
             }
+            if (!s[p].new_move || acts(s[p]) || reaction || s[p].down || s[p].cls >= 0x10000) continue;
+            if (s[p].active) continue;                      /* an attack is never active in its own first frame */
+            if (m.live && !presses_[p] && !acts(prev_[p])) continue;
+            if (presses_[p]) presses_[p]--;
+            if (m.live && m.first_active && !m.contacted) whiff_part(p, t);   /* a string's hit into the air, the next one follows */
+            started[p] = true;
+            m = Move{};
+            m.start = t;
+            m.live = true;
         }
-        /* 4. damage (or a hit reaction, step 2) decides hit or block */
-        if (ex_.open && !ex_.settled && s[ex_.def()].hp < prev_[ex_.def()].hp) ex_.hit = true;
-        if (ex_.open && !ex_.settled && s[ex_.def()].down) ex_.down = true;   /* knocked down or thrown */
-        /* 5. recoveries. The attacker can act from its can-act frame (a
-         *    string's next move before it keeps the exchange going). The
-         *    defender likewise -- unless it has pressed an attack button since
-         *    the contact: the game then opens the can-act window early to keep
-         *    the press for the end of the stun, and the move it starts there
-         *    (one frame after the frame it could act) is what counts. */
+        /* 4. damage (or a hit reaction, step 2) decides hit or block; the defender's hips on the
+         *    ground or in the air: knocked down (a sweep, a launcher, a throw; a tech roll too) */
+        if (ex_.open && !ex_.settled) {
+            const int d = ex_.def();
+            if (s[d].hp < prev_[d].hp) ex_.hit = true;
+            if (!acts(s[d]) && (s[d].down || knocked(s[d], stand_y_[d]))) ex_.down = true;
+            if (s[ex_.att].down && !acts(s[ex_.att])) ex_.att_down = true;
+        }
+        /* 5. recoveries. The attacker can act from its can-act frame (a string's next move before it
+         *    keeps the exchange going). The defender likewise -- unless it has pressed an attack button
+         *    since the contact: the game then opens the can-act window early to keep the press for the
+         *    end of the stun, and the move it starts there (one frame after the frame it could act) is
+         *    what counts. A defender knocked down: KND, without a number, as soon as it is seen. */
         if (ex_.open && !ex_.settled) {
             const int a = ex_.att, d = ex_.def();
             if (t > ex_.contact && (s[d].input & kButtons)) ex_.def_btn = true;
             if (!ex_.att_act && t > ex_.contact && acts(s[a])) ex_.att_act = t;
             if (!ex_.def_act && t > ex_.contact) {
-                if (started[d]) ex_.def_act = t - 1;
+                if (started[d] && ex_.def_btn) ex_.def_act = t - 1;
                 else if (acts(s[d])) {
                     if (!ex_.def_btn) ex_.def_act = t;
                     else if (!ex_.def_flag) ex_.def_flag = t;
                 }
                 if (!ex_.def_act && ex_.def_flag && t - ex_.def_flag > kPressWait) ex_.def_act = ex_.def_flag;
             }
-            if (ex_.att_act && ex_.def_act) {
-                last_ = Result{};
-                last_.attacker = a;
-                last_.startup = ex_.startup;
-                last_.kind = ex_.down ? Kind::Down : ex_.hit ? (ex_.counter ? Kind::Counter : Kind::Hit) : Kind::Block;
-                last_.adv = ex_.down ? 0 : (int)((int64_t)ex_.def_act - (int64_t)ex_.att_act);
-                last_.frame = t;
+            if (ex_.down || (ex_.att_act && !ex_.def_act && t - ex_.att_act > kDownAfter)) {
+                Result r = part_result(t);
+                r.kind = Kind::Down;
+                r.counter = ex_.first && ex_.counter;
+                push(r);
                 ex_.settled = true;
-                out = true;
-            } else if (ex_.att_act && t - ex_.att_act > kDownAfter) {
-                last_ = Result{};
-                last_.attacker = a;
-                last_.startup = ex_.startup;
-                last_.kind = Kind::Down;
-                last_.frame = t;
+            } else if (ex_.att_act && ex_.def_act) {
+                Result r = part_result(t);
+                r.adv = (int)((int64_t)ex_.def_act - (int64_t)ex_.att_act);
+                push(r);
                 ex_.settled = true;
-                out = true;
+            } else if (ex_.def_act && ex_.att_down) {     /* the attacker on the ground, the defender free: no number */
+                Result r = part_result(t);
+                r.no_adv = true;
+                push(r);
+                ex_.settled = true;
             }
         }
         /* 6. whiffs: an attack whose active frames hit nothing, over */
         for (int p = 0; p < 2; p++) {
-            if (!mv_[p].live) continue;
+            Move& m = mv_[p];
+            if (!m.live) continue;
             if (acts(s[p]) && !acts(prev_[p])) {
-                if (mv_[p].first_active && !mv_[p].contacted) {
-                    last_ = Result{};
-                    last_.attacker = p;
-                    last_.startup = (int)(mv_[p].first_active - mv_[p].start + 1);
-                    last_.kind = Kind::Whiff;
-                    last_.total = (int)(t - mv_[p].start);
-                    last_.frame = t;
-                    out = true;
+                if (m.first_active && !m.contacted) {
+                    Result r;
+                    r.attacker = p;
+                    r.startup = (int)(m.win_start - m.start + 1);
+                    r.active_end = (int)(m.win_end - m.start + 1);
+                    r.kind = Kind::Whiff;
+                    r.total = (int)(t - m.start);
+                    r.frame = t;
+                    push(r);
                 }
-                mv_[p].live = false;
+                m.live = false;
             }
         }
         prev_[0] = s[0]; prev_[1] = s[1];
-        return out;
+        return nnew_;
     }
 
     void reset() { *this = Tracker{}; }
     const Result& last() const { return last_; }
+    const Result& result(int i) const { return q_[i]; }
+
+    /* the defender's hips (y) against its own standing height (0: not seen yet) */
+    static bool knocked(const Sample& x, float stand)
+    {
+        return stand > 0 && x.y > 0 && (x.y < kLowShare * stand || x.y > kAirShare * stand);
+    }
 
 private:
     static bool is_reaction_cls(uint32_t c) { return c == 0 || c >= 0x10000; }
     static bool is_attack_cls(uint32_t c) { return c != 0 && c < 0x10000; }
-    struct Move { uint64_t start = 0, first_active = 0; bool live = false, contacted = false, pressed = false; };
+    /* a move: from the animation it began with; win_*: its latest active window (frames of the tracker) */
+    struct Move { uint64_t start = 0, first_active = 0, win_start = 0, win_end = 0; bool live = false, contacted = false; };
     struct Exchange {
-        bool open = false, settled = false, hit = false, counter = false, def_btn = false, down = false;
-        int att = 0, startup = 0;
+        bool open = false, settled = false, hit = false, counter = false, def_btn = false, down = false, att_down = false;
+        bool first = true;    /* the exchange's first hit (a counter hit is decided there) */
+        int att = 0, startup = 0, active_end = 0;
+        uint64_t move = 0, win = 0;   /* the hit going on: its move's start and its active window's first frame */
         uint64_t contact = 0, att_act = 0, def_act = 0, def_flag = 0;
         int def() const { return 1 - att; }
     };
+    void start_part(const Move& m, bool known)
+    {
+        ex_.move = known ? m.start : 0;
+        ex_.win = known ? m.win_start : 0;
+        ex_.startup = known ? (int)(m.win_start - m.start + 1) : 0;
+        ex_.active_end = known ? (int)(m.win_end - m.start + 1) : 0;
+    }
+    Result part_result(uint64_t t) const
+    {
+        Result r;
+        r.attacker = ex_.att;
+        r.startup = ex_.startup;
+        r.active_end = ex_.active_end;
+        r.kind = ex_.hit ? (ex_.first && ex_.counter ? Kind::Counter : Kind::Hit) : Kind::Block;
+        r.frame = t;
+        return r;
+    }
+    void emit_part(uint64_t t)
+    {
+        Result r = part_result(t);
+        if (ex_.down) { r.kind = Kind::Down; r.counter = ex_.first && ex_.counter; }
+        r.no_adv = true;
+        push(r);
+    }
+    void whiff_part(int p, uint64_t t)
+    {
+        const Move& m = mv_[p];
+        Result r;
+        r.attacker = p;
+        r.startup = (int)(m.win_start - m.start + 1);
+        r.active_end = (int)(m.win_end - m.start + 1);
+        r.kind = Kind::Whiff;
+        r.no_adv = true;
+        r.frame = t;
+        push(r);
+    }
+    void push(const Result& r)
+    {
+        if (nnew_ < kQueue) q_[nnew_++] = r;
+        else { memmove(&q_[0], &q_[1], sizeof(Result) * (kQueue - 1)); q_[kQueue - 1] = r; }
+        last_ = r;
+    }
     Sample prev_[2];
     bool have_prev_ = false;
     uint64_t t_ = 1;          /* frame numbers start at 1: 0 means "not yet" */
     uint64_t anim_[2] = { 0, 0 };   /* the frame each fighter's current animation began */
+    int presses_[2] = { 0, 0 };
+    float stand_y_[2] = { 0, 0 };   /* each fighter's hips when it last stood idle */
     Move mv_[2];
     Exchange ex_;
+    Result q_[kQueue];   /* this frame's results, oldest first */
+    int nnew_ = 0;
     Result last_;
 };
+
+/* One frame-data line, as the overlay shows it (training.cpp draws it): lead "P1  i13~14  BLOCK",
+ * tail "-1" (or "KND", "25F", "" -- a string's hit before the next one has no number of its own).
+ * The startup is the first active frame of the hit and ~ its last one, the way Tekken frame data
+ * writes an active window. de: German labels. */
+enum class Tone : uint8_t { White, Grey, Green, Red, Yellow };
+inline void format_result(const Result& r, bool de, char* lead, size_t nl, char* tail, size_t nt, Tone* tone)
+{
+    const char* who = r.attacker ? "P2" : "P1";
+    char su[24] = "";
+    if (r.startup > 0 && r.active_end > r.startup) snprintf(su, sizeof su, "  i%d~%d", r.startup, r.active_end);
+    else if (r.startup > 0) snprintf(su, sizeof su, "  i%d", r.startup);
+    const char* hit = de ? "TREFFER" : "HIT";
+    const char* counter = de ? "KONTER" : "COUNTER HIT";
+    tail[0] = 0;
+    *tone = Tone::White;
+    switch (r.kind) {
+    case Kind::Whiff:
+        snprintf(lead, nl, "%s%s  %s", who, su, de ? "DANEBEN" : "WHIFF");
+        if (!r.no_adv) snprintf(tail, nt, "%dF", r.total);
+        *tone = Tone::Grey;
+        return;
+    case Kind::Down:      /* knocked down (KND): no number -- lying, it could act again in many ways */
+        snprintf(lead, nl, "%s%s  %s", who, su, r.counter ? counter : hit);
+        snprintf(tail, nt, "KND");
+        *tone = Tone::Yellow;
+        return;
+    default: break;
+    }
+    snprintf(lead, nl, "%s%s  %s", who, su,
+             r.kind == Kind::Hit ? hit : r.kind == Kind::Counter ? counter : (de ? "GEBLOCKT" : "BLOCK"));
+    if (r.no_adv) return;
+    snprintf(tail, nt, "%+d", r.adv);
+    *tone = r.adv > 0 ? Tone::Green : r.adv < 0 ? Tone::Red : Tone::White;
+}
+
+/* Where the overlay's lists go on its 1280 x 720 canvas (training.cpp; y of the first text line,
+ * every panel reaching 4 above it and 4 below its last line). Top (the default): the inputs at the
+ * screen's edges under the health bars, the frame data under the timer, the practice status line
+ * under it. Bottom (T5_TRAINING_POS=bottom): the same at the bottom edge -- the inputs' panels and the
+ * frame data end kBottomGap above it (the frame data grows upward, its newest line still on top), the
+ * status line above the frame data's three lines. */
+struct Layout { float hist_y, results_y, status_y; };
+inline Layout overlay_layout(bool bottom, int rows, int nresults, float row_h)
+{
+    constexpr float kTopHist = 190.0f, kTopResults = 176.0f, kBottomGap = 24.0f;
+    if (!bottom) return { kTopHist, kTopResults, kTopResults + row_h * 3 + 14.0f };
+    const float end = 720.0f - kBottomGap - 4.0f;          /* where the last line's panel padding begins */
+    return { end - row_h * (float)rows, end - row_h * (float)nresults, end - row_h * 4 - 18.0f };
+}
 
 /* ==== Practice tools (offline Practice only; docs/TRAINING.md "Practice tools") ====
  * Everything below works on the game's pad masks (P1's as read from the pad, the

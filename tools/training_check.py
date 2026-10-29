@@ -18,6 +18,12 @@ which is what the frame-exact mash test measured (docs/TRAINING.md "How the
 frame data is measured"). Wrong offsets in the fight block or a broken tracker
 give other numbers. The game runs muted, minimised, at below-normal priority;
 nothing of it is kept unless --keep. Exit 0 = PASS.
+
+    python tools/training_check.py --moves [--exe ...]
+
+The moves players reported (1.1.9), each in a game of its own, same set-up: Devil Jin's string 1,2,3 on a
+defender who walks into it (three results: i10 hit, i10 hit, i25~31 KND -- one line with i10 or startup 0
+before) and Jin's d/f+1 on block (i13~14, -2 -- i13 before). The game before 1.1.9 fails this, 1.1.9 passes.
 """
 import argparse
 import os
@@ -67,15 +73,95 @@ def plan():
     return out, ",".join(s[1]), ",".join(s[2]), b + 120
 
 
+def moves_plan():
+    """[(name, fight, p1 script, p2 script, last frame, check(results) -> text or None)]"""
+    def jin_dj(rs):
+        got = [(r["startup"], r["kind"], r["active"]) for r in rs if r["p"] == 1][:3]
+        want = [(10, "hit", (10, 10)), (10, "hit", (10, 10)), (25, "down", (25, 31))]
+        return None if got == want else f"want {want}, got {got}"
+
+    def df1(rs):
+        got = [(r["startup"], r["kind"], r["adv"], r["active"]) for r in rs if r["p"] == 1][:1]
+        return None if got == [(13, "block", -2, (13, 14))] else f"want [(13, 'block', -2, (13, 14))], got {got}"
+
+    b = ROUND_FRAME + 188
+    return [("Devil Jin 1,2,3 (string, KND)", "devil,jin,20,3",
+             f"{b}:1:{SQ:#x},{b + 6}:1:0x1000,{b + 12}:1:0x4000", f"{b - 90}:115:{LEFT:#x}", b + 200, jin_dj),
+            ("Jin d/f+1 (two active frames)", "jin,jin,20,3",
+             f"{b - 40}:18:{RIGHT:#x},{b}:1:{SQ | 0x40 | RIGHT:#x}", "", b + 150, df1)]
+
+
+def run_game(a, out, fight, s1, s2, last):
+    log = os.path.join(out, "training.log")
+    env = {"PS3_VFS_ROOT": a.vfs.replace("\\", "/"), "PS3_HDD0_ROOT": os.path.join(a.vfs, "dev_hdd0").replace("\\", "/"),
+           "PS3_WINDOW_BACKGROUND": "1", "PS3_AUDIO_MUTE": "1",
+           "T5_NET_MODE": "local", "T5_NET_START": "external", "T5_NET_LOCALPAD": "0", "T5_RB_MODE": "off",
+           "T5_FIGHT": fight, "T5_NET_SCRIPT": "@" + s1, "T5_NET_LOG": os.path.join(out, "frames.log"),
+           "T5_TRAINING": "frames", "T5_TRAINING_ALL": "1", "T5_TRAINING_LOG": log}
+    if s2:
+        env["T5_NET_SCRIPT2"] = "@" + s2
+    argv, full_env, _ = game_command(ROOT, env)
+    argv[0] = os.path.abspath(a.exe)
+    argv[1] = os.path.join(a.vfs, "PS3_GAME", "USRDIR", "EBOOT.elf")
+    flags = subprocess.BELOW_NORMAL_PRIORITY_CLASS if os.name == "nt" else 0
+    t0 = time.time()
+    with open(os.path.join(out, "game.log"), "w") as gl:
+        p = subprocess.Popen(argv, env=full_env, cwd=out, stdout=gl, stderr=subprocess.STDOUT, creationflags=flags)
+        try:
+            frames = os.path.join(out, "frames.log")
+            while p.poll() is None and time.time() - t0 < a.timeout:
+                time.sleep(1)
+                try:
+                    with open(frames, "rb") as f:
+                        f.seek(max(0, os.path.getsize(frames) - 400))
+                        tail = [ln for ln in f.read().decode(errors="replace").splitlines() if ln[:1].isdigit()]
+                    if tail and int(tail[-1].split()[0]) >= last:
+                        break
+                except (OSError, ValueError):
+                    pass
+        finally:
+            if p.poll() is None:
+                p.kill()
+                p.wait(timeout=20)
+    rs = []
+    if os.path.exists(log):
+        for line in open(log):
+            m = re.match(r"\d+ result P(\d) startup (\d+) (\w+) adv ([+-]\d+) total (\d+)(?: active (\d+)-(\d+))?", line)
+            if m:
+                act = (int(m.group(6)), int(m.group(7))) if m.group(6) else (int(m.group(2)),) * 2
+                rs.append({"p": int(m.group(1)), "startup": int(m.group(2)), "kind": m.group(3), "adv": int(m.group(4)),
+                           "total": int(m.group(5)), "active": act, "line": line.strip()})
+    return rs
+
+
+def moves(a):
+    ok = True
+    for name, fight, s1, s2, last, check in moves_plan():
+        out = tempfile.mkdtemp(prefix="training_moves_")
+        rs = run_game(a, out, fight, s1, s2, last)
+        for r in rs[:4]:
+            print("    " + r["line"])
+        why = check(rs)
+        ok &= why is None
+        print(f"  {'ok  ' if why is None else 'FAIL'} {name}" + (f": {why}" if why else ""))
+        if not a.keep:
+            shutil.rmtree(out, ignore_errors=True)
+    print("PASS" if ok else "FAIL")
+    sys.exit(0 if ok else 1)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--exe", default=os.path.join(ROOT, "build", "cmake", "t5dr.exe"))
     ap.add_argument("--vfs", default=os.environ.get("PS3_VFS_ROOT", os.path.join(ROOT, "game", "vfs")))
     ap.add_argument("--out", default="", help="working directory (default: a temporary one)")
     ap.add_argument("--timeout", type=float, default=600)
+    ap.add_argument("--moves", action="store_true", help="the 1.1.9 cases: a string, two active frames, KND")
     ap.add_argument("--keep", action="store_true", help="keep the working directory")
     a = ap.parse_args()
 
+    if a.moves:
+        moves(a)
     cases, s1, s2, last = plan()
     out = os.path.abspath(a.out) if a.out else tempfile.mkdtemp(prefix="training_check_")
     os.makedirs(out, exist_ok=True)

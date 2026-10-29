@@ -86,6 +86,12 @@ class Hint(unittest.TestCase):
 
 
 class Run(unittest.TestCase):
+    def setUp(self):
+        # the hint's words are English here: a test earlier in the same process may have left another language
+        # (CI 1.1.9 ran every test in one process; the assertions below read "Unpack")
+        i18n.set_language("en")
+        self.addCleanup(i18n.set_language, "en")
+
     def test_tool_and_hint_in_the_logs(self):
         with tempfile.TemporaryDirectory() as d:
             b = core.BuildRun(None, None, d)

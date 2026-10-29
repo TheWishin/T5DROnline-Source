@@ -10,6 +10,7 @@ Real Tk, real main loops, each case in its own process (an abort must not take t
   * a closed Tk interpreter left to the collector while workers allocate: the old launcher's process aborts with
     Tcl_AsyncDelete; with tkgc it is freed on the Tk thread and the process lives.
 """
+import gc
 import json
 import os
 import subprocess
@@ -84,7 +85,8 @@ class TkGc(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertGreater(res["freed"].get("picture", 0), 100)          # (the windows' pictures were freed)
         self.assertEqual(res["stats"]["logged in"], 1)
-        self.assertFalse(res["gc_enabled"])
+        self.assertEqual(res["stats"]["gc off while running"], 1)    # the launcher collects on its Tk thread ...
+        self.assertTrue(res["gc_enabled"])                            # ... and gives it back when its window goes
 
     def test_collect_due_follows_the_thresholds(self):
         import gc
@@ -104,6 +106,37 @@ class TkGc(unittest.TestCase):
         finally:
             if was:
                 gc.enable()
+
+@unittest.skipIf(tkinter is None, "no tkinter")
+class Uninstall(unittest.TestCase):
+    """CI 1.1.9: App.destroy gives the collection back to Python -- left off, every test after the first launcher
+    window ran with no collector at all (the one-process CI run then failed in a different Tk test each time)."""
+
+    def setUp(self):
+        sys.path.insert(0, os.path.join(ROOT, "launcher"))
+        import tkgc
+        self.tkgc = tkgc
+        self.addCleanup(gc.enable)
+
+    def test_uninstall_turns_the_collector_back_on(self):
+        root = tkinter.Tk()
+        root.withdraw()
+        self.tkgc.install(root)
+        self.assertFalse(gc.isenabled())
+        other = tkinter.Tk()
+        other.withdraw()
+        self.tkgc.uninstall(other)                  # not the root it runs on: nothing changes
+        self.assertTrue(self.tkgc.installed_on(root))
+        self.tkgc.uninstall(root)
+        self.assertTrue(gc.isenabled())
+        self.assertFalse(self.tkgc.installed_on(root))
+        other.destroy()
+        root.destroy()
+
+    def test_the_launcher_window_uninstalls_on_destroy(self):
+        with open(os.path.join(ROOT, "launcher", "t5dr_launcher.pyw"), encoding="utf-8") as f:
+            src = f.read()
+        self.assertRegex(src, r"def destroy\(self\):\n\s+tkgc\.uninstall\(self\)")
 
 
 if __name__ == "__main__":

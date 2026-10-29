@@ -226,6 +226,10 @@ def run_mainloop(app):
 
 
 class App(tk.Tk):
+    def destroy(self):
+        tkgc.uninstall(self)         # the collector back to Python (tkgc.py: the tests make one window after another)
+        super().destroy()
+
     def __init__(self, offscreen=False, settings=None):
         guard_tk_callbacks()         # (before the first callback: a SystemExit in one must not close the window)
         super().__init__()

@@ -34,6 +34,23 @@ def install(root, tick_ms=TICK_MS):
     _schedule()
 
 
+def uninstall(root=None):
+    """Give the collection back to Python when the window it ran on goes (App.destroy): no more ticks, automatic
+    collection on again. Only for the root it is installed on (None: whichever). Matters where the process goes on
+    after the window -- the tests, which make one launcher window after another; left off, the rest of the test
+    run made garbage that nothing ever collected."""
+    if root is not None and _state["root"] is not root:
+        return
+    old, after = _state["root"], _state["after"]
+    if old is not None and after is not None:
+        try:
+            old.after_cancel(after)
+        except Exception:      # noqa: BLE001 -- the root is already gone
+            pass
+    _state.update(root=None, after=None, since_full=0)
+    gc.enable()
+
+
 def installed_on(root):
     return _state["root"] is root and not gc.isenabled()
 

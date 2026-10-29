@@ -268,6 +268,7 @@ def end():
     stop.set()
     stats["players listed"] = len(tab.tv_players.get_children()) if hasattr(tab, "tv_players") else -1
     stats["logged in"] = int(bool(tab.client is not None and tab.client.me))
+    stats["gc off while running"] = int(not __import__("gc").isenabled())   # tkgc: collected on the Tk thread
     app.after(600, app.on_close)
 
 

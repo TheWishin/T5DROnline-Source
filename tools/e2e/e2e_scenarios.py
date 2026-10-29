@@ -3855,6 +3855,108 @@ def bo3_away_gone(ctx):
               h[0]["set"] if h else h)
 
 
+def _away_pair_real(ctx, n1, n2):
+    """Two real games (bot players), a ranked set planned A, A (A wins both games)."""
+    _need_bo3()
+    game_server(ctx, T5L_PLACEMENT=1)
+    a = ctx.player(n1, password=f"{n1.split()[-1].lower()}-pass-1", char="jin", bot=True)
+    b = ctx.player(n2, password=f"{n2.split()[-1].lower()}-pass-1", char="lili", bot=True)
+    login(ctx, a, "register")
+    login(ctx, b, "register")
+    a.set_char("jin")
+    b.set_char("lili")
+    ctx.plan = (a, b, ["AA"])
+    return a, b
+
+
+def _start_again_real(ctx, p, char):
+    """The player starts the launcher (and with it a new game) again: a new Online tab on the same per-user folder
+    logs in with the saved login; it takes p's place in the set's plan."""
+    p2 = ctx.player(p.name, password=p.password, char=char, bot=True, tag=f"again{len(ctx.players)}",
+                    user_dir=p.user_dir)
+    p2.tab.try_saved_login()
+    ctx.wait(lambda: p2.logged_in(), 20, f"{p.name}: the restarted launcher logs in with the saved login")
+    pa, pb, seq = ctx.plan
+    ctx.plan = (p2 if pa is p else pa, p2 if pb is p else pb, seq)
+    return p2
+
+
+@scenario("bo3_away_back_game", "10 ranked sets (bo3)", game=True, suites=("game",), needs="bo3",
+          desc="1.1.9, real games: game 1 won by A, A's launcher (and game) is killed between the games and started "
+               "again 10 s later (within the 90 s): the set goes on with the same set, score and sides in a new game "
+               "process; A wins game 2 and the set 2-0, rated once")
+def bo3_away_back_game(ctx):
+    a, b = _away_pair_real(ctx, "E2E Awg1", "E2E Awg2")
+    mid = queue_match(ctx, a, b, "ranked")
+    sid = _set_of(a, mid).get("id")
+    slot = a.matches[mid].get("slot")
+    _set_game(ctx, a, b, mid, "game 1")
+    ctx.check("game 1: A won, the set goes on (1-0)", (_set_of(a, mid).get("wins") or [0, 0])[slot] == 1,
+              _set_of(a, mid))
+    t_kill = time.time()
+    _kill_launcher(ctx, a)
+    ctx.wait(lambda: b.saw_status(re.escape(a.name) + r" is reconnecting -- 90 s left", t_kill), 10,
+             f"{b.name}: told that {a.name} is reconnecting, 90 s left (status line)")
+    ctx.sleep(10)
+    ctx.check("10 s later: no set_end, no new game", not b.events_of("set_end", t_kill) and
+              not latest(b, "match_start", t_kill + 0.1), "")
+    t_back = time.time()
+    a2 = _start_again_real(ctx, a, "jin")
+    ctx.wait(lambda: a2.saw_status(r"you are back in the ranked set \(1-0\)", t_back), 15,
+             f"{a.name}: told it is back in the set (1-0)")
+    ok = ctx.wait(lambda: latest(a2, "match_start", t_back) and latest(b, "match_start", t_back), 60,
+                  "the set's next game starts")
+    if not ok:
+        raise Abort("the set did not go on")
+    mid2 = latest(a2, "match_start", t_back)["match"]
+    s2 = _set_of(a2, mid2)
+    ctx.check("the same set, game 2, the same score and sides", s2.get("id") == sid and s2.get("number") == 2 and
+              (s2.get("wins") or [0, 0])[slot] == 1 and a2.matches[mid2].get("slot") == slot,
+              f"set {s2.get('id')} (was {sid}) game {s2.get('number')} wins {s2.get('wins')} slot "
+              f"{a2.matches[mid2].get('slot')} (was {slot})")
+    ctx.check("game 2 over a new connection (the restarted launcher's new game)", not a2.matches[mid2].get("cont"),
+              a2.matches[mid2].get("cont"))
+    ctx.check("the same characters", _picks(a2, b, mid2) == {a.name: "jin", b.name: "lili"}, _picks(a2, b, mid2))
+    t0 = time.time()
+    _set_game(ctx, a2, b, mid2, "game 2")
+    ctx.wait(lambda: a2.events_of("set_end", t0 - 5) and b.events_of("set_end", t0 - 5), 30, "the set ends")
+    ea, eb = latest(a2, "set_end", t0 - 5) or {}, latest(b, "set_end", t0 - 5) or {}
+    ctx.check(f"{a.name} won the set 2-0 (confirmed), rated once", ea.get("result") == "win" and
+              ea.get("status") == "confirmed" and sorted(ea.get("wins") or []) == [0, 2] and
+              (ea.get("rating") or {}).get("delta", 0) > 0,
+              f"{ea.get('result')} {ea.get('wins')} {ea.get('status')} {(ea.get('rating') or {}).get('delta')}")
+    ctx.check(f"{b.name} lost it", eb.get("result") == "loss" and (eb.get("rating") or {}).get("delta", 0) < 0,
+              f"{eb.get('result')} {(eb.get('rating') or {}).get('delta')}")
+
+
+@scenario("bo3_away_gone_game", "10 ranked sets (bo3)", game=True, suites=("game",), needs="bo3",
+          desc="1.1.9, real games: game 1 won by A, A's launcher (and game) is killed between the games and not "
+               "started again: after the 90 s B wins the set (forfeit, no_return) and gets the points; B's game "
+               "is still running")
+def bo3_away_gone_game(ctx):
+    a, b = _away_pair_real(ctx, "E2E Gog1", "E2E Gog2")
+    mid = queue_match(ctx, a, b, "ranked")
+    _set_game(ctx, a, b, mid, "game 1")
+    r0 = (profile(ctx, b) or {}).get("rating")
+    t_kill = time.time()
+    _kill_launcher(ctx, a)
+    ok = ctx.wait(lambda: b.events_of("set_end", t_kill), 90 + 30, "the set ends after the away window")
+    e = latest(b, "set_end", t_kill) or {}
+    took = time.time() - t_kill
+    ctx.check("ended after about 90 s (T5L_SET_AWAY_SECONDS)", ok and 85 <= took <= 110, f"{took:.0f} s")
+    ctx.check(f"{b.name} won the set (forfeit, no_return) and got the points",
+              e.get("result") == "win" and e.get("status") == "forfeit" and e.get("outcome_reason") == "no_return"
+              and (e.get("rating") or {}).get("delta", 0) > 0,
+              f"{e.get('result')} {e.get('status')} {e.get('outcome_reason')} {(e.get('rating') or {}).get('delta')}")
+    ctx.check(f"{b.name}'s status line: the opponent did not come back within 90 s",
+              b.saw_status(r"did not come back within 90 s", t_kill), b.status_text())
+    prof = profile(ctx, b) or {}
+    ctx.check(f"{b.name}'s profile: the rating went up", prof.get("rating", 0) > (r0 or 0),
+              f"{r0} -> {prof.get('rating')}")
+    ctx.check(f"{b.name}'s game survived the wait (no crash)", b.game_running() or game_exit_code(b) in (0, None),
+              f"running {b.game_running()} exit {game_exit_code(b)}")
+
+
 @scenario("bo3_rating_once", "10 ranked sets (bo3)", suites=("quick", "lobby"), needs="bo3",
           desc="the rating changes only once per set: the profile's rating stays after games 1 and 2 and moves at the end")
 def bo3_rating_once(ctx):

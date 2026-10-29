@@ -5274,24 +5274,43 @@ def _al_fight(ctx, p, mid):
     return mirrored, trace
 
 
-def _al_direction(ctx, trace, towards, label):
-    """The fighters' distance (T5_ALWAYS_LEFT_TRACE, every 20 fight frames) while A holds the pad's RIGHT: towards the
-    opponent it falls below 85 % of the fight start's within the first 7 s (the zero lines before the fighters are
-    placed are skipped; the counter runs on over the matches, so it is relative to the first placed line); away it
-    never does."""
-    placed = [(n, m, d) for n, m, d in trace if d >= 1500]   # a placed round start is 2000 apart; smaller/zero lines are not yet placed
-    if len(placed) < 10:
-        ctx.check(f"{label}: the fighters' places traced", False, f"{len(placed)} placed trace lines")
+def _al_places(ctx, p, mid):
+    """p's game log of match mid: [(trace n, P1 x, P1 z, P2 x, P2 z)] of its fight (T5_ALWAYS_LEFT_TRACE)."""
+    return [(int(m.group(1)), int(m.group(3)), int(m.group(4)), int(m.group(5)), int(m.group(6)))
+            for m in map(RE_AL_TRACE.search, p.log_segment(mid)) if m]
+
+
+def al_first_step(places, slot, min_step=100):
+    """Which way A (P1 for slot 0, P2 for slot 1) first moved, while it holds the pad's RIGHT: +1 towards the
+    opponent, -1 away, 0 when it never moved min_step from where it was placed. A's own displacement along the line
+    to where the opponent stood, from the first placed line (a round start is 2000 apart) to the first line where A
+    has moved min_step -- before an attack of the script can carry A (Devil Jin's b+1 lunges ~870 forward: the
+    1.1.9 gate's Quick match walked away first, then the lunge made the distance shrink) or a hit can push the
+    opponent away."""
+    placed = [r for r in places if abs(r[1] - r[3]) + abs(r[2] - r[4]) >= 1500]
+    if not placed:
+        return 0
+    _n, x1, z1, x2, z2 = placed[0]
+    ax, az, ox, oz = (x1, z1, x2, z2) if slot == 0 else (x2, z2, x1, z1)
+    for _n, p1x, p1z, p2x, p2z in places[places.index(placed[0]):]:
+        nx, nz = (p1x, p1z) if slot == 0 else (p2x, p2z)
+        dx, dz = nx - ax, nz - az
+        if (dx * dx + dz * dz) ** 0.5 >= min_step:
+            along = dx * (ox - ax) + dz * (oz - az)
+            return 1 if along > 0 else -1
+    return 0
+
+
+def _al_direction(ctx, places, slot, towards, label):
+    """A's first step while it holds the pad's RIGHT (al_first_step): towards the opponent on a mirrored P2 screen
+    (the game's LEFT for P2) or as P1, away as an unmirrored P2."""
+    if len(places) < 10:
+        ctx.check(f"{label}: the fighters' places traced", False, f"{len(places)} trace lines")
         return
-    base, first = placed[0][0], placed[0][2]
-    early = [d for n, _m, d in trace if base <= n <= base + 420]
-    near = min(early)
-    if towards:
-        ctx.check(f"{label}: A's RIGHT walks A towards the opponent (distance {first} -> {near} in 7 s)",
-                  near < first * 0.85, f"start {first}, closest in the first 7 s {near}")
-    else:
-        ctx.check(f"{label}: A's RIGHT walks A away from the opponent (distance {first}, closest {near} in 7 s)",
-                  near >= first * 0.95, f"start {first}, closest in the first 7 s {near}")
+    step = al_first_step(places, slot)
+    want = 1 if towards else -1
+    ctx.check(f"{label}: A's RIGHT walks A {'towards' if towards else 'away from'} the opponent (first step)",
+              step == want, {1: "towards", -1: "away", 0: "A never moved 100 from its start"}[step])
 
 
 @scenario("net_always_left", "6 netcode", game=True, suites=("game", "net"),
@@ -5336,7 +5355,7 @@ def net_always_left(ctx):
     ctx.check("casual: A's game (P2) showed the fight mirrored", ma > 0, f"{ma} mirrored fight(s)")
     ctx.check("casual: B's game (P1, option on too) never mirrored", mb == 0, f"{mb} mirrored fight(s)")
     ctx.check("casual: the trace says mirrored on A's PC", any(m for _n, m, _d in ta), f"{len(ta)} lines")
-    _al_direction(ctx, ta, True, "casual, A mirrored P2")
+    _al_direction(ctx, _al_places(ctx, a, mid), 1, True, "casual, A mirrored P2")
     for p in (a, b):
         leave(ctx, p)
     ctx.sleep(2.0)
@@ -5353,7 +5372,7 @@ def net_always_left(ctx):
         mb, _tb = _al_fight(ctx, b, mid)
         ctx.check(f"quick {k + 1}: neither game mirrored (A is P{slot + 1}, both have the option on)",
                   ma == 0 and mb == 0, f"A {ma}, B {mb}")
-        _al_direction(ctx, ta, slot == 0, f"quick {k + 1}, A is P{slot + 1}, not mirrored")
+        _al_direction(ctx, _al_places(ctx, a, mid), slot, slot == 0, f"quick {k + 1}, A is P{slot + 1}, not mirrored")
         for p in (a, b):
             leave(ctx, p)
         ctx.wait(lambda: a.action_on("quick") and b.action_on("quick"), 30, "free for the next pairing")

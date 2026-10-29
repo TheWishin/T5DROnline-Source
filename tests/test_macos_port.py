@@ -163,16 +163,21 @@ class SourceLayout(unittest.TestCase):
         # and on a Mac everything else in t5dr too (boot harness, loader, HLE table, src/)
         self.assertRegex(cm, r'if\(APPLE\)\s*\n\s*target_compile_options\(t5dr PRIVATE -ffp-contract=off\)')
 
-    def test_macos_online_is_off_by_default(self):
-        """A Mac build has the online modules only when asked (docs/MACOS_ONLINE_TEST.md): CMake's option is
-        OFF, tools/build_game.py passes it from --macos-online only, and the stamp tells the lobby client."""
+    def test_macos_modules_on_by_default_online_off(self):
+        """1.1.9: a Mac build has the src/ modules by default (practice tools, unlocks, direct fight; CMake's
+        option defaults ON on APPLE, tools/build_game.py passes it unless --macos-offline), but online play
+        stays off: the stamp's "online" (what the lobby client checks) only with --macos-online
+        (docs/MACOS_ONLINE_TEST.md)."""
         cm = read(os.path.join(ROOT, "CMakeLists.txt"))
-        self.assertRegex(cm, r'option\(T5DR_MACOS_ONLINE "[^"]*" OFF\)')
+        self.assertRegex(cm, r'option\(T5DR_MACOS_ONLINE "[^"]*" \$\{_t5dr_mac_modules_default\}\)')
+        self.assertRegex(cm, r'if\(APPLE\)\s*\n\s*set\(_t5dr_mac_modules_default ON\)\s*\nelse\(\)\s*\n\s*set\(_t5dr_mac_modules_default OFF\)')
         self.assertIn("if(WIN32 OR T5DR_MACOS_ONLINE)", cm)
         bg = read(os.path.join(ROOT, "tools", "build_game.py"))
-        self.assertIn('f"-DT5DR_MACOS_ONLINE={\'ON\' if online else \'OFF\'}"', bg)
-        self.assertIn('write_stamp((cc[0] if cc else "cc") + " (CMake)", {"online": online})', bg)
+        self.assertIn('f"-DT5DR_MACOS_ONLINE={\'ON\' if modules else \'OFF\'}"', bg)
+        self.assertIn('online = modules and bool(getattr(a, "macos_online", False))', bg)
+        self.assertIn('write_stamp((cc[0] if cc else "cc") + " (CMake)", {"online": online, "modules": modules})', bg)
         self.assertIn('ap.add_argument("--macos-online", action="store_true"', bg)
+        self.assertIn('ap.add_argument("--macos-offline", action="store_true"', bg)
         # and a Mac that has them still offers no rollback unless asked (lockstep first)
         self.assertIn('getenv("T5_MACOS_ROLLBACK")', read(os.path.join(SRC, "rollback", "rb_net.cpp")))
 

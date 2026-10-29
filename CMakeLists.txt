@@ -266,7 +266,16 @@ endif()
 # T5DR_MACOS_ONLINE (tools/build_game.py --macos-online): online play between a Mac and a PC is
 # not proven in sync yet (docs/MACOS_ONLINE_TEST.md), so the default Mac build stays the game
 # alone, offline, as before.
-option(T5DR_MACOS_ONLINE "macOS: build the online modules (a test build until a Mac-vs-PC match is proven in sync)" OFF)
+# 1.1.9 (mac-119): on by default on macOS -- the modules also carry the offline features (practice tools,
+# training, stage unlock, direct fight). Online play itself stays off: nothing starts netplay without the
+# launcher / T5_NET_MODE, and the lobby client wants a --macos-online build (its stamp). tools/build_game.py
+# passes the value explicitly (--macos-offline: OFF).
+if(APPLE)
+    set(_t5dr_mac_modules_default ON)
+else()
+    set(_t5dr_mac_modules_default OFF)
+endif()
+option(T5DR_MACOS_ONLINE "macOS: build the src/ modules (netplay, rollback, direct fight, training, practice)" ${_t5dr_mac_modules_default})
 if(T5DR_MACOS_ONLINE AND NOT APPLE)
     message(FATAL_ERROR "T5DR_MACOS_ONLINE is for macOS builds")
 endif()

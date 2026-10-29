@@ -58,7 +58,7 @@ to get 90. Never set it short on the real server (the tests use 2-6 s through th
 
 ## How to deploy
 
-Same steps as [docs/DEPLOY_1.1.5.md](docs/DEPLOY_1.1.5.md) / DEPLOY_1.1.7.md, with `1.1.9` in the names:
+Same steps as [DEPLOY_1.1.5.md](DEPLOY_1.1.5.md) / [DEPLOY_1.1.7.md](DEPLOY_1.1.7.md), with `1.1.9` in the names:
 
 1. **P1** build the archive from the merged commit to deploy (`lobby_119.tgz`), copy it to the central server.
 2. **P2** unpack into `/opt/src/t5dr-lobby-1.1.9`, check it there (`code ok`; the database line on a copy of the

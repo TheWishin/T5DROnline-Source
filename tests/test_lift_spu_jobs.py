@@ -9,6 +9,7 @@ import struct
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 from helpers import PY, ROOT, TOOLS, fake_bytes, get, load_tool, put
 
@@ -93,6 +94,38 @@ class JobTable(unittest.TestCase):
                 self.assertLess(t, code_end, f"{name}: jump target 0x{t:X} past the code")
                 self.assertEqual(t % 4, 0)
             self.assertTrue(desc)
+
+
+class EuropeanJobs(unittest.TestCase):
+    """1.1.9: the European program (NPEA00019 v01.00) has its own job images; the table whose fingerprints all
+    match the ELF is the one lifted."""
+
+    def test_tables(self):
+        m = load_tool("lift_spu_jobs")
+        self.assertEqual([label for label, _ in m.JOBS_BY_PROGRAM], ["NPUB30009 v01.00", "NPEA00019 v01.00"])
+        self.assertIs(m.JOBS_BY_PROGRAM[0][1], m.JOBS)
+        for us, eu in zip(m.JOBS, m.JOBS_EU):
+            self.assertEqual((us[0], us[2], us[5]), (eu[0], eu[2], eu[5]))     # name, size, image id
+            self.assertNotEqual(us[1], eu[1])                                  # another place in the ELF
+            self.assertLessEqual(eu[4], eu[2])
+            for t in eu[6]:
+                self.assertLess(t, eu[4])
+
+    def test_pick_jobs_by_fingerprint(self):
+        m = load_tool("lift_spu_jobs")
+        a, b = fake_bytes("job a", 0x100), fake_bytes("job b", 0x80)
+        segs = [(0x10000000, a + b)]
+        one = [("x", 0x10000000, 0x100, m.fnv1a64(a), 0x100, 32, [], "x")]
+        two = [("x", 0x10000100, 0x80, m.fnv1a64(b), 0x80, 32, [], "x")]
+        with mock.patch.object(m, "JOBS_BY_PROGRAM", [("first", one), ("second", two)]):
+            self.assertEqual(m.pick_jobs(segs), ("first", one))                  # the first table that matches
+            self.assertEqual(m.pick_jobs([(0x10000000, bytes(0x180))]), (None, m.JOBS))   # none: the US table
+        with mock.patch.object(m, "JOBS_BY_PROGRAM", [("first", one[:0] + [one[0][:1] + (0x10000000,) + one[0][2:]]),
+                                                      ("second", two)]):
+            self.assertEqual(m.pick_jobs([(0x10000000, b + a)])[0], None)        # wrong bytes at the first's EA
+        with mock.patch.object(m, "JOBS_BY_PROGRAM", [("first", [("x", 0x10000000, 0x80, m.fnv1a64(b), 0x80, 32,
+                                                                    [], "x")]), ("second", two)]):
+            self.assertEqual(m.pick_jobs(segs)[0], "second")                     # only the second matches
 
 
 class GuestReads(unittest.TestCase):

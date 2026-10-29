@@ -20,6 +20,7 @@
  */
 #define WIN32_LEAN_AND_MEAN
 #include "../platform/t5_win.h"
+#include "../platform/t5_game.h"   /* hooks_ok: only for NPUB30009 v01.00 */
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -693,6 +694,7 @@ struct Register {
         const bool replay = nm0 && !_stricmp(nm0, "replay");   /* a replay is a direct fight (docs/REPLAYS.md) */
         if (!(fight && *fight) && !(ffile && *ffile) && !(pr && *pr) && !(s1 && *s1) && !(s2 && *s2) && !(dm && *dm) &&
             !(ctl && *ctl) && !replay) return;
+        if (!t5game::hooks_ok("direct fight")) return;   /* the EU release: not its addresses (t5_game.h) */
         /* netplay owns the pads with T5_NET_MODE, and in a persistent game (its
          * hooks are in from boot for the sessions to come) */
         { const char* nm = getenv("T5_NET_MODE"); g_np = (nm && *nm) || (ctl && *ctl); }

@@ -17,6 +17,7 @@
  */
 #define WIN32_LEAN_AND_MEAN
 #include "../platform/t5_win.h"
+#include "../platform/t5_game.h"   /* hooks_ok: only for NPUB30009 v01.00 */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -209,6 +210,7 @@ struct Register {
     {
         const char* p = getenv("T5_PERF_LOG");
         if (!p || !*p) return;
+        if (!t5game::hooks_ok("frame timing (T5_PERF_LOG)")) return;   /* reads US addresses (t5_game.h) */
         g_out = fopen(p, "w");
         if (!g_out) { fprintf(stderr, "[perf] cannot open %s\n", p); return; }
         QueryPerformanceFrequency(&g_qpf);

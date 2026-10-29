@@ -680,6 +680,12 @@ class OnlineTab:
         if not st.get("ok"):
             return None, st.get("text") or t("The game is not built.")
         if not BuildInfo.has_online(self.app.settings.out_dir):
+            title = BuildInfo.game_title(self.app.settings.out_dir)
+            if title and title != "NPUB30009":
+                # 1.1.9: the European release builds and plays offline; the online modules know only the US one
+                return None, t("This game is the European version ({title_id}): it plays offline only for now. Online "
+                               "play for the European version comes in a later update; it never plays against the "
+                               "US version (NPUB30009).", title_id=title)
             # a macOS build without the online modules (online on a Mac is a test build for now)
             return None, t("This Mac build has no online play. For a test match: tools/build_game.py --macos-online "
                            "(docs/MACOS_ONLINE_TEST.md).")

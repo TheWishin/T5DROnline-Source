@@ -123,6 +123,11 @@ def warmup(a, out):
     if sys.platform != "win32":
         note("only on Windows (the D3D12 renderer's caches)")
         return 0
+    if read_json(os.path.join(out, "build", "t5dr_build.json")).get("online", True) is False:
+        # 1.1.9: the European program -- the fights are played through the direct fight (src/directfight), which
+        # knows only the US program (src/platform/t5_game.h); without it the game would sit at its title
+        note("not for this version of the game (the European one) -- the first fights build their shaders instead")
+        return 0
     lines = fight_lines(a.fights)
     skip = os.path.join(out, SKIP_FILE)
     try:

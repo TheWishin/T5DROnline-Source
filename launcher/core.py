@@ -303,23 +303,31 @@ def describe_pkg(path, out_dir=None):
     # What is inside (PARAM.SFO and the program's header, read from the package in well under a second): a v01.01
     # package names itself like the supported one would, and the build used to blame the .rap for it.
     facts = _package_facts(path, peek_keys_path(out_dir))
-    if facts and facts["title_id"] == build_game.TITLE_ID:
+    # 1.1.9: the US release (NPUB30009) and the European one (NPEA00019), each version 01.00 (build_game.PROGRAMS)
+    if facts and facts["title_id"] in build_game.TITLE_IDS:
+        want = build_game.program_of(title_id=facts["title_id"])
         ver, prog = facts["version"], facts["program"]
-        ver = build_game.OTHER_VERSIONS.get(prog, ver) if ver in ("?", build_game.TITLE_VERSION) else ver
-        if ver not in ("?", build_game.TITLE_VERSION):
+        ver = build_game.OTHER_VERSIONS.get(prog, ver) if ver in ("?", want["version"]) else ver
+        if ver not in ("?", want["version"]):
             return False, "error", t("{id}  ({size} bytes) -- version {version} of the game. The port supports only "
                                      "version {supported}; the build will refuse this package.", id=cid,
-                                     size=f"{size:,}", version=ver, supported=build_game.TITLE_VERSION)
-        if prog and prog not in build_game.CONTENT_IDS:
+                                     size=f"{size:,}", version=ver, supported=want["version"])
+        if prog and prog not in want["content_ids"]:
             return True, "warn", t("{id}  ({size} bytes) -- its program has content ID {program}, not the supported "
                                    "one ({supported}). The build will most likely refuse it.", id=cid,
-                                   size=f"{size:,}", program=prog, supported=build_game.CONTENT_ID)
-    if cid in build_game.CONTENT_IDS:
+                                   size=f"{size:,}", program=prog, supported=want["content_ids"][0])
+    prog = build_game.program_of(content_id=cid)
+    if prog and not prog["online"]:
+        return True, "ok", t("{id}  ({size} bytes) -- the European version: it plays offline only for now. Online play "
+                             "for it comes in a later update.",
+                             id=cid, size=f"{size:,}")
+    if prog:
         return True, "ok", t("{id}  ({size} bytes) -- the supported version", id=cid, size=f"{size:,}")
-    if build_game.TITLE_ID in cid:
+    want = next((p for p in build_game.PROGRAMS.values() if p["title_id"] in cid), None)
+    if want:
         return True, "warn", t("{id}  ({size} bytes) -- Tekken 5 DR, but not the supported package ({supported}). "
                                "The build will most likely refuse it.", id=cid, size=f"{size:,}",
-                               supported=build_game.CONTENT_ID)
+                               supported=want["content_ids"][0])
     return True, "warn", t("{id}  ({size} bytes) -- not Tekken 5 DR Online ({title_id}).", id=cid, size=f"{size:,}",
                            title_id=build_game.TITLE_ID)
 
@@ -404,7 +412,7 @@ def describe_rap(path, pkg=None):
     if os.path.getsize(path) != 16:
         return False, "error", t("Not a PS3 license: a .rap file is exactly 16 bytes.")
     name = os.path.basename(path)
-    if build_game.CONTENT_ID in name:
+    if any(c in name for c in build_game.ALL_CONTENT_IDS):
         return True, "ok", t("{name} -- matches the supported package", name=name)
     if pkg:
         try:
@@ -489,8 +497,12 @@ def find_candidates(roots=None):
         for pat, lst in (("*.pkg", pkgs), ("*.rap", raps)):
             for depth in ("", "*", os.path.join("*", "*")):
                 lst.extend(glob.glob(os.path.join(r, depth, pat)))
-    good = [p for p in pkgs if not cloud_only(p) and _safe_cid(p) == build_game.CONTENT_ID]
-    rap = [r for r in raps if build_game.CONTENT_ID in os.path.basename(r) and not cloud_only(r)
+    # the US package first (it plays online); a European one when there is no US one, with its own license
+    good = sorted((p for p in pkgs if not cloud_only(p) and _safe_cid(p) in build_game.ALL_CONTENT_IDS),
+                  key=lambda p: _safe_cid(p) not in build_game.CONTENT_IDS)
+    want = _safe_cid(good[0]) if good else build_game.CONTENT_ID
+    want = (build_game.program_of(content_id=want) or build_game.US_PROGRAM)["content_ids"]
+    rap = [r for r in raps if any(c in os.path.basename(r) for c in want) and not cloud_only(r)
            and os.path.getsize(r) == 16]
     return (good[0] if good else None), (rap[0] if rap else None)
 
@@ -583,7 +595,8 @@ def game_state(out):
         return st
     h = build_game.sha1(elf)
     st["elf_sha1"] = h
-    if h != build_game.ELF_SHA1:
+    prog = build_game.PROGRAMS.get(h)          # 1.1.9: the US or the European program
+    if prog is None:
         st["text"] = t("The decrypted program has SHA-1 {sha}..., not the supported version. "
                        "Build again from the supported package.", sha=h[:12])
         return st
@@ -602,7 +615,7 @@ def game_state(out):
     st["ok"] = True
     when = info.get("built", "?").replace("T", " ")
     st["text"] = t("Ready: {title_id} v{version}, program SHA-1 {sha}... verified, built {when}.",
-                   title_id=build_game.TITLE_ID, version=build_game.TITLE_VERSION, sha=h[:12], when=when)
+                   title_id=prog["title_id"], version=prog["version"], sha=h[:12], when=when)
     return st
 
 

@@ -67,6 +67,7 @@
  */
 #define WIN32_LEAN_AND_MEAN
 #include "../platform/t5_win.h"
+#include "../platform/t5_game.h"   /* hooks_ok: only for NPUB30009 v01.00 */
 #if defined(_WIN32)
 #include <bcrypt.h>
 #endif
@@ -2135,6 +2136,8 @@ struct Register {
     {
         const char* m = getenv("T5_NET_MODE");
         const char* ctl = getenv("T5_CTL_DIR");
+        /* another program than NPUB30009 v01.00 (the EU release): none of the addresses here is its own */
+        if (!t5game::hooks_ok("netplay, late input, training overlay, practice tools")) return;
         g_persistent = ctl && *ctl;
         if ((!m || !*m) && !g_persistent) {
             /* netplay off: only the offline keyread tick (T5_LATE_INPUT=0: nothing

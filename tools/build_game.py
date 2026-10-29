@@ -58,11 +58,65 @@ CONTENT_ID = "UP0700-NPUB30009_00-UPDATE0000010000"
 CONTENT_IDS = (CONTENT_ID, "UP0700-NPUB30009_00-0000000000010000")
 # Programs of other versions players had (the content ID in the program's own header -> the version): the build
 # says so instead of blaming the .rap (two players' v01.01 packages, GitHub #20/#21).
-OTHER_VERSIONS = {"UP0700-NPUB30009_00-0000000000000000": "01.01"}
+OTHER_VERSIONS = {"UP0700-NPUB30009_00-0000000000000000": "01.01",
+                  # the European "Online" edition (PARAM.SFO VERSION 02.00, APP_VER 01.00): another program again,
+                  # closer to the US one; not supported yet (docs/EU.md)
+                  "UP0700-NPEA00019_00-TEKKEN5DRO000000": "02.00 (Online)"}
 GAME_NAME = "Tekken 5: Dark Resurrection Online (PS3, US PSN, NPUB30009 v01.00)"
 ELF_SHA1 = "be80165b84e30b6334baa6d6331b9db4ffd5a6a4"
 PKG_SIZE = 619430240
 CODE_END = "0x3C7100"   # end of .lib.stub; past it is .rodata
+
+# Function entries of the sound core that its function finder cannot see: the
+# DSP effect table in the core's data (LS 0x11AB0-0x11B84, records named
+# "DLAY", "DPL2", "HPF ", "IIRF", "LHPF", "MIX ", "MONO", "MUX ", "PTCH", "REVB",
+# "TMPL", "VOLP" plus one more process function) holds pointers to 13
+# functions that nothing branches to directly. Unlifted, every call landed in
+# the runtime's SPU interpreter (~600 entries a second in a fight, each
+# interpreting a whole effect over its sample block) instead of native code.
+SPU_CORE_EXTRA_FUNCS = ("bnuscore=0xF9B8,0x59A8,0x5D90,0x5FD8,0x68A0,0x6E98,0x7528,"
+                        "0x7598,0x7618,0x7690,0x7968,0x8B70,0x8BC0")
+
+# 1.1.9: the programs the build accepts, by the SHA-1 of the decrypted EBOOT.elf (docs/EU.md). The US release is
+# the one everything was made for; the European release (NPEA00019 v01.00, Sony's EP9000 package of 2007) is
+# another build of the game -- about half of its functions are the US ones byte for byte, the rest and the data
+# layout differ -- so what src/ does at US addresses (online play, practice tools, training overlay, late input)
+# stays off for it (src/platform/t5_game.h): it builds and plays offline.
+#   code_end   end of .lib.stub (the firmware import stubs); past it is .rodata
+#   spu_extra  the sound core's effect functions (SPU_CORE_EXTRA_FUNCS above): the EU core is another build of it,
+#              its effect table (the same 12 names, 0x60 further on) points 0x88 further; the 13th entry by its code
+#   pgo        the shipped PGO profile names the US program's functions: for another program it would only mislead
+#   online     the online modules know this program (BuildInfo.has_online reads it from the build stamp)
+PROGRAMS = {
+    ELF_SHA1: {
+        "key": "us", "title_id": TITLE_ID, "version": TITLE_VERSION, "region": "US", "name": GAME_NAME,
+        "content_ids": CONTENT_IDS, "pkg_size": PKG_SIZE, "code_end": CODE_END, "spu_extra": SPU_CORE_EXTRA_FUNCS,
+        "pgo": True, "online": True,
+    },
+    "586baa2074e3d259b303879fc7cbea1000041b60": {
+        "key": "eu", "title_id": "NPEA00019", "version": "01.00", "region": "EU",
+        "name": "Tekken 5: Dark Resurrection (PS3, EU PSN, NPEA00019 v01.00)",
+        "content_ids": ("EP9000-NPEA00019_00-0000000000000000",), "pkg_size": 599050576, "code_end": "0x30388C",
+        "spu_extra": ("bnuscore=0xFA38,0x5A30,0x5E18,0x6060,0x6930,0x6F28,0x75B8,"
+                      "0x7628,0x76A8,0x7720,0x79F8,0x8C00,0x8C50"),
+        "pgo": False, "online": False,
+    },
+}
+US_PROGRAM = PROGRAMS[ELF_SHA1]
+TITLE_IDS = tuple(dict.fromkeys(p["title_id"] for p in PROGRAMS.values()))      # ("NPUB30009", "NPEA00019")
+ALL_CONTENT_IDS = tuple(c for p in PROGRAMS.values() for c in p["content_ids"])
+SUPPORTED_TEXT = "; ".join(f"{p['name']}, content ID {p['content_ids'][0]}" for p in PROGRAMS.values())
+
+
+def program_of(content_id=None, title_id=None):
+    """The supported program a package or license is for: by its content ID, else its title ID; None if none."""
+    for p in PROGRAMS.values():
+        if content_id and content_id in p["content_ids"]:
+            return p
+    for p in PROGRAMS.values():
+        if title_id and title_id == p["title_id"]:
+            return p
+    return None
 
 STEPS = ["deps", "keys", "decrypt", "unpack", "vfs", "lift", "spu", "compile", "shaders"]
 # "shaders" (1.1.5, tools/shader_warmup.py) runs only with --warmup (the launcher passes it) or when named in
@@ -93,6 +147,10 @@ class Paths:
         self.spu = os.path.join(self.build, "spu")
         self.exe = os.path.join(self.cmake, "t5dr.exe" if os.name == "nt" else "t5dr")
         self.stamp = os.path.join(self.build, "t5dr_build.json")
+
+    def hdd0_usrdir_of(self, title_id):
+        """/dev_hdd0/game/<title id>/USRDIR, where a PSN game reads its data: the program's own title ID (1.1.9)."""
+        return os.path.join(self.hdd0, "game", title_id, "USRDIR")
 
 
 P = Paths(ROOT)
@@ -622,6 +680,32 @@ def need_pkg(a):
     return cid
 
 
+_PROGRAM = {}
+
+
+def built_program(elf=None):
+    """The PROGRAMS entry of the decrypted program at `elf` (default: this build's game/EBOOT.elf), or None when it
+    is missing or none of the supported ones. Hashed once per file version."""
+    elf = elf or P.elf
+    try:
+        st = os.stat(elf)
+    except OSError:
+        return None
+    key = (os.path.abspath(elf), st.st_size, st.st_mtime_ns)
+    if key not in _PROGRAM:
+        _PROGRAM[key] = PROGRAMS.get(sha1(elf))
+    return _PROGRAM[key]
+
+
+def need_program():
+    """The supported program this build has decrypted (the steps after `decrypt` follow it)."""
+    prog = built_program()
+    if prog is None:
+        fail("The decrypted game program is missing or not a supported version. Tick \"Redo every step\" and press "
+             "BUILD GAME again.")
+    return prog
+
+
 def program_kind(path):
     """"self" for a PS3 program as the package carries it, "elf" for one already decrypted, None for anything
     else (an empty or cut-short file left by a stopped run)."""
@@ -636,14 +720,36 @@ def program_kind(path):
     return {b"SCE\0": "self", b"\x7fELF": "elf"}.get(head)
 
 
-def fail_version(ver, prog):
+def fail_version(ver, prog, want=None):
+    """`want`: the supported program of the package's title ID (the US one when not given)."""
+    want = want or US_PROGRAM
     fail(f"This package is version {ver} of the game (program content ID {prog or '?'}). The port supports only "
-         f"version {TITLE_VERSION}: {GAME_NAME}, content ID {CONTENT_ID}, {PKG_SIZE:,} bytes. This version cannot "
-         "be used, whatever the license (.rap).")
+         f"version {want['version']}: {want['name']}, content ID {want['content_ids'][0]}, {want['pkg_size']:,} "
+         "bytes. This version cannot be used, whatever the license (.rap).")
+
+
+def other_package(a):
+    """True when the chosen package is another game than the one this output folder holds (its content ID names
+    another title ID than the PARAM.SFO taken out before): a US build folder given the EU package, or the other way
+    round. Then the steps that keep their output start again from that package (1.1.9)."""
+    sfo = os.path.join(P.pkg_dir, "PARAM.SFO")
+    if not (a.pkg and os.path.exists(a.pkg) and os.path.exists(sfo)):
+        return False
+    try:
+        cid, tid = pkg_content_id(a.pkg), read_sfo(sfo).get("TITLE_ID")
+    except OSError:
+        return False
+    return bool(cid and tid and tid in TITLE_IDS and tid not in cid)
 
 
 def step_decrypt(a):
-    if os.path.exists(P.elf) and sha1(P.elf) == ELF_SHA1 and not a.force:
+    if other_package(a):
+        print("  the chosen package is another version of the game than the one unpacked here: starting from it")
+        for stale in (P.unpacked_stamp, os.path.join(P.pkg_dir, "USRDIR", "EBOOT.BIN"),
+                      os.path.join(P.pkg_dir, "PARAM.SFO"), P.elf):
+            if os.path.exists(stale):
+                os.remove(stale)
+    if built_program() and not a.force:
         print("  already done")
         return
     if not a.rap:
@@ -669,22 +775,23 @@ def step_decrypt(a):
         take_out()
     if not os.path.exists(eboot):
         fail("This package has no USRDIR/EBOOT.BIN -- it is not a game package (an add-on or theme?). "
-             f"The port needs {GAME_NAME}.")
+             f"The port needs {SUPPORTED_TEXT}.")
     s = read_sfo(sfo) if os.path.exists(sfo) else {}
     title, tid, ver = s.get("TITLE", "?"), s.get("TITLE_ID", "?"), sfo_version(s)
     print(f"  PARAM.SFO: {title} / {tid} / version {ver}")
-    if tid != TITLE_ID:
-        fail(f"This package is \"{title}\" ({tid}). The port needs {GAME_NAME}.")
+    if tid not in TITLE_IDS:
+        fail(f"This package is \"{title}\" ({tid}). The port needs {SUPPORTED_TEXT}.")
+    want = program_of(title_id=tid)
     kind = program_kind(eboot)
     prog = self_content_id(eboot) if kind == "self" else None
     if prog:
         print(f"  program content ID: {prog} (its license: {prog}.rap)")
     # Two players had v01.01 (APP_VER 01.01, program UP0700-NPUB30009_00-0000000000000000): their .rap could not
     # decrypt it and the build said the .rap was wrong. The version is what is wrong, and no .rap changes that.
-    if ver not in ("?", TITLE_VERSION):
-        fail_version(ver, prog)
+    if ver not in ("?", want["version"]):
+        fail_version(ver, prog, want)
     if prog in OTHER_VERSIONS:
-        fail_version(OTHER_VERSIONS[prog], prog)
+        fail_version(OTHER_VERSIONS[prog], prog, want)
     if kind == "elf":
         # A re-packed package that carries the program already decrypted: usable when it is the same program
         # (the SHA-1 pin below decides).
@@ -699,23 +806,27 @@ def step_decrypt(a):
         except subprocess.CalledProcessError as e:
             if "wrong .rap" in (e.output or ""):
                 if prog in OTHER_VERSIONS:
-                    fail_version(OTHER_VERSIONS[prog], prog)     # no .rap makes another version usable
+                    fail_version(OTHER_VERSIONS[prog], prog, want)     # no .rap makes another version usable
                 fail("The license (.rap) does not belong to this package. Use the .rap whose name matches "
-                     f"the package's content ID ({prog or CONTENT_ID}).")
-            if a.pkg and os.path.exists(a.pkg) and os.path.getsize(a.pkg) != PKG_SIZE:
-                fail(f"The package is {os.path.getsize(a.pkg):,} bytes, the supported one is {PKG_SIZE:,} bytes: "
-                     "the download is incomplete or it is a different file. Download it again.")
+                     f"the package's content ID ({prog or want['content_ids'][0]}).")
+            if a.pkg and os.path.exists(a.pkg) and os.path.getsize(a.pkg) != want["pkg_size"]:
+                fail(f"The package is {os.path.getsize(a.pkg):,} bytes, the supported one is {want['pkg_size']:,} "
+                     "bytes: the download is incomplete or it is a different file. Download it again.")
             fail("Decrypting the game program failed (see the log above). Tick \"Redo every step\" and press "
-                 f"BUILD GAME again; if it fails again, check that the package is {PKG_SIZE:,} bytes.")
+                 f"BUILD GAME again; if it fails again, check that the package is {want['pkg_size']:,} bytes.")
     got = sha1(P.elf)
-    if got != ELF_SHA1:
+    have = PROGRAMS.get(got)
+    if have is None:
         os.remove(P.elf)
         cid = next((l.split("content id", 1)[1].split(",")[0].strip()
                     for l in out.splitlines() if "content id" in l), "?")
         fail(f"This copy is a different version of the game: \"{title}\" version {ver}, content ID {cid} "
-             f"(program SHA-1 {got[:12]}...). The port supports only {GAME_NAME}, "
-             f"content ID {CONTENT_ID}.")
-    print(f"  program OK: SHA-1 {got} ({TITLE_ID} v{TITLE_VERSION})")
+             f"(program SHA-1 {got[:12]}...). The port supports only {want['name']}, "
+             f"content ID {want['content_ids'][0]}.")
+    print(f"  program OK: SHA-1 {got} ({have['title_id']} v{have['version']}, {have['region']})")
+    if not have["online"]:
+        print(f"  note: {have['title_id']} is another build of the game than the US one -- it plays offline; online "
+              "play, the practice tools and the training overlay need the US version (NPUB30009) for now")
 
 
 def step_unpack(a):
@@ -734,7 +845,8 @@ def step_unpack(a):
         run([PY, os.path.join(P.tools, "pkg_extract.py"), a.pkg, P.pkg_dir], env=keys_env(), capture=True)
     except subprocess.CalledProcessError as e:
         if "cut short" in (e.output or ""):
-            fail(f"The package is {os.path.getsize(a.pkg):,} bytes, the supported one is {PKG_SIZE:,} bytes: the "
+            size = (program_of(content_id=pkg_content_id(a.pkg)) or US_PROGRAM)["pkg_size"]
+            fail(f"The package is {os.path.getsize(a.pkg):,} bytes, the supported one is {size:,} bytes: the "
                  "download is incomplete or it is a different file. Download it again.")
         raise
     with open(P.unpacked_stamp, "w", encoding="utf-8") as f:   # any file name (cp1252 stopped at "Ł")
@@ -746,14 +858,16 @@ def step_vfs(a):
     # beside it. The game itself is a PSN title: it looks for its data under
     # /dev_hdd0/game/NPUB30009/USRDIR/, which run_game.py maps to
     # <vfs>/dev_hdd0 through PS3_HDD0_ROOT.
+    # (the EU program reads /dev_hdd0/game/NPEA00019/USRDIR/: each program its own title ID)
+    hdd0_usrdir = P.hdd0_usrdir_of(need_program()["title_id"])
     os.makedirs(P.usrdir, exist_ok=True)
-    os.makedirs(P.hdd0_usrdir, exist_ok=True)
+    os.makedirs(hdd0_usrdir, exist_ok=True)
     link_or_copy(P.elf, os.path.join(P.usrdir, "EBOOT.elf"))
     link_or_copy(os.path.join(P.pkg_dir, "PARAM.SFO"), os.path.join(P.vfs, "PS3_GAME", "PARAM.SFO"))
-    link_or_copy(os.path.join(P.pkg_dir, "PARAM.SFO"), os.path.join(P.hdd0_usrdir, "..", "PARAM.SFO"))
+    link_or_copy(os.path.join(P.pkg_dir, "PARAM.SFO"), os.path.join(hdd0_usrdir, "..", "PARAM.SFO"))
     for name in sorted(os.listdir(os.path.join(P.pkg_dir, "USRDIR"))):
         if name.upper() != "EBOOT.BIN":
-            link_or_copy(os.path.join(P.pkg_dir, "USRDIR", name), os.path.join(P.hdd0_usrdir, name))
+            link_or_copy(os.path.join(P.pkg_dir, "USRDIR", name), os.path.join(hdd0_usrdir, name))
             stale = os.path.join(P.usrdir, name)
             if os.path.exists(stale):
                 os.remove(stale)
@@ -770,7 +884,10 @@ def step_lift(a):
     # uses live in C locals between calls. T5DR_LIFT_REGPROMO=0 lifts without it -- the same results,
     # only slower; for comparisons. The stamp records it, so switching lifts again.
     regpromo = os.environ.get("T5DR_LIFT_REGPROMO", "1") != "0"
+    prog = need_program()
     lifter_id = (sha1(lifter) if os.path.exists(lifter) else "") + ("" if regpromo else ":regpromo=off")
+    if prog is not US_PROGRAM:          # (a lift of one program is never taken for another's: 1.1.9)
+        lifter_id += ":program=" + prog["key"]
     # macOS online (--macos-online): every function src/ detours gets a hook slot (rb_detour.cpp; an
     # arm64 Mac may not patch its own code). The stamp records the list, so a change lifts again.
     hooks = []
@@ -794,41 +911,53 @@ def step_lift(a):
     run([PY, os.path.join(P.tools, "ppu_lifter.py"), P.elf,
          "--functions", os.path.join(P.analysis, "functions.json"),
          "--hle-stubs", os.path.join(P.analysis, "EBOOT.imports.json"),
-         "--code-end", CODE_END, "--max-chunk-lines", "80000",
+         "--code-end", prog["code_end"], "--max-chunk-lines", "80000",
          "-o", P.recomp] + ([] if regpromo else ["--regpromo", "off"]) + hooks)
     with open(stamp, "w") as f:
         f.write(lifter_id + "\n")
 
 
-# Function entries of the sound core that its function finder cannot see: the
-# DSP effect table in the core's data (LS 0x11AB0-0x11B84, records named
-# "DLAY", "DPL2", "HPF ", "IIRF", "LHPF", "MIX ", "MONO", "MUX ", "PTCH", "REVB",
-# "TMPL", "VOLP" plus one more process function) holds pointers to 13
-# functions that nothing branches to directly. Unlifted, every call landed in
-# the runtime's SPU interpreter (~600 entries a second in a fight, each
-# interpreting a whole effect over its sample block) instead of native code.
-SPU_CORE_EXTRA_FUNCS = ("bnuscore=0xF9B8,0x59A8,0x5D90,0x5FD8,0x68A0,0x6E98,0x7528,"
-                        "0x7598,0x7618,0x7690,0x7968,0x8B70,0x8BC0")
+def stamp_program(stamp):
+    """The program (PROGRAMS key) whose sound core the SPU step lifted, from its stamp: the US one for a stamp
+    without the line or without a stamp (every build before 1.1.9)."""
+    try:
+        with open(stamp) as f:
+            lines = f.read().split()
+    except OSError:
+        return "us"
+    return next((l.split("=", 1)[1] for l in lines if l.startswith("program=")), "us")
+
+
+def spu_stamp_text(extra):
+    """The SPU step's stamp: the core's lift arguments, and for another program than the US one its key."""
+    prog = need_program()
+    return extra + "\n" + ("" if prog is US_PROGRAM else "program=" + prog["key"] + "\n")
 
 
 def step_spu(a):
+    extra = need_program()["spu_extra"]   # the sound core is the program's own build (PROGRAMS)
     core_done = os.path.exists(os.path.join(P.spu, "spu_workloads.c"))
     jobs_done = os.path.exists(os.path.join(P.spu, "lifted", "jcsignal", "spu_recomp.c"))
     # The core is lifted again when its lift arguments changed (a lift without
     # the stamp predates SPU_CORE_EXTRA_FUNCS).
     stamp = os.path.join(P.spu, ".core_lift_args")
-    core_args_ok = os.path.exists(stamp) and open(stamp).read().strip() == SPU_CORE_EXTRA_FUNCS
+    core_args_ok = False
+    if os.path.exists(stamp):
+        with open(stamp) as f:
+            core_args_ok = f.read().split()[:1] == [extra] and stamp_program(stamp) == need_program()["key"]
     if core_done and jobs_done and core_args_ok and not a.force:
         print("  already done")
         return
+    if core_done and not core_args_ok and not a.force and stamp_program(stamp) != need_program()["key"]:
+        core_done = False                # another program's sound core (1.1.9): extracted and lifted afresh below
     if core_done and not core_args_ok and not a.force:
         print("  the sound core's lift arguments changed: lifting it again")
         run([PY, os.path.join(P.tools, "build_spu_workloads.py"), "--images", os.path.join(P.spu, "images"),
              "--lifted", os.path.join(P.spu, "lifted"), "--out", os.path.join(P.spu, "spu_workloads.c"),
              "--register-fn", "t5dr_spu_register_all", "--constructor", "--title", "t5dr", "--eboot", P.elf,
-             "--relift", "--extra-funcs", SPU_CORE_EXTRA_FUNCS])
+             "--relift", "--extra-funcs", extra])
         with open(stamp, "w") as f:
-            f.write(SPU_CORE_EXTRA_FUNCS + "\n")
+            f.write(spu_stamp_text(extra))
     if a.force or not core_done:
         if os.path.isdir(P.spu):
             rmtree(P.spu)
@@ -843,9 +972,9 @@ def step_spu(a):
         run([PY, os.path.join(P.tools, "build_spu_workloads.py"), "--images", images,
              "--lifted", os.path.join(P.spu, "lifted"), "--out", os.path.join(P.spu, "spu_workloads.c"),
              "--register-fn", "t5dr_spu_register_all", "--constructor", "--title", "t5dr", "--eboot", P.elf,
-             "--extra-funcs", SPU_CORE_EXTRA_FUNCS])
+             "--extra-funcs", extra])
         with open(stamp, "w") as f:
-            f.write(SPU_CORE_EXTRA_FUNCS + "\n")
+            f.write(spu_stamp_text(extra))
     # The SPURS jobs (vertex skinning + the chain's signal job) are raw images
     # in the ELF's data segment, not SPU ELFs; they need their own extractor.
     run([PY, os.path.join(ROOT, "tools", "lift_spu_jobs.py"), "--elf", P.elf, "--spu", P.spu, "--ps3recomp", P.deps]
@@ -861,11 +990,14 @@ def find_vcvars():
 
 
 def write_stamp(compiler, extra=None):
+    prog = built_program() or US_PROGRAM
+    keys = {"code_id": code_id(), "elf_sha1": next(h for h, p in PROGRAMS.items() if p is prog),
+            "title": prog["title_id"], "version": prog["version"], "region": prog["region"],
+            "compiler": compiler, "built": datetime.datetime.now().isoformat(timespec="seconds")}
+    if not prog["online"]:
+        keys["online"] = False          # BuildInfo.has_online: the lobby client starts no match with this game
     with open(P.stamp, "w") as f:
-        json.dump(dict({"code_id": code_id(), "elf_sha1": ELF_SHA1, "title": TITLE_ID, "version": TITLE_VERSION,
-                        "compiler": compiler, "built": datetime.datetime.now().isoformat(timespec="seconds")},
-                       **(extra or {})),
-                  f, indent=1)
+        json.dump(dict(keys, **(extra or {})), f, indent=1)
 
 
 def compile_game_dll(a):
@@ -881,7 +1013,9 @@ def compile_game_dll(a):
     run([PY, os.path.join(ROOT, "tools", "build_game_dll.py"), "--recomp", P.recomp, "--spu", P.spu,
          "--deps", P.deps, "--host-lib", os.path.join(HOST_DIR, "t5dr.lib"),
          "--out", os.path.join(P.cmake, "t5dr_game.dll"), "--obj", os.path.join(P.build, "gamedll_obj"),
-         "--llvm", llvm] + (["--force"] if a.force else []))
+         "--llvm", llvm] + (["--force"] if a.force else [])
+        # the shipped profile names the US program's functions; for another program it would only mislead clang
+        + ([] if need_program()["pgo"] else ["--profile", "none"]))
     write_stamp("clang-cl (header-free game DLL) from " + llvm)
     print(f"\nbuilt {P.exe} + t5dr_game.dll")
 
@@ -909,7 +1043,7 @@ def compile_unix(a):
     cc = subprocess.run(["cc", "--version"], capture_output=True, text=True).stdout.splitlines()
     # "online": whether this build has the online modules (the lobby client refuses to start a
     # match with a game that has none; a Windows build always has them and writes no key)
-    write_stamp((cc[0] if cc else "cc") + " (CMake)", {"online": online})
+    write_stamp((cc[0] if cc else "cc") + " (CMake)", {"online": online and need_program()["online"]})
     print(f"\nbuilt {P.exe}" + (" (online modules: a test build, docs/MACOS_ONLINE_TEST.md)" if online else ""))
 
 
@@ -955,7 +1089,7 @@ def step_compile(a):
     # the PGO profile, split into its parts (build_game_dll.prepare_profiles); without llvm-profdata.exe
     # next to clang-cl the build goes on without it (same game, a little slower)
     pgo = []
-    if os.path.exists(PGO_PROFILE):
+    if os.path.exists(PGO_PROFILE) and need_program()["pgo"]:   # (the profile is the US program's)
         import build_game_dll
         os.makedirs(P.cmake, exist_ok=True)
         prof = build_game_dll.prepare_profiles(PGO_PROFILE, P.cmake, os.path.dirname(clang[0]))

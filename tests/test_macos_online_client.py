@@ -56,6 +56,29 @@ class HasOnline(unittest.TestCase):
             self.assertEqual(rc, 1)
             self.assertIn("--macos-online", buf.getvalue())
 
+    def test_european_build_has_no_online_and_says_why(self):
+        # 1.1.9: build_game.py stamps the European program (NPEA00019) "online": false -- the online modules know
+        # only the US program -- and the client names the version instead of the Mac test build
+        with tempfile.TemporaryDirectory() as d:
+            make_out(d, {"code_id": "abc", "title": "NPEA00019", "online": False})
+            self.assertFalse(BuildInfo.has_online(d))
+            self.assertEqual(BuildInfo.game_title(d), "NPEA00019")
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                rc = cli.main(["--server", "127.0.0.1:1", "--name", "x", "--build-out", d, "--quick"])
+            self.assertEqual(rc, 1)
+            self.assertIn("NPEA00019, the European version: it plays offline only for now", buf.getvalue())
+            self.assertIn("later update", buf.getvalue())
+            self.assertNotIn("--macos-online", buf.getvalue())
+
+    def test_game_title(self):
+        with tempfile.TemporaryDirectory() as d:
+            make_out(d, {"code_id": "abc", "title": "NPUB30009"})
+            self.assertEqual(BuildInfo.game_title(d), "NPUB30009")
+        with tempfile.TemporaryDirectory() as d:
+            make_out(d, None)
+            self.assertIsNone(BuildInfo.game_title(d))
+
 
 class GameBinary(unittest.TestCase):
     def test_same_file_as_run_game(self):

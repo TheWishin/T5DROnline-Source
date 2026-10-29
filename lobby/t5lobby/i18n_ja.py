@@ -213,6 +213,8 @@ MESSAGES = {
     "Cannot read the file: {error}": "ファイルを読み込めません：{error}",
     "This is not a PS3 package (.pkg).": "PS3パッケージ（.pkg）ではありません。",
     "{id}  ({size} bytes) -- the supported version": "{id}  ({size} バイト) -- 対応バージョン",
+    "{id}  ({size} bytes) -- the European version: it plays offline only for now. Online play for it comes in a later update.":
+        "{id}  ({size} バイト) -- 欧州版：今のところオフラインでのみ遊べます。欧州版のオンライン対戦は今後のアップデートで対応します。",
     "checking the game version inside the package…": "パッケージ内のゲームバージョンを確認中…",
     "{id}  ({size} bytes) -- Tekken 5 DR, but not the supported package ({supported}). "
     "The build will most likely refuse it.":
@@ -491,8 +493,8 @@ MESSAGES = {
     "The launcher looks in this PC's logs and settings for the problems other players had, and says how to fix them. Nothing is changed and nothing is sent.":
         "ランチャーがこのPCのログと設定から、他のプレイヤーに起きた問題を探し、直し方を表示します。何も変更せず、何も送信しません。",
     "Your game package is version {version}": "ゲームのパッケージがバージョン{version}です",
-    "The port works only with version {supported} of the game: TEKKEN 5 DARK RESURRECTION ONLINE, US PSN (NPUB30009), a .pkg of {size} bytes, with its license {rap}. Version {version} cannot be used, whatever the license. Choose the {supported} package on the Build tab and press BUILD GAME.":
-        "このポートはゲームのバージョン{supported}でのみ動作します：TEKKEN 5 DARK RESURRECTION ONLINE、北米PSN（NPUB30009）、{size}バイトの.pkgとそのライセンス{rap}。バージョン{version}はどのライセンスでも使えません。ビルドタブで{supported}のパッケージを選び、BUILD GAMEを押してください。",
+    "The port works only with version {supported} of the game: TEKKEN 5 DARK RESURRECTION ONLINE, US PSN (NPUB30009), a .pkg of {size} bytes, with its license {rap}; or TEKKEN 5 DARK RESURRECTION, European PSN (NPEA00019), a .pkg of {eu_size} bytes, with its license {eu_rap} (offline only for now). Version {version} cannot be used, whatever the license. Choose a {supported} package on the Build tab and press BUILD GAME.":
+        "このポートはゲームのバージョン{supported}でのみ動作します：TEKKEN 5 DARK RESURRECTION ONLINE、北米PSN（NPUB30009）、{size}バイトの.pkgとそのライセンス{rap}；またはTEKKEN 5 DARK RESURRECTION、欧州PSN（NPEA00019）、{eu_size}バイトの.pkgとそのライセンス{eu_rap}（今はオフラインのみ）。バージョン{version}はどのライセンスでも使えません。ビルドタブで{supported}のパッケージを選び、BUILD GAMEを押してください。",
     "build.log: the package says version {version}.": "build.log：パッケージのバージョンは{version}です。",
     "Unpacking the game ran out of memory": "ゲームの展開中にメモリが不足しました",
     "Close other programs (browser, games, launchers) and press BUILD GAME again; since 1.1.5 the launcher unpacks the game in small pieces. If it fails again, check that Windows has a page file (System > About > Advanced system settings > Performance > Virtual memory: automatic).":
@@ -1037,6 +1039,8 @@ MESSAGES = {
     "the package's content ID ({id}).":
         "ライセンス（.rap）がこのパッケージのものではありません。名前がパッケージのコンテンツID（{id}）と一致する "
         ".rap を使ってください。",
+    "The decrypted game program is missing or not a supported version. Tick \"Redo every step\" and press BUILD GAME again.":
+        "復号したゲームプログラムがないか、対応バージョンではありません。「全ステップをやり直す」にチェックを入れて、もう一度BUILD GAMEを押してください。",
     "Decrypting the game program failed (see the log above). Tick \"Redo every step\" and press BUILD GAME "
     "again; if it fails again, check that the package is {size} bytes.":
         "ゲームプログラムの復号に失敗しました（上のログを参照）。「全ステップをやり直す」にチェックを入れて、もう一度"
@@ -1641,6 +1645,14 @@ MESSAGES = {
     "[Server: {notice}]": "[サーバー：{notice}]",
     "Server notice: {notice}": "サーバーからのお知らせ：{notice}",
     "The game is not built.": "ゲームがビルドされていません。",
+    "This game is the European version ({title_id}): it plays offline only for now. Online play for the European version comes in a later update; it never plays against the US version (NPUB30009).":
+        "このゲームは欧州版（{title_id}）です：今のところオフラインでのみ遊べます。欧州版のオンライン対戦は今後のアップデートで対応します。北米版（NPUB30009）とは対戦しません。",
+    "Your game is the European version: offline only for now":
+        "あなたのゲームは欧州版です：今のところオフラインのみ",
+    "The European version ({title_id}) plays its offline modes. Online play for it comes in a later update; until then online play needs the US version (NPUB30009). European and US games never play each other online.":
+        "欧州版（{title_id}）はオフラインのモードで遊べます。欧州版のオンライン対戦は今後のアップデートで対応します。それまではオンライン対戦に北米版（NPUB30009）が必要です。欧州版と北米版がオンラインで対戦することはありません。",
+    "Build stamp: the game is {title_id}.":
+        "ビルドスタンプ：ゲームは {title_id} です。",
     "This Mac build has no online play. For a test match: tools/build_game.py --macos-online (docs/MACOS_ONLINE_TEST.md).":
         "この Mac 版ビルドにはオンライン対戦がありません。テスト対戦には: tools/build_game.py --macos-online (docs/MACOS_ONLINE_TEST.md)。",
     "Cannot read the build's identity: {error}": "ビルドの識別情報を読み込めません：{error}",

@@ -171,7 +171,9 @@ class SourceLayout(unittest.TestCase):
         self.assertIn("if(WIN32 OR T5DR_MACOS_ONLINE)", cm)
         bg = read(os.path.join(ROOT, "tools", "build_game.py"))
         self.assertIn('f"-DT5DR_MACOS_ONLINE={\'ON\' if online else \'OFF\'}"', bg)
-        self.assertIn('write_stamp((cc[0] if cc else "cc") + " (CMake)", {"online": online})', bg)
+        # (1.1.9: and only for the US program -- the European one never has them, docs/EU.md)
+        self.assertIn('write_stamp((cc[0] if cc else "cc") + " (CMake)", {"online": online and need_program()["online"]})',
+                      bg)
         self.assertIn('ap.add_argument("--macos-online", action="store_true"', bg)
         # and a Mac that has them still offers no rollback unless asked (lockstep first)
         self.assertIn('getenv("T5_MACOS_ROLLBACK")', read(os.path.join(SRC, "rollback", "rb_net.cpp")))

@@ -3,6 +3,10 @@
 All notable changes, newest first. The project is a test release. Short commit hashes are in parentheses. The state of each
 part is in the README's status table.
 
+## v1.1.9 (not released yet)
+
+- **The European PSN release builds and plays offline** (TEKKEN 5 DARK RESURRECTION, NPEA00019 v01.00, with its .rap): BUILD GAME takes it next to the US package; its Arcade, Ghost and VS battles, with sound and movies. It plays offline only for now -- online play for it comes in a later update (the Build tab, the Online tab and "Check my problem" say so); European and US games are never matched (other build ID). The US version is unchanged. docs/EU.md.
+
 ## v1.1.8 (2026-10-28)
 
 **Hotfix: the lobby chat's input field and Send button are back.** In 1.1.7 the chat card was built without its

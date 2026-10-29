@@ -95,8 +95,11 @@ Im Einzelnen:
   - das Paket: `.pkg`, 619.430.240 Bytes
   - die Lizenz: `.rap` (16 Bytes), benannt
     `UP0700-NPUB30009_00-UPDATE0000010000.rap`
+  - seit 1.1.9 auch die europäische PSN-Version, **TEKKEN 5 DARK RESURRECTION, `NPEA00019`, Version 01.00**
+    (ihr `.pkg` und `EP9000-NPEA00019_00-0000000000000000.rap`): Sie wird gebaut und spielt **vorerst nur
+    offline**; Online-Spiel dafür kommt mit einem späteren Update (docs/EU.md)
   - **Andere Versionen werden abgelehnt** (Disc-Kopien, andere Regionen, andere
-    Versionen). Die Portierung ist an genau dieses Programm gebunden.
+    Versionen). Die Portierung ist an genau diese Programme gebunden.
 
 Du brauchst **kein** Visual Studio, kein Git und kein Python. Die Zip-Datei bringt
 ihr eigenes Python und ihren eigenen Compiler mit (clang-cl und lld-link aus
@@ -578,7 +581,8 @@ wichtigsten Fälle in Kürze:
 eigenen Kaufs. RPCS3 wird nicht benutzt und nicht installiert.
 
 **Kann ich eine Disc-Kopie, die EU-/JP-Version oder eine andere Version nehmen?**
-Nein. Nur NPUB30009 Version 01.00. Alles andere lehnt der Builder ab.
+Die europäische PSN-Version (NPEA00019 Version 01.00) wird seit 1.1.9 gebaut und spielt offline (Online-Spiel
+dafür mit einem späteren Update). Sonst nein: nur NPUB30009 Version 01.00. Alles andere lehnt der Builder ab.
 
 **Woher bekomme ich das Spiel?** Aus deinem eigenen PlayStation-Network-Konto. Wir
 liefern weder Paket noch Lizenz und können nicht dabei helfen, sie zu beschaffen.

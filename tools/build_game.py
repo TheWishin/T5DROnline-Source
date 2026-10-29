@@ -512,6 +512,16 @@ def read_prepared_stamp(deps):
         return None
 
 
+def same_dir(a, b):
+    """Whether two paths name the same folder. Not by their text: git answers with the long form of a path that
+    Windows may give in its short 8.3 form (a GitHub runner's temp folder is C:/Users/RUNNER~1/..., git says
+    C:/Users/runneradmin/...), and the two strings differ."""
+    try:
+        return os.path.samefile(a, b)
+    except OSError:
+        return os.path.normcase(os.path.realpath(a)) == os.path.normcase(os.path.realpath(b))
+
+
 def checkout_state(deps):
     """A developer's git checkout of ps3recomp against this tree's pin and patch series: ('current', None, stamp),
     ('changed', why, stamp), or ('unknown', why, None) for one prepared before this check existed -- then every
@@ -521,7 +531,7 @@ def checkout_state(deps):
         top = _git_out(deps, "rev-parse", "--show-toplevel").decode("utf-8", "replace").strip()
     except OSError as e:
         return "foreign", f"not a git checkout ({e})", None
-    if os.path.normcase(os.path.abspath(top)) != os.path.normcase(os.path.abspath(deps)):
+    if not same_dir(top, deps):
         return "foreign", f"its .git is not a repository (git sees {top})", None
     stamp = read_prepared_stamp(deps)
     if stamp is not None:

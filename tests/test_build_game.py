@@ -550,6 +550,23 @@ class DepsSeries(unittest.TestCase):
                          b"int a = 42;  /* my work */\n")
         self.assertTrue(os.path.exists(os.path.join(self.deps, "runtime", "b.c")))
 
+    def test_a_checkout_named_by_its_short_path_is_checked(self):
+        # CI 1.1.9: a GitHub runner's temp folder comes as C:\Users\RUNNER~1\...; git names the checkout with the
+        # long form, and comparing the two strings took the checkout for a foreign .git ("not checked")
+        if os.name != "nt":
+            self.skipTest("8.3 short names are a Windows thing")
+        import ctypes
+        self.prepare(self.old_series)
+        buf = ctypes.create_unicode_buffer(1024)
+        if not ctypes.windll.kernel32.GetShortPathNameW(self.deps, buf, len(buf)) or                 os.path.normcase(buf.value) == os.path.normcase(self.deps):
+            self.skipTest("this volume has no 8.3 short names for the temp folder")
+        self.deps = buf.value
+        self.bg.P = self.bg.Paths(os.path.join(self.tmp.name, "out"), self.deps)
+        self.assertEqual(self.bg.checkout_state(self.deps)[0], "changed")
+        out = self.deps_step()
+        self.assertNotIn("not checked", out)
+        self.assertIn("new 0002-b.patch", out)
+
     def test_a_git_folder_that_is_no_repository_is_left_alone(self):
         # deps/.git that is not a repository, inside another one (git would answer for that one: on this PC the
         # temp folder can be inside C:/T5DROnline's repository) -- never re-prepared, never git apply'd against it

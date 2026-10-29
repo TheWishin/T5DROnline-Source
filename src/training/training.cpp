@@ -367,14 +367,14 @@ extern "C" void t5_training_frame(ppu_context* ctx)
     /* T5_TRAINING_STATS: wall time and this thread's own CPU time (cycles, so a
      * busy PC preempting the thread does not count) */
     LARGE_INTEGER t0, t1;
-    ULONG64 c0 = 0, c1 = 0;
-    if (g_cfg.stats) { QueryPerformanceCounter(&t0); QueryThreadCycleTime(GetCurrentThread(), &c0); }
+    uint64_t c0 = 0, c1 = 0;
+    if (g_cfg.stats) { QueryPerformanceCounter(&t0); c0 = t5p_thread_cycles(); }
     const bool in_fight = frame_body();
     if (g_cfg.stats && in_fight) {
         static LARGE_INTEGER fq;
         static double sum = 0, mx = 0, csum = 0, cmx = 0, cyc_per_us = 0;
         static unsigned n = 0;
-        QueryThreadCycleTime(GetCurrentThread(), &c1);
+        c1 = t5p_thread_cycles();
         QueryPerformanceCounter(&t1);
         if (!fq.QuadPart) {
             QueryPerformanceFrequency(&fq);

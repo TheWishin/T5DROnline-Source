@@ -719,6 +719,14 @@ class App(tk.Tk):
         for key, label in core.TRAINING_MODES.items():
             ttk.Radiobutton(row, text=t(label), value=key, variable=self.training_var,
                             command=self.save_settings).pack(side="left", padx=(0, 14))
+        self.training_pos_var = tk.StringVar(value=self.settings["training_pos"] if self.settings["training_pos"] in
+                                             core.TRAINING_POS else "top")
+        prow = ttk.Frame(tr)
+        prow.pack(anchor="w", pady=(4, 0))
+        ttk.Label(prow, text=t("Position:")).pack(side="left", padx=(0, 10))
+        for key, label in core.TRAINING_POS.items():
+            ttk.Radiobutton(prow, text=t(label), value=key, variable=self.training_pos_var,
+                            command=self.save_settings).pack(side="left", padx=(0, 14))
         self.training_all_var = tk.BooleanVar(value=bool(self.settings.get("training_all")))
         self.training_online_var = tk.BooleanVar(value=bool(self.settings.get("training_online")))
         ttk.Checkbutton(tr, text=t("Also in the other offline modes (Arcade, Versus, ...)"),
@@ -1415,6 +1423,7 @@ class App(tk.Tk):
         self.settings["input_delay"] = self.input_delay_var.get()
         if hasattr(self, "training_var"):
             self.settings["training"] = self.training_var.get()
+            self.settings["training_pos"] = self.training_pos_var.get()
             self.settings["training_all"] = bool(self.training_all_var.get())
             self.settings["training_online"] = bool(self.training_online_var.get())
         if hasattr(self, "practice_var"):

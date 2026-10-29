@@ -13,7 +13,11 @@ finished picture:
   `COUNTER HIT`, `WHIFF`, `KNOCKDOWN`) and the frame advantage: how many frames
   earlier than the opponent the attacker can act again (`+3`, `-15`). A whiff
   shows how many frames the move took until its user could act again. The last
-  three exchanges are listed, the newest on top.
+  three exchanges are listed, the newest on top. Since 1.1.9 a string or a
+  juggle lists **every hit on its own line** (Devil Jin 1,2,3: `i10`, `i10`,
+  `i25~31 HIT KND`; the number of the move is only on the last hit), a move
+  with several active frames shows them (`i13~14`: first and last active frame
+  of Jin's d/f+1) and a knockdown reads `KND` at once, without a number.
 
 Where: P1's inputs at the left edge under the health bar, P2's at the right
 edge, the frame data in the middle under the timer (no screenshot here: it
@@ -31,6 +35,7 @@ Launcher: **Settings -> Training overlay** (German: *Trainings-Anzeige*).
 | **Inputs + frame data** (default) | both | `T5_TRAINING=frames` |
 | Also in the other offline modes | Arcade, Versus, Survival, Ghost too, not only Practice | `T5_TRAINING_ALL=1` |
 | Also online | in online matches: only this PC's own inputs, no frame data | `T5_TRAINING_ONLINE=1` |
+| Position: Top / Bottom | where the lists sit on the picture (1.1.9); Top is the default | `T5_TRAINING_POS=top\|bottom` |
 
 By default it is shown in **Practice** only. Online it is off unless "Also
 online" is ticked, and then it shows nothing about the opponent: no inputs
@@ -42,6 +47,10 @@ Inputs + frame data for the rest of the session, as long as the setting is not
 Off. The texts follow the launcher's language (`T5_TRAINING_LANG=de|en`;
 without it the Windows display language): German labels are `GEBLOCKT`,
 `TREFFER`, `KONTER`, `DANEBEN`, `AM BODEN`.
+
+Bottom puts the inputs' panels and the frame data at the bottom edge of the
+picture (the frame data grows upward, the newest line still on top), for players
+who want the top free; `training_pos` in `launcher.json`.
 
 Other variables: `T5_TRAINING_ROWS=4..24` (input rows, default 14),
 `T5_TRAINING_LOG=<file>` (one line per new input row and per frame-data
@@ -413,6 +422,21 @@ In the game:
   PASS as before, 25 results).
 - The smoke suite (quick) runs without the overlay, as players with the
   setting Off and every existing test do.
+
+### What 1.1.9 changed (found by players)
+
+- **Strings and juggles** were one line with the first or even no startup
+  (Devil Jin 1,2,3 showed `i10` or `startup 0`): each hit has its own line now.
+- **Several active frames**: Jin's d/f+1 is `i13~14` (first and last active
+  frame), not `i13`.
+- **Knockdown** is the defender's hips below half or above 1.4 times its standing
+  height, or a lying stance (0x8004 and up); a crouch (0x8002) is not lying. It is
+  shown at once as `KND`. A tech roll or wake-up reaction is no longer taken for
+  the defender's own move (Nina's d/f+2 showed `HIT +24` after a tech roll), and
+  an attacker lying after its own move (a slide) gets no number.
+- Checked in the game: `python tools/training_check.py` (jabs, as before) and
+  `python tools/training_check.py --moves` (the three cases above in local
+  lockstep with the real game; the 1.1.7 game fails it, this one passes).
 
 ## Limits
 

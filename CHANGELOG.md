@@ -3,6 +3,14 @@
 All notable changes, newest first. The project is a test release. Short commit hashes are in parentheses. The state of each
 part is in the README's status table.
 
+## v1.1.9 (not released yet)
+
+### Practice
+- Frame data: a string or juggle shows every hit on its own line (Devil Jin 1,2,3 was one line, or startup 0);
+  moves with several active frames show them (Jin d/f+1 is i13~14); a knockdown reads KND at once; a tech roll
+  or wake-up is no longer taken for the opponent's move (Nina d/f+2 showed HIT +24); a crouch is no knockdown.
+- New launcher setting Settings -> Training overlay -> Position: Top (default) or Bottom of the picture.
+
 ## v1.1.8 (2026-10-28)
 
 **Hotfix: the lobby chat's input field and Send button are back.** In 1.1.7 the chat card was built without its

@@ -592,6 +592,9 @@ MESSAGES = {
     "Training overlay": "Overlay d'entraînement",
     "Also in the other offline modes (Arcade, Versus, ...)":
         "Aussi dans les autres modes hors ligne (Arcade, Versus, ...)",
+    "Position:": "Position :",
+    "Top": "Haut",
+    "Bottom": "Bas",
     "Practice tools": "Outils d'entraînement",
     "SELECT combos in Practice (offline only)": "Combinaisons avec SELECT en Practice (hors ligne seulement)",
     "Dummy:": "Mannequin :",

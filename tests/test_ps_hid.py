@@ -19,7 +19,7 @@ import sys
 import tempfile
 import unittest
 
-from helpers import ROOT
+from helpers import ROOT, ps3recomp_series_problem
 
 sys.path.insert(0, os.path.join(ROOT, "tools"))
 import ps_hid_reports as phr  # noqa: E402
@@ -82,22 +82,34 @@ class ReportBuilderTest(unittest.TestCase):
 
 
 def find_ps3recomp():
-    cands = [os.environ.get("PS3RECOMP_DIR"), os.path.join(ROOT, "deps", "ps3recomp")]
-    try:
-        r = subprocess.run(["git", "-C", ROOT, "rev-parse", "--git-common-dir"], capture_output=True, text=True,
-                           timeout=20)
-        if r.returncode == 0:
-            common = os.path.normpath(os.path.join(ROOT, r.stdout.strip()))
-            cands.append(os.path.join(os.path.dirname(common), "deps", "ps3recomp"))
-    except (OSError, subprocess.SubprocessError):
-        pass
+    """PS3RECOMP_DIR as it is; a tree found on its own (./deps/ps3recomp, the main checkout's deps/ps3recomp) only
+    when it was prepared with this checkout's patch series (helpers.ps3recomp_series_problem). 1.1.9 gate: the main
+    checkout's deps/ps3recomp was at patch 0053, without 0070's ps_trig_di, and the C test did not compile there."""
+    explicit = os.environ.get("PS3RECOMP_DIR")
+    cands = [explicit] if explicit else [os.path.join(ROOT, "deps", "ps3recomp")]
+    if not explicit:
+        try:
+            r = subprocess.run(["git", "-C", ROOT, "rev-parse", "--git-common-dir"], capture_output=True, text=True,
+                               timeout=20)
+            if r.returncode == 0:
+                common = os.path.normpath(os.path.join(ROOT, r.stdout.strip()))
+                cands.append(os.path.join(os.path.dirname(common), "deps", "ps3recomp"))
+        except (OSError, subprocess.SubprocessError):
+            pass
     for c in cands:
         p = os.path.join(c or "", "libs", "input", "pad_host_win32.c")
         if c and os.path.isfile(p):
             with open(p, encoding="utf-8", errors="replace") as f:
-                if "ps_parse(" in f.read():
-                    return c
+                if "ps_parse(" not in f.read():
+                    continue
+            why = None if explicit else ps3recomp_series_problem(c)
+            if why is None:
+                return c
+            SKIPPED_TREES.append(why)
     return None
+
+
+SKIPPED_TREES = []        # why trees that were found were not used (the skip message names them)
 
 
 def find_vcvars():
@@ -120,7 +132,8 @@ class RuntimeParserTest(unittest.TestCase):
             raise unittest.SkipTest("the runtime's pad layer is Windows only")
         cls.tree = find_ps3recomp()
         if not cls.tree:
-            raise unittest.SkipTest("no ps3recomp tree with patch 0042 (PS3RECOMP_DIR)")
+            raise unittest.SkipTest("no ps3recomp tree with patch 0042 prepared with this series (PS3RECOMP_DIR)"
+                                    + "".join("; " + w for w in SKIPPED_TREES))
         vcvars = find_vcvars()
         clang = shutil.which("clang-cl") or (r"C:\Program Files\LLVM\bin\clang-cl.exe"
                                              if os.path.isfile(r"C:\Program Files\LLVM\bin\clang-cl.exe") else None)

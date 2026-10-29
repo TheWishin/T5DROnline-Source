@@ -3,6 +3,20 @@
 All notable changes, newest first. The project is a test release. Short commit hashes are in parentheses. The state of each
 part is in the README's status table.
 
+## v1.1.9 (not released yet)
+
+### Game
+- Phantom DirectInput pad (a second player pressing Up or buttons by itself, ports flipping): a DirectInput
+  device gets a port only after it has read well for 1 s; one lost 3 times within 30 s, each time soon after
+  it was found, is ignored until it has been gone for 5 s (one log line); a lost device is dropped before the
+  rescan; buttons held when a device gets its port count only after they were released (ps3recomp patch 0087).
+- `controls.ini`: a key given twice in a section, or a section given twice, is reported in the log with both
+  line numbers (patch 0087).
+
+### Tests
+- `tests/test_pad_flap.py` (`tests/c/pad_flap_test.c`): a fake DirectInput with a real stick and a phantom
+  that flaps, through the real hot-plug and sampler threads.
+
 ## v1.1.8 (2026-10-28)
 
 **Hotfix: the lobby chat's input field and Send button are back.** In 1.1.7 the chat card was built without its

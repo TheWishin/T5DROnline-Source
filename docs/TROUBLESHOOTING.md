@@ -609,6 +609,12 @@ not focused. The keyboard works only while the game window has the focus.
   or `[pad] found DInput 'name' VVVV:PPPP`. No `[pad]` line for your device means
   the game did not see it. The line `[pad] controls: ...` tells which
   `controls.ini` was loaded (or that the built-in defaults are used).
+- A second, phantom player that presses Up or a button by itself, or a port that flips between
+  two devices: since 1.1.9 a DirectInput device gets a port only after reading well for 1 s, one
+  that keeps disappearing right after it was found is ignored (`[pad] DInput '...' lost 3 times
+  within 30 s of being found -- ignored from now on`), and buttons held at the moment a device
+  gets its port count only after they were released. If it still happens, set `dinput = 0` in
+  `controls.ini` (XInput pads and sticks keep working) and send the game log.
 - Support for PlayStation pads and arcade sticks has **not been tried on real
   hardware by a person yet**. If yours fails, please send the log.
 - A test zip made before the evening of 2026-10-16 has only keyboard and Xbox

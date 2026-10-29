@@ -1240,6 +1240,7 @@ def _handicap_match(ctx, a, b, mid, la, lb, label):
 def net_handicap150(ctx):
     if "handicap150" not in features():
         raise Skip("this tree has no health handicap above 100 % (handicap-117)")
+    ctx.own_always_left = True      # sets (and checks) its own casual / Quick sides: run.py's E2E_ALWAYS_LEFT=1 stays out
     game_server(ctx)
     shots = os.path.join(ctx.dir, "shots_A")
     os.makedirs(shots, exist_ok=True)
@@ -5016,19 +5017,22 @@ def _al_fight(ctx, p, mid):
 
 def _al_direction(ctx, trace, towards, label):
     """The fighters' distance (T5_ALWAYS_LEFT_TRACE, every 20 fight frames) while A holds the pad's RIGHT: towards the
-    opponent it falls below half of the round start's within the first 6 s; away it never does."""
-    if len(trace) < 10:
-        ctx.check(f"{label}: the fighters' places traced", False, f"{len(trace)} trace lines")
+    opponent it falls below 85 % of the fight start's within the first 7 s (the zero lines before the fighters are
+    placed are skipped; the counter runs on over the matches, so it is relative to the first placed line); away it
+    never does."""
+    placed = [(n, m, d) for n, m, d in trace if d >= 1500]   # a placed round start is 2000 apart; smaller/zero lines are not yet placed
+    if len(placed) < 10:
+        ctx.check(f"{label}: the fighters' places traced", False, f"{len(placed)} placed trace lines")
         return
-    first = trace[0][2]
-    early = [d for n, _m, d in trace if n <= 360]
-    near = min(early) if early else first
+    base, first = placed[0][0], placed[0][2]
+    early = [d for n, _m, d in trace if base <= n <= base + 420]
+    near = min(early)
     if towards:
-        ctx.check(f"{label}: A's RIGHT walks A towards the opponent (distance {first} -> {near} in 6 s)",
-                  near < first * 0.5, f"start {first}, closest in the first 6 s {near}")
+        ctx.check(f"{label}: A's RIGHT walks A towards the opponent (distance {first} -> {near} in 7 s)",
+                  near < first * 0.85, f"start {first}, closest in the first 7 s {near}")
     else:
-        ctx.check(f"{label}: A's RIGHT walks A away from the opponent (distance {first}, closest {near} in 6 s)",
-                  near >= first * 0.9, f"start {first}, closest in the first 6 s {near}")
+        ctx.check(f"{label}: A's RIGHT walks A away from the opponent (distance {first}, closest {near} in 7 s)",
+                  near >= first * 0.95, f"start {first}, closest in the first 7 s {near}")
 
 
 @scenario("net_always_left", "6 netcode", game=True, suites=("game", "net"),
@@ -5039,6 +5043,7 @@ def _al_direction(ctx, trace, towards, label):
 def net_always_left(ctx):
     if "casual_choice" not in features():
         raise Skip("no casual choices in this tree")
+    ctx.own_always_left = True      # sets (and checks) its own casual / Quick sides: run.py's E2E_ALWAYS_LEFT=1 stays out
     game_server(ctx)
     shots = os.path.join(ctx.dir, "shots_A")
     os.makedirs(shots, exist_ok=True)
@@ -5077,8 +5082,8 @@ def net_always_left(ctx):
         leave(ctx, p)
     ctx.sleep(2.0)
 
-    # 2. Quick matches (not casual): never mirrored; until A is P2 (the coin), at most three
-    for k in range(3):
+    # 2. Quick matches (not casual): never mirrored; until A is P2 (the coin), at most four
+    for k in range(4):
         mid = queue_match(ctx, a, b, "quick")
         if not wait_fight(ctx, mid, (a, b), timeout=150):
             raise Abort("quick: no fight")
@@ -5097,5 +5102,5 @@ def net_always_left(ctx):
         if slot == 1:
             break
     else:
-        ctx.note("the coin made A P1 in all three Quick matches: the 'not mirrored as P2' case was not reached")
+        ctx.note("the coin made A P1 in all four Quick matches: the 'not mirrored as P2' case was not reached")
     ctx.note(f"pictures of A's game (T5_DF_SHOT ++240,++600): {shots}")

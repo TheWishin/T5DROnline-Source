@@ -219,7 +219,7 @@ def match_row(ctx, mid, players, expect="confirmed", label="", same_result=True,
                   f"crash {seg['crash']}, fifo {seg['fifo']}")
         fought = fighters_of(seg, mid)
         row[p.name]["fought"] = fought
-        if os.environ.get("E2E_ALWAYS_LEFT") == "1":
+        if os.environ.get("E2E_ALWAYS_LEFT") == "1" and not getattr(ctx, "own_always_left", False):
             # run.py with E2E_ALWAYS_LEFT=1: the joiner (P2) saw this match mirrored, the host never
             lines = p.log_segment(mid)
             mirrored = sum("always left: the fight is shown mirrored" in ln for ln in lines)

@@ -966,7 +966,7 @@ class Player:
                         os.path.join(me.dir, f"mash-{ev.get('match')}.txt"), seed, gap=me.mash_gap, **kw)
                 if me.fw_game:
                     env["T5_NET_TEST_INBOUND"] = me.fw_game      # (a session without it: the firewall is off again)
-                if me.kind == "real" and os.environ.get("E2E_ALWAYS_LEFT") == "1":
+                if me.kind == "real" and os.environ.get("E2E_ALWAYS_LEFT") == "1" and not getattr(me.ctx, "own_always_left", False):
                     # run.py with E2E_ALWAYS_LEFT=1: every match as a casual one with "Always see me on the left" on
                     # both PCs -- the joiner (P2) plays every netcode case mirrored (docs/NETPLAY.md "Always left")
                     env["T5_ALWAYS_LEFT"], env["T5_NET_CASUAL"] = "1", "1"

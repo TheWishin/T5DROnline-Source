@@ -472,11 +472,10 @@ MESSAGES = {
     "Package (.pkg)": "Paquet (.pkg)",
     "License (.rap)": "Licence (.rap)",
     "Browse…": "Parcourir…",
-    "Supported: Tekken 5: Dark Resurrection Online, PS3 PSN (US), NPUB30009 version "
-    "01.00 -- the package file and the license (.rap) from your own account. Nothing "
-    "leaves this PC.":
-        "Pris en charge : Tekken 5: Dark Resurrection Online, PS3 PSN (US), NPUB30009 version 01.00 -- le fichier du "
-        "paquet et la licence (.rap) de ton propre compte. Rien ne quitte ce PC.",
+    "Supported: Tekken 5: Dark Resurrection Online, PS3 PSN (US), NPUB30009 version 01.00 (online and offline), "
+    "and TEKKEN 5 DARK RESURRECTION, PS3 PSN (Europe), NPEA00019 version 01.00 (offline only for now) -- the "
+    "package file and the license (.rap) from your own account. Nothing leaves this PC.":
+        "Pris en charge : Tekken 5: Dark Resurrection Online, PS3 PSN (US), NPUB30009 version 01.00 (en ligne et hors ligne), et TEKKEN 5 DARK RESURRECTION, PS3 PSN (Europe), NPEA00019 version 01.00 (hors ligne uniquement pour l'instant) -- le fichier du paquet et la licence (.rap) de ton propre compte. Rien ne quitte ce PC.",
     "Build tools on this PC": "Outils de compilation sur ce PC",
     "Needed": "Requis",
     "Found": "Trouvé",

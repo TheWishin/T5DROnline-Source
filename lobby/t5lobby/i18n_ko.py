@@ -456,11 +456,10 @@ MESSAGES = {
     "Package (.pkg)": "패키지 (.pkg)",
     "License (.rap)": "라이선스 (.rap)",
     "Browse…": "찾아보기…",
-    "Supported: Tekken 5: Dark Resurrection Online, PS3 PSN (US), NPUB30009 version "
-    "01.00 -- the package file and the license (.rap) from your own account. Nothing "
-    "leaves this PC.":
-        "지원: Tekken 5: Dark Resurrection Online, PS3 PSN (미국), NPUB30009 버전 01.00 -- 본인 계정의 패키지 파일과 "
-        "라이선스(.rap). 아무것도 이 PC 밖으로 나가지 않습니다.",
+    "Supported: Tekken 5: Dark Resurrection Online, PS3 PSN (US), NPUB30009 version 01.00 (online and offline), "
+    "and TEKKEN 5 DARK RESURRECTION, PS3 PSN (Europe), NPEA00019 version 01.00 (offline only for now) -- the "
+    "package file and the license (.rap) from your own account. Nothing leaves this PC.":
+        "지원: Tekken 5: Dark Resurrection Online, PS3 PSN (미국), NPUB30009 버전 01.00 (온라인 및 오프라인), 그리고 TEKKEN 5 DARK RESURRECTION, PS3 PSN (유럽), NPEA00019 버전 01.00 (현재는 오프라인 전용) -- 본인 계정의 패키지 파일과 라이선스(.rap). 아무것도 이 PC 밖으로 나가지 않습니다.",
     "Build tools on this PC": "이 PC의 빌드 도구",
     "Needed": "필요",
     "Found": "확인",

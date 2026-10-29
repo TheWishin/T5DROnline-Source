@@ -256,7 +256,8 @@ class CatalogTests(Base):
                                      "problem_report_ui.py", "controls_ui.py",
                                      "tk_views.py", "tour_text.py", "tk_rooms.py",
                                      "tk_casual.py", "fighters.py",     # (1.1.5: SIDES, STAGE_NAMES)
-                                     "tk_stats.py"})
+                                     "tk_stats.py",
+                                     "tk_challenges.py"})      # (1.1.9: END_TEXT_*, HEADINGS, marked with N_)
 
 
 class EngineTests(German):
@@ -1178,8 +1179,9 @@ class OnlineTabGermanTests(German):
         rows = [self.tab.tv_players.item(i, "values") for i in self.tab.tv_players.get_children()]
         self.assertEqual(rows[0][0], "Me  (du)")
         self.assertEqual(rows[0][5], "in der Lobby")
-        self.assertEqual(rows[1][1], "Gast")
-        self.assertEqual(rows[1][5], "andere Version")
+        self.assertEqual(rows[1][0], "Nicht verfügbar")          # (1.1.9: the players one cannot play, below a line)
+        self.assertEqual(rows[2][1], "Gast")
+        self.assertEqual(rows[2][5], "andere Version")
         room = self.tab.tv_rooms.item("r1", "values")
         self.assertEqual(room[2], "offen ranked")
         self.assertIn("2nd Dan", " ".join(str(v) for v in rows[0]))

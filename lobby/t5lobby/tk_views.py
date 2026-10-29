@@ -43,6 +43,8 @@ HEADINGS = {"player": N_("Player"), "rank": N_("Rank"), "rating": N_("Rating"), 
 # the Stats page (tk_stats.py)
 HEADINGS.update(fighter=N_("Fighter"), matches=N_("Matches"), wins=N_("Wins"), winrate=N_("Win rate"),
                 share=N_("Picked"))
+# the leaderboard's split record (1.1.9, tk_challenges.py)
+HEADINGS.update(rw=N_("Ranked W"), rl=N_("Ranked L"), cw=N_("Casual W"), cl=N_("Casual L"))
 
 # The path two players will most likely get (the server's `ping.path`, 1.1.5): shown before a match is accepted
 PING_PATH_TEXT = {"direct": N_("probably a direct connection"), "lan": N_("probably over the local network"),
@@ -307,6 +309,9 @@ class OnlineView:
         tv.tag_configure("me", font=self.th.fonts["bold"])
         tv.tag_configure("other", foreground=C["faint"])
         tv.tag_configure("closed", foreground=C["muted"])
+        tv.tag_configure("away", foreground=C["faint"])         # (the players you cannot play now, tk_challenges.py)
+        tv.tag_configure("sep", foreground=C["muted"], font=self.th.fonts["bold"])
+        tv.tag_configure("challenged", foreground=C["accent"])
         if empty:
             lab = ttk.Label(frame, text=empty, style="Card.Faint.TLabel", justify="center", anchor="center",
                             wraplength=self.px(360))
@@ -849,6 +854,7 @@ class OnlineView:
         self.players_count = tk.StringVar(page, value="")
         head, tools = self.section_head(pc, t("Players online").upper(), self.players_count)
         head.grid(row=0, column=0, sticky="we", pady=(0, px(6)))
+        tab.chal.build_tools(tools, px)            # the challenge's input delay (tk_challenges.py)
         b = ttk.Button(tools, text=t("Challenge"), style="Card.Small.TButton", state="disabled",
                        command=tab.do_challenge)
         b.pack(side="left")
@@ -862,6 +868,9 @@ class OnlineView:
         fr.grid(row=1, column=0, sticky="nsew")
         tab.tv_players.bind("<Double-1>", lambda _e: tab._profile_of_selected())
         tab.tv_players.bind("<Return>", lambda _e: tab._profile_of_selected())
+        tab.tv_players.bind("<<TreeviewSelect>>", lambda _e: tab.chal.selection_changed(), add="+")
+        tab.chal.bind_player_sort(tab.tv_players)  # sorted by a heading's click (tk_challenges.py)
+        tab.chal.build_open(pc, 2, px)             # your open challenges, under the list
 
         rc = self.card(page, pad=12)
         rc.grid(row=1, column=0, sticky="nsew", pady=(px(10), 0))
@@ -933,10 +942,13 @@ class OnlineView:
         ttk.Label(card, style="Card.Faint.TLabel", text=t(
             "Order: rating minus twice its uncertainty (a few matches are needed to climb). "
             "'?' = provisional.")).grid(row=1, column=0, sticky="w", pady=(px(2), px(6)))
-        fr, tab.tv_board = self.tree(card, ("place", "player", "rank", "rating", "record", "main"),
-                                     (60, 170, 150, 80, 100, 120), height=10,
+        fr, tab.tv_board = self.tree(card, ("place", "player", "rank", "rating", "record", "rw", "rl", "cw", "cl",
+                                            "main"),
+                                     (80, 170, 150, 80, 100, 84, 84, 84, 84, 120), height=10,
                                      empty=t("Nobody has a ranked result yet. Win a ranked set to be the first."))
+        tab.tv_board.configure(displaycolumns=("place", "player", "rank", "rating", "record", "main"))
         fr.grid(row=2, column=0, sticky="nsew")
+        tab.chal.bind_board_sort(tab.tv_board)     # every column sorts by its heading (tk_challenges.py)
         tab.tv_board.bind("<Double-1>", lambda _e: tab._profile_of(tab.tv_board))
         tab.tv_board.bind("<Return>", lambda _e: tab._profile_of(tab.tv_board))
 
@@ -1803,6 +1815,10 @@ class OnlineView:
         if ev:
             self._wish_row(left, ev.get("wish"), 4)
             self._ping_row(left, self._card_ping(ev, "from"), 5)        # (1.1.5: before the answer)
+            delay = self.tab.chal.card_line(ev)                       # (1.1.9: the match's input delay)
+            if delay:
+                ttk.Label(left, text=delay, style="Card.Bold.TLabel").grid(row=6, column=0, columnspan=2,
+                                                                          sticky="w", pady=(px(4), 0))
 
     def _wish_row(self, parent, wish, row):
         """A challenger's / friend's side and stage wishes ("wants to be P1 on Ghetto Pit", tk_casual.py) on the card,

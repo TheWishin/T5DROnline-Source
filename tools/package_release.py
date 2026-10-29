@@ -94,6 +94,7 @@ OUR_FILES = [
     "launcher/problem_check.py", "launcher/problem_check_ui.py", "launcher/tab_look.py",
     "launcher/controls_ui.py", "launcher/controls_edit.py", "launcher/stub/t5dr_stub.c",
     "launcher/replays.py", "launcher/replays_ui.py",
+    "launcher/tkgc.py",            # 1.1.9: garbage freed on the Tk thread only (t5dr_launcher.pyw imports it)
     "docs/RELEASE.md",
     # online: "Host for friends" entry point (works with the bundled, isolated Python) and the server list
     "lobby/run.py", "lobby/servers.json",

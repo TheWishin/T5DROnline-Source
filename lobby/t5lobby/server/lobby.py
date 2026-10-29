@@ -79,6 +79,10 @@ FEATURES.append("stats")       # 1.1.5: the Online tab's stats page (h_stats)
 STATS_SECONDS = 300.0          # the stats page's numbers are computed again at most this often
 FEATURES += ["training", "handicap"]   # 1.1.5: training rooms and the health handicap (matchrules.py)
 FEATURES.append("handicap150")         # 1.1.7: the health handicap up to 150 % (matchrules.py CAP_150)
+FEATURES.append("challenges2")         # 1.1.9: several open challenges at once, the challenger's input delay
+CHALLENGES_OPEN = 5                    # a player's open challenges at once (1.1.9; before: one)
+CHALLENGE_GAP_S = 0.7                  # ... sent at most this often (before: one every 2 s)
+CHALLENGE_DELAYS = (0, 1, 2)           # input delays a challenger may choose (frames; None = auto): the Settings tab's
 REPORT_SOURCES = ("game", "manual", "quit", "crash", "disconnect")
 DAY = 86400.0
 
@@ -206,10 +210,11 @@ class _ConnOf:
 
 
 class Challenge:
-    def __init__(self, src, dst):
+    def __init__(self, src, dst, delay=None):
         self.id = "c" + _rid()
         self.src, self.dst = src, dst
         self.timer = None
+        self.delay = delay                   # the challenger's input delay (frames), None = auto (1.1.9)
 
 
 class Invite:
@@ -317,6 +322,7 @@ class Match:
         self.ranked = ranked
         self.origin = origin                 # queue | room | challenge
         self.room = room
+        self.casual_delay = None             # an accepted challenge's input delay (frames) for both, and its rematches
         self.build_id = host.build_id
         self.state = "ready"
         self.created = time.time()
@@ -1751,6 +1757,10 @@ class LobbyServer(SpectateMixin, RoomsMixin, CasualMixin, MatchRulesMixin):
         threshold at least that many frames (1.1.5: rollback jumps less on a far or relayed connection), never above
         the session's lockstep delay; otherwise None (each player's own setting)."""
         base = self.cfg.ranked_input_delay if m.ranked and self.cfg.ranked_input_delay >= 0 else None
+        if not m.ranked and m.casual_delay is not None:
+            # the challenger's choice, which both saw before the match was accepted (1.1.9); the session's lockstep
+            # delay stays the ceiling as for every other value
+            return min(m.casual_delay, m.delay) if isinstance(m.delay, int) and m.delay > 0 else m.casual_delay
         floor = _ping_delay_floor(self.cfg.ping_delays, m.rtt)
         if floor is None:
             return base
@@ -1859,22 +1869,44 @@ class LobbyServer(SpectateMixin, RoomsMixin, CasualMixin, MatchRulesMixin):
             raise LobbyError(proto.E_BUSY, "busy")
         if self._is_blocked(p, q):
             raise LobbyError(proto.E_NOT_ALLOWED, "that player is not available")
+        delay = msg.get("delay")                   # (1.1.9: the challenger's input delay; None / "auto" = auto)
+        if delay in (None, "auto"):
+            delay = None
+        elif isinstance(delay, bool) or not isinstance(delay, int) or delay not in CHALLENGE_DELAYS:
+            raise LobbyError(proto.E_BAD_REQUEST, "bad field: delay")
         now = time.monotonic()
-        if now - p.last_challenge < 2.0 or any(c.src is p for c in self.challenges.values()):
-            raise LobbyError(proto.E_RATE, "one challenge at a time")
+        mine = [c for c in self.challenges.values() if c.src is p]
+        if any(c.dst is q for c in mine):
+            raise LobbyError(proto.E_RATE, "you challenged that player already")
+        if now - p.last_challenge < CHALLENGE_GAP_S or len(mine) >= CHALLENGES_OPEN:
+            raise LobbyError(proto.E_RATE, "too many challenges at once")
         if sum(1 for c in self.challenges.values() if c.dst is q) >= 3:
             raise LobbyError(proto.E_BUSY, "that player has challenges pending")
         wait = self._retry_left(("challenge", self._block_key(p), self._block_key(q)))
         if wait:
             raise LobbyError(proto.E_RATE, f"your last challenge to that player ended a moment ago; try again in {wait} s")
         p.last_challenge = now
-        c = Challenge(p, q)
+        c = Challenge(p, q, delay)
         self.challenges[c.id] = c
         c.timer = asyncio.get_running_loop().call_later(30.0, self._end_challenge, c, "expired")
         ping = self._ping_info(p, q)               # (1.1.5: the ping and the likely path before an answer)
-        q.send({"t": "challenged", "challenge": c.id, "from": p.brief(), "ping": ping,
+        shown = self._challenge_delay(c, ping)
+        q.send({"t": "challenged", "challenge": c.id, "from": p.brief(), "ping": ping, "delay": shown,
                 "wish": self._casual_wish(p)})             # (1.1.5: the challenger's side and stage wishes, casual.py)
-        return {"t": "challenge", "challenge": c.id, "ping": ping}
+        return {"t": "challenge", "challenge": c.id, "ping": ping, "delay": shown, "to": q.brief()}
+
+    def _challenge_delay(self, c, ping):
+        """The input delay a challenge's match will have, for both cards before the answer (1.1.9): {"frames": n,
+        "auto": bool}. Auto: what the games will pick from the ping (docs/NETPLAY.md "Input delay": 1 frame up to 60 ms,
+        2 above; T5L_PING_DELAYS above its thresholds) -- an estimate until the games measure it; frames None when the
+        ping is not known."""
+        if c.delay is not None:
+            return {"frames": c.delay, "auto": False}
+        ms = ping.get("ms") if ping.get("known") else None
+        if not isinstance(ms, (int, float)):
+            return {"frames": None, "auto": True}
+        floor = _ping_delay_floor(self.cfg.ping_delays, ms)
+        return {"frames": floor if floor is not None else (1 if ms <= 60 else 2), "auto": True}
 
     async def h_challenge_reply(self, conn, msg):
         p = conn.player
@@ -1897,7 +1929,9 @@ class LobbyServer(SpectateMixin, RoomsMixin, CasualMixin, MatchRulesMixin):
         self._abandon_set(p)
         self._leave_queue(src)
         self._leave_queue(p)
-        self.create_match(*self._casual_sides(src, p), ranked=False, origin="challenge")
+        # (create_match withdraws both players' other challenges: the first one accepted wins)
+        m = self.create_match(*self._casual_sides(src, p), ranked=False, origin="challenge")
+        m.casual_delay = c.delay
 
     async def h_challenge_cancel(self, conn, msg):
         c = self.challenges.get(msg.get("challenge"))
@@ -1943,6 +1977,10 @@ class LobbyServer(SpectateMixin, RoomsMixin, CasualMixin, MatchRulesMixin):
         self.matches[m.id] = m
         for inv in [i for i in self.invites.values() if i.src in (host, join) or i.dst in (host, join)]:
             self._end_invite(inv, "cancelled")          # (playing someone else now)
+        for c in [c for c in self.challenges.values() if c.src in (host, join) or c.dst in (host, join)]:
+            self._end_challenge(c, "withdrawn")         # (1.1.9: the first accepted of several wins, the rest go)
+        if rematch_of is not None and not ranked:
+            m.casual_delay = rematch_of.casual_delay
         self._join_set(m, rematch_of, game_set)
         # (an accepted challenge or invite, a rematch, the next game of a set, a tournament set: accepted already)
         skip_ready = origin in ("challenge", "rematch", "set", "invite", "tournament")

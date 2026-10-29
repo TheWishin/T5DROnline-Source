@@ -29,6 +29,7 @@ import problem_report as report  # noqa: E402
 import problem_report_ui as report_ui  # noqa: E402
 import problem_check_ui  # noqa: E402
 import tab_look  # noqa: E402
+import tkgc  # noqa: E402
 import replays  # noqa: E402
 import replays_ui  # noqa: E402
 import updater  # noqa: E402
@@ -228,6 +229,7 @@ class App(tk.Tk):
     def __init__(self, offscreen=False, settings=None):
         guard_tk_callbacks()         # (before the first callback: a SystemExit in one must not close the window)
         super().__init__()
+        tkgc.install(self)           # garbage (Tk objects among it) is freed on this thread only (tkgc.py)
         self.readonly = offscreen
         self.settings = settings if settings is not None else core.Settings()
         self.language = core.apply_language(self.settings)      # before the first text is built

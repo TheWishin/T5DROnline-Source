@@ -655,6 +655,26 @@ update, in one transaction with the version number. A database from a newer serv
 server still opens an upgraded database (tested), so going back to an older release works. Deleting an account
 (admin tool) deletes its friends and requests.
 
+## Challenges
+
+(1.1.9; code: `server/lobby.py` `h_challenge`, `client.py` `send_challenge`, the launcher's `tk_challenges.py`; server
+feature flag `challenges2`.)
+
+- **Several at once.** A player can have up to five open challenges, to different players (a second one to the same
+  player is refused), at least 0.7 s apart. Under the player list "Your open challenges" lists them, each with its input
+  delay and a Cancel button. The **first one accepted wins**: the match starts and the server withdraws all the other
+  challenges of both players (`challenge_update` state `withdrawn`). Both sides get a line in the lobby chat for sending,
+  taking back, a no, the end after 30 s and the withdrawal.
+- **Input delay.** The challenger picks Auto, 0, 1 or 2 frames in the box left of Challenge (the box shows what Auto
+  gives for the selected player: 1 frame up to 60 ms, 2 above, 3 above 150 ms, 4 above 250 ms; the choice is kept in
+  online.json). The challenged player sees it on the card before accepting (`delay` {frames, auto} in `challenged`);
+  the match and its rematches use it on both PCs. An older server ignores the box (it is hidden).
+- **The player list** sorts by clicking a heading (player, rank, status, ping; the choice is kept in online.json). Players
+  you cannot play right now -- in a match, another version, no connection to the lobby server's UDP -- come below a line
+  "Unavailable". Your open challenges' rows are in the accent colour.
+- **The leaderboard** has ranked and casual wins and losses in their own columns (server rows `ranked_wins`,
+  `ranked_losses`, `casual_wins`, `casual_losses`; an older server: the one Record column), every column sortable.
+
 ## Sides and stages by choice
 
 (1.1.5; code: `server/casual.py`, `client.py` `set_casual_prefs`, the launcher's `tk_casual.py`.) In the matches two
@@ -938,7 +958,7 @@ Answers are never larger than requests (no amplification). The game's packets
   0.5/s per address (burst 10), at most 8 at once per address, 500 in total.
   Failed password logins: 5, then one per minute, per address and per account
   name. Account creation: 3 per address, then one per 10 minutes. Chat: 1 line/s (burst 5).
-  Challenges: one pending at a time, one per 2 s, at most 3 waiting per target.
+  Challenges (1.1.9): up to 5 open at once (to different players), one per 0.7 s, at most 3 waiting per target.
   UDP control packets: 100/s per address. Login must finish within 15 s.
 - **Input validation**: lines over 8 KiB close the connection; malformed or
   deeply nested JSON is refused; names are 2-16 characters from a fixed set;

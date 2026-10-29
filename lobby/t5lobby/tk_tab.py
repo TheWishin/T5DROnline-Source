@@ -74,7 +74,7 @@ from .i18n import N_, stamp, t, translate_message
 from .match_driver import MatchDriver, fps_from_logs, game_files, game_supports_pick, game_supports_rules, \
     game_supports_life150
 from .proto import DEFAULT_PORT, LobbyError
-from . import theme, tk_casual, tk_rooms, tk_rules, tk_spectate, tk_tour, tk_views, tklist, winfront
+from . import theme, tk_casual, tk_challenges, tk_rooms, tk_rules, tk_spectate, tk_tour, tk_views, tklist, winfront
 from .ranks import record_label as _record
 
 
@@ -116,7 +116,7 @@ CANCEL_TEXT = {"declined": N_("Match declined."), "ready_timeout": N_("Nobody ac
                "organizer": N_("The organizer decided the set."),
                "set_restart": N_("A player was away; the set's game starts again.")}
 CHALLENGE_TEXT = {"declined": N_("Challenge declined."), "cancelled": N_("Challenge cancelled."),
-                  "expired": N_("Challenge expired.")}
+                  "expired": N_("Challenge expired."), "withdrawn": N_("Challenge withdrawn: a match started.")}
 # A friend's state in the Friends list: the lobby status when online (STATUS_TEXT), else these.
 FRIEND_STATE_TEXT = {"in_match": N_("in a match"), "offline": N_("offline")}
 # ... and, when they cannot be invited for a reason of their side, that reason instead (the presence icon still
@@ -301,6 +301,7 @@ class OnlineTab:
         self.spec = tk_spectate.Spectating(self)   # watching live matches (docs/SPECTATE.md)
         self.rooms_ui = tk_rooms.RoomsUI(self)     # private and community rooms (docs/ONLINE.md "Rooms")
         self.casual = tk_casual.CasualUI(self)     # side and stage by choice (docs/ONLINE.md "Sides and stages by choice")
+        self.chal = tk_challenges.ChallengesUI(self)   # open challenges, input delay, list order (docs/ONLINE.md)
         self._bar_t = -1e9               # when the question bar's buttons last changed (pad clock): BAR_ARM_S
         self.tours = tk_tour.TourController(self)    # tournaments: the page, the calls (docs/TOURNAMENTS.md)
         self.fw_check = fwcheck.check    # the read-only firewall check (tests replace it)
@@ -421,6 +422,7 @@ class OnlineTab:
             b.configure(state="normal" if on.get(k) else "disabled")
         self.spec.set_actions(busy)
         self.casual.refresh()
+        self.chal.refresh()
         connected = self.client is not None
         for b in (self.b_guest, self.b_login, self.b_register, self.b_forgot):
             b.configure(state="disabled" if connected else "normal")
@@ -989,6 +991,7 @@ class OnlineTab:
         self.match_var.set("")
         self.tv_players.delete(*self.tv_players.get_children())
         self.tv_rooms.delete(*self.tv_rooms.get_children())
+        self.chal.reset()
         self.rooms_ui.close_window()
         self.rooms_ui.refresh()
 
@@ -1106,11 +1109,12 @@ class OnlineTab:
         self.rooms_ui.join_selected()         # (a locked room asks for its password or code: tk_rooms.py)
 
     def do_challenge(self):
-        sel = self.tv_players.selection()
-        if not sel or (self.client.me and sel[0] == self.client.me["id"]):
-            self.status(t("Select an opponent in the list first."))
-            return
-        self.call(self.client.challenge, sel[0], then=lambda _r: self.status(t("Challenge sent.")))
+        self.chal.send()                      # (several at once, with the chosen input delay: tk_challenges.py)
+
+    def relist(self):
+        """The player list again from the last lobby state (a new order, a challenge sent or ended)."""
+        if getattr(self, "_last_lobby", None) and self.client:
+            self._fill_lists(self._last_lobby)
 
     def do_blocked(self):
         """The block list, with Unblock."""
@@ -1526,12 +1530,18 @@ class OnlineTab:
     def _show_board(self, rows):
         self._last_board = rows
         plates = self.view.plates_on()
+        # (1.1.9: ranked and casual wins and losses in their own columns when the server sends them; any order)
+        shown, cols = self.chal.board_rows(rows)
+        if tuple(self.tv_board["displaycolumns"]) != cols:
+            self.tv_board.configure(displaycolumns=cols)
         tklist.sync(self.tv_board, [("lb:" + r["name"], (
             r["place"], r["name"] + ("  *" if r.get("online") else ""),
             (t("(provisional)") if r.get("provisional") else "") if plates else
             ranks.display_name(r) + ("?" if r.get("provisional") else ""), r["rating"],
-            _record((r["wins"], r["losses"])), self.table.fighter_name(r["main"]) if r.get("main") else ""),
-            self.view.rank_image(r), ()) for r in rows])
+            _record((r["wins"], r["losses"])), r.get("ranked_wins", ""), r.get("ranked_losses", ""),
+            r.get("casual_wins", ""), r.get("casual_losses", ""),
+            self.table.fighter_name(r["main"]) if r.get("main") else ""),
+            self.view.rank_image(r), ()) for r in shown])
         self.view.show_empty(self.tv_board, not rows)
 
     def art_ready(self):
@@ -1545,7 +1555,7 @@ class OnlineTab:
 
     def _profile_of_selected(self):
         sel = self.tv_players.selection()
-        if sel:
+        if sel and sel[0] != tk_challenges.AWAY:
             name = self.tv_players.item(sel[0], "values")[0].replace(self._you_suffix(), "")
             self.show_profile(name)
 
@@ -1637,6 +1647,7 @@ class OnlineTab:
         kind = ev["t"]
         c = self.client
         self._notify_event(ev)                             # (before anything brings the window forward)
+        self.chal.on_event(ev)                             # open challenges and their chat lines (tk_challenges.py)
         if kind.startswith("tour_") or kind == "match_found":
             self.tours.on_event(ev)                        # tournaments (tk_tour.py)
         if self.spec.on_event(ev):
@@ -1652,8 +1663,9 @@ class OnlineTab:
             # after_event comes later, too late for the card's first and only drawing)
             self.challenge, self.challenge_ev = ev["challenge"], ev
             ping = _event_ping(c, ev)    # (1.1.5: the ping and the likely path before an answer)
+            delay = self.chal.card_line(ev)    # (1.1.9: the input delay of the match, before the answer)
             self.show_bar(t("{name} ({rank}) challenges you", name=ev["from"]["name"], rank=rank_text(ev["from"]))
-                          + (" -- " + ping_text(ping) if ping else ""),
+                          + (" -- " + ping_text(ping) if ping else "") + (" -- " + delay if delay else ""),
                           [(t("Accept"), lambda: self._answer(True), "cross"),
                            (t("Decline"), lambda: self._answer(False), "circle")])
         elif kind == "challenge_update":
@@ -1960,9 +1972,10 @@ class OnlineTab:
         self._last_lobby = ev
         me = self.client.me if self.client else None
         mine = self.client.build.build_id if self.client else None
-        rows = []
+        entries = []
         rtt_of = {}
         plates = self.view.plates_on()
+        challenged = self.chal.challenged_ids()
         for p in ev.get("players", []):
             # another version: that is what matters (no challenge either way), not what they are doing
             status = _word(STATUS_TEXT, p["status"]) if p["build"] == mine else t("other version")
@@ -1975,9 +1988,14 @@ class OnlineTab:
             name = p["name"] + (self._you_suffix() if me and p["id"] == me["id"] else "")
             main = self.table.fighter_name(p.get("main")) if p.get("main") else ""
             tags = ("me",) if me and p["id"] == me["id"] else ("other",) if p["build"] != mine else ()
-            rows.append((p["id"], (name, rank_text(p, plates), rating, _record(rec), main, status, ping),
-                         self.view.player_image(ms, p), tags))
-        tklist.sync(self.tv_players, rows)
+            if not self.chal.playable(p, me, mine):
+                tags += ("away",)              # (1.1.9: below the players you can play now)
+            if p["id"] in challenged:
+                tags += ("challenged",)            # (your open challenge: the accent colour, tk_challenges.py)
+            entries.append((p["id"], (name, rank_text(p, plates), rating, _record(rec), main, status, ping),
+                            self.view.player_image(ms, p), tags, p, ms))
+        self._list_rtt = rtt_of
+        tklist.sync(self.tv_players, self.chal.order_players(entries, (me or {}).get("id")))
         rows = []
         for r in ev.get("rooms", []):
             state = " ".join([_word(ROOM_STATE_TEXT, r["status"])] + self.rooms_ui.list_state(r)

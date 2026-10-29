@@ -3,7 +3,18 @@
 All notable changes, newest first. The project is a test release. Short commit hashes are in parentheses. The state of each
 part is in the README's status table.
 
-## v1.1.9 (not released yet)
+## v1.1.9 (2026-10-29)
+
+**Fair ranked sets, several challenges at once, frame data for every hit, "always see me on the left", the European
+release offline, and a launcher crash fixed.** A crash or a lost connection between two games of a ranked set no
+longer loses the set: you have 90 s to come back and the set goes on with the same score and sides; only the
+**Leave set** button gives it up at once. The leaderboard counts ranked and casual games apart. In the lobby you can
+send up to five challenges and cancel them, pick the input delay as the challenger, and sort the player list. The
+training overlay shows every hit of a string on its own line, active frames like i13~14 and KND, at the top or the
+bottom of the picture. Casual matches can show you on the left as P2. The European PSN release (NPEA00019) now
+builds and plays offline. Also fixed: the launcher closing by itself now and then (Python's memory clean-up in the
+wrong thread), a phantom DirectInput pad pressing buttons by itself, and HP bars flickering online with an unsteady
+ping. Both players need 1.1.9. After the update press **BUILD GAME** once, as the launcher asks.
 
 ### Launcher
 - Python's garbage collector runs on the Tk thread only (`launcher/tkgc.py`): closed windows' pictures, variables and
@@ -45,8 +56,6 @@ part is in the README's status table.
   or wake-up is no longer taken for the opponent's move (Nina d/f+2 showed HIT +24); a crouch is no knockdown.
 - New launcher setting Settings -> Training overlay -> Position: Top (default) or Bottom of the picture.
 
-- **The European PSN release builds and plays offline** (TEKKEN 5 DARK RESURRECTION, NPEA00019 v01.00, with its .rap): BUILD GAME takes it next to the US package; its Arcade, Ghost and VS battles, with sound and movies. It plays offline only for now -- online play for it comes in a later update (the Build tab, the Online tab and "Check my problem" say so); European and US games are never matched (other build ID). The US version is unchanged. docs/EU.md.
-
 ### Game
 - Phantom DirectInput pad (a second player pressing Up or buttons by itself, ports flipping): a DirectInput
   device gets a port only after it has read well for 1 s; one lost 3 times within 30 s, each time soon after
@@ -58,13 +67,22 @@ part is in the README's status table.
   costs ~0.02 ms per re-simulated frame and does not change the netplay sync.
 - `controls.ini`: a key given twice in a section, or a section given twice, is reported in the log with both
   line numbers (patch 0087).
-
 - **Always see me on the left** (casual matches): as P2 in a challenge, a friend's invite or a room that is not
   ranked, your screen shows the fight mirrored with you on the left (HUD halves swapped, names and timer readable)
   and your left and right are swapped; your opponent sees the normal picture and the game simulates the same
   (ps3recomp patch 0086, `src/netplay/always_left.cpp`). Ranked, Quick and tournament matches stay as they are.
   Settings -> Screen side, and the same checkbox in the Online tab's casual row; offline, Versus fights show the
   P2 side. Known: one-sided details (scars, writing on clothes) appear the other way round.
+
+### European release
+- **The European PSN release builds and plays offline** (TEKKEN 5 DARK RESURRECTION, NPEA00019 v01.00, with its .rap): BUILD GAME takes it next to the US package; its Arcade, Ghost and VS battles, with sound and movies. It plays offline only for now -- online play for it comes in a later update (the Build tab, the Online tab and "Check my problem" say so); European and US games are never matched (other build ID). The US version is unchanged. docs/EU.md.
+
+### macOS (test builds)
+- The practice tools, training, stage unlock and direct fight are on by default in a Mac build (`--macos-offline`
+  builds the game alone); online stays off. They work now: `src/` read the runtime's semaphores with the Windows
+  layout. Windows is unchanged.
+- The Metal renderer logs `[fps]` and real `[slow-frames]` times; a second scripted pad (`PS3_PAD_FILE2`); a
+  compiler warning fixed (ps3recomp patches 0100-0102). The training overlay is not drawn on the Mac yet.
 
 ### Tests
 - `tests/launcher_challenges_click.py`: four real launcher processes in a real Tk main loop against a local lobby

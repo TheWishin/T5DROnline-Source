@@ -8,8 +8,8 @@ English: [../README.md](../README.md)
 
 <!-- RELEASE LINE: the version and date in the next two lines change with every release, when it is tagged
 (docs/RELEASING.md "Cutting a release", step 2); the same lines are in README.md. -->
-**Release 1.1.8 (2026-10-28).** Lade
-`T5DR-Online-1.1.8.zip` von https://github.com/TheWishin/T5DROnline/releases
+**Release 1.1.9 (2026-10-29).** Lade
+`T5DR-Online-1.1.9.zip` von https://github.com/TheWishin/T5DROnline/releases
 
 **Community-Discord:** https://discord.gg/4DwDHAkk2x -- Fragen, Matches, Feedback.
 

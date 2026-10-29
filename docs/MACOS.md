@@ -1,5 +1,33 @@
 # macOS port: inventory, plan and groundwork
 
+## Status 1.1.9 (2026-10-29)
+
+Mac work of 1.1.9 (branch `mac-119`; Mac17,9, Apple M5 Pro, macOS 26.6.2, Apple clang 21; Windows unchanged):
+
+- **The `src/` modules are on by default on macOS** (practice tools, training, stage unlock, direct fight;
+  `tools/build_game.py --macos-offline` builds the game alone, CMake `T5DR_MACOS_ONLINE` defaults ON on `APPLE`
+  only). Online stays off: only `--macos-online` sets the stamp's `"online": true`, which the lobby client checks;
+  the stamp's `"modules"` records the build kind.
+- **Semaphore layout off Windows** (`src/netplay/t5_hooks.cpp`, `src/directfight/df_hooks.cpp`): `src/` read the
+  runtime's `g_sys_semaphores` with the Windows tail (`HANDLE`, `CRITICAL_SECTION`); off Windows the runtime has
+  patch 0063's `rsx_posted` and a `pthread_mutex_t` + `pthread_cond_t` there. The keyread thread was never seen
+  parked (5 s lost at boot), late input gave up and the practice tools never ran. Fixed: the non-Windows branch has
+  the runtime's layout and locks `s.mtx`. Windows layout and locking unchanged.
+- **Patch 0100**: no unsequenced `++` in the Metal staging-slot wait log. **Patch 0101**: `[fps]` on the Metal path
+  (`eng_present`) and real `[slow-frames]` times (flip stamps on `CLOCK_MONOTONIC`, the main thread's waits and
+  processor time via `thread_info`, GPU time from the Metal command buffers). "GPU wait" and the per-frame median
+  "game" stay 0 on Metal (the frame never blocks on the GPU; the next frame is released before the previous one is
+  presented). **Patch 0102**: `PS3_PAD_FILE2` (player 2) on the non-XInput pad path; `tools/smoke` runs on the Mac
+  and skips the frame-dump checks there with the reason (`LD_FRAME_DUMP` is D3D12-only).
+- Measured: clean build 135 s with the modules; fp_vectors 55/55; fights on stages 17/19 at 59.9-60.0 fps;
+  smoke quick 31 pass / 19 skip / 1 fail; `tools/practice_check.py` passed once, the final build's two runs missed
+  the timing-sensitive "30 frames after the reset" check (driven blind, no frame dump).
+- **Open**: a Metal overlay pass for `rsx_overlay.c` (the training input display, frame data and practice status
+  line are not drawn on the Mac); the intro sometimes ignores START (about 1 run in 3) and the character select is
+  sometimes mostly silent (both with and without the modules); a log-based "fight started" signal for
+  `practice_check.py` on the Mac; 16.6 fps for about 10 s on the fight's loading screen with the modules (late
+  input's loader drain?); exit with Esc not tested.
+
 ## Status 1.1.5 (2026-10-27)
 
 - **Offline play on Apple silicon works**: n0madic's port (ps3recomp patches

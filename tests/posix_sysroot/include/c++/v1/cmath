@@ -1,3 +1,24 @@
 #pragma once
 #include <math.h>   /* declaration-only stand-in: tests/test_macos_port.py */
 #include "__t5_std.h"
+/* As libc++'s <cmath>: the classification macros become functions, the math functions are in std. */
+#undef signbit
+#undef isnan
+#undef isinf
+#undef isfinite
+#undef isnormal
+namespace std {
+template <class T> inline bool signbit(T x) { return __builtin_signbit(x); }
+template <class T> inline bool isnan(T x) { return __builtin_isnan(x); }
+template <class T> inline bool isinf(T x) { return __builtin_isinf(x); }
+template <class T> inline bool isfinite(T x) { return __builtin_isfinite(x); }
+template <class T> inline bool isnormal(T x) { return __builtin_isnormal(x); }
+using ::sqrt; using ::fabs; using ::floor; using ::ceil; using ::trunc; using ::nearbyint; using ::rint;
+using ::round; using ::exp; using ::exp2; using ::log; using ::log2; using ::log10; using ::sin; using ::cos;
+using ::tan; using ::asin; using ::acos; using ::atan; using ::sinh; using ::cosh; using ::tanh; using ::cbrt;
+using ::fma; using ::ldexp; using ::frexp; using ::modf; using ::pow;
+inline float ceil(float x) { return ::ceilf(x); }
+inline float floor(float x) { return ::floorf(x); }
+inline float sqrt(float x) { return ::sqrtf(x); }
+inline float fabs(float x) { return ::fabsf(x); }
+}

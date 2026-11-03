@@ -79,7 +79,13 @@ T0 = time.time()
 def log(msg):
     line = f"[{time.time() - T0:8.1f}s] {msg}"
     with LOG_LOCK:
-        print(line, flush=True)
+        try:
+            print(line, flush=True)
+        except UnicodeEncodeError:
+            # stdout redirected to a file takes the ANSI code page (cp1252): a launcher text like the DEV badge's
+            # diamond must not fail the scenario that logged it -- the run's own log file below is UTF-8 anyway
+            enc = getattr(sys.stdout, "encoding", None) or "ascii"
+            print(line.encode(enc, "backslashreplace").decode(enc), flush=True)
         if Run.current is not None and Run.current.logf is not None:
             Run.current.logf.write(line + "\n")
             Run.current.logf.flush()

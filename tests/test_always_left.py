@@ -144,8 +144,11 @@ class Renderer(unittest.TestCase):
         draw = draw.group(0)
         self.assertNotIn("al_hud_clip(", draw)
         self.assertIn("const int hud = want && g_al.active && g_al.copy_seen;", draw)
-        self.assertIn("al_hud_place(&g_al.hud, &q, &m)", draw)
-        self.assertIn("al_hud_note(&g_al.hud, &q)", draw)
+        # Issue #31: the placement is decided from this draw alone -- no layout remembered from earlier frames
+        # (that history kept a fill touching the timer in place while its frame moved, and flickered).
+        self.assertIn("al_hud_place(&q, n, &why)", draw)
+        self.assertNotIn("al_hud_note(", body)
+        self.assertNotIn("al_hud_frame_end(", body)
         self.assertLess(draw.index("g_al_trace.raw = q;"), draw.index("al_hud_place("))
         # Capture the renderer's already-computed scissor before mirror/move, then trace before host scaling.
         capture = self.patch.index("+    const D3D12_RECT al_sc_before = sc;")

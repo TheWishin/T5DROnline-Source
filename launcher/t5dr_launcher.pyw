@@ -1561,11 +1561,11 @@ class App(tk.Tk):
             self.settings["training_online"] = bool(self.training_online_var.get())
         if hasattr(self, "practice_var"):
             self.settings["practice"] = bool(self.practice_var.get())
-        if hasattr(self, "auto_skip_var"):
-            self.settings["auto_skip_offline"] = bool(self.auto_skip_var.get())
             label = self.practice_dummy_var.get()
             self.settings["practice_dummy"] = next(
                 (k for k, v in self._practice_dummy_labels.items() if v == label), "game")
+        if hasattr(self, "auto_skip_var"):
+            self.settings["auto_skip_offline"] = bool(self.auto_skip_var.get())
         if hasattr(self, "router_ports_var"):
             self.settings["router_ports"] = bool(self.router_ports_var.get())
         if hasattr(self, "screen_side_var"):

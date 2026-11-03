@@ -103,9 +103,65 @@ PROGRAMS = {
     },
 }
 US_PROGRAM = PROGRAMS[ELF_SHA1]
-TITLE_IDS = tuple(dict.fromkeys(p["title_id"] for p in PROGRAMS.values()))      # ("NPUB30009", "NPEA00019")
-ALL_CONTENT_IDS = tuple(c for p in PROGRAMS.values() for c in p["content_ids"])
-SUPPORTED_TEXT = "; ".join(f"{p['name']}, content ID {p['content_ids'][0]}" for p in PROGRAMS.values())
+
+# 1.2.0 (docs/EU.md "EU Online"): the European "Online" edition, a third build of the game -- 88 % of the US code
+# the same instructions, every fighter data entry of T55DATA1.BIN byte-identical to the US one, the data layout moved
+# by small per-unit shifts. Two versions of its package exist; v02.01 is the v02.00 program with three bytes changed
+# (an age-rating compare of sceNpManagerGetContentRatingFlag and a data word next to it) and the same game data.
+# EXPERIMENTAL and opt-in (T5DR_EU_ONLINE=1 or --eu-online): it builds and plays offline like the EU v01.00 build;
+# nothing in src/ knows its addresses yet, so online play stays off ("online": False, t5_game.h hooks_ok()). Without
+# the opt-in the build refuses both packages as before.
+#   sfo    what its PARAM.SFO says (VERSION is the edition's own number, APP_VER stays 01.00)
+#   code_end      the last firmware import stub (0x3D7864) + 0x20
+#   spu_extra     the sound core's effect table (the same 12 names at the US place, 0x11AD0) points at these 13
+EU_ONLINE_SPU_EXTRA = ("bnuscore=0xFA20,0x59A0,0x5D88,0x5FD0,0x68A0,0x6E98,0x7528,"
+                       "0x7598,0x7618,0x7690,0x7970,0x8B78,0x8BC8")
+EU_ONLINE_PROGRAMS = {
+    "ff07efe07be23a30e37601049f4e849ddc2cff02": {
+        "key": "eu_online", "title_id": "NPEA00019", "version": "02.01", "region": "EU",
+        "name": "Tekken 5: Dark Resurrection Online (PS3, EU PSN, NPEA00019 v02.01)",
+        "sfo": {"VERSION": "02.01", "APP_VER": "01.00"},
+        "content_ids": ("EP9000-NPEA00019_00-TEKKENRETAIL0000",), "pkg_size": 631901088, "code_end": "0x3D7884",
+        "spu_extra": EU_ONLINE_SPU_EXTRA, "pgo": False, "online": False, "experimental": True,
+    },
+    "a26bc6e037e5a8faf40250849acfa8a40d027fff": {
+        "key": "eu_online200", "title_id": "NPEA00019", "version": "02.00", "region": "EU",
+        "name": "Tekken 5: Dark Resurrection Online (PS3, EU PSN, NPEA00019 v02.00)",
+        "sfo": {"VERSION": "02.00", "APP_VER": "01.00"},
+        # (package size from the co-developer's build script; no v02.00 package was here to measure)
+        "content_ids": ("UP0700-NPEA00019_00-TEKKEN5DRO000000",), "pkg_size": 628324080, "code_end": "0x3D7884",
+        "spu_extra": EU_ONLINE_SPU_EXTRA, "pgo": False, "online": False, "experimental": True,
+    },
+}
+# Without the opt-in both are named and refused before anything is decrypted.
+OTHER_VERSIONS["EP9000-NPEA00019_00-TEKKENRETAIL0000"] = "02.01 (Online)"
+EU_ONLINE_ENV = "T5DR_EU_ONLINE"
+
+
+def eu_online_enabled():
+    return os.environ.get(EU_ONLINE_ENV) == "1"
+
+
+def _derive_program_lists():
+    global TITLE_IDS, ALL_CONTENT_IDS, SUPPORTED_TEXT
+    TITLE_IDS = tuple(dict.fromkeys(p["title_id"] for p in PROGRAMS.values()))  # ("NPUB30009", "NPEA00019")
+    ALL_CONTENT_IDS = tuple(c for p in PROGRAMS.values() for c in p["content_ids"])
+    SUPPORTED_TEXT = "; ".join(f"{p['name']}, content ID {p['content_ids'][0]}" for p in PROGRAMS.values())
+
+
+def enable_eu_online():
+    """Accept the EU Online programs in this process and in the tools it starts (the env var)."""
+    os.environ[EU_ONLINE_ENV] = "1"
+    PROGRAMS.update(EU_ONLINE_PROGRAMS)
+    for p in EU_ONLINE_PROGRAMS.values():
+        for cid in p["content_ids"]:
+            OTHER_VERSIONS.pop(cid, None)
+    _derive_program_lists()
+
+
+_derive_program_lists()
+if eu_online_enabled():
+    enable_eu_online()
 
 
 def program_of(content_id=None, title_id=None):
@@ -236,9 +292,35 @@ def sfo_version(s):
     return s.get("APP_VER") or s.get("VERSION") or "?"
 
 
+def sfo_version_text(s):
+    """sfo_version() for messages, with VERSION beside it when the PARAM.SFO has both and they differ (the EU Online
+    edition says VERSION 02.01 / APP_VER 01.00; "version 01.00" alone named it as the EU v01.00 game)."""
+    v, app = s.get("VERSION"), s.get("APP_VER")
+    return sfo_version(s) + (f" (VERSION {v})" if v and app and v != app else "")
+
+
+def sfo_matches(s, want):
+    """Does this PARAM.SFO name `want`'s version? ("?" when it names none: the SHA-1 pin decides)."""
+    if want.get("sfo"):
+        return all(s.get(k) in (None, v) for k, v in want["sfo"].items())
+    return sfo_version(s) in ("?", want["version"])
+
+
 def self_content_id(data):
     """The content ID in a PS3 program's (SELF's) NPDRM header -- no key needed to read it -- or None. `data`: the
     program's first bytes (64 KB is plenty) or a path. Decrypting it needs the .rap of exactly this content ID."""
+    npd = self_npd(data)
+    return npd[0] if npd else None
+
+
+def self_license_type(data):
+    """The NPDRM license type of a SELF (1 network, 2 local = a .rap, 3 free = no .rap), or None."""
+    npd = self_npd(data)
+    return npd[1] if npd else None
+
+
+def self_npd(data):
+    """(content ID, license type) from a SELF's NPDRM header, or None."""
     try:
         if isinstance(data, str):
             with open(data, "rb") as f:
@@ -251,7 +333,9 @@ def self_content_id(data):
             typ, size, nxt = struct.unpack_from(">IIQ", data, off)
             if typ == 3:
                 npd = data[off + 0x10: off + 0x90]
-                return npd[0x10:0x40].rstrip(b"\0").decode("ascii", "replace") if npd[:4] == b"NPD\0" else None
+                if npd[:4] != b"NPD\0":
+                    return None
+                return npd[0x10:0x40].rstrip(b"\0").decode("ascii", "replace"), struct.unpack_from(">I", npd, 8)[0]
             if not nxt or size < 0x10:
                 break
             off += size
@@ -761,6 +845,13 @@ def other_package(a):
     return bool(cid and tid and tid in TITLE_IDS and tid not in cid)
 
 
+def need_rap(a):
+    if not a.rap:
+        fail("Choose your license file (.rap) first.")
+    if not os.path.exists(a.rap) or os.path.getsize(a.rap) != 16:
+        fail(f"{a.rap} is not a PS3 license: a .rap file is exactly 16 bytes.")
+
+
 def step_decrypt(a):
     if other_package(a):
         print("  the chosen package is another version of the game than the one unpacked here: starting from it")
@@ -771,10 +862,9 @@ def step_decrypt(a):
     if built_program() and not a.force:
         print("  already done")
         return
-    if not a.rap:
-        fail("Choose your license file (.rap) first.")
-    if not os.path.exists(a.rap) or os.path.getsize(a.rap) != 16:
-        fail(f"{a.rap} is not a PS3 license: a .rap file is exactly 16 bytes.")
+    # (with the EU Online opt-in the license check waits until the program is out: v02.00 has a free license)
+    if not eu_online_enabled():
+        need_rap(a)
     eboot = os.path.join(P.pkg_dir, "USRDIR", "EBOOT.BIN")
     sfo = os.path.join(P.pkg_dir, "PARAM.SFO")
 
@@ -797,20 +887,29 @@ def step_decrypt(a):
              f"The port needs {SUPPORTED_TEXT}.")
     s = read_sfo(sfo) if os.path.exists(sfo) else {}
     title, tid, ver = s.get("TITLE", "?"), s.get("TITLE_ID", "?"), sfo_version(s)
-    print(f"  PARAM.SFO: {title} / {tid} / version {ver}")
+    print(f"  PARAM.SFO: {title} / {tid} / version {sfo_version_text(s)}")
     if tid not in TITLE_IDS:
         fail(f"This package is \"{title}\" ({tid}). The port needs {SUPPORTED_TEXT}.")
-    want = program_of(title_id=tid)
     kind = program_kind(eboot)
     prog = self_content_id(eboot) if kind == "self" else None
+    # (the program's own content ID first: one title ID has several editions, NPEA00019 v01.00 and Online)
+    want = program_of(content_id=prog, title_id=tid)
     if prog:
         print(f"  program content ID: {prog} (its license: {prog}.rap)")
     # Two players had v01.01 (APP_VER 01.01, program UP0700-NPUB30009_00-0000000000000000): their .rap could not
     # decrypt it and the build said the .rap was wrong. The version is what is wrong, and no .rap changes that.
-    if ver not in ("?", want["version"]):
-        fail_version(ver, prog, want)
+    if not sfo_matches(s, want):
+        # (an edition named by its VERSION -- the EU Online one, whose APP_VER stays 01.00 -- is named by that)
+        fail_version(s.get("VERSION", ver) if want.get("sfo") else ver, prog, want)
     if prog in OTHER_VERSIONS:
         fail_version(OTHER_VERSIONS[prog], prog, want)
+    rap = a.rap
+    if eu_online_enabled() and kind == "self":
+        if self_license_type(eboot) == 3 and want.get("experimental"):
+            print("  free license (license type 3): no .rap is needed")
+            rap = "-"
+        else:
+            need_rap(a)
     if kind == "elf":
         # A re-packed package that carries the program already decrypted: usable when it is the same program
         # (the SHA-1 pin below decides).
@@ -820,7 +919,7 @@ def step_decrypt(a):
         out = ""
     else:
         try:
-            out = run([PY, os.path.join(ROOT, "tools", "unself.py"), eboot, a.rap, P.elf, "--keys", P.keys],
+            out = run([PY, os.path.join(ROOT, "tools", "unself.py"), eboot, rap, P.elf, "--keys", P.keys],
                       capture=True)
         except subprocess.CalledProcessError as e:
             if "wrong .rap" in (e.output or ""):
@@ -839,13 +938,16 @@ def step_decrypt(a):
         os.remove(P.elf)
         cid = next((l.split("content id", 1)[1].split(",")[0].strip()
                     for l in out.splitlines() if "content id" in l), "?")
-        fail(f"This copy is a different version of the game: \"{title}\" version {ver}, content ID {cid} "
+        fail(f"This copy is a different version of the game: \"{title}\" version {sfo_version_text(s)}, "
+             f"content ID {cid} "
              f"(program SHA-1 {got[:12]}...). The port supports only {want['name']}, "
              f"content ID {want['content_ids'][0]}.")
     print(f"  program OK: SHA-1 {got} ({have['title_id']} v{have['version']}, {have['region']})")
     if not have["online"]:
         print(f"  note: {have['title_id']} is another build of the game than the US one -- it plays offline; online "
               "play, the practice tools and the training overlay need the US version (NPUB30009) for now")
+    if have.get("experimental"):
+        print(f"  note: {have['name']} is accepted as an experiment ({EU_ONLINE_ENV}=1, docs/EU.md): offline only")
 
 
 def step_unpack(a):
@@ -1166,7 +1268,12 @@ def main():
     ap.add_argument("--macos-online", action="store_true",
                     help="macOS: build the online modules too (netplay, rollback, direct fight) -- a test build "
                          "until a Mac-vs-PC match is proven in sync (docs/MACOS_ONLINE_TEST.md)")
+    ap.add_argument("--eu-online", action="store_true",
+                    help="EXPERIMENT: also accept the European Online edition (NPEA00019 v02.00 / v02.01); it builds "
+                         "and plays offline only (docs/EU.md). The same as %s=1" % EU_ONLINE_ENV)
     a = ap.parse_args()
+    if a.eu_online:
+        enable_eu_online()
     if (a.macos_online or a.macos_offline) and sys.platform != "darwin":
         ap.error("--macos-online / --macos-offline are for macOS (a Windows build always has the modules)")
     if a.macos_online and a.macos_offline:

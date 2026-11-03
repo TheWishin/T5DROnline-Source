@@ -188,6 +188,40 @@ class DecryptSyntheticSelf(unittest.TestCase):
             self.assertNotEqual(r.returncode, 0)
             self.assertIn("did not decrypt", r.stderr)
 
+    def test_free_license(self):
+        """License type 3 (the EU Online v02.00 program): the klicensee is NP_KLIC_FREE from the keys file and the
+        .rap is not read; without NP_KLIC_FREE in the keys file it says so (fake keys, synthetic SELF)."""
+        unself = load_tool("unself")
+        k = dict(fake_keys(), NP_KLIC_FREE=fake_bytes("free klicensee"))
+        parts = make_elf()
+        blob = bytearray(make_self(parts, k, k["NP_KLIC_FREE"]))
+        i = blob.index(b"NPD\0")
+        blob[i + 8:i + 12] = struct.pack(">I", 3)
+        with tempfile.TemporaryDirectory() as d:
+            paths = {n: os.path.join(d, n) for n in ("EBOOT.BIN", "out.elf", "ps3.keys", "nokey.keys")}
+            put(paths["EBOOT.BIN"], bytes(blob))
+            write_keys(paths["ps3.keys"], k)
+            r = subprocess.run([PY, os.path.join(TOOLS, "unself.py"), paths["EBOOT.BIN"], "-", paths["out.elf"],
+                                "--keys", paths["ps3.keys"]], capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn("license type 3", r.stdout)
+            self.assertEqual(get(paths["out.elf"]), parts[0])
+            # a license type 2 program still reads its .rap ("-" does not exist)
+            blob[i + 8:i + 12] = struct.pack(">I", 2)
+            put(paths["EBOOT.BIN"], bytes(blob))
+            r = subprocess.run([PY, os.path.join(TOOLS, "unself.py"), paths["EBOOT.BIN"], "-", paths["out.elf"] + "2",
+                                "--keys", paths["ps3.keys"]], capture_output=True, text=True)
+            self.assertNotEqual(r.returncode, 0)
+            # no NP_KLIC_FREE in the keys file
+            blob[i + 8:i + 12] = struct.pack(">I", 3)
+            put(paths["EBOOT.BIN"], bytes(blob))
+            write_keys(paths["nokey.keys"], fake_keys())
+            r = subprocess.run([PY, os.path.join(TOOLS, "unself.py"), paths["EBOOT.BIN"], "-", paths["out.elf"] + "3",
+                                "--keys", paths["nokey.keys"]], capture_output=True, text=True)
+            self.assertNotEqual(r.returncode, 0)
+            self.assertIn("NP_KLIC_FREE", r.stderr)
+            self.assertFalse(os.path.exists(paths["out.elf"] + "3"))
+
     def test_rejects_non_self(self):
         with tempfile.TemporaryDirectory() as d:
             p = os.path.join(d, "x.bin")

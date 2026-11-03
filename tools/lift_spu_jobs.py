@@ -88,7 +88,20 @@ JOBS_EU = [
 
 # Every program the build accepts (tools/build_game.py PROGRAMS) with its job table; the one whose fingerprints
 # all match the ELF is lifted. None matching: the US table's first mismatch is reported.
-JOBS_BY_PROGRAM = [("NPUB30009 v01.00", JOBS), ("NPEA00019 v01.00", JOBS_EU)]
+# The European Online edition (NPEA00019 v02.00 and v02.01, 1.2.0 experiment; docs/EU.md): both skinning jobs are the
+# US images byte for byte (same fingerprints), 0x600 further on (its (ea, size) table at 0x480EB0); the signal job is
+# another build of it, 0x98 bytes of code (the descriptor's size word, TOC slot 0x481644), fingerprinted as 0xA0.
+JOBS_EU_ONLINE = [
+    ("skin4x",   0x1003E580, 0x4480, 0x398E459063BA810A, 0x33B0, 32,
+     [0x160, 0x1A0, 0x1E0, 0x220], "vertex skinning, modes 0x40-0x4F"),
+    ("skin1x",   0x10042A80, 0x4200, 0xA5D68040C9BF35AF, 0x30E0, 33,
+     [0x130, 0x170, 0x1B0, 0x1F0], "vertex skinning, modes 0x10-0x13"),
+    ("jcsignal", 0x10046D00, 0x00A0, 0xF86BFF70ACDD3BB3, 0x00A0, 34,
+     [], "job-chain completion: throws an SPU user event to the attached queue"),
+]
+
+JOBS_BY_PROGRAM = [("NPUB30009 v01.00", JOBS), ("NPEA00019 v01.00", JOBS_EU),
+                   ("NPEA00019 v02.0x Online", JOBS_EU_ONLINE)]
 
 
 def pick_jobs(segs):

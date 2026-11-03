@@ -7,6 +7,12 @@ Contains no keys. They are read from a local keys file (git-ignored) holding
 NAME=HEX lines: NP_KLIC_KEY, RAP_KEY, RAP_PBOX, RAP_E1, RAP_E2 and
 NPDRM_<rev>_ERK / NPDRM_<rev>_RIV per key revision.
 
+A program with a free license (NPD license type 3, e.g. the European "Online"
+edition v02.00) has no per-content license: its klicensee is the fixed
+NP_KLIC_FREE value, read from the keys file like the others; the .rap
+argument is then not read (pass any path, e.g. "-"). License types 1 and 2
+take the klicensee from the .rap as before.
+
 Written from the public SELF format description; RPCS3's unself.cpp was used
 as a reference for the layout only.
 """
@@ -76,7 +82,6 @@ def main():
 
     k = load_keys(a.keys)
     s = open(a.self_path, "rb").read()
-    rap = open(a.rap_path, "rb").read()
     if s[:4] != b"SCE\0":
         sys.exit("not a SELF")
 
@@ -108,8 +113,14 @@ def main():
     content_id = npd[0x10:0x40].rstrip(b"\0").decode()
     print(f"content id {content_id}, license type {license_type}")
 
-    # Metadata info: NPDRM layer (AES-128-CBC, key from the .rap), then AES-256-CBC
-    klic = rap_to_rif_key(rap, k)
+    # Metadata info: NPDRM layer (AES-128-CBC, key from the .rap -- or the free klicensee), then AES-256-CBC
+    if license_type == 3:
+        if "NP_KLIC_FREE" not in k:
+            sys.exit(f"license type 3 (free): this program needs NP_KLIC_FREE in {a.keys}; no .rap is involved")
+        klic = k["NP_KLIC_FREE"]
+        print("free license: klicensee NP_KLIC_FREE (the .rap is not read)")
+    else:
+        klic = rap_to_rif_key(open(a.rap_path, "rb").read(), k)
     npdrm_key = AES.new(k["NP_KLIC_KEY"], AES.MODE_ECB).decrypt(klic)
     mi_off = se_meta + 0x20
     mi = s[mi_off: mi_off + 0x40]

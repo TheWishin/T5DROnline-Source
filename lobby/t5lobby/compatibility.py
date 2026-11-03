@@ -14,6 +14,7 @@ REGIONS = {
     "be80165b84e30b6334baa6d6331b9db4ffd5a6a4": "US",
     "586baa2074e3d259b303879fc7cbea1000041b60": "EU",
     "a26bc6e037e5a8faf40250849acfa8a40d027fff": "EU",
+    "ff07efe07be23a30e37601049f4e849ddc2cff02": "EU",   # EU Online v02.01 (EP9000-NPEA00019_00-TEKKENRETAIL0000)
 }
 
 

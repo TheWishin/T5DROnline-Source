@@ -102,7 +102,8 @@ class EuropeanJobs(unittest.TestCase):
 
     def test_tables(self):
         m = load_tool("lift_spu_jobs")
-        self.assertEqual([label for label, _ in m.JOBS_BY_PROGRAM], ["NPUB30009 v01.00", "NPEA00019 v01.00"])
+        self.assertEqual([label for label, _ in m.JOBS_BY_PROGRAM],
+                         ["NPUB30009 v01.00", "NPEA00019 v01.00", "NPEA00019 v02.0x Online"])
         self.assertIs(m.JOBS_BY_PROGRAM[0][1], m.JOBS)
         for us, eu in zip(m.JOBS, m.JOBS_EU):
             self.assertEqual((us[0], us[2], us[5]), (eu[0], eu[2], eu[5]))     # name, size, image id
@@ -110,6 +111,34 @@ class EuropeanJobs(unittest.TestCase):
             self.assertLessEqual(eu[4], eu[2])
             for t in eu[6]:
                 self.assertLess(t, eu[4])
+
+    def test_eu_online_table(self):
+        """1.2.0: the EU Online edition carries the US skinning jobs (same fingerprints, another place) and its own
+        signal job, so the US table can never match it (the signal job decides) and the US table stays first."""
+        m = load_tool("lift_spu_jobs")
+        self.assertIs(m.JOBS_BY_PROGRAM[2][1], m.JOBS_EU_ONLINE)
+        for us, eo in zip(m.JOBS, m.JOBS_EU_ONLINE):
+            self.assertEqual((us[0], us[5]), (eo[0], eo[5]))
+            self.assertNotEqual(us[1], eo[1])
+            self.assertEqual(eo[2] % 16, 0)
+            self.assertLessEqual(eo[4], eo[2])
+            for t in eo[6]:
+                self.assertLess(t, eo[4])
+        self.assertEqual([j[3] for j in m.JOBS[:2]], [j[3] for j in m.JOBS_EU_ONLINE[:2]])
+        self.assertNotEqual(m.JOBS[2][3], m.JOBS_EU_ONLINE[2][3])
+        # A program image with the same skinning jobs at the EU Online places and another signal job: only the EU
+        # Online table matches it (fake bytes, fingerprints computed here).
+        skin = {j[0]: fake_bytes("skin " + j[0], j[2]) for j in m.JOBS[:2]}
+        sig = fake_bytes("eu online signal", m.JOBS_EU_ONLINE[2][2])
+        fp = {name: m.fnv1a64(b) for name, b in skin.items()}
+        fp["jcsignal"] = m.fnv1a64(sig)
+        us_t = [j[:3] + (fp[j[0]] if j[0] in skin else j[3],) + j[4:] for j in m.JOBS]
+        eo_t = [j[:3] + (fp[j[0]],) + j[4:] for j in m.JOBS_EU_ONLINE]
+        base, img = 0x10000000, bytearray(0x48000)
+        for j in eo_t:
+            img[j[1] - base:j[1] - base + j[2]] = skin.get(j[0], sig)
+        with mock.patch.object(m, "JOBS_BY_PROGRAM", [("us", us_t), ("eu online", eo_t)]):
+            self.assertEqual(m.pick_jobs([(base, bytes(img))])[0], "eu online")
 
     def test_pick_jobs_by_fingerprint(self):
         m = load_tool("lift_spu_jobs")

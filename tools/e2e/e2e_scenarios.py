@@ -5628,6 +5628,35 @@ def _admin(ctx, *args):
     return r.returncode, r.stdout + r.stderr
 
 
+def _db_privacy_texts(db):
+    """(raw bytes of the database file and its -wal, every text/blob value of a consistent snapshot as one string).
+    The snapshot is taken with SQLite's backup API, which reads through the WAL."""
+    import sqlite3
+    raw = b""
+    for path in (db, db + "-wal"):
+        try:
+            with open(path, "rb") as f:
+                raw += f.read()
+        except OSError:
+            pass
+    src = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=10)
+    snap = sqlite3.connect(":memory:")
+    try:
+        src.backup(snap)
+        parts = []
+        for (table,) in snap.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall():
+            for row in snap.execute(f'SELECT * FROM "{table}"'):
+                for v in row:
+                    if isinstance(v, bytes):
+                        parts.append(v.decode("utf-8", "replace"))
+                    elif isinstance(v, str):
+                        parts.append(v)
+        return raw, chr(10).join(parts)
+    finally:
+        src.close()
+        snap.close()
+
+
 def _filter_term():
     """A term of the server's own list, read at run time (this file never spells one)."""
     from e2e_harness import LOBBY
@@ -5744,9 +5773,15 @@ def chat_private_120(ctx):
         ctx.check("the report holds exactly the 2 selected lines", got == ["pm reply", "pm two"], got)
         ctx.check("reporter A, peer B", reports[0]["reporter_name"] == "E2E Dev" and
                   reports[0]["peer_name"] == "E2E Bea", f"{reports[0]['reporter_name']} {reports[0]['peer_name']}")
-    with open(ctx.server.db, "rb") as f:
-        db_text = f.read()
-    ctx.check("unreported lines are not in the database", b"pm one" not in db_text and b"pm three" not in db_text)
+    # (review optin-check-120 P2) the server runs SQLite in WAL mode: a fresh write may sit in t5lobby.db-wal only, so
+    # the main file alone proves nothing. Read the raw bytes of the file and its WAL, and a consistent snapshot through
+    # SQLite; the reported lines must be found (positive control), the unreported ones nowhere.
+    raw, rows_text = _db_privacy_texts(ctx.server.db)
+    ctx.check("the database snapshot holds the reported lines (the check can see the database)",
+              "pm reply" in rows_text and "pm two" in rows_text, len(rows_text))
+    for line in ("pm one", "pm three"):
+        ctx.check(f"unreported line {line!r} is not in the database (file, WAL, rows)",
+                  line.encode() not in raw and line not in rows_text)
 
     # chat filter (the server's list, read at run time)
     term = _filter_term()
@@ -6152,6 +6187,10 @@ def _pace_modes(path):
                "with input delay Auto: confirmed, 0 mismatching frames, the frame log shows A's pacing mode, the "
                "host logs the jitter delay")
 def net_vrr_adaptive_120(ctx):
+    if ctx.run.netcode == "lockstep":
+        # (review optin-check-120 P2) the harness would add T5_RB_MODE=off to both games, and this scenario
+        # checks rollback's adaptive delay; net_vrr_lockstep_120 is the lockstep case
+        raise Skip("the rollback case (this run is --netcode lockstep; net_vrr_lockstep_120 covers it)")
     _net_vrr_120(ctx, "rollback", os.environ.get("E2E_VRR_PACING", "1"))
 
 
@@ -6160,6 +6199,9 @@ def net_vrr_adaptive_120(ctx):
                "comparison on, RTT 150 / jitter 15 / 2 % loss: confirmed, 0 mismatching frames")
 def net_vrr_lockstep_120(ctx):
     _net_vrr_120(ctx, "lockstep", os.environ.get("E2E_VRR_PACING", "1"))
+
+
+VRR_LOSS_PCT = 2.0      # the scenarios' "2 % loss"
 
 
 def _net_vrr_120(ctx, mode, pacing):
@@ -6174,7 +6216,8 @@ def _net_vrr_120(ctx, mode, pacing):
                                                     T5_TRAINING_LOG=tl))
     login(ctx, a)
     login(ctx, b)
-    row = net_case(ctx, a, b, f"VRR {pacing} vs default ({mode}), RTT 150 jitter 15", 150, 15, 0.02, "auto", False,
+    # loss in percent, as net_case / the proxy take it (review optin-check-120 P2: 0.02 was 0.02 %, not 2 %)
+    row = net_case(ctx, a, b, f"VRR {pacing} vs default ({mode}), RTT 150 jitter 15", 150, 15, VRR_LOSS_PCT, "auto", False,
                    None, mode=mode)
     modes = _pace_modes(fl)
     if pacing == "2":

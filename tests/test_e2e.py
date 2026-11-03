@@ -165,6 +165,45 @@ class AlwaysLeftStepTest(unittest.TestCase):
         self.assertEqual(scenarios.al_first_step([(0, 0, 0, 0, 0)], 1), 0)
 
 
+class OptinScenarioReviewTest(unittest.TestCase):
+    """Review optin-check-120: the private-chat privacy check reads SQLite's WAL too; the VRR scenarios give the
+    proxy 2 % (it takes percent); the adaptive (rollback) scenario skips a --netcode lockstep run."""
+
+    def test_privacy_check_sees_a_line_still_in_the_wal(self):
+        import shutil
+        import sqlite3
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        db = os.path.join(d, "t5lobby.db")
+        c = sqlite3.connect(db)
+        self.addCleanup(c.close)
+        c.execute("PRAGMA journal_mode=WAL")
+        c.execute("PRAGMA wal_autocheckpoint=0")
+        c.execute("CREATE TABLE lines (text TEXT)")
+        c.commit()
+        c.execute("INSERT INTO lines VALUES ('pm two'), ('pm one')")
+        c.commit()
+        with open(db, "rb") as f:
+            self.assertNotIn(b"pm one", f.read())          # the old check (main file only) saw nothing
+        raw, rows = scenarios._db_privacy_texts(db)
+        self.assertIn(b"pm one", raw)
+        self.assertIn("pm one", rows)
+        self.assertIn("pm two", rows)
+
+    def test_vrr_loss_is_percent(self):
+        self.assertEqual(scenarios.VRR_LOSS_PCT, 2.0)
+        import inspect
+        src = inspect.getsource(scenarios._net_vrr_120)
+        self.assertIn("VRR_LOSS_PCT", src)
+        self.assertNotIn("15, 0.02,", src)
+
+    def test_adaptive_scenario_skips_lockstep_runs(self):
+        ctx = type("Ctx", (), {"run": type("Run", (), {"netcode": "lockstep"})()})()
+        with self.assertRaises(harness.Skip):
+            scenarios.net_vrr_adaptive_120.__wrapped__(ctx) if hasattr(scenarios.net_vrr_adaptive_120, "__wrapped__") \
+                else scenarios.net_vrr_adaptive_120(ctx)
+
+
 class ReportTest(unittest.TestCase):
     def test_report_lists_every_scenario_with_its_counts(self):
         import importlib.util

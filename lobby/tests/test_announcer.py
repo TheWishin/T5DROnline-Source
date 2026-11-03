@@ -314,14 +314,16 @@ class PlayVoiceTests(unittest.TestCase):
 
 
 class SettingTests(unittest.TestCase):
-    TEXT = "Use the game's announcer for matches and challenges (\"Get ready for the next battle\")"
+    TEXT = "Announcer (\"Get ready for the next battle\")"
 
     def test_default_on_and_the_text_in_every_language(self):
         sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
             os.path.abspath(__file__)))), "launcher"))
         import core
         from t5lobby import i18n
+        self.assertEqual(core.DEFAULTS["notify_sound"], notify.ANNOUNCER)       # (Settings "Sound when a match ...")
         self.assertIs(core.DEFAULTS["notify_voice"], True)
+        self.assertEqual(core.MATCH_SOUNDS["announcer"], self.TEXT)
         for lang in ("de", "es", "fr", "ja", "ko", "pt-BR"):
             self.assertNotEqual(i18n.catalog(lang).get(self.TEXT, self.TEXT), self.TEXT, lang)
 

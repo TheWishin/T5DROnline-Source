@@ -116,6 +116,12 @@ def game_command(out=ROOT, extra_env=None):
             if k not in (extra_env or {}):
                 env.setdefault(k, v)
     for k, v in (extra_env or {}).items():
+        if os.name == "nt":
+            # Windows ignores the case of names: drop every spelling of k first (a lower-case extra name next to
+            # the inherited upper-case one would reach the game twice, and None must remove both)
+            for old in [o for o in env if o.upper() == k.upper()]:
+                del env[old]
+            k = k.upper()
         if v is None:
             env.pop(k, None)
         else:

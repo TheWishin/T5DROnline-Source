@@ -34,6 +34,8 @@ import core  # noqa: E402
 import problem_report as report  # noqa: E402
 
 PATCH = os.path.join(ROOT, "patches", "ps3recomp", "0086-always-left.patch")
+# patch 0110 (review fix-31-hpbar P2): a flush in the middle of the HUD -- the header's layout as the series has it
+SPLIT_PATCH = os.path.join(ROOT, "patches", "ps3recomp", "0110-always-left-split-hud.patch")
 LLVM_CL = r"C:\Program Files\LLVM\bin\clang-cl.exe"
 
 
@@ -54,6 +56,22 @@ def new_file_from_patch(patch_text, path):
         if line.startswith("+"):
             out.append(line[1:])
     return "\n".join(out) + "\n"
+
+
+def series_header(patch_text, directory):
+    """libs/video/rsx_always_left.h as the whole series leaves it: 0086's new file with 0110's hunks applied
+    (git apply in a scratch folder; nothing else of the tree is needed). -> its folder."""
+    root = os.path.join(directory, "series")
+    hdr = os.path.join(root, "libs", "video", "rsx_always_left.h")
+    os.makedirs(os.path.dirname(hdr))
+    with open(hdr, "w", encoding="utf-8", newline="\n") as f:
+        f.write(new_file_from_patch(patch_text, "libs/video/rsx_always_left.h"))
+    if os.path.isfile(SPLIT_PATCH):
+        r = subprocess.run(["git", "apply", "--include=libs/video/rsx_always_left.h", "--whitespace=nowarn",
+                            SPLIT_PATCH], cwd=root, capture_output=True, text=True, timeout=60)
+        if r.returncode != 0:
+            raise AssertionError("0110 does not apply to 0086's rsx_always_left.h: " + r.stderr[-1500:])
+    return os.path.dirname(hdr)
 
 
 def compiler():
@@ -94,11 +112,12 @@ class Renderer(unittest.TestCase):
     def test_c_unit_test_passes(self):
         vcvars, clang = compiler()
         with tempfile.TemporaryDirectory() as d:
-            hdr = new_file_from_patch(self.patch, "libs/video/rsx_always_left.h")
+            hdr_dir = series_header(self.patch, d)
+            with open(os.path.join(hdr_dir, "rsx_always_left.h"), encoding="utf-8") as f:
+                hdr = f.read()
             self.assertIn("al_vp_eval", hdr)
-            with open(os.path.join(d, "rsx_always_left.h"), "w", encoding="utf-8") as f:
-                f.write(hdr)
-            flags = f'/I "{d}"'
+            self.assertIn("al_hud_layout_frame", hdr)
+            flags = f'/I "{hdr_dir}"'
             tree = find_ps3recomp()
             if tree:      # the runtime's own decompiler reads the test's program the same way
                 flags += " /DAL_WITH_DECOMPILER " + " ".join(
@@ -189,6 +208,26 @@ class Renderer(unittest.TestCase):
         self.assertIn("if (!((reads >> t) & 1u)) continue;", draw)
         # Guest scissors must be clipped before the unsigned host-pixel scaling in the renderer.
         self.assertIn("al_clip_scissor(W, al_dx_px, al_mirror, &l, &rr);", added)
+
+    def test_filter_kernel_copy_counts_as_the_3d_picture(self):
+        """patch 0111: a soft-focus stage's screen copy reads the 3D target through its guest-size view
+        (view_big), which is not in surf_used -- Always left must see that view, or it never switches on."""
+        path = os.path.join(ROOT, "patches", "ps3recomp", "0111-always-left-kernel-copy.patch")
+        with open(path, encoding="utf-8") as f:
+            patch = f.read()
+        files = re.findall(r"^diff --git a/(\S+)", patch, re.M)
+        self.assertEqual(files, ["libs/video/rsx_live_draw.c"])
+        added = "\n".join(l[1:] for l in patch.splitlines() if l.startswith("+") and not l.startswith("+++"))
+        removed = "\n".join(l[1:] for l in patch.splitlines() if l.startswith("-") and not l.startswith("---"))
+        self.assertIn("ld_al_draw(target, surf_used, n_surf_used,", removed)
+        self.assertIn("if (view_big >= 0)", added)
+        self.assertIn("if (!seen) al_surf[n_al++] = (u32)view_big;", added)
+        self.assertIn("ld_al_draw(target, al_surf, n_al,", added)
+        # room for the extra surface; the draw's own list (used by the rest of the draw) stays as it was
+        self.assertIn("u32 al_surf[SRV_TABLE_SIZE + 1]", added)
+        self.assertNotRegex(added, r"surf_used\[[^\]]*\]\s*=(?!=)")
+        for guest_write in ("vm_write", "wr32(", "wr16(", "guest_write"):
+            self.assertNotIn(guest_write, added)
 
     def test_series_order(self):
         names = sorted(n for n in os.listdir(os.path.join(ROOT, "patches", "ps3recomp")) if n.endswith(".patch"))

@@ -23,11 +23,13 @@ class OnlineBootDriverTest(unittest.TestCase):
         self.assertIsNotNone(match, signature)
         return match.group(1)
 
-    def test_default_only_online_and_explicit_switch(self):
+    def test_off_by_default_explicit_switch_only(self):
+        # owner decision 1.2.0: no Connecting cover by default, online starts included (the game's own logos,
+        # movie, title and loading pictures as in 1.1.9); T5_ONLINE_FAST_BOOT=1 turns it on for testers
         init = self.body("void fight_init()")
         self.assertIn('getenv("T5_ONLINE_FAST_BOOT")', init)
-        self.assertIn('const bool online = g_ctl || (nm && (!_stricmp(nm, "host") || !_stricmp(nm, "join")))', init)
-        self.assertIn("g_boot_cover_enabled = sw && *sw ? *sw == '1' : online", init)
+        self.assertIn("g_boot_cover_enabled = sw && *sw == '1';", init)
+        self.assertNotIn(": online;", init)
         self.assertLess(init.index("g_boot_cover.store"), init.index("t5_boot_cover_publish()"))
 
     def test_renderer_query_is_host_only(self):

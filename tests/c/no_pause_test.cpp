@@ -583,6 +583,57 @@ static void test_offline_skip()
           "offline: arcade with both or no port playing: nothing (no challenger)");
     check(np::OfflineSkip::ports(2, true, false) == 0 && np::OfflineSkip::ports(10, true, false) == 0,
           "offline: demo and practice: nothing");
+
+    /* review wishes-120 P2: a held SELECT (either port) never gets a generated START (START+SELECT = soft reset) */
+    check(np::OfflineSkip::select_held(0x0100, 0) && np::OfflineSkip::select_held(0, 0x0100) &&
+          np::OfflineSkip::select_held(0x0900, 0x2000), "offline: SELECT on either port is seen");
+    check(!np::OfflineSkip::select_held(0x0800, 0x00F0), "offline: no SELECT, no hold");
+
+    /* review wishes-120 P2: who plays is the port whose presses a fighter reads, not any port with input */
+    {
+        const uint16_t presses[] = { 0x2000, 0x2080, 0x0080, 0x4000, 0x0040, 0x1010, 0x8000, 0x0020 };
+        for (uint32_t delay = 0; delay <= 3; delay++) {
+            for (int human = 0; human < 2; human++) {
+                /* the human mashes on its port (taps of 3-9 frames), its fighter reads the port `delay` frames later;
+                 * the CPU's fighter makes its own inputs; the other port is idle */
+                np::OfflinePortOwner o;
+                uint16_t hist[8] = { 0 };
+                uint16_t cpu = 0;
+                for (uint32_t f = 0; f < 600; f++) {
+                    const uint16_t mask = (f / 6) % 2 ? presses[(f / 12) % 8] : 0;
+                    for (int k = 7; k > 0; k--) hist[k] = hist[k - 1];
+                    hist[0] = mask;
+                    if (rnd() % 9 == 0) cpu = (uint16_t)(presses[rnd() % 8] * (rnd() & 1));
+                    const uint16_t seen = hist[delay];
+                    if (human == 0) o.feed(mask, 0, seen, cpu);
+                    else o.feed(0, mask, cpu, seen);
+                }
+                check(o.known(human) && !o.known(1 - human), "offline owner: the human's port", delay, human);
+                check(np::OfflineSkip::ports(0, o.known(0), o.known(1)) == (human ? 2u : 1u),
+                      "offline owner: arcade START on the human's port only", delay, human);
+            }
+        }
+        /* the review's case: the human on port 1 idles, an unused pad on port 2 sends directions / buttons; the CPU
+         * fights on (its own inputs, sometimes the same direction) -> nobody known, no START at all */
+        uint32_t stray_owner = 0;
+        for (int run = 0; run < 200; run++) {
+            np::OfflinePortOwner o;
+            uint16_t cpu = 0, stray = 0;
+            for (uint32_t f = 0; f < 3600; f++) {
+                if (rnd() % 7 == 0) cpu = (uint16_t)(presses[rnd() % 8] * (rnd() % 3 != 0));
+                if (rnd() % 25 == 0) stray = (uint16_t)(presses[rnd() % 8] * (rnd() & 1));
+                o.feed(0, stray, 0, cpu);        /* fighter 0 = the idle human (reads port 1: nothing) */
+            }
+            if (o.known(1) || np::OfflineSkip::ports(0, o.known(0), o.known(1)) != 0) stray_owner++;
+        }
+        check(stray_owner == 0, "offline owner: an unused pad never becomes the player", stray_owner);
+        /* a stuck stick on the unused pad (one press, held) and a CPU walking the same way: one press is not enough */
+        np::OfflinePortOwner o;
+        for (uint32_t f = 0; f < 3600; f++) o.feed(0, 0x2000, 0x2000, 0x2000);
+        check(!o.known(1) && !o.known(0), "offline owner: a held direction is one press");
+        o.reset();
+        check(o.presses[0] == 0 && o.presses[1] == 0, "offline owner: reset");
+    }
     printf("offline skips ok\n");
 }
 

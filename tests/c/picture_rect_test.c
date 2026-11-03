@@ -142,6 +142,24 @@ int main(void)
     rsx_picture_rect(RSX_PIC_43, 1920, 1080, 960, 720, &r);
     CHECK(r.cl == 240 && r.cr == 1680 && r.vw == 1440.0f, "4:3 guest");
 
+    /* patch 0109 (review picture-120 P2): the present's plain copy is allowed only when nothing is cut or
+     * barred. 4:3 at Native in the default 1280x720 window has a full-window viewport but the scissor keeps
+     * 160..1120 -- the copy showed the whole 16:9 picture. */
+    rsx_picture_rect(RSX_PIC_43, 1280, 720, 1280, 720, &r);
+    CHECK(r.vx == 0.0f && r.vw == 1280.0f && r.cl == 160 && r.cr == 1120, "4:3 1280x720 (%.1f %.1f %ld %ld)",
+          r.vx, r.vw, r.cl, r.cr);
+    CHECK(!rsx_picture_rect_whole(&r, 1280, 720), "4:3 1280x720 is no plain copy");
+    rsx_picture_rect(RSX_PIC_43, 1920, 1080, 1920, 1080, &r);
+    CHECK(!rsx_picture_rect_whole(&r, 1920, 1080), "4:3 1920x1080 same size is no plain copy");
+    for (int m = 0; m < 3; m++) {   /* fit, fill, stretch of a same-size, same-shape source: the copy */
+        rsx_picture_rect(m, 1280, 720, 1280, 720, &r);
+        CHECK(rsx_picture_rect_whole(&r, 1280, 720), "mode %d same size is the plain copy", m);
+    }
+    rsx_picture_rect(RSX_PIC_FIT, 1280, 720, 960, 720, &r);
+    CHECK(!rsx_picture_rect_whole(&r, 1280, 720), "fit of a 4:3 guest has bars");
+    rsx_picture_rect(RSX_PIC_FILL, 1920, 1200, 1280, 720, &r);
+    CHECK(!rsx_picture_rect_whole(&r, 1920, 1200), "fill on 16:10 is cut");
+
     if (g_fails) {
         printf("FAILED %d of %d checks\n", g_fails, g_checks);
         return 1;

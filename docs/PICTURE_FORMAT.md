@@ -39,7 +39,10 @@ and a replay plays back the same with any setting.
 
 `fit` takes exactly the old code path: the same viewport, scissor and clear, and when the window has the
 picture's size the plain copy (`tests/c/picture_rect_test.c` compares the new function with the old formula on
-26 window shapes). The game log says once which format is used:
+26 window shapes). Only a rectangle that covers the window with nothing cut may take the plain copy
+(`rsx_picture_rect_whole`, patch 0109): before it, 4:3 in a window of the picture's own size (Native, the
+default 1280 x 720 window) had a full-window viewport, the copy skipped the 160..1120 scissor and the window
+showed the whole 16:9 picture. The game log says once which format is used:
 `[display] picture fill (PS3_PICTURE): 1920x1200 window, picture 2133x1200 at -107,0, visible 0,0..1920,1200`.
 
 Windows only: the macOS (Metal) present keeps its own letterbox.

@@ -39,7 +39,8 @@ the player (1.1.7), someone joins the player's room, a community room's turn com
 is ready or the opponent asks for a rematch -- and the player is elsewhere (another program in front, the launcher
 minimized, another tab) -- a short chime plays and the launcher's taskbar button flashes until the window is in
 front. Once per event. A match, a challenge and a tournament set say the game's own "Get ready for the next battle!"
-instead of the chime (1.2.0, announcer.py, Settings "notify_voice"), read from the player's unpacked game.
+instead of the chime (1.2.0, announcer.py, Settings "notify_sound": announcer / beep / own WAV / off), read from the
+player's unpacked game.
 
 Firewall hint (docs/TROUBLESHOOTING.md "The firewall blocks the game"): a read-only look at Windows Firewall's rules
 for the exact t5dr.exe the launcher starts and for the launcher itself (t5lobby.fwcheck, on a worker thread when the tab
@@ -2168,11 +2169,16 @@ class OnlineTab:
             return False
 
     def _notify_voice(self):
-        """The game's announcer for a match / challenge / tournament set (notify.VOICE_KINDS), read from the player's
-        unpacked game (announcer.py); False (-> the chime) when the setting is off."""
-        if not self.app.settings.get("notify_voice", True):
+        """The sound for a match / challenge / tournament set (notify.VOICE_KINDS), as chosen in Settings "Sound when a
+        match is found" (notify.match_sound_choice): the game's announcer read from the player's unpacked game
+        (announcer.py), the beep, the player's own WAV (copied next to launcher.json) or none. False -> the chime."""
+        settings = self.app.settings
+        choice = notify.match_sound_choice(settings)
+        if choice == notify.BEEP:
             return False
-        return notify.play_voice(getattr(self.app.settings, "out_dir", None))
+        path = getattr(settings, "path", None)
+        folder = os.path.dirname(os.path.abspath(path)) if path else None
+        return notify.play_match_sound(choice, getattr(settings, "out_dir", None), folder, log=_launcher_log)
 
     def _notify_flash(self):
         return notify.flash_window(padnav.toplevel_hwnd(self.parent.winfo_toplevel()))

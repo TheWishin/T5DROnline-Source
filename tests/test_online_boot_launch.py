@@ -11,9 +11,10 @@ from t5lobby import spectate
 
 
 class OnlineBootLaunchTest(unittest.TestCase):
-    def test_live_spectator_explicitly_enables_online_cover(self):
+    def test_live_spectator_has_no_cover_by_default(self):
+        # owner decision 1.2.0: the cover is off by default everywhere (an Extra settings line can still turn it on)
         env = spectate.watch_env("stream.t5r", controls=False, buffer_frames=120)
-        self.assertEqual(env["T5_ONLINE_FAST_BOOT"], "1")
+        self.assertNotIn("T5_ONLINE_FAST_BOOT", env)
         self.assertEqual(env["T5_NET_MODE"], "replay")
         self.assertEqual(env["T5_REPLAY_FILE"], os.path.abspath("stream.t5r"))
         self.assertEqual(env["T5_REPLAY_CONTROLS"], "0")

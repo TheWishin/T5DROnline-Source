@@ -74,6 +74,21 @@ class GameSide(unittest.TestCase):
         self.assertIn('getenv("T5_AUTO_SKIP_OFFLINE")', body)
         self.assertIn("g_off_skip.press(st)", body)
 
+    def test_no_start_beside_select_and_only_on_the_known_player(self):
+        # review wishes-120 P2 x2: a held SELECT gets no START (soft reset); the one-player modes' port is the one
+        # whose presses a fighter reads (+0x6D6), never "any input on a port"
+        src = read("src", "netplay", "t5_hooks.cpp")
+        body = re.search(r"void offline_auto_skip\(uint16_t& m0, uint16_t& m1\)\n\{(.*?)\n\}", src, re.S).group(1)
+        sel = body.index("np::OfflineSkip::select_held(m0, m1)")
+        self.assertLess(sel, body.index("m0 = (uint16_t)(m0 | kMaskStart);"))
+        self.assertIn("np::OfflineSkip::ports(gt, g_off_owner.known(0), g_off_owner.known(1))", body)
+        self.assertIn("g_off_owner.feed(m0, m1, rd16(kFighter0 + 0x6D6), rd16(kFighter0 + kFighterStride + 0x6D6))",
+                      body)
+        self.assertNotIn("g_off_used", src)
+        rule = read("src", "netplay", "no_pause.h")
+        self.assertIn("kMaskSelect = 0x0100", rule)
+        self.assertIn("kSelect = 0x0100", read("src", "training", "training_logic.h"))
+
     def test_start_bit_is_the_games(self):
         self.assertIn("kStart = 0x0800", read("src", "training", "training_logic.h"))
 

@@ -5628,6 +5628,35 @@ def _admin(ctx, *args):
     return r.returncode, r.stdout + r.stderr
 
 
+def _db_privacy_texts(db):
+    """(raw bytes of the database file and its -wal, every text/blob value of a consistent snapshot as one string).
+    The snapshot is taken with SQLite's backup API, which reads through the WAL."""
+    import sqlite3
+    raw = b""
+    for path in (db, db + "-wal"):
+        try:
+            with open(path, "rb") as f:
+                raw += f.read()
+        except OSError:
+            pass
+    src = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=10)
+    snap = sqlite3.connect(":memory:")
+    try:
+        src.backup(snap)
+        parts = []
+        for (table,) in snap.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall():
+            for row in snap.execute(f'SELECT * FROM "{table}"'):
+                for v in row:
+                    if isinstance(v, bytes):
+                        parts.append(v.decode("utf-8", "replace"))
+                    elif isinstance(v, str):
+                        parts.append(v)
+        return raw, chr(10).join(parts)
+    finally:
+        src.close()
+        snap.close()
+
+
 def _filter_term():
     """A term of the server's own list, read at run time (this file never spells one)."""
     from e2e_harness import LOBBY
@@ -5744,9 +5773,15 @@ def chat_private_120(ctx):
         ctx.check("the report holds exactly the 2 selected lines", got == ["pm reply", "pm two"], got)
         ctx.check("reporter A, peer B", reports[0]["reporter_name"] == "E2E Dev" and
                   reports[0]["peer_name"] == "E2E Bea", f"{reports[0]['reporter_name']} {reports[0]['peer_name']}")
-    with open(ctx.server.db, "rb") as f:
-        db_text = f.read()
-    ctx.check("unreported lines are not in the database", b"pm one" not in db_text and b"pm three" not in db_text)
+    # (review optin-check-120 P2) the server runs SQLite in WAL mode: a fresh write may sit in t5lobby.db-wal only, so
+    # the main file alone proves nothing. Read the raw bytes of the file and its WAL, and a consistent snapshot through
+    # SQLite; the reported lines must be found (positive control), the unreported ones nowhere.
+    raw, rows_text = _db_privacy_texts(ctx.server.db)
+    ctx.check("the database snapshot holds the reported lines (the check can see the database)",
+              "pm reply" in rows_text and "pm two" in rows_text, len(rows_text))
+    for line in ("pm one", "pm three"):
+        ctx.check(f"unreported line {line!r} is not in the database (file, WAL, rows)",
+                  line.encode() not in raw and line not in rows_text)
 
     # chat filter (the server's list, read at run time)
     term = _filter_term()
@@ -5834,12 +5869,29 @@ def _cover_kind(path):
     return "picture"
 
 
-def _cover_checks(ctx, p, sampler, first_fight_at, label):
-    """The Connecting cover from the first picture to the reveal; afterwards no cover in the fight."""
+def _cover_checks(ctx, p, sampler, first_fight_at, label, expect_cover=False):
+    """The online start's pictures (backbuffer shots every 0.5 s). Default (owner decision 1.2.0): no Connecting cover
+    at all -- the game's own logos / movie / title, the select and the game's own loading picture before the fight
+    are seen. expect_cover (a T5_ONLINE_FAST_BOOT=1 start): the cover from the first picture to the reveal."""
     rows = [(t, _cover_kind(path), path) for t, path in sampler.shots]
     rows = [r for r in rows if r[1] is not None]
-    seq = "".join({"cover": "C", "black": "b", "picture": "P"}[k] for _t, k, _p in rows)
+    kinds = {"cover": "C", "black": "b", "picture": "P"}
+    seq = "".join(kinds[k] for _t, k, _p in rows)
     ctx.note(f"{label}: {p.name}: {len(rows)} pictures, sequence {seq[:400]}")
+    if not expect_cover:
+        ctx.check(f"{label}: {p.name}: no Connecting cover in any picture (default off)", bool(rows) and "C" not in seq,
+                  seq[:200])
+        boot = [r for r in rows if r[0] < first_fight_at - 6.0]
+        ctx.check(f"{label}: {p.name}: the game's own boot / title / select screens are seen before the fight",
+                  any(k == "picture" for _t, k, _p in boot), "".join(kinds[k] for _t, k, _p in boot)[:200])
+        # FIGHT START is the game mode's start: the game's loading picture and the fight's intro follow (the cover
+        # used to hide ~5 s of them)
+        loading = [r for r in rows if first_fight_at - 1.0 <= r[0] <= first_fight_at + 6.0]
+        ctx.check(f"{label}: {p.name}: the game's own loading picture is seen around FIGHT START",
+                  any(k == "picture" for _t, k, _p in loading), "".join(kinds[k] for _t, k, _p in loading))
+        proof = [r[2] for r in boot if r[1] == "picture"][:2] + [r[2] for r in loading if r[1] == "picture"][:3]
+        ctx.note(f"{label}: {p.name}: proof pictures (build/ only): {proof}")
+        return rows
     first_pic = next((i for i, r in enumerate(rows) if r[1] == "picture"), None)
     ctx.check(f"{label}: {p.name}: the first pictures are the Connecting cover", rows and rows[0][1] == "cover",
               seq[:40])
@@ -6039,8 +6091,9 @@ def _room_tables(ctx, real):
 
 @scenario("casual_120_pair", "15 1.2.0 opt-in", game=True, suites=("game",),
           desc="one real pair: A challenges B with an FT2 set and input delay 5 (A's setting), A plays 'Always "
-               "right', B 'Always left', A's replays go to a chosen folder with a Unicode name; the Connecting cover "
-               "from boot to the select/fight on both PCs (backbuffer pictures); every game confirmed and in sync, "
+               "right', B 'Always left', A's replays go to a chosen folder with a Unicode name; no Connecting cover "
+               "(default off: the game's own boot, title, select and loading pictures on both PCs, backbuffer "
+               "pictures); every game confirmed and in sync, "
                "both games used delay 5, the replays in the Unicode folder play back identical")
 def casual_120_pair(ctx):
     if not {"casual_sets", "input_delay8"}.issubset(features()):
@@ -6152,6 +6205,10 @@ def _pace_modes(path):
                "with input delay Auto: confirmed, 0 mismatching frames, the frame log shows A's pacing mode, the "
                "host logs the jitter delay")
 def net_vrr_adaptive_120(ctx):
+    if ctx.run.netcode == "lockstep":
+        # (review optin-check-120 P2) the harness would add T5_RB_MODE=off to both games, and this scenario
+        # checks rollback's adaptive delay; net_vrr_lockstep_120 is the lockstep case
+        raise Skip("the rollback case (this run is --netcode lockstep; net_vrr_lockstep_120 covers it)")
     _net_vrr_120(ctx, "rollback", os.environ.get("E2E_VRR_PACING", "1"))
 
 
@@ -6160,6 +6217,9 @@ def net_vrr_adaptive_120(ctx):
                "comparison on, RTT 150 / jitter 15 / 2 % loss: confirmed, 0 mismatching frames")
 def net_vrr_lockstep_120(ctx):
     _net_vrr_120(ctx, "lockstep", os.environ.get("E2E_VRR_PACING", "1"))
+
+
+VRR_LOSS_PCT = 2.0      # the scenarios' "2 % loss"
 
 
 def _net_vrr_120(ctx, mode, pacing):
@@ -6174,7 +6234,8 @@ def _net_vrr_120(ctx, mode, pacing):
                                                     T5_TRAINING_LOG=tl))
     login(ctx, a)
     login(ctx, b)
-    row = net_case(ctx, a, b, f"VRR {pacing} vs default ({mode}), RTT 150 jitter 15", 150, 15, 0.02, "auto", False,
+    # loss in percent, as net_case / the proxy take it (review optin-check-120 P2: 0.02 was 0.02 %, not 2 %)
+    row = net_case(ctx, a, b, f"VRR {pacing} vs default ({mode}), RTT 150 jitter 15", 150, 15, VRR_LOSS_PCT, "auto", False,
                    None, mode=mode)
     modes = _pace_modes(fl)
     if pacing == "2":

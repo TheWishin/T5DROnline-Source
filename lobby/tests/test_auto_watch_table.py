@@ -167,6 +167,58 @@ class TablePolicyTest(unittest.TestCase):
         room["playing"] = ["a", "d"]                  # the next pair: a new turn at the table
         self.assertEqual(p.due(tab, 21.0)[1], ("r1", None, ("a", "d")))
 
+    def test_stop_skips_a_pair_only_until_the_table_moves_on(self):
+        # review autowatch-120 P2: A-B stopped, then A-C, then A-B again -> A-B is watched again
+        room = line_room(playing=("a", "b"))
+        tab = Tab(room)
+        p = TablePolicy()
+        ab = p.due(tab, 0.0)
+        p.stopped(ab[1])
+        self.assertIsNone(p.due(tab, 10.0))
+        room["playing"] = ["a", "c"]
+        self.assertEqual(p.due(tab, 20.0)[1], ("r1", None, ("a", "c")))
+        room["playing"] = ["b", "a"]                  # the same two again (either side): a new turn
+        self.assertEqual(p.due(tab, 40.0)[1], ("r1", None, ("a", "b")))
+        # tables: the skip is per table and lasts while that table keeps its pair
+        t1 = {"id": 1, "players": ["a", "b"], "match": "m1", "watch": True}
+        t2 = {"id": 2, "players": ["c", "d"], "match": "m2", "watch": True}
+        room = tables_room([t1, t2])
+        tab = Tab(room)
+        p = TablePolicy()
+        first = p.due(tab, 0.0)
+        self.assertEqual(first[0], {"room": "r2", "table": 1})
+        p.stopped(first[1])
+        self.assertEqual(p.due(tab, 10.0)[0], {"room": "r2", "table": 2})
+        t1["players"] = ["b", "a"]                    # side swap in the same set: still skipped
+        self.assertEqual(p.due(tab, 11.0)[0], {"room": "r2", "table": 2})
+        t1.update(players=[], match=None, watch=False)
+        p.due(tab, 12.0)
+        t1.update(players=["a", "b"], match="m3", watch=True)
+        self.assertEqual(p.due(tab, 13.0)[0], {"room": "r2", "table": 1})
+
+    def test_my_match_keeps_my_table(self):
+        # review autowatch-120 P2: room -> match -> playing -> room must keep the table I played at
+        t1 = {"id": 1, "players": ["a", "b"], "match": "m1", "watch": True}
+        t2 = {"id": 2, "players": ["c", "d"], "match": "m2", "watch": True}
+        room = tables_room([t1, t2])
+        tab = Tab(room)
+        p = TablePolicy()
+        self.assertEqual(p.due(tab, 0.0)[0], {"room": "r2", "table": 1})
+        p.picked("r2", 2)                             # watched table 2 by hand: mine
+        self.assertEqual(p.due(tab, 1.0)[0], {"room": "r2", "table": 2})
+        t2.update(players=["me", "c"], match="m3", watch=False)
+        for status in ("match", "playing"):
+            tab.client.me["status"] = status
+            self.assertIsNone(p.due(tab, 5.0))
+            self.assertEqual(p.prefer, 2)
+        tab.client.me["status"] = "room"
+        t2.update(players=["d", "f"], match="m4", watch=True)
+        self.assertEqual(p.due(tab, 10.0)[0], {"room": "r2", "table": 2})
+        tab.client.me["status"] = "idle"              # left the room: forgotten
+        tab.client.my_room = None
+        self.assertIsNone(p.due(tab, 11.0))
+        self.assertIsNone(p.prefer)
+
     def test_lobby_wide_policy_leaves_my_room_to_the_table(self):
         tab = Tab(line_room())
         tab.client.rooms = [{"id": "other", "watch": True}]

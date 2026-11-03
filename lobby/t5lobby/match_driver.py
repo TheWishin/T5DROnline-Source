@@ -1108,8 +1108,11 @@ class MatchDriver:
         if self.ui is not None and not q.get("fallback"):
             self.ui.update(self._rq_texts(q), [], seconds=q["closing"] - time.monotonic() + 0.5, countdown=None)
 
-    def _rq_end(self, fallback=True):
-        """The question is over: hidden in the game; fallback = the launcher takes over (comes to the front)."""
+    def _rq_end(self, fallback=True, new_match=False):
+        """The question is over: hidden in the game; fallback = the launcher takes over (comes to the front).
+        new_match: the lobby has set up the next match (match_found / match_start) -- a decline that is waiting
+        to close the game is void then: the server's word counts (an accept taken back after the opponent's
+        accept had already committed the rematch) and the event's own handling decides about the game."""
         q, self._rq = self._rq, None
         if q is None:
             return
@@ -1118,7 +1121,7 @@ class MatchDriver:
         self._ui_was_active = False
         if fallback:
             self.note("ingame_ui_fallback", match=q["match"])
-        if q.get("stop_after") and self.mode == "process":
+        if q.get("stop_after") and self.mode == "process" and not new_match:
             self.stop_game()
 
     def _rq_event(self, ev):
@@ -1130,7 +1133,9 @@ class MatchDriver:
         if kind in ("match_start", "match_found"):
             # the rematch (or anything else) is set up: the game goes on (a rematch over a new connection first lets
             # its session go -- the game may stand loading for seconds: that is no reason to bring the launcher up)
-            self._rq_end(fallback=False)
+            # A deferred stop of a taken-back accept is cancelled here (review rematch-ingame-120 P2: it killed the
+            # committed rematch's game, _start(continue) found none and both players lost the rematch).
+            self._rq_end(fallback=False, new_match=True)
         elif kind in ("match_cancel", "disconnected"):
             self._rq_end()
         elif kind == "rematch" and ev.get("match") == q["match"]:

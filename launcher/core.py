@@ -122,7 +122,10 @@ DEFAULTS = {
     "discord_app_id": "",      # ... with this Discord application instead of the release's (lobby data/discord.json)
     "mute": False,
     "notify": True,            # online: a chime + the taskbar button flashes when a match is found / someone joins the room (lobby/t5lobby/notify.py)
-    "notify_voice": True,      # ... a match, a challenge, a tournament set: the game's announcer instead (lobby/t5lobby/announcer.py)
+    "notify_voice": True,      # (1.2.0 test builds; kept = notify_sound is "announcer", for an older launcher)
+    "notify_sound_name": "",   # the file name the player chose for "custom" (shown in Settings; the copy: match_sound.wav)
+    "notify_sound": "announcer",  # a match, a challenge, a tournament set: announcer | beep | custom | off (notify.MATCH_SOUNDS;
+                               # announcer = the game's own line, lobby/t5lobby/announcer.py; custom = match_sound.wav here)
     "background": False,       # start minimized without focus (testing)
     "extra_env": "",           # NAME=VALUE lines
     "low_priority": False,     # build at below-normal priority: the PC stays responsive, the build is slower
@@ -226,6 +229,13 @@ class Settings(dict):
             self["practice_dummy"] = "game"
         if not isinstance(self["replay_dir"], str):
             self["replay_dir"] = ""
+        if self["notify_sound"] not in MATCH_SOUNDS:
+            self["notify_sound"] = "announcer"
+        if isinstance(saved, dict) and "notify_sound" not in saved and saved.get("notify_voice") is False:
+            self["notify_sound"] = "beep"          # a 1.2.0 test build's "announcer" box left unticked
+        self["notify_voice"] = self["notify_sound"] == "announcer"
+        if not isinstance(self["notify_sound_name"], str):
+            self["notify_sound_name"] = ""
         if not isinstance(self["picture"], str) or self["picture"] not in PICTURE_FORMATS:
             self["picture"] = "fit"
         if not isinstance(self["display"], str) or self["display"] not in dict(DISPLAY_MODES):
@@ -237,6 +247,7 @@ class Settings(dict):
         side = self.get("screen_side", "dealt")
         self["screen_side"] = side if isinstance(side, str) and side in SCREEN_SIDES else "dealt"
         self["always_left"] = self["screen_side"] == "left"
+        self["notify_voice"] = self.get("notify_sound", "announcer") == "announcer"    # (for an older launcher)
         temporary = None
         try:
             # Never truncate the only settings copy before its replacement is complete.
@@ -257,6 +268,11 @@ class Settings(dict):
                     os.remove(temporary)
                 except OSError:
                     pass
+
+    @property
+    def settings_dir(self):
+        """The folder of launcher.json (the player's own match sound is copied here: notify.CUSTOM_WAV_NAME)."""
+        return os.path.dirname(os.path.abspath(self.path))
 
     @property
     def out_dir(self):
@@ -387,7 +403,7 @@ class Settings(dict):
             line = line.strip()
             if line and not line.startswith("#") and "=" in line:
                 k, v = line.split("=", 1)
-                env[k.strip()] = v.strip()
+                env_set(env, k.strip(), v.strip())
         # One folder for recording, the Replays tab and problem reports. Extra settings cannot send
         # recordings somewhere the launcher cannot find; recording Off also removes an old override.
         if self["replays"]:
@@ -1084,6 +1100,39 @@ def dialog_message(text):
     return t("The game shows: \"{text}\" {advice}", text=" ".join((text or "").split()), advice=dialog_info(text)[1])
 
 
+def env_key(name):
+    """The one spelling of an environment variable's name in our dicts. Windows' environment ignores the case of
+    names (the game's getenv("PS3_VIDEO_ASPECT") also finds "ps3_video_aspect"), so there the name is upper case
+    -- what os.environ gives too; elsewhere the case counts and the name stays as it is."""
+    return name.upper() if IS_WIN else name
+
+
+def env_set(env, name, value):
+    """env[name] = value with every other spelling of `name` (env_key) taken out first: an Extra settings line
+    "ps3_video_aspect=4:3" must be the same variable as PS3_VIDEO_ASPECT for every filter after it
+    (review picture-120 P1: the online filter set PS3_VIDEO_ASPECT=None and the lower-case line reached the
+    online game)."""
+    key = env_key(name)
+    if IS_WIN:
+        for k in [k for k in env if k != key and k.upper() == key]:
+            del env[k]
+    env[key] = value
+    return env
+
+
+def canon_env(env):
+    """`env` with every name in its env_key spelling; of two spellings of one name the later one wins (dict
+    order: a later update() overrides). Changes env in place."""
+    if IS_WIN:
+        out = {}
+        for k, v in env.items():
+            out.pop(env_key(k), None)
+            out[env_key(k)] = v
+        env.clear()
+        env.update(out)
+    return env
+
+
 UNLOCK_ENV = ("T5_UNLOCK_STAGES", "T5_UNLOCK_ITEMS", "T5_UNLOCK_JINPACHI")
 OFFLINE_ONLY_ENV = ("T5_AUTO_SKIP_OFFLINE",)   # offline settings the game ignores online (dropped there too)
 ONLINE_ENV = ("T5_CTL_DIR", "T5_NET_MODE", "T5_FIGHT", "T5_FIGHT_FILE")
@@ -1190,6 +1239,7 @@ class GameRun:
         if monitor_point and "PS3_WINDOW_MONITOR" not in env_over:
             env_over["PS3_WINDOW_MONITOR"] = "%d,%d" % monitor_point   # open on the launcher's monitor
         env_over.update(extra_env or {})
+        canon_env(env_over)    # one spelling per name before the online filters below look for them
         # run_game removes None values from the inherited environment. Otherwise an old Windows
         # T5_REPLAY_DIR would keep recording even when the launcher checkbox is Off.
         env_over["T5_REPLAY_DIR"] = self.settings.replay_dir if self.settings["replays"] else None
@@ -1543,6 +1593,27 @@ PRACTICE_DUMMY = {       # English; t(label) where it is shown -- the dummy's be
     "walk": N_("Walks forward and back"),
     "step": N_("Sidesteps"),
 }
+# Settings "Sound when a match is found" (launcher.json "notify_sound"; the keys are t5lobby.notify.MATCH_SOUNDS):
+# a found match, a challenge, a tournament set. The other lobby notifications keep the beep.
+MATCH_SOUNDS = {
+    "announcer": N_("Announcer (\"Get ready for the next battle\")"),
+    "beep": N_("Beep"),
+    "custom": N_("Your own WAV file"),
+    "off": N_("Off"),
+}
+MATCH_SOUND_HELP = N_(
+    "For a found match, a challenge and a tournament set when you are in another window. The announcer is read "
+    "from your own game (after BUILD GAME); without it the beep plays. Your own sound: a WAV file of at most "
+    "5 seconds and 2 MB, copied into the launcher's folder.")
+# why a chosen WAV file is not used (t5lobby.notify.WAV_*)
+MATCH_SOUND_PROBLEMS = {
+    "not_wav": N_("That file is not a WAV sound the launcher can play (plain PCM WAV only)."),
+    "too_long": N_("That sound is longer than 5 seconds."),
+    "too_big": N_("That file is larger than 2 MB."),
+    "unreadable": N_("That file could not be read or copied."),
+    "missing": N_("Your WAV file is gone."),
+}
+
 # Settings and Online share the same variable; this only changes this PC's presentation and local input.
 SCREEN_SIDES = {"dealt": N_("As dealt"), "left": N_("Always left"), "right": N_("Always right")}
 SCREEN_SIDE_HELP = N_(
@@ -1720,7 +1791,7 @@ def extra_env_override(settings, key):
         line = line.strip()
         if name and line and not line.startswith("#") and "=" in line:
             k, v = line.split("=", 1)
-            if k.strip() == name:
+            if env_key(k.strip()) == env_key(name):
                 return f"{name}={v.strip()}"
     return None
 
@@ -1790,7 +1861,9 @@ def window_size(w, h):
             return None
         if isinstance(v, str):
             v = v.strip()
-            if not v.isdigit() or len(v) > 6:
+            # ASCII digits only: str.isdigit() also takes a superscript two or Arabic-Indic digits,
+            # which int() refuses (review picture-120 P3)
+            if not (v.isascii() and v.isdigit()) or len(v) > 6:
                 return None
             v = int(v)
         if not isinstance(v, int) or not lo <= v <= hi:

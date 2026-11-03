@@ -455,7 +455,7 @@ Ph g_ph = Ph::Boot;
 /* Presentation only: the renderer reads this host atomic, never the guest's
  * mode manager. Arm it during static registration, before the first picture.
  * The driver's title, autosave, reader and sync-point paths stay unchanged. */
-bool g_boot_cover_enabled = false;   /* T5_ONLINE_FAST_BOOT=0/1; default: online processes */
+bool g_boot_cover_enabled = false;   /* T5_ONLINE_FAST_BOOT=1 only (default off since the 1.2.0 owner decision) */
 std::atomic<int> g_boot_cover{ 0 };
 bool g_boot_ready_last = false;   /* keep the cover through a whole ready frame before revealing */
 bool g_boot_fight_ready = false;  /* once revealed, later round transitions keep their normal picture */
@@ -1962,10 +1962,12 @@ void fight_init()
         const char* nm = getenv("T5_NET_MODE");
         const bool online = g_ctl || (nm && (!_stricmp(nm, "host") || !_stricmp(nm, "join")));
         const char* sw = getenv("T5_ONLINE_FAST_BOOT");
-        /* Replay/local/offline boots keep their presentation by default.
-         * An explicit 1 also lets a spectator/replay hide its boot without
-         * inventing any input that was absent from the recorded session. */
-        g_boot_cover_enabled = sw && *sw ? *sw == '1' : online;
+        /* Owner decision 1.2.0: OFF by default for every start, online ones
+         * included -- the game's own logos, movie, title and loading pictures
+         * show as in 1.1.9. T5_ONLINE_FAST_BOOT=1 (testers) turns the cover on,
+         * for an online start or a spectator/replay without inventing any input. */
+        (void)online;
+        g_boot_cover_enabled = sw && *sw == '1';
         g_boot_cover.store(g_boot_cover_enabled ? 1 : 0, std::memory_order_relaxed);
         t5_boot_cover_publish();
     }

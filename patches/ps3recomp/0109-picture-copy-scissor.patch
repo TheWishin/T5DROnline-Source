@@ -1,0 +1,33 @@
+diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
+index ff296ff..851fb97 100644
+--- a/libs/video/rsx_live_draw.c
++++ b/libs/video/rsx_live_draw.c
+@@ -13352,7 +13352,9 @@ static void ld_present_copy(ID3D12Resource* bb, u32 bbi, ID3D12Resource* src, u3
+                   (unsigned long long)bd.Width, bd.Height, (double)pr.vw, (double)pr.vh, (double)pr.vx,
+                   (double)pr.vy, pr.cl, pr.ct, pr.cr, pr.cb);
+       } }
+-    const int whole = pr.vx == 0.0f && pr.vy == 0.0f && pr.vw == (float)bd.Width && pr.vh == (float)bd.Height;
++    /* patch 0109: the plain copy only when the picture covers the window AND nothing of it is cut -- 4:3 in
++     * a window of the picture's own size has a full-window viewport but a 960-wide scissor */
++    const int whole = rsx_picture_rect_whole(&pr, (unsigned)bd.Width, bd.Height);
+     if (!g_ldp.pso || !g_ldp.heap || !aw || !ah ||
+         (sd.Width == bd.Width && sd.Height == bd.Height && sd.Format == bd.Format && whole)) {
+         LDL->lpVtbl->CopyResource(LDL, bb, src);
+diff --git a/libs/video/rsx_picture_rect.h b/libs/video/rsx_picture_rect.h
+index 133c870..de2be86 100644
+--- a/libs/video/rsx_picture_rect.h
++++ b/libs/video/rsx_picture_rect.h
+@@ -119,4 +119,13 @@ static inline void rsx_picture_rect(int mode, unsigned bw, unsigned bh, unsigned
+     }
+ }
+ 
++/* 1 when r draws the source 1:1 over the whole bw x bh window with nothing cut (no bars, no crop): only
++ * then may the present replace its draw by a plain copy of a source of the window's size (patch 0109: the
++ * viewport alone said yes for 4:3 at Native in a 1280x720 window -- the scissor keeps only 160..1120). */
++static inline int rsx_picture_rect_whole(const rsx_pic_rect* r, unsigned bw, unsigned bh)
++{
++    return r->vx == 0.0f && r->vy == 0.0f && r->vw == (float)bw && r->vh == (float)bh &&
++           r->cl == 0 && r->ct == 0 && r->cr == (long)bw && r->cb == (long)bh;
++}
++
+ #endif

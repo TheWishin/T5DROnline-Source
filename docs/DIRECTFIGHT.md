@@ -25,7 +25,7 @@ T5_DF_STATUS_FILE=<path>                             JSON status for the launche
 T5_HUD_NAMES=<P1 name>|<P2 name>                     names under the health bars (lobby names, 16 characters)
 T5_HUD_RANKS=<P1 tier>,<P2 tier>                     rank badges, 0-36 in the game's order (0 Beginner, 10 1st Dan, ...)
 T5_CTL_DIR=<dir>                                     persistent game: every match is a control command (below)
-T5_ONLINE_FAST_BOOT=0|1                              online loading cover (default on for host/join/persistent games)
+T5_ONLINE_FAST_BOOT=0|1                              online loading cover (default OFF since the 1.2.0 owner decision; 1 = on, testers)
 T5_DF_PICK=<seconds>                                 pick=<seconds> for fight lines without one (tests)
 T5_COSTUME_SAVE=<SYS-DATA>|0                         netplay: this player's own save, its customization goes to the opponent
                                                      ("Custom costumes online"; the launcher sets it); offline tests: P1's
@@ -132,7 +132,12 @@ needs only the select-screen part: 3-6 s from the command to FIGHT START.
 
 ## Online startup presentation (1.2.0)
 
-Ranked and casual online games use a plain black loading screen with centered
+**Default OFF (owner decision, 2026-11-03).** An online start shows the game's own screens as in 1.1.9: the
+logos, the intro movie, the title, the character select and the game's own loading pictures before the fight.
+The cover below exists only behind `T5_ONLINE_FAST_BOOT=1` (Extra settings, for testers); the spectator's
+live viewer no longer turns it on either. Everything below describes the cover when it is switched on.
+
+With `T5_ONLINE_FAST_BOOT=1`, ranked and casual online games use a plain black loading screen with centered
 `Connecting...` text, published through the existing renderer overlay. It is
 armed during direct-fight initialization before the first game presentation,
 including a persistent process that boots before its first online command.
@@ -140,13 +145,10 @@ Patch 0088 connects the host-decoded movie's `present_rgba` path to the same
 overlay after its image copy and before presentation; patch 0045's normal
 game-frame overlay path alone does not cover those movies. Neither patch
 0088 nor the driver changes decoding or movie completion.
-`T5_ONLINE_FAST_BOOT=0` restores the previous presentation; `1` enables the
-cover for a configured direct-fight process. The switch is read at process
-startup, so changing it needs a new process. With no switch, host/join and
-`T5_CTL_DIR` games enable it; ordinary offline play and saved replay playback
-keep their existing presentation. The spectator launcher explicitly enables
-it for its replay-based live viewer. A saved replay can opt in with `1` without
-adding or changing recorded input.
+`1` enables the cover for a configured direct-fight process; unset or `0` is
+the game's own presentation (the default). The switch is read at process
+startup, so changing it needs a new process. A spectator or a saved replay can
+opt in with `1` without adding or changing recorded input.
 
 What the player sees on the supported Windows renderer:
 

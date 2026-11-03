@@ -907,7 +907,12 @@ Player wish: "auto-skip for replays and round animations" instead of both player
   (8, 9, 0xC; the deciding round's too -- offline nothing else skips it) START, 3 frames from the part's first
   frame and again every 20 frames, never in the intros, READY/FIGHT or the fight. Which ports
   (`OfflineSkip::ports`): VS (game type 4) both; the one-player modes (Arcade, Ghost, Survival, ...) only the port
-  that sent input during the fight, none if both or neither did; never in a demo or Practice. Found in the game:
+  known to play, none while that is not known; never in a demo or Practice. Known to play
+  (`OfflinePortOwner`, review fix): at least 4 presses on the port (a change of its directions/face buttons to
+  something pressed) and at least 75 % of them read by a fighter (`+0x6D6` equal within 4 frames) -- the CPU's
+  fighter reads no port, so an unused pad that sends a direction while the player idles never becomes the player
+  (before: "any input on a port during the fight" and START went to that pad = a challenger). Never while a player
+  holds SELECT on either port (START+SELECT is the soft reset; the player's own chord is left alone). Found in the game:
   START on both ports in Arcade during the KO's slow motion called "HERE COMES A NEW CHALLENGER" (the CPU's port)
   and opened the VS select screen. Offline nothing else finds the mode manager, so the rule looks for it itself
   (`t5_df_find_mode`; without it no part was ever seen). Log: `offline auto-skip: START pressed on port 1 / both

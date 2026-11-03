@@ -1,0 +1,27 @@
+diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
+index 887ff0f..dde76c0 100644
+--- a/libs/video/rsx_live_draw.c
++++ b/libs/video/rsx_live_draw.c
+@@ -12099,8 +12099,20 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+     int al_mirror = 0;                    /* patch 0086: the fight shown mirrored (ld_al_draw) */
+     float al_dx_px = 0.0f;
+     int al_defer = 0;                     /* placed with the frame's side HUD (ld_al_resolve) */
+-    if (g_al.active || g_al_req || ld_al_trace_enabled())
+-        ld_al_draw(target, surf_used, n_surf_used, W, H, xf, &al_mirror, &al_dx_px, &al_defer);
++    if (g_al.active || g_al_req || ld_al_trace_enabled()) {
++        /* patch 0111: a filter kernel's copy reads the 3D target through its guest-size view (0043 above
++         * Native, 0106 at Native with an undrawn margin): that surface is view_big, not in surf_used -- the
++         * copy was never recognised and Always left never switched on (Moonlit Wilderness at Native, every
++         * soft-focus stage above Native). It counts as a surface this draw reads. */
++        u32 al_surf[SRV_TABLE_SIZE + 1], n_al = n_surf_used;
++        memcpy(al_surf, surf_used, n_surf_used * sizeof(surf_used[0]));
++        if (view_big >= 0) {
++            int seen = 0;
++            for (u32 k = 0; k < n_al; k++) seen |= al_surf[k] == (u32)view_big;
++            if (!seen) al_surf[n_al++] = (u32)view_big;
++        }
++        ld_al_draw(target, al_surf, n_al, W, H, xf, &al_mirror, &al_dx_px, &al_defer);
++    }
+     if (g_ld_3d_crop != 1.0f && ld_is_3d_copy(target, surf_used, n_surf_used, view_big, W, H)) {
+         /* patch 0107, True 4:3 online: the copy of the 3D picture onto the screen is drawn wider by
+          * g_ld_3d_crop about the middle -- the camera kept its 16:9 framing, so the 4:3 screen shows the

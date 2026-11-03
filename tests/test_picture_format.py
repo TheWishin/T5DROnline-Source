@@ -104,7 +104,8 @@ class WindowSize(unittest.TestCase):
     def test_refused(self):
         for w, h in ((0, 720), (1280, 0), (-1280, 720), (1280.5, 720), ("1280.5", "720"), ("", "720"),
                      ("abc", "720"), (True, 720), (None, None), (319, 720), (1280, 239), (7681, 720),
-                     (1280, 4321), ("99999999999", "720"), ("+1280", "720"), ("1e3", "720"), ([1280], 720)):
+                     (1280, 4321), ("99999999999", "720"), ("+1280", "720"), ("1e3", "720"), ([1280], 720),
+                     ("1\u00b280", "720"), ("1280", "7\u00b20"), ("\u0661\u0662\u0668\u0660", "720")):
             self.assertIsNone(core.window_size(w, h), (w, h))
 
     def test_fit_client_keeps_the_shape(self):
@@ -238,6 +239,11 @@ class SettingsAndEnv(unittest.TestCase):
         s = self.settings({"picture": ["fill"], "window_w": 2160, "window_h": 1440, "display": "custom"})
         self.assertEqual(s["picture"], "fit")
         self.assertEqual((s["window_w"], s["window_h"], s["display"]), (2160, 1440, "custom"))
+
+    def test_saved_unicode_digits_fall_back(self):
+        # review picture-120 P3: a saved "1\u00b280" made Settings() raise ValueError instead of the default size
+        s = self.settings({"display": "custom", "window_w": "1\u00b280", "window_h": "720"})
+        self.assertEqual((s["window_w"], s["window_h"]), (core.DEFAULTS["window_w"], core.DEFAULTS["window_h"]))
 
     def test_extra_settings_line_is_named(self):
         s = self.settings({"picture": "fill", "extra_env": "PS3_PICTURE=stretch"})

@@ -1824,7 +1824,9 @@ def window_size(w, h):
             return None
         if isinstance(v, str):
             v = v.strip()
-            if not v.isdigit() or len(v) > 6:
+            # ASCII digits only: str.isdigit() also takes a superscript two or Arabic-Indic digits,
+            # which int() refuses (review picture-120 P3)
+            if not (v.isascii() and v.isdigit()) or len(v) > 6:
                 return None
             v = int(v)
         if not isinstance(v, int) or not lo <= v <= hi:

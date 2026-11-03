@@ -188,10 +188,29 @@ def table_room(client):
     return room
 
 
+def member_room(client):
+    """The community room this player is a member of, whatever their status: waiting, at the ready check, in a
+    match or playing (table_room() is the room only while they wait in it). The client keeps my_room through a
+    room match and clears it when the player is back to idle / queue."""
+    me = getattr(client, "me", None) or {}
+    room = getattr(client, "my_room", None)
+    if me.get("status") in ("idle", "queue") or not community(room) or me.get("id") not in (room.get("members") or ()):
+        return None
+    return room
+
+
 def _seat_key(room, table=None):
-    """Who sits at the table now: a new pair (the next turn) is a new key, a set's games keep it."""
+    """Who sits at the table now: a new pair (the next turn) is a new key, a set's games keep it (the pair in
+    either order: a side swap in a casual set is the same turn)."""
     pair = table.get("players") if table is not None else room.get("playing")
-    return (room.get("id"), table.get("id") if table is not None else None, tuple(pair or ()))
+    return (room.get("id"), table.get("id") if table is not None else None, tuple(sorted(pair or (), key=str)))
+
+
+def _seat_keys(room):
+    """The seat key of every table in the room now."""
+    if room.get("mode") != "tables":
+        return {_seat_key(room)}
+    return {_seat_key(room, tb) for tb in room.get("tables") or () if isinstance(tb.get("id"), int)}
 
 
 def table_targets(room, prefer=None):
@@ -284,8 +303,12 @@ class TablePolicy:
         self._next = 0.0
 
     def _track(self, tab):
+        # membership, not "waiting": a match of this player's own in the room (status match / playing) keeps the
+        # room, its preferred table and its skips (review autowatch-120 P2: the match cleared prefer, and after it
+        # the player watched table 1 instead of the table they had played at); whether they may watch now is
+        # table_blocker's question
         c = getattr(tab, "client", None)
-        room = table_room(c) if c is not None else None
+        room = member_room(c) if c is not None else None
         rid = room.get("id") if room else None
         if c is not self._client or rid != self._room:
             self._client, self._room = c, rid
@@ -294,6 +317,9 @@ class TablePolicy:
             self._skip.clear()
         if room is None:
             return None
+        # a Stop watching holds for that turn only: once its table shows another pair the skip is gone, so the
+        # same two meeting again later (A-B, A-C, A-B) are watched again (review autowatch-120 P2)
+        self._skip &= _seat_keys(room)
         uid = (c.me or {}).get("id")
         for tb in room.get("tables") or ():
             if uid in (tb.get("players") or ()) and isinstance(tb.get("id"), int):

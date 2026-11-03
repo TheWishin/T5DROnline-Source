@@ -104,6 +104,15 @@ combo never makes P1 attack, walk or open the menu.
 | SELECT, tap up / down | the next / previous slot (5 slots) |
 | SELECT, tap forward / back | what the dummy does: as set in the game's Practice menu, blocks after the first hit, crouches, walks forward and back, sidesteps |
 
+The resets (SELECT + 3 and the four wall resets) happen when both fighters
+stand (1.2.0, player report "after a launcher the opponent keeps flying /
+is turned around after the reset"): pressed while the dummy is in the air,
+lies on the floor or a fighter is in a move, the reset waits -- both pads
+neutral, the dummy on the game's own *quick recovery*, a playing slot
+paused, the overlay saying `RESET WHEN BOTH STAND` -- and comes as soon as
+both stand (at most 4 s, then anyway). A reset only moves the fighters; it
+cannot end a fall, a juggle or a move (see "How it works", *Resets wait*).
+
 f and b are as you see them (f = toward the dummy): standing on the left,
 f+3 puts the dummy against the right wall. While recording, your pad controls
 the dummy in its screen directions: if the dummy stands on the right,
@@ -189,6 +198,23 @@ run the code they ran before: CODE_VERSION is unchanged.
   CONTROLLER for that tap): both turned around in the game (P1 with its turn
   move 0x0373), which also takes them ~300 units forward, so 24 frames later
   both go back to the places the reset gave them, facing as they now do.
+- **Resets wait** (1.2.0, `training_logic.h` `ResetGate`): a reset moves
+  places and nothing else. Traced in Practice (Lili vs Lili, the menu's first stage, df+2
+  then SELECT+3 0.35 s later): the launched dummy (move 0x009B, class
+  0x00010000, hips at ~2,230 instead of ~1,130) put back at its place kept
+  falling there, lay (0x003D) and stood only ~120 frames later -- the facing
+  tap two frames after the reset did nothing to it, so it could stay turned
+  away -- and P1 reset during its own move (0x01C6) ended 1,078 units off its
+  place. The game's round set-up is no way out: Practice's round state (17 at
+  0x1009322C) is rewritten every frame (written 0, 12 or 38: no effect), and
+  a full-neutral reset needs fields we do not know (docs/INTEGRATION_1.2.0.md
+  item 32). So a reset (SELECT + 3 and the wall resets) is done only when both
+  fighters stand (move 0x8001 at +0x168) and can act. Until then both pads
+  are neutral, a playing slot pauses, the dummy is on TRAINING DUMMY 8 (quick
+  recovery; the player's setting comes back with the reset) and the overlay
+  says `RESET WHEN BOTH STAND`; after 240 frames it happens anyway. Measured:
+  55, 59 and 79 frames of waiting after a launcher (0.9-1.3 s), then both
+  standing at their places 30 frames later, facing each other.
 - **The dummy** follows the game's own Practice menu, TRAINING DUMMY
   (0x1008EFF3, traced by stepping through the menu): 0 stand without
   guarding, 1 stand while guarding, 2 crouch without guarding, 3 crouch while

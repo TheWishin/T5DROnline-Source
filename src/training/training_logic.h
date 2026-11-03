@@ -885,4 +885,49 @@ private:
     State st_ = State::Idle;
 };
 
+/* When a position reset may happen (1.2.0, player report "after a launcher the opponent keeps flying / is turned
+ * around after the reset"). A reset moves the fighters' places, nothing else: a fighter in the air keeps its fall,
+ * a juggled one its reaction, one in a move its move (traced in Practice: the dummy launched by df+2 put back at its
+ * place fell there and lay 2 s; P1 reset during its own move ended 1,078 units off its place) -- and the facing tap
+ * after a reset does nothing to a fighter that cannot act. The game's own round set-up does not run in Practice
+ * (its round state is rewritten every frame), and a full-neutral reset needs fields we do not know
+ * (docs/INTEGRATION_1.2.0.md item 32). So a reset waits until both fighters stand and can act (the game itself
+ * ends the juggle, the fall and the get-up; practice.cpp keeps both pads neutral and has the dummy recover quickly
+ * meanwhile), at most kMaxWait frames, then happens as before. Both standing at the request: at once. */
+class ResetGate {
+public:
+    static constexpr uint32_t kMaxWait = 240;   /* 4 s: a juggle, the fall and a slow get-up fit */
+
+    static bool ready(const Sample& s) { return s.can_act && s.stand && !s.down; }
+
+    /* A reset is asked for: the action to do now, or None (it waits; frame() gives it later). Another
+     * request while one waits replaces it. */
+    PAction request(PAction a, const Sample& p1, const Sample& dummy)
+    {
+        if (ready(p1) && ready(dummy)) { pending_ = PAction::None; return a; }
+        pending_ = a;
+        waited_ = 0;
+        return PAction::None;
+    }
+    /* Every frame: the waiting action once both are ready (or the wait ran out: *late), else None. */
+    PAction frame(const Sample& p1, const Sample& dummy, bool* late = nullptr)
+    {
+        if (late) *late = false;
+        if (pending_ == PAction::None) return PAction::None;
+        const bool go = ready(p1) && ready(dummy);
+        if (!go && ++waited_ < kMaxWait) return PAction::None;
+        if (late) *late = !go;
+        const PAction a = pending_;
+        pending_ = PAction::None;
+        return a;
+    }
+    bool waiting() const { return pending_ != PAction::None; }
+    uint32_t waited() const { return waited_; }
+    void cancel() { pending_ = PAction::None; }
+
+private:
+    PAction pending_ = PAction::None;
+    uint32_t waited_ = 0;
+};
+
 } // namespace training

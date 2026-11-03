@@ -959,6 +959,41 @@ static Placer::Cmd place(PAction a, const Place& p1, const Place& dm, const Aren
     return c;
 }
 
+static void test_reset_gate()
+{
+    /* a reset waits until both fighters stand and can act, at most kMaxWait frames */
+    Sample stand; stand.can_act = true; stand.stand = true;
+    Sample air = stand; air.can_act = false; air.stand = false;          /* launched */
+    Sample lying = stand; lying.can_act = false; lying.stand = false; lying.down = true;
+    Sample moving = stand; moving.stand = false;                          /* in a move, cancellable or not */
+    ResetGate g;
+    CHECK(g.request(PAction::ResetRound, stand, stand) == PAction::ResetRound);   /* both standing: at once */
+    CHECK(!g.waiting());
+    CHECK(g.frame(stand, stand) == PAction::None);
+    CHECK(g.request(PAction::ResetRound, stand, air) == PAction::None);           /* dummy in the air: waits */
+    CHECK(g.waiting());
+    bool late = true;
+    for (int i = 0; i < 30; i++) CHECK(g.frame(stand, air, &late) == PAction::None);
+    for (int i = 0; i < 60; i++) CHECK(g.frame(stand, lying) == PAction::None);
+    CHECK(g.frame(moving, stand) == PAction::None);                                /* P1 still in a move */
+    CHECK(g.frame(stand, stand, &late) == PAction::ResetRound && !late);           /* both stand: now, once */
+    CHECK(!g.waiting() && g.frame(stand, stand) == PAction::None);
+    /* a newer request replaces the waiting one; a wall reset waits the same way */
+    CHECK(g.request(PAction::ResetRound, air, stand) == PAction::None);
+    CHECK(g.request(PAction::DummyWallFront, air, stand) == PAction::None);
+    CHECK(g.frame(stand, stand) == PAction::DummyWallFront);
+    /* never standing: after kMaxWait frames anyway, marked late */
+    CHECK(g.request(PAction::PlayerWallBack, stand, lying) == PAction::None);
+    uint32_t n = 0;
+    PAction a = PAction::None;
+    while ((a = g.frame(stand, lying, &late)) == PAction::None && n < 1000) n++;
+    CHECK(a == PAction::PlayerWallBack && late && n + 1 == ResetGate::kMaxWait);
+    /* cancel drops it */
+    CHECK(g.request(PAction::ResetRound, stand, air) == PAction::None);
+    g.cancel();
+    CHECK(!g.waiting() && g.frame(stand, stand) == PAction::None);
+}
+
 static void test_placer()
 {
     const float pi2 = 1.5707963f;
@@ -1186,6 +1221,7 @@ int main()
     test_recorder();
     test_recording_directions();
     test_placer();
+    test_reset_gate();
     test_font();
     test_layout();
     if (g_fail) {

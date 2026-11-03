@@ -951,8 +951,8 @@ thread never waits; if Windows refuses it (no sound card), the system's "SystemA
 turns the real sound and flash off (every test sets it; the tests give the tab a fake player and a fake flash).
 
 **The announcer (1.2.0).** For a match found, a challenge and a tournament set (`notify.VOICE_KINDS`) the game's own
-announcer says "Get ready for the next battle!" instead of the chime (Settings -> "Use the game's announcer for
-matches and challenges", launcher.json `"notify_voice"`, on by default; it follows the notification checkbox above).
+announcer says "Get ready for the next battle!" instead of the chime (Settings -> "Sound when a match is found" ->
+Announcer, the default; it follows the notification checkbox above).
 `announcer.py` reads the line when it is needed from the player's own unpacked game -- entry 11 of the data table in
 `T55DATA1.BIN` (the TOC/XOR/zlib coding of rank_art.py) is the announcer's sound bank, sample 1 is the line,
 PlayStation ADPCM at 18 kHz, decoded in memory and brought to 45 % of full scale. Nothing of it is shipped or written
@@ -961,6 +961,22 @@ other/damaged data the chime rings. `python -m t5lobby.announcer --out <output f
 How the sample was found: the bank's 21 samples compared with spoken phrases (MFCC + DTW against a TTS voice) --
 samples 1 and 9 are two takes of the line, 8 is likely "... the final battle", 0 "Welcome to the King of Iron Fist
 Tournament". Tests: `lobby/tests/test_announcer.py` (a made-up bank and an independent ADPCM encoder).
+
+**Sound when a match is found (1.2.0).** Settings -> "Sound when a match is found" (launcher.json `"notify_sound"`,
+`notify.MATCH_SOUNDS`) picks what a match, a challenge and a tournament set ring: **Announcer** (default, above),
+**Beep** (the chime), **Your own WAV file** or **Off** (no sound; the taskbar button still flashes). The other lobby
+notifications (joins, turns, invites, rematch questions, mentions) keep the chime. "Choose WAV file..." opens the normal
+Windows file dialog; the file must be a plain PCM WAV (what winsound plays from memory: 1-2 channels, 8-32 bit, 8-192
+kHz) of at most 5 seconds and 2 MB (`notify.check_wav`). A file that passes is copied next to launcher.json as
+`match_sound.wav` (the original may be moved or deleted afterwards); one that does not switches the choice to Beep and
+says why under the buttons (not a WAV / longer than 5 s / larger than 2 MB / unreadable). If the copy is later gone or
+replaced by something that no longer fits, the chime rings and launcher.log says why. "Play" plays what a match would
+ring now (the chime where it stands in, with the reason: no built game for the announcer, a gone or damaged WAV). The
+box is radio buttons and buttons: Tab, the arrow keys and Space reach everything (the Settings tab has no controller
+navigation; the controller presses Accept / Decline / search on the Online tab only). launcher.json of a 1.2.0 test
+build with the old "announcer" box unticked (`notify_voice: false`) becomes Beep; `notify_voice` is still written
+(true = Announcer) for an older launcher. Tests: `lobby/tests/test_match_sound.py` (the checks, the copy, what rings
+per choice, the Online tab's hook), `tests/test_match_sound_ui.py` (the Settings box with a faked file dialog).
 
 ## Developer badges and chat mentions
 

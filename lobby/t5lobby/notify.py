@@ -23,7 +23,11 @@ The sound is made here, from nothing: two soft bell tones in a 16-bit mono WAV t
 no game audio and no file anywhere. For a match, a challenge and a tournament set (VOICE_KINDS) the game's own
 announcer says "Get ready for the next battle!" instead (1.2.0, Settings "... the game's announcer", on by default):
 announcer.py reads that line from the player's own unpacked game when it is needed; without it (before BUILD GAME,
-a European program, other data) the chime plays. winsound cannot play a memory image asynchronously, so a daemon thread plays it
+a European program, other data) the chime plays. Settings "Sound when a match is found" (launcher.json "notify_sound",
+1.2.0) picks that sound: the announcer (default), the beep (the chime), a WAV file of the player's own (copied into the
+launcher's settings folder as CUSTOM_WAV_NAME; plain PCM WAV, at most CUSTOM_MAX_S seconds and CUSTOM_MAX_BYTES; a file
+that is gone or no longer fits rings the chime and says so in launcher.log) or none (the taskbar still flashes).
+winsound cannot play a memory image asynchronously, so a daemon thread plays it
 (the Tk thread never waits); if Windows refuses, the system sound "SystemAsterisk" plays instead. The taskbar button
 flashes with FlashWindowEx (FLASHW_TRAY | FLASHW_TIMERNOFG): until the window comes to the front, which also ends
 it when winfront brings the launcher forward by itself.
@@ -145,6 +149,169 @@ def play_voice(out_dir):
         return False
 
 
+# ---------------------------------------------------------------------- the sound for a found match (Settings)
+ANNOUNCER, BEEP, CUSTOM, OFF = "announcer", "beep", "custom", "off"
+MATCH_SOUNDS = (ANNOUNCER, BEEP, CUSTOM, OFF)      # launcher.json "notify_sound"; ANNOUNCER is the default
+CUSTOM_WAV_NAME = "match_sound.wav"                # the player's WAV, copied next to launcher.json
+CUSTOM_MAX_BYTES = 2 * 1024 * 1024
+CUSTOM_MAX_S = 5.0
+CUSTOM_MIN_RATE, CUSTOM_MAX_RATE = 8000, 192000
+
+# why a WAV file is refused (the launcher's Settings turn these into sentences)
+WAV_NOT_WAV, WAV_TOO_LONG, WAV_TOO_BIG, WAV_UNREADABLE, WAV_MISSING = (
+    "not_wav", "too_long", "too_big", "unreadable", "missing")
+
+
+def match_sound_choice(settings):
+    """The player's choice from the launcher settings (any mapping): "notify_sound", else the 1.2.0 test builds'
+    "notify_voice" (False = the beep), else the announcer."""
+    try:
+        choice = settings.get("notify_sound")
+        if choice in MATCH_SOUNDS:
+            return choice
+        if settings.get("notify_voice") is False:
+            return BEEP
+    except AttributeError:
+        pass
+    return ANNOUNCER
+
+
+def check_wav(data):
+    """None when `data` (bytes) is a WAV file the launcher plays as a match sound, else the reason (WAV_*): plain PCM
+    (what winsound plays from memory on every Windows), 1-2 channels, 8-32 bit, 8-192 kHz, some sound, at most
+    CUSTOM_MAX_S seconds and CUSTOM_MAX_BYTES."""
+    if len(data) > CUSTOM_MAX_BYTES:
+        return WAV_TOO_BIG
+    if len(data) < 44 or data[:4] != b"RIFF" or data[8:12] != b"WAVE":
+        return WAV_NOT_WAV
+    try:
+        with wave.open(io.BytesIO(data), "rb") as w:
+            channels, width, rate, frames = w.getnchannels(), w.getsampwidth(), w.getframerate(), w.getnframes()
+            got = len(w.readframes(frames))
+    except (wave.Error, EOFError, struct.error, ValueError, OverflowError):
+        return WAV_NOT_WAV
+    if not (1 <= channels <= 2 and 1 <= width <= 4 and CUSTOM_MIN_RATE <= rate <= CUSTOM_MAX_RATE) or frames <= 0:
+        return WAV_NOT_WAV
+    if got < frames * channels * width:
+        return WAV_NOT_WAV                          # the header promises more sound than the file holds
+    if frames > CUSTOM_MAX_S * rate + 0.5:
+        return WAV_TOO_LONG
+    return None
+
+
+def custom_wav_path(folder):
+    return os.path.join(folder, CUSTOM_WAV_NAME) if folder else None
+
+
+def install_custom_wav(src, folder):
+    """Copy the player's WAV `src` into `folder` (the launcher's settings folder) as CUSTOM_WAV_NAME, after
+    check_wav. -> None when it is in place, else the reason (WAV_*); the copy there before stays when refused."""
+    try:
+        if os.path.getsize(src) > CUSTOM_MAX_BYTES:
+            return WAV_TOO_BIG
+        with open(src, "rb") as f:
+            data = f.read(CUSTOM_MAX_BYTES + 1)
+    except (OSError, ValueError, TypeError):
+        return WAV_UNREADABLE
+    problem = check_wav(data)
+    if problem:
+        return problem
+    dest = custom_wav_path(folder)
+    if not dest:
+        return WAV_UNREADABLE
+    tmp = dest + ".tmp"
+    try:
+        os.makedirs(folder, exist_ok=True)
+        with open(tmp, "wb") as f:
+            f.write(data)
+        os.replace(tmp, dest)
+    except (OSError, ValueError, TypeError):
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        return WAV_UNREADABLE
+    return None
+
+
+def custom_wav(folder):
+    """(WAV bytes, None) of the player's copied sound, or (None, reason): gone, damaged, or larger / longer than
+    allowed (somebody replaced the file)."""
+    path = custom_wav_path(folder)
+    if not path or not os.path.isfile(path):
+        return None, WAV_MISSING
+    try:
+        with open(path, "rb") as f:
+            data = f.read(CUSTOM_MAX_BYTES + 1)
+    except OSError:
+        return None, WAV_UNREADABLE
+    problem = check_wav(data)
+    return (None, problem) if problem else (data, None)
+
+
+def match_sound_wav(choice, out_dir=None, folder=None):
+    """What a found match rings: (WAV bytes, or None for silence; note). note: "" as chosen; "no_game" the announcer
+    without the player's unpacked game (the chime instead); a WAV_* reason for the custom sound (the chime
+    instead)."""
+    if choice == OFF:
+        return None, ""
+    if choice == CUSTOM:
+        wav, problem = custom_wav(folder)
+        return (wav, "") if wav else (chime_wav(), problem)
+    if choice == ANNOUNCER:
+        try:
+            from . import announcer
+            wav = announcer.next_battle_wav(out_dir)
+        except Exception:             # noqa: BLE001 -- whatever the files hold, the chime still rings
+            wav = None
+        return (wav, "") if wav else (chime_wav(), "no_game")
+    return chime_wav(), ""
+
+
+def _match_sound_now(choice, out_dir, folder, log):
+    """Runs on its own thread: the chosen sound (match_sound_wav); a line in the log when the chime stands in for
+    the player's own WAV."""
+    try:
+        wav, note = match_sound_wav(choice, out_dir, folder)
+    except Exception:                 # noqa: BLE001 -- the chime is the fallback
+        wav, note = chime_wav(), "error"
+    if note and note != "no_game" and log is not None:
+        try:
+            log(f"notify: the custom match sound cannot be played ({note}), the beep instead")
+        except Exception:             # noqa: BLE001 -- the log is best effort
+            pass
+    if wav:
+        _play_now(wav)
+
+
+def play_match_sound(choice, out_dir=None, folder=None, log=None):
+    """Start the sound chosen for a found match (MATCH_SOUNDS) and return at once: the files are read and the sound
+    plays on a daemon thread. -> True when it was handled (OFF too: nothing to play), False when no sound can be
+    made here (not Windows, T5_NOTIFY=0, no thread)."""
+    if choice == OFF:
+        return True
+    if winsound is None or os.name != "nt" or _off():
+        return False
+    try:
+        threading.Thread(target=_match_sound_now, args=(choice, out_dir, folder, log), daemon=True,
+                         name="notify-match-sound").start()
+        return True
+    except (RuntimeError, OSError, MemoryError):
+        return False
+
+
+def preview_match_sound(choice, out_dir=None, folder=None):
+    """Settings' Play button: the sound a found match would ring now, started at once (a daemon thread plays it;
+    nothing with T5_NOTIFY=0). -> its note (match_sound_wav): why the beep stands in, or ""."""
+    wav, note = match_sound_wav(choice, out_dir, folder)
+    if wav and winsound is not None and os.name == "nt" and not _off():
+        try:
+            threading.Thread(target=_play_now, args=(wav,), daemon=True, name="notify-preview").start()
+        except (RuntimeError, OSError, MemoryError):
+            pass
+    return note
+
+
 # ---------------------------------------------------------------------- the taskbar button
 class FLASHWINFO(ctypes.Structure):
     _fields_ = [("cbSize", ctypes.c_uint), ("hwnd", ctypes.c_void_p), ("dwFlags", ctypes.c_uint),
@@ -175,8 +342,9 @@ class Notifier:
         enabled()   the setting is on                              -> bool
         away()      the player is probably not looking at the tab  -> bool
         play()      start the chime (must not wait for it)
-        voice()     for VOICE_KINDS instead of play(): start the announcer's line (must not wait) -> True when it
-                    was started; None, an answer of False or an error -> play()
+        voice()     for VOICE_KINDS instead of play(): start the sound chosen for a found match (must not wait)
+                    -> True when that was handled (started, or "Off" chosen); None, an answer of False or an
+                    error -> play()
         flash()     flash the taskbar button
         log(text)   one line for launcher.log (optional)
     """

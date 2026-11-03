@@ -1,140 +1,108 @@
-# In-game rematch: implementation and maintainer verification
+# The rematch question in the game (1.2.0)
 
-This working-tree change implements the rematch portion of
-`codex/plans:docs/PLAN_1.2.0.md`. It does not implement the independent VRR plan.
-No build, test program, game, server connection, or runtime measurement was run.
-There are no new guest-memory addresses. Static review cannot prove compilation,
-input ownership, renderer behavior, or simulation equality on a real pair.
+After a casual online match the game itself asks **Rematch?**. Each player answers with the controller (or the
+keyboard) in the game; the launcher window stays behind. It is on by default when both players have 1.2.0 (launcher,
+game and the lobby server); with an older opponent, launcher or server the launcher asks as before.
 
-## Rollout and authority
+## What the player sees
 
-- The server switch is `T5L_INGAME_REMATCH=1`; it defaults off.
-- The launcher switch is `T5_INGAME_REMATCH=1`; it defaults off.
-- `ingame_rematch_v1` gates the optional server metadata and room settings.
-  `auto_skip_after_round_v1` additionally gates automatic round skipping.
-  Launcher capability detection checks the game binary for feature markers.
-- `T5L_CASUAL_REMATCH_POLICY` accepts `both_confirm` (default) or
-  `auto_unless_declined`. Classic casual rooms have the same server-owned
-  `rematch_policy` setting. Ranked sets retain their existing rules. Community
-  rooms retain rotation and ready checks.
-- Each client casts its own rematch vote. Automatic mode defers that vote until
-  the visible, cancellable countdown ends. The server owns eligibility and
-  expiry; a local countdown cannot start a fight.
-- Room skip permission and each player's skip consent are separate. The server
-  sends one immutable `auto_skip_after_round` fight rule only when both agree
-  and both advertise support. The input rule, including rollback and replay,
-  applies symmetric START pulses in eligible nonfinal after-round parts.
-- New recordings use replay format 7 and guarded live SESSION 3 whether
-  automatic skipping is enabled or disabled. This additionally versions the
-  integrated START+SELECT reset guard. Formats 1–6 and SESSION 1/2 retain their
-  historical reset policy; the earlier skip draft's format 6 / SESSION 2 remains
-  readable. A reserved header stops old native spectators before unsupported
-  rules, and old native replay readers reject format 7. See [REPLAYS.md](REPLAYS.md).
-  Changing the agreed skip flag requests a fresh game connection; repeated
-  rematches with the same flag may retain their existing connection.
-- Runtime patch **0089-ingame-rematch-overlay.patch** follows the online boot
-  overlay at **0088**. It was renumbered from the rematch draft's duplicate
-  **0088** so patches retain one unambiguous numeric sequence in filename order.
-  The existing 0100–0102 patches follow it; VRR pacing remains **0103**.
+A panel over the game picture (the overlay layer of the training tools, `rsx_overlay.c`: drawn into the backbuffer
+after the internal-resolution scaling, so it is sharp and the same size at every Internal resolution and window size):
 
-## Components and static confidence
+```
+ REMATCH?                                          10
+ You won.
+ Bob is deciding...                (grey; green: "Bob wants a rematch!", red: "Bob does not want a rematch.")
+ You want a rematch. Waiting for Bob...           (after your yes)
+ [=================================-------------]  (the countdown bar; red for the last 3 s)
+ (X) A [Z]  Rematch          (O) B [X]  No thanks
+```
 
-| Part | Implementation | Confidence and outstanding proof |
+- **Cross** (PlayStation) / **A** (Xbox) = Rematch, **Circle** / **B** = No thanks. The keyboard keys are the ones bound
+  to Cross and Circle in `controls.ini` (`[keys1]`, default Z and X); the launcher reads them and the game draws them
+  as key caps. The PlayStation symbols are drawn by the game (no font has them everywhere).
+- **10 seconds** (`T5L_INGAME_REMATCH_SECONDS`), counted down in big digits and a bar.
+- The opponent's choice shows as it comes. After your yes, Circle takes it back ("Take it back").
+- Both yes: "Rematch! Starting..." and the rematch goes on in the running session (in-game select, fight).
+- A no from either side, or the time running out: the reason ("No rematch. Back to the lobby." / "Time is up.")
+  for a moment, then the question goes and the launcher comes to the front, as after a declined rematch before.
+- The buttons do nothing for the first 0.7 s of a question, and a button already held when it appears counts only
+  after it was let go: a player still mashing kicks after the KO does not answer by accident. Directions, punches,
+  START and every other button do nothing.
+- Pads work while the game window is not the active window (as in a match); the keyboard needs the game window.
+- Texts in all 7 languages (the launcher's catalogs). Letters the game's own 5x7 font lacks (accents, Japanese,
+  Korean) are drawn from Windows' fonts (Segoe UI, Yu Gothic UI, Malgun Gothic, ...); a text no installed font can
+  draw makes the game refuse the question, and the launcher asks instead.
+
+Not in the game (the launcher's question is still there for them, behind the game): **Rematch: swap sides**, Next
+game, Block, Leave: too laggy.
+
+## Which matches
+
+Quick matches, challenges, invites and classic rooms (two players), and the rematches of those. Not: ranked sets and
+ranked rooms (their next game starts by itself), tournament sets, community rooms (the room picks the next pair),
+training rooms (they go back to the select screen by themselves), a casual set that is still running (FT2 and up:
+its next game starts by itself; the question comes after the set is decided).
+
+## How it works
+
+Server (`lobby/t5lobby/server/rematch.py`): when both players' clients have the cap `ingame_rematch_v1` and
+`T5L_INGAME_REMATCH` is on (default), the match result carries `rematch_ui {v: 1, kind: rematch, policy, timeout,
+auto_after, room_mode, actions}` and `rematch_window` = the question's 10 s. The server's deadline is 10 s +
+`VOTE_GRACE` (1.5 s), so a yes pressed at 9.9 s still counts on its way; then `rematch {state: expired}` to both.
+Votes go through `h_rematch` as before (same checks, `offered` / `declined` to the opponent, `keep` = continue in
+the running games). Older clients: no `rematch_ui`, the 20 s window (`T5L_REMATCH_WINDOW`).
+
+Launcher (`lobby/t5lobby/match_driver.py`, "the rematch question in the game"): on a `match_result` with
+`rematch_ui` the driver hands the question to the game through `IngameUI` (`lobby/t5lobby/ingame_ui.py`): the
+texts (from `tk_tab._ingame_labels`, translated), the actions the server permits now, how long it shows, the
+countdown. It follows the lobby's events (`offered`, `declined`, `expired`, `set_end`, `match_start`) and the
+game's answers; a vote from the game is the same `client.rematch(...)` the launcher's button sends (one yes and one
+no at most per match; the launcher's own bar is answered too: note `ingame_vote`). While the game shows the
+question the launcher does not come forward; when the question ends without a rematch it does (note
+`ingame_ui_fallback`).
+
+The game (`src/directfight/df_ui.cpp`, `ui_logic.h`): a worker thread reads `ui.json` (every 50 ms; only a new
+revision counts), prepares the glyphs, writes the answer (`ui_action.json`) and a heartbeat (`ui_ready.json`: the
+revision it shows). The main thread, at the live frame boundary only (never in a re-simulated frame or a replay),
+peeks the local player's controller (`t5_local_player_pad_ui`: the port pressed last; patch 0089's
+`cellPad_peek_local` does not consume the press) and draws the overlay layer 1 (the question wins over the training
+overlay while shown). Nothing of it touches guest memory, the exchanged inputs or the netplay session: both games
+simulate the same, whatever the players press during the question. The game logs `in-game question shown: rematch
+for match ...` and `in-game question answered: accept|decline (match ...)`.
+
+Replays and spectating: the question adds nothing to a recording (it changes no input). 1.2.0 sessions are written as
+replay format 7 and guarded live SESSION 3 whether the after-round skip rule is on or off (docs/REPLAYS.md); a rematch
+continued in the running session goes on in the same file.
+
+Fallback: if the game does not acknowledge the question within 3 s (`HEALTH_SECONDS`: an older game without the
+marker `T5_INGAME_REMATCH`, an overlay that is not ready, a text it cannot draw) or stops answering, the question
+goes and the launcher comes forward with its own question (the rest of the window).
+
+## Switches
+
+| Switch | Default | |
 |---|---|---|
-| Server | Default explicit votes, optional automatic policy, per-room controls, bounded offers, capability gates, mutual skip consent, community line metadata | High source confidence; in-process rule and expiry tests must be run by maintainer |
-| Launcher transport | Separate versioned UI channel, action identity/sequence checks, asynchronous deduplication, acknowledgement, waiting/expiry, persistent and process lifecycle | Moderate source confidence; run fake-endpoint tests and repeat real process/persistent transitions |
-| Launcher UI | Healthy acknowledged prompts suppress focus changes; legacy rematch button retained; room controls, player skip option, language catalogs | High Python source confidence; Tk layout, localization, focus and unsupported-game fallback require launcher validation |
-| Host menu | Host-only worker, bounded parsing, live-only pad edges, release-to-arm, focus guard, one pending action, overlay publication | Moderate C++ confidence; real host build/link and pad ownership need proof |
-| Runtime overlay | Separate training/menu layers, raw non-consuming pad peek, focus query, Unicode glyph handling | Moderate C confidence; apply the full series and build all supported backends before claiming compatibility |
-| Fight integration | Existing barriers retained, live hook excludes re-simulation/replay, per-match rule agreement before fight release | Moderate C++ confidence; same-session rematches and asymmetric arrival need pair tests |
-| Deterministic skip and recording | Match-rule packing, after-round voting, peer rule verification, versioned replay/spectator recording and readers | High pure-rule confidence, moderate integration confidence; compile rule tests and prove 0 mismatching frames on a real pair |
+| `T5L_INGAME_REMATCH` (server) | `1` | `0`: never offered; every launcher asks itself, 20 s |
+| `T5L_INGAME_REMATCH_SECONDS` (server) | `10` | the countdown (1-120) |
+| `T5L_CASUAL_REMATCH_POLICY` (server) | `both_confirm` | `auto_unless_declined`: the rematch starts unless a player declines within `auto_after` (5 s; each launcher sends its own yes then) |
+| room setting "Rematch rule" | Both players confirm | the same choice for a classic room |
+| `T5_INGAME_REMATCH` (launcher) | on | `0`: this launcher asks in its own window (does not tell the server it can) |
+| `T5L_AUTO_SKIP` (server) / `T5_AUTO_SKIP` (launcher) | off | the agreed after-round skip draft (changes what the games simulate; unproved in games): opt-in only |
 
-## Game-free tests to run later
+## Tests
 
-New regression sources accompany each component. They use fake pads, clocks,
-file endpoints, clients and rule state; no game assets or external server are
-needed. The C++ rule/menu tests require compilation. The repository's existing
-no-pause, match-rule, local-pad, persistent-driver, room, ranked-set, replay,
-spectator, overlay and language-catalog suites must also pass. No test result is
-claimed in this change: the instruction for this lane prohibits running them.
+- Game-free: `tests/c/rematch_ui_test.cpp` (`tests/test_rematch_ui.py`: the menu on a fake pad and clock -- the input
+  lock, held buttons, directions while confirming, one action at a time, countdown, parsing), `lobby/tests/
+  test_ingame_ui.py` (the channel), `test_driver_ingame_ui.py` (the driver's question: accept, decline, take back,
+  opponent's choice, timeout, yes at the last moment, server expiry, refused vote, game that never shows it,
+  automatic policy, ranked/old servers/community), `test_tk_ingame_ui.py`, `test_rematch_server.py` (default on, 10 s
+  + grace, a yes in the grace counts, training/community excluded, skip rule off without its switch).
+- With two real games and a local lobby: `python tools/e2e/run.py --suite ingame [--netcode lockstep] [--replays]`
+  (`tools/e2e/e2e_ingame.py`): accept/accept, accept/decline, a yes at 9.2 s, timeout, both mashing buttons from the
+  KO through the question (3 matches), a classic room, a relayed match, one launcher switched off.
 
-New regression entry points:
+## Measured
 
-- `lobby/tests/test_rematch_server.py`
-- `lobby/tests/test_ingame_ui.py`, `test_driver_ingame_ui.py`,
-  `test_tk_ingame_ui.py`, `test_tk_rematch_rules.py`
-- `tests/test_rematch_ui.py`, `test_rematch_runtime.py`,
-  `test_rematch_integration.py`, `test_replay_skip_compat.py`
-- `tests/c/rematch_ui_test.cpp`, plus added local-pad, match-rule and no-pause
-  cases in the existing C++ harnesses. `tests/test_replays.py` also specifies
-  enabled-skip file/live recording through the standalone replay harness.
-
-## Exact real-pair acceptance procedure
-
-Run this in the maintainer's real project, keeping game assets and runtime
-captures out of this mirror. Use the existing mismatch/hash reporting on both
-PCs and compare the same agreed fight inputs, rules and results.
-
-1. Build the full patched runtime and host on both PCs. Start with both feature
-   switches off and establish the existing launcher rematch and ranked-set
-   behavior. Repeat with one old client/game and with a new launcher using an
-   old game: ordinary rematches must work through the launcher, the new skip
-   rule must remain disabled, and no unacknowledged overlay may hide the UI.
-2. Enable both switches on both PCs. For casual and classic private rooms
-   (password, invite and hidden), test `both_confirm`: accept on PC A with only
-   its pad/stick, verify waiting on A, accept on B, then select characters and
-   start the next fight with the launcher behind. Repeat ten rematches, changing
-   characters/stage, then use decline/Next/ready to change opponents. Require
-   one result report and one vote/action per player, no stuck select and no
-   duplicate match start.
-3. Set the server/room rule to `auto_unless_declined`. Verify the visible
-   countdown on both PCs, cancellation just before its end on either PC, then
-   an uncancelled automatic rematch. Hold an attack/confirm button through KO,
-   opening, focus loss/return and controller reconnection: none may accept
-   until released and pressed again. Leave one PC unconfirmed in explicit mode
-   and let the offer expire: return to lobby fallback without launching a fight.
-4. Disconnect either game or launcher during the offer, an outstanding action,
-   waiting, and a ready check. Restart it and present old action/UI files:
-   generation/session/prompt/match checks must reject stale requests. Test a
-   slow asynchronous vote and duplicated input: at most one server request.
-   Missing heartbeat, missing glyphs/backend support or failed acknowledgements
-   must restore the ordinary launcher decision path.
-5. Exercise a private community room with at least three members under each
-   rotation rule. Rotation, waiting-player priority and ready checks must stay
-   authoritative; no classic match-ID rematch may bypass the line, and no Next
-   action from any private room may enter public matchmaking. Run ranked sets
-   and tournament matches too: next-game and explicit leave behavior must match
-   baseline.
-6. For each flow above, cover direct and relay paths, lockstep and rollback,
-   process and persistent games, and asymmetric fast/slow PCs. Include packet
-   delay/jitter/loss and repeated reused-session rematches. Require **0
-   mismatching simulation frames**, identical results, and no extra/missing
-   simulation frames for every completed fight.
-7. Run skip consent combinations off/off, on/off, off/on and on/on. Only the
-   last may enable the agreed rule; ranked and unsupported peers must retain
-   baseline behavior. Observe nonfinal KO slow motion, replay and transition
-   states 8/9/0xC, unchanged manual intro voting, unpausable fighting, and the
-   existing final-match 40-frame skip guard. Force rollback across entry/exit of
-   each part, repeated corrections and delayed START. Require **0 mismatching
-   simulation frames** with skipping both enabled and disabled.
-8. Deliberately give the peers different packed rules before a first fight and
-   before a reused-session rematch. They must reject or time out before stage
-   confirmation/FIGHT START releases the fight. Record/play back enabled and
-   disabled fights and spectate them; compare hashes/results with **0
-   mismatches**. Old readers must reject the new format explicitly; new readers
-   must play old formats with automatic skipping off.
-
-Check long names, every language (including Japanese/Korean), wrapping, scaling,
-overlay priority, training hide/clear, and mapped button hints on the built
-renderer. Missing fonts must trigger an honest launcher fallback. Visual and
-latency claims need actual focused game-window validation.
-
-## Agent ownership and review
-
-Implementation agents: `server_rules`, `launcher_driver`, `launcher_ui`,
-`room_settings`, `host_ui`, `runtime_overlay`, `fight_integration`, `skip_core`,
-and `replay_readers`. `compatibility_audit` performed a separate read-only
-architecture audit. `final_diff_review` performed the independent final diff
-review. The root agent coordinated file ownership and wrote this report.
-Changes remain in the working tree; no commit, push, merge or pull request was
-made.
+See "Proof" in the branch notes (build/coordination/T5DR_120_REMATCH.md) and the report of branch
+`rematch-ingame-120`.

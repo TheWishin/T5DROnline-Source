@@ -1,5 +1,5 @@
 diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
-index e289700..46c7183 100644
+index 6caeb23..b57c010 100644
 --- a/libs/video/rsx_live_draw.c
 +++ b/libs/video/rsx_live_draw.c
 @@ -334,7 +334,10 @@ typedef struct {
@@ -14,7 +14,7 @@ index e289700..46c7183 100644
  #if !defined(YZ_PERF_CLEAN)
      u32 resource_serial;
      u32 last_write_generation;
-@@ -10382,7 +10385,7 @@ static int ld_gview_pipeline(void)
+@@ -10384,7 +10387,7 @@ static int ld_gview_pipeline(void)
      static const char ps_src[] =
          "Texture2D src : register(t0);\n"
          "SamplerState lin : register(s0);\n"
@@ -23,7 +23,7 @@ index e289700..46c7183 100644
          "float4 boxloop(float2 p) {\n"
          "    float2 lo = floor(p) * ratio, hi = lo + ratio;\n"
          "    int2 a = (int2)floor(lo), b = min((int2)ceil(hi) - 1, (int2)host - 1);\n"
-@@ -10397,6 +10400,7 @@ static int ld_gview_pipeline(void)
+@@ -10399,6 +10402,7 @@ static int ld_gview_pipeline(void)
          "    return ws > 0 ? acc / ws : (float4)0;\n"
          "}\n"
          "float4 main(float4 pos : SV_Position) : SV_Target {\n"
@@ -31,7 +31,7 @@ index e289700..46c7183 100644
          "    const float2 g = floor(pos.xy);\n"
          "    const float2 t = 1.0 / host;\n"
          "    [branch] if (fast < 0.5) return boxloop(pos.xy);\n"
-@@ -10465,7 +10469,7 @@ static int ld_gview_pipeline(void)
+@@ -10467,7 +10471,7 @@ static int ld_gview_pipeline(void)
          param[0].DescriptorTable.pDescriptorRanges = &range;
          param[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
          param[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
@@ -40,7 +40,7 @@ index e289700..46c7183 100644
          param[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
          D3D12_STATIC_SAMPLER_DESC ss = {0};
          ss.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
-@@ -10578,10 +10582,34 @@ static void ld_gview_selfcheck(const char* dir)
+@@ -10580,10 +10584,34 @@ static void ld_gview_selfcheck(const char* dir)
      g_ld_gview_fast = saved;
  }
  
@@ -76,7 +76,7 @@ index e289700..46c7183 100644
      if (s->fmt != DXGI_FORMAT_R8G8B8A8_UNORM && s->fmt != DXGI_FORMAT_R16G16B16A16_FLOAT) return SRV_WHITE;
      if (!ld_gview_pipeline()) return SRV_WHITE;
      if (s->gv_tex && s->gv_src != s->tex) {
-@@ -10619,7 +10647,7 @@ static u32 ld_guest_view_srv(u32 slot)
+@@ -10621,7 +10649,7 @@ static u32 ld_guest_view_srv(u32 slot)
          fresh = 1;
      }
  #if !defined(YZ_PERF_CLEAN)
@@ -85,7 +85,7 @@ index e289700..46c7183 100644
          return SRV_GUESTVIEW_BASE + slot;
  #endif
      if (g.srv_ring_used + 1u > SRV_RING_TABLES) {
-@@ -10650,8 +10678,10 @@ static u32 ld_guest_view_srv(u32 slot)
+@@ -10652,8 +10680,10 @@ static u32 ld_guest_view_srv(u32 slot)
      LDL->lpVtbl->ResourceBarrier(LDL, 2, b);
      ld_gp_mark(GP_GUESTVIEW, s->offset, 0, s->w, s->h, s->fmt == DXGI_FORMAT_R16G16B16A16_FLOAT, 0);
      /* RSX_GVIEW_FAST=0: the loop for every factor (patch 0043's shader), for comparisons */
@@ -98,7 +98,7 @@ index e289700..46c7183 100644
      const D3D12_VIEWPORT vp = { 0.0f, 0.0f, (float)s->w, (float)s->h, 0.0f, 1.0f };
      const D3D12_RECT sc = { 0, 0, (LONG)s->w, (LONG)s->h };
      ld_bound_invalidate();   /* patch 0062: the pass below records its own state */
-@@ -10659,7 +10689,7 @@ static u32 ld_guest_view_srv(u32 slot)
+@@ -10661,7 +10691,7 @@ static u32 ld_guest_view_srv(u32 slot)
      LDL->lpVtbl->OMSetRenderTargets(LDL, 1, &rtv, FALSE, NULL);
      LDL->lpVtbl->SetGraphicsRootSignature(LDL, g_ld_gview.rootsig);
      LDL->lpVtbl->SetGraphicsRootDescriptorTable(LDL, 0, gpu);
@@ -107,7 +107,7 @@ index e289700..46c7183 100644
      LDL->lpVtbl->SetPipelineState(LDL, s->fmt == DXGI_FORMAT_R16G16B16A16_FLOAT
                                                   ? g_ld_gview.pso_rgba16f : g_ld_gview.pso_rgba8);
      LDL->lpVtbl->RSSetViewports(LDL, 1, &vp);
-@@ -10675,6 +10705,7 @@ static u32 ld_guest_view_srv(u32 slot)
+@@ -10677,6 +10707,7 @@ static u32 ld_guest_view_srv(u32 slot)
  #if !defined(YZ_PERF_CLEAN)
      s->gv_gen = s->last_write_generation;
  #endif
@@ -115,7 +115,7 @@ index e289700..46c7183 100644
      g_ld_gview_passes++;
      return SRV_GUESTVIEW_BASE + slot;
  }
-@@ -11706,7 +11737,9 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+@@ -11804,7 +11835,9 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
              u32 view = SRV_WHITE;
              if ((post_taps >> u) & 1u) {
                  post_kernel = 1;
@@ -126,7 +126,7 @@ index e289700..46c7183 100644
                      view = ld_guest_view_srv((u32)sampled);
                  ld_post_note(u, (u32)sampled, target,
                               !g_ld_stage_blur ? "one tap (stage blur off)"
-@@ -12037,6 +12070,14 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+@@ -12137,6 +12170,14 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
          }
      }
      const D3D12_RECT al_sc_before = sc;  /* effective guest scissor, before any display transform */
@@ -138,6 +138,6 @@ index e289700..46c7183 100644
 +            if ((u32)sc.bottom > es->ext_b) es->ext_b = (u32)sc.bottom;
 +        }
 +    }
-     /* Patch 0086: a guest scissor narrower than the target moves or mirrors with its draw. */
-     if ((al_mirror || al_dx_px != 0.0f) && (sc.left > 0 || sc.right < (LONG)W)) {
-         int l = (int)sc.left, rr = (int)sc.right;
+     if (al_defer)
+         al_dx_px = ld_al_defer_commit((float*)(g.cb_mapped + cb_offset + 512 * 16), xf,
+                                       sc.left <= 0 && sc.top <= 0 && sc.right >= (LONG)W && sc.bottom >= (LONG)H, W);

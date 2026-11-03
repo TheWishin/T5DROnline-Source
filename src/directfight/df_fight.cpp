@@ -1,4 +1,4 @@
-/*
+﻿/*
  * T5DR direct fight -- the match driver (NPUB30009 v01.00; docs/DIRECTFIGHT.md).
  *
  *   T5_FIGHT=p1,p2,stage[,rounds][,p1color,p2color][ match=<id>]

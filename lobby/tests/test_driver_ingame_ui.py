@@ -328,6 +328,33 @@ class DriverIngameUITest(unittest.TestCase):
         self.tick(CLOSE_SECONDS)
         self.assertIsNone(self.driver.game)
 
+    def test_process_mode_take_back_racing_a_committed_rematch_keeps_the_game(self):
+        # review rematch-ingame-120 P2: accept, the opponent's accept commits the rematch at the server, our take
+        # back (decline) arrives too late -- the server's match_found(keep) must not be answered by closing the game
+        self.driver.mode = "process"
+        self.open()
+        self.press("accept")
+        self.press("decline", 2)
+        self.assertTrue(self.driver._rq["stop_after"])
+        self.driver.on_event({"t": "match_found", "match": "m2", "rematch_of": "m1", "keep": True})
+        self.assertIsNone(self.driver._rq)
+        self.assertTrue(self.driver.game_running())
+        self.tick(CLOSE_SECONDS)
+        self.assertTrue(self.driver.game_running())
+        self.assertEqual(self.doc()["kind"], "hidden")
+        # without a new match the take back still closes the game after its words
+        self.driver._rq = None
+        self.driver.rematch_sent.clear()
+        self.driver.rematch_declined.clear()
+        self.driver.ui.close()
+        self.driver.ui = IngameUI(self.directory.name, "m3", clock=lambda: self.now, worker=False)
+        self.driver.ingame_labels(LABELS)
+        self.open(mid="m3")
+        self.press("accept")
+        self.press("decline", 2)
+        self.tick(CLOSE_SECONDS)
+        self.assertIsNone(self.driver.game)
+
     def test_skip_fight_line_only_from_authoritative_server_true(self):
         self.assertEqual(fight_rules({"auto_skip_after_round": True}), " auto_skip_after_round=1")
         for value in (False, 1, "true", None):

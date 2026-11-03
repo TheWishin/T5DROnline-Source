@@ -1430,7 +1430,8 @@ class OnlineTab:
         text = self.chat_var.get().strip()
         if text and self.client:
             self.chat_var.set("")
-            self.call(self.client.chat, text)
+            # (a request: a line the server refuses -- chat filter, admin mute -- says why on the status line)
+            self.call(self.client.chat_checked, text)
 
     def complete_mention(self, event):
         c = self.client

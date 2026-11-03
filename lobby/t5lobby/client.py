@@ -1828,6 +1828,12 @@ class LobbyClient(TourCalls, SpectateClientMixin):
     def chat(self, text):
         self._fire({"t": "chat", "text": text})
 
+    def chat_checked(self, text):
+        """Lobby chat as a request (the launcher's Send): a refusal -- the chat filter, an admin mute, the rate
+        limit -- comes back to the sender as a LobbyError instead of an unseen event. Every server answers a
+        request with an id (ok when it has nothing else to say), 1.0 included."""
+        return self._call({"t": "chat", "text": text})
+
     def badges_ok(self):
         """Account badges are available only when negotiated with this server."""
         w = self.welcome or {}

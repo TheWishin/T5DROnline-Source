@@ -125,12 +125,25 @@ class Host:
         atomic_write(os.path.join(self.data, "host.json"), json.dumps(info, indent=1))
         return info
 
+    def chat_filter_policy(self, env=None):
+        """{} or {"chat_filter": False}. The player's release zip carries no hate-term list (docs/CHAT_FILTER.md), so
+        a lobby hosted for friends from it runs without the filter, as before 1.2.0 -- 1.2.0's enabled default
+        refused to start there at all ("Cannot load the chat filter"). Asked for explicitly (T5L_CHAT_FILTER or
+        T5L_CHAT_FILTER_PATH set), a missing or broken list still refuses to start (fail closed)."""
+        env = os.environ if env is None else env
+        if "T5L_CHAT_FILTER" in env or "T5L_CHAT_FILTER_PATH" in env or os.path.isfile(Config.chat_filter_path):
+            return {}
+        self.say("This release has no chat filter list: the lobby runs without the hate-term filter "
+                 "(T5L_CHAT_FILTER_PATH = a reviewed list turns it on).")
+        return {"chat_filter": False}
+
     # ----------------------------------------------------------------- run
     def run(self):
         os.makedirs(self.data, exist_ok=True)
         cert = key = ""
         if not self.a.no_tls:
             cert, key = self.certificate()
+        policy = self.chat_filter_policy()
         try:
             cfg = Config.from_env(
                 host="0.0.0.0", port=self.a.port, udp_port=self.a.port,
@@ -139,7 +152,7 @@ class Host:
                 log_file=os.path.join(self.data, "logs", "t5lobby.log"),
                 backup_dir=os.path.join(self.data, "backups"), backup_keep=7,
                 status_port=self.a.status_port, motd=self.a.motd or "",
-                guests=True, accounts=not self.a.guests_only)
+                guests=True, accounts=not self.a.guests_only, **policy)
         except ValueError as e:
             self.say(str(e))
             self.event("error", message=str(e))

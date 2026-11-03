@@ -13,6 +13,14 @@ recording played once and in a loop. The practice log must show
     the slot recorded, played and looped; the dummy's behaviours cycled.
 
 The game runs muted and minimised; nothing of it is kept unless --keep. Exit 0 = PASS.
+
+    python tools/practice_check.py --adv-compare [...]
+
+The same run with the experimental advantage comparison on (T5_TRAINING_ADV_COMPARE=1, T5_TRAINING_LOG;
+docs/TRAINING.md "Experimental animation-frame advantage comparison"): besides the checks above, the training
+log must hold the old overlay results, the comparison's mapping lines for both players, and for every old
+result a comparison line that fails closed (new=unavailable new_status=mapping_conflict_position_x) -- never a
+second number from the conflicting mapping.
 """
 import argparse
 import math
@@ -133,12 +141,38 @@ def check(log_lines):
     return ok
 
 
+def check_adv_compare(lines):
+    """The training log of an --adv-compare run (docs/TRAINING.md): observation only, fails closed."""
+    ok = True
+
+    def good(cond, what):
+        nonlocal ok
+        ok &= bool(cond)
+        print(f"  {'ok  ' if cond else 'FAIL'} {what}")
+    adv = [ln for ln in lines if " adv_compare " in ln]
+    old = [ln for ln in lines if " adv_compare " not in ln and re.search(r"^\d+ result P[12] startup ", ln)]
+    mapping = [ln for ln in adv if " adv_compare mapping " in ln]
+    moves = [ln for ln in adv if " adv_compare move " in ln]
+    print(f"{len(lines)} training log lines, {len(adv)} adv_compare lines ({len(mapping)} mapping, {len(moves)} move)")
+    good(old, f"the overlay's own results are logged ({len(old)})")
+    good({"P1", "P2"} <= {ln.split()[3] for ln in mapping}, "a mapping line for both players")
+    good(moves, "comparison lines for the overlay's results")
+    good(all("new=unavailable" in ln and "new_status=mapping_conflict_position_x" in ln for ln in moves),
+         "every comparison fails closed (new=unavailable, mapping_conflict_position_x)")
+    good(not [ln for ln in adv if " new=candidate" in ln], "no second number from the conflicting mapping")
+    for ln in (mapping[:2] + moves[:3]):
+        print("    " + ln[:220])
+    return ok
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--exe", default=None, help="t5dr.exe (default: <root>/build/cmake/t5dr.exe)")
     ap.add_argument("--root", default=None, help="the build's output root with game/vfs (build_game.py --out)")
     ap.add_argument("--out", default="", help="working directory (default: a temporary one)")
     ap.add_argument("--keep", action="store_true", help="keep the working directory")
+    ap.add_argument("--adv-compare", action="store_true",
+                    help="also the experimental advantage comparison (T5_TRAINING_ADV_COMPARE=1): fails closed")
     a = ap.parse_args()
     root = os.path.abspath(a.root) if a.root else find_game_root()
     exe = os.path.abspath(a.exe) if a.exe else os.path.join(root, "build", "cmake",
@@ -146,6 +180,9 @@ def main():
     out = os.path.abspath(a.out) if a.out else tempfile.mkdtemp(prefix="practice_check_")
     log = os.path.join(out, "practice.log")
     env = {"T5_PRACTICE": "1", "T5_PRACTICE_LOG": log, "T5_TRAINING": "frames", "PS3_AUDIO_MUTE": "1"}
+    tlog = os.path.join(out, "training.log")
+    if a.adv_compare:
+        env.update(T5_TRAINING_ADV_COMPARE="1", T5_TRAINING_LOG=tlog)
     g = Game(out, exe=exe, root=root, env=env)   # frame dumps: the menu driver finds the fight HUD in them
     ok = False
     try:
@@ -164,6 +201,13 @@ def main():
             ok = check(f.read().splitlines())
     else:
         print("no practice log: the game did not reach the fight, or T5_PRACTICE did not take")
+    if a.adv_compare:
+        if os.path.exists(tlog):
+            with open(tlog, encoding="utf-8", errors="replace") as f:
+                ok = check_adv_compare(f.read().splitlines()) and ok
+        else:
+            print("no training log: T5_TRAINING_LOG did not take")
+            ok = False
     if not a.keep and not a.out:
         shutil.rmtree(out, ignore_errors=True)
     print("PASS" if ok else "FAIL")

@@ -5397,3 +5397,577 @@ def net_always_left(ctx):
     else:
         ctx.note("the coin made A P1 in all four Quick matches: the 'not mirrored as P2' case was not reached")
     ctx.note(f"pictures of A's game (T5_DF_SHOT ++240,++600): {shots}")
+
+
+# ============================================================================== 15. 1.2.0 opt-in features
+def _admin(ctx, *args):
+    """python -m t5lobby.server.admin --db <this scenario's database> ARGS (the operator's tool)."""
+    from e2e_harness import LOBBY
+    r = subprocess.run([sys.executable, "-m", "t5lobby.server.admin", "--db", ctx.server.db] + list(args), cwd=LOBBY,
+                       env=dict(os.environ, PYTHONPATH=LOBBY), capture_output=True, text=True, encoding="utf-8",
+                       errors="replace", timeout=60, creationflags=core.CREATE_NO_WINDOW if core.IS_WIN else 0)
+    return r.returncode, r.stdout + r.stderr
+
+
+def _filter_term():
+    """A term of the server's own list, read at run time (this file never spells one)."""
+    from e2e_harness import LOBBY
+    path = os.path.join(LOBBY, "t5lobby", "server", "data", "chat_filter_terms.json")
+    with open(path, encoding="utf-8") as f:
+        terms = json.load(f)["terms"]
+    return next(e["term"] for e in terms if e.get("match", "word") == "word" and e["term"].isascii()
+                and e["term"].isalpha())
+
+
+class _Entry:
+    """The chat entry as complete_mention() sees it (cursor position only)."""
+
+    def __init__(self, n):
+        self.n = n
+
+    def index(self, _what):
+        return self.n
+
+    def icursor(self, n):
+        self.n = n
+
+
+@scenario("chat_private_120", "15 1.2.0 opt-in", suites=("quick", "lobby"),
+          desc="1.2.0 chat (stub players): DEV badge granted by the admin tool shows in the roster and chat; an "
+               "@mention reaches only its target; a private message A->B and back, unread for B, nothing for C; A "
+               "reports 2 of 4 lines and only those reach the moderator inbox; the chat filter blocks a listed term "
+               "in lobby chat, private chat and a guest name")
+def chat_private_120(ctx):
+    if not {"private_chat", "badges", "mentions"}.issubset(features()):
+        raise Skip("this tree has no 1.2.0 chat")
+    stub_server(ctx)
+    a = ctx.player("E2E Dev", kind="stub", password="dev-pass-123")
+    login(ctx, a, "register")
+    a.logout(forget=True)
+    ctx.wait(lambda: a.tab.client is None, 10, "A logged out")
+    code, out = _admin(ctx, "badge", "E2E Dev", "dev")
+    ctx.require("admin: badge E2E Dev dev", code == 0, out.strip())
+    login(ctx, a, "account")
+    b = ctx.player("E2E Bea", kind="stub")
+    c = ctx.player("E2E Cal", kind="stub")
+    login(ctx, b)
+    login(ctx, c)
+    ctx.wait(lambda: any(p["name"] == "E2E Dev" for p in b.client.players), 10, "B sees A in the roster")
+    row = next(p for p in b.client.players if p["name"] == "E2E Dev")
+    ctx.check("roster: A carries the DEV badge from the server", row.get("badge") == "dev", row.get("badge"))
+    ctx.wait(lambda: b.tab.tv_players.exists(row["id"]), 10, "A's row in B's player list")
+    shown = str(b.tab.tv_players.item(row["id"], "values")[0])
+    ctx.check("player list: A's name shows DEV", "DEV" in shown and shown.startswith("E2E Dev"), shown)
+    crow = next((p for p in b.client.players if p["name"] == "E2E Cal"), {})
+    ctx.check("player list: a guest has no badge", not crow.get("badge"), crow.get("badge"))
+
+    # mentions: Tab completes from the roster, the server resolves the target, only A is mentioned
+    b.tab.chat_var.set("hello @e2e d")
+    ev = type("E", (), {"widget": _Entry(len("hello @e2e d"))})()
+    b.tab.complete_mention(ev)
+    ctx.check("Tab completes @e2e d to the roster name", b.tab.chat_var.get() == "hello @E2E Dev ", b.tab.chat_var.get())
+    t0 = time.time()
+    b.tab.chat_var.set(b.tab.chat_var.get() + "are you there?")
+    b.tab.do_chat()
+    ctx.wait(lambda: a.events_of("chat", t0) and c.events_of("chat", t0), 10, "the chat line reaches A and C")
+    ea, ec = a.events_of("chat", t0)[-1], c.events_of("chat", t0)[-1]
+    ctx.check("A is mentioned (server ids)", a.tab._chat_mentions_me(ea), ea.get("mentions"))
+    ctx.check("C is not mentioned", not c.tab._chat_mentions_me(ec), ec.get("mentions"))
+    ctx.check("A's chat log marks the line as a mention", bool(a.tab.chat_log.tag_ranges("chat_mention")))
+    t1 = time.time()
+    a.tab.chat_var.set("dev line")
+    a.tab.do_chat()
+    ctx.wait(lambda: b.events_of("chat", t1), 10, "A's chat line reaches B")
+    ctx.check("chat: A's line carries the DEV badge", b.tab._player_badge(b.events_of("chat", t1)[-1]["from"]) == "dev",
+              b.events_of("chat", t1)[-1].get("from"))
+
+    # private messages
+    pa, pb = a.tab.private_chat, b.tab.private_chat
+    ctx.check("private chat is available on both", pa.available() and pb.available())
+    a.tab.tv_players.selection_set(next(p["id"] for p in a.client.players if p["name"] == "E2E Bea"))
+    pa.selected_player()
+    ctx.check("A's private window opened for B (from the player list)", pa.window is not None and pa.name == "E2E Bea",
+              pa.name)
+    t2 = time.time()
+    for k, text in enumerate(("pm one", "pm two", "pm three")):
+        pa.text.set(text)
+        pa.send()
+        ctx.wait(lambda k=k: len(b.events_of("private_message", t2)) >= k + 1, 10, f"B gets private line {k + 1}")
+    row_b = pb.model.rows.get("e2e dev") or {}
+    ctx.check("B: a conversation with A, 3 unread", row_b.get("unread") == 3, row_b.get("unread"))
+    pb.show("E2E Dev")
+    pb.text.set("pm reply")
+    pb.send()
+    ctx.wait(lambda: a.events_of("private_message", t2), 10, "A gets B's reply")
+    ctx.wait(lambda: len((pa.model.rows.get("e2e bea") or {}).get("lines") or ()) == 4, 10, "A's view has 4 lines")
+    ctx.check("C got no private message", not c.events_of("private_message", t2))
+
+    # report 2 of the 4 lines A sees (A's 'pm two' and B's reply), never the rest
+    pa.draw()
+    texts = [pa.lines.get(i) for i in range(pa.lines.size())]
+    want = [i for i, s in enumerate(texts) if s.endswith(": pm two") or s.endswith(": pm reply")]
+    ctx.require("A's view lists the lines", len(want) == 2, texts)
+    pa.lines.selection_clear(0, "end")
+    for i in want:
+        pa.lines.selection_set(i)
+    a.tab.ask_yes_no = lambda *a_, **k: True
+    t3 = time.time()
+    pa.report()
+    ctx.wait(lambda: a.saw_status("Report sent", t3), 10, "A: 'Report sent to moderators.'")
+    code, out = _admin(ctx, "private-reports", "--json")
+    try:
+        reports = json.loads(out)
+    except ValueError:
+        reports = []
+    ctx.check("moderator inbox: one report", code == 0 and len(reports) == 1, out[:300])
+    if reports:
+        got = sorted(line["text"] for line in reports[0]["lines"])
+        ctx.check("the report holds exactly the 2 selected lines", got == ["pm reply", "pm two"], got)
+        ctx.check("reporter A, peer B", reports[0]["reporter_name"] == "E2E Dev" and
+                  reports[0]["peer_name"] == "E2E Bea", f"{reports[0]['reporter_name']} {reports[0]['peer_name']}")
+    with open(ctx.server.db, "rb") as f:
+        db_text = f.read()
+    ctx.check("unreported lines are not in the database", b"pm one" not in db_text and b"pm three" not in db_text)
+
+    # chat filter (the server's list, read at run time)
+    term = _filter_term()
+    t4 = time.time()
+    b.tab.chat_var.set(f"you are a {term}")
+    b.tab.do_chat()
+    ctx.wait(lambda: b.saw_status("blocked", t4), 10, "lobby chat with a listed term: B told it was blocked")
+    ctx.sleep(1.0)
+    ctx.check("... and nobody got it", not [e for e in a.events_of("chat", t4) + c.events_of("chat", t4)
+                                            if term in e.get("text", "")])
+    t5 = time.time()
+    pb.text.set(f"{term} again")
+    pb.send()
+    ctx.wait(lambda: b.saw_status("blocked", t5), 10, "private message with a listed term: blocked")
+    ctx.sleep(1.0)
+    ctx.check("... and A got nothing", not a.events_of("private_message", t5))
+    g = ctx.player("E2E " + term.capitalize(), kind="stub", tag="badname")
+    t6 = time.time()
+    g.login_guest()
+    ctx.wait(lambda: g.saw_status("not allowed|blocked", t6), 10, "guest name with a listed term: refused")
+    ctx.check("... not logged in", not g.logged_in())
+    for p in (a, b):
+        if p.tab.private_chat.window is not None:
+            p.tab.private_chat.close()
+
+
+class _ShotSampler:
+    """RSX_TEST_BB_SHOT (patch 0038): asks the game for a picture of its backbuffer (after the overlay, i.e. what the
+    window shows) about every `gap` seconds; keeps (wall time, path). The pictures stay in the run folder (build/)."""
+
+    def __init__(self, d, gap=0.5):
+        import threading
+        self.dir, self.gap = d, gap
+        os.makedirs(d, exist_ok=True)
+        self.req = os.path.join(d, "req.txt")
+        self.shots = []
+        self.stop = False
+        self.thread = threading.Thread(target=self._run, name="bb-shots", daemon=True)
+        self.thread.start()
+
+    def _run(self):
+        k = 0
+        while not self.stop:
+            if not os.path.exists(self.req):
+                if self.shots and not os.path.exists(self.shots[-1][1]):
+                    self.shots.pop()           # (the game was not running: the request was taken by nobody)
+                k += 1
+                path = os.path.join(self.dir, f"s{k:05d}.ppm")
+                with open(self.req + ".tmp", "w") as f:
+                    f.write(path)
+                os.replace(self.req + ".tmp", self.req)
+                self.shots.append((time.time(), path))
+            time.sleep(self.gap)
+
+    def close(self):
+        self.stop = True
+        self.thread.join(5)
+
+
+def _cover_kind(path):
+    """'cover' (black with the small 'Connecting...' text), 'black' (nothing at all), 'picture' (anything else), or
+    None (no file)."""
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+    except OSError:
+        return None
+    try:
+        import numpy as np
+        parts = data.split(b"\n", 3)          # P6 / w h / 255 / pixels (the runtime writes no comments)
+        w, h = (int(x) for x in parts[1].split())
+        px = np.frombuffer(parts[3], dtype=np.uint8)[: w * h * 3].reshape(h, w, 3)
+    except Exception:              # noqa: BLE001
+        return None
+    bright = px.max(axis=2)
+    dark = float((bright < 24).mean())
+    lit = bright > 160
+    if dark > 0.985 and lit.any():
+        ys, xs = np.nonzero(lit)
+        # the text sits in the middle (canvas 1280x720: x 640, y 352): every lit pixel within the centre band
+        if abs(ys.mean() / h - 0.49) < 0.08 and abs(xs.mean() / w - 0.5) < 0.1:
+            return "cover"
+    if dark > 0.999:
+        return "black"
+    return "picture"
+
+
+def _cover_checks(ctx, p, sampler, first_fight_at, label):
+    """The Connecting cover from the first picture to the reveal; afterwards no cover in the fight."""
+    rows = [(t, _cover_kind(path), path) for t, path in sampler.shots]
+    rows = [r for r in rows if r[1] is not None]
+    seq = "".join({"cover": "C", "black": "b", "picture": "P"}[k] for _t, k, _p in rows)
+    ctx.note(f"{label}: {p.name}: {len(rows)} pictures, sequence {seq[:400]}")
+    first_pic = next((i for i, r in enumerate(rows) if r[1] == "picture"), None)
+    ctx.check(f"{label}: {p.name}: the first pictures are the Connecting cover", rows and rows[0][1] == "cover",
+              seq[:40])
+    ctx.check(f"{label}: {p.name}: the cover goes away (no hang under it)", first_pic is not None,
+              f"{len(rows)} pictures, none uncovered")
+    if first_pic is not None:
+        before = rows[:first_pic]
+        ctx.check(f"{label}: {p.name}: until the reveal only the cover was shown (no title, logo or movie)",
+                  all(k in ("cover", "black") for _t, k, _p in before), seq[:first_pic + 1])
+        reveal_at = rows[first_pic][0]
+        ctx.note(f"{label}: {p.name}: revealed {reveal_at - rows[0][0]:.1f} s after the first picture, "
+                 f"{reveal_at - first_fight_at:+.1f} s from FIGHT START; picture {rows[first_pic][2]}")
+        # DIRECTFIGHT.md "Online startup presentation": the interactive select is shown, the automatic confirm,
+        # the fight's loading and the intros are covered again, the fight from phase 17 on stays visible.
+        fight = [(t, k) for t, k, _p in rows if t >= first_fight_at]
+        shown = next((t for t, k in fight if k == "picture"), None)
+        ctx.check(f"{label}: {p.name}: the fight becomes visible after FIGHT START", shown is not None,
+                  "".join({"cover": "C", "black": "b", "picture": "P"}[k] for _t, k in fight)[:80])
+        if shown is not None:
+            ctx.note(f"{label}: {p.name}: covered {shown - first_fight_at:.1f} s from FIGHT START (loading, intros)")
+            after = [k for t, k in fight if shown <= t < shown + 15]
+            ctx.check(f"{label}: {p.name}: no cover again in the first 15 s of the visible fight",
+                      "cover" not in after, "".join({"cover": "C", "black": "b", "picture": "P"}[k] for k in after))
+    return rows
+
+
+def _casual_set(ctx, a, b, mid, label, max_games=4):
+    """Follow a casual first-to set with real games until its set_end. -> (set_end of a, [match ids])."""
+    t0 = min(p.matches.get(mid, {}).get("started") or time.time() for p in (a, b))
+    mids = [mid]
+    for k in range(max_games):
+        if not wait_fight(ctx, mid, (a, b), timeout=150):
+            raise Abort(f"{label} game {k + 1}: no fight")
+        wait_results(ctx, mid, (a, b))
+        match_row(ctx, mid, (a, b), "confirmed", f"{label} game {k + 1}")
+        if ctx.wait(lambda: a.events_of("set_end", t0) and b.events_of("set_end", t0), 3.0):
+            break
+        since = max(p.matches[mid].get("result") or 0 for p in (a, b)) - 0.5
+        if not ctx.wait(lambda: latest(a, "match_start", since) and latest(b, "match_start", since), 60,
+                        f"{label}: game {k + 2} starts by itself"):
+            raise Abort(f"{label}: the set's next game did not start")
+        mid = latest(a, "match_start", since)["match"]
+        mids.append(mid)
+    ctx.wait(lambda: a.events_of("set_end", t0) and b.events_of("set_end", t0), 30, f"{label}: the set ends")
+    return latest(a, "set_end", t0) or {}, mids
+
+
+def _game_lines(p, pattern):
+    rx = re.compile(pattern)
+    out = []
+    for g in p.games:
+        try:
+            with open(g.log_path, encoding="utf-8", errors="replace") as f:
+                out += [ln for ln in f.read().splitlines() if rx.search(ln)]
+        except (OSError, TypeError):
+            pass
+    return out
+
+
+@scenario("ft_sets_120", "15 1.2.0 opt-in", suites=("quick", "lobby"),
+          desc="casual first-to sets FT1/2/3/5/10 through a challenge (stub games, planned winners): each set ends "
+               "after the winner's N-th game with one result per game, the next game starts by itself, no rematch vote "
+               "inside the set")
+def ft_sets_120(ctx):
+    if "casual_sets" not in features():
+        raise Skip("no casual sets in this tree")
+    from t5lobby.i18n import t as _t
+    stub_server(ctx, T5L_SET_NEXT_SECONDS=1)
+    # P1 wins every game (T5_STUB_WINNERS counts this stub process's games across all the sets): FTn = n-0 in n games
+    w = {"T5_STUB_WINNERS": "0"}
+    a = ctx.player("E2E Fta", kind="stub", env=w)
+    b = ctx.player("E2E Ftb", kind="stub", env=w)
+    login(ctx, a)
+    login(ctx, b)
+    for n in (1, 2, 3, 5, 10):
+        ui = a.tab.casual
+        ui.refresh()
+        ui.set_var.set(_t("FT{wins}", wins=n))
+        ui.on_set_change()
+        ctx.check(f"FT{n}: chosen in A's casual row", a.client.casual_first_to == n, a.client.casual_first_to)
+        mid, bar = _casual_challenge(ctx, a, b)
+        ctx.check(f"FT{n}: B's challenge card names the set", f"FT{n}" in bar, bar)
+        ea, eb, seen = _stub_set(ctx, a, b, mid, f"FT{n}", games_max=n + 2, timeout=60)
+        slot = a.matches[mid].get("slot")
+        mine = [n, 0] if slot == 0 else [0, n]
+        ctx.check(f"FT{n}: set ended {mine[0]}-{mine[1]} for A after {n} games",
+                  ea.get("wins") == mine and ea.get("games") == n, f"{ea.get('wins')} in {ea.get('games')}")
+        ctx.check(f"FT{n}: every game has one confirmed result", len(seen) == n and
+                  all(s[1] == "confirmed" for s in seen), seen)
+        ctx.check(f"FT{n}: games after the first continued in the running games", all(s[3] for s in seen[1:]), seen)
+        votes = []
+        for (m1, *_x), (m2, *_y) in zip(seen, seen[1:]):
+            lo, hi = a.matches[m1].get("result") or 0, a.matches[m2].get("started") or 0
+            votes += [lb for ts, _t2, lbs in getattr(a, "bars", []) if lo - 0.5 <= ts <= hi for lb in lbs
+                      if lb.startswith("Rematch") or lb.startswith(_t("Rematch"))]
+        ctx.check(f"FT{n}: no rematch vote between the games of the set", not votes, votes)
+        for p in (a, b):
+            leave(ctx, p)
+        ctx.wait(lambda: a.action_on("challenge") and b.action_on("challenge"), 30, f"FT{n}: both free again")
+
+
+@scenario("room_tables_120", "15 1.2.0 opt-in", game=True, suites=("game",),
+          desc="a community room 'several matches at once' for 4: two real games at table 1 and two stub games at "
+               "table 2 play at the same time; both tables' matches confirmed, the real one in sync; each table's "
+               "players only; no classic rematch vote")
+def room_tables_120(ctx):
+    _room_tables(ctx, real=True)
+
+
+@scenario("room_tables_stub_120", "15 1.2.0 opt-in", suites=("quick", "lobby"),
+          desc="the same room with 'several matches at once' for 4, all stub games: two tables play at once, both "
+               "matches confirmed, each table's players only, no classic rematch vote")
+def room_tables_stub_120(ctx):
+    _room_tables(ctx, real=False)
+
+
+def _room_tables(ctx, real):
+    if "room_tables" not in features():
+        raise Skip("no room tables in this tree")
+    from t5lobby.i18n import t as _t
+    (game_server if real else stub_server)(ctx, T5L_ROOM_NEXT_SECONDS=3)
+    kind = "real" if real else "stub"
+    a = ctx.player("E2E TabA", char="jin", kind=kind, **({} if real else {"env": {"T5_STUB_SECONDS": "40"}}))
+    b = ctx.player("E2E TabB", char="paul", kind=kind, **({} if real else {"env": {"T5_STUB_SECONDS": "40"}}))
+    c = ctx.player("E2E TabC", kind="stub", env={"T5_STUB_SECONDS": "25"})
+    d = ctx.player("E2E TabD", kind="stub", env={"T5_STUB_SECONDS": "25"})
+    for p in (a, b, c, d):
+        login(ctx, p)
+    p_ = a
+    p_.press("room")
+    w = p_.tab.rooms_ui.window
+    if w is None:
+        raise Abort("Create room opened no window")
+    w.vars["size"].set("4")
+    w.vars["mode"].set(_t("Several matches at once"))
+    w.vars["access"].set(_t("Anybody"))
+    w.create_button.invoke()
+    ctx.wait(lambda: (a.client.my_room or {}).get("mode") == "tables", 10, "the table room is made")
+    rid = a.client.my_room["id"]
+    t0 = time.time()
+    for p in (b, c, d):
+        ctx.wait(lambda p=p: p.tab.tv_rooms.exists(rid), 10, f"{p.name} sees the room")
+        p.tab.tv_rooms.selection_set(rid)
+        p.press("join")
+        ctx.wait(lambda p=p: (p.client.my_room or {}).get("id") == rid, 10, f"{p.name} joins")
+        if p is b:
+            ctx.sleep(1.0)
+    ctx.wait(lambda: all(latest(p, "match_found", t0) for p in (a, b, c, d)), 40, "both tables find a match")
+    mids = {p.name: latest(p, "match_found", t0)["match"] for p in (a, b, c, d)}
+    ctx.check("table pairs: A with B, C with D", mids["E2E TabA"] == mids["E2E TabB"] and
+              mids["E2E TabC"] == mids["E2E TabD"] and mids["E2E TabA"] != mids["E2E TabC"], mids)
+    m1, m2 = mids["E2E TabA"], mids["E2E TabC"]
+    for p in (a, b, c, d):
+        if p.bar_button("Accept") is not None or ctx.wait(lambda p=p: p.bar_button("Accept") is not None, 15,
+                                                         fail=False):
+            p.click("Accept")
+    started_both(ctx, a, b, m1, 60)
+    started_both(ctx, c, d, m2, 60)
+    both = all(p.matches.get(m, {}).get("started") for p, m in ((a, m1), (c, m2)))
+    ctx.check("both tables' matches started", both)
+    room = a.client.my_room or {}
+    tabs = room.get("tables") or []
+    ctx.note(f"tables while playing: {[{k: v for k, v in tb.items() if k in ('id', 'players', 'match')} for tb in tabs]}")
+    ctx.check("the room lists two tables with a match each", len([tb for tb in tabs if tb.get("match")]) == 2, tabs)
+    wait_results(ctx, m2, (c, d), 120)
+    ctx.check("table 2 (stub) confirmed while table 1 still plays",
+              c.matches[m2].get("status") == "confirmed" and not a.matches.get(m1, {}).get("status"),
+              f"{c.matches[m2].get('status')} / table 1 {a.matches.get(m1, {}).get('status')}")
+    # sit the stub table out, so it does not start its next match beside the real game's end
+    for p in (c, d):
+        try:
+            p.client.room_line(False)
+        except Exception as e:     # noqa: BLE001
+            ctx.note(f"{p.name}: room_line: {e}")
+    if real:
+        wait_fight(ctx, m1, (a, b), timeout=150)
+        wait_results(ctx, m1, (a, b))
+        row = match_row(ctx, m1, (a, b), "confirmed", "table 1 (real games)")
+        fps_check(ctx, row, (a, b))
+    else:
+        wait_results(ctx, m1, (a, b), 120)
+        ctx.check("table 1 confirmed", a.matches[m1].get("status") == "confirmed", a.matches[m1].get("status"))
+    ctx.check("no classic rematch vote at a table", not a.saw_bar("Rematch", t0) and not b.saw_bar("Rematch", t0),
+              [a.bar_labels(), b.bar_labels()])
+    for p in (a, b):
+        try:
+            p.client.room_line(False)
+        except Exception as e:     # noqa: BLE001
+            ctx.note(f"{p.name}: room_line: {e}")
+    for p in (a, b, c, d):
+        if p.action_on("leave"):
+            p.press("leave")
+
+
+@scenario("casual_120_pair", "15 1.2.0 opt-in", game=True, suites=("game",),
+          desc="one real pair: A challenges B with an FT2 set and input delay 5 (A's setting), A plays 'Always "
+               "right', B 'Always left', A's replays go to a chosen folder with a Unicode name; the Connecting cover "
+               "from boot to the select/fight on both PCs (backbuffer pictures); every game confirmed and in sync, "
+               "both games used delay 5, the replays in the Unicode folder play back identical")
+def casual_120_pair(ctx):
+    if not {"casual_sets", "input_delay8"}.issubset(features()):
+        raise Skip("no 1.2.0 casual sets in this tree")
+    from t5lobby.i18n import t as _t
+    game_server(ctx, T5L_SET_NEXT_SECONDS=4)
+    rdir = os.path.join(ctx.dir, "Replays Ümläut 日本 Записи")
+    os.makedirs(rdir, exist_ok=True)
+    sa = _ShotSampler(os.path.join(ctx.dir, "shots_A"))
+    sb = _ShotSampler(os.path.join(ctx.dir, "shots_B"))
+    try:
+        a = ctx.player("E2E Uma", char="jin", env={"RSX_TEST_BB_SHOT": sa.req})
+        b = ctx.player("E2E Vic", char="paul", env={"RSX_TEST_BB_SHOT": sb.req})
+        a.app.settings["replay_dir"] = rdir
+        a.app.settings["screen_side"] = "right"
+        b.app.settings["screen_side"] = "left"
+        for p in (a, b):
+            p.app.settings.save()
+        ctx.check("A: the chosen replay folder is accepted", os.path.normcase(a.app.settings.replay_dir) ==
+                  os.path.normcase(rdir), a.app.settings.replay_dir_status())
+        login(ctx, a)
+        login(ctx, b)
+        ui = a.tab.casual
+        ui.refresh()
+        ui.set_var.set(_t("FT{wins}", wins=2))
+        ui.on_set_change()
+        # the input delay box left of Challenge (tk_challenges): 5 frames, as a player picks it with B selected
+        a.tab.tv_players.selection_set(b.client.me["id"])
+        ctx.pump(0.3)
+        ch = a.tab.chal
+        labels = list(ch.delay_cb.cget("values"))
+        ctx.require("A's delay box offers 0-8 for B", "5" in ch.delay_choices(), ch.delay_choices())
+        ch.delay_var.set(labels[ch.delay_choices().index("5")])
+        ch._delay_chosen()
+        ctx.check("A's challenge delay is 5", ch.effective_delay() == "5", ch.effective_delay())
+        mid, bar = _casual_challenge(ctx, a, b)
+        ctx.check("B's challenge card names FT2", "FT2" in bar, bar)
+        ea, mids = _casual_set(ctx, a, b, mid, "FT2 set")
+        fight_at = min(a.matches[mids[0]].get("fight_at") or time.time(), b.matches[mids[0]].get("fight_at") or time.time())
+        ctx.check("the FT2 set ended with 2 wins for one player", 2 in (ea.get("wins") or []) and
+                  ea.get("games") == len(mids), f"{ea.get('wins')} in {ea.get('games')} game(s), {len(mids)} played")
+        for p in (a, b):
+            got = _game_lines(p, r"rollback loop takes over|lockstep starts")
+            ctx.note(f"{p.name}: delay lines: {got[:6]}")
+            loops = [ln for ln in got if "takes over" in ln] or got
+            ctx.check(f"{p.name}: every game of the set played with input delay 5",
+                      loops and all(re.search(r"\(delay 5,|delay 5$", ln) for ln in loops), loops[:4])
+        sides = {p.name: _game_lines(p, r"screen side:") for p in (a, b)}
+        ctx.note(f"screen side lines: {sides}")
+        slot_a = a.matches[mids[0]].get("slot")
+        mir_a = any("mirrored" in ln for ln in sides[a.name])
+        mir_b = any("mirrored" in ln for ln in sides[b.name])
+        # Always right mirrors a P1, Always left a P2
+        ctx.check(f"A (P{slot_a + 1}, always right): mirrored exactly when A is P1", mir_a == (slot_a == 0),
+                  sides[a.name][-2:])
+        ctx.check(f"B (P{2 - slot_a}, always left): mirrored exactly when B is P2", mir_b == (slot_a == 0),
+                  sides[b.name][-2:])
+    finally:
+        sa.close()
+        sb.close()
+    _cover_checks(ctx, a, sa, fight_at or time.time(), "first boot")
+    _cover_checks(ctx, b, sb, fight_at or time.time(), "first boot")
+    for p in (a, b):
+        leave(ctx, p)
+    files = sorted(os.path.join(rdir, n) for n in os.listdir(rdir) if n.endswith(".t5replay"))
+    ctx.check("A's replay is in the Unicode folder", len(files) >= 1, os.listdir(rdir))
+    ctx.check("... and not in the default folder", not [n for n in os.listdir(os.path.join(a.out, "replays"))
+                                                         if n.endswith(".t5replay")]
+              if os.path.isdir(os.path.join(a.out, "replays")) else True)
+    if files:
+        exe = os.path.join(ctx.run.bin, "t5dr.exe")
+        exe = exe if os.path.isfile(exe) else ctx.run.exe
+        out = os.path.join(ctx.dir, "replay_play")
+        from e2e_harness import TOOLS
+        r = subprocess.run([sys.executable, os.path.join(TOOLS, "replay_play.py"),
+                            "--exe", exe, "--vfs", os.path.join(ctx.run.game_root, "game", "vfs"), "--out", out,
+                            "--timeout", "600"] + files, capture_output=True, text=True, encoding="utf-8",
+                           errors="replace", timeout=900, creationflags=core.CREATE_NO_WINDOW if core.IS_WIN else 0)
+        lines = [ln for ln in (r.stdout + r.stderr).splitlines() if re.match(r"\[\d+\] ", ln)]
+        ctx.check("the Unicode-folder replay plays back identical to the live set",
+                  r.returncode == 0 and lines and all("-- IDENTICAL" in ln for ln in lines),
+                  (lines or [(r.stdout + r.stderr)[-300:]])[0][:300])
+
+
+def _pace_modes(path):
+    """pace_mode column of a PS3_FRAMELOG CSV -> {mode: rows}."""
+    import csv
+    out = {}
+    try:
+        with open(path, encoding="utf-8", errors="replace", newline="") as f:
+            rows = [r for r in csv.reader(f) if r and not r[0].startswith("#")]
+    except OSError:
+        return out
+    if not rows or "pace_mode" not in rows[0]:
+        return out
+    k = rows[0].index("pace_mode")
+    for r in rows[1:]:
+        if len(r) > k:
+            out[r[k]] = out.get(r[k], 0) + 1
+    return out
+
+
+@scenario("net_vrr_adaptive_120", "15 1.2.0 opt-in", game=True, suites=("game",),
+          desc="VRR pacing on one side (A: PS3_VRR_PACING=2 + tearing, display lock off), B default; both "
+               "with the adaptive rollback delay (T5_RB_NET_ADAPTIVE_DELAY=1), B also with the experimental practice "
+               "advantage comparison switched on (must stay inactive online), RTT 150 / jitter 15 / 2 % loss, Quick "
+               "matches with input delay Auto: confirmed, 0 mismatching frames, ~60 fps, the frame log shows A's "
+               "pacing mode, the host logs the jitter delay")
+def net_vrr_adaptive_120(ctx):
+    _net_vrr_120(ctx, "rollback")
+
+
+@scenario("net_vrr_lockstep_120", "15 1.2.0 opt-in", game=True, suites=("game",),
+          desc="the same in lockstep (both T5_RB_MODE=off): A VRR pacing 2, B default + the practice advantage "
+               "comparison on, RTT 150 / jitter 15 / 2 % loss: confirmed, 0 mismatching frames")
+def net_vrr_lockstep_120(ctx):
+    _net_vrr_120(ctx, "lockstep")
+
+
+def _net_vrr_120(ctx, mode):
+    game_server(ctx)
+    fl = os.path.join(ctx.dir, "frames_A.csv")
+    tl = os.path.join(ctx.dir, "training_B.log")
+    extra = {"T5_RB_MODE": "off"} if mode == "lockstep" else {"T5_RB_NET_ADAPTIVE_DELAY": "1"}
+    a = ctx.player("E2E Vrr", char="jin", env=dict(extra, PS3_VRR_PACING="2", RSX_PRESENT_MODE="tearing",
+                                                   PS3_DISPLAY_LOCK="0", PS3_FRAMELOG=fl))
+    b = ctx.player("E2E Fix", char="paul", env=dict(extra, T5_TRAINING="frames", T5_TRAINING_ADV_COMPARE="1",
+                                                    T5_TRAINING_LOG=tl))
+    login(ctx, a)
+    login(ctx, b)
+    row = net_case(ctx, a, b, f"VRR 2 vs default ({mode}), RTT 150 jitter 15", 150, 15, 0.02, "auto", False, None,
+                   mode=mode)
+    modes = _pace_modes(fl)
+    ctx.check("A's frame log: pacing mode 2 (controlled present) took effect", modes.get("2", 0) > 600, modes)
+    try:
+        with open(tl, encoding="utf-8", errors="replace") as f:
+            adv = [ln for ln in f if " adv_compare " in ln]
+    except OSError:
+        adv = []
+    ctx.check("B: the practice advantage comparison stayed inactive online (no adv_compare line)", not adv, adv[:2])
+    if mode == "rollback":
+        for p in (a, b):
+            ctx.note(f"{p.name}: {(_game_lines(p, r'jitter delay:|rollback input delay for this match') or ['-'])[-2:]}")
+        host = a if a.matches[list(a.matches)[-1]].get("slot") == 0 else b
+        jit = _game_lines(host, r"jitter delay:")
+        ctx.check("the host logs the adaptive (jitter) delay, fixed for the match", bool(jit), jit[-1:] or "no line")
+    from e2e_harness import TOOLS
+    r = subprocess.run([sys.executable, os.path.join(TOOLS, "perf_compare.py"), "pacing", fl], capture_output=True,
+                       text=True, encoding="utf-8", errors="replace", timeout=120)
+    ctx.note(f"perf_compare pacing (A, mode 2): {(r.stdout or r.stderr)[:1500]}")
+    with open(os.path.join(ctx.dir, f"pacing_A_mode2_{mode}.json"), "w", encoding="utf-8") as f:
+        f.write(r.stdout or r.stderr)

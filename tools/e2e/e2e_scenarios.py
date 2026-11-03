@@ -5055,6 +5055,7 @@ def private_room_turns(ctx):
     ctx.sleep(1.0)
     ctx.check("a hidden room is in nobody's list", not b.tab.tv_rooms.get_children() and
               not c.tab.tv_rooms.get_children())
+    t_joins = time.time()     # the first match starts as soon as the second player is in, maybe before the third joined
     for p in (b, c):
         p.tab.tv_rooms.selection_remove(*p.tab.tv_rooms.selection())
         p.tab.ask_string = lambda *a_, **k: code            # (typed in from what the host shared)
@@ -5062,7 +5063,7 @@ def private_room_turns(ctx):
         ctx.wait(lambda p=p: (p.client.my_room or {}).get("id") == a.client.my_room["id"], 10, f"{p.name} joins")
     line = ["E2E Ivy", "E2E Jon", "E2E Kai"]
     for k in range(3):
-        t = time.time()
+        t = t_joins if k == 0 else time.time()
         ctx.wait(lambda: sum(1 for p in (a, b, c) if latest(p, "match_found", t)) == 2, 30, f"room match {k + 1}")
         two = [p for p in (a, b, c) if latest(p, "match_found", t)]
         mid = latest(two[0], "match_found", t)["match"]

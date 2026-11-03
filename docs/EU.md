@@ -102,6 +102,22 @@ v01.00 it plays **offline only**: its build stamp says `"online": false` and t5_
 already identified this program, by entry 0x457898 and size, for both versions). Without the opt-in both packages
 are named ("version 02.00 (Online)" / "version 02.01 (Online) of the game") and refused before decrypting, as before.
 
+**Sound needs runtime patch 0108.** The EU Online program starts its sound core's SPU thread with
+`sys_spu_thread_initialize(..., spu_num 0xFF, ...)` (the US program and EU v01.00 pass 1). The PS3 kernel numbers a
+group's threads 0..255 (a 256-entry map) and gives the thread the next free place; our runtime refused every number
+from 8 up, so the thread never existed, the PPU never got its mixed blocks and the game ran silent (`[audio-rate] ...
+not written 937` every 5 s). `patches/ps3recomp/0108-spu-thread-num.patch`: numbers 0..255; 0..7 keep their place as
+before (the US program's path is unchanged), a higher number takes the lowest free place, a repeated number is
+EBUSY.
+
+Checked on the owner's v02.01 package (2026-11-03, 1.2.0 preflight zip + this branch's tools, BUILD GAME the
+launcher's way with `--eu-online`: 165 s; then `tools/smoke/run.py`): boot to the title menu, VS with both pads,
+Arcade, Practice (the Online edition has it), title twice: PASS; Ghost: the fight runs (its end picture caught the
+ghost's KO replay, a test-timing miss). Without 0108 every fight had 100 % unwritten audio blocks; with it 0 %
+silent blocks, the sound core answering every 5.33 ms tick (mean 1.3 ms). The US build through the same tools:
+lifted sources, all objects and the build stamp identical to integrated-120's tools, smoke quick PASS with and
+without 0108.
+
 ### Which versions could play each other (measured 2026-11-03)
 
 Five programs compared with the tools of this page (function matcher, whole-text alignment of the instruction

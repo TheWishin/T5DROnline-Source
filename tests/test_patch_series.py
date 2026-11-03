@@ -37,7 +37,8 @@ class PatchSeries(unittest.TestCase):
             "0111-always-left-kernel-copy.patch",
             "0112-always-left-copy-any-unit.patch",
         ]
-        self.assertEqual([name for name in names if name >= "0088-"], expected)
+        # (later patches -- 0106+ -- may follow; these keep their order at the start)
+        self.assertEqual([name for name in names if name >= "0088-"][:len(expected)], expected)
 
 
 if __name__ == "__main__":

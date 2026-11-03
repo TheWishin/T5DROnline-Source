@@ -275,5 +275,23 @@ class StepsWithoutOptIn(Steps):
         self.assertIsNone(self.bg.built_program())                    # not a program this build knows
 
 
+class SoundCoreThread(unittest.TestCase):
+    """EU Online's sound core thread: sys_spu_thread_initialize(spu_num 0xFF) -- US 1. lv2 numbers threads 0..255
+    (a 256-entry map); our runtime refused >= 8, so the EU Online build ran silent (patch 0108)."""
+
+    def test_runtime_patch_takes_spu_num_up_to_255_and_keeps_low_numbers(self):
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(root, "patches", "ps3recomp", "0108-spu-thread-num.patch"), encoding="utf-8") as f:
+            patch = f.read()
+        lines = patch.splitlines()
+        added = "|".join(l[1:] for l in lines if l.startswith("+") and not l.startswith("+++"))
+        removed = "|".join(l[1:] for l in lines if l.startswith("-") and not l.startswith("---"))
+        self.assertIn("if (thread_num >= 8) LV2_RET(ctx, CELL_EINVAL);", removed)
+        self.assertIn("if (thread_num >= 256) LV2_RET(ctx, CELL_EINVAL);", added)
+        self.assertIn("if (spu_num >= 8) {", added)          # only numbers >= 8 take another slot
+        self.assertIn("t->spu_num     = spu_num;", added)
+        self.assertIn("if (g->init_mask & (1u << thread_num)) LV2_RET(ctx, CELL_EBUSY);", added)
+
+
 if __name__ == "__main__":
     unittest.main()

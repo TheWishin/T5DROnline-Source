@@ -23,6 +23,14 @@ Draft integration for maintainer review. Nothing has been built or released; gam
 - `rest`: Adds screen-side choices, hidden post-build warmup, first-start control guidance, GPU build warnings, opt-in build compatibility groups and frozen match-start jitter delay; low-end/practice investigations remain explicitly gated.
 - `waiting`: Adds capability-gated private chat and explicitly selected-line reports, START/device-loss diagnostics, and safer EU address-review tools; EU online support remains unapproved.
 
+### Fixed during integration
+
+- `--search ranked` / `--search casual` on a built game always stopped at "Build the game first": it now waits for the
+  launcher's game check before it starts the search.
+- A rematch after a casual challenge or room game reconnected both games instead of going on in the running session
+  (every casual game is a set since 1.2.0, and the decided set let the game go before the rematch window ended).
+- The rematch after such a game ignored the players' stage and side wishes (it drew a random stage).
+
 ## v1.1.9 (2026-10-29)
 
 **Fair ranked sets, several challenges at once, frame data for every hit, "always see me on the left", the European

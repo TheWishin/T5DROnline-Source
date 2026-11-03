@@ -909,7 +909,7 @@ Player wish: "auto-skip for replays and round animations" instead of both player
   game has the rule announces it; launcher `T5_AUTO_SKIP=0` hides the box) are enough, so the box shows even with
   `T5L_INGAME_REMATCH=0` / `T5_INGAME_REMATCH=0`, and a room's skip wish works without the rematch rule.
   In the rule it stands for both players' votes in every *nonfinal* after-round part (8, 9, 0xC): the rule's own
-  presses start at the part's first frame. The intros still need both players' START; the deciding round keeps
+  presses start at the part's first frame. The intros are the intro rule's (above), not this one's; the deciding round keeps
   the post-match window (the driver's / rollback loop's skip from 40 frames after the decision). A function of
   the state and the agreed flag only, so rollback, lockstep and replays stay equal. Proof (2026-11-03, branch
   wishes-120 on integrated-120, fight line `auto_skip_after_round=1`, 3 rounds, mashing): `fight_flow_test

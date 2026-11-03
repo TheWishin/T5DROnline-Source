@@ -904,6 +904,31 @@ Player wish: "auto-skip for replays and round animations" instead of both player
   "offline skips ok" (every replay and way to the next round skipped, never a press where START pauses, also while
   the player mashes or holds START; the same inputs without the rule skip nothing).
 
+### Sidestep from crouch (1.2.0 wish: looked at, not done)
+
+Player wish: "sidestep from crouch" as an option (offline; online only if both players / the room allow it;
+never ranked; default off). Not built, because no clean way exists in this game:
+
+* **Not an input rule.** Everything we change online is a pure function of the game state and both inputs
+  (no pause, skips, training rooms). In Tekken 5 DR a sidestep is a tap of up or down from a *standing*
+  fighter; a crouching fighter already holds down, and letting go puts it into the while-rising state, where
+  the buttons give while-standing moves. No sequence of pad inputs makes a crouching fighter sidestep -- an input rule could only hold neutral until the fighter stands and then tap, i.e. a
+  late *standing* sidestep with the while-rising frames (and their hurtbox) in front: not the wish, and it
+  would steal the player's while-standing inputs.
+* **A state write is not clean.** The other way is to start the sidestep move ourselves on the frame of the
+  tap: find the game's move-change routine and each fighter's sidestep moves (per character and direction),
+  call it from the keyread tick and keep the move system's other fields (animation time, hurtbox state,
+  crouch flags, buffered inputs) consistent. That is new game code inside the simulation -- deterministic on
+  both PCs (a function of the state and the inputs, like every rule here) but a change of the fighting
+  system itself, with no reference to check it against: transitions the game never makes (crouch straight
+  into sidestep) can leave a fighter in states the move tables were not written for. The full-neutral
+  Practice reset was set aside for the same reason (docs/INTEGRATION_1.2.0.md item 32).
+* If it is wanted anyway: an opt-in match rule (`ss_crouch=1`, packed into the match rules like
+  `auto_skip_after_round`, off for ranked and tournaments, both players' consent), the move change at the
+  keyread boundary of live, re-simulated and replayed frames alike, and rollback + lockstep pairs with
+  0 mismatching frames plus replays played back identical -- after the move routine and the sidestep move
+  ids per character are traced in the game.
+
 ## Connection problems
 
 How a session starts, survives trouble, and ends when it cannot go on

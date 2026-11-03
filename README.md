@@ -372,7 +372,10 @@ Good to know:
 - Nobody can pause an online fight (from 1.1.2): **Start** does not open the
   pause menu there, for either player. From 1.1.4 the fighters' intros and the
   replay after a round are skipped once **both** players have pressed **Start**
-  during them (one player alone skips nothing).
+  during them (one player alone skips nothing). From 1.2.0 the fighters' intros
+  at the start of a match are skipped by themselves; the replay after a round
+  still needs both players' **Start**, or both players' tick at "Auto-skip
+  replays and round endings" in the Online tab (off by default).
   To quit a match, close the game (Esc twice): that counts as a loss, as before.
 - Ranked uses a Glicko-2 rating shown with Tekken 5's own rank names and, from
   1.1.4, the game's own rank plates (Beginner, 9th kyu ... Tekken Lord) next to

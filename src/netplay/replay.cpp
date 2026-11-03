@@ -63,7 +63,8 @@ constexpr uint32_t kVersion = 7;   /* 2: the last frame the recording game ran (
                                     4: header flags bit 1 (select seed per match) and bit 2 (unlocks open);
                                     5: each match's rules word (online training, the health handicap);
                                     6: rules bit 1 automatic after-round skips;
-                                    7: filter cross-pad START/SELECT soft reset; old readers must reject */
+                                    7: filter cross-pad START/SELECT soft reset; old readers must reject;
+                                       rules bit 2 automatic intro skips (1.2.0, never in format 5/6) */
 constexpr uint32_t kFlagRollback = 1, kFlagSelectMix = 2, kFlagUnlocksOpen = 4;
 constexpr uint32_t kCostumeBlock = 0x108;
 constexpr int kMaxDelay = 30;      /* netplay_core.cpp kMaxDelay: the input delay a session can have */
@@ -263,6 +264,7 @@ Match get_match(Reader& r, uint32_t ver)
         m.ft.costumes = r.bytes(m.ft.cos[0], kCostumeBlock) && r.bytes(m.ft.cos[1], kCostumeBlock);
     if (ver >= 5) m.ft.rules = r.u32();    /* format 5: training, health handicap (older files: none) */
     if (ver < 6) m.ft.rules &= ~2u;       /* no automatic skip in older replay formats */
+    if (ver < 7) m.ft.rules &= ~4u;       /* no automatic intro skip before format 7 (1.2.0) */
     return m;
 }
 
@@ -371,6 +373,7 @@ std::string to_json(const Data& d, bool names, uint32_t frames)
                      ru.life[1]);
             j += b;
             j += std::string(", \"auto_skip_after_round\": ") + (ru.auto_skip_after_round ? "true" : "false");
+            j += std::string(", \"auto_skip_intro\": ") + (ru.auto_skip_intro ? "true" : "false");
         }
         if (m.have_hash) { snprintf(b, sizeof b, ", \"hash\": \"%016llx\"", (unsigned long long)m.hash); j += b; }
         if (!m.reason.empty()) j += ", \"reason\": " + jstr(m.reason);
@@ -1612,6 +1615,7 @@ bool play_fight_line(uint32_t match, std::string* line)
         const np::MatchRules ru = np::MatchRules::unpack(f.rules);
         if (ru.training) *line += " train=1";
         if (ru.auto_skip_after_round) *line += " auto_skip_after_round=1";
+        if (ru.auto_skip_intro) *line += " auto_skip_intro=1";
         if (ru.life[0] != 100 || ru.life[1] != 100)
             *line += " life=" + std::to_string(ru.life[0]) + "|" + std::to_string(ru.life[1]);
     }

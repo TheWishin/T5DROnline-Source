@@ -91,7 +91,8 @@ class RematchRuleTest(unittest.IsolatedAsyncioTestCase):
         cfg = Config()
         self.assertTrue(cfg.ingame_rematch)
         self.assertEqual(cfg.ingame_rematch_seconds, 10.0)
-        self.assertFalse(cfg.auto_skip)                  # the simulation-changing skip rule stays opt-in
+        self.assertTrue(cfg.auto_skip)                   # the round skip is offered; each match needs both consents
+        self.assertTrue(cfg.auto_skip_intro)             # 1.2.0: the intros are skipped between 1.2.0 games
         self.assertEqual(cfg.casual_rematch_policy, "both_confirm")
         self.assertEqual(cfg.rematch_window, 20.0)       # (older launchers keep their 20 s)
         configured = Config.from_env({"T5L_INGAME_REMATCH": "0", "T5L_INGAME_REMATCH_SECONDS": "15",
@@ -279,8 +280,33 @@ class RematchRuleTest(unittest.IsolatedAsyncioTestCase):
         m.requested_ranked = True
         self.assertFalse(s._rematch_skip_rule(m, a, b, False, "queue"))
         m.requested_ranked = False
+        # 1.2.0: the round skip no longer depends on the in-game rematch question (its own switch and cap)
         s.cfg.ingame_rematch = False
+        a.conn.caps.discard("ingame_rematch_v1")
+        self.assertTrue(s._rematch_skip_rule(m, a, b, False, "queue"))
+        s.cfg.auto_skip = False
         self.assertFalse(s._rematch_skip_rule(m, a, b, False, "queue"))
+
+    async def test_intro_skip_for_every_pair_whose_games_have_it(self):
+        """1.2.0: no consent, no setting -- both launchers' cap is enough, ranked and tournaments too; an old
+        launcher (no cap) keeps the intros as before; T5L_AUTO_SKIP_INTRO=0 switches it off"""
+        from t5lobby.server.rematch import INTRO_CAP
+        s = Server()
+        m, a, b = match(s)
+        self.assertTrue(s.cfg.auto_skip_intro)
+        self.assertFalse(s._intro_skip_rule(a, b))
+        a.conn.caps.add(INTRO_CAP)
+        self.assertFalse(s._intro_skip_rule(a, b))          # (the opponent's game does not have it)
+        b.conn.caps.add(INTRO_CAP)
+        self.assertTrue(s._intro_skip_rule(a, b))
+        s.cfg.ingame_rematch = False                          # (independent of the in-game rematch too)
+        self.assertTrue(s._intro_skip_rule(a, b))
+        m.training, m.life, m.auto_skip_intro = False, None, True
+        self.assertEqual(MatchRulesMixin._rules_fight(m), {"auto_skip_intro": True})
+        m.auto_skip_intro = False
+        self.assertEqual(MatchRulesMixin._rules_fight(m), {})
+        s.cfg.auto_skip_intro = False
+        self.assertFalse(s._intro_skip_rule(a, b))
 
     async def test_room_skip_requires_room_rule_and_both_consents(self):
         s = Server()

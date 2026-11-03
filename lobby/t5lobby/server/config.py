@@ -74,7 +74,11 @@ class Config:
     rematch_window: float = 20.0    # T5L_REMATCH_WINDOW: seconds to agree on a rematch
     ingame_rematch: bool = True     # T5L_INGAME_REMATCH: the rematch question in the game (1.2.0 launchers + games)
     ingame_rematch_seconds: float = 10.0  # T5L_INGAME_REMATCH_SECONDS: its countdown (both players have it)
-    auto_skip: bool = False         # T5L_AUTO_SKIP: the agreed after-round skip rule (opt-in draft, unproved in games)
+    auto_skip: bool = True          # T5L_AUTO_SKIP: the agreed after-round skip rule (casual; only when both players
+                                    # ticked it in their launchers -- the launcher's box is off by default); 0 = never
+    auto_skip_intro: bool = True    # T5L_AUTO_SKIP_INTRO (1.2.0): the fighters' intros at a match's start are skipped
+                                    # for every pair whose games have it (cap auto_skip_intro_v1; casual, ranked,
+                                    # tournaments); 0 = both players press START as before
     casual_rematch_policy: str = "both_confirm"  # T5L_CASUAL_REMATCH_POLICY: both_confirm | auto_unless_declined
     rematch_direct: bool = True     # T5L_REMATCH_DIRECT: a rematch after a match on the relay tries the direct path again
                                     # (a new connection) instead of continuing on the relay; a second failure keeps it

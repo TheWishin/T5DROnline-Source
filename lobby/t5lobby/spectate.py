@@ -91,6 +91,7 @@ def parse_match(b, session_version=1):
             "p1": v[0], "p2": v[1], "stage": v[6], "rounds": v[7], "pick": v[8],
             "winner": None if v[9] < 0 else v[9], "score": [v[10], v[11]], "names": names, "costumes": costumes,
             "training": bool(rules & 1), "auto_skip_after_round": session_version >= 2 and bool(rules & 2),
+            "auto_skip_intro": session_version >= 3 and bool(rules & 4),
             "soft_reset_guard": session_version >= 3,
             "life": [((rules >> 8) & 0xFF) or 100, ((rules >> 16) & 0xFF) or 100]}
 
@@ -208,6 +209,7 @@ class LiveParser:
                 previous = self.matches[k]
                 m["soft_reset_guard"] = previous["soft_reset_guard"]
                 m["auto_skip_after_round"] = previous["auto_skip_after_round"]
+                m["auto_skip_intro"] = previous.get("auto_skip_intro", False)
                 self.matches[k] = m
         elif t == R_HASH:
             # The game keeps its hashes sorted and puts an older one into its place (a rollback records a frame again,

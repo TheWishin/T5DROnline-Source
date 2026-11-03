@@ -19,6 +19,11 @@
  *     the replay). The players' own START does not reach the game there either.
  *     An agreed auto_skip_after_round match rule supplies both votes in nonfinal after-round
  *     parts only. It never supplies intro votes or shortens the final-match decision delay.
+ *     An agreed auto_skip_intro match rule (1.2.0: the server sets it for every pair whose games
+ *     have it, casual and ranked; docs/NETPLAY.md "Skipping intros and replays online") supplies
+ *     both votes in the intro part (round states 1 and 2) only: the same presses as when both
+ *     players pressed, from the part's first frame. READY/FIGHT (4), the fight and the parts after
+ *     a round are untouched by it.
  *   - the post-match window -- from kDelay frames after the match was decided in this fight until
  *     the game asks for the select screen -- where START skips the last KO replay and the win pose
  *     (the direct-fight driver presses it in lockstep, the rollback loop's post-match rule sends it;
@@ -126,7 +131,8 @@ struct NoPauseRule {
      * what START does in frame f. The post-match window opens only where the decided byte rises after
      * a boundary that was fought -- not on the last match's byte, which is still set when a rematch's
      * fight begins; the round's own skip parts end where the match is decided. */
-    Verdict record(uint32_t f, const State& st, const PadInput in[2], bool auto_skip_after_round = false)
+    Verdict record(uint32_t f, const State& st, const PadInput in[2], bool auto_skip_after_round = false,
+                   bool auto_skip_intro = false)
     {
         const bool fight = st.game_mode && st.phase == 17;
         const bool dec = fight && st.decided;
@@ -145,6 +151,10 @@ struct NoPauseRule {
              * Intros still need real votes; the final result still uses the delayed decision window.
              * This runs on restored boundaries too, so rollback reconstructs exactly the same pulses. */
             if (auto_skip_after_round && pt == kAfter && !st.decided) pr = 3;
+            /* The agreed intro rule: both votes in the fighters' intros -- a rematch's too, where the
+             * last match's decided byte is still up (part_of() is only asked outside the post-match
+             * window). Restored boundaries reconstruct the same pulses here as well. */
+            if (auto_skip_intro && pt == kIntro) pr = 3;
             b = same && both[p] ? both[p] : pr == 3 ? f + 1 : 0;
         }
         const uint32_t i = f % kHist;

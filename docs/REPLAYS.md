@@ -94,6 +94,9 @@ soft-reset guard. SELECT takes priority when the combined inputs could reach the
 START is removed symmetrically after the ordinary skip decision. Native readers of older formats reject
 format 7. The current reader preserves the historical input policy for formats 1–6; it must not apply the
 new guard retroactively. Historical absent/all-zero costume blocks also keep their original setup bytes.
+Format 7 also assigns bit 2 of the per-match rules word: the fighters' intros skipped by the match rule
+(`auto_skip_intro`, docs/NETPLAY.md "Automatic skips"); a playback writes `auto_skip_intro=1` back onto the
+fight line. Readers clear the bit in formats 5 and 6 (no released build wrote format 6 or 7 before it).
 
 New live streams use guarded SESSION 3 from the first session record, with the same payload layout as
 SESSION 2. The guard makes older native spectators refuse before unsupported input rules can run.

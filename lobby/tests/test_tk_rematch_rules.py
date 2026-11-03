@@ -21,9 +21,15 @@ class RoomRuleValuesTest(unittest.TestCase):
                          {"rematch_policy": "auto_unless_declined", "auto_skip_after_round": True})
 
     def test_old_server_or_game_drops_stale_controls(self):
-        self.assertEqual(tk_rooms._room_rule_values(client(rematch=False), policy="auto_unless_declined",
+        self.assertEqual(tk_rooms._room_rule_values(client(rematch=False, skip=False), policy="auto_unless_declined",
                                                    auto_skip_after_round=True), {})
         self.assertEqual(tk_rooms._room_rule_values(SimpleNamespace()), {})
+
+    def test_round_skip_does_not_need_the_ingame_rematch(self):
+        """1.2.0: the room's round-skip wish stands on its own (no rematch rule sent without the in-game question)"""
+        self.assertEqual(tk_rooms._room_rule_values(client(rematch=False), policy="auto_unless_declined",
+                                                   auto_skip_after_round=True), {"auto_skip_after_round": True})
+        self.assertEqual(tk_rooms._room_rule_values(client(rematch=False), size=3, auto_skip_after_round=True), {})
 
     def test_ranked_and_community_rooms_keep_existing_rules(self):
         for size, ranked in ((2, True), (3, False), (8, False)):

@@ -98,6 +98,16 @@ static void test_rules()
     automatic.auto_skip_after_round = true;
     CHECK(automatic.any() && automatic != r && (automatic.pack() & 2u), "auto skip changes rules identity");
     CHECK(MatchRules::unpack(automatic.pack()) == automatic, "auto skip packed round trip");
+    /* 1.2.0: the intro rule is bit 2, its own identity (the two PCs verify the word before the fight) */
+    MatchRules intro;
+    intro.auto_skip_intro = true;
+    CHECK(intro.any() && intro != r && intro != automatic && intro.pack() == (4u | 100u << 8 | 100u << 16),
+          "intro skip packs to bit 2 0x%X", intro.pack());
+    CHECK(MatchRules::unpack(intro.pack()) == intro && !MatchRules::unpack(intro.pack()).auto_skip_after_round,
+          "intro skip packed round trip");
+    intro.auto_skip_after_round = true;
+    CHECK(MatchRules::unpack(intro.pack()) == intro && (intro.pack() & 6u) == 6u, "both skips round trip");
+    CHECK(!MatchRules::unpack(2u | 100u << 8 | 100u << 16).auto_skip_intro, "the after-round bit is not the intro bit");
     r.training = true; r.life[0] = 70;
     const uint32_t w = r.pack();
     CHECK(w == (1u | 70u << 8 | 100u << 16), "pack 0x%X", w);

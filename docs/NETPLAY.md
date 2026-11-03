@@ -885,13 +885,31 @@ practice) PASS.
 
 Player wish: "auto-skip for replays and round animations" instead of both players pressing START.
 
+* **The intros, online (always; branch autoskip-online)**: player feedback "Skip intro at the start of the game
+  in online". The match rule `auto_skip_intro` (fight line `auto_skip_intro=1`, bit 2 of the match rules word
+  both games verify before the fight, replay format 7): in the intro part (round states 1 and 2, the P1 and the
+  P2 fighter's intro before round 1 -- a rematch's too) the rule acts as if both players had pressed START at
+  the part's first frame, i.e. the same presses as the both-pressed path above (3 frames, again every 20, until
+  the part ends). Nothing else changes: READY/FIGHT (4) with its announcer, the fight, the parts after a round
+  and the post-match window are exactly as before (the owner: keep "Get ready for the next battle" and the
+  round start). No setting: the server (`T5L_AUTO_SKIP_INTRO`, on; `0` = off) puts it into every match --
+  casual, ranked, tournaments, training rooms -- whose two launchers announce `auto_skip_intro_v1`, which a
+  launcher does when its game has the rule (marker `auto_skip_intro=` in the game binary). Older launchers and
+  games (1.1.9 and before) never get it: their intros need both players' START as before, and a 1.2.0 game
+  only ever meets a 1.2.0 game (build check). A function of the game state and the agreed flag only, so
+  lockstep, rollback (re-simulated boundaries rebuild the same presses), replays and spectators stay equal; the
+  driver leaves a match whose fight line has the rule if its game lacks it. The log line is the both-pressed
+  one: `frame N: the intro (round state 1): START pressed by both players (skip requested)`.
 * **Online** (the in-game rematch lane, docs/REMATCH_1.2.0.md): the agreed match rule `auto_skip_after_round`
   (fight line `auto_skip_after_round=1`, packed into the match rules both games verify before the fight). The
   server sends it only for casual matches when both players ticked "Auto-skip replays and round endings (both
-  players agree)" in the Online tab (and, for a classic room, the room allows it), never ranked or a tournament;
-  it is offered only with the in-game rematch switches on (`T5L_INGAME_REMATCH=1`, launcher `T5_INGAME_REMATCH=1`).
+  players agree)" in the Online tab (and, for a classic room, the room allows it), never ranked or a tournament.
+  The box is off by default. Since branch autoskip-online it no longer depends on the in-game rematch question:
+  the server's own switch `T5L_AUTO_SKIP` (on; `0` = never) and cap `auto_skip_after_round_v1` (a launcher whose
+  game has the rule announces it; launcher `T5_AUTO_SKIP=0` hides the box) are enough, so the box shows even with
+  `T5L_INGAME_REMATCH=0` / `T5_INGAME_REMATCH=0`, and a room's skip wish works without the rematch rule.
   In the rule it stands for both players' votes in every *nonfinal* after-round part (8, 9, 0xC): the rule's own
-  presses start at the part's first frame. The intros still need both players' START; the deciding round keeps
+  presses start at the part's first frame. The intros are the intro rule's (above), not this one's; the deciding round keeps
   the post-match window (the driver's / rollback loop's skip from 40 frames after the decision). A function of
   the state and the agreed flag only, so rollback, lockstep and replays stay equal. Proof (2026-11-03, branch
   wishes-120 on integrated-120, fight line `auto_skip_after_round=1`, 3 rounds, mashing): `fight_flow_test

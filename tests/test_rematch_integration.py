@@ -53,7 +53,7 @@ class RematchIntegrationTest(unittest.TestCase):
         end = self.hooks.index("void start_gate(", start)
         rule = self.hooks[start:end]
         self.assertIn("np::MatchRules::unpack(t5_df_rules())", rule)
-        self.assertIn("g_np_rule.record(f, st, in, rules.auto_skip_after_round)", rule)
+        self.assertIn("g_np_rule.record(f, st, in, rules.auto_skip_after_round, rules.auto_skip_intro)", rule)
         self.assertIn("no_pause_rule(run, in, run >= f)", self.hooks)
         self.assertIn("no_pause_rule(f, in, true)", self.hooks)
         self.assertNotRegex(rule, r'getenv\(".*SKIP')

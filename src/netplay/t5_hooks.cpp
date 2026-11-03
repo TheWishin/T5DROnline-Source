@@ -663,7 +663,7 @@ void no_pause_rule(uint32_t f, np::PadInput in[2], bool live)
     }
     const np::NoPauseRule::State st = np_state_now();
     const np::MatchRules rules = np::MatchRules::unpack(t5_df_rules());
-    const np::NoPauseRule::Verdict v = g_np_rule.record(f, st, in, rules.auto_skip_after_round);
+    const np::NoPauseRule::Verdict v = g_np_rule.record(f, st, in, rules.auto_skip_after_round, rules.auto_skip_intro);
     const bool any = ((in[0].buttons | in[1].buttons) & np::NoPauseRule::kStart) != 0;
     const unsigned cut = np::NoPauseRule::apply(v, in, rp::play_soft_reset_guard());
     if (!live) return;

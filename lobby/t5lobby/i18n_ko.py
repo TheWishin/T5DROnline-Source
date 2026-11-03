@@ -2065,8 +2065,8 @@ MESSAGES = {
     "With a controller: A accepts, B declines.": "컨트롤러: A 수락, B 거절.",
     "Online nobody can pause the fight: Start does not open the pause menu.":
         "온라인에서는 누구도 대전을 일시정지할 수 없습니다. Start로 일시정지 메뉴가 열리지 않습니다.",
-    "Intros and the replay after a round are skipped once both players have pressed Start.":
-        "인트로와 라운드 후 리플레이는 두 플레이어가 모두 Start를 누르면 건너뜁니다.",
+    "Intros are skipped by themselves; the replay after a round once both players have pressed Start.":
+        "인트로는 자동으로 건너뜁니다. 라운드 후 리플레이는 두 플레이어가 모두 Start를 누르면 건너뜁니다.",
     "Lobby": "로비",
     "Leaderboard": "순위표",
     "Profile": "프로필",
@@ -2678,6 +2678,7 @@ MESSAGES = {
     "Start automatically unless declined": "거절하지 않으면 자동 시작",
     "Skip replays after rounds (both players must agree)": "라운드 후 리플레이 건너뛰기 (양쪽 동의 필요)",
     "this server has no in-game rematch": "이 서버는 게임 내 재대결을 지원하지 않습니다",
+    "this server has no automatic round skips": "이 서버는 라운드 후 자동 건너뛰기를 지원하지 않습니다",
     # Server chat-filter notices (1.2.0).
     "Message blocked: hate terms are not allowed.": "메시지가 차단되었습니다. 혐오 표현은 허용되지 않습니다.",
     "This name is not allowed.": "이 이름은 사용할 수 없습니다.",

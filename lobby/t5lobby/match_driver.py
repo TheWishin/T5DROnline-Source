@@ -86,6 +86,7 @@ PICK_MARKER = b"T5_DF_PICK"     # a game build with the in-game select (src/dire
 RULES_MARKER = b"T5_DF_RULES"   # a game build with training rooms and the health handicap (src/netplay/match_rules.h)
 INGAME_UI_MARKER = b"T5_INGAME_REMATCH"
 AUTO_SKIP_MARKER = b"T5_AUTO_SKIP_AFTER_ROUND"
+AUTO_SKIP_INTRO_MARKER = b"auto_skip_intro="   # 1.2.0: a game build that skips the intros by the fight line's rule
 LIFE150_MARKER = b'"life_max": 150'   # 1.1.7: a game build that plays a health handicap up to 150 % (df_fight.cpp status)
 LIFE_MAX = 150                  # the highest health handicap a fight line may carry (percent; 1.1.5 / 1.1.6: 100)
 
@@ -389,6 +390,11 @@ def game_supports_auto_skip(paths):
     return _has_marker(paths, AUTO_SKIP_MARKER)
 
 
+def game_supports_auto_skip_intro(paths):
+    """Does this game build skip the fighters' intros by the fight line's auto_skip_intro=1 (1.2.0)?"""
+    return _has_marker(paths, AUTO_SKIP_INTRO_MARKER)
+
+
 def fight_rules(fight):
     """The fight line's rules from match_start's `fight`: " train=1" for a training room's match, " life=P1|P2" for
     the health handicap (both games must write the same: the server sends them only when both can)."""
@@ -399,6 +405,8 @@ def fight_rules(fight):
         out += " train=1"
     if fight.get("auto_skip_after_round") is True:
         out += " auto_skip_after_round=1"
+    if fight.get("auto_skip_intro") is True:
+        out += " auto_skip_intro=1"
     life = fight.get("life")
     if (isinstance(life, list) and len(life) == 2 and all(isinstance(x, int) and not isinstance(x, bool)
                                                            and 10 <= x <= LIFE_MAX for x in life) and life != [100, 100]):
@@ -470,6 +478,7 @@ class MatchDriver:
         self.extra_env = dict(extra_env or {})
         self.ingame_rematch = ingame_rematch_wanted() if ingame_rematch is None else bool(ingame_rematch)
         self._auto_skip_supported = game_supports_auto_skip(game_files)
+        self._auto_skip_intro_supported = game_supports_auto_skip_intro(game_files)
         self.ui = None               # IngameUI: the rematch question in the game (offer_ingame_ui)
         self._ui_labels = {}
         self._ui_was_active = False
@@ -720,6 +729,11 @@ class MatchDriver:
         ticket = ev.get("ticket")
         mid = ev["match"]
         if (ev.get("fight") or {}).get("auto_skip_after_round") is True and not self._auto_skip_supported:
+            self._call(self.client.leave_match, mid)
+            return
+        if (ev.get("fight") or {}).get("auto_skip_intro") is True and not self._auto_skip_intro_supported:
+            # (the server sends it only with this launcher's cap: a game swapped under a running launcher would
+            # simulate the intros otherwise than the opponent's)
             self._call(self.client.leave_match, mid)
             return
         if ev.get("continue"):

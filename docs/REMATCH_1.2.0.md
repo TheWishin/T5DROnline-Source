@@ -88,7 +88,8 @@ goes and the launcher comes forward with its own question (the rest of the windo
 | `T5L_CASUAL_REMATCH_POLICY` (server) | `both_confirm` | `auto_unless_declined`: the rematch starts unless a player declines within `auto_after` (5 s; each launcher sends its own yes then) |
 | room setting "Rematch rule" | Both players confirm | the same choice for a classic room |
 | `T5_INGAME_REMATCH` (launcher) | on | `0`: this launcher asks in its own window (does not tell the server it can) |
-| `T5L_AUTO_SKIP` (server) / `T5_AUTO_SKIP` (launcher) | off | the agreed after-round skip draft (changes what the games simulate; unproved in games): opt-in only |
+| `T5L_AUTO_SKIP` (server) / `T5_AUTO_SKIP` (launcher) | on | the agreed after-round skip (docs/NETPLAY.md "Automatic skips"): offered, used only when both players ticked the box (off by default); independent of the in-game rematch; `0` = never |
+| `T5L_AUTO_SKIP_INTRO` (server) | on | the fighters' intros skipped in every match between two 1.2.0 games (cap `auto_skip_intro_v1`, fight `auto_skip_intro`); `0` = both players press START as before |
 
 ## Tests
 

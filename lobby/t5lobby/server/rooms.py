@@ -986,6 +986,9 @@ class RoomsMixin:
         d = r.public()
         if not r.community and not r.ranked and self._rematch_enabled() and self._rematch_capable(viewer):
             d.update(rematch_policy=r.rematch_policy, auto_skip_after_round=r.auto_skip_after_round)
+        elif (not r.community and not r.ranked and self._skip_enabled()
+              and "auto_skip_after_round_v1" in getattr(getattr(viewer, "conn", None), "caps", ())):
+            d.update(auto_skip_after_round=r.auto_skip_after_round)     # (the round skip without the in-game rematch)
         playing = list(r.match.players) if r.match is not None else []
         if not playing and r._casual_set_active():
             playing = list(r.set.players)       # the table remains theirs during the between-game countdown

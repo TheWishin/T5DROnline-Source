@@ -95,8 +95,7 @@ class CasualMixin:
             skip = msg["auto_skip_after_round"]
             if not isinstance(skip, bool):
                 raise LobbyError(proto.E_BAD_REQUEST, "auto_skip_after_round must be boolean")
-            if skip and (not self._skip_enabled() or "auto_skip_after_round_v1" not in conn.caps
-                         or "ingame_rematch_v1" not in conn.caps):
+            if skip and (not self._skip_enabled() or "auto_skip_after_round_v1" not in conn.caps):
                 raise LobbyError(proto.E_NOT_ALLOWED, "round skips require an updated launcher")
             p.auto_skip_after_round = skip
         p.casual_side, p.casual_stage = (None if side is None else int(side)), stage

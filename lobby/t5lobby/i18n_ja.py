@@ -2092,8 +2092,8 @@ MESSAGES = {
     "With a controller: A accepts, B declines.": "コントローラー：A で受ける、B で断る。",
     "Online nobody can pause the fight: Start does not open the pause menu.":
         "オンラインでは誰も対戦をポーズできません。Start でポーズメニューは開きません。",
-    "Intros and the replay after a round are skipped once both players have pressed Start.":
-        "イントロとラウンド後のリプレイは、両プレイヤーが Start を押すとスキップされます。",
+    "Intros are skipped by themselves; the replay after a round once both players have pressed Start.":
+        "イントロは自動でスキップされます。ラウンド後のリプレイは、両プレイヤーが Start を押すとスキップされます。",
     "Lobby": "ロビー",
     "Leaderboard": "ランキング",
     "Profile": "プロフィール",
@@ -2710,6 +2710,7 @@ MESSAGES = {
     "Start automatically unless declined": "辞退しなければ自動開始",
     "Skip replays after rounds (both players must agree)": "ラウンド後のリプレイをスキップ（両者の同意が必要）",
     "this server has no in-game rematch": "このサーバーはゲーム内の再戦に対応していません",
+    "this server has no automatic round skips": "このサーバーはラウンド後の自動スキップに対応していません",
     # Server chat-filter notices (1.2.0).
     "Message blocked: hate terms are not allowed.": "メッセージは送信されませんでした。差別的な表現は使用できません。",
     "This name is not allowed.": "この名前は使用できません。",

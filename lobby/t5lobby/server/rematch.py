@@ -16,6 +16,7 @@ from ..proto import LobbyError
 
 CAP = "ingame_rematch_v1"
 SKIP_CAP = "auto_skip_after_round_v1"
+INTRO_CAP = "auto_skip_intro_v1"    # 1.2.0: this launcher's game skips the intros by the fight line's rule
 POLICIES = ("both_confirm", "auto_unless_declined")
 VOTE_GRACE = 1.5        # seconds past the countdown a vote still counts (pressed at 9.9 s, still on its way)
 
@@ -37,8 +38,9 @@ class RematchMixin:
         return bool(getattr(self.cfg, "ingame_rematch", False))
 
     def _skip_enabled(self):
-        """The after-round skip rule changes what the games simulate: its own opt-in switch (T5L_AUTO_SKIP)."""
-        return self._rematch_enabled() and bool(getattr(self.cfg, "auto_skip", False))
+        """The after-round skip rule changes what the games simulate: its own switch (T5L_AUTO_SKIP, on), and each
+        match only with both players' consent. Independent of the in-game rematch question (T5L_INGAME_REMATCH)."""
+        return bool(getattr(self.cfg, "auto_skip", False))
 
     def _rematch_capable(self, p):
         return CAP in getattr(getattr(p, "conn", None), "caps", ())
@@ -102,7 +104,8 @@ class RematchMixin:
             raise LobbyError(proto.E_BAD_REQUEST, "auto_skip_after_round must be boolean")
         chosen = policy(chosen)
         if chosen != "both_confirm" or skip:
-            if (not self._rematch_enabled() or CAP not in conn.caps
+            # (each rule needs only its own switch and cap: the round skip does not need the in-game question)
+            if ((chosen != "both_confirm" and (not self._rematch_enabled() or CAP not in conn.caps))
                     or (skip and (SKIP_CAP not in conn.caps or not self._skip_enabled()))):
                 raise LobbyError(proto.E_NOT_ALLOWED, "rematch rules require an updated launcher")
             if ranked or size > 2 or mode != "line":
@@ -111,7 +114,7 @@ class RematchMixin:
 
     async def h_room_rules(self, conn, msg):
         """Owner-only rules for future matches; a running result keeps its snapshot."""
-        if not self._rematch_enabled() or CAP not in conn.caps:
+        if not ((self._rematch_enabled() and CAP in conn.caps) or (self._skip_enabled() and SKIP_CAP in conn.caps)):
             raise LobbyError(proto.E_NOT_ALLOWED, "rematch rules require an updated launcher")
         room = self._room_owner(conn.player)
         if room.ranked or room.community:
@@ -135,6 +138,15 @@ class RematchMixin:
                 or (room is not None and (room.ranked or room.community
                                           or not getattr(room, "auto_skip_after_round", False)))):
             return False
-        return all(self._rematch_capable(p)
-                   and SKIP_CAP in getattr(p.conn, "caps", ())
+        return all(SKIP_CAP in getattr(getattr(p, "conn", None), "caps", ())
                    and getattr(p, "auto_skip_after_round", False) for p in (host, join))
+
+    def _intro_skip_rule(self, host, join):
+        """1.2.0 (owner: "skip the intro at the start of the game online"): the fighters' intros before round 1 are
+        skipped in every match -- casual, ranked, tournaments, training rooms -- when both launchers' games have the
+        rule (INTRO_CAP); no setting. The games apply it from the fight line (auto_skip_intro=1) as both players'
+        START in the intros only (src/netplay/no_pause.h): READY/FIGHT and everything after it stay as they are.
+        A launcher without the cap (1.1.9 and older) gets nothing new: both players press START as before.
+        T5L_AUTO_SKIP_INTRO=0 switches it off."""
+        return bool(getattr(self.cfg, "auto_skip_intro", True)) and all(
+            INTRO_CAP in getattr(getattr(q, "conn", None), "caps", ()) for q in (host, join))

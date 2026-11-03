@@ -5274,6 +5274,7 @@ def private_room_turns(ctx):
     ctx.sleep(1.0)
     ctx.check("a hidden room is in nobody's list", not b.tab.tv_rooms.get_children() and
               not c.tab.tv_rooms.get_children())
+    t_joins = time.time()     # the first match starts as soon as the second player is in, maybe before the third joined
     for p in (b, c):
         p.tab.tv_rooms.selection_remove(*p.tab.tv_rooms.selection())
         p.tab.ask_string = lambda *a_, **k: code            # (typed in from what the host shared)
@@ -5281,7 +5282,7 @@ def private_room_turns(ctx):
         ctx.wait(lambda p=p: (p.client.my_room or {}).get("id") == a.client.my_room["id"], 10, f"{p.name} joins")
     line = ["E2E Ivy", "E2E Jon", "E2E Kai"]
     for k in range(3):
-        t = time.time()
+        t = t_joins if k == 0 else time.time()
         ctx.wait(lambda: sum(1 for p in (a, b, c) if latest(p, "match_found", t)) == 2, 30, f"room match {k + 1}")
         two = [p for p in (a, b, c) if latest(p, "match_found", t)]
         mid = latest(two[0], "match_found", t)["match"]
@@ -5616,27 +5617,6 @@ def net_always_left(ctx):
         ctx.note("the coin made A P1 in all four Quick matches: the 'not mirrored as P2' case was not reached")
     ctx.note(f"pictures of A's game (T5_DF_SHOT ++240,++600): {shots}")
 
-
-# ============================================================================== 5b. the rematch question in the game
-import e2e_ingame  # noqa: E402
-
-for _name, _desc in (
-        ("ingame_rematch_flow", "1.2.0: after a quick match both games ask 'Rematch?' (10 s countdown, the opponent's "
-                                "choice); both press Cross in the game -> the rematch in the running session; then Cross "
-                                "/ Circle -> no rematch, back to the lobby; the launcher stays behind while asked"),
-        ("ingame_rematch_timing", "1.2.0: a yes pressed at 9.2 s still starts the rematch; then nobody answers: the "
-                                  "countdown runs out, both back to the lobby"),
-        ("ingame_rematch_mash", "1.2.0: both players mash buttons from the KO through the question (3 matches): both "
-                                "PCs agree on the rematch, one vote each at most, in sync"),
-        ("ingame_rematch_room", "1.2.0: a classic room's match: the in-game rematch stays in the room; a Circle keeps "
-                                "both in the room"),
-        ("ingame_rematch_relay", "1.2.0: a relayed match's in-game rematch: a new connection, relay again"),
-        ("ingame_rematch_off", "1.2.0: one launcher with T5_INGAME_REMATCH=0: no question in the games, the launcher's "
-                               "Rematch buttons as before")):
-    scenario(_name, "5 rematch", game=True, suites=("game", "ingame"), desc=_desc)(getattr(e2e_ingame, _name))
-scenario("ingame_rematch_pictures", "5 rematch", game=True, suites=("ingame_pics",),
-         desc="1.2.0: pictures of the in-game question (Lowest in 1280x720, 4K in 1920x1080; every language)")(
-    e2e_ingame.ingame_rematch_pictures)
 
 # ============================================================================== 15. 1.2.0 opt-in features
 def _admin(ctx, *args):
@@ -6223,3 +6203,25 @@ def _net_vrr_120(ctx, mode, pacing):
     ctx.note(f"perf_compare pacing (A, mode {pacing}): {(r.stdout or r.stderr)[:1500]}")
     with open(os.path.join(ctx.dir, f"pacing_A_mode{pacing}_{mode}.json"), "w", encoding="utf-8") as f:
         f.write(r.stdout or r.stderr)
+
+
+# ============================================================================== 5b. the rematch question in the game
+import e2e_ingame  # noqa: E402
+
+for _name, _desc in (
+        ("ingame_rematch_flow", "1.2.0: after a quick match both games ask 'Rematch?' (10 s countdown, the opponent's "
+                                "choice); both press Cross in the game -> the rematch in the running session; then Cross "
+                                "/ Circle -> no rematch, back to the lobby; the launcher stays behind while asked"),
+        ("ingame_rematch_timing", "1.2.0: a yes pressed at 9.2 s still starts the rematch; then nobody answers: the "
+                                  "countdown runs out, both back to the lobby"),
+        ("ingame_rematch_mash", "1.2.0: both players mash buttons from the KO through the question (3 matches): both "
+                                "PCs agree on the rematch, one vote each at most, in sync"),
+        ("ingame_rematch_room", "1.2.0: a classic room's match: the in-game rematch stays in the room; a Circle keeps "
+                                "both in the room"),
+        ("ingame_rematch_relay", "1.2.0: a relayed match's in-game rematch: a new connection, relay again"),
+        ("ingame_rematch_off", "1.2.0: one launcher with T5_INGAME_REMATCH=0: no question in the games, the launcher's "
+                               "Rematch buttons as before")):
+    scenario(_name, "5 rematch", game=True, suites=("game", "ingame"), desc=_desc)(getattr(e2e_ingame, _name))
+scenario("ingame_rematch_pictures", "5 rematch", game=True, suites=("ingame_pics",),
+         desc="1.2.0: pictures of the in-game question (Lowest in 1280x720, 4K in 1920x1080; every language)")(
+    e2e_ingame.ingame_rematch_pictures)

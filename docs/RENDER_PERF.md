@@ -3666,6 +3666,10 @@ gate runs it on the candidate and compares with the 1.1.6 baseline (`build/w117/
 
     python tools/perf_compare.py run --game <built game folder> --out <dir> [--runs 2]
         [--lock C:/T5DROnline/build/int115/HEAVY.lock --lock-name <name>] [--parts offline,rollback,e2e]
+
+`--lock` takes a comma list too (`...HEAVY.lock,...HEAVY2.lock`): with two heavy slots on the PC a timing run
+holds both for each game run (taken atomically and all at once: a slot is never held while waiting for the other;
+given back after the run), so no other game shares those slots with a measurement.
     python tools/perf_compare.py table <dir>/results.json
     python tools/perf_compare.py compare <before>/results.json <after>/results.json
 

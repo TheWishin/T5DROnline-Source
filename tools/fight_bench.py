@@ -326,6 +326,15 @@ def renderer_split(rows):
     return out
 
 
+def _num(v):
+    """A frame-log field that is a number (a cut-short last row has None or a fragment)."""
+    try:
+        float(v)
+        return True
+    except (TypeError, ValueError):
+        return False
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--exe", default=os.path.join(ROOT, "build", "cmake", "t5dr.exe"))
@@ -463,7 +472,8 @@ def main():
     # frames in the window (the frame log's qpc is QueryPerformanceCounter, like perf_counter)
     with open(os.path.join(out, "frames.csv")) as f:
         freq = int(f.readline().split("=")[1])
-        rows = list(csv.DictReader(f))
+        # (a row the killed game was still writing can be cut short: no qpc/dt_us -- left out)
+        rows = [r for r in csv.DictReader(f) if _num(r.get("qpc")) and _num(r.get("dt_us"))]
     lo, hi = (fight_qpc + a.skip) * freq, end_qpc * freq
     w = [r for r in rows if lo <= float(r["qpc"]) <= hi]
     dts = [float(r["dt_us"]) / 1000.0 for r in w if float(r["dt_us"]) > 0]

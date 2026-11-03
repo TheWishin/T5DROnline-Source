@@ -2,7 +2,7 @@
 """Repeatable speed measurements of one game build, and a before/after table of two (1.1.7's gate).
 
     python tools/perf_compare.py run --game C:/T5DROnline/build/int115/x-final --out DIR [--parts ...]
-        [--runs 2] [--lock C:/T5DROnline/build/int115/HEAVY.lock --lock-name NAME]
+        [--runs 2] [--lock C:/T5DROnline/build/int115/HEAVY.lock[,...HEAVY2.lock] --lock-name NAME]
     python tools/perf_compare.py table DIR/results.json
     python tools/perf_compare.py compare BEFORE/results.json AFTER/results.json
     python tools/perf_compare.py pacing frames.csv [--series intervals.csv]
@@ -72,42 +72,91 @@ def delay_for(rtt):
 
 # ------------------------------------------------------------------ the shared lock (one heavy step at a time)
 class Lock:
-    def __init__(self, path, name):
+    """The shared heavy lock, taken per game run. `path` may name several lock files, comma-separated (the PC's
+    heavy slots, e.g. HEAVY.lock,HEAVY2.lock): a timing measurement then holds all of them at once. Each file is
+    created atomically (O_EXCL); all or none: when one is someone else's, the ones just taken are given back at once
+    and the whole set is tried again a few seconds later (a slot is never held while waiting for another).
+    `need` < the number of files: any `need` of them (three slots on the PC, a measurement wants two)."""
+    def __init__(self, path, name, need=0):
+        self.paths = [p.strip() for p in (path or "").split(",") if p.strip()]
+        self.need = need if 0 < need <= len(self.paths) else len(self.paths)
         self.path, self.name = path, name
         self.given = 0.0
+        self.held = []
 
     GAP = 35.0      # after giving the lock back: others poll every 30 s, so wait that long before the next take
 
     def __enter__(self):
         return self
 
+    def _try(self, p, what):
+        try:
+            cur = open(p, encoding="utf-8", errors="replace").read().strip()
+        except OSError:
+            cur = ""
+        if cur and cur.split()[0] == self.name:      # ours from an earlier take of this name
+            return True
+        if cur:
+            return False
+        try:
+            fd = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_EXCL)
+        except FileExistsError:
+            return False
+        except OSError:
+            return False
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(f"{self.name} {time.strftime('%H:%M')} {what}\n")
+        return True
+
     def take(self, what):
-        if not self.path:
+        if not self.paths:
             return
         if time.time() - self.given < self.GAP:
             time.sleep(self.GAP - (time.time() - self.given))
+        said = 0.0
         while True:
-            try:
-                cur = open(self.path, encoding="utf-8", errors="replace").read().strip()
-            except OSError:
-                cur = ""
-            if not cur or cur.split()[0] == self.name:
-                with open(self.path, "w", encoding="utf-8") as f:
-                    f.write(f"{self.name} {time.strftime('%H:%M')} {what}\n")
+            got, busy = [], None
+            for p in self.paths:
+                if len(got) == self.need:
+                    break
+                if self._try(p, what):
+                    got.append(p)
+                else:
+                    busy = p
+            if len(got) == self.need:
+                self.held = got
                 return
-            print(f"  lock held: {cur!r}; waiting", flush=True)
-            time.sleep(30)
+            for p in got:                                   # all or none: never sit on a slot while waiting
+                self._drop(p)
+            if time.time() - said > 300:
+                try:
+                    cur = open(busy, encoding="utf-8", errors="replace").read().strip()
+                except OSError:
+                    cur = ""
+                print(f"  lock held: {os.path.basename(busy)} {cur!r}; waiting", flush=True)
+                said = time.time()
+            time.sleep(30 if len(self.paths) == 1 else 4)
 
-    def give(self):
-        if not self.path:
-            return
+    def _drop(self, p):
         try:
-            cur = open(self.path, encoding="utf-8", errors="replace").read().strip()
+            cur = open(p, encoding="utf-8", errors="replace").read().strip()
             if cur.split() and cur.split()[0] == self.name:
-                os.remove(self.path)
-                self.given = time.time()
+                os.remove(p)
         except OSError:
             pass
+
+    def give(self):
+        if not self.paths:
+            return
+        for p in self.paths:
+            try:
+                cur = open(p, encoding="utf-8", errors="replace").read().strip()
+                if cur.split() and cur.split()[0] == self.name:
+                    os.remove(p)
+                    self.given = time.time()
+            except OSError:
+                pass
+        self.held = []
 
     def __exit__(self, *a):
         self.give()
@@ -797,8 +846,9 @@ def main():
     r.add_argument("--secs", type=float, default=50.0)
     r.add_argument("--rb-cpus1", default="0xFF0000")
     r.add_argument("--rb-cpus2", default="0xFF000000")
-    r.add_argument("--lock", default="", help="the shared lock file (taken per game run)")
+    r.add_argument("--lock", default="", help="the shared lock file(s), comma-separated (all taken per game run)")
     r.add_argument("--lock-name", default="perf")
+    r.add_argument("--lock-need", type=int, default=0, help="take any N of the --lock files (default: all of them)")
     r.add_argument("--lock-gap", type=float, default=35.0, help="seconds between giving the lock back and taking it again")
     r.add_argument("--redo", action="store_true", help="measure again what results.json already has")
     r.add_argument("--env", action="append", default=[], help="extra NAME=VALUE for every game")
@@ -825,7 +875,7 @@ def main():
     os.makedirs(a.out, exist_ok=True)
     path = os.path.join(a.out, "results.json")
     results = json.load(open(path)) if os.path.exists(path) else {}
-    lock = Lock(a.lock, a.lock_name)
+    lock = Lock(a.lock, a.lock_name, a.lock_need)
     lock.GAP = a.lock_gap
     parts = a.parts.split(",")
     with lock:

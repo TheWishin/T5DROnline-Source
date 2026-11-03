@@ -898,11 +898,19 @@ Player wish: "auto-skip for replays and round animations" instead of both player
   automatically (offline)" (`auto_skip_offline`, default off) sends `T5_AUTO_SKIP_OFFLINE=1`; the launcher drops
   it for games started for online play, and the game reads it only in `keyread_tick`'s offline branch (never in
   netplay, a replay or a spectator's game). `no_pause.h` `OfflineSkip`: in the after-round parts of a fight
-  (8, 9, 0xC; the deciding round's too -- offline nothing else skips it) START on both ports, 3 frames from the
-  part's first frame and again every 20 frames, never in the intros, READY/FIGHT or the fight. Log:
-  `offline auto-skip: the part after round N lasted F frames`. Model test: `tests/c/no_pause_test.cpp`
+  (8, 9, 0xC; the deciding round's too -- offline nothing else skips it) START, 3 frames from the part's first
+  frame and again every 20 frames, never in the intros, READY/FIGHT or the fight. Which ports
+  (`OfflineSkip::ports`): VS (game type 4) both; the one-player modes (Arcade, Ghost, Survival, ...) only the port
+  that sent input during the fight, none if both or neither did; never in a demo or Practice. Found in the game:
+  START on both ports in Arcade during the KO's slow motion called "HERE COMES A NEW CHALLENGER" (the CPU's port)
+  and opened the VS select screen. Offline nothing else finds the mode manager, so the rule looks for it itself
+  (`t5_df_find_mode`; without it no part was ever seen). Log: `offline auto-skip: START pressed on port 1 / both
+  ports after a round ...` and `the part after round N lasted F frames`; `T5_AUTO_SKIP_TRACE=1` logs every
+  change of round state, phase, mode and game type. Measured (real game, 2026-11-03): VS 121 frames from the KO
+  to the next round (8 -> 9 -> 0xC), Arcade 141 and 122 frames, P1 on port 1 only, no challenger; without the
+  rule the replay alone is ~524 frames and the way to the next round ~149. Model test: `tests/c/no_pause_test.cpp`
   "offline skips ok" (every replay and way to the next round skipped, never a press where START pauses, also while
-  the player mashes or holds START; the same inputs without the rule skip nothing).
+  the player mashes or holds START; the same inputs without the rule skip nothing; the port choice).
 
 ### Sidestep from crouch (1.2.0 wish: looked at, not done)
 

@@ -1302,6 +1302,8 @@ MESSAGES = {
     "programs from the folder were still running ({names}); close them and try again":
         "programas da pasta ainda estavam rodando ({names}); feche-os e tente de novo",
     "the new launcher {version} did not start": "o novo launcher {version} não iniciou",
+    "the new launcher did not confirm startup before the timeout":
+        "o novo launcher não confirmou a inicialização antes do fim do tempo de espera",
     "could not replace the program files: {error}": "não foi possível substituir os arquivos do programa: {error}",
     "unexpected error: {error}": "erro inesperado: {error}",
     "GitHub asks to wait with update checks until {time}.":

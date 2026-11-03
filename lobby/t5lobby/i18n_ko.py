@@ -1276,6 +1276,8 @@ MESSAGES = {
     "programs from the folder were still running ({names}); close them and try again":
         "폴더의 프로그램이 아직 실행 중이었습니다 ({names}). 닫고 다시 시도하세요",
     "the new launcher {version} did not start": "새 런처 {version}이(가) 시작되지 않았습니다",
+    "the new launcher did not confirm startup before the timeout":
+        "새 런처가 제한 시간 내에 시작을 확인하지 않았습니다",
     "could not replace the program files: {error}": "프로그램 파일을 바꿀 수 없습니다: {error}",
     "unexpected error: {error}": "예기치 않은 오류: {error}",
     "GitHub asks to wait with update checks until {time}.": "GitHub가 {time}까지 업데이트 확인을 기다려 달라고 합니다.",

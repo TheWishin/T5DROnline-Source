@@ -7,8 +7,8 @@ Real Tk, real main loops, each case in its own process (an abort must not take t
   * tests/launcher_gc_stress.py: the real launcher under tab switches, lobby events from a local server, windows
     opened and closed, worker threads allocating. Old launcher: thousands of Tk objects freed in worker threads
     (the lobby client's among them). Now: none.
-  * a closed Tk interpreter left to the collector while workers allocate: the old launcher's process aborts with
-    Tcl_AsyncDelete; with tkgc it is freed on the Tk thread and the process lives.
+  * a closed Tk root left to the collector while workers allocate: without tkgc its wrapper is finalized on the
+    worker (some Tcl builds abort with Tcl_AsyncDelete); with tkgc it is finalized on the Tk thread.
 """
 import gc
 import json
@@ -29,12 +29,20 @@ except ImportError:      # pragma: no cover
     tkinter = None
 
 INTERP = textwrap.dedent("""
-    import gc, sys, threading, time, tkinter as tk
+    import gc, sys, threading, time, tkinter as tk, weakref
     sys.path.insert(0, sys.argv[1])
     use = sys.argv[2] == "tkgc"
     if use:
         import tkgc
+    # Keep the closed interpreter alive until the allocation worker starts.
+    # Otherwise creating the second Tk can collect it safely on this thread.
+    gc.disable()
     first = tk.Tk(); first.withdraw()
+    owner = threading.get_ident()
+    def released():
+        where = "on" if threading.get_ident() == owner else "off"
+        print("root finalized " + where + " Tk thread", flush=True)
+    weakref.finalize(first, released)
     if use:
         tkgc.install(first)                 # (what App.__init__ does)
     b = tk.Button(first); b.me = b          # a closed window whose objects point at each other
@@ -44,6 +52,8 @@ INTERP = textwrap.dedent("""
         tkgc.install(root)
     stop = []
     def work():                             # a worker that allocates: the collector's counters overflow here
+        if not use:
+            gc.enable()
         while not stop:
             x = [[i] for i in range(300)]
             for a in x:
@@ -65,14 +75,22 @@ class TkGc(unittest.TestCase):
 
     def test_a_closed_interpreter_is_freed_on_the_tk_thread(self):
         code, out, err = self.run_py(["-c", INTERP, LAUNCHER, "tkgc"], 60)
-        self.assertEqual((code, out.strip()), (0, "alive"), err[-2000:])
+        self.assertEqual((code, out.splitlines()), (0, ["root finalized on Tk thread", "alive"]), err[-2000:])
+        self.assertNotIn("Tcl_AsyncDelete", err)
 
     def test_without_tkgc_the_same_process_aborts(self):
-        """The case above without tkgc: the worker frees the interpreter and Tcl aborts (the reason for tkgc; if
-        this ever stops aborting, the case above proves nothing any more)."""
+        """The unguarded worker finalizes the closed root; Tcl may panic without terminating on some builds.
+
+        Keep this historical method name for callers, but prove the collection thread directly instead of
+        assuming every Tcl panic exits the process.
+        """
         code, out, err = self.run_py(["-c", INTERP, LAUNCHER, "plain"], 60)
-        self.assertNotEqual(code, 0)
-        self.assertIn("Tcl_AsyncDelete", err)
+        self.assertIn("root finalized off Tk thread", out.splitlines(), err[-2000:])
+        self.assertNotIn("root finalized on Tk thread", out.splitlines())
+        if code == 0:
+            self.assertEqual(out.splitlines()[-1], "alive", err[-2000:])
+        else:
+            self.assertIn("Tcl_AsyncDelete", err)
 
     def test_the_launcher_under_stress_frees_tk_objects_on_the_tk_thread_only(self):
         code, out, err = self.run_py([os.path.join(HERE, "launcher_gc_stress.py"), "--seconds", "20"], 240)

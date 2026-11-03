@@ -261,6 +261,7 @@ TOURNAMENTS = (
 
 # lobby/t5lobby/client.py: LobbyError texts and the reasons a connection ended
 CLIENT = (
+    N_("Private chat is unavailable on this server."),
     N_("Personal mute is unavailable on this server."),
     N_("this server has no simultaneous room tables"),
     N_("not connected to the lobby"),
@@ -417,6 +418,7 @@ UPDATER = (
     N_("the launcher did not close"),
     N_("programs from the folder were still running ({names}); close them and try again"),
     N_("the new launcher {version} did not start"),
+    N_("the new launcher did not confirm startup before the timeout"),
     N_("could not replace the program files: {error}"),
     N_("unexpected error: {error}"),
     N_("GitHub asks to wait with update checks until {time}."),

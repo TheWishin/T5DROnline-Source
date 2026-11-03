@@ -34,10 +34,22 @@ Three jobs run in parallel.
 | `... --history <range>` | the same in every commit of the push or PR (a file added and deleted again is still public) |
 | `py_compile` on every tracked `.py`/`.pyw` | syntax errors in tools/, tests/, launcher/, lobby/ |
 | `tools/prepare_ps3recomp.py` | a patch that no longer applies (named) |
-| `python tests/ci_unittest.py -v` (= `unittest discover -s tests -v`) | broken tools (below); every failed test becomes an annotation |
+| `tests/ci_unittest.py` discovery plus three layout invocations | every root test, with expensive native layout suites given separate deadlines; every failed test becomes an annotation |
 
 Python tests in `tests/` (stdlib `unittest`, plus `pycryptodome` for unself
 and Pillow for the smoke suite's frame checks):
+
+The workflow runs discovery with `--exclude-module test_i18n --exclude-module
+test_font_fallback --exclude-module test_layout_lobby_entry`, then runs each
+excluded module by name through the same wrapper. The repeatable exclusion
+option takes a Python module basename without `.py` and applies only to
+discovery; the loader skips those files before importing them as test suites.
+Other tests can still import their helpers normally. All tests still
+run once. Each invocation retains its own 900-second deadline, and an earlier
+failure is retained while later invocations run. The job retains its 30-minute
+limit. Running `python tests/ci_unittest.py -v` locally still means one discovery
+invocation with one total deadline; use the workflow's PowerShell routing block
+to reproduce its batching.
 
 - `test_unself.py` -- `rap_to_rif_key` against an independent reference and a
   fixed vector; a full decrypt of a **synthetic NPDRM SELF** built in the test
@@ -162,6 +174,11 @@ Since 1.1.7 (the push job was red from the 1.1.5 merge on, after 9.5-11 min, wit
 nothing anyone could read) `tests/ci_unittest.py` also:
 
 - writes each failure's annotation the moment it fails (a later crash cannot lose it);
+- prints and flushes every failure, error and failing subtest's full traceback
+  immediately, both locally and on GitHub Actions. These log details have no
+  eight-failure cap; the separate GitHub error annotations remain capped so the
+  summary and process-failure annotation have room. Completed failing runs also
+  retain unittest's usual final traceback listing, so those details appear twice;
 - prints the time per module at the end, slowest first, and names the slowest in the notice;
 - lists why tests were skipped (one `::warning`): a runner that lacks something a
   test needs -- a font, a compiler, a display -- says so;
@@ -169,6 +186,27 @@ nothing anyone could read) `tests/ci_unittest.py` also:
   access violation, a test ending its own process), an `::error` "unittest
   process died" names the exit code, the test that was running and the modules
   done so far; faulthandler prints the Python stacks into the log.
+
+The parent also enforces a **900-second wall-clock deadline per invocation**,
+including discovery, module/class fixtures and interpreter shutdown after the
+test summary. Set `T5DR_CI_TIMEOUT` to a positive finite number of seconds, or
+pass `--timeout SECONDS` to override it. This is separate from the workflow's
+job limit; the lobby job gives each module its own invocation and deadline, and
+the root job separates its three expensive layout modules from other discovery
+tests. This avoids charging all native layout walks to one 900-second budget.
+On timeout, the child dumps every thread's Python stack before the parent
+terminates the process tree and returns a failure. The diagnostic names the
+last recorded phase or test, including fixture setup/teardown and shutdown.
+A timeout stack shows where execution was waiting; it does not establish the
+cause of the hang. `--in-process` skips the parent and is explicitly unbounded:
+the timeout setting does not apply in that mode.
+
+A Windows exit code such as `0x80000003` reports a process crash, separate from
+the wrapper's timeout exit code 124. The last recorded test identifies where the
+process stopped; it does not establish which earlier operation caused the
+crash. Preserve the earlier immediate tracebacks and any fatal-error thread
+stacks as well as the exit message. A `Timeout` block is a snapshot of every
+thread's Python stack at that moment, not another test failure traceback.
 
 Found while looking for the 1.1.5 red run (none of it reproduced the red run on
 this PC, with 2 CPUs by affinity and `os.cpu_count()` = 2, a fresh user profile,
@@ -178,7 +216,8 @@ es, fr and pt-BR "cut off" in 1 to 43 places. Since then the launcher draws a st
 for a missing face smaller by how much wider it is (`theme.width_factor`), so the walk
 judges every PC again; `tests/test_font_fallback.py` runs it with Bahnschrift and Segoe UI
 hidden (`python tests/i18n_layout.py --without-font Bahnschrift --without-font "Segoe UI"`).
-On 2 CPUs the suite takes ~8 min here, half of it `test_i18n`.
+Native layout matrices dominate the suite's runtime; their cost depends on the
+runner's fonts and display environment. They run in separate bounded batches.
 
 From a shell, no token needed:
 

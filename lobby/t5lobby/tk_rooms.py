@@ -16,6 +16,7 @@ texts), its actions, its events and its poll.
 from functools import partial
 import time
 import tkinter as tk
+import tkinter.font as tkfont
 from tkinter import ttk
 
 from . import proto
@@ -32,6 +33,15 @@ PW_RULE = N_("Room passwords are 4-64 characters, with no space at the start or 
 
 def _pick(choices, shown):
     return next((v for label, v in choices if t(label) == shown), choices[0][1])
+
+
+def _fit_choices(box):
+    """Keep translated choices readable in the closed combobox, including fallback fonts."""
+    font = tkfont.Font(root=box, font=box.cget("font"))
+    unit = max(1, font.measure("0"))
+    longest = max((font.measure(str(value)) for value in box.cget("values")), default=0)
+    # Tk's width is in zero-character units; leave one extra unit beside the text.
+    box.configure(width=max(int(box.cget("width")), (longest + unit - 1) // unit + 1))
 
 
 def _room_rules_supported(client, size=2, ranked=False, mode="line"):
@@ -546,6 +556,7 @@ def create_window(ui):
         row=len(rows) + 3, column=0, sticky="w", pady=px(3), padx=(0, px(10)))
     policy = ttk.Combobox(card, textvariable=v["rematch_policy"], values=[t(x) for x, _v in REMATCH_CHOICES],
                           state="readonly", style="Card.TCombobox", width=34)
+    _fit_choices(policy)
     policy.grid(row=len(rows) + 3, column=1, sticky="we", pady=px(3))
     widgets["rematch_policy"] = policy
     skip = ttk.Checkbutton(card, text=t("Skip replays after rounds (both players must agree)"),
@@ -748,6 +759,7 @@ def settings_window(ui, r):
         row=4, column=0, sticky="w", pady=px(3), padx=(0, px(10)))
     policy = ttk.Combobox(card, textvariable=v["rematch_policy"], values=[t(x) for x, _v in REMATCH_CHOICES],
                           state="readonly" if can_rules else "disabled", style="Card.TCombobox", width=34)
+    _fit_choices(policy)
     policy.grid(row=4, column=1, sticky="we", pady=px(3))
     skip = ttk.Checkbutton(card, text=t("Skip replays after rounds (both players must agree)"),
                            variable=v["auto_skip_after_round"], style="Card.TCheckbutton")

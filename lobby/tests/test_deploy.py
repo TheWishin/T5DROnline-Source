@@ -17,12 +17,14 @@ import sqlite3
 import tempfile
 import threading
 import time
+from types import SimpleNamespace
 import unittest
 
 import util
 from util import ServerThread, client, expect
 from t5lobby.buildid import BuildInfo
 from t5lobby.server import admin
+from t5lobby.server.lobby import LobbyServer
 from t5lobby.server.store import SCHEMA_VERSION, Store
 
 SETS = {"set_next_seconds": 30.0}        # a long countdown between two games of a set
@@ -323,6 +325,24 @@ def build(release):
     return BuildInfo("be80165b84e30b6334baa6d6331b9db4ffd5a6a4", "code-" + release, release)
 
 
+def assert_release_notice(test, text, latest):
+    test.assertIn(f"T5DR Online {latest} is out", text)
+    test.assertIn('press "Check for updates"', text)
+    test.assertLessEqual(len(text), 200)
+
+
+class ReleaseNoticeTextTest(unittest.TestCase):
+    """Check the same advice as the live delivery test without starting a server."""
+
+    def test_update_advice_for_current_and_legacy_launchers(self):
+        server = object.__new__(LobbyServer)
+        for caps in (frozenset(), frozenset(("notices",))):
+            with self.subTest(caps=caps):
+                player = SimpleNamespace(release="1.1.1", conn=SimpleNamespace(caps=caps))
+                notice = server._update_msg(player, "1.1.2")
+                assert_release_notice(self, notice["text"] if "notices" in caps else notice["msg"], "1.1.2")
+
+
 class ReleaseNoticeTest(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.mkdtemp()
@@ -357,9 +377,7 @@ class ReleaseNoticeTest(unittest.TestCase):
         self.assertEqual(rc, 0, out)
         ev = expect(old, "server_notice", 5)
         self.assertEqual((ev["id"], ev["cleared"], ev["expires"]), (-1, False, 0))
-        self.assertIn("T5DR Online 1.1.2 is out", ev["text"])
-        self.assertIn("your 1.1.1", ev["text"])
-        self.assertLessEqual(len(ev["text"]), 200)
+        assert_release_notice(self, ev["text"], "1.1.2")
         self.assertEqual(old.active_notices(), [ev["text"]])
         self.assertIn("1.1.2 is out", expect(older, "server_notice", 5)["text"])
         self.assertEqual(self.updates(new), [])

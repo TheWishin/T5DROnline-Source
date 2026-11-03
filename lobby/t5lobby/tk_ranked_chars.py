@@ -3,7 +3,7 @@
 This view only formats the server's rows. The server counts games and computes win rates; rating and rank
 remain on the account. Older servers omit ranked_chars, so their profile has no extra section.
 """
-from tkinter import ttk
+from tkinter import font as tkfont, ttk
 
 from . import i18n, tklist
 from .i18n import t
@@ -32,6 +32,17 @@ class RankedCharacters:
         frame, self.tv = view.tree(self.frame, COLUMNS, WIDTHS, height=4, image_col=False, select="none",
                                    empty=t("No ranked games played."))
         frame.grid(row=1, column=0, sticky="nsew")
+        style = ttk.Style(self.tv)
+        heading_style = str(self.tv.cget("style") or "Treeview") + ".Heading"
+        heading_font = tkfont.Font(root=self.tv, font=style.lookup(heading_style, "font") or "TkHeadingFont")
+        padding = [self.tv.winfo_pixels(value) for value in
+                   self.tv.tk.splitlist(style.lookup(heading_style, "padding") or "0")]
+        horizontal_padding = padding[0] + padding[2] if len(padding) >= 3 else 2 * padding[0]
+        for column in COLUMNS:
+            # Translated headings can exceed the default numeric-column widths.
+            needed = heading_font.measure(self.tv.heading(column, "text")) + max(horizontal_padding, view.px(12))
+            self.tv.column(column, width=max(self.tv.column(column, "width"), needed),
+                           minwidth=max(self.tv.column(column, "minwidth"), needed))
         for column in COLUMNS[1:]:
             self.tv.column(column, anchor="e")
             self.tv.heading(column, anchor="e")

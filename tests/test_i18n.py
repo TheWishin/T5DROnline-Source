@@ -59,7 +59,7 @@ REAL_DIALOGS = {n: getattr(dialogs, n) for _m, n in DIALOG_FUNCTIONS if _m is di
 # they are not translated and show in English.
 DEV_ONLY = {
     "login timeout", "idle timeout", "malformed message", "line too long", "hello first", "log in first",
-    "unknown message X", "bad field: X", "mode is quick or ranked", "winner is 0 (P1), 1 (P2) or null (draw)",
+    "unknown message X", "bad field: X", "bad field: name", "mode is quick or ranked", "winner is 0 (P1), 1 (P2) or null (draw)",
     "score is [P1 rounds, P2 rounds]", "chars is [P1 fighter, P2 fighter]", "costumes is [P1 button, P2 button]",
     "fps is a number", "fps out of range",
     "unknown character X", "kind is casual or room",
@@ -257,6 +257,8 @@ class CatalogTests(Base):
                                      "tk_views.py", "tour_text.py", "tk_rooms.py",
                                      "tk_casual.py", "fighters.py",     # (1.1.5: SIDES, STAGE_NAMES)
                                      "tk_stats.py",
+                                     "core.py", "first_start.py",      # marked advice / one-time hint
+                                     "tk_private_chat.py",             # marked button labels
                                      "tk_challenges.py"})      # (1.1.9: END_TEXT_*, HEADINGS, marked with N_)
 
 
@@ -437,6 +439,45 @@ class MessageCoverageTests(German):
         self.check_all(samples)
         for reason in ("connection closed", "message too long", "closed"):      # the reasons a connection ended
             self.assertTrue(self.covered(reason), reason)
+
+    def test_private_chat_api_errors_follow_the_message_policy(self):
+        from t5lobby.client import LobbyClient
+        from t5lobby.proto import LobbyError
+
+        client = LobbyClient("localhost", None, private_chat=False)
+        with mock.patch.object(client, "_call", side_effect=AssertionError("unexpected transport")):
+            with self.assertRaises(LobbyError) as unavailable:
+                client.private_message("Rival", "hello")
+            with self.assertRaises(LobbyError) as malformed:
+                client.mute("")
+        self.assertEqual(malformed.exception.msg, "bad field: name")
+        self.assertIn(malformed.exception.msg, DEV_ONLY)
+        for lang in i18n.CATALOGS:
+            with self.subTest(lang=lang):
+                i18n.set_language(lang)
+                i18n.clear_missing()
+                message = unavailable.exception.msg
+                self.assertNotEqual(i18n.translate_message(message), message)
+                self.assertEqual(i18n.missing(), [])
+
+    def test_unconfirmed_update_result_translates_in_every_language(self):
+        import test_update_launch_failure as launch_fixture
+
+        fixture = launch_fixture.ApplyLaunch("runTest")
+        self.addCleanup(fixture.doCleanups)
+        fixture.setUp()
+        updater = launch_fixture.updater
+        with mock.patch.object(updater, "wait_confirm", return_value=None):
+            code, result, launch = fixture.run_apply(lambda *args, **kwargs: mock.Mock(poll=lambda: None))
+        self.assertEqual(code, 8)
+        self.assertEqual(result["phase"], "unconfirmed")
+        self.assertEqual(launch.call_count, 1)
+        for lang in i18n.CATALOGS:
+            with self.subTest(lang=lang):
+                i18n.set_language(lang)
+                i18n.clear_missing()
+                self.assertNotEqual(i18n.translate_message(result["error"]), result["error"])
+                self.assertEqual(i18n.missing(), [])
 
     def test_build_tool_messages(self):
         path = os.path.join(ROOT, "tools", "build_game.py")
@@ -1108,11 +1149,16 @@ class FakeClient:
     def __init__(self):
         self.me = {"id": "p1", "name": "Me", "guest": False, "rating": 1500, "record": [3, 2, 0], "status": "idle",
                    "main": "jin", "tier": 5, "rank": "2nd Dan", "provisional": False}
+        self.welcome = {}
         self.players = []
         self.events = __import__("queue").Queue()
 
     def badges_ok(self):
         return True
+
+    def compatible(self, entry):
+        from t5lobby.client import LobbyClient
+        return LobbyClient.compatible(self, entry)
 
     def mentions_ok(self):
         return True

@@ -28,11 +28,25 @@ class Frame:
 class Tree:
     def __init__(self):
         self.rows = {}
+        self.columns = {column: {"width": width, "minwidth": min(width, 50), "anchor": "w"}
+                        for column, width in zip(tk_ranked_chars.COLUMNS, tk_ranked_chars.WIDTHS)}
+        self.headings = {column: {"text": i18n.t(tk_views.HEADINGS[column]).upper(), "anchor": "w"}
+                         for column in tk_ranked_chars.COLUMNS}
+        self.tk = SimpleNamespace(splitlist=lambda value: str(value).split())
 
-    def column(self, *args, **kwargs):
-        pass
+    def column(self, column, option=None, **kwargs):
+        self.columns[column].update(kwargs)
+        return self.columns[column][option] if option else dict(self.columns[column])
 
-    heading = column
+    def heading(self, column, option=None, **kwargs):
+        self.headings[column].update(kwargs)
+        return self.headings[column][option] if option else dict(self.headings[column])
+
+    def cget(self, option):
+        return {"style": "Lobby.Treeview"}[option]
+
+    def winfo_pixels(self, value):
+        return int(value)
 
     def get_children(self):
         return tuple(self.rows)
@@ -63,7 +77,13 @@ class RankedCharacterViewTest(unittest.TestCase):
         self.view = SimpleNamespace(tab=SimpleNamespace(table=SimpleNamespace(fighter_name=lambda key: key.title())),
                                     px=lambda value: value, body=lambda parent: Frame(),
                                     tree=mock.Mock(return_value=(Frame(), self.tv)), show_empty=mock.Mock())
-        with mock.patch.object(tk_ranked_chars.ttk, "Label"):
+        # Keep the view tests independent of a display, while supplying the
+        # style and numeric font metrics used to size the real headings.
+        style = SimpleNamespace(lookup=lambda name, option: {"font": "TkHeadingFont", "padding": "0"}[option])
+        font = SimpleNamespace(measure=lambda text: len(str(text)) * 8)
+        with mock.patch.object(tk_ranked_chars.ttk, "Label"), \
+                mock.patch.object(tk_ranked_chars.ttk, "Style", return_value=style), \
+                mock.patch.object(tk_ranked_chars.tkfont, "Font", return_value=font):
             self.ui = tk_ranked_chars.RankedCharacters(self.view, Frame())
 
     def tearDown(self):

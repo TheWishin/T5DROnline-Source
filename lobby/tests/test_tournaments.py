@@ -364,7 +364,7 @@ class TourBase(unittest.TestCase):
         return self.s.call(lambda: self.s.srv.tours.tours[tid])
 
     def create(self, fmt="single", start_in=0.5, players=None, wait=True, seeds=None, **kw):
-        """A tournament of `players` (all names) starting in `start_in` s. Seeded by rating, the ratings set so that the
+        """A tournament of `players` (all names) starting `start_in` s after signup. Seeded by rating, the ratings set so that the
         seeds follow `seeds` -- by default the order of `players`, and with four of them so that the first round is
         players[0] v players[1] and players[2] v players[3]."""
         players = list(players or self.names)
@@ -375,9 +375,25 @@ class TourBase(unittest.TestCase):
             for i, n in enumerate(seeds):
                 self.s.call(lambda n=n, r=2000 - 10 * i: self.s.srv.store._x(
                     "UPDATE accounts SET rating = ? WHERE name = ?", (r, n)))
-        t = self.org.tour_create("Test Cup", fmt=fmt, start=time.time() + start_in, **kw)
+        # Signup is setup, not part of the countdown under test. Serial join
+        # RPCs may take longer than 0.5 s on a busy runner. Reserve the allowed
+        # future window, then arm the requested countdown after everyone joins.
+        # Keep joins inside check-in when that is the requested initial state.
+        signup_window = self.s.cfg.tour_max_days * 86400
+        checkin_window = int(kw.get("checkin_minutes") or 0) * 60
+        if checkin_window and start_in <= checkin_window:
+            signup_window = min(signup_window, checkin_window)
+        t = self.org.tour_create("Test Cup", fmt=fmt, start=time.time() + max(start_in, signup_window), **kw)
         for n in players:
             self.f.c[n].tour_join(t["id"])
+
+        def arm_start():
+            manager = self.s.srv.tours
+            tour = manager.tours[t["id"]]
+            tour.start_time = time.time() + start_in
+            manager._save(tour, [])
+
+        self.s.call(arm_start)
         if wait and start_in < 5:
             self.wait_state(t["id"], "running")
         return t["id"]

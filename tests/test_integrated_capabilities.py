@@ -21,7 +21,7 @@ LEGACY = ["delta", "notices", "blind_ready", "old_stages", "ingame_pick", "sets"
           "nat2", "relays", "friends", "tournaments", "spectate", "private_rooms",
           "game_fallback", "boss_chars", "lag_wait", "match_rules"]
 ADDED = ["life150", "input_delay8", "badges", "mentions", "ranked_chars", "casual_sets",
-         "room_tables", "ingame_rematch_v1", "auto_skip_after_round_v1", "compat_groups", "private_chat"]
+         "room_tables", "ingame_rematch_v1", "auto_skip_after_round_v1", "compat_groups", "private_chat", "mutes"]
 
 
 def client(**options):

@@ -269,6 +269,22 @@ class World:
 
 
 # ============================================================================ one match
+def finish_games(procs):
+    """Reap every child and close its log, including after a partial launch."""
+    error = None
+    for p, lf in procs:
+        try:
+            if p.poll() is None:
+                p.kill()
+            p.wait(10)
+        except Exception as exc:
+            error = error or exc
+        finally:
+            lf.close()
+    if error is not None:
+        raise error
+
+
 def play_match(world, clients, a, out_dir, expect_relay, expect_rtt):
     for c in clients:
         c.quick_match()
@@ -327,20 +343,24 @@ def play_match(world, clients, a, out_dir, expect_relay, expect_rtt):
             env.update(T5_STUB_SECONDS=str(a.seconds))
             cmd = [sys.executable, os.path.join(HERE, "stub_game.py")]
         lf = open(os.path.join(d, "game.log"), "w", encoding="utf-8")
-        procs.append((subprocess.Popen(cmd, cwd=d, env=env, stdout=lf, stderr=subprocess.STDOUT,
-                                       stdin=subprocess.DEVNULL, creationflags=flags), lf))
+        try:
+            child = subprocess.Popen(cmd, cwd=d, env=env, stdout=lf, stderr=subprocess.STDOUT,
+                                     stdin=subprocess.DEVNULL, creationflags=flags)
+        except BaseException:
+            lf.close()
+            finish_games(procs)
+            raise
+        procs.append((child, lf))
         dirs.append(d)
     t_end = time.monotonic() + (a.game_seconds if a.exe else 30 + a.seconds)
-    while time.monotonic() < t_end and any(p.poll() is None for p, _lf in procs):
-        if a.exe and all(read_result_file(os.path.join(d, "result.json")) is not None for d in dirs):
-            time.sleep(2)               # (the real game stays after the match: both results are in)
-            break
-        time.sleep(0.25)
-    for p, lf in procs:
-        if p.poll() is None:
-            p.kill()
-        p.wait(10)
-        lf.close()
+    try:
+        while time.monotonic() < t_end and any(p.poll() is None for p, _lf in procs):
+            if a.exe and all(read_result_file(os.path.join(d, "result.json")) is not None for d in dirs):
+                time.sleep(2)               # (the real game stays after the match: both results are in)
+                break
+            time.sleep(0.25)
+    finally:
+        finish_games(procs)
     logs = []
     for d in dirs:
         with open(os.path.join(d, "game.log"), encoding="utf-8", errors="replace") as f:
@@ -350,6 +370,11 @@ def play_match(world, clients, a, out_dir, expect_relay, expect_rtt):
                  or "peer lost" in ln]
         print(f"    P{i + 1} game: " + " | ".join(ln.strip()[:90] for ln in lines[:4]))
     if not all("connected" in text for text in logs):
+        for i, ((p, _lf), text) in enumerate(zip(procs, logs)):
+            # Handshake messages and tracebacks do not match the success excerpt above.
+            # Keep the actual failure visible without flooding the CI log.
+            tail = "\n".join(text.splitlines()[-20:])[-3500:]
+            print(f"    P{i + 1} game exit {p.returncode}; log tail:\n{tail or '(empty log)'}")
         raise AssertionError("the games did not connect through the relay")
     # ---- results
     for c in order:

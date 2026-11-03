@@ -1390,6 +1390,8 @@ MESSAGES = {
         "Programme aus dem Ordner liefen noch ({names}); schließe sie und versuche es noch "
         "einmal",
     "the new launcher {version} did not start": "der neue Launcher {version} ist nicht gestartet",
+    "the new launcher did not confirm startup before the timeout":
+        "der neue Launcher hat den Start nicht vor Ablauf der Wartezeit bestätigt",
     "could not replace the program files: {error}": "die Programmdateien konnten nicht ersetzt werden: {error}",
     "unexpected error: {error}": "unerwarteter Fehler: {error}",
     "GitHub asks to wait with update checks until {time}.":

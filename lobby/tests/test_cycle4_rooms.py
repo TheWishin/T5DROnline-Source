@@ -36,13 +36,22 @@ class RoomModerationOwnershipTest(unittest.TestCase):
             widget.command = kwargs.get("command")
             return widget
 
+        def combobox(*_args, **kwargs):
+            options = {"font": "TkDefaultFont", **kwargs}
+            widget = Mock()
+            widget.cget.side_effect = options.__getitem__
+            widget.configure.side_effect = lambda **changes: options.update(changes)
+            return widget
+
         with patch.object(tk_rooms, "_window", return_value=(window, Mock())), \
                 patch.object(tk_rooms, "_room_rules_supported", return_value=False), \
                 patch.object(tk_rooms.tk, "StringVar", Variable), \
                 patch.object(tk_rooms.tk, "IntVar", Variable), \
                 patch.object(tk_rooms.tk, "Listbox") as listbox, \
                 patch.object(tk_rooms.ttk, "Label"), patch.object(tk_rooms.ttk, "Entry"), \
-                patch.object(tk_rooms.ttk, "Combobox"), patch.object(tk_rooms.ttk, "Checkbutton"), \
+                patch.object(tk_rooms.ttk, "Combobox", side_effect=combobox), \
+                patch.object(tk_rooms.tkfont, "Font", return_value=SimpleNamespace(measure=lambda text: 8 * len(text))), \
+                patch.object(tk_rooms.ttk, "Checkbutton"), \
                 patch.object(tk_rooms.ttk, "Button", side_effect=button):
             listbox.return_value.curselection.return_value = (0,)
             tk_rooms.settings_window(ui, room)

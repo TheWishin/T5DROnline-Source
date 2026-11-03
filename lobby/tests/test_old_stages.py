@@ -3,6 +3,7 @@ game's stage ids 0-13 and 15), the stage drawn for a match is one of them only w
 (T5L_OLD_STAGES, default off) and both clients announce the old_stages cap; the stage select's own stages (17-34)
 are drawn exactly as before otherwise."""
 import unittest
+from unittest import mock
 
 import util  # noqa: F401  (puts lobby/ on the path)
 from util import ServerThread, client, expect
@@ -62,6 +63,8 @@ class ServerTest(unittest.TestCase):
 
     def setUp(self):
         self.s = ServerThread(**self.server_cfg).start()
+        # Cleanups also run if a subclass's later setup fails.
+        self.addCleanup(self.s.stop)
         self.clients = []
         # record what the server asks the table for (the stage draw itself is random per match)
         self.calls = []
@@ -71,15 +74,15 @@ class ServerTest(unittest.TestCase):
         def resolve(*a, **kw):
             self.calls.append(kw.get("old_stages", False))
             return orig(*a, **kw)
-        table.resolve = resolve
-
-    def tearDown(self):
-        for c in self.clients:
-            c.close()
-        self.s.stop()
+        # The server uses fighters.table()'s shared instance. Restore the method
+        # before another fixture records its own calls.
+        resolve_patch = mock.patch.object(table, "resolve", resolve)
+        resolve_patch.start()
+        self.addCleanup(resolve_patch.stop)
 
     def acc(self, name, **kw):
         c = client(self.s, name, password="pw-" + name, register=True, auto_ready=True, **kw)
+        self.addCleanup(c.close)
         self.clients.append(c)
         return c
 

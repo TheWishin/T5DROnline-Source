@@ -59,11 +59,23 @@ class ServerThread:
         self.srv = None
         self.thread = threading.Thread(target=self._run, daemon=True)
         self._ready = threading.Event()
+        self._startup_error = None
 
     def _run(self):
         asyncio.set_event_loop(self.loop)
-        self.srv = LobbyServer(self.cfg)
-        self.loop.run_until_complete(self.srv.start())
+        try:
+            self.srv = LobbyServer(self.cfg)
+            self.loop.run_until_complete(self.srv.start())
+        except BaseException as error:
+            # LobbyServer.start() cleans up a partial startup before raising.
+            # Relay its cause to the test instead of hiding a dead worker behind
+            # the same timeout used for a genuinely stalled startup.
+            self._startup_error = error
+            try:
+                self.loop.close()
+            finally:
+                self._ready.set()
+            return
         self._ready.set()
         self.loop.run_forever()
 
@@ -71,6 +83,10 @@ class ServerThread:
         self.thread.start()
         if not self._ready.wait(10):
             raise RuntimeError("server did not start")
+        if self._startup_error is not None:
+            self.thread.join(10)
+            error = self._startup_error
+            raise RuntimeError(f"server did not start: {type(error).__name__}: {error}") from error
         return self
 
     @property
@@ -84,10 +100,14 @@ class ServerThread:
         return asyncio.run_coroutine_threadsafe(wrap(), self.loop).result(10)
 
     def stop(self):
-        asyncio.run_coroutine_threadsafe(self.srv.stop(), self.loop).result(10)
-        self.loop.call_soon_threadsafe(self.loop.stop)
-        self.thread.join(10)
-        self.loop.close()
+        try:
+            asyncio.run_coroutine_threadsafe(self.srv.stop(), self.loop).result(10)
+        finally:
+            # A failed server shutdown must not leave its fixture's event-loop
+            # worker alive for the remaining tests.
+            self.loop.call_soon_threadsafe(self.loop.stop)
+            self.thread.join(10)
+            self.loop.close()
 
     def wait_for(self, pred, timeout=10.0):
         t_end = time.monotonic() + timeout

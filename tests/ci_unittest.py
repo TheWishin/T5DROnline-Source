@@ -4,7 +4,8 @@
     python tests/ci_unittest.py [-v] [-s DIR]          # what `python -m unittest discover -s DIR` does
     python ../../tests/ci_unittest.py -v test_lobby    # what `python -m unittest -v test_lobby` does
 
-Same tests, same output, same exit code as the plain `unittest` command. What
+Same tests and results as the plain `unittest` command, with a bounded parent
+deadline (900 seconds by default, timeout exit code 124). What
 it adds, on GitHub Actions (GITHUB_ACTIONS=true), is what the job log cannot
 give anyone without a login: every failed or errored test as one
 `::error title=...::` annotation (test id + the end of its traceback), and one
@@ -22,7 +23,8 @@ Two details matter on a runner:
   not workflow commands. (Output of subprocesses a test captures never reached
   the log anyway.)
 * Only a handful of failures get their own annotation; the summary lists all.
-  Each one is written the moment the test fails, so a later crash cannot lose it.
+  Every failure's traceback is also written and flushed to the log immediately,
+  including outside GitHub Actions, so a later crash cannot lose its details.
 
 And for a red run whose log nobody can read (the push job was red from the 1.1.5
 merge on with no annotation to go by):
@@ -34,10 +36,14 @@ merge on with no annotation to go by):
   that ends its own process), this process says so in an annotation: the exit
   code, the test that was running, the modules done so far. faulthandler
   prints the child's Python stacks into the log. --in-process skips the child.
+  The parent also bounds discovery, fixtures and interpreter shutdown; a timeout
+  dumps all Python thread stacks, reports the phase and terminates descendants.
 """
 import argparse
 import faulthandler
+import importlib.util
 import json
+import math
 import os
 import platform
 import re
@@ -47,11 +53,22 @@ import tempfile
 import time
 import unittest
 
+# runpy and module entry points do not put this directory on sys.path. Load the
+# sibling by path without changing where the selected test modules resolve.
+_process_spec = importlib.util.spec_from_file_location(
+    "_t5dr_ci_process", os.path.join(os.path.dirname(os.path.abspath(__file__)), "ci_process.py"))
+_process_module = importlib.util.module_from_spec(_process_spec)
+_process_spec.loader.exec_module(_process_module)
+ProcessTree = _process_module.ProcessTree
+
 MAX_DETAIL = 8          # failures that get an annotation of their own
 SLOWEST = 8             # modules named in the summary notice
 TB_LINES = 14           # traceback lines kept (the end is what matters)
 TB_CHARS = 3500
 PROGRESS_ENV = "T5DR_CI_PROGRESS"      # the child keeps the running test and the times in this file
+TIMEOUT_ENV = "T5DR_CI_TIMEOUT"
+DEADLINE_ENV = "T5DR_CI_DEADLINE"
+DEFAULT_TIMEOUT = 900.0
 COMMAND = re.compile(r"^::(error|warning|notice|debug|group|endgroup|add-mask|stop-commands)", re.M)
 
 
@@ -127,7 +144,7 @@ def slowest(secs, n=SLOWEST):
 
 class TimedResult(unittest.TextTestResult):
     """The usual result, plus: the time per module, the running test in the progress file (for the
-    parent), and on a runner each failure's annotation right away."""
+    parent), each failure's traceback right away, and annotations on a runner."""
 
     def __init__(self, *args, **kw):
         super().__init__(*args, **kw)
@@ -138,10 +155,11 @@ class TimedResult(unittest.TextTestResult):
         self.annotated = 0
         self._t0 = None
 
-    def write_progress(self, current, done=False):
+    def write_progress(self, current, done=False, exit_code=None):
         if not self.progress:
             return
-        data = {"current": current, "done": done, "run": self.testsRun, "modules": self.module_secs}
+        data = {"current": current, "done": done, "run": self.testsRun,
+                "modules": self.module_secs, "exit_code": exit_code}
         try:
             with open(self.progress + ".tmp", "w", encoding="utf-8") as f:
                 json.dump(data, f)
@@ -161,49 +179,161 @@ class TimedResult(unittest.TextTestResult):
             self.module_secs[mod] = self.module_secs.get(mod, 0.0) + time.perf_counter() - self._t0
         self.module_tests[mod] = self.module_tests.get(mod, 0) + 1
         self._t0 = None
+        self.write_progress("after " + test.id())
 
-    def _annotate(self, kind, test, err):
+    def _report_problem(self, kind, test, traceback):
+        # TextTestRunner normally waits until the suite ends to print these.
+        # A child abort or timeout would then lose every earlier failure's
+        # details, and GitHub annotations only retain the first MAX_DETAIL.
+        # Keep the standard final report too, while making the log durable now.
+        self.stream.writeln()
+        self.printErrorList(kind, [(test, traceback)])
+        self.stream.flush()
         if self.gha and self.annotated < MAX_DETAIL:
             self.annotated += 1
-            annotate("error", f"unittest {kind}: {test.id()}", tb_tail(self._exc_info_to_string(err, test)) or kind)
+            annotate("error", f"unittest {kind}: {test.id()}", tb_tail(traceback) or kind)
 
     def addFailure(self, test, err):
         super().addFailure(test, err)
-        self._annotate("FAIL", test, err)
+        self._report_problem("FAIL", test, self.failures[-1][1])
 
     def addError(self, test, err):
         super().addError(test, err)
-        self._annotate("ERROR", test, err)
+        self._report_problem("ERROR", test, self.errors[-1][1])
 
     def addSubTest(self, test, subtest, err):
         super().addSubTest(test, subtest, err)
         if err is not None:
-            self._annotate("FAIL" if issubclass(err[0], test.failureException) else "ERROR", subtest, err)
+            failed = issubclass(err[0], test.failureException)
+            problems = self.failures if failed else self.errors
+            self._report_problem("FAIL" if failed else "ERROR", subtest, problems[-1][1])
 
 
-def run_child(argv, gha):
+class TrackedSuite(unittest.TestSuite):
+    """Name fixture work too: unittest calls startTest only after setUpClass."""
+
+    def _handleClassSetUp(self, test, result):
+        cls = test.__class__
+        if cls != getattr(result, "_previousTestClass", None):
+            result.write_progress("setUpClass " + cls.__module__ + "." + cls.__qualname__)
+        super()._handleClassSetUp(test, result)
+
+    def _tearDownPreviousClass(self, test, result):
+        previous = getattr(result, "_previousTestClass", None)
+        if previous is not None and previous != getattr(test, "__class__", None):
+            result.write_progress("tearDownClass " + previous.__module__ + "." + previous.__qualname__)
+        super()._tearDownPreviousClass(test, result)
+
+    def _handleModuleFixture(self, test, result):
+        previous = getattr(result, "_previousTestClass", None)
+        self._setting_up_module = (test.__class__.__module__
+                                   if getattr(previous, "__module__", None) != test.__class__.__module__
+                                   else None)
+        try:
+            super()._handleModuleFixture(test, result)
+        finally:
+            self._setting_up_module = None
+
+    def _handleModuleTearDown(self, result):
+        previous = getattr(result, "_previousTestClass", None)
+        if previous is not None:
+            result.write_progress("tearDownModule " + previous.__module__)
+        super()._handleModuleTearDown(result)
+        # unittest tears down the previous module inside _handleModuleFixture,
+        # before calling the new module's setUpModule. Record that transition.
+        if getattr(self, "_setting_up_module", None):
+            result.write_progress("setUpModule " + self._setting_up_module)
+
+
+class DiscoveryLoader(unittest.TestLoader):
+    """Partition discovery before imports, keeping expensive files in other runs."""
+
+    def __init__(self, excluded=()):
+        super().__init__()
+        self.excluded = frozenset(excluded)
+
+    def _match_path(self, path, full_path, pattern):
+        if os.path.splitext(path)[0] in self.excluded:
+            return False
+        return super()._match_path(path, full_path, pattern)
+
+
+def module_basename(value):
+    if not value.isidentifier():
+        raise argparse.ArgumentTypeError("expected a test-file basename without .py or a directory")
+    return value
+
+
+def positive_seconds(value):
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError):
+        raise argparse.ArgumentTypeError("timeout must be a finite positive number of seconds")
+    if not math.isfinite(seconds) or seconds <= 0:
+        raise argparse.ArgumentTypeError("timeout must be a finite positive number of seconds")
+    return seconds
+
+
+def run_child(argv, gha, timeout):
     """Run the tests in a child (this file with --in-process) and report a child that did not finish."""
     fd, progress = tempfile.mkstemp(prefix="t5dr_ci_progress_", suffix=".json")
     os.close(fd)
     os.remove(progress)
-    t0 = time.time()
-    rc = subprocess.call([sys.executable, os.path.abspath(__file__), "--in-process"] + list(argv),
-                         env=dict(os.environ, **{PROGRESS_ENV: progress}))
+    t0 = time.monotonic()
+    timed_out = False
+    tree = ProcessTree()
+    try:
+        proc = subprocess.Popen(
+            [sys.executable, os.path.abspath(__file__), "--in-process"] + list(argv),
+            env=dict(os.environ, **{PROGRESS_ENV: progress,
+                                   DEADLINE_ENV: str(t0 + timeout)}), **tree.popen_kwargs)
+        try:
+            tree.attach(proc)
+        except Exception:
+            proc.kill()
+            proc.wait(timeout=5)
+            raise
+        # The child waits here until containment covers descendants as well.
+        with open(progress + ".ready", "w", encoding="utf-8"):
+            pass
+        try:
+            rc = proc.wait(timeout=max(0.001, t0 + timeout - time.monotonic()))
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            # Give the child's deadline stack dump time to reach stderr.
+            try:
+                proc.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                pass
+            tree.terminate()
+            rc = proc.wait(timeout=5)
+    finally:
+        tree.close()
     state = {}
     try:
         with open(progress, encoding="utf-8") as f:
             state = json.load(f)
     except (OSError, ValueError):
         pass
-    for p in (progress, progress + ".tmp"):
+    for p in (progress, progress + ".tmp", progress + ".ready"):
         try:
             os.remove(p)
         except OSError:
             pass
-    if state.get("done"):
+    if timed_out:
+        msg = (f"test timeout after {timeout:g} s: {state.get('run', 0)} tests in, "
+               f"during {state.get('current') or 'loading modules'}; "
+               f"slowest modules so far: {slowest(state.get('modules') or {})}")
+        print("\n" + msg, flush=True)
+        if gha:
+            annotate("error", "unittest timeout", msg)
+        return 124
+    # A summary precedes interpreter shutdown. A later abort (or an atexit
+    # handler overriding failure with exit 0) must not hide behind done=True.
+    if state.get("done") and rc == state.get("exit_code"):
         return rc
     code = f"0x{rc & 0xFFFFFFFF:08X}" if rc < 0 or rc > 255 else str(rc)
-    msg = (f"the test process ended without finishing: exit code {code} after {time.time() - t0:.0f} s, "
+    msg = (f"the test process ended without finishing: exit code {code} after {time.monotonic() - t0:.0f} s, "
            f"{state.get('run', 0)} tests in, during {state.get('current') or '(no test started: loading the modules)'}; "
            f"slowest modules so far: {slowest(state.get('modules') or {})}")
     print("\n" + msg, flush=True)
@@ -219,29 +349,52 @@ def main(argv=None):
                     help="discover test*.py here (default: this file's directory)")
     ap.add_argument("--in-process", action="store_true",
                     help="run the tests in this process (default: in a child process, so a crash is reported)")
+    ap.add_argument("--timeout", type=positive_seconds,
+                    help="parent deadline in seconds (default: T5DR_CI_TIMEOUT or 900; --in-process is unbounded)")
+    ap.add_argument("--exclude-module", action="append", default=[], type=module_basename,
+                    help="exclude this test-file basename (without .py) before discovery imports; repeatable")
     ap.add_argument("names", nargs="*", help="test modules/classes/methods instead of discovery")
     argv = sys.argv[1:] if argv is None else argv
     a = ap.parse_args(argv)
+    if a.names and a.exclude_module:
+        ap.error("--exclude-module requires discovery, without named test selections")
+    try:
+        timeout = a.timeout if a.timeout is not None else positive_seconds(os.environ.get(TIMEOUT_ENV, DEFAULT_TIMEOUT))
+    except argparse.ArgumentTypeError as exc:
+        ap.error(str(exc))
 
     gha = os.environ.get("GITHUB_ACTIONS") == "true"
     if not a.in_process:
-        return run_child(argv, gha)
+        return run_child(argv, gha, timeout)
     faulthandler.enable()               # a hard crash prints every thread's Python stack into the log
+    if os.environ.get(DEADLINE_ENV) and os.environ.get(PROGRESS_ENV):
+        faulthandler.dump_traceback_later(max(0.001, float(os.environ[DEADLINE_ENV]) - time.monotonic()))
+        while not os.path.exists(os.environ[PROGRESS_ENV] + ".ready"):
+            time.sleep(0.01)
     sys.stdout = Mute(sys.stdout)
     sys.stderr = Mute(sys.stderr)
 
-    loader = unittest.TestLoader()
+    loader = DiscoveryLoader(a.exclude_module)
+    loader.suiteClass = TrackedSuite
+    # Discovery happens before TextTestRunner constructs its result.
+    progress = os.environ.get(PROGRESS_ENV)
+    if progress:
+        with open(progress, "w", encoding="utf-8") as f:
+            json.dump({"current": "loading modules", "done": False}, f)
     if a.names:
         sys.path.insert(0, os.getcwd())          # as `python -m unittest` does
         suite = loader.loadTestsFromNames(a.names)
     else:
         start = os.path.abspath(a.start_directory)
+        if a.exclude_module:
+            print("== discovery excludes: " + ", ".join(sorted(set(a.exclude_module))), flush=True)
         suite = loader.discover(start)           # also puts `start` on sys.path
     t0 = time.time()
     runner = unittest.TextTestRunner(stream=sys.stdout, verbosity=2 if a.verbose else 1, resultclass=TimedResult)
     result = runner.run(suite)
     secs = time.time() - t0
-    result.write_progress(None, done=True)
+    exit_code = 0 if result.wasSuccessful() else 1
+    result.write_progress("shutdown", done=True, exit_code=exit_code)
 
     print("\n== time per module (slowest first)")
     for line in timing_lines(result.module_secs, result.module_tests):
@@ -251,10 +404,16 @@ def main(argv=None):
         print("\n== why tests were skipped (a runner without something a test needs says so here)")
         for line in skips:
             print(line)
-    sys.stdout.flush()
-
     bad = [("FAIL", t, tb) for t, tb in result.failures] + [("ERROR", t, tb) for t, tb in result.errors] \
         + [("UNEXPECTED SUCCESS", t, "") for t in result.unexpectedSuccesses]
+    if bad:
+        # Keep the failing IDs in a captured log's tail, after the potentially
+        # long timing and skip tables, including outside GitHub Actions.
+        names = ", ".join(f"{kind} {test.id()}" for kind, test, _ in bad)
+        summary = f"{len(bad)} of {result.testsRun} tests did not pass: {names}"
+        print("\n== tests that did not pass")
+        print(summary)
+    sys.stdout.flush()
     if gha:
         what = " ".join(a.names) or "discover " + os.path.basename(os.path.abspath(a.start_directory))
         annotate("notice", f"unittest {what}",
@@ -267,7 +426,7 @@ def main(argv=None):
         if bad:
             names = ", ".join(f"{kind.split()[0]} {test.id()}" for kind, test, _ in bad)
             annotate("error", "unittest summary", f"{len(bad)} of {result.testsRun} tests did not pass: {names}")
-    return 0 if result.wasSuccessful() else 1
+    return exit_code
 
 
 if __name__ == "__main__":

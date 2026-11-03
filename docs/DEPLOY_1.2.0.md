@@ -6,6 +6,71 @@ no server has been started or contacted and no firewall has been changed. `codex
 Use the feature-specific checks and rollback steps below together when deploying the combined lobby.
 Runtime changes elsewhere in 1.2.0 also require the build and real-pair checks in their own feature documents.
 
+## Package 5 readiness gates (pending owner checks)
+
+These steps describe work to complete in the owner's permitted test and deployment environment. They are
+not execution evidence: no launcher, server, migration or deployment was run for this checklist. Do not
+accept package 5 from green source-only tests or a schema-version number alone.
+
+1. Resolve and execute the two reported test failures first. The casual-set test bypasses
+   `MatchDriver.__init__`; construct the real driver and dispatch the result through public `on_event`
+   before verifying its automatic next-game acknowledgement. The release-notice test still expects
+   `your 1.1.1` from an intentionally removed incompatibility claim: compatibility groups can permit
+   cross-release play. Update the assertion to check update guidance without restoring the false
+   "cannot play against" wording. Show the reported failures before the corrections and passing tests
+   afterward through the actual test entry points. Neither correction is claimed implemented here.
+2. Run the actual launcher entry through `main()`, `App` and the Tk mainloop, with bounded clean shutdown
+   and isolated settings. Check startup, login/search, clear display of `kicked` with no automatic
+   relogin loop, then match/ready/result, rooms/friends and tournaments/spectating in that order. Keep
+   the existing T5DR launcher in the mixed-client checks. Fake widgets and extracted-method tests do
+   not establish launcher startup. Decide saved-login sharing and how both launchers refuse another
+   search while a game is already running before accepting the new launcher.
+3. Exercise real historical client code read from git against the real new server code in the owner's
+   test environment, and new clients against the intended older server. Record the exact revisions
+   and executed cases. The legacy fixture's default `v1.1.6` tag is absent in this checkout and can
+   silently skip those tests; a skipped fixture is not compatibility evidence. Supply an available,
+   intended historical revision through `T5L_SIDES_OLD_REF` (`test_sides.py`) and `T5L_COMPAT_REF`
+   (`test_relays.py`, whose default `v1.1.0` is also absent). Verify each revision contains the intended
+   shipped client source; an available commit alone does not prove it was released. Require the cases
+   to execute. Keep lobby protocol version 1.
+4. Rehearse storage changes on a private backup copy and verify existing accounts, sessions, matches,
+   sets, character stats and intended code rollback. Use a single database opener: stop the service,
+   administrator timers and every other process opening that database during rehearsal and upgrade.
+   Serialize backup jobs too: concurrent filename reservation and stale partial-file cleanup are not
+   proved safe. Keep scheduled and manual backup jobs from overlapping the upgrade backup.
+   `Store` reads the schema version before acquiring each migration's write lock; its column
+   check/`ALTER TABLE` sequence can also race with another opener. Setup DDL runs outside the numbered
+   migration transaction. These source findings mean concurrent live migration safety is unproved.
+   Use the existing administrator tool for the pre-upgrade drain and backup, before new code opens
+   production storage. Preserve the upgraded database on code rollback as described below; do not
+   replace newer records with an old backup merely to remove additive schema changes.
+5. Complete the feature checks in [INTEGRATION_1.2.0.md](INTEGRATION_1.2.0.md),
+   [COMPATIBILITY_GROUPS.md](COMPATIBILITY_GROUPS.md), [CHAT_FILTER.md](CHAT_FILTER.md),
+   [NETPLAY.md](NETPLAY.md) and [RANKED.md](RANKED.md):
+   - Lobby-supplied update metadata, version refusal, stale/malformed metadata and fallback must still
+     accept only valid signed updates. Verify real TLS on normal TCP 7781 and fallback TCP 443.
+   - Negotiate Auto and manual delay limits, including 8, across sets and rematches; old peers retain
+     their legacy limits. Check chat delivery, filter configuration/reload and rate limits.
+   - Verify per-character ranked stats survive reopening without changing unrelated character stats;
+     verify casual/ranked set scores, continuation, abandonment and room rotation with mixed clients.
+   - Keep `T5L_COMPAT_GROUPS` empty until the owner approves complete build IDs after real cross-build
+     pair tests with **0 mismatches**. Check excluded builds and peers fail closed; retain documented
+     exact-build restrictions for tournaments and spectators. Test direct and relay game paths too.
+6. Keep shared T4 accounts and concurrent per-game sessions behind the separate post-T4-release review.
+   The account draft is absent from the working tree but readable without checkout using
+   `git show origin/codex/accounts:docs/PLAN_ACCOUNTS.md`. It describes an unrun opt-in split-store
+   implementation, with T4 authentication/social features only and gameplay blocked pending a verified
+   adapter. Its numeric T4 rating fallback leaves authoritative text rank names and owner-approved
+   thresholds pending. Review it after the agreed reset and T4-release gates; do not import or deploy
+   `codex/accounts` as part of this deployment. Current T5DR login behavior is account-global:
+   one connection per account; a second login takes over and
+   kicks the first. The future shared-account policy must allow T5DR and T4 online simultaneously with
+   separate sessions, matches and ranks per game, carrying over existing T5DR accounts. It must not
+   give other game developers access to these accounts. Do not claim T4 ready or deploy that draft.
+
+After these gates pass, follow the drain, backup, installation, optional TCP 443 and rollback procedures
+below. Publication and deployment remain owner actions; this checklist authorizes no deployment.
+
 ## Combined database and private-chat rollout
 
 Review the complete integrated schema before deploying: badge migration 2 is not the only additive database

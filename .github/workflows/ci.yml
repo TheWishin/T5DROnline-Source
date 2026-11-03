@@ -87,9 +87,21 @@ jobs:
         run: |
           python -m pip install --disable-pip-version-check --quiet pycryptodome pillow
           if ($LASTEXITCODE) { exit 1 }
-          # Same as `python -m unittest discover -s tests -v`; also writes every failed test
-          # as an ::error annotation (the REST API serves those without a login).
-          python tests/ci_unittest.py -v
+          # Retain all discovery tests, but give each expensive native layout
+          # suite its own bounded invocation instead of sharing one 900s budget.
+          $layoutModules = @('test_i18n', 'test_font_fallback', 'test_layout_lobby_entry')
+          $exclusions = @()
+          foreach ($module in $layoutModules) {
+            $exclusions += @('--exclude-module', $module)
+          }
+          $suiteExit = 0
+          python tests/ci_unittest.py -v @exclusions
+          if ($LASTEXITCODE -ne 0) { $suiteExit = 1 }
+          foreach ($module in $layoutModules) {
+            python tests/ci_unittest.py -v $module
+            if ($LASTEXITCODE -ne 0) { $suiteExit = 1 }
+          }
+          exit $suiteExit
 
   # The lobby's own suite takes minutes (it runs real servers and clients with
   # real time windows), so it is in the second tier. One process per module, so

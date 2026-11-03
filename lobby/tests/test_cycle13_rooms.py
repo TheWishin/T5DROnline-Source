@@ -39,12 +39,22 @@ class RoomAcknowledgementOwnershipTest(unittest.TestCase):
             widget.command = kwargs.get("command")
             return widget
 
+        def combobox(*_args, **kwargs):
+            options = {"font": "TkDefaultFont", **kwargs}
+            widget = Mock()
+            widget.cget.side_effect = options.__getitem__
+            widget.configure.side_effect = lambda **changes: options.update(changes)
+            return widget
+
         with ExitStack() as stack:
             stack.enter_context(patch.object(tk_rooms, "_window", return_value=(window, Mock())))
             stack.enter_context(patch.object(tk_rooms.tk, "StringVar", Variable))
             stack.enter_context(patch.object(tk_rooms.tk, "IntVar", Variable))
-            for name in ("Label", "Entry", "Combobox", "Checkbutton"):
+            for name in ("Label", "Entry", "Checkbutton"):
                 stack.enter_context(patch.object(tk_rooms.ttk, name))
+            stack.enter_context(patch.object(tk_rooms.ttk, "Combobox", side_effect=combobox))
+            stack.enter_context(patch.object(tk_rooms.tkfont, "Font",
+                                            return_value=SimpleNamespace(measure=lambda text: 8 * len(text))))
             stack.enter_context(patch.object(tk_rooms.ttk, "Button", side_effect=button))
             if action == "create":
                 tk_rooms.create_window(ui)

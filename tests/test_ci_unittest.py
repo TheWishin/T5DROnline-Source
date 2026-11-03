@@ -85,6 +85,28 @@ class Wrapper(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertNotIn("::error", out)
         self.assertIn("== time per module", out)
+        tail = out[out.index("== why tests were skipped"):]
+        self.assertIn("1 of 5 tests did not pass: FAIL test_alpha.A.test_fails", tail)
+
+    def test_local_tail_names_errors_and_unexpected_successes(self):
+        with open(os.path.join(self.d, "test_problem.py"), "w", encoding="utf-8") as f:
+            f.write('''
+import unittest
+class P(unittest.TestCase):
+    def test_error(self):
+        raise RuntimeError("synthetic error")
+    @unittest.expectedFailure
+    def test_unexpected_success(self):
+        pass
+''')
+        rc, out, err = self.run_wrapper(gha=False)
+        self.assertEqual(rc, 1, out + err)
+        tail = out[out.index("== why tests were skipped"):]
+        self.assertIn("3 of 7 tests did not pass:", tail)
+        self.assertIn("FAIL test_alpha.A.test_fails", tail)
+        self.assertIn("ERROR test_problem.P.test_error", tail)
+        self.assertIn("UNEXPECTED SUCCESS test_problem.P.test_unexpected_success", tail)
+        self.assertNotIn("::error", tail)
 
     def test_a_dead_test_process_is_named(self):
         with open(os.path.join(self.d, "test_crash.py"), "w", encoding="utf-8") as f:

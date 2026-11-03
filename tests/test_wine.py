@@ -98,7 +98,7 @@ class GameLog(unittest.TestCase):
             def env_overrides(self):
                 return {}
         with tempfile.TemporaryDirectory() as d:
-            g = core.GameRun(d, Settings(display="window"))
+            g = core.GameRun(d, Settings(display="window", replays=False))
             info = {"version": "10.0", "build": "", "host": "Linux 6.17", "proton": "proton-cachyos-slr"}
             cmd = ([sys.executable, "-c", "print('[fps] 60.0 (game)')"], dict(os.environ, RSX_VERTEX_THREADS="0",
                                                                           PS3_LWM_FAST="0"), d)

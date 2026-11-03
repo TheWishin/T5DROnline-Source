@@ -1,4 +1,5 @@
 """Casual FT launcher regressions using fake calls/widgets only: no sockets, server or game."""
+import tempfile
 import unittest
 from types import SimpleNamespace
 from unittest import mock
@@ -7,10 +8,6 @@ import util  # noqa: F401 -- repository import path and safe test environment
 from t5lobby import i18n, proto, sets
 from t5lobby.client import LobbyClient
 from t5lobby.match_driver import MatchDriver, hud_values
-from t5lobby.tk_casual import CasualUI
-from t5lobby.tk_challenges import ChallengesUI
-from t5lobby.tk_rooms import RoomsUI
-from t5lobby.tk_tab import OnlineTab
 
 
 class Var:
@@ -101,6 +98,8 @@ class CasualSetPresentationTest(unittest.TestCase):
                          "The casual set ended 2-1. Completed games keep their results; no rating change.")
 
     def test_challenge_target_is_visible_before_accepting_without_delay_metadata(self):
+        from t5lobby.tk_challenges import ChallengesUI
+
         ui = ChallengesUI.__new__(ChallengesUI)
         self.assertEqual(ui.card_line({"first_to": 10}), "FT10")
         self.assertEqual(ui.card_line({"first_to": 2, "delay": {"frames": 1, "auto": False}}),
@@ -108,6 +107,8 @@ class CasualSetPresentationTest(unittest.TestCase):
         self.assertEqual(ui.card_line({}), "")
 
     def test_room_summary_displays_requested_target_and_effective_table_score(self):
+        from t5lobby.tk_rooms import RoomsUI
+
         ui = RoomsUI(SimpleNamespace(client=SimpleNamespace(me={"id": "p1"})))
         room = {"name": "Friends", "first_to": 10, "size": 3, "rotation": "winner", "owner_id": "p1",
                 "players": [{"id": "p1", "name": "Alice"}, {"id": "p2", "name": "Bob"}],
@@ -119,6 +120,8 @@ class CasualSetPresentationTest(unittest.TestCase):
         self.assertIn("FT10", ui.list_state(room))
 
     def test_selector_saves_preference_and_new_clients_use_it(self):
+        from t5lobby.tk_casual import CasualUI
+
         c = SimpleNamespace(set_casual_prefs=mock.Mock())
         tab = SimpleNamespace(client=c, cfg={}, _save_cfg=mock.Mock())
         ui = CasualUI.__new__(CasualUI)
@@ -135,17 +138,20 @@ class CasualSetPresentationTest(unittest.TestCase):
     def test_driver_automatically_acknowledges_next_casual_game(self):
         calls = []
         client = SimpleNamespace(set_next=lambda *a: calls.append(a))
-        drv = MatchDriver.__new__(MatchDriver)
-        drv.client, drv.ticket, drv.auto_rematch = client, None, 0
+        directory = tempfile.TemporaryDirectory(dir=util.HERE)
+        self.addCleanup(directory.cleanup)
+        drv = MatchDriver(client, lambda env: self.fail("must not launch a game"), directory.name,
+                          table=object(), mode="process", ingame_rematch=False)
         drv.connected_game = lambda: True
-        drv._call = lambda fn, *a: fn(*a)
         drv.note = mock.Mock()
-        ev = {"match": "m1", "set": self.info(next={"in": 5}), "rematch_window": 0}
-        drv._finished(ev)
+        ev = {"t": "match_result", "match": "m1", "set": self.info(next={"in": 5}), "rematch_window": 0}
+        drv.on_event(ev)
         self.assertEqual(calls, [("m1", True)])
         drv.note.assert_called_once_with("set_next", match="m1", set=ev["set"])
 
     def test_between_game_leave_does_not_describe_ranked_loss(self):
+        from t5lobby.tk_tab import OnlineTab
+
         tab = OnlineTab.__new__(OnlineTab)
         tab.set_bar, tab.lag = (self.info(), 0, 123), None
         tab.show_bar = mock.Mock()

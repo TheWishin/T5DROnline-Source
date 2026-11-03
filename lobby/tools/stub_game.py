@@ -139,6 +139,8 @@ class Session:
             self.peer = (h, int(p))
         self.sock = None
         self.frame = 0
+        # Short exchanges at character select share the same peer deadline.
+        self.last_heard = time.time()
         self.mismatches = 0
         self.desync = env.get("T5_STUB_DESYNC") == "1" or str(game_no) in _list(env.get("T5_STUB_DESYNC_AT"))
         self.vanished = False
@@ -205,6 +207,7 @@ class Session:
             return False
         log(f"connected ({self.mode}, P{1 if self.mode == 'host' else 2}), delay {self.delay}")
         log(f"lockstep starts: frame 0, delay {self.delay}")
+        self.last_heard = time.time()
         return True
 
     def hash(self, f):
@@ -213,7 +216,6 @@ class Session:
 
     def exchange(self, frames, fail=None, fail_at=None):
         """`frames` frames of input exchange with per-frame hashes. -> 'ok' | 'lost' | fail."""
-        last_heard = time.time()
         # Like the real game, the frames start with the opponent's first input: until then a peer that is there (its
         # HELLOs come) is waited for, up to T5_NET_START_TIMEOUT (the real game's start_timeout).
         started = self.frame > 0
@@ -240,7 +242,7 @@ class Session:
                 except (socket.timeout, ConnectionResetError):
                     break
                 if data[:4] == MAGIC and data[4] == INPUT and len(data) >= 16:
-                    last_heard = time.time()
+                    self.last_heard = time.time()
                     started = True
                     rf, rh = struct.unpack_from("!II", data, 8)
                     if rh != self.hash(rf):
@@ -249,13 +251,13 @@ class Session:
                             log(f"DESYNC at frame {rf}: local state hash {self.hash(rf):016x}, peer {rh:016x}")
                 elif data[:4] == MAGIC and data[4] == HELLO:
                     if not started:
-                        last_heard = time.time()  # (the opponent's game is there, still in its handshake)
+                        self.last_heard = time.time()  # (the opponent's game is there, still in its handshake)
                     if self.mode == "host":
                         self.sock.sendto(MAGIC + bytes([HELLO, 1, self.delay, 0]) + b"\0" * 4, self.peer)
                 elif data[:4] == MAGIC and data[4] == BYE:
                     log("peer lost (peer_quit): the opponent left (its game was closed)")
                     return "peer_quit"
-            if time.time() - last_heard > min(self.timeout, 5.0):
+            if time.time() - self.last_heard > min(self.timeout, 5.0):
                 log(f"no input from the peer for {min(self.timeout, 5.0):.0f}s -- peer lost, continuing with "
                     f"P{2 if self.mode == 'host' else 1} idle")
                 return "lost"
@@ -431,47 +433,79 @@ def persistent(ctl_dir):
 
     seen = 0
     games = 0
+    sessions = 0
+    session_games = 0
+    s = None
+
+    def close_session():
+        nonlocal s
+        if s is not None:
+            s.close()
+            s = None
+            log(f"session {sessions} ends")
+
     fights = 0          # the status file's match counter, as the game's (every fight in the process)
     state("idle", 0)
     log(f"control channel {ctl_dir}: idle")
     t_idle = time.time()
-    while True:
-        try:
-            with open(os.path.join(ctl_dir, "cmd.json")) as f:
-                cmd = json.load(f)
-        except (OSError, ValueError):
-            cmd = None
-        if cmd is None or cmd.get("seq", 0) <= seen:
-            if time.time() - t_idle > float(os.environ.get("T5_STUB_IDLE_EXIT", "600")):
-                return 0
-            time.sleep(0.05)
-            continue
-        seen = cmd["seq"]
-        if cmd["cmd"] == "quit":
-            state("quit", seen)
-            return 0
-        if cmd["cmd"] == "idle":
-            state("idle", seen)
-            t_idle = time.time()
-            continue
-        if cmd["cmd"] == "fight":
-            env = dict(os.environ)
-            env.update(cmd.get("env") or {})
-            state("connecting", seen, match=cmd.get("match"))
-            games += 1
-            s = Session(env, games)
-            s.open()
+    try:
+        while True:
             try:
-                if not s.connect():
-                    state("error", seen, match=cmd.get("match"), error="no peer")
-                    continue
+                with open(os.path.join(ctl_dir, "cmd.json")) as f:
+                    cmd = json.load(f)
+            except (OSError, ValueError):
+                cmd = None
+            if cmd is None or cmd.get("seq", 0) <= seen:
+                if time.time() - t_idle > float(os.environ.get("T5_STUB_IDLE_EXIT", "600")):
+                    return 0
+                if s is not None:
+                    # Character select still services the connection: the other
+                    # game may be draining its last frames or awaiting its command.
+                    if s.exchange(3) != "ok":
+                        close_session()
+                else:
+                    time.sleep(0.05)
+                continue
+            seen = cmd["seq"]
+            if cmd["cmd"] == "quit":
+                state("quit", seen)
+                return 0
+            if cmd["cmd"] == "idle":
+                close_session()
+                state("idle", seen)
+                t_idle = time.time()
+                continue
+            if cmd["cmd"] == "fight":
+                env = dict(os.environ)
+                env.update(cmd.get("env") or {})
+                games += 1
+                if s is None or not cmd.get("rematch"):
+                    close_session()
+                    sessions += 1
+                    session_games = 0
+                    s = Session(env, games)
+                    log(f"session {sessions} set up (handshake running)")
+                    s.open()
+                    state("connecting", seen, match=cmd.get("match"))
+                    if not s.connect():
+                        close_session()
+                        state("error", seen, match=cmd.get("match"), error="no peer")
+                        continue
+                # A continuation retains the socket, negotiated peer and frame
+                # stream, like run_env's later fights. Only fight metadata changes.
+                session_games += 1
+                s.env = env
+                s.match_id = env.get("T5_NET_MATCH") or cmd.get("match")
+                s.game_no = games
+                s.desync = env.get("T5_STUB_DESYNC") == "1" or str(games) in _list(env.get("T5_STUB_DESYNC_AT"))
+                s.mismatches = 0
                 state("fight", seen, match=cmd.get("match"))
                 chars, pick = fight_chars(env, env.get("T5_FIGHT", ""))
                 if pick:
                     status(env, "pick", fights, chars=chars)
                 fights += 1
                 status(env, "fight", fights, chars=chars)
-                r = s.play(1, env)
+                r = s.play(session_games, env)
                 status(env, "over", fights, getattr(s, "last", None), chars=chars)
                 if r == "crash":
                     print("[CRASH] stub: simulated crash", flush=True)
@@ -479,9 +513,11 @@ def persistent(ctl_dir):
                 if r == "close":
                     return 7
                 state("result" if r == "ok" else "error", seen, match=cmd.get("match"))
-            finally:
-                s.close()
-            t_idle = time.time()
+                if r != "ok":
+                    close_session()
+                t_idle = time.time()
+    finally:
+        close_session()
 
 
 def main():

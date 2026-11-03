@@ -281,10 +281,14 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual(ev["ping"]["kind"], "estimate")
         b.answer_challenge(cid, accept=True)
         sa, sb = expect(a, "match_start", 15), expect(b, "match_start", 15)
-        # both PCs: T5_RB_NET_DELAY -- 3, but never above the lockstep delay of a match on this PC (2)
-        self.assertEqual((sa["input_delay"], sb["input_delay"]), (sa["delay"], sa["delay"]))
-        self.assertEqual(sa["ticket"].input_delay, 2)
-        self.assertEqual(sa["ticket"].game_env()["T5_RB_NET_DELAY"], "2")
+        # Both PCs use the configured floor, capped by the shared lockstep delay.
+        # Even on this PC, scheduling jitter can raise the measured lockstep delay above 2.
+        self.assertEqual(sa["delay"], sb["delay"])
+        expected = min(3, sa["delay"])
+        self.assertEqual((sa["input_delay"], sb["input_delay"]), (expected, expected))
+        for start in (sa, sb):
+            self.assertEqual(start["ticket"].input_delay, expected)
+            self.assertEqual(start["ticket"].game_env()["T5_RB_NET_DELAY"], str(expected))
         a.report_result(0, [3, 1])
         b.report_result(0, [3, 1])
         expect(a, "match_result")

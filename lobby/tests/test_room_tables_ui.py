@@ -30,7 +30,7 @@ class Var:
 
 class Widget:
     def __init__(self, *_a, **kw):
-        self.options = dict(kw)
+        self.options = {"font": "TkTextFont", **kw}
 
     def grid(self, **_kw):
         pass
@@ -40,6 +40,9 @@ class Widget:
 
     def configure(self, **kw):
         self.options.update(kw)
+
+    def cget(self, key):
+        return self.options[key]
 
     def invoke(self):
         if self.options.get("state") != "disabled":
@@ -202,6 +205,8 @@ class RoomTablesPresentationTest(unittest.TestCase):
         w = SimpleNamespace(destroy=mock.Mock())
         with mock.patch.object(tk_rooms, "_window", return_value=(w, Widget())), \
                 mock.patch.multiple(tk_rooms.tk, StringVar=Var, IntVar=Var), \
+                mock.patch.object(tk_rooms.tkfont, "Font", return_value=SimpleNamespace(
+                    measure=lambda text: 8 * len(text))), \
                 mock.patch.multiple(tk_rooms.ttk, Label=Widget, Entry=Widget, Combobox=Widget,
                                     Button=Widget, Checkbutton=Widget):
             self.ui.window = tk_rooms.create_window(self.ui)

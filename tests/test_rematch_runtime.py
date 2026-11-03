@@ -144,9 +144,13 @@ class RematchRuntimePatch(unittest.TestCase):
 
     def test_ui_pad_does_not_consume_a_gameplay_latch(self):
         patch = PATCH.read_text(encoding="utf-8")
-        added = "\n".join(line[1:] for line in patch.splitlines()
-                          if line.startswith("+") and not line.startswith("+++"))
-        function = added.split("s32 cellPad_peek_local(", 1)[1].split("int cellPad_ui_focused", 1)[0]
+        source = added_files(patch)["libs/input/cellPad.c"]
+        # The header also declares this API. Inspect the implementation's body,
+        # excluding prototypes and other functions that happen to sample pads.
+        functions = re.findall(
+            r"(?ms)^s32 cellPad_peek_local\([^;{}]*\)\s*\{(.*?)^\}", source)
+        self.assertEqual(len(functions), 1, "expected one cellPad_peek_local definition")
+        function = functions[0]
         self.assertIn("padh_sample(port_no, &st, padh_min_interval_us())", function)
         self.assertNotIn("padh_read(", function)
         self.assertNotIn("cellPad_sample_local(", function)

@@ -74,14 +74,16 @@ class DeviceRemoved(unittest.TestCase):
         self.assertIn("4400", core.explain_exit(12, run.last_lines, gpu_adapter=run.gpu_adapter))
 
     def test_new_start_clears_previous_run_evidence_before_launch(self):
-        settings = mock.Mock()
+        settings = mock.MagicMock(spec=core.Settings)
         settings.env_overrides.return_value = {}
+        settings.__getitem__.side_effect = {"replays": False}.__getitem__
         run = core.GameRun(ROOT, settings)
         run.gpu_adapter = "Intel(R) HD Graphics 4400"
         run.last_lines = [adapter(), LOST]
-        with mock.patch.object(core.run_game, "game_command", side_effect=ValueError("synthetic stop")):
+        with mock.patch.object(core.run_game, "game_command", side_effect=ValueError("synthetic stop")) as command:
             with self.assertRaisesRegex(ValueError, "synthetic stop"):
                 run.start()
+        command.assert_called_once_with(ROOT, {"T5_REPLAY_DIR": None})
         self.assertIsNone(run.gpu_adapter)
         self.assertEqual(run.last_lines, [])
 

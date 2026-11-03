@@ -539,7 +539,8 @@ class MatchDriver:
         if not self.game_running() or self.glog is None:
             return False
         self.glog.poll()
-        return self.glog.connected and self.glog.session_lost == 0 and not self.glog.build_mismatch
+        return (self.glog.connected and not self.glog.session_over
+                and self.glog.session_lost == 0 and not self.glog.build_mismatch)
 
     def stop_game(self):
         if self.ui is not None:

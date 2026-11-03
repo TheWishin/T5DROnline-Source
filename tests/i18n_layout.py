@@ -51,7 +51,7 @@ SCREEN_H = 1080                      # the launcher's size is checked as on a 19
 
 
 # ---------------------------------------------------------------------------- the checker
-def _font(w, suffix=""):
+def _font(w, suffix="", cache=None):
     try:
         f = w.cget("font")
     except tk.TclError:
@@ -63,10 +63,19 @@ def _font(w, suffix=""):
             f = st.lookup(style, "font") or st.lookup(w.winfo_class() + suffix, "font") or "TkDefaultFont"
         except tk.TclError:
             f = "TkDefaultFont"
+    # A screen contains many widgets that share a theme font. Keep wrappers
+    # only while checking that screen: later screens may change named fonts,
+    # and a wrapper must never survive its Tk interpreter.
+    key = (type(f), str(f))
+    if cache is not None and key in cache:
+        return cache[key]
     try:
-        return tkfont.Font(root=w, font=f)
+        font = tkfont.Font(root=w, font=f)
     except tk.TclError:
-        return tkfont.nametofont("TkDefaultFont", root=w)
+        font = tkfont.nametofont("TkDefaultFont", root=w)
+    if cache is not None:
+        cache[key] = font
+    return font
 
 
 def scroll_problems(area):
@@ -112,6 +121,13 @@ def _text(w):
 def problems(root, slack=2):
     """[(kind, widget path, column, needed px, available px, text)] for texts wider than their widget."""
     out = []
+    fonts, widths = {}, {}
+
+    def measure(font, text):
+        key = (font.name, text)
+        if key not in widths:
+            widths[key] = font.measure(text)
+        return widths[key]
 
     def walk(w):
         cls = w.winfo_class()
@@ -125,30 +141,32 @@ def problems(root, slack=2):
             except (tk.TclError, ValueError):
                 text, width, wrap = "", 0, "0"
             if text and width > 0 and wrap in ("", "0"):     # a fixed width: the text must fit it
-                need = max(_font(w).measure(line) for line in text.split("\n"))
+                font = _font(w, cache=fonts)
+                need = max(measure(font, line) for line in text.split("\n"))
                 if need > w.winfo_reqwidth() + slack:
                     out.append(("fixed", str(w), "", need, w.winfo_reqwidth(), text))
         elif managed and cls == "Treeview":
-            head, body = _font(w, ".Heading"), _font(w)
+            head, body = _font(w, ".Heading", fonts), _font(w, cache=fonts)
             show = str(w.cget("show"))
             for c in ("#0",) + tuple(w["columns"]):
                 if c == "#0" and "tree" not in show:
                     continue
                 width = int(w.column(c, "width"))
                 h = str(w.heading(c)["text"])
-                if h and head.measure(h) + 12 > width + slack:
-                    out.append(("heading", str(w), c, head.measure(h) + 12, width, h))
+                heading_width = measure(head, h) + 12 if h else 0
+                if h and heading_width > width + slack:
+                    out.append(("heading", str(w), c, heading_width, width, h))
                 for iid in w.get_children():
                     v = str(w.item(iid, "text") if c == "#0" else w.set(iid, c))
-                    need = body.measure(v) + 8 + (20 if c == "#0" else 0)
+                    need = measure(body, v) + 8 + (20 if c == "#0" else 0)
                     if v and need > width + slack:
                         out.append(("cell", str(w), c, need, width, v))
         elif managed and cls == "TCombobox":
-            f = _font(w)
+            f = _font(w, cache=fonts)
             values = [str(v) for v in w.cget("values")]
             if values:
-                longest = max(values, key=f.measure)
-                need = f.measure(longest) + 26
+                longest = max(values, key=lambda value: measure(f, value))
+                need = measure(f, longest) + 26
                 if need > w.winfo_reqwidth() + slack:
                     out.append(("combo", str(w), "", need, w.winfo_reqwidth(), longest))
         elif managed and cls == "Canvas" and not str(w.cget("xscrollcommand")):
@@ -198,8 +216,14 @@ def problems(root, slack=2):
                     out.append(("overlap", str(master), f"row {ra}", wa + wb, have,
                                 f"{_text(a) if a.winfo_class().endswith(('Label', 'Button', 'Checkbutton')) else a.winfo_class()}"
                                 f" + {_text(b) if b.winfo_class().endswith(('Label', 'Button', 'Checkbutton')) else b.winfo_class()}"))
-    walk(root)
-    return out
+    try:
+        walk(root)
+        return out
+    finally:
+        # The recursive walk closes over itself; do not leave its native Font
+        # wrappers waiting for cyclic GC, potentially on another thread.
+        fonts.clear()
+        widths.clear()
 
 
 # ---------------------------------------------------------------------------- the launcher, state by state
@@ -271,6 +295,10 @@ class Client:
     room_code = None
     clock_offset = 0.0
     welcome = {"room_limits": {"max_size": 8, "next_seconds": 8}}
+
+    def compatible(self, entry):
+        from t5lobby.client import LobbyClient
+        return LobbyClient.compatible(self, entry)
 
     def private_rooms_ok(self):
         return True
@@ -505,6 +533,9 @@ class Walk:
                 # freed later in a launcher worker thread (pictures, update check), which Tk refuses -- the
                 # unittest process then dies at exit with "Tcl_AsyncDelete: async handler deleted by the wrong
                 # thread" (1.1.7's release check, after the walk grew by two screens).
+                # A cached walk's bound Theme.px method also owns the root,
+                # pictures and fonts. Drop it before collecting on this thread.
+                self.px = None
                 app = self.app = None
                 gc.collect()
             log.stop()
@@ -519,6 +550,17 @@ class Walk:
             cancel_timers(app)
             app.online.client = None
             app.online.on_close()
+            # Tcl retains Python variable-trace callbacks outside Python's GC
+            # graph. Those callbacks can own the whole App after destroy, even
+            # after a cached Walk drops its references. This interpreter is
+            # closing; unregister its variable callbacks on the Tk thread.
+            for variable in gc.get_objects():
+                if isinstance(variable, tk.Variable) and getattr(variable, "_tk", None) is app.tk:
+                    try:
+                        for modes, callback in variable.trace_info():
+                            variable.trace_remove(modes, callback)
+                    except tk.TclError:
+                        pass  # a stale variable must not prevent destroying the root
             app.destroy()
         except tk.TclError:
             pass

@@ -41,6 +41,8 @@ r"""Updates: the launcher offers new releases and installs them itself, like Tek
    CONFIRM_AFTER_MS (15 s), or when the player closes it before. If anything fails -- a move, the
    check of the new files, or the new launcher ends by itself without confirming (1.1.5's closed 2 s
    after its start) -- the old files go back and the old launcher starts and says why.
+   If it remains running without confirming before the deadline, keep the old files in backup
+   and report the unconfirmed update; do not move files underneath the running launcher.
 7. Rebuild: when the new version changes the game code (build_game.code_id()), the Play tab says
    "Build the game once (about 2 minutes)" and its button becomes BUILD GAME (core.game_state).
 
@@ -645,6 +647,9 @@ def _new_stage_root(root):
     for d in stage_roots(root):
         try:
             if os.path.exists(d):
+                backup = os.path.join(d, "backup")
+                if os.path.exists(backup) and (not os.path.isdir(backup) or os.listdir(backup)):
+                    continue             # a previous failed swap may still need these old files
                 shutil.rmtree(d)
             os.makedirs(d)
             with open(os.path.join(d, ".probe"), "w") as f:
@@ -1012,6 +1017,7 @@ def apply_plan(plan_path, confirm_wait=CONFIRM_WAIT, list_processes=None):
         _write_json(res_path, result)
         log(f"result: {'updated' if ok else 'not updated'}{': ' + error if error else ''}")
         proc = None
+        launch_error = None
         if start and install:
             others = [p for p in list_processes([install], exclude={os.getpid()})
                       if os.path.basename(p[1]).lower() in ("pythonw.exe", "python.exe")]
@@ -1025,7 +1031,8 @@ def apply_plan(plan_path, confirm_wait=CONFIRM_WAIT, list_processes=None):
                         log(f"started {cmd[0]}")
                     except OSError as e:
                         log(f"could not start the launcher: {e}")
-        return proc
+                        launch_error = e
+        return proc, launch_error
 
     try:
         log(f"update {plan.get('from')} -> {plan.get('to')} in {install}")
@@ -1054,15 +1061,24 @@ def apply_plan(plan_path, confirm_wait=CONFIRM_WAIT, list_processes=None):
             return 5
         result.update(changed=True, journal=journal, phase="swapped")
         marker = os.path.join(sroot, "confirm")
-        proc = finish(True, env={CONFIRM_ENV: marker})
+        proc, launch_error = finish(True, env={CONFIRM_ENV: marker})
         watch = bool(launch) or launcher_command(install)[1]
-        confirmed = wait_confirm(proc, marker, confirm_wait, watch_exit=watch) if proc else None
+        if launch_error is not None:
+            confirmed = False
+        else:
+            confirmed = wait_confirm(proc, marker, confirm_wait, watch_exit=watch) if proc else None
         if confirmed is False:
-            log("the new launcher ended without starting up; putting the old files back")
+            log("the new launcher did not start; putting the old files back")
             problems = undo(install, new_dir, backup, journal["new"], journal["old"], log)
             result.update(rolled_back=not problems, problems=problems, phase="undone")
             finish(False, f"the new launcher {plan['to']} did not start")
             return 6
+        if proc is not None and confirmed is None:
+            # It may still be using the new files. Preserve recovery files without
+            # trying to roll back underneath it or claiming startup succeeded.
+            result["phase"] = "unconfirmed"
+            finish(False, "the new launcher did not confirm startup before the timeout", start=False)
+            return 8
         shutil.rmtree(backup, ignore_errors=True)
         result["phase"] = "done"
         _write_json(res_path, result)
@@ -1070,8 +1086,11 @@ def apply_plan(plan_path, confirm_wait=CONFIRM_WAIT, list_processes=None):
         return 0
     except BaseException as e:       # noqa: BLE001 -- the old launcher must come back whatever happened
         log(f"unexpected error: {e!r}")
-        if not result.get("changed"):
-            finish(False, f"unexpected error: {e}")
+        if result.get("changed"):
+            result["phase"] = "failed"
+        # Never leave the interim success report behind. After a swap, preserve
+        # the backup and avoid starting another launcher or moving live files.
+        finish(False, f"unexpected error: {e}", start=not result.get("changed"))
         return 7
     finally:
         logf.close()
@@ -1117,7 +1136,14 @@ def pending_results(root=ROOT):
 def cleanup(sroot, result=None, logs_dir=None, wait=60.0):
     """After the swap step ended: keep its log in native\\logs, remove the staging folder."""
     if result and result.get("pid"):
-        wait_for_exit(result["pid"], wait)
+        if not wait_for_exit(result["pid"], wait):
+            return False                 # the swap still owns its staging folder and backup
+        # The launcher can read the interim "swapped" result while the swap
+        # waits for startup confirmation. Its eventual rollback may fail, so
+        # cleanup must use the result written after that wait, not the snapshot.
+        result = _read_json(os.path.join(sroot, "result.json"))
+        if not isinstance(result, dict) or result.get("phase") == "swapped":
+            return False                 # without a final result the backup may still be needed
     src = os.path.join(sroot, "swap.log")
     if logs_dir and os.path.exists(src):
         try:

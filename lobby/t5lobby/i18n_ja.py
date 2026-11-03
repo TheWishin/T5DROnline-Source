@@ -1293,6 +1293,8 @@ MESSAGES = {
     "programs from the folder were still running ({names}); close them and try again":
         "フォルダー内のプログラムがまだ実行中でした（{names}）。閉じてからもう一度試してください",
     "the new launcher {version} did not start": "新しいランチャー {version} が起動しませんでした",
+    "the new launcher did not confirm startup before the timeout":
+        "新しいランチャーは制限時間内に起動を確認しませんでした",
     "could not replace the program files: {error}": "プログラムファイルを置き換えられませんでした：{error}",
     "unexpected error: {error}": "予期しないエラー：{error}",
     "GitHub asks to wait with update checks until {time}.":

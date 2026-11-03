@@ -855,6 +855,7 @@ class OnlineView:
         page.rowconfigure(0, weight=3)
         page.rowconfigure(1, weight=1)
         pc = self.card(page, pad=12)
+        pc.configure(padding=(0, px(6)))
         pc.grid(row=0, column=0, sticky="nsew")
         pc.columnconfigure(0, weight=1)
         pc.rowconfigure(1, weight=1)
@@ -870,10 +871,20 @@ class OnlineView:
             side="left", padx=(px(6), 0))
         tab.private_chat.button(tools, tab.private_chat.selected_player).pack(side="left", padx=(px(6), 0))
         fr, tab.tv_players = self.tree(pc, ("player", "rank", "rating", "record", "main", "status", "ping", "mute"),
-                                       (130, 168, 70, 80, 80, 110, 62, 70), height=6,   # rank: "Beginner (placement 4/5)"
+                                       (130, 168, 70, 60, 65, 110, 62, 70), height=6,   # rank: "Beginner (placement 4/5)"
                                        empty=t("Nobody else is online right now. Ranked match and Quick match "
                                                "keep looking until someone comes."))
         fr.grid(row=1, column=0, sticky="nsew")
+        heading_font = tkfont.Font(root=tab.tv_players, font=ttk.Style(tab.tv_players).lookup(
+            "Lobby.Treeview.Heading", "font") or "TkHeadingFont")
+        body_font = tkfont.Font(root=tab.tv_players, font=ttk.Style(tab.tv_players).lookup(
+            "Lobby.Treeview", "font") or "TkDefaultFont")
+        record_width = max(px(60), heading_font.measure(tab.tv_players.heading("record", "text")) + px(12))
+        tab.tv_players.column("record", width=record_width, minwidth=record_width, stretch=False)
+        self._player_record_font, self._player_record_min = body_font, record_width
+        mute_width = max(px(70), heading_font.measure(t("Mute").upper()) + px(12),
+                         *(body_font.measure(label) + px(8) for label in (t("Mute"), t("Unmute"))))
+        tab.tv_players.column("mute", width=mute_width, minwidth=mute_width)
         tab.tv_players.bind("<Button-1>", tab.on_player_mute_click, add="+")
         tab.tv_players.bind("<Double-1>", lambda _e: tab._profile_of_selected())
         tab.tv_players.bind("<Return>", lambda _e: tab._profile_of_selected())
@@ -882,6 +893,7 @@ class OnlineView:
         tab.chal.build_open(pc, 2, px)             # your open challenges, under the list
 
         rc = self.card(page, pad=12)
+        rc.configure(padding=(px(12), px(6)))
         rc.grid(row=1, column=0, sticky="nsew", pady=(px(10), 0))
         rc.columnconfigure(0, weight=1)
         rc.rowconfigure(1, weight=1)
@@ -904,12 +916,15 @@ class OnlineView:
         tab.rooms_ui.build(rc, px, self)    # this player's room under the list (tk_rooms.py), shown while in one
 
         cc = self.card(page, pad=12)
+        cc.configure(padding=(0, px(6)))
         cc.grid(row=0, column=1, rowspan=2, sticky="nsew", padx=(px(10), 0))
         cc.columnconfigure(0, weight=1)
         cc.rowconfigure(1, weight=1)
         head, _tools = self.section_head(cc, t("Chat").upper())
         head.grid(row=0, column=0, sticky="we", pady=(0, px(6)))
-        tab.chat_log = tk.Text(cc, height=10, width=26, state="disabled", wrap="word", font=self.th.fonts["body"],
+        # Natural minima only: the grid gives chat the remaining width. A fixed
+        # character count competes with the player table's translated actions.
+        tab.chat_log = tk.Text(cc, height=10, width=1, state="disabled", wrap="word", font=self.th.fonts["body"],
                                bg=C["surface"], fg=C["text"], relief="flat", borderwidth=0, highlightthickness=0,
                                padx=px(2), pady=px(2), cursor="arrow", takefocus=0)
         tab.chat_log.grid(row=1, column=0, sticky="nsew")
@@ -925,13 +940,13 @@ class OnlineView:
         row = self.body(cc)
         row.grid(row=2, column=0, sticky="we", pady=(px(8), 0))
         row.columnconfigure(0, weight=1)
-        ce = ttk.Entry(row, textvariable=tab.chat_var, style="Card.TEntry", width=8)    # (it grows with the card)
+        ce = ttk.Entry(row, textvariable=tab.chat_var, style="Card.TEntry", width=1)    # (it grows with the card)
         ce.grid(row=0, column=0, sticky="we")
         ce.bind("<Return>", lambda _e: tab.do_chat())
         ce.bind("<Tab>", tab.complete_mention)
         ttk.Button(row, text=t("Send"), style="Card.TButton", command=tab.do_chat).grid(row=0, column=1,
                                                                                         padx=(px(6), 0))
-        self.mention_hint = ttk.Label(cc, text="", style="Card.Muted.TLabel", wraplength=px(240))
+        self.mention_hint = ttk.Label(cc, text="", style="Card.Muted.TLabel", wraplength=px(120))
         self.mention_hint.grid(row=3, column=0, sticky="w", pady=(px(4), 0))
 
     def chat_name_tag(self, name, mine=False):
@@ -1443,6 +1458,13 @@ class OnlineView:
                 return
         except tk.TclError:
             return
+        tv = self.tab.tv_players
+        record_width = max([self._player_record_min] + [
+            (self.th.fonts["bold"] if "me" in tv.item(row, "tags") else self._player_record_font).measure(
+                tv.set(row, "record")) + self.px(8)
+            for row in tv.get_children()])
+        if record_width > int(tv.column("record", "minwidth")):
+            tv.column("record", width=max(record_width, int(tv.column("record", "width"))), minwidth=record_width)
         self._update_profile()
         self._update_profile_mute()
         self._update_play()

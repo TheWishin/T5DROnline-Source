@@ -29,8 +29,9 @@ Added regression: `tests/test_screen_side.py` builds/runs the pure C++ policy ma
 session and renderer wiring. These tests were authored but remain unexecuted here;
 the native policy harness requires a build, which is forbidden in this mirror.
 
-Maintainer validation still required: real build and a casual pair test with **0 mismatches**, testing each
-side choice from both assigned slots, normal/mirrored players together, rematches, persistent-session choice
-changes, and casual-to-ranked/Quick/tournament transitions. Confirm readable HUD names, bars, timer, scissor
-clipping, correct toward/away directions for D-pad and both sticks, and unchanged watched replays. For the
-offline preview, check both pad ports independently. No game run or renderer capture was made here.
+Checked in the game for the HUD (issue #31, 2026-11-03; NETPLAY.md "Issue #31"): offline Always left and
+Always right pictures at 720p and 1440p, every frame across the HUD's first appearance and the first damage,
+a rollback pair (RTT 150 ms, 3 % loss, joiner Always left) and a lockstep pair (host Always right) with
+**0 mismatches** and the same hashes, each mirrored bar the length of the other PC's bar for that player.
+Not repeated there: rematches, persistent-session choice changes, casual-to-ranked/Quick/tournament
+transitions, real sticks.

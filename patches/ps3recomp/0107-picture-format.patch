@@ -1,0 +1,445 @@
+diff --git a/libs/video/cellVideoOut.c b/libs/video/cellVideoOut.c
+index c67a6ea..6cc1972 100644
+--- a/libs/video/cellVideoOut.c
++++ b/libs/video/cellVideoOut.c
+@@ -11,6 +11,7 @@
+ #include <stdio.h>
+ #include <string.h>
+ #include <stdint.h>
++#include <stdlib.h>
+ 
+ /* The generic HLE adapter passes GUEST addresses for pointer args; translate to
+  * a host pointer. (Values written through it stay big-endian via ps3_bswap*.) */
+@@ -27,6 +28,58 @@ static u32 s_pitch          = 1280 * 4;
+ 
+ static void get_resolution_wh(u32 resId, u16* w, u16* h);
+ 
++/* PS3_VIDEO_ASPECT=4:3|16:9 and PS3_VIDEO_RESOLUTION=480|576|720|1080
++ * (patch 0107, picture format): the display mode cellVideoOutGetState reports,
++ * read once. Default = what a 720p 16:9 TV reports (unchanged). Tekken 5 DR
++ * reads the aspect byte at 0x25A34C and keeps "wide = aspect != 4:3" in its
++ * display object (+0x69); docs/PICTURE_FORMAT.md says what that changes.
++ * A 4:3 TV is an SD TV on the PS3: the game's 4:3 HUD is laid out for 480
++ * lines (at 720p it lands off-centre), so PS3_VIDEO_ASPECT=4:3 alone reports
++ * 480; the present shows the picture as 4:3 and Internal resolution counts
++ * from 720 lines (cellVideoOut_report_4_3 / cellVideoOut_res_boost). */
++static int s_report_init;
++static u8  s_report_aspect = CELL_VIDEO_OUT_ASPECT_16_9;
++static void report_init(void)
++{
++    if (s_report_init) return;
++    s_report_init = 1;
++    const char* a = getenv("PS3_VIDEO_ASPECT");
++    if (a && (!strcmp(a, "4:3") || !strcmp(a, "4_3") || !strcmp(a, "43")))
++        s_report_aspect = CELL_VIDEO_OUT_ASPECT_4_3;
++    const char* r = getenv("PS3_VIDEO_RESOLUTION");
++    if (s_report_aspect == CELL_VIDEO_OUT_ASPECT_4_3 && !(r && *r))
++        r = "480";
++    if (r && *r) {
++        const int v = atoi(r);
++        const u8 id = v == 480 ? CELL_VIDEO_OUT_RESOLUTION_480 : v == 576 ? CELL_VIDEO_OUT_RESOLUTION_576 :
++                      v == 1080 ? CELL_VIDEO_OUT_RESOLUTION_1080 : CELL_VIDEO_OUT_RESOLUTION_720;
++        cellVideoOut_set_resolution(id);
++    }
++    if (s_report_aspect != CELL_VIDEO_OUT_ASPECT_16_9 || (r && *r))
++        fprintf(stderr, "[cellVideoOut] reported display mode: resolution id %u, aspect %s "
++                "(PS3_VIDEO_ASPECT / PS3_VIDEO_RESOLUTION)\n", (unsigned)s_resolution_id,
++                s_report_aspect == CELL_VIDEO_OUT_ASPECT_4_3 ? "4:3" : "16:9");
++}
++
++/* 1 when the game was told it has a 4:3 TV (PS3_VIDEO_ASPECT=4:3): the present
++ * shows its display buffers as 4:3, whatever their pixel size. */
++int cellVideoOut_report_4_3(void)
++{
++    report_init();
++    return s_report_aspect == CELL_VIDEO_OUT_ASPECT_4_3;
++}
++
++/* Internal resolution's factor counts from 720 lines: with a reported SD mode
++ * (480 / 576 lines) the display buffers are smaller, so the factor is raised by
++ * 720 / their height (Native = 720 lines again). 1 for every HD mode. */
++float cellVideoOut_res_boost(void)
++{
++    report_init();
++    if (s_resolution_id == CELL_VIDEO_OUT_RESOLUTION_480) return 1.5f;
++    if (s_resolution_id == CELL_VIDEO_OUT_RESOLUTION_576) return 1.25f;
++    return 1.0f;
++}
++
+ /* ---------------------------------------------------------------------------
+  * Configuration
+  * -----------------------------------------------------------------------*/
+@@ -85,6 +138,7 @@ s32 cellVideoOutGetState(u32 videoOut, u32 deviceIndex, CellVideoOutState* state
+     if (videoOut != CELL_VIDEO_OUT_PRIMARY && videoOut != CELL_VIDEO_OUT_SECONDARY)
+         return CELL_VIDEO_OUT_ERROR_UNSUPPORTED_VIDEO_OUT;
+ 
++    report_init();
+     state = GUEST_PTR(state, CellVideoOutState*);
+     memset(state, 0, sizeof(CellVideoOutState));
+ 
+@@ -98,7 +152,7 @@ s32 cellVideoOutGetState(u32 videoOut, u32 deviceIndex, CellVideoOutState* state
+         state->displayMode.resolutionId = (u8)s_resolution_id;
+         state->displayMode.scanMode     = CELL_VIDEO_OUT_SCAN_MODE_PROGRESSIVE;
+         state->displayMode.conversion   = 0;
+-        state->displayMode.aspect       = CELL_VIDEO_OUT_ASPECT_16_9;
++        state->displayMode.aspect       = s_report_aspect;
+         state->displayMode.refreshRates = ps3_bswap16(0x0001); /* 59.94Hz flag */
+     } else {
+         state->state = 0; /* disabled */
+diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
+index 46c7183..5bfa540 100644
+--- a/libs/video/rsx_live_draw.c
++++ b/libs/video/rsx_live_draw.c
+@@ -225,6 +225,7 @@ static volatile long g_ld_ps1_vram_ready = 0;
+ #include <dxgi1_6.h>   /* IDXGIFactory6: EnumAdapterByGpuPreference (patch 0031) */
+ #include <d3dcompiler.h>
+ #include "rsx_vertex_formats.h"
++#include "rsx_picture_rect.h"   /* patch 0107: PS3_PICTURE fit / fill / stretch / 4:3 */
+ #include <sys/stat.h>
+ 
+ #pragma comment(lib, "d3d12.lib")
+@@ -10999,6 +11000,34 @@ static int ld_al_is_screen(u32 target, float W, float H)
+     return 0;
+ }
+ 
++/* Patch 0107, True 4:3 online (src/directfight/df_aspect.cpp): the game shows a 4:3 HUD, but its fight
++ * camera keeps the 16:9 framing so that both PCs play the same fight. The 3D picture is then drawn for 16:9
++ * into the 4:3 screen; its copy onto the screen is widened by this factor (4/3) about the middle, so the
++ * screen shows the middle 4:3 of it in shape. 1 = off. Host pixels only. */
++static volatile float g_ld_3d_crop = 1.0f;
++static u64 g_ld_3d_crop_draws;
++void rsx_live_draw_set_3d_crop(float k)
++{
++    if (!(k >= 1.0f && k <= 2.0f)) k = 1.0f;
++    if (k != g_ld_3d_crop)
++        fprintf(stderr, "[display] 3D picture %s (True 4:3 online, patch 0107; %llu copies widened so far)\n",
++                k != 1.0f ? "widened to the middle 4:3 of the 16:9 camera" : "as drawn",
++                (unsigned long long)g_ld_3d_crop_draws);
++    g_ld_3d_crop = k;
++}
++/* The copy of the 3D picture onto the screen: a draw onto a display buffer at its own size that reads a
++ * surface larger than the screen both ways (the 2048 x 1440 3D target; not a 512 x 512 glow buffer). */
++static int ld_is_3d_copy(u32 target, const u32* surf_used, u32 n_surf_used, int view_big, float W, float H)
++{
++    if (!ld_al_is_screen(target, W, H)) return 0;
++    if (view_big >= 0 && (float)g.surfaces[view_big].w > W && (float)g.surfaces[view_big].h > H) return 1;
++    for (u32 i = 0; i < n_surf_used; i++) {
++        const surface_t* s = &g.surfaces[surf_used[i]];
++        if ((float)s->w > W && (float)s->h > H && !ld_al_is_display(surf_used[i])) return 1;
++    }
++    return 0;
++}
++
+ /* This draw's vertices (at most 64), with every attribute as the vertex shader gets it. -> count, 0 = no. */
+ static u32 ld_al_vertices(float (*v)[16][4])
+ {
+@@ -11532,6 +11561,7 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+         : 0;
+     u32 slots[SRV_TABLE_SIZE], smp_slots[SMP_TABLE_SIZE];
+     u32 surf_used[SRV_TABLE_SIZE], n_surf_used = 0;
++    int view_big = -1;   /* patch 0107: a surface this draw reads through its guest-size view (ld_is_3d_copy) */
+     u32 zdepth_used[SRV_TABLE_SIZE], n_zdepth_used = 0;
+     u32 texture_mask = 0;
+     for (u32 u = 0; u < SRV_TABLE_SIZE; u++) slots[u] = SRV_WHITE;
+@@ -11748,6 +11778,7 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+             }
+             if (view != SRV_WHITE) {
+                 slots[u] = view;
++                view_big = sampled;
+             } else {
+                 slots[u] = SRV_SURFACE_BASE + sampled;
+                 int seen = 0;
+@@ -11964,6 +11995,13 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+     float al_dx_px = 0.0f;
+     if (g_al.active || g_al_req || ld_al_trace_enabled())
+         ld_al_draw(target, surf_used, n_surf_used, W, H, xf, &al_mirror, &al_dx_px);
++    if (g_ld_3d_crop != 1.0f && ld_is_3d_copy(target, surf_used, n_surf_used, view_big, W, H)) {
++        /* patch 0107, True 4:3 online: the copy of the 3D picture onto the screen is drawn wider by
++         * g_ld_3d_crop about the middle -- the camera kept its 16:9 framing, so the 4:3 screen shows the
++         * middle 4:3 of it, in shape; the viewport cuts the sides */
++        xf[0] *= g_ld_3d_crop; xf[4] *= g_ld_3d_crop;
++        g_ld_3d_crop_draws++;
++    }
+     /* The vertex constant block (8 KB + viewport) is re-uploaded per draw.
+      * When no constant was written since the previous draw and the viewport
+      * transform is the same, point this draw at the block already uploaded --
+@@ -12805,6 +12843,11 @@ float rsx_internal_res_scale(void)
+             g_ld_res_source = oka && okb ? "PS3_RES_SCALE x PS3_RENDER_SCALE"
+                                          : oka ? "PS3_RES_SCALE" : "PS3_RENDER_SCALE";
+     }
++    {   /* patch 0107: an SD display mode (the game's own 4:3, PS3_VIDEO_ASPECT=4:3 -> 480 lines) -- the steps
++         * count from 720 lines, so Native draws 720 lines again, not 480 */
++        extern float cellVideoOut_res_boost(void);
++        s *= cellVideoOut_res_boost();
++    }
+     if (!(s >= 0.25f)) s = 0.25f;
+     if (s > 4.0f) s = 4.0f;
+     cached = s;
+@@ -12816,7 +12859,8 @@ const char* rsx_internal_res_label(void)
+ {
+     static char label[48];
+     static float label_s = 0.0f;
+-    const float s = rsx_internal_res_scale();
++    extern float cellVideoOut_res_boost(void);
++    const float s = rsx_internal_res_scale() / cellVideoOut_res_boost();   /* the step (patch 0107) */
+     if (!label[0] || label_s != s) {   /* patch 0063: auto may settle after the first call */
+         label_s = s;
+         if (s == 0.5f)        snprintf(label, sizeof label, "Lowest (0.5x)");
+@@ -13183,25 +13227,38 @@ static void ld_test_backbuffer_shot(ID3D12Resource* bb)
+ /* Replaces the present's CopyResource(bb, src). Same contract: src is in
+  * COPY_SOURCE, bb in COPY_DEST, and both are left that way. When the sizes
+  * match this IS that copy; otherwise src is drawn scaled into the backbuffer,
+- * aspect kept (aw:ah, the guest's display size) with black bars. */
++ * aspect kept (aw:ah, the guest's display size) with black bars.
++ * Patch 0107: where it goes is rsx_picture_rect() (PS3_PICTURE): fit (the
++ * above), fill (no bars, the edges cut), stretch, 4:3 (the middle 4:3). The
++ * viewport may reach past the window; the scissor keeps the visible part. */
+ static void ld_present_copy(ID3D12Resource* bb, u32 bbi, ID3D12Resource* src, u32 aw, u32 ah)
+ {
+     D3D12_RESOURCE_DESC sd, bd;
+     src->lpVtbl->GetDesc(src, &sd);
+     bb->lpVtbl->GetDesc(bb, &bd);
+     ld_gp_mark(GP_PRESENT, 0, 0, (u32)bd.Width, bd.Height, 0, 0);
++    const int pic_mode = rsx_picture_mode_env();
++    rsx_pic_rect pr;
++    rsx_picture_rect(pic_mode, (unsigned)bd.Width, (unsigned)bd.Height, aw ? aw : (unsigned)sd.Width,
++                     ah ? ah : sd.Height, &pr);
++    { static int logged = -1;
++      if (logged != pic_mode) {
++          logged = pic_mode;
++          fprintf(stderr, "[display] picture %s (PS3_PICTURE): %llux%u window, picture %.0fx%.0f at %.0f,%.0f, "
++                          "visible %ld,%ld..%ld,%ld\n", rsx_picture_mode_name(pic_mode),
++                  (unsigned long long)bd.Width, bd.Height, (double)pr.vw, (double)pr.vh, (double)pr.vx,
++                  (double)pr.vy, pr.cl, pr.ct, pr.cr, pr.cb);
++      } }
++    const int whole = pr.vx == 0.0f && pr.vy == 0.0f && pr.vw == (float)bd.Width && pr.vh == (float)bd.Height;
+     if (!g_ldp.pso || !g_ldp.heap || !aw || !ah ||
+-        (sd.Width == bd.Width && sd.Height == bd.Height && sd.Format == bd.Format)) {
++        (sd.Width == bd.Width && sd.Height == bd.Height && sd.Format == bd.Format && whole)) {
+         LDL->lpVtbl->CopyResource(LDL, bb, src);
+         return;
+     }
+     const float bw = (float)bd.Width, bh = (float)bd.Height;
+-    const float k = bw / (float)aw < bh / (float)ah ? bw / (float)aw : bh / (float)ah;
+-    const float vw = (float)aw * k, vh = (float)ah * k;
+-    D3D12_VIEWPORT vp = { (float)(LONG)((bw - vw) * 0.5f), (float)(LONG)((bh - vh) * 0.5f),
+-                          vw, vh, 0.0f, 1.0f };
+-    D3D12_RECT sc = { (LONG)vp.TopLeftX, (LONG)vp.TopLeftY,
+-                      (LONG)(vp.TopLeftX + vw + 0.5f), (LONG)(vp.TopLeftY + vh + 0.5f) };
++    const float vw = pr.vw, vh = pr.vh;
++    D3D12_VIEWPORT vp = { pr.vx, pr.vy, vw, vh, 0.0f, 1.0f };
++    D3D12_RECT sc = { (LONG)pr.cl, (LONG)pr.ct, (LONG)pr.cr, (LONG)pr.cb };
+     D3D12_RESOURCE_BARRIER b[2] = {0};
+     for (int i = 0; i < 2; i++) {
+         b[i].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+@@ -13229,7 +13286,7 @@ static void ld_present_copy(ID3D12Resource* bb, u32 bbi, ID3D12Resource* src, u3
+     g.dev->lpVtbl->CreateShaderResourceView(g.dev, src, &srv, cpu);
+ 
+     const D3D12_CPU_DESCRIPTOR_HANDLE rtv = rtv_handle(bbi);
+-    if (vw + 0.5f < bw || vh + 0.5f < bh) {
++    if (pr.cl > 0 || pr.ct > 0 || (float)pr.cr + 0.5f < bw || (float)pr.cb + 0.5f < bh) {
+         static const float black[4] = { 0, 0, 0, 1 };
+         LDL->lpVtbl->ClearRenderTargetView(LDL, rtv, black, 0, NULL);
+     }
+@@ -14853,6 +14910,12 @@ static void ld_present_body(u32 buffer_id, int display_synced, const hp_target*
+     if (!g_ld_lock_mode) ld_wait_frame_latency();
+     const u32 bbi = g.swap->lpVtbl->GetCurrentBackBufferIndex(g.swap);
+     ID3D12Resource* bb = g.backbuf[bbi];
++    /* the picture's shape (patch 0107): the display buffer's size, or 4:3 when the game was told it has a
++     * 4:3 TV (its display buffers are then 720x480, drawn for a 4:3 screen) */
++    u32 pic_w = presented_surface->w;
++    const u32 pic_h = presented_surface->h;
++    { extern int cellVideoOut_report_4_3(void);
++      if (pic_h && cellVideoOut_report_4_3()) pic_w = (pic_h * 4u + 1u) / 3u; }
+ 
+     D3D12_RESOURCE_BARRIER bar[2] = {0};
+     bar[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+@@ -14875,7 +14938,7 @@ static void ld_present_body(u32 buffer_id, int display_synced, const hp_target*
+         if (dot) snprintf(dot, sizeof loop_path - (size_t)(dot - loop_path), "_loop.ppm");
+         const int saved = ld_present_fast();
+         g_ld_present_fast = 0;
+-        ld_present_copy(bb, bbi, srcimg, presented_surface->w, presented_surface->h);
++        ld_present_copy(bb, bbi, srcimg, pic_w, pic_h);
+         g_ld_present_fast = saved;
+         char keep[MAX_PATH];
+         snprintf(keep, sizeof keep, "%s", g_ld_bb_shot_path);
+@@ -14883,9 +14946,9 @@ static void ld_present_body(u32 buffer_id, int display_synced, const hp_target*
+         ld_test_backbuffer_shot(bb);
+         snprintf(g_ld_bb_shot_path, sizeof g_ld_bb_shot_path, "%s", keep);
+     }
+-    ld_present_copy(bb, bbi, srcimg, presented_surface->w, presented_surface->h);
++    ld_present_copy(bb, bbi, srcimg, pic_w, pic_h);
+     extern void rsx_overlay_present(void*, void*, void*, uint32_t, uint32_t);   /* patch 0045: rsx_overlay.c */
+-    rsx_overlay_present(g.dev, g.list, bb, presented_surface->w, presented_surface->h);
++    rsx_overlay_present(g.dev, g.list, bb, pic_w, pic_h);
+     ld_bound_invalidate();
+     ld_test_backbuffer_shot(bb);
+ 
+diff --git a/libs/video/rsx_overlay.c b/libs/video/rsx_overlay.c
+index fde4903..4b0e68a 100644
+--- a/libs/video/rsx_overlay.c
++++ b/libs/video/rsx_overlay.c
+@@ -16,6 +16,7 @@
+  * the layout.
+  */
+ #include "rsx_overlay.h"
++#include "rsx_picture_rect.h"
+ 
+ #include <math.h>
+ #include <stdio.h>
+@@ -553,16 +554,21 @@ static float ovl_round(float v) { return floorf(v + 0.5f); }
+ 
+ /* The picture's rectangle in the backbuffer: the same letterbox as the
+  * present copy (rsx_live_draw.c ld_present_copy). */
++/* The overlay's canvas in the window: the present's picture (fit), or with another picture format
++ * (patch 0107, PS3_PICTURE) the aw:ah rectangle inside the visible part -- never cut, never stretched. */
+ static void ovl_viewport(uint32_t bw, uint32_t bh, uint32_t aw, uint32_t ah,
+                          float* vx, float* vy, float* vw, float* vh)
+ {
+     if (!aw || !ah) { aw = bw; ah = bh; }
+-    const float fw = (float)bw, fh = (float)bh;
+-    const float k = fw / (float)aw < fh / (float)ah ? fw / (float)aw : fh / (float)ah;
+-    *vw = (float)aw * k;
+-    *vh = (float)ah * k;
+-    *vx = (float)(long)((fw - *vw) * 0.5f);
+-    *vy = (float)(long)((fh - *vh) * 0.5f);
++    rsx_pic_rect r;
++    rsx_picture_rect(rsx_picture_mode_env(), bw, bh, aw, ah, &r);
++    if ((uint64_t)aw * 720u != (uint64_t)ah * 1280u) {   /* RSX_OVERLAY_CANVAS_W x _H */
++        /* a picture of another shape (the game's own 4:3, patch 0107): the canvas keeps its own shape inside
++         * the visible part, so the overlay's letters are never squeezed */
++        rsx_pic_fit((float)r.cl, (float)r.ct, (float)(r.cr - r.cl), (float)(r.cb - r.ct),
++                    1280u, 720u, &r.ox, &r.oy, &r.ow, &r.oh);
++    }
++    *vx = r.ox; *vy = r.oy; *vw = r.ow; *vh = r.oh;
+ }
+ 
+ static int ovl_layout_list(const ovl_list* L, uint32_t bw, uint32_t bh, uint32_t aw, uint32_t ah,
+diff --git a/libs/video/rsx_picture_rect.h b/libs/video/rsx_picture_rect.h
+new file mode 100644
+index 0000000..2ae64d9
+--- /dev/null
++++ b/libs/video/rsx_picture_rect.h
+@@ -0,0 +1,122 @@
++/*
++ * Picture format (patch 0107, T5DR 1.2.0; docs/PICTURE_FORMAT.md): where the present puts the game's
++ * picture in the window. Host pixels only -- nothing the game sees changes, so two PCs of a match may
++ * choose differently.
++ *
++ *   PS3_PICTURE = fit      the whole picture, its own shape (16:9), black bars where the window has
++ *                          another shape (default, the present before 0107)
++ *               | fill     the picture enlarged until the window has no bars, its shape kept: on a 16:10
++ *                          screen 5 % of the width is cut on each side, on 3:2 7.8 %, on 4:3 12.5 %
++ *               | stretch  the whole picture pulled to the window's shape (wider or taller people)
++ *               | 4:3      the middle 4:3 of the picture, bars left and right on a wide screen (what a 4:3
++ *                          TV showed of a 16:9 game in "zoom"; the game itself has no 4:3 layout, see
++ *                          docs/PICTURE_FORMAT.md "True 4:3")
++ *
++ * One function decides the rectangles, used by the present (rsx_live_draw.c ld_present_copy) and the
++ * overlay (rsx_overlay.c): the training overlay is laid out in the 16:9 rectangle that fits the visible
++ * part, so it is never cut or stretched. Header only and pure, so tests/c/picture_rect_test.c runs it.
++ */
++#ifndef RSX_PICTURE_RECT_H
++#define RSX_PICTURE_RECT_H
++
++#include <string.h>
++
++enum { RSX_PIC_FIT = 0, RSX_PIC_FILL = 1, RSX_PIC_STRETCH = 2, RSX_PIC_43 = 3 };
++
++typedef struct {
++    /* the viewport the whole source picture is drawn into, host pixels; may reach past the window (fill)
++     * or past the visible rectangle (4:3) -- the scissor cuts it */
++    float vx, vy, vw, vh;
++    /* the visible rectangle (scissor), inside the window: left, top, right, bottom */
++    long cl, ct, cr, cb;
++    /* the overlay's canvas: the aw:ah rectangle that fits inside the visible one */
++    float ox, oy, ow, oh;
++} rsx_pic_rect;
++
++/* PS3_PICTURE's text -> mode (unknown/empty -> fit). */
++static inline int rsx_picture_mode_parse(const char* s)
++{
++    if (!s || !*s) return RSX_PIC_FIT;
++    char b[16];
++    size_t n = 0;
++    for (; s[n] && n < sizeof b - 1; n++) b[n] = (char)((s[n] >= 'A' && s[n] <= 'Z') ? s[n] + 32 : s[n]);
++    b[n] = 0;
++    if (!strcmp(b, "fill") || !strcmp(b, "zoom") || !strcmp(b, "1")) return RSX_PIC_FILL;
++    if (!strcmp(b, "stretch") || !strcmp(b, "2")) return RSX_PIC_STRETCH;
++    if (!strcmp(b, "4:3") || !strcmp(b, "43") || !strcmp(b, "4x3") || !strcmp(b, "3")) return RSX_PIC_43;
++    return RSX_PIC_FIT;
++}
++
++/* PS3_PICTURE, read once per file that asks (the present and the overlay agree: same variable) */
++#include <stdlib.h>
++static inline int rsx_picture_mode_env(void)
++{
++    static int m = -1;
++    if (m < 0) m = rsx_picture_mode_parse(getenv("PS3_PICTURE"));
++    return m;
++}
++
++static inline const char* rsx_picture_mode_name(int mode)
++{
++    return mode == RSX_PIC_FILL ? "fill" : mode == RSX_PIC_STRETCH ? "stretch" : mode == RSX_PIC_43 ? "4:3" : "fit";
++}
++
++/* the largest aw:ah rectangle inside w x h, centred at (x, y) + half the rest (the present's rounding: the
++ * origin truncated to whole pixels) */
++static inline void rsx_pic_fit(float x, float y, float w, float h, unsigned aw, unsigned ah,
++                               float* ox, float* oy, float* ow, float* oh)
++{
++    const float k = w / (float)aw < h / (float)ah ? w / (float)aw : h / (float)ah;
++    *ow = (float)aw * k;
++    *oh = (float)ah * k;
++    *ox = x + (float)(long)((w - *ow) * 0.5f);
++    *oy = y + (float)(long)((h - *oh) * 0.5f);
++}
++
++/* bw x bh = the window's backbuffer, aw x ah = the guest's display size (its shape). */
++static inline void rsx_picture_rect(int mode, unsigned bw, unsigned bh, unsigned aw, unsigned ah,
++                                    rsx_pic_rect* r)
++{
++    if (!aw || !ah) { aw = bw ? bw : 1; ah = bh ? bh : 1; }
++    const float fw = (float)bw, fh = (float)bh;
++    if (mode == RSX_PIC_STRETCH) {
++        r->vx = 0; r->vy = 0; r->vw = fw; r->vh = fh;
++        r->cl = 0; r->ct = 0; r->cr = (long)bw; r->cb = (long)bh;
++    } else if (mode == RSX_PIC_FILL) {
++        const float k = fw / (float)aw > fh / (float)ah ? fw / (float)aw : fh / (float)ah;
++        r->vw = (float)aw * k;
++        r->vh = (float)ah * k;
++        /* <= 0: the cut part is off the window; rounded to the nearest pixel, so both sides lose the same */
++        r->vx = -(float)(long)((r->vw - fw) * 0.5f + 0.5f);
++        r->vy = -(float)(long)((r->vh - fh) * 0.5f + 0.5f);
++        r->cl = 0; r->ct = 0; r->cr = (long)bw; r->cb = (long)bh;
++    } else if (mode == RSX_PIC_43 && (float)aw * 3.0f > (float)ah * 4.0f + 0.5f) {
++        /* the middle 4:3 of a wider picture, as large as the window allows */
++        const unsigned cw = (ah * 4u + 1u) / 3u;              /* 720 -> 960 */
++        float cx, cy, cwf, chf;
++        rsx_pic_fit(0, 0, fw, fh, cw, ah, &cx, &cy, &cwf, &chf);
++        const float k = chf / (float)ah;
++        r->vw = (float)aw * k;
++        r->vh = chf;
++        r->vx = cx - (float)(long)(((float)aw * k - cwf) * 0.5f);
++        r->vy = cy;
++        r->cl = (long)cx; r->ct = (long)cy;
++        r->cr = (long)(cx + cwf + 0.5f); r->cb = (long)(cy + chf + 0.5f);
++    } else {   /* fit: exactly the present before 0107 */
++        rsx_pic_fit(0, 0, fw, fh, aw, ah, &r->vx, &r->vy, &r->vw, &r->vh);
++        r->cl = (long)r->vx; r->ct = (long)r->vy;
++        r->cr = (long)(r->vx + r->vw + 0.5f); r->cb = (long)(r->vy + r->vh + 0.5f);
++    }
++    if (r->cl < 0) r->cl = 0;
++    if (r->ct < 0) r->ct = 0;
++    if (r->cr > (long)bw) r->cr = (long)bw;
++    if (r->cb > (long)bh) r->cb = (long)bh;
++    if (mode == RSX_PIC_FIT) {
++        r->ox = r->vx; r->oy = r->vy; r->ow = r->vw; r->oh = r->vh;
++    } else {
++        rsx_pic_fit((float)r->cl, (float)r->ct, (float)(r->cr - r->cl), (float)(r->cb - r->ct), aw, ah,
++                    &r->ox, &r->oy, &r->ow, &r->oh);
++    }
++}
++
++#endif

@@ -92,7 +92,10 @@ DEFAULTS = {
     "rap": "",
     "out": "",                 # empty: <package folder>/native
     "nickname": "",
-    "display": "window",       # window | window1080 | window1440 | maximized | borderless
+    "display": "window",       # window | window1080 | window1440 | maximized | borderless | custom
+    "window_w": 1920,          # display "custom": the window's inside (client area), physical pixels (WINDOW_SIZE)
+    "window_h": 1200,
+    "picture": "fit",          # picture format: fit | fill | stretch | 4:3, PS3_PICTURE (PICTURE_FORMATS)
     "internal_res": "native",  # internal resolution: lowest | lower | native | 1080p | 1440p | 4k | auto, PS3_INTERNAL_RES
     "internal_res_set": False, # ... picked by the player; until then Auto on integrated graphics (internal_res_choice)
     "clock_hint_shown": False, # the Play tab's "Your processor ran at X GHz" (clock_hint) was shown: once
@@ -223,6 +226,12 @@ class Settings(dict):
             self["practice_dummy"] = "game"
         if not isinstance(self["replay_dir"], str):
             self["replay_dir"] = ""
+        if not isinstance(self["picture"], str) or self["picture"] not in PICTURE_FORMATS:
+            self["picture"] = "fit"
+        if not isinstance(self["display"], str) or self["display"] not in dict(DISPLAY_MODES):
+            self["display"] = "window"
+        size = window_size(self["window_w"], self["window_h"])
+        self["window_w"], self["window_h"] = size or (DEFAULTS["window_w"], DEFAULTS["window_h"])
 
     def save(self):
         side = self.get("screen_side", "dealt")
@@ -321,6 +330,12 @@ class Settings(dict):
         env["PS3_LAPTOP"] = {"on": "1", "off": "0"}.get(self["power_saving"], "auto")
         if self["stage_blur"] == "off":
             env["PS3_STAGE_BLUR"] = "0"
+        if self["picture"] == TRUE_43:
+            # the game's own 4:3 (it is told it has a 4:3 TV): offline only -- GameRun turns it into the
+            # middle-of-the-picture 4:3 for a game started for online play (TRUE_43_ONLINE)
+            env["PS3_VIDEO_ASPECT"] = "4:3"
+        elif self["picture"] in PICTURE_FORMATS and self["picture"] != "fit":
+            env["PS3_PICTURE"] = self["picture"]
         for key, (_name, var, _modes, _default) in GRAPHICS.items():
             if self[key] == "off":
                 env[var] = "0"
@@ -1079,6 +1094,18 @@ def is_online_env(env):
     return any(env.get(k) for k in ONLINE_ENV)
 
 
+def online_picture_env(env):
+    """For a game started for online play (or a replay): True 4:3 changes what the game sets up (its display
+    mode, ps3recomp patch 0107), so it is offline only -- online the picture is the middle of the 16:9 one
+    (picture only), like the "4:3" choice. None also takes the switches out of an inherited Windows
+    environment (run_game drops None values). Changes env in place."""
+    asked = env.get("PS3_VIDEO_ASPECT")
+    env["PS3_VIDEO_ASPECT"] = env["PS3_VIDEO_RESOLUTION"] = None
+    if asked and not env.get("PS3_PICTURE"):
+        env["PS3_PICTURE"] = TRUE_43_ONLINE
+    return env
+
+
 def saves_dir(out_dir):
     """Where the game keeps its saves (the runtime's ./gamedata in the output folder)."""
     return os.path.join(out_dir, "gamedata", "dev_hdd0", "home", "00000001", "savedata")
@@ -1169,6 +1196,7 @@ class GameRun:
         if is_online_env(env_over):
             for k in UNLOCK_ENV + OFFLINE_ONLY_ENV:   # the game ignores them online anyway; keep its log and reports plain
                 env_over.pop(k, None)
+            online_picture_env(env_over)
             # An online game keeps a save of its own (patches/ps3recomp/0044): both PCs start from the same
             # fresh save -- the game copies its own OPTIONS (round time, difficulty, ...) and unlocks into the
             # match state -- and the player's offline save is never read or written by it.
@@ -1289,7 +1317,7 @@ class GameRun:
             time.sleep(0.25)
         if hwnd:
             time.sleep(0.5)
-            place_window(hwnd, self.settings["display"])
+            place_window(hwnd, self.settings["display"], (self.settings["window_w"], self.settings["window_h"]))
 
 
 # --------------------------------------------------------------------------- windows (Win32)
@@ -1682,7 +1710,7 @@ def slow_frame_lines(path, limit=64 * 1024 * 1024):
 
 # Settings a line of Extra settings overrides (env_overrides applies them last).
 SETTING_ENV = {"power_saving": "PS3_LAPTOP", "internal_res": "PS3_INTERNAL_RES", "vsync": "PS3_VSYNC",
-               "stage_blur": "PS3_STAGE_BLUR", **{key: spec[1] for key, spec in GRAPHICS.items()}}
+               "stage_blur": "PS3_STAGE_BLUR", "picture": "PS3_PICTURE", **{key: spec[1] for key, spec in GRAPHICS.items()}}
 
 
 def extra_env_override(settings, key):
@@ -1742,7 +1770,53 @@ DISPLAY_MODES = [        # English; t(label) where it is shown
     ("window1440", N_("Window, 2560 x 1440")),
     ("maximized", N_("Maximized window")),
     ("borderless", N_("Borderless fullscreen (Alt+Enter or F11 switches in the game)")),
+    ("custom", N_("Window, my own size:")),
 ]
+
+# Display "custom" (1.2.0): the size of the window's inside in physical pixels, any shape (a 3:2 or 16:10 laptop
+# screen, a part of an ultrawide). Never bigger than the monitor's work area: a larger size is scaled down to fit,
+# shape kept. Stored as two whole numbers; window_size() refuses anything else.
+CUSTOM_DISPLAY = "custom"
+WINDOW_SIZE_MIN = (320, 240)
+WINDOW_SIZE_MAX = (7680, 4320)
+
+
+def window_size(w, h):
+    """(w, h) as whole numbers inside WINDOW_SIZE_MIN..MAX, or None for anything else (text, 0, negative,
+    fractions, bool, too large). Text '1920' is taken; '1920.5', '', 'abc' are not."""
+    out = []
+    for v, lo, hi in ((w, WINDOW_SIZE_MIN[0], WINDOW_SIZE_MAX[0]), (h, WINDOW_SIZE_MIN[1], WINDOW_SIZE_MAX[1])):
+        if isinstance(v, bool):
+            return None
+        if isinstance(v, str):
+            v = v.strip()
+            if not v.isdigit() or len(v) > 6:
+                return None
+            v = int(v)
+        if not isinstance(v, int) or not lo <= v <= hi:
+            return None
+        out.append(v)
+    return tuple(out)
+
+
+# Picture format (ps3recomp patch 0107, PS3_PICTURE, docs/PICTURE_FORMAT.md): how the game's 16:9 picture fills a
+# window of another shape: Whole picture with black bars (default), Fill (no bars, the shape kept, the edges cut
+# off: 5 % on each side on 16:10, 8 % on 3:2, the HUD's ends too), Stretch (no bars, everything wider or taller)
+# and 4:3 (the middle of the picture in a 4:3 frame, like a 4:3 TV in "zoom"). These change only the picture, so
+# the two players of an online match may choose differently. The training overlay is always placed whole inside
+# what is visible.
+# True 4:3 (TRUE_43): the game is told it has a 4:3 TV (PS3_VIDEO_ASPECT=4:3, an SD mode) and draws its own 4:3
+# picture -- 3D view and HUD laid out for 4:3. That changes what the game itself sets up, so it is offline only:
+# a game started for online play (or a replay) gets the middle-of-the-picture 4:3 instead (TRUE_43_ONLINE).
+TRUE_43 = "true43"
+TRUE_43_ONLINE = "4:3"
+PICTURE_FORMATS = {      # English; t(label) where it is shown
+    "fit": N_("Whole picture (16:9, black bars on other screens; default)"),
+    "fill": N_("Fill the screen (no bars; cuts the left and right edges)"),
+    "stretch": N_("Stretch to the screen (no bars; fighters look wider)"),
+    "4:3": N_("4:3 (the middle of the picture, bars left and right)"),
+    TRUE_43: N_("True 4:3 (the game draws for a 4:3 screen; offline only, online the middle of the picture)"),
+}
 
 
 def find_game_window(pid):
@@ -1800,15 +1874,22 @@ def window_center(hwnd):
     return (r.l + r.r) // 2, (r.t + r.b) // 2
 
 
-def place_window(hwnd, mode):
+def place_window(hwnd, mode, size=None):
     """Size the game window (in physical pixels: "1920 x 1080" is 1920 x 1080 pixels at any
     display scaling). The swap chain follows the client size and the present scales, so any
-    size works."""
+    size works. `size` = (w, h) of the client area for mode "custom"."""
     with _PerMonitorDpi():
-        _place_window(hwnd, mode)
+        _place_window(hwnd, mode, size)
 
 
-def _place_window(hwnd, mode):
+def fit_client(cw, ch, work_w, work_h, frame_w=16, frame_h=40):
+    """(w, h): the client size cw x ch scaled down (shape kept) until the window with its frame fits the work
+    area work_w x work_h; never scaled up."""
+    scale = min(1.0, (work_w - frame_w) / cw, (work_h - frame_h) / ch)
+    return max(1, int(cw * scale)), max(1, int(ch * scale))
+
+
+def _place_window(hwnd, mode, size=None):
     user32 = ctypes.windll.user32
     h = ctypes.c_void_p(hwnd)
 
@@ -1834,10 +1915,11 @@ def _place_window(hwnd, mode):
         user32.SetWindowPos(h, None, m.l, m.t, m.r - m.l, m.b - m.t, SWP_NOZORDER | SWP_FRAMECHANGED)
         return
     cw, ch = {"window1080": (1920, 1080), "window1440": (2560, 1440)}.get(mode, (1280, 720))
+    if mode == "custom":
+        cw, ch = window_size(*(size or (None, None))) or (DEFAULTS["window_w"], DEFAULTS["window_h"])
     w = mi.work
-    # never bigger than the screen's work area, keep 16:9
-    scale = min(1.0, (w.r - w.l - 16) / cw, (w.b - w.t - 40) / ch)
-    cw, ch = int(cw * scale), int(ch * scale)
+    # never bigger than the screen's work area, keep the shape (16:9, or the player's own)
+    cw, ch = fit_client(cw, ch, w.r - w.l, w.b - w.t)
     rc = RECT(0, 0, cw, ch)
     user32.AdjustWindowRect(ctypes.byref(rc), WS_OVERLAPPEDWINDOW, False)
     ww, wh = rc.r - rc.l, rc.b - rc.t

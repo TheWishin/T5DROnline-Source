@@ -438,6 +438,26 @@ MESSAGES = {
     "Maximized window": "Ventana maximizada",
     "Borderless fullscreen (Alt+Enter or F11 switches in the game)":
         "Pantalla completa sin bordes (Alt+Enter o F11 cambia en el juego)",
+    # Display: own window size, Picture format (ps3recomp patch 0107)
+    'pixels': 'píxeles',
+    'Window, my own size:':
+        'Ventana, tamaño propio:',
+    'Width {wmin}-{wmax} and height {hmin}-{hmax}, whole numbers. Until then the game uses {w} x {h}.':
+        'Ancho {wmin}-{wmax} y alto {hmin}-{hmax}, números enteros. Hasta entonces el juego usa {w} x {h}.',
+    'Picture format':
+        'Formato de imagen',
+    'Whole picture (16:9, black bars on other screens; default)':
+        'Imagen completa (16:9, barras negras en otras pantallas; predeterminado)',
+    'Fill the screen (no bars; cuts the left and right edges)':
+        'Llenar la pantalla (sin barras; recorta los bordes izquierdo y derecho)',
+    'Stretch to the screen (no bars; fighters look wider)':
+        'Estirar a la pantalla (sin barras; los luchadores se ven más anchos)',
+    '4:3 (the middle of the picture, bars left and right)':
+        '4:3 (el centro de la imagen, barras a izquierda y derecha)',
+    'True 4:3 (the game draws for a 4:3 screen; offline only, online the middle of the picture)':
+        '4:3 real (el juego dibuja para una pantalla 4:3; solo sin conexión, en línea el centro de la imagen)',
+    'For screens that are not 16:9, such as 16:10 and 3:2 laptops. The game draws 16:9, so Fill cuts a little off the sides and Stretch widens everything. Only your picture changes: online, both players can choose differently.':
+        'Para pantallas que no son 16:9, como portátiles 16:10 y 3:2. El juego dibuja en 16:9, así que Llenar recorta un poco los lados y Estirar ensancha todo. Solo cambia tu imagen: en línea, cada jugador puede elegir algo distinto.',
     # ---- launcher/online.py
     "Online play": "Juego online",
     "The lobby files (lobby/t5lobby) are missing from this copy of the launcher, so "

@@ -46,7 +46,8 @@ class RestRuntimeIntegration(unittest.TestCase):
         tail = sorted(path.name for path in directory.glob("010*.patch"))
         self.assertEqual(tail, ["0100-macos-metal-slot-wait-warning.patch",
                                 "0101-macos-fps-slow-frames.patch", "0102-macos-pad-file2.patch",
-                                "0103-vrr-pacing.patch", "0104-low-end.patch", "0105-warmup-hidden.patch"])
+                                "0103-vrr-pacing.patch", "0104-low-end.patch", "0105-warmup-hidden.patch",
+                                "0106-kernel-edge.patch", "0107-picture-format.patch"])
         low = source("patches/ps3recomp/0104-low-end.patch")
         self.assertIn("#define PPU_VMX_SOFT2 0", low)
         hidden = source("patches/ps3recomp/0105-warmup-hidden.patch")

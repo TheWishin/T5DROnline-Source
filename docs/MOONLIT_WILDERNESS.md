@@ -1,104 +1,63 @@
-# Moonlit Wilderness: black-line investigation
+# Moonlit Wilderness: the thin black line (ps3recomp patch 0106)
 
-Status: diagnostic plan and code-based hypothesis; no reproduced Moonlit
-Wilderness failure and no renderer fix claimed. This task did not build, start
-the game, capture frames, or execute tests.
+Report (1.2.0 list): thin black lines on Moonlit Wilderness (**stage 5**, `t5s06`, see the stage table in
+[DIRECTFIGHT.md](DIRECTFIGHT.md); stage 22, Great Plains, is its Dark Resurrection replacement).
 
-Moonlit Wilderness is **stage 5**, `t5s06`, in
-[the stage table](DIRECTFIGHT.md). Stage 22 is Great Plains, its Dark
-Resurrection replacement. Stage 4, the default of `tools/flicker_check.py`, is
-City at Sunset and will not exercise the reported stage.
+## What it was
 
-## What the maintainer should run later
+With **Stage blur / glow On** (launcher Settings; `PS3_STAGE_BLUR=1`, Off is the default since 1.1.4) the last
+row of the picture was about a third as bright as the rows above it, and the last column about three quarters:
+a thin dark line along the bottom and the right edge, every frame of every fight. Measured on the display
+buffers (`tools/flicker_check.py --keep`, 90-240 frames per run; ratio = mean brightness of the edge row/column
+over the row / column two pixels further in):
 
-These commands are for an authorized, game-ready maintainer environment.
-`GAME_OUT` and `DIAGNOSTICS_OUT` are placeholders for its existing build and
-private diagnostics directory. Never run these commands in this public working
-copy or put their game data, captured game art, or player logs here. The tool
-needs the game's existing build plus NumPy; it does not build anything.
+| run (stage 5 unless named) | bottom row | right column | top / left |
+|---|---|---|---|
+| blur Off, Native / 1440p / 1080p / Lower / Lowest | 1.00-1.03 | 1.00-1.01 | 0.99-1.01 |
+| blur On, Native, before 0106 (`RSX_KERNEL_EDGE=0`) | **0.35** | **0.75-0.81** | 0.99-1.01 |
+| blur On, Native, 0106 | 1.00 | 1.00 | 1.01 / 1.00 |
+| blur On, 1080p, 0106 | 1.00 | 1.00 | 1.00 |
+| blur On, Lowest (0106 does not act below Native: 0038 already draws one host pixel = 2 guest texels past the scissor there) | 1.00 | 1.00 | 1.00 |
+| stage 34 (the misty swamp), blur On, before / 0106 | 0.35 / 1.00 | 0.79 / 1.00 | 1.00 |
 
-Run separate captures, with the same build, GPU, driver, fighters, and capture
-timing. Replace each diagnostics directory with a fresh private directory.
+So Moonlit Wilderness has a soft-focus filter like the stages in
+[RENDER_PERF.md "Stage blur and glow"](RENDER_PERF.md) (0043's survey covered stages 17-34 only), and the line
+was on every soft-focus stage with blur On, not only this one.
 
-```text
-python tools/flicker_check.py --out GAME_OUT --stage 5 --fighters kaz,rav --at 9 --secs 12 --dir DIAGNOSTICS_OUT/native --keep PS3_INTERNAL_RES=native PS3_STAGE_BLUR=0
-python tools/flicker_check.py --out GAME_OUT --stage 5 --fighters kaz,rav --at 9 --secs 12 --dir DIAGNOSTICS_OUT/lowest --keep PS3_INTERNAL_RES=lowest PS3_STAGE_BLUR=0
-python tools/flicker_check.py --out GAME_OUT --stage 5 --fighters kaz,rav --at 9 --secs 12 --dir DIAGNOSTICS_OUT/blur --keep PS3_INTERNAL_RES=native PS3_STAGE_BLUR=1
-python tools/flicker_check.py --out GAME_OUT --stage 5 --fighters kaz,rav --at 9 --secs 12 --dir DIAGNOSTICS_OUT/no-shadows --keep PS3_INTERNAL_RES=native PS3_STAGE_BLUR=0 PS3_SHADOWS=0
-python tools/flicker_check.py --out GAME_OUT --stage 5 --fighters kaz,rav --at 9 --secs 12 --dir DIAGNOSTICS_OUT/synchronous-vertices --keep PS3_INTERNAL_RES=native PS3_STAGE_BLUR=0 RSX_VERTEX_THREADS=0
-```
+Why: the 3D pass draws into part of the 2048 x 1440 target -- on Moonlit 1536 x 1280, scissor = viewport, and
+the game's clear of that target is held to the same scissor, so the rest of it is black. The soft-focus
+downsample reads the target with a centre tap and taps 2 guest texels around it (a filter kernel,
+`rsx_fp_texture_tap_mask`). For the last display row the centre is at guest row ~1279 and the taps reach rows
+1280-1281: black. Top and left are not affected: there the taps leave the texture itself and the sampler clamps
+to its edge row, which is drawn. Visible in the surface dumps (`T5_DF_SHOT` + `LD_SURF_DUMP`): row 1279 mean 54,
+row 1280 0; column 1535 38, column 1536 0.
 
-On Windows, repeat the native capture with `--cpus 0xFF` only if that mask is
-valid for the machine. It restricts the game to eight logical processors and
-can expose scheduling-sensitive failures hidden by more workers. On other
-platforms this option does not set affinity. Do not compare a capture with a
-different CPU mask without recording that difference.
+## The fix
 
-The tool already enables `LD_FRAME_DUMP_ASYNC=1` and dumps every presented
-frame during the capture interval. Keep that default: synchronous GPU readback
-can hide a timing failure. `RSX_VERTEX_THREADS=0` changes vertex fetching to
-the renderer's walker; it is a diagnostic comparison, with a performance cost.
-`--keep` retains frames for visual comparison. Without it the frames are
-deleted, but the tool still leaves its run directory and game log behind.
+A filter kernel that reads a render target whose draws this frame left an undrawn margin reads it through a
+view (0043's guest-size view, `ld_guest_view_srv`, now also at Native) whose texels past the drawn part repeat
+its last row and column -- what the scene's continuation would be. Every texel inside is the same as before
+(the view's shader clamps the texel position first: `pos.xy = min(floor(pos.xy), lim) + 0.5`, a no-op inside).
+The drawn part is the furthest right/bottom of this frame's draw scissors on that target (`ext_r` / `ext_b`
+per surface, `ld_kernel_edge`). Nothing changes for single-tap reads (the plain downsample of the other stages,
+the heat haze), with blur Off (the kernel then reads one tap at its centre, 0043), or for a target drawn to its
+edges. `RSX_KERNEL_EDGE=0` turns it off (the old picture, for comparisons). Host pixels only: no guest memory,
+command or timing changes, so the two players of a match may have it on or off.
 
-Inspect the retained consecutive frames, especially floor/vegetation edges
-and the right and bottom picture edges. Record whether the line is stationary,
-moves with geometry, lasts a single frame, changes with resolution, or
-disappears with blur or shadows. Compare matching fight moments, allowing for
-different startup timing between runs. Check the logs for skipped asynchronous
-readbacks and dropped draws. Missing captures are gaps in the evidence.
+Cost: one 2048 x 1440 copy pass per frame on soft-focus stages with blur On at Native (above Native the view
+was made anyway).
 
-Exit status 0 means no *whole-picture dark flash* was counted, 1 means one was
-counted, and 2 means the run failed or fewer than 30 frames were read back.
-`dark_frames()` averages a central crop with a four-pixel stride; a frame must
-be under brightness 45 and less than half as bright as both neighbours to be
-counted. **A narrow line, a persistent dark strip, or an artifact outside that
-crop can produce exit status 0.** This tool does not prove Moonlit Wilderness
-is line-free. Visual inspection of the retained frames is required, and any
-line detector needs synthetic positive and negative cases before it becomes
-a release gate.
+## Checked
 
-## Likely cause to investigate in the code
-
-For a stable dark line at the picture edge, the first code-supported hypothesis
-is **sampling cleared-black padding beside the stage's rendered subrectangle**.
-[Patch 0038](../patches/ps3recomp/0038-internal-resolution.patch), in
-`libs/video/rsx_live_draw.c` / `sink_end_impl`, scales the target, viewport and
-scissor. Its explicit below-native correction extends the scissor by one host
-pixel at the right and bottom: the game's downsample taps can otherwise reach
-the cleared black outside the scene, because a host texel spans more than one
-guest texel. The patch's comment describes a darker right column and bottom
-row. That is direct evidence for this *class* of edge artifact, not evidence
-that stage 5 currently has it. A Lowest-only edge line supports this lead;
-a line crossing the interior at Native needs a different explanation. Check
-the actual stage 5 render-target dimensions, viewport/scissor and sampled
-rectangle before changing any rounding or sampling rule.
-
-For intermittent black triangles or slivers, investigate asynchronous vertex
-job reservation and draw-skipping instead.
-[Patch 0082](../patches/ps3recomp/0082-sunset-black-frames.patch) documents a
-proven City at Sunset failure: a draw queues a vertex job, then returns before
-recording; the next draw reuses its ring bytes, and whichever job finishes last
-supplies the geometry. `sink_end()` now calls `ld_vjob_reserve_keep()` to
-advance those reservations even after a skipped draw. This protection covers
-dropped PSOs and debug skips as well as the stage-blur skip. A Moonlit failure
-that disappears with synchronous vertices would justify auditing these paths,
-but does not establish the same bug. The City at Sunset diagnosis is documented
-in [RENDER_PERF.md](RENDER_PERF.md); it must not be relabelled as a confirmed
-Moonlit cause. `RSX_VERTEX_KEEP_SKIPPED=0` deliberately restores the old failure
-and is not a player workaround.
-
-No stage 5 surface address is supplied here: it has not been established by
-the repository evidence inspected for this item. Do not copy City at Sunset's
-surface address into `LD_FRAME_DUMP_ASYNC_SURF` for Moonlit Wilderness. Discover
-the actual surface from a future authorized capture before using that hook.
-
-## Proof still needed
-
-The maintainer must reproduce the reported line on stage 5, identify the
-affected draw or sample region, and repeat the capture matrix on a real build.
-This document changes no simulation or rendering behavior and adds no setting.
-The switches above are existing, local rendering diagnostics; old clients and
-network messages are unchanged. Any eventual renderer fix needs a focused
-regression that fails on its old behavior, matching-scene visual checks and a
-real two-PC game test with **0 simulation mismatches** before release.
+- The table above (offline direct fights, Kazuya vs Raven, 1.5 s windows 12 s after the fight state).
+- Frame-exact: a lockstep pair, blur On on both, host `RSX_KERNEL_EDGE=0` and joiner 0106, stages 5 and 34,
+  every surface dumped at the same fight frames on both PCs (`T5_DF_SHOT=++300,++600`): both matches confirmed,
+  0 mismatching frames, the same hashes (the setting is host-only). Where the two PCs' 3D targets were identical
+  (stage 5 frame +300, stage 34 frame +600), the display buffers differed only in the last 3 rows and columns:
+  the last row's mean brightness 62 -> 168 (stage 5) and 48 -> 125 (stage 34), against 169 / 133 three rows up.
+  In the other two frames the 3D targets themselves already differed in 1,300-2,900 pixels (secondary motion,
+  as in same-build pairs).
+- Other things looked at, no line found: Native, 1440p, Lower, Lowest, 1080p with blur Off; a later part of the
+  fight; dark-line search over every frame (only HUD panel and text edges). A dark-blue stepped strip in the far
+  grass (sky between two distant grass cards) is the same at every internal resolution and with blur on or off;
+  it is not changed by this patch. If players mean that, a screenshot of the spot is needed.

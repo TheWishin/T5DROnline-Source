@@ -954,7 +954,9 @@ def settings_lines(settings, labels=None, env_overrides=None, out_dir=None):
         t = (labels.get(key) or {}).get(v)
         return f"{t} [{v}]" if t else str(v)
     yesno = lambda v: "yes" if v else "no"      # noqa: E731
-    L = [f"Window and resolution: {lab('display')}",
+    L = [f"Window and resolution: {lab('display')}"
+         + (f" {st.get('window_w')} x {st.get('window_h')}" if st.get("display") == "custom" else ""),
+         f"Picture format: {lab('picture') if st.get('picture') else 'fit'}",
          f"Internal resolution: {lab('internal_res')}",
          f"VSync: {lab('vsync')}",
          f"Stage blur / glow: {lab('stage_blur')}",

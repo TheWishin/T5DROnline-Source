@@ -1,53 +1,132 @@
-﻿# Picture format plan for 1.2.0
+# Picture format and own window size (1.2.0, ps3recomp patch 0107)
 
-Status: design only. The current default stays unchanged: the game's 16:9 picture is scaled to fit the window, with black bars where necessary. No new setting, game-reported aspect, resolution, or launcher text is implemented by this document.
+Players with 16:10 and 3:2 screens (laptops, a Discord request) saw black bars above and below the picture and
+could not pick a window size of their own. Two launcher settings now cover that:
 
-## What the mirror establishes
+- **Settings -> Display -> "Window, my own size"**: the inside of the game window (client area) in physical
+  pixels, any shape, e.g. 2160 x 1440 on a 3:2 laptop or 1680 x 1050 on a 16:10 monitor. Whole numbers, width
+  320-7680, height 240-4320 (`core.window_size`); anything else is refused in the field and the last valid size
+  stays. A size larger than the monitor's work area is scaled down to fit with its shape kept (`core.fit_client`),
+  like the fixed window presets. Borderless fullscreen still follows the monitor.
+- **Settings -> Picture format** (`PS3_PICTURE`): how the game's 16:9 picture fills a window or screen of
+  another shape.
 
-- `patches/ps3recomp/0010-render-quality.patch`, `ld_present_copy`, uses the guest display dimensions `aw:ah`, computes `k = min(backbuffer_width / aw, backbuffer_height / ah)`, and centres the resulting rectangle. A taller monitor therefore has bars above and below a 16:9 picture. At a 1920 x 1280 client area (3:2), the expected picture is 1920 x 1080 with 100 pixels above and below: 15.625% of the total height is bars. At 1920 x 1200 (16:10), it is 1920 x 1080 with 60 pixels at each edge. Substantially larger bars need the actual client, backbuffer and picture rectangles checked; the report alone does not establish their cause.
-- `patches/ps3recomp/0038-internal-resolution.patch` changes host resource sizes while retaining guest surface dimensions, memory and commands. Below Native it reduces the large 3D targets while retaining the 1280 x 720 display buffers for HUD and text. Its existing numeric option is a uniform factor or scalar output height, not an arbitrary width and height.
-- `launcher/core.py`, `DEFAULTS`, `DISPLAY_MODES` and `_place_window`, offers fixed window presets, maximized and borderless modes; fixed windows retain 16:9 and fit the monitor's work area. There is no saved custom width/height setting.
-- `patches/ps3recomp/0045-training-overlay.patch`, `ovl_viewport`, independently repeats the present rectangle calculation for the 1280 x 720 overlay canvas. Changing presentation without changing that mapping moves overlays away from their intended positions.
-- The mirror contains neither the video-output aspect-report implementation nor the game's consumers of a reported aspect. The movie decoder's aspect metadata in patch 0006 is not evidence of game layout support. There is no verified aspect-control address here. Do not guess one or claim the game supports a native 4:3, 16:10 or 3:2 layout from these files.
+| Picture format | `PS3_PICTURE` | What you see |
+|---|---|---|
+| Whole picture (default) | `fit` (unset) | the whole 16:9 picture, black bars where the window has another shape -- the present before 0107, to the pixel |
+| Fill the screen | `fill` | no bars, the shape kept, the picture enlarged until it covers the window: on 16:10 5 % of the width is cut on each side, on 3:2 7.8 %, on 4:3 12.5 % (the outer ends of the life bars and names too) |
+| Stretch to the screen | `stretch` | no bars, the whole picture pulled to the window's shape: on 16:10 everything is 11 % wider than it should be, on 3:2 19 % |
+| 4:3 | `4:3` | the middle 960 x 720 of the picture in a 4:3 frame, bars left and right on a wide screen; on a 4:3 screen it fills the screen |
+| True 4:3 (offline only) | `PS3_VIDEO_ASPECT=4:3` | the game draws for a 4:3 TV: its own 4:3 3D view and HUD, shown as 4:3 with bars left and right on a wide screen. A game started for online play (or a replay) gets the `4:3` choice instead (below) |
 
-## Proposed choices
+Fill and Stretch are honest names for what a final-picture change can do: the game draws 16:9 or 4:3 only, so a
+16:10 or 3:2 screen either gets bars, cuts the sides or widens everything. A real 16:10 / 3:2 picture with more of
+the stage above and below would need the game to draw a taller 3D view and to place its HUD for it; it has no
+such layout -- only 16:9 and 4:3 (below).
 
-Keep picture format, output resolution and Internal resolution as separate settings. Increasing pixel count must not silently change picture shape or vice versa.
+The 3D picture, the HUD and the menus all go the same way (they are one picture by then). The training overlay
+is laid out in the 16:9 rectangle that fits inside what is visible, so it is never cut or stretched.
 
-| Picture format | Intended behaviour | Release condition |
-| --- | --- | --- |
-| 16:9 (default) | Preserve today's complete picture and shape, fitted inside the available client area. | Existing behaviour; retain as fallback for every unsupported format. |
-| 4:3 | Use a verified native 4:3 layout if the game has one, including its HUD and camera framing. | Trace the game's aspect report reads and verify the complete layout first. This extends the existing requested 4:3 work; it does not mark it implemented. |
-| Fit to screen | Use the actual client ratio for 16:10 and 3:2 only if their complete layout survives the checks below. Re-evaluate on resize or monitor change. | Experimental and unavailable until both ratios pass; fall back to 16:9 with a clear reason when unsupported. Do not automatically treat arbitrary ratios as supported. |
+## Host pixels only
 
-A final-blit stretch can remove bars without changing simulation, but it squeezes or stretches fighters, text and circles; that is not proof of a native layout. A crop can preserve shape but cuts the sides of a 16:9 picture on taller screens, including names, life bars and other edge content. Neither is an acceptable substitute for the proposed complete-layout Fit to screen mode. If a separate distorted stretch option is ever wanted, label it honestly and keep it opt-in; it is outside this plan.
+Both settings (every picture format but True 4:3, below) change only where the present (`libs/video/rsx_live_draw.c` `ld_present_copy`) and the overlay
+(`libs/video/rsx_overlay.c` `ovl_viewport`) put the finished picture in the window. One pure function decides the
+rectangles for both, `rsx_picture_rect()` in `libs/video/rsx_picture_rect.h`: the viewport the whole picture is
+drawn into (it may reach past the window for Fill and past the visible part for 4:3; the scissor keeps the
+visible part), the visible rectangle, and the overlay's 16:9 canvas. Nothing the game reads changes: no guest
+memory, no command, no display mode, no timing. So the two players of an online match can choose differently,
+and a replay plays back the same with any setting.
 
-Before implementing a native format, the maintainer must establish what the game actually does with its reported aspect: does it change 3D projection, HUD anchors and safe areas, display buffers, menus, or a combination? A reported aspect that only changes projection can still leave 16:9 HUD assumptions; a reported resolution that only resizes buffers does not reflow text. The missing implementation and consumer evidence must be supplied in the real project before enabling such a path.
+`fit` takes exactly the old code path: the same viewport, scissor and clear, and when the window has the
+picture's size the plain copy (`tests/c/picture_rect_test.c` compares the new function with the old formula on
+26 window shapes). The game log says once which format is used:
+`[display] picture fill (PS3_PICTURE): 1920x1200 window, picture 2133x1200 at -107,0, visible 0,0..1920,1200`.
 
-## Custom resolution
+Windows only: the macOS (Metal) present keeps its own letterbox.
 
-Add validated custom **output client width and height**, in physical pixels, alongside the existing window presets. Persist them separately from picture format and `internal_res`; use them for window placement/backbuffer sizing only. Borderless continues to follow the selected monitor. A 3:2 output size must not itself request a different guest aspect or remove bars in 16:9 mode.
+## True 4:3
 
-Accept complete positive integers within documented renderer/resource limits, reject malformed, zero, negative and overflowing values, and handle a size that cannot be created by reverting to a supported preset. Keep a window inside the current monitor's work area, including its frame and DPI; show the actual applied size when clamped. Revalidate saved values on load and after monitor changes. Determine limits from the real renderer/device checks before choosing numbers; this mirror does not establish a safe arbitrary maximum for custom output.
+The game does have a 4:3 mode. At boot it asks the system for the display mode (`cellVideoOutGetState`) and keeps
+"wide = aspect is not 4:3" in its display object (code at 0x25A34C: `+0x69 = (aspect ^ 1) != 0`). The display
+object is read back by at least seven functions; the camera set-up (0x816D4) picks the 3D projection's aspect
+from it -- 16/9 (0x469860) when wide, 4/3 (0x46985C) when not -- and stores it with the near/far planes
+(100, 5,000,000) in the camera object.
 
-Keep the current Internal resolution presets and uniform scaling semantics. If an advanced custom internal height is exposed later, route it through the existing validated uniform-scale path, retaining its 0.25x to 4x bounds and guest surface identity. Do not interpret arbitrary output `width x height` as anisotropic internal rendering or as a replacement guest display size. Higher custom output sizes need not increase 3D detail, and lower Internal resolution does not repair an aspect/layout error.
+`PS3_VIDEO_ASPECT=4:3` (patch 0107) makes `cellVideoOutGetState` report a 4:3 TV; the default report stays
+16:9 (`s_report_aspect`). `PS3_VIDEO_RESOLUTION=480|576|720|1080` reports that resolution (the game then makes
+display buffers of that size). Both are read once and logged (`[cellVideoOut] reported display mode: ...`).
 
-Any new launcher labels, hints, validation messages and fallback messages must be added to every existing language catalog using the surrounding translation conventions. None are added by this plan.
+What the game does with it (stage 5, Kazuya vs Raven, window pictures through `RSX_TEST_BB_SHOT`):
 
-## Keep changes display-only
+- **4:3 at 720p**: the 3D view gets the 4:3 projection (drawn squeezed into the 1280 x 720 buffer: the moon is an
+  ellipse until the picture is shown as 4:3) and the HUD a 4:3 layout -- but off-centre: life bars, timer and
+  names sit left of the middle and do not line up with each other. 720p with a 4:3 TV is not a combination a
+  PS3 gives a game (HD output is 16:9), and the game was not made for it.
+- **4:3 at 480 (SD)**, what a 4:3 TV gives the PS3: display buffers 720 x 480, the HUD centred and complete,
+  the moon round once the picture is shown as 4:3. That is the game's real 4:3 picture: more of the stage above
+  and below, less at the sides.
+- 1080 lines with 4:3: the same off-centre HUD as 720p.
 
-The safe implementation boundary is host presentation and resource allocation: the peers retain identical guest inputs, commands, memory, clock, camera decisions and side assignment. Share one computed picture rectangle between the present blit and training/status overlays. Check patch 0086 against that same coordinate system: HUD element placement, viewport/scissor clipping and the distinction between 3D and HUD must use the draw's real coordinates rather than assume a new canvas is 1280 pixels wide.
+So **True 4:3** = `PS3_VIDEO_ASPECT=4:3`, which by itself reports 480 lines (unless `PS3_VIDEO_RESOLUTION` says
+otherwise). The present then shows the display buffers as 4:3, whatever their pixel size
+(`cellVideoOut_report_4_3`, `pic_w` in `ld_present_body`), so Whole picture gives a 4:3 picture with bars on a
+wide screen and the other formats work from that shape; the training overlay keeps its own 16:9 canvas inside
+the visible part (`ovl_viewport`), so its letters are never squeezed. Internal resolution counts from 720 lines
+in this mode (`cellVideoOut_res_boost`: x1.5 at 480, x1.25 at 576): Native draws 720 lines, 1080p 1080 lines,
+Lowest keeps 480-line display buffers with a smaller 3D pass; the log and the window title name the step
+(`rsx_internal_res_label`). Checked: boot (rating screen, intro movie, attract), fights at Lowest / Native /
+1080p in 1024 x 768, 1440 x 1080 and 1920 x 1080 windows.
 
-Changing the aspect reported to the guest is **not yet proven display-only**. `src/netplay/t5_hooks.cpp` documents that camera-projected fighter side flags affect sidestep direction and remain in the gameplay hash; excluding some render/camera records from a hash is not proof that an arbitrary aspect change cannot feed back into gameplay. Prefer a verified host-only projection/HUD transform after the game's decisions. If a native layout needs guest-visible configuration, trace its writes and all gameplay consumers, and prove identical simulation before allowing different local preferences online. Do not weaken hash coverage to make a format pass.
+**Offline only.** The 4:3 TV changes what the game simulates, so a 4:3 PC and a 16:9 PC cannot play each other
+with it. The launcher therefore sends `PS3_VIDEO_ASPECT` only to offline games; a game started for online play,
+a replay or a spectator's game gets the picture-only `4:3` choice instead and loses any `PS3_VIDEO_ASPECT` /
+`PS3_VIDEO_RESOLUTION` (`core.online_picture_env`, also out of an inherited Windows environment). Every other
+picture format (Whole picture, Fill, Stretch, 4:3, own window size, 3:2 and 16:10 screens) is host pixels only
+and plays online with any mix of settings (pairs above).
 
-## Acceptance tests for the maintainer
+### True 4:3 online: what is in the way
 
-These require the real build and game; none were run in this checkout.
+Measured with lockstep pairs, one PC 16:9 and one True 4:3, every mismatching frame's compared state dumped on
+both PCs (`T5_NET_DESYNC_DUMP`; `build/w120/picout/scripts/dsall.py` lists the words):
 
-1. Preserve the default: with a clean settings file, compare the existing 16:9 picture and overlays in 1280 x 720, 1920 x 1080, 1920 x 1200 and 1920 x 1280 clients, windowed and borderless. Verify the exact expected centred rectangles above, with no second scaling/letterbox applied. Check DPI at 100%, 125% and 150%, Alt+Enter, resize and moving between monitors. The 3:2 GT 1030 report should record the monitor's actual mode and the actual client/backbuffer/picture sizes, then compare those to the formula.
-2. Verify the full layout separately for proposed 4:3, 16:10 and 3:2: main menus, character/stage select, customization, Practice, fight intros, side switches, walls/corners, KO slow motion, end-of-round replays, victory and rematch. Check round marks, timer, long names on both sides, life bars at full/partial/empty health, sparks, subtitles, pause/offline menus and training overlays. No clipping, garbled text, stretched geometry, displaced bars or missing UI; reject a format that fails rather than silently crop it.
-3. Repeat each enabled format with Always show me on the left off and on as actual P2, at Native, Lowest and an above-Native internal resolution. Check moving cameras and full/partial scissors so the name/bar fix remains correct across host scale changes.
-4. On the player's GT 1030 and 3:2 monitor, compare Native, Lower and Lowest Internal resolution using the same stage and fight sequence; measure frame time and verify 60 fps where the hardware can sustain it. Do not promise that a shape or output-size setting will cure GPU or CPU limits. Keep a known supported preset recoverable after invalid or excessive custom values.
-5. For every format admitted online, run a real pair with one PC at default 16:9 and the other at the new format/custom output, then swap PCs and actual P1/P2 roles. Exercise sidesteps, camera turns, side switches, walls, KO replays and rematch under rollback as well as normal play. Require **0 gameplay mismatches**, identical health/timer/side flags and results, and successful replay playback with a different local display preference. A guest-reported-aspect implementation cannot ship online before this passes.
+1. **The camera.** From the fight's first frame only camera words differ: eye and target (0x10099B10..), the
+   camera matrix and its copies (0x100996E0.., 0x100A0990.., 0x100A3B10.., 0x100A3BB4.., 0x100A3CC4..), a
+   camera-relative direction in each fighter block (+0x670/+0x678) and the fighters' screen x (+0x6C8). The
+   camera set-up 0x816D4 gives the camera object *(0x46984C) the aspect 4/3 instead of 16/9 (+0x1E4) and the
+   camera frames the fight for the narrower view -- further back, turned slightly.
+2. **The side flags follow the camera.** +0x1C2/+0x1C3 of each fighter block (which fighter is on the left, so
+   which way up/down sidesteps; written by 0x808D8 from the screen x) are game state and stay in the compared
+   hash. In a 4-match run (stages 20, 27, 30, 34, mashing with motion inputs) they went apart at frame 1,783;
+   from there the input history recorded the opposite up/down and the fighters moved differently. Leaving the
+   camera words out of the hash would only hide this: the fights really are different.
+3. **Keeping the camera at 16:9** (research switch `T5_ASPECT_CAMERA=16:9`, `src/directfight/df_aspect.cpp`,
+   off by default): the camera aspect is put back to 16/9 right after 0x816D4 and the renderer shows the middle
+   4:3 of the 16:9 3D picture under the game's 4:3 HUD (`rsx_live_draw_set_3d_crop`; the picture is right:
+   round moon, centred HUD). The two PCs then stay identical for the first ~1,500 frames (first difference 224
+   -> 1,762), but then the camera drifts apart again by a few millionths (another reader of the 4:3 mode, not
+   found: the set-mode 0x80F10 is not it; candidates are the other readers of the display object's wide flag,
+   0x56B30, 0x56CCC, 0x9C09C, 0x10941C, 0x13265C, 0x24FBF4, 0x24FCA8) and the side flags follow at ~3,100.
+   Not shippable.
 
-Before game testing, add game-free regression tests for the eventual rectangle and settings helpers: exact aspect-fit bounds, shared overlay mapping, custom-value parsing/clamping/fallback, default compatibility and all-catalog coverage. Since this change is a plan and implements no helper, it supplies acceptance criteria rather than claiming an executed regression test or a fixed player report.
+So for 1.2.0: True 4:3 offline; online the 4:3 choice (the middle of the 16:9 picture, bars left and right, the
+outer ends of the life bars and names cut) is the safe option and works against every other setting. Two PCs
+that are both on True 4:3 should simulate the same thing (not tested), but the setting is fixed when the game starts and the
+persistent online game starts before an opponent is known, so it cannot be switched per match.
+
+## Tests
+
+- `tests/test_picture_format.py`: builds and runs `tests/c/picture_rect_test.c` (every format on 26 window
+  shapes, fit = the old present, the overlay always 16:9 inside the visible part); the launcher's size parser
+  and fit, the settings refusing junk, `PS3_PICTURE` reaching the game only for a non-default format, Extra
+  settings naming it, the problem report's lines, the texts in all six catalogs; the patch's files and the
+  documented switches.
+- In the game: `RSX_TEST_CLIENT_SIZE=WxH` (swap chain as if the window had that size) + `RSX_TEST_BB_SHOT=<file>`
+  (read back what the window shows) give the window picture of every format without taking the screen.
+
+Results (2026-11-03, this PC, RTX 3090): window pictures of Whole picture at 1280 x 720 (the plain copy) and
+1920 x 1200 (1920 x 1080 with 60 px bars above and below), Fill at 1920 x 1200 and 2160 x 1440, Stretch at
+1920 x 1200, 4:3 at 1920 x 1200 and 1024 x 768, each with the training overlay on: as in the table, the overlay
+whole inside the visible part. Online with different settings on the two PCs (host Fill in a 1920 x 1200 window,
+joiner 4:3 in 1280 x 720; `fight_flow_test --flow persistent --matches 2 --mash`, stages 5 and 22): rollback
+2/2 and lockstep 2/2 matches confirmed, 0 mismatching frames, the same hashes on both PCs; the 8 replays the
+two pairs recorded played back identical with the default picture (`replay_play.py`).

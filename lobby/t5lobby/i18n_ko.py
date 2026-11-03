@@ -428,6 +428,26 @@ MESSAGES = {
     "Maximized window": "최대화된 창",
     "Borderless fullscreen (Alt+Enter or F11 switches in the game)":
         "테두리 없는 전체 화면 (게임에서 Alt+Enter 또는 F11로 전환)",
+    # Display: own window size, Picture format (ps3recomp patch 0107)
+    'pixels': '픽셀',
+    'Window, my own size:':
+        '창, 직접 정한 크기:',
+    'Width {wmin}-{wmax} and height {hmin}-{hmax}, whole numbers. Until then the game uses {w} x {h}.':
+        '너비 {wmin}-{wmax}, 높이 {hmin}-{hmax}의 정수로 입력하세요. 그때까지 게임은 {w} x {h}를 사용합니다.',
+    'Picture format':
+        '화면 비율',
+    'Whole picture (16:9, black bars on other screens; default)':
+        '전체 화면 표시 (16:9, 다른 화면에서는 검은 띠; 기본)',
+    'Fill the screen (no bars; cuts the left and right edges)':
+        '화면 채우기 (검은 띠 없음; 왼쪽과 오른쪽 가장자리가 잘림)',
+    'Stretch to the screen (no bars; fighters look wider)':
+        '화면에 맞게 늘이기 (검은 띠 없음; 캐릭터가 넓어 보임)',
+    '4:3 (the middle of the picture, bars left and right)':
+        '4:3 (화면 가운데, 왼쪽과 오른쪽에 검은 띠)',
+    'True 4:3 (the game draws for a 4:3 screen; offline only, online the middle of the picture)':
+        '진짜 4:3 (게임이 4:3 화면에 맞게 그림, 오프라인 전용, 온라인에서는 화면 가운데)',
+    'For screens that are not 16:9, such as 16:10 and 3:2 laptops. The game draws 16:9, so Fill cuts a little off the sides and Stretch widens everything. Only your picture changes: online, both players can choose differently.':
+        '16:10이나 3:2 노트북처럼 16:9가 아닌 화면용입니다. 게임은 16:9로 그리므로 채우기는 양옆이 조금 잘리고 늘이기는 모든 것이 넓어집니다. 내 화면만 바뀌므로 온라인에서 두 플레이어가 서로 다르게 고를 수 있습니다.',
     # ---- launcher/online.py
     "Online play": "온라인 플레이",
     "The lobby files (lobby/t5lobby) are missing from this copy of the launcher, so "

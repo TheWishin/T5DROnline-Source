@@ -688,6 +688,7 @@ MESSAGES = {
     "Sound and start": "Ton und Start",
     "Mute sound": "Ton aus",
     "Sound and taskbar flash for lobby notifications": "Ton und Taskleistenblinken für Lobby-Benachrichtigungen",
+    "Use the game's announcer for matches and challenges (\"Get ready for the next battle\")": "Für Matches und Herausforderungen die Ansage aus dem Spiel verwenden (\"Get ready for the next battle\")",
     "Start minimized, without taking focus (for testing)": "Minimiert starten, ohne den Fokus zu nehmen (zum Testen)",
     "Advanced: extra settings, one NAME=VALUE per line":
         "Erweitert: zusätzliche Einstellungen, eine pro Zeile als NAME=WERT",

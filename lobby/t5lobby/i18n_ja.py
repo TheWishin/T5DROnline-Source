@@ -644,6 +644,7 @@ MESSAGES = {
     "Sound and start": "サウンドと起動",
     "Mute sound": "ミュート",
     "Sound and taskbar flash for lobby notifications": "ロビーの通知時に音を鳴らしてタスクバーを点滅させる",
+    "Use the game's announcer for matches and challenges (\"Get ready for the next battle\")": "マッチと挑戦の通知にゲームのアナウンス（\"Get ready for the next battle\"）を使う",
     "Start minimized, without taking focus (for testing)": "最小化して起動、フォーカスを奪わない（テスト用）",
     "Advanced: extra settings, one NAME=VALUE per line": "詳細：追加設定（1行に1つ、NAME=VALUE）",
     "Internal resolution": "内部解像度",

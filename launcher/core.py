@@ -118,6 +118,7 @@ DEFAULTS = {
     "discord_app_id": "",      # ... with this Discord application instead of the release's (lobby data/discord.json)
     "mute": False,
     "notify": True,            # online: a chime + the taskbar button flashes when a match is found / someone joins the room (lobby/t5lobby/notify.py)
+    "notify_voice": True,      # ... a match, a challenge, a tournament set: the game's announcer instead (lobby/t5lobby/announcer.py)
     "background": False,       # start minimized without focus (testing)
     "extra_env": "",           # NAME=VALUE lines
     "low_priority": False,     # build at below-normal priority: the PC stays responsive, the build is slower

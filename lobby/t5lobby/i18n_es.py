@@ -657,6 +657,7 @@ MESSAGES = {
     "Sound and start": "Sonido e inicio",
     "Mute sound": "Silenciar sonido",
     "Sound and taskbar flash for lobby notifications": "Sonido y parpadeo en la barra de tareas para las notificaciones de la sala",
+    "Use the game's announcer for matches and challenges (\"Get ready for the next battle\")": "Usar el anunciador del juego para partidas y desafíos (\"Get ready for the next battle\")",
     "Start minimized, without taking focus (for testing)": "Iniciar minimizado, sin tomar el foco (para pruebas)",
     "Advanced: extra settings, one NAME=VALUE per line": "Avanzado: ajustes extra, uno NOMBRE=VALOR por línea",
     "Internal resolution": "Resolución interna",

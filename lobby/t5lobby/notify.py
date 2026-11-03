@@ -20,7 +20,10 @@ which compares one `room` message with the one before. Events that come close to
 starts, a turn and its first countdown tick) make one chime: nothing is played within COALESCE_S of the last one.
 
 The sound is made here, from nothing: two soft bell tones in a 16-bit mono WAV that is built in memory (chime_wav),
-no game audio and no file anywhere. winsound cannot play a memory image asynchronously, so a daemon thread plays it
+no game audio and no file anywhere. For a match, a challenge and a tournament set (VOICE_KINDS) the game's own
+announcer says "Get ready for the next battle!" instead (1.2.0, Settings "... the game's announcer", on by default):
+announcer.py reads that line from the player's own unpacked game when it is needed; without it (before BUILD GAME,
+a European program, other data) the chime plays. winsound cannot play a memory image asynchronously, so a daemon thread plays it
 (the Tk thread never waits); if Windows refuses, the system sound "SystemAsterisk" plays instead. The taskbar button
 flashes with FlashWindowEx (FLASHW_TRAY | FLASHW_TIMERNOFG): until the window comes to the front, which also ends
 it when winfront brings the launcher forward by itself.
@@ -45,6 +48,7 @@ except ImportError:                      # not Windows
 
 MATCH, JOIN, TURN, INVITE, TOUR, REMATCH = "match", "join", "turn", "invite", "tour", "rematch"
 CHALLENGE = "challenge"
+VOICE_KINDS = (MATCH, CHALLENGE, TOUR)     # the announcer's "Get ready for the next battle!" instead of the chime
 
 COALESCE_S = 3.0          # a second notification this soon after one that went out makes no second chime
 SEEN_MAX = 128            # keys of events told so far (a long session must not grow without end)
@@ -119,6 +123,28 @@ def play_chime():
         return False
 
 
+def _voice_now(out_dir):
+    """Runs on its own thread: the announcer's line from the player's game files, else the chime."""
+    try:
+        from . import announcer
+        wav = announcer.next_battle_wav(out_dir)
+    except Exception:                 # noqa: BLE001 -- whatever the files hold, the chime still rings
+        wav = None
+    _play_now(wav or chime_wav())
+
+
+def play_voice(out_dir):
+    """Start "Get ready for the next battle!" (or the chime when the game's files do not have it) and return at
+    once: the files are read and the sound plays on a daemon thread. -> True when it was started."""
+    if winsound is None or os.name != "nt" or _off():
+        return False
+    try:
+        threading.Thread(target=_voice_now, args=(out_dir,), daemon=True, name="notify-voice").start()
+        return True
+    except (RuntimeError, OSError, MemoryError):
+        return False
+
+
 # ---------------------------------------------------------------------- the taskbar button
 class FLASHWINFO(ctypes.Structure):
     _fields_ = [("cbSize", ctypes.c_uint), ("hwnd", ctypes.c_void_p), ("dwFlags", ctypes.c_uint),
@@ -149,19 +175,37 @@ class Notifier:
         enabled()   the setting is on                              -> bool
         away()      the player is probably not looking at the tab  -> bool
         play()      start the chime (must not wait for it)
+        voice()     for VOICE_KINDS instead of play(): start the announcer's line (must not wait) -> True when it
+                    was started; None, an answer of False or an error -> play()
         flash()     flash the taskbar button
         log(text)   one line for launcher.log (optional)
     """
 
-    def __init__(self, enabled=None, away=None, play=play_chime, flash=None, log=None, clock=time.monotonic):
+    def __init__(self, enabled=None, away=None, play=play_chime, flash=None, log=None, clock=time.monotonic,
+                 voice=None):
         self.enabled = enabled or (lambda: True)
         self.away = away or (lambda: True)
         self.play = play
+        self.voice = voice
         self.flash = flash or (lambda: False)
         self.log = log
         self.clock = clock
         self._seen = collections.OrderedDict()
         self._last = None             # when the last chime went out
+
+    def _sound(self, kind):
+        """The sound hook for `kind`: the announcer for VOICE_KINDS when there is a voice hook, else the chime."""
+        if kind not in VOICE_KINDS or self.voice is None:
+            return self.play
+
+        def voice_or_chime():
+            try:
+                started = self.voice()
+            except Exception:         # noqa: BLE001 -- the chime is the fallback
+                started = False
+            if not started:
+                self.play()
+        return voice_or_chime
 
     def notify(self, kind, key=None):
         """Something happened that wants this player. `key` names the event (a match id, an invite id): the same
@@ -182,7 +226,7 @@ class Notifier:
         if self._last is not None and 0 <= now - self._last < COALESCE_S:
             return False
         self._last = now
-        for hook in (self.play, self.flash):
+        for hook in (self._sound(kind), self.flash):
             try:
                 hook()
             except Exception:         # noqa: BLE001 -- no sound card, no window: the tab goes on

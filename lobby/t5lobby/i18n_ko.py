@@ -640,6 +640,7 @@ MESSAGES = {
     "Sound and start": "소리 및 시작",
     "Mute sound": "소리 끄기",
     "Sound and taskbar flash for lobby notifications": "로비 알림 시 소리 및 작업 표시줄 깜박임",
+    "Use the game's announcer for matches and challenges (\"Get ready for the next battle\")": "매치와 도전 알림에 게임 아나운서 음성 사용 (\"Get ready for the next battle\")",
     "Start minimized, without taking focus (for testing)": "최소화 상태로 포커스 없이 시작 (테스트용)",
     "Advanced: extra settings, one NAME=VALUE per line": "고급: 추가 설정, 한 줄에 하나씩 NAME=VALUE",
     "Internal resolution": "내부 해상도",

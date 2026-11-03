@@ -190,4 +190,31 @@ struct NoPauseRule {
     }
 };
 
+/* Offline (1.2.0; launcher Settings "Skip replays and round endings automatically", T5_AUTO_SKIP_OFFLINE=1): one
+ * PC, nothing to agree on. In the after-round parts of a fight (KO slow motion 8, the replay 9, the way to the next
+ * round 0xC -- the deciding round's too: offline nothing else skips its replay) START is pressed on both ports the
+ * way the online rule presses it: 3 frames from the part's first frame, then again every 20 frames, until the part
+ * ends. Never in the intros, READY/FIGHT or the fight (START pauses there), never once the select screen is asked
+ * for. A press reaches READY/FIGHT (4) at most for the last 2 frames of a pulse, where START does nothing; the
+ * pause needs a new press in the fight. t5_hooks.cpp keyread_tick applies it to the game masks (START 0x0800),
+ * never online, in a replay or a spectator's game. */
+struct OfflineSkip {
+    uint32_t in_part = 0;      /* frames of the current after-round part seen so far (0 = not in one) */
+    uint32_t parts = 0;        /* parts entered (the log) */
+
+    static bool after_round(const NoPauseRule::State& st)
+    {
+        return st.game_mode && st.phase == 17 && st.round < 32 && st.mode_next != NoPauseRule::kModeSelect &&
+               ((NoPauseRule::kAfterRounds >> st.round) & 1);
+    }
+    /* One frame's boundary: true = START for both ports in this frame. */
+    bool press(const NoPauseRule::State& st)
+    {
+        if (!after_round(st)) { in_part = 0; return false; }
+        if (in_part == 0) parts++;
+        const uint32_t k = in_part++;
+        return k % NoPauseRule::kPressEvery < NoPauseRule::kPressFrames;
+    }
+};
+
 } // namespace np

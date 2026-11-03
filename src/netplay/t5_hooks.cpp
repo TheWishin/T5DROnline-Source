@@ -767,6 +767,36 @@ void training_rule(uint32_t f, const np::PadInput in[2], bool live)
     }
 }
 
+/* ---- Offline auto-skip (1.2.0; no_pause.h OfflineSkip, launcher Settings, T5_AUTO_SKIP_OFFLINE=1) ----
+ * Offline only (keyread_tick's offline branch: never a netplay session, a replay or a spectator's game). */
+np::OfflineSkip g_off_skip;
+int g_off_skip_on = -1;         /* -1 = T5_AUTO_SKIP_OFFLINE not read yet */
+uint32_t g_off_skip_noted = 0;
+
+void offline_auto_skip(uint16_t& m0, uint16_t& m1)
+{
+    if (g_off_skip_on < 0) {
+        const char* e = getenv("T5_AUTO_SKIP_OFFLINE");
+        g_off_skip_on = e && *e == '1';
+        if (g_off_skip_on) np::note("offline: replays and round endings are skipped (T5_AUTO_SKIP_OFFLINE=1)");
+    }
+    if (!g_off_skip_on) return;
+    const np::NoPauseRule::State st = np_state_now();
+    const uint32_t before = g_off_skip.in_part;
+    const bool press = g_off_skip.press(st);
+    if (before && !g_off_skip.in_part)
+        np::note("offline auto-skip: the part after round %u lasted %u frames (round state now %u)", g_off_skip.parts,
+                 before, st.round);
+    if (!press) return;
+    constexpr uint16_t kMaskStart = 0x0800;   /* START in the game's port mask (training_logic.h) */
+    m0 = (uint16_t)(m0 | kMaskStart);
+    m1 = (uint16_t)(m1 | kMaskStart);
+    if (g_off_skip.parts != g_off_skip_noted) {
+        g_off_skip_noted = g_off_skip.parts;
+        np::note("offline auto-skip: START pressed after a round (round state %u, part %u)", st.round, g_off_skip.parts);
+    }
+}
+
 uint64_t gcall(uint32_t code, uint64_t a0 = 0)
 {
     return ppu_guest_call_ct(code, kTOC, a0, 0, 0, 0, 0, 0, 0, 0);
@@ -796,6 +826,7 @@ void keyread_tick()
     uint16_t m1 = (uint16_t)gcall(kFnPortMask, 1);
     if (g_offline) {   /* offline only (never netplay, a replay or spectating): the practice tools, in Practice */
         t5_practice_pads(&m0, &m1);
+        offline_auto_skip(m0, m1);   /* T5_AUTO_SKIP_OFFLINE: START in the after-round parts */
         wr16(kRing + slot, m0);
     }
     wr16(kRing + 0x20 + slot, m1);

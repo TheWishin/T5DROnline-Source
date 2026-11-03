@@ -882,6 +882,54 @@ The post-match part (the last KO replay, the win pose) was skipped by the driver
 before in every match (2-3 frames of replay). Offline (smoke quick: arcade, VS with two pads,
 practice) PASS.
 
+### Automatic skips (1.2.0)
+
+Player wish: "auto-skip for replays and round animations" instead of both players pressing START.
+
+* **Online** (the in-game rematch lane, docs/REMATCH_1.2.0.md): the agreed match rule `auto_skip_after_round`
+  (fight line `auto_skip_after_round=1`, packed into the match rules both games verify before the fight). The
+  server sends it only for casual matches when both players ticked "Auto-skip replays and round endings (both
+  players agree)" in the Online tab (and, for a classic room, the room allows it), never ranked or a tournament;
+  it is offered only with the in-game rematch switches on (`T5L_INGAME_REMATCH=1`, launcher `T5_INGAME_REMATCH=1`).
+  In the rule it stands for both players' votes in every *nonfinal* after-round part (8, 9, 0xC): the rule's own
+  presses start at the part's first frame. The intros still need both players' START; the deciding round keeps
+  the post-match window (the driver's / rollback loop's skip from 40 frames after the decision). A function of
+  the state and the agreed flag only, so rollback, lockstep and replays stay equal.
+* **Offline** (this branch): launcher Settings -> "Round endings" -> "Skip replays and round endings
+  automatically (offline)" (`auto_skip_offline`, default off) sends `T5_AUTO_SKIP_OFFLINE=1`; the launcher drops
+  it for games started for online play, and the game reads it only in `keyread_tick`'s offline branch (never in
+  netplay, a replay or a spectator's game). `no_pause.h` `OfflineSkip`: in the after-round parts of a fight
+  (8, 9, 0xC; the deciding round's too -- offline nothing else skips it) START on both ports, 3 frames from the
+  part's first frame and again every 20 frames, never in the intros, READY/FIGHT or the fight. Log:
+  `offline auto-skip: the part after round N lasted F frames`. Model test: `tests/c/no_pause_test.cpp`
+  "offline skips ok" (every replay and way to the next round skipped, never a press where START pauses, also while
+  the player mashes or holds START; the same inputs without the rule skip nothing).
+
+### Sidestep from crouch (1.2.0 wish: looked at, not done)
+
+Player wish: "sidestep from crouch" as an option (offline; online only if both players / the room allow it;
+never ranked; default off). Not built, because no clean way exists in this game:
+
+* **Not an input rule.** Everything we change online is a pure function of the game state and both inputs
+  (no pause, skips, training rooms). In Tekken 5 DR a sidestep is a tap of up or down from a *standing*
+  fighter; a crouching fighter already holds down, and letting go puts it into the while-rising state, where
+  the buttons give while-standing moves. No sequence of pad inputs makes a crouching fighter sidestep -- an input rule could only hold neutral until the fighter stands and then tap, i.e. a
+  late *standing* sidestep with the while-rising frames (and their hurtbox) in front: not the wish, and it
+  would steal the player's while-standing inputs.
+* **A state write is not clean.** The other way is to start the sidestep move ourselves on the frame of the
+  tap: find the game's move-change routine and each fighter's sidestep moves (per character and direction),
+  call it from the keyread tick and keep the move system's other fields (animation time, hurtbox state,
+  crouch flags, buffered inputs) consistent. That is new game code inside the simulation -- deterministic on
+  both PCs (a function of the state and the inputs, like every rule here) but a change of the fighting
+  system itself, with no reference to check it against: transitions the game never makes (crouch straight
+  into sidestep) can leave a fighter in states the move tables were not written for. The full-neutral
+  Practice reset was set aside for the same reason (docs/INTEGRATION_1.2.0.md item 32).
+* If it is wanted anyway: an opt-in match rule (`ss_crouch=1`, packed into the match rules like
+  `auto_skip_after_round`, off for ranked and tournaments, both players' consent), the move change at the
+  keyread boundary of live, re-simulated and replayed frames alike, and rollback + lockstep pairs with
+  0 mismatching frames plus replays played back identical -- after the move routine and the sidestep move
+  ids per character are traced in the game.
+
 ## Connection problems
 
 How a session starts, survives trouble, and ends when it cannot go on

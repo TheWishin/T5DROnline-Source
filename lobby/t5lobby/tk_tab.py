@@ -38,7 +38,8 @@ Chime and taskbar flash (notify.py, launcher Settings, on by default): when a ma
 the player (1.1.7), someone joins the player's room, a community room's turn comes, a friend invites, a tournament set
 is ready or the opponent asks for a rematch -- and the player is elsewhere (another program in front, the launcher
 minimized, another tab) -- a short chime plays and the launcher's taskbar button flashes until the window is in
-front. Once per event.
+front. Once per event. A match, a challenge and a tournament set say the game's own "Get ready for the next battle!"
+instead of the chime (1.2.0, announcer.py, Settings "notify_voice"), read from the player's unpacked game.
 
 Firewall hint (docs/TROUBLESHOOTING.md "The firewall blocks the game"): a read-only look at Windows Firewall's rules
 for the exact t5dr.exe the launcher starts and for the launcher itself (t5lobby.fwcheck, on a worker thread when the tab
@@ -283,7 +284,7 @@ class OnlineTab:
         self._game_fronted = None                     # the match the game's window last came forward for
         # chime + taskbar flash (notify.py; tests set fake hooks); and what is new in this player's room
         self.notifier = notify.Notifier(enabled=self._notify_enabled, away=self._notify_away,
-                                        flash=self._notify_flash, log=_launcher_log)
+                                        flash=self._notify_flash, log=_launcher_log, voice=self._notify_voice)
         self.room_watch = notify.RoomWatch()
         self._challenge_rung = {}        # challenger's name (lower case) -> notifier clock of the last chime for them
         self.codes_window = None
@@ -2154,6 +2155,13 @@ class OnlineTab:
             return not (self.launcher_in_front() and self._tab_viewable())
         except tk.TclError:
             return False
+
+    def _notify_voice(self):
+        """The game's announcer for a match / challenge / tournament set (notify.VOICE_KINDS), read from the player's
+        unpacked game (announcer.py); False (-> the chime) when the setting is off."""
+        if not self.app.settings.get("notify_voice", True):
+            return False
+        return notify.play_voice(getattr(self.app.settings, "out_dir", None))
 
     def _notify_flash(self):
         return notify.flash_window(padnav.toplevel_hwnd(self.parent.winfo_toplevel()))

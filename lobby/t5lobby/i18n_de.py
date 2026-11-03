@@ -688,6 +688,7 @@ MESSAGES = {
     "Sound and start": "Ton und Start",
     "Mute sound": "Ton aus",
     "Sound and taskbar flash for lobby notifications": "Ton und Taskleistenblinken für Lobby-Benachrichtigungen",
+    "Use the game's announcer for matches and challenges (\"Get ready for the next battle\")": "Für Matches und Herausforderungen die Ansage aus dem Spiel verwenden (\"Get ready for the next battle\")",
     "Start minimized, without taking focus (for testing)": "Minimiert starten, ohne den Fokus zu nehmen (zum Testen)",
     "Advanced: extra settings, one NAME=VALUE per line":
         "Erweitert: zusätzliche Einstellungen, eine pro Zeile als NAME=WERT",
@@ -2795,6 +2796,9 @@ MESSAGES = {
     "Both players must confirm the rematch.": "Beide Spieler müssen das Rematch bestätigen.",
     "The rematch offer expired. Return to the lobby.": "Das Rematch-Angebot ist abgelaufen. Zurück zur Lobby.",
     "Auto-skip replays and round endings (both players agree)": "Replays und Rundenende automatisch überspringen (beide stimmen zu)",
+    "Round endings": "Rundenende",
+    "Skip replays and round endings automatically (offline)": "Replays und Rundenende automatisch überspringen (offline)",
+    "Online the skip counts only when both players tick \"Auto-skip replays and round endings\" in the Online tab (casual matches; never ranked).": "Online zählt das Überspringen nur, wenn beide Spieler im Online-Reiter „Replays und Rundenende automatisch überspringen (beide stimmen zu)“ ankreuzen (Casual-Matches, nie Ranked).",
     "Rematch rule:": "Rematch-Regel:",
     "Both players confirm": "Beide Spieler bestätigen",
     "Start automatically unless declined": "Automatisch starten, sofern nicht abgelehnt",

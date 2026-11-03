@@ -55,7 +55,8 @@ class RuleModel(unittest.TestCase):
         out = r.stdout[-3000:] + r.stderr[-2000:]
         self.assertEqual(r.returncode, 0, out)
         self.assertRegex(r.stdout, r"(?m)^PASS \d+ checks$", out)
-        for part in ("window ok", "parts ok", "symmetry ok", "soft reset ok", "lockstep, rollback, replay ok", "automatic skips ok"):
+        for part in ("window ok", "parts ok", "symmetry ok", "soft reset ok", "lockstep, rollback, replay ok", "automatic skips ok",
+                     "offline skips ok"):
             self.assertIn(part, r.stdout)
 
 

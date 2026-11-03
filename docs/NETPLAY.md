@@ -378,12 +378,12 @@ not a replay being watched; offline: a Versus fight shows the P2 side, for tryin
 - **Picture** (ps3recomp patch 0086, `libs/video/rsx_always_left.h`): the game draws its 3D scene into a
   2048 x 1440 target and copies it into the 1280 x 720 display buffer with one full-screen quad, then draws
   the HUD on top. The renderer mirrors that copy (its viewport transform, x -> -x). HUD draws are run
-  through their vertex program on the CPU (`al_vp_eval`) to find their screen coordinates. The 1.2.0
-  source repair replaces previous-frame/per-glyph reflection with stable half-width translation for
-  same-side HUD draws and their scissors, and verifies sampled texture use and full-screen geometry
-  before treating a draw as the scene copy. Draws containing both HUD halves still need verified
-  primitive splitting in the real renderer. This repair is **partial and untested in the game**;
-  see [the repair limits and acceptance matrix](ALWAYS_LEFT_FIX.md).
+  through their vertex program on the CPU (`al_vp_eval`) to find their screen coordinates, and each is
+  placed from its own box alone (`al_hud_place`, no frame history): a side draw of the top HUD band (bar
+  frame, both fill layers, round marks, plates, every name glyph) moves by half the width with its scissor,
+  the round intro's PLAYER DATA panels swap places with their numbers, the timer and centred titles stay.
+  The scene copy is recognized by its full-screen geometry and the textures its program really samples.
+  The measured HUD and the rule: [ALWAYS_LEFT_FIX.md](ALWAYS_LEFT_FIX.md).
 - **Controller** (`src/netplay/always_left.cpp`): online, this player's sample has LEFT and RIGHT swapped and
   the sticks' X mirrored (`np::always_left_input`, in `sample_local`) *before* it is exchanged, so both PCs
   simulate the same input and "towards the opponent" stays the direction the player sees the opponent in.
@@ -393,8 +393,9 @@ not a replay being watched; offline: a Versus fight shows the P2 side, for tryin
   screens stay as they are.
 
 Known limits: everything in the 3D scene is mirrored -- one-sided details (scars, writing on clothes or
-stages, a character's dominant hand) appear the other way round. The name/bar report is not fully
-resolved; HUD readability and ownership require the acceptance work in [ALWAYS_LEFT_FIX.md](ALWAYS_LEFT_FIX.md).
+stages, a character's dominant hand) appear the other way round. The HUD is each side's own art moved
+across: the bars fill toward the timer from the outer end, round marks sit at the outer end, names are
+aligned toward the timer (ALWAYS_LEFT_FIX.md "The rule now").
 For real casual P1/P2 wishes see [SCREEN_SIDE.md](SCREEN_SIDE.md); display-format plans are in
 [PICTURE_FORMAT.md](PICTURE_FORMAT.md).
 

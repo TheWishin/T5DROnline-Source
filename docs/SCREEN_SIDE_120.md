@@ -6,12 +6,14 @@ absent, `T5_ALWAYS_LEFT=1` retains the old checkbox behavior; an explicit new va
 three-way screen-side choice.
 
 Always left mirrors a casual P2's picture. Always right mirrors a casual P1's picture using exactly the same
-renderer transformation from patch 0086: mirror a verified full-screen scene copy, translate same-side HUD
-geometry by exactly half the target width without reversing glyph order, and clamp both horizontal scissor
-ends with the draw. The scene-copy test checks the fragment program's actual texture reads and evaluated
-geometry. Batches larger than six vertices remain unchanged; centered overlays partly use prior-frame
-classification, and scissored screen-spanning bars remain an open case. This is a partial renderer repair,
-not proof of complete HUD mirroring; see [ALWAYS_LEFT_FIX.md](ALWAYS_LEFT_FIX.md). It needs no additional
+renderer transformation from patch 0086: mirror a verified full-screen scene copy, then place every HUD draw
+from its own evaluated box alone (no frame history): a side draw of the top HUD band -- bar frame, both fill
+layers, round marks, plates, each name glyph -- moves by exactly half the target width, so a side's HUD arrives
+whole and glyphs keep their order; the round intro's PLAYER DATA panels swap places with their numbers; the
+timer and the centred titles stay; the scissor moves with its draw. The scene-copy test checks the fragment
+program's actual texture reads and evaluated geometry. Batches larger than six vertices across the middle are
+left whole (never seen in a fight). Issue #31 (own bar empty, names jumping) is fixed by this; see
+[ALWAYS_LEFT_FIX.md](ALWAYS_LEFT_FIX.md) for the measured HUD and the rule. It needs no additional
 shader or memory address. The old runtime
 function names remain for compatibility. Ranked, Quick, tournaments, watched replays and the attract demo
 keep their normal picture. Offline Versus retains the old preview behavior: left previews P2, right previews

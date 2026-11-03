@@ -176,7 +176,7 @@ def _git_head():
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--suite", default="full", choices=["quick", "lobby", "game", "net", "full"])
+    ap.add_argument("--suite", default="full", choices=["quick", "lobby", "game", "net", "ingame", "full"])
     ap.add_argument("--only", default="", help="comma list of scenario names / fnmatch patterns")
     ap.add_argument("--skip", default="")
     ap.add_argument("--list", action="store_true")

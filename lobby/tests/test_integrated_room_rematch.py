@@ -29,7 +29,7 @@ class Harness(RoomsMixin, RematchMixin):
     _check_filtered_text = LobbyServer._check_filtered_text
 
     def __init__(self, enabled=True):
-        self.cfg = Config(ingame_rematch=enabled)
+        self.cfg = Config(ingame_rematch=enabled, auto_skip=enabled)     # (the skip rule's own opt-in, on here)
         self.chat_filter = Mock(blocked=Mock(return_value=False))
         self.rooms = {}
         self.dirty = False
@@ -129,18 +129,16 @@ class IntegratedRoomRematchTest(unittest.TestCase):
         srv._rematch_ui_open(match)
         self.assertEqual(srv._rematch_ui_result(match, a)["rematch_ui"]["actions"], ["accept", "decline"])
 
-    def test_active_community_set_keeps_seats_then_restores_line_menu(self):
+    def test_active_community_set_keeps_seats_and_gets_no_question_in_the_game(self):
         srv = Harness()
         room, match, a, _b = srv.room(size=4)
         gs = NS(casual=True, automatic=True, rated=False, state="active")
         room.set = match.set = gs
         self.assertEqual(srv._rematch_ui_result(match, a), {})
         gs.state = "done"
-        shown = srv._rematch_ui_result(match, a)["rematch_ui"]
-        self.assertEqual(shown["room_mode"], "community")
-        self.assertEqual(shown["actions"], ["sit_out"])
-        room.line.remove(a)
-        self.assertEqual(srv._rematch_ui_result(match, a)["rematch_ui"]["actions"], ["back_to_line"])
+        # 1.2.0: no question in the game for a community room (the room picks the next pair; its line actions stay
+        # in the launcher)
+        self.assertEqual(srv._rematch_ui_result(match, a), {})
 
     def test_result_snapshot_waits_for_casual_set_progression(self):
         for deciding in (False, True):

@@ -1,11 +1,13 @@
-"""Driver menu dispatch without a process, a game, or a server."""
+"""The driver's rematch question in the game (docs/REMATCH_1.2.0.md) without a process, a game, or a server: a fake
+clock, a fake client, the real IngameUI channel (no worker thread; the test stands in for the game)."""
 import tempfile
 import unittest
 from unittest import mock
 
 import util  # noqa: F401
-from t5lobby.ingame_ui import IngameUI
-from t5lobby.match_driver import GameLog, MatchDriver, fight_rules
+from t5lobby.ingame_ui import HEALTH_SECONDS, IngameUI
+from t5lobby.match_driver import (CLOSE_SECONDS, VOTE_GRACE_SECONDS, GameLog, MatchDriver, fight_rules,
+                                  ingame_rematch_wanted)
 
 
 class Client:
@@ -21,17 +23,11 @@ class Client:
         if self.fail:
             raise ValueError("test rejection")
 
-    def ready(self, *args):
-        self.calls.append(("ready",) + args)
-
-    def quick_match(self):
-        self.calls.append(("quick_match",))
-
-    def room_line(self, back):
-        self.calls.append(("room_line", back))
-
     def leave_match(self, mid):
         self.calls.append(("leave_match", mid))
+
+    def game_started(self, mid):
+        pass
 
 
 class Game:
@@ -45,10 +41,21 @@ class Game:
         self.alive = False
 
 
-def result(policy="both_confirm"):
-    return {"t": "match_result", "match": "m1", "status": "ok", "rematch_window": 20,
-            "rematch_ui": {"v": 1, "policy": policy, "timeout": 20, "auto_after": 5,
-                           "room_mode": "classic", "actions": ["accept", "decline"]}}
+LABELS = {"title": "Rematch?", "won": "You won.", "lost": "You lost.", "draw": "Draw.",
+          "opp_deciding": "{name} is deciding...", "opp_accept": "{name} wants a rematch!",
+          "opp_decline": "{name} does not want a rematch.", "me_accept": "You want a rematch. Waiting for {name}...",
+          "starting": "Rematch! Starting...", "me_declined": "No rematch. Back to the lobby.",
+          "back_to_lobby": "No rematch. Back to the lobby.", "expired": "Time is up. Back to the lobby.",
+          "auto": "Rematch starts in {seconds} s unless you decline.", "confirm": "Rematch", "cancel": "No thanks",
+          "take_back": "Take it back", "key_confirm": "Z", "key_cancel": "X", "result_void": "No result"}
+
+
+def result(policy="both_confirm", timeout=10, mid="m1", **extra):
+    ev = {"t": "match_result", "match": mid, "status": "confirmed", "winner": 0, "rematch_window": timeout,
+          "rematch_ui": {"v": 1, "kind": "rematch", "policy": policy, "timeout": timeout, "auto_after": 5,
+                         "room_mode": "casual", "actions": ["accept", "decline"]}}
+    ev.update(extra)
+    return ev
 
 
 class DriverIngameUITest(unittest.TestCase):
@@ -57,41 +64,181 @@ class DriverIngameUITest(unittest.TestCase):
         self.addCleanup(self.directory.cleanup)
         self.client = Client()
         self.driver = MatchDriver(self.client, lambda env: self.fail("must not launch"), self.directory.name,
-                                  mode="process", ingame_rematch=False)
+                                  mode="persistent", ingame_rematch=False)
         self.driver.game = Game()
         self.driver.glog = GameLog(None)
         self.driver.glog.connected = True
+        self.driver.match_ev = {"opponent": {"name": "Bob"}}
+        self.driver.session_ticket = mock.Mock(slot=0)
         self.now = 100.0
         self.driver.ui = IngameUI(self.directory.name, "m1", clock=lambda: self.now, worker=False)
         self.addCleanup(self.driver.ui.close)
         self.clock_patch = mock.patch("t5lobby.match_driver.time.monotonic", side_effect=lambda: self.now)
         self.clock_patch.start()
         self.addCleanup(self.clock_patch.stop)
-        self.driver.on_event(result())
+        self.driver.ingame_labels(LABELS)
+
+    def open(self, **kw):
+        self.driver.on_event(result(**kw))
         self.mark_ready()
+        self.driver._watch_ingame_ui()
+        return self.doc()
 
     def mark_ready(self):
+        """The game drew the question as it is now (ui_ready.json)."""
         self.driver.ui.ready_at = self.now
         self.driver.ui.ready_revision = self.driver.ui.document["rev"]
 
-    def request(self, name="accept", sequence=1):
+    def doc(self):
+        return self.driver.ui.snapshot()
+
+    def press(self, name="accept", sequence=1):
         ui = self.driver.ui
-        action = dict(ui._base(), seq=sequence, prompt=ui.document["prompt"],
-                      match=ui.document["match"], action=name)
+        action = dict(ui._base(), seq=sequence, prompt=ui.document["prompt"], match=ui.document["match"], action=name)
         ui.receive(action)
+        self.driver._watch_ingame_ui()
+        self.driver._watch_ingame_ui()      # (the completion of the lobby call)
         return action
 
-    def test_accept_uses_existing_vote_and_waits_for_server_start(self):
-        self.request()
+    def tick(self, seconds):
+        self.now += seconds
+        self.mark_ready()
+        self.driver.ui.pump()
         self.driver._watch_ingame_ui()
-        self.driver._watch_ingame_ui()
+
+    def kinds(self):
+        return [n["kind"] for n in self.driver.poll()]
+
+    # ------------------------------------------------------------------ the question
+    def test_question_shows_result_opponent_countdown_and_keys(self):
+        d = self.open()
+        self.assertEqual(d["kind"], "rematch")
+        self.assertEqual(d["allowed"], ["accept", "decline"])
+        self.assertEqual((d["title"], d["body"]), ("Rematch?", "You won."))
+        self.assertEqual((d["opponent"], d["opp_state"]), ("Bob is deciding...", "deciding"))
+        self.assertEqual((d["countdown_ms"], d["total_ms"]), (10000, 10000))
+        self.assertEqual(d["remaining_ms"], (10 + CLOSE_SECONDS) * 1000)
+        self.assertEqual((d["key_confirm"], d["key_cancel"]), ("Z", "X"))
+        self.assertTrue(self.driver.ingame_ui_active)
+        self.assertIn("ingame_ui_ready", self.kinds())
+
+    def test_loser_and_other_results(self):
+        self.driver.session_ticket.slot = 1
+        self.assertEqual(self.open()["body"], "You lost.")
+        drv = self.driver
+        drv._rq_end(fallback=False)
+        drv.on_event(result(mid="m2", status="void", winner=None))
+        self.assertEqual(self.doc()["body"], "No result")
+
+    def test_accept_in_game_votes_once_and_waits_for_the_opponent(self):
+        self.open()
+        self.press("accept")
+        self.assertEqual((self.doc()["ack_seq"], self.doc()["ack_status"]), (1, "ok"))
+        self.press("accept", 2)
         self.assertEqual(self.client.calls, [("rematch", "m1", True, True)])
-        self.assertEqual(self.driver.ui.document["kind"], "waiting")
-        self.assertEqual(self.driver.ui.document["ack_status"], "ok")
-        self.assertTrue(self.driver.game.running())
-        self.assertIsNone(self.driver.ticket)       # only match_start can start a fight
+        d = self.doc()
+        self.assertEqual(d["allowed"], ["decline"])               # Circle takes it back
+        self.assertEqual(d["status"], "You want a rematch. Waiting for Bob...")
+        self.assertEqual(d["cancel"], "Take it back")
+        self.assertEqual((d["ack_seq"], d["ack_status"]), (2, "rejected"))     # (a second yes is refused)
+        self.assertIn("ingame_vote", self.kinds())
+        self.assertIsNone(self.driver.ticket)                      # only match_start starts a fight
+
+    def test_opponent_accepts_first_then_both(self):
+        self.open()
+        self.driver.on_event({"t": "rematch", "match": "m1", "state": "offered", "from": {"name": "Bob"}})
+        d = self.doc()
+        self.assertEqual((d["opponent"], d["opp_state"]), ("Bob wants a rematch!", "accept"))
+        self.press("accept")
+        d = self.doc()
+        self.assertEqual((d["status"], d["allowed"], d["countdown_ms"]), ("Rematch! Starting...", [], 0))
+        self.driver.on_event({"t": "match_start", "match": "m2", "continue": True, "opponent": {"name": "Bob"},
+                              "fight": {}})
+        self.assertEqual(self.doc()["kind"], "hidden")
+        self.assertNotIn("ingame_ui_fallback", self.kinds())     # the game goes on: the launcher stays behind
+
+    def test_decline_in_game_says_so_then_hands_back_to_the_launcher(self):
+        self.open()
+        self.press("decline")
+        self.assertEqual(self.client.calls, [("rematch", "m1", False, False)])
+        d = self.doc()
+        self.assertEqual((d["status"], d["allowed"]), ("No rematch. Back to the lobby.", []))
+        self.assertNotIn("ingame_ui_fallback", self.kinds())
+        self.tick(CLOSE_SECONDS)
+        self.assertEqual(self.doc()["kind"], "hidden")
+        self.assertIn("ingame_ui_fallback", self.kinds())
+        self.assertEqual(self.driver.ctl, None)       # (no persistent control channel in this test: nothing sent)
+
+    def test_take_back_after_accept(self):
+        self.open()
+        self.press("accept")
+        self.press("decline", 2)
+        self.assertEqual(self.client.calls, [("rematch", "m1", True, True), ("rematch", "m1", False, False)])
+        self.press("accept", 3)
+        self.assertEqual(len(self.client.calls), 2)
+
+    def test_opponent_declines(self):
+        self.open()
+        self.driver.on_event({"t": "rematch", "match": "m1", "state": "declined", "from": {"name": "Bob"}})
+        d = self.doc()
+        self.assertEqual((d["opponent"], d["opp_state"], d["allowed"]), ("Bob does not want a rematch.", "decline", []))
+        self.tick(CLOSE_SECONDS)
+        self.assertIn("ingame_ui_fallback", self.kinds())
+
+    def test_timeout_without_an_answer(self):
+        self.open()
+        self.tick(9.9)
+        self.assertEqual(self.doc()["allowed"], ["accept", "decline"])
+        self.tick(0.2)
+        d = self.doc()
+        self.assertEqual((d["status"], d["allowed"]), ("Time is up. Back to the lobby.", []))
+        self.tick(CLOSE_SECONDS)
+        self.assertIn("ingame_ui_fallback", self.kinds())
+        self.assertEqual(self.client.calls, [])
+
+    def test_accept_at_the_last_moment_waits_for_the_lobby(self):
+        self.open()
+        self.tick(9.8)
+        self.press("accept")
+        self.tick(0.5)                                           # countdown over, our yes sent
+        self.assertEqual(self.doc()["status"], "You want a rematch. Waiting for Bob...")
+        self.driver.on_event({"t": "match_start", "match": "m2", "continue": True, "opponent": {"name": "Bob"},
+                              "fight": {}})
+        self.assertEqual(self.doc()["kind"], "hidden")
+        self.assertNotIn("ingame_ui_fallback", self.kinds())
+
+    def test_rematch_over_a_new_connection_ends_the_question_quietly(self):
+        self.open()
+        self.press("accept")
+        self.driver.on_event({"t": "rematch", "match": "m1", "state": "accepted"})
+        self.now += HEALTH_SECONDS + 1                # (the game resets for the new session: no heartbeat)
+        self.driver._watch_ingame_ui()
+        self.assertNotIn("ingame_ui_fallback", self.kinds())
+        self.driver.ctl = mock.Mock()
+        self.driver.on_event({"t": "match_found", "match": "m2", "rematch_of": "m1", "keep": False})
+        self.assertEqual(self.doc()["kind"], "hidden")
+        self.assertNotIn("ingame_ui_fallback", self.kinds())
+
+    def test_server_expiry_after_our_yes(self):
+        self.open()
+        self.press("accept")
+        self.tick(10 + VOTE_GRACE_SECONDS + 0.1)
+        self.assertEqual(self.doc()["status"], "Time is up. Back to the lobby.")
+
+    def test_server_expired_event(self):
+        self.open()
+        self.driver.on_event({"t": "rematch", "match": "m1", "state": "expired"})
+        self.assertEqual(self.doc()["status"], "Time is up. Back to the lobby.")
+
+    def test_lobby_refuses_the_vote(self):
+        self.client.fail = True
+        self.open()
+        self.press("accept")
+        self.assertEqual(self.driver.ui.document["ack_status"], "rejected")
+        self.assertEqual(self.doc()["status"], "Time is up. Back to the lobby.")
 
     def test_duplicate_is_reserved_before_asynchronous_lobby_call(self):
+        self.open()
         self.driver.async_calls = True
         pending = []
 
@@ -102,206 +249,84 @@ class DriverIngameUITest(unittest.TestCase):
             def start(self):
                 pass
 
-        action = self.request()
+        ui = self.driver.ui
+        action = dict(ui._base(), seq=1, prompt=ui.document["prompt"], match="m1", action="accept")
         with mock.patch("t5lobby.match_driver.threading.Thread", Thread):
+            ui.receive(action)
             self.driver._watch_ingame_ui()
-            self.driver.ui.receive(action)
+            ui.receive(action)
             self.driver._watch_ingame_ui()
         self.assertEqual(len(pending), 1)
         self.assertEqual(self.client.calls, [])
         pending[0][0](*pending[0][1])
         self.driver._watch_ingame_ui()
         self.assertEqual(self.client.calls, [("rematch", "m1", True, True)])
-        self.assertEqual(self.driver.ui.document["ack_seq"], 1)
+        self.assertEqual(ui.document["ack_seq"], 1)
 
-    def test_failed_async_request_gets_rejected_ack_and_launcher_fallback(self):
-        self.client.fail = True
-        self.request()
-        self.driver._watch_ingame_ui()
-        self.driver._watch_ingame_ui()
-        self.assertEqual(self.driver.ui.document["ack_status"], "rejected")
-        self.assertEqual(self.driver.ui.document["kind"], "hidden")
-        self.assertIn("ingame_ui_fallback", [n["kind"] for n in self.driver.poll()])
+    def test_launcher_button_and_game_share_one_vote(self):
+        self.open()
+        self.driver.rematch("m1", True)                         # the launcher's Rematch button
+        self.press("accept")
+        self.assertEqual(self.client.calls, [("rematch", "m1", True, True)])
+        self.assertEqual(self.doc()["allowed"], ["decline"])
 
-    def test_prompt_superseded_between_worker_receive_and_dispatch_is_rejected(self):
-        self.request()
-        self.driver.ui.offer("m2", "ready", ["ready"], 15)
-        self.mark_ready()
-        self.driver._watch_ingame_ui()
-        self.assertEqual(self.client.calls, [])
-        self.assertEqual(self.driver.ui.document["ack_status"], "rejected")
-
-    def test_decline_keeps_capable_process_and_next_private_room_stays_private(self):
-        self.client.my_room = {"id": "r1", "size": 2, "private": "password"}
-        self.request("decline")
-        self.driver._watch_ingame_ui()
-        self.driver._watch_ingame_ui()
-        self.assertTrue(self.driver.game.running())
-        self.assertEqual(self.driver.ui.document["kind"], "next")
-        self.mark_ready()
-        self.request("next", 2)
-        self.driver._watch_ingame_ui()
-        self.assertEqual(self.client.calls, [("rematch", "m1", False, False), ("rematch",)])
-        self.assertNotIn(("quick_match",), self.client.calls)
-
-    def test_next_menu_replaces_the_finished_rematch_question(self):
-        self.driver._ui_labels.update(title="Rematch?", body="Both players must confirm.",
-                                      next="Next game", confirm="Rematch", cancel="No thanks")
-        self.driver._offer_next_ui()
-        document = self.driver.ui.document
-        self.assertEqual(document["title"], "Next game")
-        self.assertEqual(document["body"], "")
-        self.assertEqual(document["next"], "Next game")
-        self.assertEqual(document["allowed"], ["next"])
-        self.driver.offer_ingame_ui({"t": "rematch", "match": "m1", "state": "declined"})
-        self.assertEqual(self.driver.ui.document["title"], "Next game")
-        self.assertEqual(self.driver.ui.document["body"], "")
-
-    def test_casual_next_queues_only_after_previous_match_cleanup(self):
-        self.driver._offer_next_ui()
-        self.mark_ready()
-        self.client.match = {"match": "old"}
-        self.request("next")
-        self.driver._watch_ingame_ui()
-        self.assertEqual(self.client.calls, [])
-        self.assertEqual(self.driver.ui.document["ack_status"], "rejected")
-        self.client.match = None
-        self.request("next", 2)
-        self.driver._watch_ingame_ui()
-        self.assertEqual(self.client.calls, [("quick_match",)])
-
-    def test_community_next_only_returns_to_line(self):
-        self.client.my_room = {"id": "r1", "size": 4}
-        self.driver._offer_next_ui()
-        self.mark_ready()
-        self.request("next")
-        self.driver._watch_ingame_ui()
-        self.assertEqual(self.client.calls, [("room_line", True)])
-
-    def community(self, in_line=True):
-        room = {"id": "r1", "size": 4, "rotation": "winner", "line": ["p1", "p2"] if in_line else ["p2"]}
-        self.client.my_room = room
-        event = {"t": "match_result", "match": "m2", "status": "confirmed", "rematch_window": 0,
-                 "rematch_ui": {"v": 1, "kind": "community", "policy": "both_confirm", "timeout": 25,
-                                "room_mode": "community", "room": "r1", "rotation": "winner",
-                                "actions": ["sit_out"] if in_line else ["back_to_line"]}}
-        self.driver.offer_ingame_ui(event, {"community_waiting": "Wait for your turn.",
-                                            "community_sitting_out": "Sitting out.", "rotation": "Winner stays"})
-        self.mark_ready()
-        return event, room
-
-    def test_community_result_exposes_line_actions_without_match_vote(self):
-        self.community()
-        self.assertEqual(self.driver.ui.document["kind"], "community")
-        self.request("sit_out")
-        self.driver._watch_ingame_ui()
-        self.assertEqual(self.client.calls, [("room_line", False)])
-        self.assertEqual(self.driver.rematch_sent, set())
-
-    def test_community_room_updates_preserve_ready_check(self):
-        _event, room = self.community()
-        self.driver.offer_ingame_ui({"t": "match_found", "match": "m3", "ready_check": True,
-                                     "ready_timeout": 15})
-        prompt = self.driver.ui.document["prompt"]
-        self.driver.offer_ingame_ui({"t": "room", "room": room})
-        self.assertEqual(self.driver.ui.document["kind"], "ready")
-        self.assertEqual(self.driver.ui.document["prompt"], prompt)
-        self.mark_ready()
-        self.request("ready")
-        self.driver._watch_ingame_ui()
-        self.assertEqual(self.client.calls, [("ready", True, "m3")])
-
-    def test_community_away_and_leave_invalidate_old_line_action(self):
-        _event, room = self.community(in_line=False)
-        self.request("back_to_line")
-        self.client.my_room = None
-        self.driver.offer_ingame_ui({"t": "room", "room": None})
-        self.driver._watch_ingame_ui()
-        self.assertEqual(self.client.calls, [])
-        self.assertEqual(self.driver.ui.document["ack_status"], "rejected")
-        self.assertEqual(self.driver.ui.document["kind"], "hidden")
-
-    def test_community_rotation_body_and_countdown_follow_server_clock(self):
-        _event, room = self.community()
-        self.client.clock_offset = 20
-        room["next"] = {"at": 1025, "players": ["p1", "p2"]}
-        with mock.patch("t5lobby.match_driver.time.time", return_value=1000):
-            self.driver.offer_ingame_ui({"t": "room", "room": room}, {"community_next": "Next in {seconds} s."})
-        self.mark_ready()
-        self.driver._watch_ingame_ui()
-        self.assertIn("Winner stays", self.driver.ui.document["body"])
-        self.assertIn("Next in 5 s.", self.driver.ui.document["body"])
-
-    def test_negotiated_rule_overrides_legacy_scripted_auto_rematch_counter(self):
-        self.driver.auto_rematch = 9
+    def test_game_that_never_shows_it_falls_back_to_the_launcher(self):
         self.driver.on_event(result())
-        self.assertEqual(self.client.calls, [])
-
-    def test_ready_answers_actual_ready_check(self):
-        self.driver.offer_ingame_ui({"t": "match_found", "match": "m2", "ready_check": True,
-                                     "ready_timeout": 15})
-        self.mark_ready()
-        self.request("ready")
+        self.assertTrue(self.driver.ingame_ui_pending is False)  # (no game answer at all yet: not healthy)
+        self.now += HEALTH_SECONDS
         self.driver._watch_ingame_ui()
-        self.assertEqual(self.client.calls, [("ready", True, "m2")])
-
-    def test_ranked_and_old_server_never_offer_game_votes(self):
-        self.driver.ui.hide()
-        self.assertFalse(self.driver.offer_ingame_ui(dict(result(), ranked=True)))
-        old = result()
-        del old["rematch_ui"]
-        self.assertFalse(self.driver.offer_ingame_ui(old))
-        self.assertEqual(self.driver.ui.document["kind"], "hidden")
-
-    def test_automatic_rule_defers_own_vote_until_cancellable_countdown(self):
-        self.driver._ui_event = None
-        self.driver.offer_ingame_ui(result("auto_unless_declined"), {"auto": "Starts in {seconds}"})
-        self.mark_ready()
-        self.driver._watch_ingame_ui()
-        self.assertEqual(self.client.calls, [])
-        self.now += 4
-        self.mark_ready()
-        self.driver._watch_ingame_ui()
-        self.assertEqual(self.client.calls, [])
-        self.now += 1
-        self.mark_ready()
-        self.driver._watch_ingame_ui()
+        self.assertIn("ingame_ui_fallback", self.kinds())
+        self.assertFalse(self.driver.ingame_ui_active)
+        self.driver.rematch("m1", True)                         # the launcher's question works as before
         self.assertEqual(self.client.calls, [("rematch", "m1", True, True)])
 
-    def test_decline_and_capability_loss_cancel_automatic_vote(self):
-        self.driver._ui_event = None
-        self.driver.offer_ingame_ui(result("auto_unless_declined"))
-        self.mark_ready()
-        self.request("decline")
+    def test_game_that_stops_answering_falls_back(self):
+        self.open()
+        self.now += HEALTH_SECONDS + 0.1
         self.driver._watch_ingame_ui()
-        self.driver._watch_ingame_ui()
-        self.now += 6
-        self.mark_ready()
-        self.driver._watch_ingame_ui()
-        self.assertEqual(self.client.calls, [("rematch", "m1", False, False)])
-        self.driver.rematch_sent.clear()
-        self.driver._ui_event = None
-        self.driver.offer_ingame_ui(result("auto_unless_declined"))
-        self.driver.ui.ready_at = None
-        self.driver._watch_ingame_ui()
-        self.now += 3
-        self.driver._watch_ingame_ui()      # missing readiness has reached fallback timeout
-        self.now += 3
-        self.mark_ready()
-        self.driver._watch_ingame_ui()
-        self.assertEqual(self.client.calls, [("rematch", "m1", False, False)])
+        self.assertIn("ingame_ui_fallback", self.kinds())
 
-    def test_overlay_timeout_returns_to_launcher_without_voting(self):
-        self.now += 21
-        self.driver.ui.pump()
-        self.driver._watch_ingame_ui()
-        notes = self.driver.poll()
-        self.assertIn("ingame_ui_fallback", [n["kind"] for n in notes])
-        self.assertEqual(self.client.calls, [])
-
-    def test_old_launcher_rematch_method_still_sends_vote(self):
-        self.driver.rematch("m1", True)
+    def test_auto_policy_votes_when_its_countdown_ends_unless_declined(self):
+        d = self.open(policy="auto_unless_declined")
+        self.assertEqual(d["countdown_ms"], 5000)
+        self.assertEqual(d["status"], "Rematch starts in 5 s unless you decline.")
+        self.tick(2)
+        self.assertEqual(self.doc()["status"], "Rematch starts in 3 s unless you decline.")
+        self.tick(3)
         self.assertEqual(self.client.calls, [("rematch", "m1", True, True)])
+        self.assertEqual(self.doc()["status"], "You want a rematch. Waiting for Bob...")
+
+    def test_auto_policy_decline_cancels(self):
+        self.open(policy="auto_unless_declined")
+        self.press("decline")
+        self.tick(6)
+        self.assertEqual(self.client.calls, [("rematch", "m1", False, False)])
+
+    def test_ranked_sets_old_servers_and_rooms_keep_the_launcher(self):
+        for ev in (dict(result(), ranked=True), dict(result(), set={"rated": True}), dict(result(), rematch_ui=None),
+                   dict(result(), rematch_window=0),
+                   dict(result(), rematch_ui={"v": 1, "kind": "community", "policy": "both_confirm",
+                                              "timeout": 10, "actions": ["sit_out"]})):
+            self.driver._rq = None
+            self.assertFalse(self.driver.offer_ingame_ui(ev))
+            self.assertIsNone(self.driver._rq)
+
+    def test_no_channel_no_question(self):
+        self.driver.ui = None
+        self.assertFalse(self.driver.offer_ingame_ui(result()))
+
+    def test_switch(self):
+        self.assertTrue(ingame_rematch_wanted({}))
+        self.assertTrue(ingame_rematch_wanted({"T5_INGAME_REMATCH": "1"}))
+        self.assertFalse(ingame_rematch_wanted({"T5_INGAME_REMATCH": "0"}))
+
+    def test_process_mode_decline_closes_the_game_after_the_words(self):
+        self.driver.mode = "process"
+        self.open()
+        self.press("decline")
+        self.assertTrue(self.driver.game_running())
+        self.tick(CLOSE_SECONDS)
+        self.assertIsNone(self.driver.game)
 
     def test_skip_fight_line_only_from_authoritative_server_true(self):
         self.assertEqual(fight_rules({"auto_skip_after_round": True}), " auto_skip_after_round=1")

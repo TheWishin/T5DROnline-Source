@@ -378,10 +378,11 @@ not a replay being watched; offline: a Versus fight shows the P2 side, for tryin
 - **Picture** (ps3recomp patch 0086, `libs/video/rsx_always_left.h`): the game draws its 3D scene into a
   2048 x 1440 target and copies it into the 1280 x 720 display buffer with one full-screen quad, then draws
   the HUD on top. The renderer mirrors that copy (its viewport transform, x -> -x). HUD draws are run
-  through their vertex program on the CPU (`al_vp_eval`) to find their screen coordinates, and each is
-  placed from its own box alone (`al_hud_place`, no frame history): a side draw of the top HUD band (bar
-  frame, both fill layers, round marks, plates, every name glyph) moves by half the width with its scissor,
-  the round intro's PLAYER DATA panels swap places with their numbers, the timer and centred titles stay.
+  through their vertex program on the CPU (`al_vp_eval`) to find their screen coordinates. The timer and
+  centred titles stay; the side HUD (bar frames, both fill layers, round marks, plates, names, the round
+  intro's PLAYER DATA strip) is placed together right before the frame's command list runs, from this
+  frame's draws only (no frame history): art the game flips itself is mirrored, text is moved whole to its
+  mirrored box -- the picture has the normal view's layout with the players swapped.
   The scene copy is recognized by its full-screen geometry and the textures its program really samples.
   The measured HUD and the rule: [ALWAYS_LEFT_FIX.md](ALWAYS_LEFT_FIX.md).
 - **Controller** (`src/netplay/always_left.cpp`): online, this player's sample has LEFT and RIGHT swapped and
@@ -393,9 +394,9 @@ not a replay being watched; offline: a Versus fight shows the P2 side, for tryin
   screens stay as they are.
 
 Known limits: everything in the 3D scene is mirrored -- one-sided details (scars, writing on clothes or
-stages, a character's dominant hand) appear the other way round. The HUD is each side's own art moved
-across: the bars fill toward the timer from the outer end, round marks sit at the outer end, names are
-aligned toward the timer (ALWAYS_LEFT_FIX.md "The rule now").
+stages, a character's dominant hand) appear the other way round. The HUD looks like the normal view: each
+bar drains like the normal bar on that side, round marks next to the timer, the left name left-aligned at
+the left edge, the right one right-aligned at the right edge (ALWAYS_LEFT_FIX.md "The rule now").
 For real casual P1/P2 wishes see [SCREEN_SIDE.md](SCREEN_SIDE.md); display-format plans are in
 [PICTURE_FORMAT.md](PICTURE_FORMAT.md).
 
@@ -407,28 +408,34 @@ stayed on the left while P1's frame moved right -- the left frame showed the opp
 opponent was low), the right frame lost its fill; the grouping changed with the fill's length and the timer's
 digits, so bars and names jumped between frames, and the first frames of a new HUD (no history yet) were
 left unmoved. Reproduced with the old runtime (offline Versus, Always left): left bar empty while the right one
-still had life, the right frame missing, frames with the whole HUD unmoved. Fix: every draw is placed from its
-own box alone (ALWAYS_LEFT_FIX.md "The rule now"). Host pixels only: no guest memory, no hashed state, no
-rollback state changes; the two PCs of a match may show different pictures.
+still had life, the right frame missing, frames with the whole HUD unmoved. Fix: the side HUD is placed
+from the frame's own draws only, laid out like the normal view (ALWAYS_LEFT_FIX.md "The rule now"). Host
+pixels only: no guest memory, no hashed state, no rollback state changes; the two PCs of a match may show
+different pictures.
 
-Checked in the game (2026-11-03, runs in build/w120/i31/runs, local only):
+Checked in the game (2026-11-03, runs in build/w120/i31/runs, local only; the build with the normal-view
+layout):
 
-- Offline Versus (netplay local mode, scripted pads, Lili vs Asuka, stage 20, names `WWWWWWWWWWWWWWWW` and
-  `il.Ab 12 Zy`), pictures at 40 fixed fight frames, Always left and Always right (offline both preview the
-  mirrored picture): both bars in every fight picture, each anchored in its own moved frame, each name under
-  its own bar, glyphs in order; the round intro's PLAYER DATA panels follow their players. As dealt: the
-  normal HUD (the renderer's off path returns before touching a draw). 1440p (2560 x 1440 window): the same
-  bar lengths within 1 px.
-- Every frame from 15 to 27 s after FIGHT START (721 frames, the first damage): new -- names moved in every
-  frame, left bar always anchored at the outer end, right likewise, only real life changes; old runtime (715
-  frames) -- the first 27 HUD frames unmoved, the left bar empty in single frames, fills jumping between
-  ends. Every frame 3..13 s (the switch-on and the HUD's first frame): first HUD frame already moved, stable.
-- Rollback pair, RTT 150 ms, 3 % loss, mashing, host As dealt / joiner Always left: 0 mismatching frames on
-  both (36,000 frames, 1,821 / 1,792 rollbacks), same result and hash. Lockstep pair, host Always right /
-  joiner As dealt: 0 mismatching (52,200 frames), same result and hash. At the same fight frames the host's P1
-  bar has exactly the length of the mirrored PC's right bar and P2's of its left bar (e.g. 144/431 px <->
-  431/144 px), in every picture.
-- No both-sides batch in any run (`0 left as they were`).
+- Offline Versus (netplay local mode, scripted pads, Lili vs Asuka, stage 20), Always left and Always right
+  (offline both preview the mirrored picture), names `WWWWWWWWWWWWWWWW` / `il.Ab 12 Zy` and `i` /
+  `SuperStarSag016`, 720p and 1440p (2560 x 1440 window), 40 pictures each: in every fight picture both bars
+  anchored at the timer end like the normal view's, the left name starting at the left edge (58 px) and the
+  right one ending at the right edge (1212 px of text), rank plates and round marks where the normal view has
+  them, glyphs in order; the round intro's PLAYER DATA panels with their player. As dealt: unchanged.
+- Every frame from the HUD's first frame (3..13 s after FIGHT START, 99 frames) and from 15 to 27 s (718
+  frames, the first damage): the bars' timer-end anchors never moved (0 changes; the old runtime 11, the
+  first half-width fix 7 as its fills were anchored at the outer end). Renderer trace of 300 frames from the
+  HUD's first frame: every side draw at the same place in every frame -- the only changes are the PLAYER DATA
+  panels' own slide-in animation (frames 2..24) and their leaving -- 0 glyph-order faults.
+- Rollback pair, RTT 150 ms, 3 % loss, mashing, host As dealt / joiner Always left, and lockstep pair, host
+  Always right / joiner As dealt (a match each): 0 mismatching frames on both PCs, same result and hash. At the
+  same fight frames each PC's bar for a player has exactly the other PC's length (e.g. 144/431 px <-> 431/144
+  px), the mirrored PC's names at the outer edges.
+- No both-sides batch, no culled or scissored side draw in any run; side draws placed before the frame's end
+  (a flush in the middle of the HUD): 0 in normal play, a few only in runs that dump pictures (readbacks).
+- Earlier the same day, the first fix (every side draw moved by half the width): the same pairs and checks
+  passed, but each side showed the other side's art (names toward the timer); the owner asked for the
+  normal view's layout.
 
 For a new HUD problem, collect a short text trace (no pictures leave the PC unless the player sends them):
 

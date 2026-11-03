@@ -407,6 +407,161 @@ static void test_hud_player_data(void)
     CHECK(near(placed_n(&title, 4, &why), 380.0f) && why == AL_STAY_BELOW_BAND, "a centred quad in the strip stays");
 }
 
+/* ---- the frame's side HUD placed together (al_hud_layout): the normal view's layout ---- */
+
+/* the frame's real texture identities matter here: art the game flips shares one texture per kind */
+enum { T_FONT = 101, T_FRAME, T_LIFE, T_DRAIN, T_MARKS, T_NPLATE, T_RANK, T_DATA1, T_DATA2 };
+
+typedef struct { al_quad q[AL_PEND_MAX]; uint8_t cm[AL_PEND_MAX], mir[AL_PEND_MAX]; float dx[AL_PEND_MAX]; uint32_t n; } lay_t;
+static lay_t L;
+static uint32_t lay_add(uint64_t tex, float x0, float x1, float y0, float y1, int uflip)
+{
+    L.q[L.n] = Q(tex, x0, x1, y0, y1, uflip);
+    L.cm[L.n] = 1;
+    return L.n++;
+}
+/* where item i lands: its left and right edge in pixels */
+static void lay_box(uint32_t i, float* a, float* b)
+{
+    const al_quad* q = &L.q[i];
+    if (L.mir[i]) { *a = (1.0f - q->x1) * 640.0f; *b = (1.0f - q->x0) * 640.0f; }
+    else { *a = (q->x0 + L.dx[i] + 1.0f) * 640.0f; *b = (q->x1 + L.dx[i] + 1.0f) * 640.0f; }
+}
+static int lay_name(float x_first, int right_aligned, const char* s, uint32_t* first)
+{
+    const int len = (int)strlen(s);
+    const float x0 = right_aligned ? x_first - 14.67f * (float)(len - 1) : x_first;
+    *first = L.n;
+    for (int i = 0; i < len; i++) {
+        if (s[i] == ' ') continue;     /* the game draws no glyph for a space */
+        const float gx = x0 + 14.67f * (float)i;
+        lay_add(T_FONT, gx, gx + 23.3f, 89.3f, 112.7f, 0);
+    }
+    return len;
+}
+
+/* One frame of the game's side HUD (the 1.2.0 trace's boxes and flips; textures by kind), life p1/p2 0..1. */
+static void lay_frame(float p1, float p2, const char* n1, const char* n2, uint32_t* idx)
+{
+    memset(&L, 0, sizeof L);
+    idx[0] = lay_add(T_MARKS, 396.7f, 575.3f, 68.0f, 121.3f, 0);
+    idx[1] = lay_add(T_MARKS, 706.7f, 885.3f, 68.0f, 121.3f, 1);
+    idx[2] = lay_add(T_FRAME, 41.3f, 588.0f, 42.7f, 85.3f, 0);
+    const float l1 = 569.3f - (569.3f - 62.0f) * p1, r2 = 712.0f + (1219.3f - 712.0f) * p2;
+    idx[3] = p1 > 0.0f ? lay_add(T_LIFE, l1, 569.3f, 42.7f, 85.3f, 1) : ~0u;
+    idx[4] = p1 > 0.0f ? lay_add(T_DRAIN, l1, 569.3f, 42.7f, 85.3f, 1) : ~0u;
+    idx[5] = lay_add(T_FRAME, 693.3f, 1240.0f, 42.7f, 85.3f, 1);
+    idx[6] = p2 > 0.0f ? lay_add(T_LIFE, 712.0f, r2, 42.7f, 85.3f, 0) : ~0u;
+    idx[7] = p2 > 0.0f ? lay_add(T_DRAIN, 712.0f, r2, 42.7f, 85.3f, 0) : ~0u;
+    idx[8] = lay_add(T_RANK, 53.3f, 181.3f, 114.7f, 178.7f, 0);
+    idx[9] = lay_add(T_NPLATE, 53.3f, 477.3f, 81.3f, 121.3f, 0);
+    idx[10] = lay_add(T_NPLATE, 804.0f, 1228.0f, 81.3f, 121.3f, 1);
+    idx[11] = lay_add(T_RANK, 1100.0f, 1228.0f, 114.7f, 178.7f, 0);
+    lay_name(58.0f, 0, n1, &idx[12]);
+    idx[13] = L.n;
+    lay_name(1226.0f - 23.3f, 1, n2, &idx[14]);
+    idx[15] = L.n;
+    al_hud_layout(L.q, L.cm, L.n, L.mir, L.dx);
+}
+
+static void test_hud_layout_normal_look(void)
+{
+    const char* names[][2] = { { "WWWWWWWWWWWWWWWW", "il.Ab 12 Zy" }, { "i", "SuperStarSag" },
+                               { "AlphaHostLeft001", "zz_joinerP2_iiii" }, { "A   B", "x  y  z" } };
+    for (unsigned k = 0; k < 4; k++)
+        for (int step = 0; step <= 8; step++) {
+            const float p1 = (float)step / 8.0f, p2 = 1.0f - 0.5f * p1;
+            uint32_t ix[16];
+            lay_frame(p1, p2, names[k][0], names[k][1], ix);
+            float a, b;
+            /* art the game flips: mirrored, each at the other side's place */
+            lay_box(ix[5], &a, &b);
+            CHECK(L.mir[ix[5]] && near(a, 40.0f) && near(b, 586.7f), "P2's frame at the left frame's place: %f..%f", a, b);
+            lay_box(ix[2], &a, &b);
+            CHECK(L.mir[ix[2]] && near(a, 692.0f) && near(b, 1238.7f), "P1's frame at the right frame's place");
+            lay_box(ix[1], &a, &b);
+            CHECK(L.mir[ix[1]] && near(a, 394.7f) && near(b, 573.3f), "P2's round marks at the left marks' place");
+            CHECK(L.mir[ix[0]] && L.mir[ix[9]] && L.mir[ix[10]], "marks and name plates mirrored");
+            /* the fills: drain like the normal view's bar on that side -- the left bar anchored at the timer end */
+            if (ix[6] != ~0u) {
+                lay_box(ix[6], &a, &b);
+                CHECK((L.mir[ix[6]] || ix[3] == ~0u) && near(b, 568.0f), "life %d: P2's fill on the left, anchored at the timer end: %f", step, b);
+                lay_box(ix[7], &a, &b);
+                CHECK(near(b, 568.0f), "life %d: P2's drain anchored there too", step);
+            }
+            if (ix[3] != ~0u) {
+                lay_box(ix[3], &a, &b);
+                CHECK(L.mir[ix[3]] && near(a, 710.7f), "life %d: P1's fill on the right, anchored at the timer end: %f", step, a);
+            }
+            /* rank plates (writing on them): moved to the other plate's place, not mirrored */
+            lay_box(ix[8], &a, &b);
+            CHECK(!L.mir[ix[8]] && near(a, 1098.7f) && near(b, 1226.7f), "P1's rank plate at the right plate's place");
+            lay_box(ix[11], &a, &b);
+            CHECK(!L.mir[ix[11]] && near(a, 52.0f) && near(b, 180.0f), "P2's rank plate at the left plate's place");
+            /* names: whole, in order, P2's left-aligned at the left edge, P1's right-aligned at the right edge */
+            float prev = -1e9f, first = 0, last = 0;
+            for (uint32_t i = ix[14]; i < ix[15]; i++) {
+                lay_box(i, &a, &b);
+                CHECK(!L.mir[i] && a > prev, "name %u: P2's glyph %u in order, not mirrored", k, i - ix[14]);
+                if (i == ix[14]) first = a;
+                last = b; prev = a;
+            }
+            CHECK(near(first, 1280.0f - 1226.0f), "name %u: P2's name starts at the left edge: %f", k, first);
+            CHECK(last < 640.0f, "name %u: P2's name on the left", k);
+            prev = -1e9f;
+            for (uint32_t i = ix[12]; i < ix[13]; i++) {
+                lay_box(i, &a, &b);
+                CHECK(!L.mir[i] && a > prev, "name %u: P1's glyph %u in order", k, i - ix[12]);
+                prev = a; last = b;
+            }
+            CHECK(near(last, 1280.0f - 58.0f), "name %u: P1's name ends at the right edge: %f", k, last);
+        }
+    /* a KO'd side draws no fill: the other side's fill (its texture now only unflipped) keeps its place */
+    uint32_t ix[16];
+    lay_frame(0.0f, 0.6f, "AB", "CD", ix);
+    float a, b;
+    lay_box(ix[6], &a, &b);
+    CHECK(near(b, 568.0f), "P1 KO'd: P2's fill still anchored at the left bar's timer end: %f..%f", a, b);
+    /* the same frame laid out twice gives the same answer (nothing remembered) */
+    lay_frame(0.4f, 0.7f, "WWWW", "ZZ", ix);
+    float before[AL_PEND_MAX];
+    for (uint32_t i = 0; i < L.n; i++) lay_box(i, &before[i], &b);
+    lay_frame(0.4f, 0.7f, "WWWW", "ZZ", ix);
+    int same = 1;
+    for (uint32_t i = 0; i < L.n; i++) { lay_box(i, &a, &b); same &= near(a, before[i]); }
+    CHECK(same, "the layout depends on this frame's draws only");
+    /* culling on: never mirrored (the winding would flip), placed at the mirrored box instead */
+    memset(&L, 0, sizeof L);
+    const uint32_t f = lay_add(T_FRAME, 693.3f, 1240.0f, 42.7f, 85.3f, 1);
+    L.cm[f] = 0;
+    al_hud_layout(L.q, L.cm, L.n, L.mir, L.dx);
+    lay_box(f, &a, &b);
+    CHECK(!L.mir[f] && near(a, 40.0f) && near(b, 586.7f), "culled art: box mirrored, art kept");
+    /* the PLAYER DATA strip: panels swap places, each side's numbers move as one line */
+    memset(&L, 0, sizeof L);
+    const uint32_t p1 = lay_add(T_DATA1, -13.6f, 565.1f, 522.1f, 594.1f, 0);
+    const uint32_t p2 = lay_add(T_DATA2, 716.3f, 1294.9f, 522.1f, 594.1f, 0);
+    const uint32_t g0 = L.n;
+    for (int i = 0; i < 6; i++) {
+        const float gx = 195.3f + (i < 3 ? 25.0f * (float)i : 120.0f + 25.0f * (float)i);   /* "0 W" ... "0 L" */
+        lay_add(T_FONT, gx, gx + 23.3f, 557.3f, 580.7f, 0);
+    }
+    al_hud_layout(L.q, L.cm, L.n, L.mir, L.dx);
+    float prev;
+    lay_box(p1, &a, &b);
+    CHECK(near(a, 714.9f), "P1's panel at P2's place: %f", a);
+    lay_box(p2, &a, &b);
+    CHECK(near(a, -14.9f), "P2's panel at P1's place");
+    float pa, pb;
+    lay_box(p1, &pa, &pb);
+    prev = -1e9f;
+    for (uint32_t i = g0; i < L.n; i++) {
+        lay_box(i, &a, &b);
+        CHECK(a > prev && a >= pa && b <= pb, "P1's number %u in order inside its moved panel", i - g0);
+        prev = a;
+    }
+}
+
 /* Diagnostics: a centred raw quad whose visible scissor part is on one side is flagged (side_clipped_center);
  * al_hud_clip keeps texture identity and direction. */
 static void test_hud_scissor_diagnostics(void)
@@ -474,6 +629,7 @@ int main(void)
     test_hud_game_frame();
     test_hud_centre_and_titles();
     test_hud_player_data();
+    test_hud_layout_normal_look();
     test_hud_scissor_diagnostics();
     test_picture_quad_and_scissor();
     if (g_fails) { printf("FAILED %d of %d checks\n", g_fails, g_checks); return 1; }

@@ -3,7 +3,9 @@
 Status (2026-11-03, branch `fix-31-hpbar`): **fixed and checked in the game.** Host presentation only, in
 `patches/ps3recomp/0086-always-left.patch` (`libs/video/rsx_always_left.h` + the hook in `rsx_live_draw.c`).
 No guest memory, game address, controller rule or simulated state changes; the setting's policy
-(`src/netplay/always_left.h`: casual online, offline Versus as a preview) is unchanged.
+(`src/netplay/always_left.h`: casual online, offline Versus as a preview) is unchanged. The mirrored HUD has
+the normal (as dealt) view's layout with the players swapped (the owner's wish after the first fix, which
+moved each side across by half the width and so showed the other side's art).
 
 ## The report
 
@@ -34,29 +36,38 @@ previous layout yet) it was left unmoved: 27 frames in the capture below. Captur
 the left bar empty while the right one still had life, the right frame missing, and frames in which the whole
 HUD stood unmoved.
 
-## The rule now (stateless)
+## The rule now (this frame only)
 
-`al_hud_place(q, n, &why)` decides from the draw's own evaluated box, the same way on every frame -- no
-history, so nothing changes between frames or on the first mirrored one:
+Nothing is remembered from an earlier frame. Each HUD draw after the mirrored 3D copy is first sorted by its
+own evaluated box (`al_hud_place`):
 
-- **Top band** (the draw ends above 30 % of the height): a draw wholly on one side moves by exactly half the
-  width to the other side. Frame, both fill layers at any length, round marks, plates and every name glyph
-  of a side move by the same amount, so each side's HUD arrives whole, in order and inside its own frame. A
-  draw across the middle (the timer's digits) stays.
-- **PLAYER DATA strip** (wholly inside 500..600 of 720): a panel (wider than 1/8 of the width) takes the
-  other panel's place (its box mirrored, art as drawn); its numbers move by half the width, in order, inside
-  the moved panel.
-- **Everything else below the band** stays: centred titles (one draw per letter -- a letter must not move
-  alone), ROUND n and its separate digit, the intro line, REPLAY.
-- A draw of more than six vertices across the middle in the band (both sides in one batch; never seen in
-  Tekken 5 DR) is left whole, never cut.
-- The scissor moves with its draw (`al_clip_scissor`); a frame whose 3D picture was mirrored keeps its HUD
-  on the mirrored side even if the game's request goes off before that HUD is drawn.
-
-The look: each side's HUD is the other side's art moved across -- the bars fill toward the timer from the
-outer end, the round marks sit at the outer end and the name is aligned toward the timer. Placing each name
-at the mirrored anchor would need the string's width before its first glyph is drawn (only the previous
-frame knows it -- the history that caused the bug), so it is not done.
+- **Stays where the game put it**: a draw across the middle (the timer's digits) and everything below the
+  top band except the PLAYER DATA strip -- centred titles (ROUND n and its separate digit, READY, FIGHT,
+  K.O., one draw per letter), the intro line, REPLAY.
+- **A side draw**: wholly on one side, in the top band (ends above 30 % of the height) or inside the PLAYER
+  DATA strip (500..600 of 720). It is drawn with a constant block of its own and placed together with the
+  frame's other side draws right before the command list that holds them runs (`ld_al_resolve` at the start
+  of `ld_flush_owned`, before Close/Execute: the GPU has not read the block yet). `al_hud_layout` then looks
+  at this frame's side draws only:
+  - **art the game flips itself** -- a texture this frame draws with its art flipped somewhere (u running
+    right to left: bar frames, both fill layers, round marks, name plates; the game draws P2's as P1's
+    flipped) -- is mirrored (x -> -x, the art flipped with it). Each side gets exactly the art the game draws
+    there: the bars drain as the normal view's bars on that side, the round marks sit next to the timer.
+  - **everything else** (text and pictures with writing: name glyphs, rank plates, PLAYER DATA panels and
+    numbers) is grouped per texture, side and line -- a whole name whatever its gaps -- and the group's box
+    is mirrored as a whole, every member moved by the same amount: glyphs stay in order and readable, the
+    left player's name is left-aligned at the left edge, the right player's right-aligned at the right edge,
+    rank plates and PLAYER DATA panels take the other side's place.
+- The result is the normal (as dealt) layout with the players swapped, from the first mirrored frame on.
+- Fallbacks, never seen in Tekken 5 DR's fight HUD: a side draw with face culling on is not mirrored (the
+  mirror reverses its winding) but placed like text; a side draw with a guest scissor narrower than the
+  target is moved by half the width at once, its scissor with it (`al_clip_scissor`); a draw of more than six
+  vertices across the middle in the band (both sides in one batch) is left whole, never cut.
+- A flush in the middle of the HUD (a full ring, a readback) places what came so far; the log counts it
+  ("placed before the frame's end", by flush reason). In normal play: 0; with picture dumps for tests: a
+  few.
+- A frame whose 3D picture was mirrored keeps its HUD on the mirrored side even if the game's request goes
+  off before that HUD is drawn.
 
 Scene-copy detection is unchanged from 1.2.0: a full-screen quad (all four corners within two guest pixels)
 that samples the oversized non-display target in unit 0, checked against the fragment program's real
@@ -64,13 +75,18 @@ texture mask.
 
 ## Tests
 
-- `tests/c/always_left_render_test.c` (built by `tests/test_always_left.py`): the measured HUD frame placed
-  three times (no history: identical every pass), each fill inside its own moved frame at nine life steps
-  with unequal life, names of every length glyph by glyph in order under their own bar, the timer, titles,
-  ROUND 1, intro line, REPLAY, the band's edge, both-sides batches, the PLAYER DATA strip, the scissor
-  diagnostics; plus the vertex-program evaluator and the scene-copy shape.
-- `tests/test_always_left.py`: wiring (placement from the draw alone, no frame history in the renderer,
-  scissor trace before host scaling, presentation only, series order) and the game/launcher side.
+- `tests/c/always_left_render_test.c` (built by `tests/test_always_left.py`): `al_hud_layout` on the
+  measured HUD frame (boxes and flips from the trace) at nine life steps with unequal life, four name pairs
+  (16 wide letters, 1 letter, mixed, wide gaps): frames, round marks and name plates at the other side's
+  place and mirrored, each fill anchored at its bar's timer end, rank plates moved not mirrored, P2's name
+  starting at the left edge and P1's ending at the right edge with every glyph in order; a KO'd side's
+  missing fill, culling on, the PLAYER DATA strip, the same frame twice (same answer). Also the sorting
+  (`al_hud_place`: timer, titles, ROUND 1, intro line, REPLAY, the band's edge, both-sides batches), the
+  scissor diagnostics, the vertex-program evaluator and the scene-copy shape.
+- `tests/test_always_left.py`: wiring (side draws placed by `ld_al_resolve` first thing in
+  `ld_flush_owned`, before the list closes; their constant blocks never shared; no frame history; culling and
+  scissor fallbacks; scissor trace before host scaling; presentation only; series order) and the
+  game/launcher side.
 
 ## Checked in the game
 
@@ -85,7 +101,8 @@ name boxes.
 
 - `RSX_ALWAYS_LEFT_TRACE=<first>:<count>` (renderer frames) or `gate[:n]` (n frames each time the file
   `LD_SURF_DUMP_GATE` appears): one `[always-left-trace]` line per draw -- outcome (`copy-mirrored`,
-  `hud-moved`, `hud-panel-swapped`, `hud-stays-across`, `hud-stays-centre`, `mixed-side-batch`, ...), raw
-  and scissor-clipped box, texture hash, U direction, scissor before/after. Text only.
-- Every 600 mirrored frames: `[always-left] N frames mirrored: ... HUD draws M moved / K kept in place / L
-  left as they were`.
+  `hud-deferred`, `hud-moved`, `hud-stays-across`, `hud-stays-centre`, `mixed-side-batch`, ...), raw
+  and scissor-clipped box, texture hash, U direction, scissor before/after; then one `placed i/n` line per
+  side draw with where `al_hud_layout` put it (`mirrored` / `moved`, new x range). Text only.
+- Every 600 mirrored frames: `[always-left] N frames mirrored: ... HUD draws M moved / X mirrored / K kept in
+  place / L left as they were, E placed before the frame's end` (and the flush reasons when E > 0).

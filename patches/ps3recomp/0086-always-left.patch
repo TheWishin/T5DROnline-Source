@@ -1,9 +1,9 @@
 diff --git a/libs/video/rsx_always_left.h b/libs/video/rsx_always_left.h
 new file mode 100644
-index 0000000..f86f97a
+index 0000000..ff8898f
 --- /dev/null
 +++ b/libs/video/rsx_always_left.h
-@@ -0,0 +1,272 @@
+@@ -0,0 +1,346 @@
 +/*
 + * ps3recomp patch 0086 (T5DR Online "Always left" / "Always right"): the pure part of showing the fight to one
 + * player as if they stood on the other side -- the 3D picture mirrored, the HUD's two halves swapped with every
@@ -31,6 +31,11 @@ index 0000000..f86f97a
 + *                   panel's place, its glyphs move by half the width.
 + *                   A draw of more than six vertices across the middle inside the band (independent elements of
 + *                   both sides in one batch; never seen in Tekken 5 DR) is left as it is, never cut.
++ *                   The half-width move is what a side draw gets only when it cannot wait (a narrow scissor);
++ *                   normally:
++ *   al_hud_layout   places the frame's side draws together once the frame's HUD is complete -- art the
++ *                   game flips itself mirrored, text groups (a name, a rank plate) moved whole to their
++ *                   mirrored box -- so the mirrored HUD looks like the normal view (see below).
 + *
 + * T5DR's tests/c/always_left_render_test.c includes this header and checks it with programs and HUDs made for
 + * the test (the shapes of the game's HUD as measured).
@@ -245,6 +250,75 @@ index 0000000..f86f97a
 +    return (q->x0 + q->x1) < 0.0f ? 1.0f : -1.0f;
 +}
 +
++/* ---- the frame's side HUD, placed when the frame's HUD is complete ------------------------------------ */
++
++/* A side draw (al_hud_place said AL_MOVE or AL_SWAP_PANEL) is not placed when it is drawn: the renderer
++ * keeps its box and places all of them together before the frame's command list runs, from this frame's
++ * draws only (nothing is remembered from an earlier frame). The result looks like the normal view:
++ *
++ *   art the game flips itself  a texture this frame draws with its art flipped somewhere (u running right to
++ *                              left: the bar frames, both fill layers, round marks, name plates -- the game
++ *                              draws P2's as P1's flipped) is mirrored: x -> -x, the art flipped with it, so
++ *                              each side gets the other side's art exactly as the game draws it there -- the
++ *                              bars drain the way the normal view's bars on that side do.
++ *   everything else            text and pictures with writing (name glyphs, rank plates, PLAYER DATA panels
++ *                              and numbers): one group per texture, side and line (a name with all its
++ *                              glyphs, whatever the gaps), the group's box mirrored as a whole and every
++ *                              member moved by the same amount -- glyphs stay in order and readable, a left
++ *                              player's name ends up left-aligned at the left edge where the normal view has
++ *                              P1's, a right player's right-aligned at the right edge.
++ *
++ * can_mirror[i] = 0: that draw cannot be mirrored (face culling on: a mirror reverses its winding); it is
++ * placed like text. -> mirror[i] (x -> -x) or dx[i] (clip-space x translation). */
++#define AL_PEND_MAX 512
++
++static int al_same_line(const al_quad* a, const al_quad* b)
++{
++    if (a->tex != b->tex || ((a->x0 + a->x1) < 0.0f) != ((b->x0 + b->x1) < 0.0f)) return 0;
++    const float ha = a->y1 - a->y0, hb = b->y1 - b->y0, hmin = al_minf(ha, hb);
++    if (!(hmin > 0.0f) || al_maxf(ha, hb) > 2.0f * hmin) return 0;
++    return al_minf(a->y1, b->y1) - al_maxf(a->y0, b->y0) >= 0.5f * hmin;
++}
++
++static uint32_t al_root(uint32_t* p, uint32_t i)
++{
++    while (p[i] != i) { p[i] = p[p[i]]; i = p[i]; }
++    return i;
++}
++
++static void al_hud_layout(const al_quad* q, const uint8_t* can_mirror, uint32_t n, uint8_t* mirror, float* dx)
++{
++    static uint32_t parent[AL_PEND_MAX];
++    static float gx0[AL_PEND_MAX], gx1[AL_PEND_MAX];
++    if (n > AL_PEND_MAX) n = AL_PEND_MAX;
++    for (uint32_t i = 0; i < n; i++) {
++        mirror[i] = 0; dx[i] = 0.0f; parent[i] = i;
++        if (!can_mirror[i]) continue;
++        for (uint32_t j = 0; j < n; j++)
++            if (q[j].tex == q[i].tex && q[j].uflip) { mirror[i] = 1; break; }
++    }
++    for (uint32_t i = 0; i < n; i++) {
++        if (mirror[i]) continue;
++        for (uint32_t j = 0; j < i; j++)
++            if (!mirror[j] && al_same_line(&q[i], &q[j])) {
++                const uint32_t a = al_root(parent, i), b = al_root(parent, j);
++                if (a != b) parent[a] = b;
++            }
++    }
++    for (uint32_t i = 0; i < n; i++) { gx0[i] = 1e30f; gx1[i] = -1e30f; }
++    for (uint32_t i = 0; i < n; i++) {
++        if (mirror[i]) continue;
++        const uint32_t r = al_root(parent, i);
++        gx0[r] = al_minf(gx0[r], q[i].x0);
++        gx1[r] = al_maxf(gx1[r], q[i].x1);
++    }
++    for (uint32_t i = 0; i < n; i++) {
++        if (mirror[i]) continue;
++        const uint32_t r = al_root(parent, i);
++        dx[i] = -(gx0[r] + gx1[r]);
++    }
++}
++
 +/* The scene copy must be a full-screen quad in evaluated screen coordinates. Stale render-target
 + * bindings and camera constants are not proof: all four corners must actually be drawn. */
 +static int al_picture_quad(const float xy[][2], uint32_t n, float px_w, float px_h)
@@ -277,7 +351,7 @@ index 0000000..f86f97a
 +
 +#endif
 diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
-index 5cbbdc1..532fe19 100644
+index 5cbbdc1..705ca28 100644
 --- a/libs/video/rsx_live_draw.c
 +++ b/libs/video/rsx_live_draw.c
 @@ -133,6 +133,7 @@ void rsx_live_draw_xo_info(long long* e, unsigned* d, long long* w) { *e = 0; *d
@@ -288,7 +362,19 @@ index 5cbbdc1..532fe19 100644
  void rsx_live_draw_set_movie_mode(int on) { (void)on; }
  void rsx_live_draw_present_rgba(const uint8_t* r, u32 w, u32 h) { (void)r; (void)w; (void)h; }
  u32  rsx_live_draw_get_frames(void) { return 0; }
-@@ -10604,6 +10605,330 @@ static void ld_fx_count(void)
+@@ -3566,9 +3567,11 @@ static void ld_flush(ld_flush_reason reason)
+     ld_flush_owned(reason);
+     ld_own_leave();
+ }
++static void ld_al_resolve(ld_flush_reason reason);   /* patch 0086: the side HUD, before the list runs */
+ static void ld_flush_owned(ld_flush_reason reason)
+ {
+     ld_begin_recording();
++    ld_al_resolve(reason);
+     if (reason != LD_FLUSH_PRESENT)
+         g_pf.flushes++;
+ #if defined(YZ_PERF_PROFILE)
+@@ -10604,6 +10607,429 @@ static void ld_fx_count(void)
      const u32 f = t0.format & 0x9Fu;
      if (t0.enabled && t0.width == 64 && t0.height == 64 && f >= 0x86u && f <= 0x88u) g_ld_fx64_n++;
  }
@@ -305,9 +391,11 @@ index 5cbbdc1..532fe19 100644
 + *                    the current fragment program's sampled-unit mask: mirrored. A bound texture alone
 + *                    is insufficient: HUD draws can retain the scene's bindings as the camera changes.
 + *   the HUD          every later draw onto the screen in that frame: its vertices run through its vertex
-+ *                    program on the CPU (al_vp_eval); a side draw of the top HUD band moves by half the
-+ *                    target width, decided from that draw alone (al_hud_place), so frame, fills, name and
-+ *                    plates of a side always move together, from the first mirrored frame on.
++ *                    program on the CPU (al_vp_eval); al_hud_place sorts it: the timer and centred titles
++ *                    stay; a side draw (top HUD band, PLAYER DATA strip) gets a constant block of its own and
++ *                    is placed with the frame's other side draws right before the list runs (ld_al_resolve:
++ *                    al_hud_layout rewrites the block's viewport transform) -- the normal view's layout, from
++ *                    this frame's draws only, the first mirrored frame included.
 + * -----------------------------------------------------------------------*/
 +#include "rsx_always_left.h"
 +static volatile LONG g_al_req;               /* the game's request (any thread) */
@@ -315,8 +403,23 @@ index 5cbbdc1..532fe19 100644
 +    int active, copy_seen;
 +    u32 copy_frame;                          /* renderer frame of the last mirrored picture */
 +    u32 hud_since_copy;                      /* HUD draws placed since that picture */
-+    u64 frames, copies, moved, stayed, left_alone;
++    u64 frames, copies, moved, mirrored, stayed, left_alone, early, early_by[16];
 +} g_al;
++
++/* The frame's side HUD draws, placed together before the command list that holds them runs (ld_al_resolve,
++ * from ld_flush_owned): each keeps its evaluated box and where its viewport transform sits in the constant
++ * block the GPU will read (a block of its own: no other draw reuses it). This frame's draws only. */
++static struct {
++    SRWLOCK lock;
++    u32 n;
++    al_quad q[AL_PEND_MAX];
++    uint8_t can_mirror[AL_PEND_MAX];
++    float* cxf[AL_PEND_MAX];          /* the block's xf in the mapped constant ring */
++    float xf0[AL_PEND_MAX], xf4[AL_PEND_MAX];
++    u32 frame[AL_PEND_MAX];
++} g_al_pend = { SRWLOCK_INIT };
++static al_quad g_al_dq;               /* ld_al_draw -> sink_end_impl: the deferred draw's box */
++static uint8_t g_al_dcm;
 +
 +/* Text only, no pixels, guest bytes or shader programs. A selected renderer frame range also traces
 + * mirror-off draws, so a maintainer can compare the same HUD before enabling the option. */
@@ -416,16 +519,26 @@ index 5cbbdc1..532fe19 100644
 +    if (at_copy && g_al.active) {
 +        g_al.frames++;
 +        if (g_al.frames % 600 == 0)
-+            fprintf(stderr, "[always-left] %llu frames mirrored: %llu pictures, HUD draws %llu moved / %llu kept in "
-+                            "place / %llu left as they were (frame %u)\n", (unsigned long long)g_al.frames,
-+                    (unsigned long long)g_al.copies, (unsigned long long)g_al.moved, (unsigned long long)g_al.stayed,
-+                    (unsigned long long)g_al.left_alone, g_ld_frames);
++            fprintf(stderr, "[always-left] %llu frames mirrored: %llu pictures, HUD draws %llu moved / %llu mirrored / "
++                            "%llu kept in place / %llu left as they were, %llu placed before the frame's end "
++                            "(frame %u)\n", (unsigned long long)g_al.frames,
++                    (unsigned long long)g_al.copies, (unsigned long long)g_al.moved, (unsigned long long)g_al.mirrored,
++                    (unsigned long long)g_al.stayed, (unsigned long long)g_al.left_alone,
++                    (unsigned long long)g_al.early, g_ld_frames);
++        if (g_al.frames % 600 == 0 && g_al.early) {
++            fprintf(stderr, "[always-left] placed before the frame's end, by flush reason:");
++            for (u32 r = 0; r < 16; r++)
++                if (g_al.early_by[r]) fprintf(stderr, " %u=%llu", r, (unsigned long long)g_al.early_by[r]);
++            fprintf(stderr, "\n");
++        }
 +    }
 +    if (want != g_al.active) {
 +        fprintf(stderr, "[always-left] %s at frame %u (so far: %llu frames, %llu pictures mirrored, HUD draws "
-+                        "%llu moved / %llu kept in place / %llu left as they were)\n", want ? "on" : "off", g_ld_frames,
++                        "%llu moved / %llu mirrored / %llu kept in place / %llu left as they were)\n",
++                want ? "on" : "off", g_ld_frames,
 +                (unsigned long long)g_al.frames, (unsigned long long)g_al.copies, (unsigned long long)g_al.moved,
-+                (unsigned long long)g_al.stayed, (unsigned long long)g_al.left_alone);
++                (unsigned long long)g_al.mirrored, (unsigned long long)g_al.stayed,
++                (unsigned long long)g_al.left_alone);
 +        g_al.active = want;
 +    }
 +    g_al.copy_seen = at_copy && want;
@@ -496,9 +609,9 @@ index 5cbbdc1..532fe19 100644
 + * clip x = o0.x * xf[0] + o0.w * xf[4]) and says how the scissor follows -- *mirror, or a move by *dx_px
 + * guest pixels. */
 +static void ld_al_draw(u32 target, const u32* surf_used, u32 n_surf_used, float W, float H, float xf[8],
-+                       int* mirror, float* dx_px)
++                       int* mirror, float* dx_px, int* defer)
 +{
-+    *mirror = 0; *dx_px = 0.0f;
++    *mirror = 0; *dx_px = 0.0f; *defer = 0;
 +    g_al_trace.enabled = ld_al_trace_enabled();
 +    if (g_al_trace.enabled) {
 +        if (g_al_trace.frame != g_ld_frames) g_al_trace.draw = 0;
@@ -610,31 +723,124 @@ index 5cbbdc1..532fe19 100644
 +        g_al.stayed++;
 +        return;
 +    }
++    /* A side draw: placed with the rest of the frame's side HUD before the frame's list runs (ld_al_resolve);
++     * sink_end_impl gives it a constant block of its own and keeps it only with a full-target scissor. */
++    {
++        AcquireSRWLockExclusive(&g_al_pend.lock);
++        const int room = g_al_pend.n < AL_PEND_MAX;
++        ReleaseSRWLockExclusive(&g_al_pend.lock);
++        if (room) {
++            g_al_dq = q;
++            g_al_dcm = !(rsx_dsp_reg(&g.rsx, M_CULL_FACE_ENABLE) & 1u);   /* a mirror reverses the winding */
++            *defer = 1;
++            g_al_trace.outcome = "hud-deferred";
++            return;
++        }
++    }
 +    g_al_trace.outcome = why == AL_SWAP_PANEL ? "hud-panel-swapped" : "hud-moved";
 +    xf[4] += dx;
 +    *dx_px = dx * W * 0.5f;
 +    g_al.moved++;
 +}
 +
++/* sink_end_impl, after the deferred draw's constant block was written: keep it for ld_al_resolve, or -- a
++ * guest scissor narrower than the target, which cannot follow a later placement -- move it by half the width
++ * now (patch 0086's per-draw rule; never seen in Tekken 5 DR's HUD). -> the scissor's move in guest pixels. */
++static float ld_al_defer_commit(float* cxf, const float xf[8], int full_scissor, float W)
++{
++    if (full_scissor) {
++        AcquireSRWLockExclusive(&g_al_pend.lock);
++        if (g_al_pend.n < AL_PEND_MAX) {
++            const u32 i = g_al_pend.n++;
++            g_al_pend.q[i] = g_al_dq;
++            g_al_pend.can_mirror[i] = g_al_dcm;
++            g_al_pend.cxf[i] = cxf;
++            g_al_pend.xf0[i] = xf[0];
++            g_al_pend.xf4[i] = xf[4];
++            g_al_pend.frame[i] = g_ld_frames;
++            ReleaseSRWLockExclusive(&g_al_pend.lock);
++            return 0.0f;
++        }
++        ReleaseSRWLockExclusive(&g_al_pend.lock);
++    }
++    int why = 0;
++    const float dx = al_hud_place(&g_al_dq, 4, &why);
++    cxf[4] = xf[4] + dx;
++    g_al.moved++;
++    return dx * W * 0.5f;
++}
++
++/* Before a command list runs (ld_flush_owned): the side HUD drawn into it is placed from its own draws
++ * (al_hud_layout) by rewriting each draw's viewport transform in its constant block -- the GPU has not read
++ * it yet. At the present that is the whole frame's HUD; a flush in the middle of the HUD (a full ring) places
++ * what came so far (counted: "placed before the frame's end"). */
++static void ld_al_resolve(ld_flush_reason reason)
++{
++    AcquireSRWLockExclusive(&g_al_pend.lock);
++    const u32 n = g_al_pend.n;
++    if (!n) { ReleaseSRWLockExclusive(&g_al_pend.lock); return; }
++    static uint8_t mir[AL_PEND_MAX];
++    static float dxs[AL_PEND_MAX];
++    al_hud_layout(g_al_pend.q, g_al_pend.can_mirror, n, mir, dxs);
++    const int trace = ld_al_trace_enabled();
++    for (u32 i = 0; i < n; i++) {
++        float* c = g_al_pend.cxf[i];
++        if (mir[i]) { c[0] = -g_al_pend.xf0[i]; c[4] = -g_al_pend.xf4[i]; g_al.mirrored++; }
++        else { c[4] = g_al_pend.xf4[i] + dxs[i]; g_al.moved++; }
++        if (trace) {
++            const al_quad* q = &g_al_pend.q[i];
++            fprintf(stderr, "[always-left-trace] frame %u placed %u/%u x %.3f..%.3f y %.3f..%.3f tex %llx uflip %d -> %s"
++                            " x %.3f..%.3f\n", g_al_pend.frame[i], i, n, (q->x0 + 1) * 640.0f, (q->x1 + 1) * 640.0f,
++                    (1 - q->y1) * 360.0f, (1 - q->y0) * 360.0f, (unsigned long long)q->tex, q->uflip,
++                    mir[i] ? "mirrored" : "moved", mir[i] ? (1 - q->x1) * 640.0f : (q->x0 + dxs[i] + 1) * 640.0f,
++                    mir[i] ? (1 - q->x0) * 640.0f : (q->x1 + dxs[i] + 1) * 640.0f);
++        }
++    }
++    if (reason != LD_FLUSH_PRESENT) { g_al.early += n; g_al.early_by[(u32)reason & 15u] += n; }
++    g_al_pend.n = 0;
++    ReleaseSRWLockExclusive(&g_al_pend.lock);
++}
++
  static void sink_end_impl(void* user, const rsx_dispatch* r)
  {
      (void)user; (void)r;
-@@ -11400,6 +11725,10 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+@@ -11400,6 +11826,11 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
          xf[5] = -((vp.translate[1] - H * 0.5f) / (H * 0.5f));
          xf[6] = vp.translate[2];
      }
 +    int al_mirror = 0;                    /* patch 0086: the fight shown mirrored (ld_al_draw) */
 +    float al_dx_px = 0.0f;
++    int al_defer = 0;                     /* placed with the frame's side HUD (ld_al_resolve) */
 +    if (g_al.active || g_al_req || ld_al_trace_enabled())
-+        ld_al_draw(target, surf_used, n_surf_used, W, H, xf, &al_mirror, &al_dx_px);
++        ld_al_draw(target, surf_used, n_surf_used, W, H, xf, &al_mirror, &al_dx_px, &al_defer);
      /* The vertex constant block (8 KB + viewport) is re-uploaded per draw.
       * When no constant was written since the previous draw and the viewport
       * transform is the same, point this draw at the block already uploaded --
-@@ -11505,6 +11834,14 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+@@ -11408,7 +11839,7 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+     static u32 s_cb_gen = 0, s_cb_after = 0, s_cb_offset = 0;
+     static float s_cb_xf[8];
+     u32 cb_offset = g.cb_used;
+-    const int cb_reuse = s_cb_after != 0 && g.cb_used == s_cb_after &&
++    const int cb_reuse = !al_defer && s_cb_after != 0 && g.cb_used == s_cb_after &&
+                          g.rsx.constants_gen == s_cb_gen &&
+                          memcmp(xf, s_cb_xf, sizeof(xf)) == 0;
+     if (cb_reuse) {
+@@ -11468,6 +11899,7 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+         s_cb_gen = g.rsx.constants_gen;
+         memcpy(s_cb_xf, xf, sizeof(xf));
+     }
++    if (al_defer) s_cb_after = 0;         /* patch 0086: its block gets its own transform later -- never shared */
+ 
+     /* The whole surface in host pixels (W x H guest pixels times its factor):
+      * the vertex shader maps the guest viewport into it (xf above). */
+@@ -11505,6 +11937,17 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
              if (sc.bottom < sc.top)      sc.bottom = sc.top;
          }
      }
 +    const D3D12_RECT al_sc_before = sc;  /* effective guest scissor, before any display transform */
++    if (al_defer)
++        al_dx_px = ld_al_defer_commit((float*)(g.cb_mapped + cb_offset + 512 * 16), xf,
++                                      sc.left <= 0 && sc.top <= 0 && sc.right >= (LONG)W && sc.bottom >= (LONG)H, W);
 +    /* Patch 0086: a guest scissor narrower than the target moves or mirrors with its draw. */
 +    if ((al_mirror || al_dx_px != 0.0f) && (sc.left > 0 || sc.right < (LONG)W)) {
 +        int l = (int)sc.left, rr = (int)sc.right;

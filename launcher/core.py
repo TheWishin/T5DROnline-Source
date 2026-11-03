@@ -325,7 +325,11 @@ class Settings(dict):
         env["PS3_LAPTOP"] = {"on": "1", "off": "0"}.get(self["power_saving"], "auto")
         if self["stage_blur"] == "off":
             env["PS3_STAGE_BLUR"] = "0"
-        if self["picture"] in PICTURE_FORMATS and self["picture"] != "fit":
+        if self["picture"] == TRUE_43:
+            # the game's own 4:3 (it is told it has a 4:3 TV): offline only -- GameRun turns it into the
+            # middle-of-the-picture 4:3 for a game started for online play (TRUE_43_ONLINE)
+            env["PS3_VIDEO_ASPECT"] = "4:3"
+        elif self["picture"] in PICTURE_FORMATS and self["picture"] != "fit":
             env["PS3_PICTURE"] = self["picture"]
         for key, (_name, var, _modes, _default) in GRAPHICS.items():
             if self[key] == "off":
@@ -1080,6 +1084,18 @@ def is_online_env(env):
     return any(env.get(k) for k in ONLINE_ENV)
 
 
+def online_picture_env(env):
+    """For a game started for online play (or a replay): True 4:3 changes what the game sets up (its display
+    mode, ps3recomp patch 0107), so it is offline only -- online the picture is the middle of the 16:9 one
+    (picture only), like the "4:3" choice. None also takes the switches out of an inherited Windows
+    environment (run_game drops None values). Changes env in place."""
+    asked = env.get("PS3_VIDEO_ASPECT")
+    env["PS3_VIDEO_ASPECT"] = env["PS3_VIDEO_RESOLUTION"] = None
+    if asked and not env.get("PS3_PICTURE"):
+        env["PS3_PICTURE"] = TRUE_43_ONLINE
+    return env
+
+
 def saves_dir(out_dir):
     """Where the game keeps its saves (the runtime's ./gamedata in the output folder)."""
     return os.path.join(out_dir, "gamedata", "dev_hdd0", "home", "00000001", "savedata")
@@ -1170,6 +1186,7 @@ class GameRun:
         if is_online_env(env_over):
             for k in UNLOCK_ENV:            # the game ignores them online anyway; keep its log and reports plain
                 env_over.pop(k, None)
+            online_picture_env(env_over)
             # An online game keeps a save of its own (patches/ps3recomp/0044): both PCs start from the same
             # fresh save -- the game copies its own OPTIONS (round time, difficulty, ...) and unlocks into the
             # match state -- and the player's offline save is never read or written by it.
@@ -1773,17 +1790,22 @@ def window_size(w, h):
 
 
 # Picture format (ps3recomp patch 0107, PS3_PICTURE, docs/PICTURE_FORMAT.md): how the game's 16:9 picture fills a
-# window of another shape. The game draws 16:9 only (its own 4:3 mode changes nothing on a 720p output, see the
-# doc), so every choice is a way of showing that picture: Whole picture with black bars (default), Fill (no bars,
-# the shape kept, the edges cut off: 5 % on each side on 16:10, 8 % on 3:2, the HUD's ends too), Stretch (no bars,
-# everything wider or taller) and 4:3 (the middle of the picture in a 4:3 frame, like a 4:3 TV in "zoom"). Only
-# the picture changes, so the two players of an online match may choose differently. The training overlay is
-# always placed whole inside what is visible.
+# window of another shape: Whole picture with black bars (default), Fill (no bars, the shape kept, the edges cut
+# off: 5 % on each side on 16:10, 8 % on 3:2, the HUD's ends too), Stretch (no bars, everything wider or taller)
+# and 4:3 (the middle of the picture in a 4:3 frame, like a 4:3 TV in "zoom"). These change only the picture, so
+# the two players of an online match may choose differently. The training overlay is always placed whole inside
+# what is visible.
+# True 4:3 (TRUE_43): the game is told it has a 4:3 TV (PS3_VIDEO_ASPECT=4:3, an SD mode) and draws its own 4:3
+# picture -- 3D view and HUD laid out for 4:3. That changes what the game itself sets up, so it is offline only:
+# a game started for online play (or a replay) gets the middle-of-the-picture 4:3 instead (TRUE_43_ONLINE).
+TRUE_43 = "true43"
+TRUE_43_ONLINE = "4:3"
 PICTURE_FORMATS = {      # English; t(label) where it is shown
     "fit": N_("Whole picture (16:9, black bars on other screens; default)"),
     "fill": N_("Fill the screen (no bars; cuts the left and right edges)"),
     "stretch": N_("Stretch to the screen (no bars; fighters look wider)"),
     "4:3": N_("4:3 (the middle of the picture, bars left and right)"),
+    TRUE_43: N_("True 4:3 (the game draws for a 4:3 screen; offline only, online the middle of the picture)"),
 }
 
 

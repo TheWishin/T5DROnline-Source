@@ -446,6 +446,8 @@ MESSAGES = {
         '画面に合わせて引き伸ばす（黒帯なし・キャラが横に広がる）',
     '4:3 (the middle of the picture, bars left and right)':
         '4:3（画面の中央、左右に黒帯）',
+    'True 4:3 (the game draws for a 4:3 screen; offline only, online the middle of the picture)':
+        '本来の4:3（ゲームが4:3画面向けに描画。オフラインのみ、オンラインでは画面の中央）',
     'For screens that are not 16:9, such as 16:10 and 3:2 laptops. The game draws 16:9, so Fill cuts a little off the sides and Stretch widens everything. Only your picture changes: online, both players can choose differently.':
         '16:10 や 3:2 のノートPCなど、16:9 ではない画面向けです。ゲームは 16:9 で描画するので、「画面いっぱい」は左右が少し切れ、「引き伸ばす」は全体が横に広がります。変わるのは自分の画面だけなので、オンラインでは2人が別々に選べます。',
     # ---- launcher/online.py

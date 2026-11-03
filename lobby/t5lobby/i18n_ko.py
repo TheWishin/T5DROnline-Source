@@ -444,6 +444,8 @@ MESSAGES = {
         '화면에 맞게 늘이기 (검은 띠 없음; 캐릭터가 넓어 보임)',
     '4:3 (the middle of the picture, bars left and right)':
         '4:3 (화면 가운데, 왼쪽과 오른쪽에 검은 띠)',
+    'True 4:3 (the game draws for a 4:3 screen; offline only, online the middle of the picture)':
+        '진짜 4:3 (게임이 4:3 화면에 맞게 그림, 오프라인 전용, 온라인에서는 화면 가운데)',
     'For screens that are not 16:9, such as 16:10 and 3:2 laptops. The game draws 16:9, so Fill cuts a little off the sides and Stretch widens everything. Only your picture changes: online, both players can choose differently.':
         '16:10이나 3:2 노트북처럼 16:9가 아닌 화면용입니다. 게임은 16:9로 그리므로 채우기는 양옆이 조금 잘리고 늘이기는 모든 것이 넓어집니다. 내 화면만 바뀌므로 온라인에서 두 플레이어가 서로 다르게 고를 수 있습니다.',
     # ---- launcher/online.py

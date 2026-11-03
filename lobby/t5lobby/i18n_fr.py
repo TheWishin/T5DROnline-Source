@@ -455,6 +455,8 @@ MESSAGES = {
         "Étirer à l'écran (sans bandes ; les combattants paraissent plus larges)",
     '4:3 (the middle of the picture, bars left and right)':
         "4:3 (le centre de l'image, bandes à gauche et à droite)",
+    'True 4:3 (the game draws for a 4:3 screen; offline only, online the middle of the picture)':
+        "Vrai 4:3 (le jeu dessine pour un écran 4:3 ; hors ligne uniquement, en ligne le centre de l'image)",
     'For screens that are not 16:9, such as 16:10 and 3:2 laptops. The game draws 16:9, so Fill cuts a little off the sides and Stretch widens everything. Only your picture changes: online, both players can choose differently.':
         'Pour les écrans qui ne sont pas en 16:9, comme les portables 16:10 et 3:2. Le jeu dessine en 16:9 : Remplir coupe donc un peu les côtés et Étirer élargit tout. Seule ton image change : en ligne, les deux joueurs peuvent choisir différemment.',
     # ---- launcher/online.py

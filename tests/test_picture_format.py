@@ -141,6 +141,35 @@ class SettingsAndEnv(unittest.TestCase):
             s = self.settings({"picture": key})
             self.assertEqual(s.env_overrides().get("PS3_PICTURE"), key)
 
+    def test_true_43_offline_tells_the_game(self):
+        s = self.settings({"picture": core.TRUE_43})
+        env = s.env_overrides()
+        self.assertEqual(env.get("PS3_VIDEO_ASPECT"), "4:3")
+        self.assertNotIn("PS3_PICTURE", env)       # the present follows the game's 4:3 by itself
+
+    def test_true_43_never_online(self):
+        # a game started for online play (or a replay) never gets the game's own 4:3, but the middle-of-the-
+        # picture 4:3, which is picture only
+        env = self.settings({"picture": core.TRUE_43}).env_overrides()
+        env.update({"T5_CTL_DIR": "x"})
+        self.assertTrue(core.is_online_env(env))
+        core.online_picture_env(env)
+        self.assertIsNone(env["PS3_VIDEO_ASPECT"])
+        self.assertIsNone(env["PS3_VIDEO_RESOLUTION"])
+        self.assertEqual(env["PS3_PICTURE"], core.TRUE_43_ONLINE)
+        # an Extra settings line from the player is taken out too; another format is left alone
+        env = {"T5_NET_MODE": "replay", "PS3_VIDEO_RESOLUTION": "480", "PS3_PICTURE": "fill"}
+        core.online_picture_env(env)
+        self.assertEqual((env["PS3_VIDEO_RESOLUTION"], env["PS3_PICTURE"]), (None, "fill"))
+        env = {"T5_NET_MODE": "net"}
+        core.online_picture_env(env)
+        self.assertNotIn("PS3_PICTURE", env)
+
+    def test_gamerun_applies_it_online(self):
+        src = text("launcher", "core.py")
+        i = src.index("if is_online_env(env_over):")
+        self.assertIn("online_picture_env(env_over)", src[i:i + 800])
+
     def test_junk_is_refused(self):
         s = self.settings({"picture": "21:9", "display": "huge", "window_w": "big", "window_h": -3})
         self.assertEqual(s["picture"], "fit")
@@ -203,6 +232,14 @@ class Patch(unittest.TestCase):
         self.assertIn("rsx_picture_rect(", self.patch)
         self.assertIn("PS3_VIDEO_ASPECT", self.patch)
         self.assertIn("s_report_aspect = CELL_VIDEO_OUT_ASPECT_16_9", self.patch)
+
+    def test_true_43_is_an_sd_tv(self):
+        # the game's 4:3 HUD is laid out for 480 lines; the present shows the picture as 4:3 and Internal
+        # resolution counts from 720 lines
+        self.assertIn('r = "480";', self.patch)
+        self.assertIn("cellVideoOut_report_4_3()) pic_w = (pic_h * 4u + 1u) / 3u;", self.patch)
+        self.assertIn("s *= cellVideoOut_res_boost();", self.patch)
+        self.assertIn("rsx_overlay_present(g.dev, g.list, bb, pic_w, pic_h);", self.patch)
 
     def test_documented(self):
         doc = text("docs", "PICTURE_FORMAT.md")

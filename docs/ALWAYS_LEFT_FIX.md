@@ -29,8 +29,8 @@ The 1.1.8-1.2.0 renderer grouped the previous frame's quads into "elements" (str
 placed this frame's draws by them. P1's fills end 5 px from the timer's first digit, so they were grouped with
 the timer -- the centre element, which stays -- while P1's frame moved to the right: the left frame held P2's
 fill, the right frame was empty or held only part of a fill. Which draw joined which element changed as the
-fill shrank and as digits changed, so bars and names jumped between frames, and on the first mirrored frame
-(no previous layout) every glyph was placed on its own. Captured with the old runtime (`runs/B_left`):
+fill shrank and as digits changed, so bars and names jumped between frames, and while the HUD was new (no
+previous layout yet) it was left unmoved: 27 frames in the capture below. Captured with the old runtime (`runs/B_left`):
 the left bar empty while the right one still had life, the right frame missing, and frames in which the whole
 HUD stood unmoved.
 

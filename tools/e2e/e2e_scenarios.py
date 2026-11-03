@@ -5744,8 +5744,11 @@ def _room_tables(ctx, real):
     kind = "real" if real else "stub"
     a = ctx.player("E2E TabA", char="jin", kind=kind, **({} if real else {"env": {"T5_STUB_SECONDS": "40"}}))
     b = ctx.player("E2E TabB", char="paul", kind=kind, **({} if real else {"env": {"T5_STUB_SECONDS": "40"}}))
-    c = ctx.player("E2E TabC", kind="stub", env={"T5_STUB_SECONDS": "25"})
-    d = ctx.player("E2E TabD", kind="stub", env={"T5_STUB_SECONDS": "25"})
+    # a stub "second" is slow under load (25 took ~91 s in a room, longer than the real 1-round match at table 1):
+    # short stubs next to real games so table 2 really ends while table 1 still fights
+    short = "8" if real else "25"
+    c = ctx.player("E2E TabC", kind="stub", env={"T5_STUB_SECONDS": short})
+    d = ctx.player("E2E TabD", kind="stub", env={"T5_STUB_SECONDS": short})
     for p in (a, b, c, d):
         login(ctx, p)
     p_ = a
@@ -5921,37 +5924,46 @@ def _pace_modes(path):
 
 
 @scenario("net_vrr_adaptive_120", "15 1.2.0 opt-in", game=True, suites=("game",),
-          desc="VRR pacing on one side (A: PS3_VRR_PACING=2 + tearing, display lock off), B default; both "
-               "with the adaptive rollback delay (T5_RB_NET_ADAPTIVE_DELAY=1), B also with the experimental practice "
-               "advantage comparison switched on (must stay inactive online), RTT 150 / jitter 15 / 2 % loss, Quick "
-               "matches with input delay Auto: confirmed, 0 mismatching frames, ~60 fps, the frame log shows A's "
-               "pacing mode, the host logs the jitter delay")
+          desc="VRR pacing on one side (A: PS3_VRR_PACING=1, the timer-only mode; mode 2 needs the game window in "
+               "front, which a background test never has: it falls back to 0), B default; both with the adaptive "
+               "rollback delay (T5_RB_NET_ADAPTIVE_DELAY=1), B also with the experimental practice advantage "
+               "comparison switched on (must stay inactive online), RTT 150 / jitter 15 / 2 % loss, Quick match "
+               "with input delay Auto: confirmed, 0 mismatching frames, the frame log shows A's pacing mode, the "
+               "host logs the jitter delay")
 def net_vrr_adaptive_120(ctx):
-    _net_vrr_120(ctx, "rollback")
+    _net_vrr_120(ctx, "rollback", os.environ.get("E2E_VRR_PACING", "1"))
 
 
 @scenario("net_vrr_lockstep_120", "15 1.2.0 opt-in", game=True, suites=("game",),
-          desc="the same in lockstep (both T5_RB_MODE=off): A VRR pacing 2, B default + the practice advantage "
+          desc="the same in lockstep (both T5_RB_MODE=off): A VRR pacing 1, B default + the practice advantage "
                "comparison on, RTT 150 / jitter 15 / 2 % loss: confirmed, 0 mismatching frames")
 def net_vrr_lockstep_120(ctx):
-    _net_vrr_120(ctx, "lockstep")
+    _net_vrr_120(ctx, "lockstep", os.environ.get("E2E_VRR_PACING", "1"))
 
 
-def _net_vrr_120(ctx, mode):
+def _net_vrr_120(ctx, mode, pacing):
     game_server(ctx)
     fl = os.path.join(ctx.dir, "frames_A.csv")
     tl = os.path.join(ctx.dir, "training_B.log")
     extra = {"T5_RB_MODE": "off"} if mode == "lockstep" else {"T5_RB_NET_ADAPTIVE_DELAY": "1"}
-    a = ctx.player("E2E Vrr", char="jin", env=dict(extra, PS3_VRR_PACING="2", RSX_PRESENT_MODE="tearing",
+    # mode 2 (controlled present) also wants tearing and no display lock (docs/VRR_PACING_1.2.0.md)
+    a = ctx.player("E2E Vrr", char="jin", env=dict(extra, PS3_VRR_PACING=pacing, RSX_PRESENT_MODE="tearing",
                                                    PS3_DISPLAY_LOCK="0", PS3_FRAMELOG=fl))
     b = ctx.player("E2E Fix", char="paul", env=dict(extra, T5_TRAINING="frames", T5_TRAINING_ADV_COMPARE="1",
                                                     T5_TRAINING_LOG=tl))
     login(ctx, a)
     login(ctx, b)
-    row = net_case(ctx, a, b, f"VRR 2 vs default ({mode}), RTT 150 jitter 15", 150, 15, 0.02, "auto", False, None,
-                   mode=mode)
+    row = net_case(ctx, a, b, f"VRR {pacing} vs default ({mode}), RTT 150 jitter 15", 150, 15, 0.02, "auto", False,
+                   None, mode=mode)
     modes = _pace_modes(fl)
-    ctx.check("A's frame log: pacing mode 2 (controlled present) took effect", modes.get("2", 0) > 600, modes)
+    if pacing == "2":
+        # controlled present only for a visible window in front (rsx_live_draw_pace_mode): a background game runs
+        # the old path; the check is then that it stayed there for the whole match and in sync
+        ctx.check("A's frame log: pacing mode 2 in front, else the old path (0) throughout",
+                  set(modes) <= {"0", "2"} and sum(modes.values()) > 600, modes)
+        ctx.note(f"A's pacing modes (the window was {'in front' if modes.get('2') else 'in the background'}): {modes}")
+    else:
+        ctx.check(f"A's frame log: pacing mode {pacing} took effect", modes.get(pacing, 0) > 600, modes)
     try:
         with open(tl, encoding="utf-8", errors="replace") as f:
             adv = [ln for ln in f if " adv_compare " in ln]
@@ -5967,6 +5979,6 @@ def _net_vrr_120(ctx, mode):
     from e2e_harness import TOOLS
     r = subprocess.run([sys.executable, os.path.join(TOOLS, "perf_compare.py"), "pacing", fl], capture_output=True,
                        text=True, encoding="utf-8", errors="replace", timeout=120)
-    ctx.note(f"perf_compare pacing (A, mode 2): {(r.stdout or r.stderr)[:1500]}")
-    with open(os.path.join(ctx.dir, f"pacing_A_mode2_{mode}.json"), "w", encoding="utf-8") as f:
+    ctx.note(f"perf_compare pacing (A, mode {pacing}): {(r.stdout or r.stderr)[:1500]}")
+    with open(os.path.join(ctx.dir, f"pacing_A_mode{pacing}_{mode}.json"), "w", encoding="utf-8") as f:
         f.write(r.stdout or r.stderr)

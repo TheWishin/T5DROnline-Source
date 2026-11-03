@@ -66,6 +66,18 @@ the same setting ("Automatically watch the match at my room's table while I wait
 - **Same rules as a click.** Nothing new on the server: an ordinary `watch {room}` / `watch {room, table}`. Both
   players' spectator settings, ranked permission, blocks, build, the limits and private rooms (members only) are
   checked by the server for every watch; the room's view only says `watch` when this member may watch.
+- **Your turn closes it even before the KO.** In a winner-stays room the waiting member named by the next countdown
+  loses the rest of the match being watched (the spectator game runs a few seconds behind the live game); its
+  last status file still says what it compared up to then.
+
+**Measured** (2026-11-03, e2e `room_autowatch` vs `room_autowatch_off`, real games, all four launchers and up to four
+games on one shared PC, interleaved A/B): the spectator game of each player the countdown named was gone +0.00 s
+after the countdown started, every run. Ready check -> FIGHT START of that next match (persistent + fresh game):
+median 22.8 s with auto-watch (10 values, 22.4-23.0) vs 22.75 s without (6 values, 22.5-23.0) -- no extra delay. Both
+of those include a 15 s direct -> relay fallback that the local harness hits for a persistent game meeting a new
+opponent, with and without auto-watch (not caused by it). What the spectators showed: identical to the live games
+(every compared hash equal; 10-42 hashes per watch), in rollback and in a lockstep run (`--netcode lockstep`); the
+matches themselves 0 mismatching frames.
 
 `lobby/t5lobby/auto_spectate.py` (TablePolicy, table_blocker, table_targets), `tk_spectate.py` (poll),
 `tk_rooms.py` (the box). Tests: `lobby/tests/test_auto_watch_table.py`, `test_tk_rooms.py`; e2e

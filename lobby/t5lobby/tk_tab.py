@@ -996,6 +996,9 @@ class OnlineTab:
                           "time --search logs in and starts searching by itself."))
             return False
         self._pending_search = mode
+        if self._auto_tried and not self._login_busy:     # (the tab was opened before the game state was known:
+            self._auto_tried = False                      # it stays selected, so no on_show will log in)
+            self.try_saved_login()
         return True
 
     def _run_pending_search(self):

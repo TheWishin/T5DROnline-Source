@@ -250,6 +250,7 @@ class App(tk.Tk):
         self._dialogs_seen = 0         # the game's own message boxes already shown (GameRun.dialog_count)
         self._dialog_text = ""         # the Play tab's sentence about the last one
         self._dialog_box = False       # a message box about one came up for this game (once per game)
+        self._search_waiting = None    # --search's mode until the game state is known
         self.sub = 0.0
         self._last_status = None
         if not offscreen:
@@ -1362,7 +1363,11 @@ class App(tk.Tk):
 
     def refresh_game_state(self):
         def work():
-            st = core.game_state(self.settings.out_dir)
+            try:
+                st = core.game_state(self.settings.out_dir)
+            except Exception:       # noqa: BLE001 -- launcher.log has it (log_thread_errors)
+                self.after(0, self._start_waiting_search)      # (no state will come: the tab's hint, not silence)
+                raise
             self.after(0, lambda: self._show_game_state(st))
         threading.Thread(target=work, daemon=True).start()
 
@@ -1371,6 +1376,7 @@ class App(tk.Tk):
         self.state_var.set(("✔ " if st["ok"] else "⚠ ") + st["text"])
         self.state_lbl.configure(style="ok.TLabel" if st["ok"] else "warn.TLabel")
         self._update_play_buttons()
+        self._start_waiting_search()
 
     def _update_play_buttons(self):
         running = bool(self.game and self.game.running())
@@ -1604,10 +1610,19 @@ class App(tk.Tk):
 
     def search_on_start(self, mode):
         """--search ranked|casual: the Online tab, logged in with the saved login, searching (README "Start a search
-        from a shortcut"). Without a saved login the tab only says what to do."""
+        from a shortcut"). Without a saved login the tab only says what to do. Starts once the game state is known
+        (refresh_game_state is a thread; until it is done game_state() says "not ok" and the tab "Build the game")."""
         if self.readonly:
             return
         core.log(f"command line: --search {mode}")
+        self._search_waiting = mode
+        if hasattr(self, "_game_state"):
+            self._start_waiting_search()
+
+    def _start_waiting_search(self):
+        mode, self._search_waiting = self._search_waiting, None
+        if not mode:
+            return
         start = getattr(self.online, "search_on_start", None)
         if start is not None:
             start(mode)                     # before the tab is shown: showing it logs in with the saved login

@@ -893,7 +893,13 @@ Player wish: "auto-skip for replays and round animations" instead of both player
   In the rule it stands for both players' votes in every *nonfinal* after-round part (8, 9, 0xC): the rule's own
   presses start at the part's first frame. The intros still need both players' START; the deciding round keeps
   the post-match window (the driver's / rollback loop's skip from 40 frames after the decision). A function of
-  the state and the agreed flag only, so rollback, lockstep and replays stay equal.
+  the state and the agreed flag only, so rollback, lockstep and replays stay equal. Proof (2026-11-03, branch
+  wishes-120 on integrated-120, fight line `auto_skip_after_round=1`, 3 rounds, mashing): `fight_flow_test
+  --flow persistent --pattern NR` lockstep and rollback, 2/2 matches each, 0 desync, the same hashes on both
+  PCs, "START pressed by both players (skip requested)" at round state 8 of every nonfinal round; and
+  `rollback_net_test` RTT 150 / jitter 5 / 3 % loss (`T5_DF_RULES=auto_skip_after_round=1`): 2 matches,
+  ~2,450 rollbacks per side, 0 mismatching frames through frame 16,799, same results and hashes. Every
+  recorded replay played back IDENTICAL (lockstep 229, rollback 228 and 279 hashes, 0 different).
 * **Offline** (this branch): launcher Settings -> "Round endings" -> "Skip replays and round endings
   automatically (offline)" (`auto_skip_offline`, default off) sends `T5_AUTO_SKIP_OFFLINE=1`; the launcher drops
   it for games started for online play, and the game reads it only in `keyread_tick`'s offline branch (never in

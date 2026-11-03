@@ -199,6 +199,7 @@ inline uint64_t rd64(uint32_t a) { uint64_t v; memcpy(&v, vm_base + a, 8); retur
 inline void wr32(uint32_t a, uint32_t v) { v = _byteswap_ulong(v); memcpy(vm_base + a, &v, 4); }
 inline void wr64(uint32_t a, uint64_t v) { v = _byteswap_uint64(v); memcpy(vm_base + a, &v, 8); }
 inline void wr16(uint32_t a, uint16_t v) { v = _byteswap_ushort(v); memcpy(vm_base + a, &v, 2); }
+inline uint16_t rd16(uint32_t a) { uint16_t v; memcpy(&v, vm_base + a, 2); return _byteswap_ushort(v); }
 inline void wr8(uint32_t a, uint8_t v) { vm_base[a] = v; }
 inline uint8_t rd8(uint32_t a) { return vm_base[a]; }
 
@@ -774,7 +775,7 @@ np::OfflineSkip g_off_skip;
 int g_off_skip_on = -1;         /* -1 = T5_AUTO_SKIP_OFFLINE not read yet */
 bool g_off_skip_trace = false;  /* T5_AUTO_SKIP_TRACE=1: every change of round state / phase / mode (tests) */
 uint32_t g_off_skip_noted = 0;
-bool g_off_used[2] = { false, false };   /* the port sent input in this fight (the one-player modes' human) */
+np::OfflinePortOwner g_off_owner;        /* which port drives a fighter in this fight (the one-player modes' human) */
 
 void offline_auto_skip(uint16_t& m0, uint16_t& m1)
 {
@@ -802,24 +803,36 @@ void offline_auto_skip(uint16_t& m0, uint16_t& m1)
                      st.phase, (int)st.game_mode, st.mode_next, gt);
         }
     }
-    /* who plays: any input on a port while the fight runs (phase 17) -- forgotten outside a fight */
-    if (st.phase != 17) g_off_used[0] = g_off_used[1] = false;
-    else if (st.round == 5) { g_off_used[0] |= m0 != 0; g_off_used[1] |= m1 != 0; }
+    /* who plays: the port whose presses the fighters read (no_pause.h OfflinePortOwner) -- forgotten outside a
+     * fight. Any input on a port was not enough: an unused pad's direction made it "the player" (review wishes-120) */
+    if (st.phase != 17) g_off_owner.reset();
+    else if (st.round == 5)
+        g_off_owner.feed(m0, m1, rd16(kFighter0 + 0x6D6), rd16(kFighter0 + kFighterStride + 0x6D6));
     const uint32_t before = g_off_skip.in_part;
     const bool press = g_off_skip.press(st);
     if (before && !g_off_skip.in_part)
         np::note("offline auto-skip: the part after round %u lasted %u frames (round state now %u)", g_off_skip.parts,
                  before, st.round);
     if (!press) return;
-    const unsigned ports = np::OfflineSkip::ports(gt, g_off_used[0], g_off_used[1]);
+    if (np::OfflineSkip::select_held(m0, m1)) {   /* START now would complete the START+SELECT soft reset */
+        static uint32_t s_sel_noted = 0;
+        if (s_sel_noted != g_off_skip.parts) {
+            s_sel_noted = g_off_skip.parts;
+            np::note("offline auto-skip: SELECT held -- no START (it would be the soft reset), part %u", g_off_skip.parts);
+        }
+        return;
+    }
+    const unsigned ports = np::OfflineSkip::ports(gt, g_off_owner.known(0), g_off_owner.known(1));
     constexpr uint16_t kMaskStart = 0x0800;   /* START in the game's port mask (training_logic.h) */
     if (ports & 1) m0 = (uint16_t)(m0 | kMaskStart);
     if (ports & 2) m1 = (uint16_t)(m1 | kMaskStart);
     if (g_off_skip.parts != g_off_skip_noted) {
         g_off_skip_noted = g_off_skip.parts;
-        np::note("offline auto-skip: START %s after a round (round state %u, part %u, game type %u)",
+        np::note("offline auto-skip: START %s after a round (round state %u, part %u, game type %u; port presses "
+                 "seen by a fighter %u/%u, %u/%u)",
                  ports == 3 ? "pressed on both ports" : ports == 1 ? "pressed on port 1" : ports == 2 ? "pressed on port 2"
-                 : "not pressed (one-player mode, the playing port is not known)", st.round, g_off_skip.parts, gt);
+                 : "not pressed (one-player mode, the playing port is not known)", st.round, g_off_skip.parts, gt,
+                 g_off_owner.matched[0], g_off_owner.presses[0], g_off_owner.matched[1], g_off_owner.presses[1]);
     }
 }
 

@@ -230,6 +230,60 @@ struct OfflineSkip {
         if (used1 != used2) return used1 ? 1 : 2;
         return 0;
     }
+
+    /* START+SELECT is the game's soft reset: a generated START while a player holds SELECT (either port) would
+     * complete it and end the run -- no START is added then; the player's own START+SELECT still reaches the game
+     * as it comes (review wishes-120 P2). Game port mask: SELECT 0x0100 (training_logic.h). */
+    static constexpr uint16_t kMaskSelect = 0x0100;
+    static bool select_held(uint16_t m0, uint16_t m1) { return ((m0 | m1) & kMaskSelect) != 0; }
+};
+
+/* Which port plays in a one-player mode (Arcade, Ghost, Survival, ...): offline auto-skip may press START only on
+ * the human's port (START on the other one calls a challenger). "Any input on a port" is not enough (review
+ * wishes-120 P2: an idle human on port 1 and an unused pad on port 2 that sends a direction made port 2 "the player").
+ * The game's own word: the input a fighter read (+0x6D6 of its block, the game's mask) follows the port that drives
+ * it; the CPU's fighter reads no port. A port is the player once its new presses show up as some fighter's input:
+ * every change of the port's mask (directions + face buttons) to a non-zero value is a press; it is matched when a
+ * fighter's input equals it within kWindow frames. Owner = at least kMinPresses presses, at least kMinShare matched,
+ * the other port not (both or neither: not known -> no START at all). Fed in the fight (round state 5) only,
+ * reset outside a fight. Pure; tests/c/no_pause_test.cpp. */
+struct OfflinePortOwner {
+    static constexpr uint16_t kRelevant = 0xF0F0;   /* directions 0xF000, Triangle/Circle/Cross/Square 0x00F0 */
+    static constexpr uint32_t kWindow = 4;          /* frames from the press to the fighter's read */
+    static constexpr uint32_t kMinPresses = 4;
+    static constexpr uint32_t kMinSharePct = 75;
+
+    uint16_t last[2] = { 0, 0 };
+    uint16_t want[2] = { 0, 0 };   /* the press waiting to be seen (0 = none) */
+    uint32_t age[2] = { 0, 0 };
+    uint32_t presses[2] = { 0, 0 };
+    uint32_t matched[2] = { 0, 0 };
+
+    void reset() { *this = OfflinePortOwner(); }
+
+    /* one keyread tick in the fight: the two ports' masks and the two fighters' inputs as the game has them now */
+    void feed(uint16_t m0, uint16_t m1, uint16_t in0, uint16_t in1)
+    {
+        const uint16_t m[2] = { (uint16_t)(m0 & kRelevant), (uint16_t)(m1 & kRelevant) };
+        const uint16_t f0 = (uint16_t)(in0 & kRelevant), f1 = (uint16_t)(in1 & kRelevant);
+        for (int p = 0; p < 2; p++) {
+            if (m[p] != last[p]) {
+                last[p] = m[p];
+                if (m[p]) { presses[p]++; want[p] = m[p]; age[p] = 0; }
+                else want[p] = 0;
+            }
+            if (!want[p]) continue;
+            if (f0 == want[p] || f1 == want[p]) { matched[p]++; want[p] = 0; }
+            else if (++age[p] > kWindow) want[p] = 0;
+        }
+    }
+
+    bool plays(int p) const
+    {
+        return presses[p] >= kMinPresses && matched[p] * 100 >= presses[p] * kMinSharePct;
+    }
+    /* (used1, used2) for OfflineSkip::ports: true only for a port known to play */
+    bool known(int p) const { return plays(p) && !plays(1 - p); }
 };
 
 } // namespace np

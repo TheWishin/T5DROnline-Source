@@ -439,6 +439,24 @@ MESSAGES = {
     "Maximized window": "Fenêtre agrandie",
     "Borderless fullscreen (Alt+Enter or F11 switches in the game)":
         "Plein écran sans bordure (Alt+Entrée ou F11 bascule en jeu)",
+    # Display: own window size, Picture format (ps3recomp patch 0107)
+    'pixels': 'pixels',
+    'Window, my own size:':
+        'Fenêtre, taille personnalisée :',
+    'Width {wmin}-{wmax} and height {hmin}-{hmax}, whole numbers. Until then the game uses {w} x {h}.':
+        'Largeur {wmin}-{wmax} et hauteur {hmin}-{hmax}, nombres entiers. En attendant, le jeu utilise {w} x {h}.',
+    'Picture format':
+        "Format d'image",
+    'Whole picture (16:9, black bars on other screens; default)':
+        'Image entière (16:9, bandes noires sur les autres écrans ; par défaut)',
+    'Fill the screen (no bars; cuts the left and right edges)':
+        "Remplir l'écran (sans bandes ; coupe les bords gauche et droit)",
+    'Stretch to the screen (no bars; fighters look wider)':
+        "Étirer à l'écran (sans bandes ; les combattants paraissent plus larges)",
+    '4:3 (the middle of the picture, bars left and right)':
+        "4:3 (le centre de l'image, bandes à gauche et à droite)",
+    'For screens that are not 16:9, such as 16:10 and 3:2 laptops. The game draws 16:9, so Fill cuts a little off the sides and Stretch widens everything. Only your picture changes: online, both players can choose differently.':
+        'Pour les écrans qui ne sont pas en 16:9, comme les portables 16:10 et 3:2. Le jeu dessine en 16:9 : Remplir coupe donc un peu les côtés et Étirer élargit tout. Seule ton image change : en ligne, les deux joueurs peuvent choisir différemment.',
     # ---- launcher/online.py
     "Online play": "Jeu en ligne",
     "The lobby files (lobby/t5lobby) are missing from this copy of the launcher, so "

@@ -458,6 +458,24 @@ MESSAGES = {
     "Maximized window": "Maximiertes Fenster",
     "Borderless fullscreen (Alt+Enter or F11 switches in the game)":
         "Randloses Vollbild (Alt+Enter oder F11 schaltet im Spiel um)",
+    # Display: own window size, Picture format (ps3recomp patch 0107)
+    'pixels': 'Pixel',
+    'Window, my own size:':
+        'Fenster, eigene Größe:',
+    'Width {wmin}-{wmax} and height {hmin}-{hmax}, whole numbers. Until then the game uses {w} x {h}.':
+        'Breite {wmin}-{wmax} und Höhe {hmin}-{hmax}, ganze Zahlen. Bis dahin nutzt das Spiel {w} x {h}.',
+    'Picture format':
+        'Bildformat',
+    'Whole picture (16:9, black bars on other screens; default)':
+        'Ganzes Bild (16:9, schwarze Balken auf anderen Bildschirmen; Standard)',
+    'Fill the screen (no bars; cuts the left and right edges)':
+        'Bildschirm füllen (keine Balken; schneidet links und rechts ab)',
+    'Stretch to the screen (no bars; fighters look wider)':
+        'Auf den Bildschirm ziehen (keine Balken; Kämpfer wirken breiter)',
+    '4:3 (the middle of the picture, bars left and right)':
+        '4:3 (die Mitte des Bildes, Balken links und rechts)',
+    'For screens that are not 16:9, such as 16:10 and 3:2 laptops. The game draws 16:9, so Fill cuts a little off the sides and Stretch widens everything. Only your picture changes: online, both players can choose differently.':
+        'Für Bildschirme, die nicht 16:9 sind, etwa 16:10- und 3:2-Laptops. Das Spiel zeichnet 16:9, darum schneidet Füllen an den Seiten etwas ab und Ziehen macht alles breiter. Nur dein Bild ändert sich: Online können beide Spieler verschieden wählen.',
     # ---- launcher/online.py
     "Online play": "Online spielen",
     "The lobby files (lobby/t5lobby) are missing from this copy of the launcher, so "

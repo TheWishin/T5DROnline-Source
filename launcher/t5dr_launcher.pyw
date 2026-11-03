@@ -647,10 +647,38 @@ class App(tk.Tk):
         for key, label in core.DISPLAY_MODES:
             ttk.Radiobutton(disp, text=t(label), value=key, variable=self.display_var, style=self.wrap_style(
                 "TRadiobutton", 400), command=self.save_settings).pack(anchor="w", pady=1)
+        # Display "custom" (1.2.0): the window's inside in pixels, any shape (core.window_size checks it)
+        size_row = ttk.Frame(disp)
+        size_row.pack(anchor="w", padx=(24, 0))
+        self.window_w_var = tk.StringVar(value=str(self.settings["window_w"]))
+        self.window_h_var = tk.StringVar(value=str(self.settings["window_h"]))
+        ttk.Entry(size_row, textvariable=self.window_w_var, width=6).pack(side="left")
+        ttk.Label(size_row, text=" x ").pack(side="left")
+        ttk.Entry(size_row, textvariable=self.window_h_var, width=6).pack(side="left")
+        ttk.Label(size_row, text=" " + t("pixels")).pack(side="left")
+        for var in (self.window_w_var, self.window_h_var):
+            var.trace_add("write", lambda *_: self._window_size_changed())
+        self.window_size_note = tk.StringVar(value="")
+        ttk.Label(disp, style="Muted.TLabel", textvariable=self.window_size_note, wraplength=300,
+                  justify="left").pack(anchor="w", padx=(24, 0))
         ttk.Label(disp, style="Muted.TLabel", wraplength=300, justify="left", text=t(
             "The picture is scaled to the window; how sharp it is depends on Internal resolution. "
             "You can also drag the window's edges. Alt+Enter or F11 switches borderless fullscreen "
             "in the game.")).pack(anchor="w", pady=(6, 0))
+
+        # Picture format (PS3_PICTURE, core.PICTURE_FORMATS, ps3recomp patch 0107): how the 16:9 picture fills a
+        # screen of another shape (16:10, 3:2, 4:3, ultrawide). Picture only, like VSync.
+        pf = ttk.LabelFrame(left, text="  " + t("Picture format") + "  ", padding=(12, 6))
+        pf.pack(fill="x", pady=(6, 0))
+        self.picture_var = tk.StringVar(value=self.settings["picture"] if self.settings["picture"] in
+                                        core.PICTURE_FORMATS else "fit")
+        for key, label in core.PICTURE_FORMATS.items():
+            ttk.Radiobutton(pf, text=t(label), value=key, variable=self.picture_var, style=self.wrap_style(
+                "TRadiobutton", 400), command=self.save_settings).pack(anchor="w", pady=1)
+        ttk.Label(pf, style="Muted.TLabel", wraplength=300, justify="left", text=t(
+            "For screens that are not 16:9, such as 16:10 and 3:2 laptops. The game draws 16:9, so Fill "
+            "cuts a little off the sides and Stretch widens everything. Only your picture changes: online, "
+            "both players can choose differently.")).pack(anchor="w", pady=(4, 0))
 
         # VSync (PS3_VSYNC=0 when off, core.VSYNC_MODES): only how pictures reach the screen. No frame
         # rate choice: the game's simulation is tied to 60 fps like on the PS3, with VSync on or off.
@@ -1522,10 +1550,32 @@ class App(tk.Tk):
         if hasattr(self, "replays"):
             self.replays.refresh()
 
+    def _window_size_changed(self):
+        """Display "custom": a valid size is saved (and the custom display picked); anything else is said, and the
+        last valid size stays."""
+        size = core.window_size(self.window_w_var.get(), self.window_h_var.get())
+        if size:
+            self.window_size_note.set("")
+            if self.display_var.get() != core.CUSTOM_DISPLAY:
+                self.display_var.set(core.CUSTOM_DISPLAY)
+            self.save_settings()
+        else:
+            self.window_size_note.set(t(
+                "Width {wmin}-{wmax} and height {hmin}-{hmax}, whole numbers. Until then the game uses "
+                "{w} x {h}.", wmin=core.WINDOW_SIZE_MIN[0], wmax=core.WINDOW_SIZE_MAX[0],
+                hmin=core.WINDOW_SIZE_MIN[1], hmax=core.WINDOW_SIZE_MAX[1], w=self.settings["window_w"],
+                h=self.settings["window_h"]))
+
     def save_settings(self):
         if self.readonly:
             return
         self.settings["display"] = self.display_var.get()
+        if hasattr(self, "window_w_var"):
+            size = core.window_size(self.window_w_var.get(), self.window_h_var.get())
+            if size:
+                self.settings["window_w"], self.settings["window_h"] = size
+        if hasattr(self, "picture_var"):
+            self.settings["picture"] = self.picture_var.get()
         if hasattr(self, "power_var"):
             self.settings["power_saving"] = self.power_var.get()
         self.settings["internal_res"] = self.internal_res_var.get()
@@ -1708,7 +1758,7 @@ class App(tk.Tk):
         out = self.settings.out_dir
         replay_dir = self.settings.replay_dir
         labels = {"display": dict(core.DISPLAY_MODES), "internal_res": core.INTERNAL_RES_LABELS,
-                  "vsync": core.VSYNC_MODES, "stage_blur": core.STAGE_BLUR_MODES,
+                  "picture": core.PICTURE_FORMATS, "vsync": core.VSYNC_MODES, "stage_blur": core.STAGE_BLUR_MODES,
                   "input_delay": core.INPUT_DELAYS, "power_saving": core.POWER_SAVING,
                   **{key: spec[2] for key, spec in core.GRAPHICS.items()}}
         lines = report.settings_lines(self.settings, labels, self.settings.env_overrides(), out)

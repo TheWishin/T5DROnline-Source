@@ -433,6 +433,24 @@ MESSAGES = {
     "Maximized window": "Janela maximizada",
     "Borderless fullscreen (Alt+Enter or F11 switches in the game)":
         "Tela cheia sem bordas (Alt+Enter ou F11 alterna no jogo)",
+    # Display: own window size, Picture format (ps3recomp patch 0107)
+    'pixels': 'pixels',
+    'Window, my own size:':
+        'Janela, tamanho próprio:',
+    'Width {wmin}-{wmax} and height {hmin}-{hmax}, whole numbers. Until then the game uses {w} x {h}.':
+        'Largura {wmin}-{wmax} e altura {hmin}-{hmax}, números inteiros. Até lá o jogo usa {w} x {h}.',
+    'Picture format':
+        'Formato da imagem',
+    'Whole picture (16:9, black bars on other screens; default)':
+        'Imagem inteira (16:9, barras pretas em outras telas; padrão)',
+    'Fill the screen (no bars; cuts the left and right edges)':
+        'Preencher a tela (sem barras; corta as bordas esquerda e direita)',
+    'Stretch to the screen (no bars; fighters look wider)':
+        'Esticar para a tela (sem barras; os lutadores parecem mais largos)',
+    '4:3 (the middle of the picture, bars left and right)':
+        '4:3 (o centro da imagem, barras à esquerda e à direita)',
+    'For screens that are not 16:9, such as 16:10 and 3:2 laptops. The game draws 16:9, so Fill cuts a little off the sides and Stretch widens everything. Only your picture changes: online, both players can choose differently.':
+        'Para telas que não são 16:9, como notebooks 16:10 e 3:2. O jogo desenha em 16:9, então Preencher corta um pouco das laterais e Esticar alarga tudo. Só a sua imagem muda: online, cada jogador pode escolher diferente.',
     # ---- launcher/online.py
     "Online play": "Jogo online",
     "The lobby files (lobby/t5lobby) are missing from this copy of the launcher, so "

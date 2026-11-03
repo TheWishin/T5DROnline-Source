@@ -5869,12 +5869,29 @@ def _cover_kind(path):
     return "picture"
 
 
-def _cover_checks(ctx, p, sampler, first_fight_at, label):
-    """The Connecting cover from the first picture to the reveal; afterwards no cover in the fight."""
+def _cover_checks(ctx, p, sampler, first_fight_at, label, expect_cover=False):
+    """The online start's pictures (backbuffer shots every 0.5 s). Default (owner decision 1.2.0): no Connecting cover
+    at all -- the game's own logos / movie / title, the select and the game's own loading picture before the fight
+    are seen. expect_cover (a T5_ONLINE_FAST_BOOT=1 start): the cover from the first picture to the reveal."""
     rows = [(t, _cover_kind(path), path) for t, path in sampler.shots]
     rows = [r for r in rows if r[1] is not None]
-    seq = "".join({"cover": "C", "black": "b", "picture": "P"}[k] for _t, k, _p in rows)
+    kinds = {"cover": "C", "black": "b", "picture": "P"}
+    seq = "".join(kinds[k] for _t, k, _p in rows)
     ctx.note(f"{label}: {p.name}: {len(rows)} pictures, sequence {seq[:400]}")
+    if not expect_cover:
+        ctx.check(f"{label}: {p.name}: no Connecting cover in any picture (default off)", bool(rows) and "C" not in seq,
+                  seq[:200])
+        boot = [r for r in rows if r[0] < first_fight_at - 6.0]
+        ctx.check(f"{label}: {p.name}: the game's own boot / title / select screens are seen before the fight",
+                  any(k == "picture" for _t, k, _p in boot), "".join(kinds[k] for _t, k, _p in boot)[:200])
+        # FIGHT START is the game mode's start: the game's loading picture and the fight's intro follow (the cover
+        # used to hide ~5 s of them)
+        loading = [r for r in rows if first_fight_at - 1.0 <= r[0] <= first_fight_at + 6.0]
+        ctx.check(f"{label}: {p.name}: the game's own loading picture is seen around FIGHT START",
+                  any(k == "picture" for _t, k, _p in loading), "".join(kinds[k] for _t, k, _p in loading))
+        proof = [r[2] for r in boot if r[1] == "picture"][:2] + [r[2] for r in loading if r[1] == "picture"][:3]
+        ctx.note(f"{label}: {p.name}: proof pictures (build/ only): {proof}")
+        return rows
     first_pic = next((i for i, r in enumerate(rows) if r[1] == "picture"), None)
     ctx.check(f"{label}: {p.name}: the first pictures are the Connecting cover", rows and rows[0][1] == "cover",
               seq[:40])
@@ -6074,8 +6091,9 @@ def _room_tables(ctx, real):
 
 @scenario("casual_120_pair", "15 1.2.0 opt-in", game=True, suites=("game",),
           desc="one real pair: A challenges B with an FT2 set and input delay 5 (A's setting), A plays 'Always "
-               "right', B 'Always left', A's replays go to a chosen folder with a Unicode name; the Connecting cover "
-               "from boot to the select/fight on both PCs (backbuffer pictures); every game confirmed and in sync, "
+               "right', B 'Always left', A's replays go to a chosen folder with a Unicode name; no Connecting cover "
+               "(default off: the game's own boot, title, select and loading pictures on both PCs, backbuffer "
+               "pictures); every game confirmed and in sync, "
                "both games used delay 5, the replays in the Unicode folder play back identical")
 def casual_120_pair(ctx):
     if not {"casual_sets", "input_delay8"}.issubset(features()):

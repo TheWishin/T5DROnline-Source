@@ -97,6 +97,10 @@ reviewed from source only: no build, unit-test execution, game or server was
 started. The new source checks can detect missing cover policy/integration;
 they cannot prove renderer output, link success or network determinism.
 
+The cover is OFF by default since the 1.2.0 owner decision: a default online start must show the game's own
+logos, intro movie, title, character select and loading pictures (no `Connecting...` at all). The checks below
+apply to a tester's `T5_ONLINE_FAST_BOOT=1` start.
+
 After a real build, validate the [online startup flow](DIRECTFIGHT.md#online-startup-presentation-120)
 with the supported Windows overlay enabled. On **both PCs**, from the very
 first presentation, expect only the plain `Connecting...` cover until an

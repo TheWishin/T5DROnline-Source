@@ -232,8 +232,9 @@ def end_record(why):
 
 def watch_env(path, result_path=None, status_path=None, controls=True, buffer_frames=None):
     """The game's environment to watch the live stream in `path` (a growing file)."""
-    env = {"T5_NET_MODE": "replay", "T5_REPLAY_FILE": os.path.abspath(path), "T5_NET_START": "external",
-           "T5_ONLINE_FAST_BOOT": "1"}  # live online viewer; saved replays keep their normal presentation
+    # (no Connecting cover: off by default since 1.2.0's owner decision; T5_ONLINE_FAST_BOOT=1 in Extra settings still
+    # turns it on for testers)
+    env = {"T5_NET_MODE": "replay", "T5_REPLAY_FILE": os.path.abspath(path), "T5_NET_START": "external"}
     if result_path:
         env["T5_REPLAY_RESULT"] = os.path.abspath(result_path)
     if status_path:

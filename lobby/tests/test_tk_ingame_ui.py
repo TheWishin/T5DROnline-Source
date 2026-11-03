@@ -48,55 +48,38 @@ class IngameFocusTest(unittest.TestCase):
         tab._come_forward(("rematch", "match1"))
         tab.bring_forward.assert_called_once_with(tab.parent)
 
-    def test_localized_labels_are_published_without_creating_actions(self):
+    def test_translated_texts_and_key_hints_go_to_the_driver(self):
         tab = self.tab(True)
-        offer = tab.driver.offer_ingame_ui = mock.Mock(return_value=True)
+        tab.app = types.SimpleNamespace(settings=types.SimpleNamespace(out_dir=None, env_overrides=lambda: {}))
+        tab.driver.ingame_labels = mock.Mock()
         ev = {"t": "match_result", "status": "confirmed", "match": "match1",
-              "rematch_ui": {"policy": "auto_unless_declined", "actions": ["decline"]}}
-        self.assertTrue(tab._offer_ingame_ui(ev))
-        sent, labels = offer.call_args.args
-        self.assertIs(sent, ev)
-        self.assertEqual(sent["rematch_ui"]["actions"], ["decline"])
-        self.assertIn("automatically", labels["body"])
+              "rematch_ui": {"policy": "both_confirm", "actions": ["accept", "decline"]}}
+        with mock.patch.dict("os.environ", {"PS3_CONTROLS": ""}):
+            self.assertTrue(tab._offer_ingame_ui(ev))
+        labels = tab.driver.ingame_labels.call_args.args[0]
+        self.assertEqual(labels["title"], "Rematch?")
+        self.assertEqual(labels["opp_accept"].format(name="Bob"), "Bob wants a rematch!")
+        self.assertEqual(labels["auto"].format(seconds=3), "Rematch starts in 3 s unless you decline.")
+        self.assertEqual((labels["key_confirm"], labels["key_cancel"]), ("Z", "X"))     # the default keyboard
+        self.assertEqual(labels["result_void"], "No result")
 
-    def test_waiting_updates_preserve_existing_policy_and_result_text(self):
+    def test_other_events_change_nothing(self):
         tab = self.tab(True)
-        offer = tab.driver.offer_ingame_ui = mock.Mock(return_value=True)
-        ev = {"t": "rematch", "match": "match1", "state": "waiting"}
-        tab._offer_ingame_ui(ev)
-        offer.assert_called_once_with(ev)
+        tab.driver.ingame_labels = mock.Mock()
+        self.assertFalse(tab._offer_ingame_ui({"t": "rematch", "match": "match1", "state": "waiting"}))
+        tab.driver.ingame_labels.assert_not_called()
 
-    def test_community_result_describes_rotation_without_rematch_offer(self):
+    def test_vote_in_the_game_answers_the_launcher_question(self):
         tab = self.tab(True)
-        offer = tab.driver.offer_ingame_ui = mock.Mock(return_value=True)
-        ev = {"t": "match_result", "match": "match1", "status": "confirmed",
-              "rematch_ui": {"kind": "community", "room_mode": "community", "rotation": "winner",
-                             "policy": "both_confirm", "actions": ["sit_out"]}}
-        tab._offer_ingame_ui(ev)
-        sent, labels = offer.call_args.args
-        self.assertIs(sent, ev)
-        self.assertEqual(labels["title"], "Community room")
-        self.assertIn("Waiting for your turn", labels["body"])
-        self.assertIn("Winner stays", labels["body"])
-        self.assertNotIn("confirm the rematch", labels["body"])
-        self.assertEqual(labels["cancel"], "Sit out")
-        self.assertEqual(labels["next"], "")
-        self.assertEqual(labels["community_next"].format(seconds=3), "Next turn in 3 s.")
-
-    def test_community_sitting_out_and_ready_room_update_keep_distinct_prompts(self):
-        tab = self.tab(True)
-        offer = tab.driver.offer_ingame_ui = mock.Mock(return_value=True)
-        result = {"t": "match_result", "match": "match1", "status": "confirmed",
-                  "rematch_ui": {"kind": "community", "room_mode": "community", "rotation": "queue",
-                                 "actions": ["back_to_line"]}}
-        tab._offer_ingame_ui(result)
-        self.assertIn("Sitting out", offer.call_args.args[1]["body"])
-        ready = {"t": "match_found", "match": "match2", "ready_check": True}
-        tab._offer_ingame_ui(ready)
-        self.assertEqual(offer.call_args.args[1]["confirm"], "Accept")
-        room = {"t": "room", "room": {"size": 3, "line": ["p1", "p2"]}}
-        tab._offer_ingame_ui(room)
-        self.assertEqual(offer.call_args.args, (room,))
+        tab._notify_driver = mock.Mock()
+        tab.view = mock.Mock()
+        tab.hide_bar = mock.Mock()
+        tab.status = mock.Mock()
+        tab.cfg = {}
+        tab.driver.last_fps = None
+        tab.on_driver({"kind": "ingame_vote", "match": "match1", "accept": True})
+        tab.view.rematch_sent.assert_called_once_with(True)
+        tab.hide_bar.assert_called_once()
 
 
 class RuleConsentTest(unittest.TestCase):

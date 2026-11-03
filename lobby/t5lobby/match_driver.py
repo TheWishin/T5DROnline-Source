@@ -114,6 +114,8 @@ RE_SESSION_END = re.compile(r"\[netplay\] session (\d+) ends")
 FALLBACK_NOTHING_SECONDS = 15
 FALLBACK_WAIT_SECONDS = 20.0
 # how long a game may take to take a control command (persistent mode): a running one, a booting one
+VOTE_GRACE_SECONDS = 2.0      # after the countdown, a yes still on its way: the lobby's late verdict counts
+CLOSE_SECONDS = 3.0           # the in-game question says why there is no rematch this long, then the launcher takes over
 CTL_ACK_SECONDS = 10.0
 CTL_ACK_BOOT_SECONDS = 90.0
 # ... and a running one whose last netplay session has not ended yet: it may stand at a frame waiting for an opponent
@@ -371,6 +373,11 @@ def game_supports_life150(paths):
     return _has_marker(paths, LIFE150_MARKER)
 
 
+def ingame_rematch_wanted(env=None):
+    """The rematch question in the game is on unless T5_INGAME_REMATCH=0 (the launcher's own question then)."""
+    return (os.environ if env is None else env).get("T5_INGAME_REMATCH", "1").strip() != "0"
+
+
 def game_supports_ingame_ui(paths):
     return _has_marker(paths, INGAME_UI_MARKER)
 
@@ -461,22 +468,13 @@ class MatchDriver:
             mode = "persistent" if game_supports_control(game_files) else "process"
         self.mode = mode
         self.extra_env = dict(extra_env or {})
-        self.ingame_rematch = (os.environ.get("T5_INGAME_REMATCH") == "1" if ingame_rematch is None
-                              else bool(ingame_rematch))
+        self.ingame_rematch = ingame_rematch_wanted() if ingame_rematch is None else bool(ingame_rematch)
         self._auto_skip_supported = game_supports_auto_skip(game_files)
-        self.ui = None
+        self.ui = None               # IngameUI: the rematch question in the game (offer_ingame_ui)
         self._ui_labels = {}
-        self._ui_event = None
         self._ui_was_active = False
-        self._ui_offered_at = None
         self._ui_completions = queue.Queue()
-        self._ui_auto_at = None
-        self._ui_auto_delay = None
-        self._ui_auto_second = None
-        self._ui_room = None
-        self._ui_room_next_at = None
-        self._ui_room_second = None
-        self._ui_community_body = ""
+        self._rq = None              # the open rematch question (offer_ingame_ui), else None
         self.input_delay = str(input_delay) if input_delay not in (None, "") else None
         self.always_left = always_left
         self.screen_side = screen_side
@@ -510,7 +508,8 @@ class MatchDriver:
         self.t_reported = 0.0
         self.last = None             # last finished match (match_result event)
         self.history = []            # (match id, what was reported) -- for tools and tests
-        self.rematch_sent = set()    # finished matches this side already answered a rematch for
+        self.rematch_sent = set()    # finished matches this side already said yes to a rematch for
+        self.rematch_declined = set()  # ... and no (also after a yes: the player took it back)
         self.last_fps = None         # this PC's sustained speed in its last match (reported to the lobby)
         self.ctl_wait = None         # (seq, sent at, booting) of a control command the game has not taken yet
         self.released = False        # persistent game: "idle" sent since its last "fight" (its session is let go)
@@ -526,7 +525,7 @@ class MatchDriver:
     # ------------------------------------------------------------------ helpers
     def note(self, kind, **kw):
         if kind in ("ingame_ui_ready", "ingame_ui_fallback") and "match" not in kw:
-            kw["match"] = self.ui.document.get("match") if self.ui is not None else None
+            kw["match"] = (self._rq or {}).get("match")
         self.notes.put(dict(kw, t="driver", kind=kind))
 
     def status(self, text):
@@ -547,12 +546,8 @@ class MatchDriver:
         if self.ui is not None:
             self.ui.close()
             self.ui = None
-        self._ui_event = None
-        self._ui_offered_at = None
+        self._rq = None
         self._ui_was_active = False
-        self._ui_auto_at = None
-        self._ui_auto_delay = None
-        self._ui_room = None
         if self.game is not None:
             try:
                 if self.ctl is not None and self.game.running():
@@ -666,14 +661,7 @@ class MatchDriver:
     # ------------------------------------------------------------------ lobby events
     def on_event(self, ev):
         kind = ev.get("t")
-        if self.ui is not None and kind in ("match_start", "match_cancel", "disconnected"):
-            self.ui.hide()
-            self._ui_event = None
-            self._ui_offered_at = None
-            self._ui_auto_at = None
-            self._ui_auto_delay = None
-            if kind == "match_cancel":
-                self.note("ingame_ui_fallback")
+        self._rq_event(ev)
         if kind == "match_found":
             self._hold_until = None
             if not ev.get("keep"):
@@ -691,7 +679,6 @@ class MatchDriver:
                     self.rematch(ev["match"], True)
             elif ev.get("state") == "declined":
                 self.status(t("Your opponent does not want a rematch."))
-                self._offer_next_ui()
         elif kind == "set_end":
             # A decided casual set (1.2.0: every challenge/room game is one, FT1 by default) still has its rematch
             # window: the running games keep the session for it, as before casual sets (a match found without
@@ -701,18 +688,12 @@ class MatchDriver:
                 self._hold_until = time.monotonic() + window + 3     # then let it go (poll), like _set_over
             else:
                 self._set_over()
-            self._offer_next_ui()
         elif kind == "disconnected":
             self.ticket = None
-            self._ui_room = None
 
     def _release_game(self):
         """A new opponent: the old game session cannot be reused in process mode."""
         if self.game is None:
-            return
-        if self.mode == "process" and self.ui is not None and self.ui.healthy and self.game_running():
-            # The UI stays usable for the ready check. _start still replaces this
-            # process before a fresh opponent; the old netplay session is not reused.
             return
         if self.mode == "persistent" and self.game_running():
             if not self.released:            # (_set_over sent it already: a second reset could hit a mode change)
@@ -947,12 +928,15 @@ class MatchDriver:
         self.offer_ingame_ui(ev, self._ui_labels)
 
     def rematch(self, match_id=None, accept=True, swap=False):
-        """Offer / accept (or decline) a rematch against the last opponent (swap: P1 and P2 the other way round)."""
+        """Offer / accept (or decline) a rematch against the last opponent (swap: P1 and P2 the other way round).
+        After an accept, one decline may follow (the player takes it back: Circle in the game, Leave here)."""
         mid = match_id or (self.last or {}).get("match")
-        if not mid or mid in self.rematch_sent:
+        if not mid or mid in self.rematch_declined or (accept and mid in self.rematch_sent):
             return
-        keep_ui = self.ingame_ui_active or self.ingame_ui_pending
-        self.rematch_sent.add(mid)
+        if accept:
+            self.rematch_sent.add(mid)
+        else:
+            self.rematch_declined.add(mid)
         keep = accept and self.connected_game()
         if accept and self.auto_rematch > 0:
             self.auto_rematch -= 1
@@ -960,201 +944,240 @@ class MatchDriver:
             self._call(self.client.rematch, mid, accept, keep, True)
         else:
             self._call(self.client.rematch, mid, accept, keep)
-        if self.ui is not None and self.ui.document.get("match") == mid:
-            if accept:
-                self.ui.waiting()
-            elif self.ingame_ui_active:
-                self._offer_next_ui()
-        if not accept and self.mode == "process" and not keep_ui:
-            self.stop_game()
+        q = self._rq if self._rq is not None and self._rq["match"] == mid else None
+        if q is not None:
+            self._rq_vote(q, accept)
+        if not accept and self.mode == "process":
+            if q is not None and not q.get("fallback"):
+                q["stop_after"] = True              # (closed once the game has said so)
+            else:
+                self.stop_game()
 
-    # ------------------------------------------------------------- host-only menu
+    # ------------------------------------------------------------- the rematch question in the game
     @property
     def ingame_ui_active(self):
-        return bool(self.game_running() and self.ui is not None and self.ui.active)
+        """The game shows the rematch question (the launcher stays behind it)."""
+        q = self._rq
+        return bool(q is not None and not q.get("fallback") and self.game_running() and self.ui is not None
+                    and self.ui.active)
 
     @property
     def ingame_ui_pending(self):
-        return bool(self.game_running() and self.ui is not None and self.ui.healthy
-                    and self._ui_offered_at is not None and not self.ui.active
-                    and time.monotonic() - self._ui_offered_at < HEALTH_SECONDS)
+        """A question was handed to the game a moment ago and it has not said yet that it shows it."""
+        q = self._rq
+        return bool(q is not None and not q.get("fallback") and self.game_running() and self.ui is not None
+                    and self.ui.healthy and not self.ui.active
+                    and time.monotonic() - q["offered_at"] < HEALTH_SECONDS)
 
-    def offer_ingame_ui(self, ev, labels=None):
-        """Publish only server-permitted actions; Tk supplies the translated strings.
-
-        Metadata is deliberately optional: old servers/games keep the launcher path.
-        The ranked set flow never enters this menu.
-        """
+    def ingame_labels(self, labels):
+        """The launcher's translated texts and key names for the question (tk_tab)."""
         if labels:
             self._ui_labels.update(labels)
-        if self.ui is None or not self.game_running():
-            return False
+            if self._rq is not None:
+                self._rq_render(self._rq)
+
+    def offer_ingame_ui(self, ev, labels=None):
+        """Hand the server-permitted rematch question to the game (docs/REMATCH_1.2.0.md). Returns whether the game
+        shows it. Old servers (no rematch_ui), old games, ranked sets and rooms that pick the next match themselves
+        keep the launcher's own question."""
+        if labels:
+            self._ui_labels.update(labels)
         kind = ev.get("t")
-        if kind == "match_result":
-            rule = ev.get("rematch_ui")
-            if (not isinstance(rule, dict) or type(rule.get("v")) is not int or rule["v"] != 1 or ev.get("ranked")
-                    or (ev.get("set") or {}).get("rated")
-                    or (rule.get("kind") != "community" and not ev.get("rematch_window"))):
-                return False
-            if rule.get("policy") not in ("both_confirm", "auto_unless_declined"):
-                return False
-            key = (kind, ev.get("match"))
-            if self._ui_event and self._ui_event[0] == key:
-                self.ui.labels(self._ui_labels)
-                return self.ingame_ui_active
-            seconds = _ui_seconds(rule.get("timeout", ev.get("rematch_window")))
-            if seconds is None or not isinstance(rule.get("actions"), list):
-                return False
-            community = rule.get("kind") == "community"
-            permitted = ("sit_out", "back_to_line") if community else ("accept", "decline")
-            actions = [a for a in rule["actions"] if isinstance(a, str) and a in permitted]
-            if community:
-                room = getattr(self.client, "my_room", None)
-                if not room or room.get("id") != rule.get("room") or room.get("size", 2) <= 2:
-                    return False
-                self._ui_room = rule["room"]
-            else:
-                self._ui_room = None
-            offered = self.ui.offer(ev.get("match"), "community" if community else "rematch", actions, seconds, self._ui_labels,
-                                    rule.get("room_mode", "casual"), rule["policy"])
-        elif kind == "match_found" and ev.get("ready_check") and self._ui_event is not None:
-            if ev.get("ranked") or ev.get("blind"):
-                return False
-            key = (kind, ev.get("match"))
-            seconds = _ui_seconds(ev.get("ready_timeout") or 15)
-            if seconds is None:
-                return False
-            offered = self.ui.offer(ev.get("match"), "ready", ["ready", "decline"],
-                                    seconds, self._ui_labels,
-                                    "classic" if getattr(self.client, "my_room", None) else "casual")
-        elif kind == "rematch" and self._ui_event is not None:
-            if ev.get("match") != self.ui.document.get("match"):
-                return False
-            self.ui.labels(self._ui_labels)
-            if ev.get("state") in ("accepted", "waiting"):
-                self.ui.waiting()
+        if kind != "match_result":
             return self.ingame_ui_active
-        elif kind == "room" and self._ui_room is not None:
-            self._update_community_ui(ev.get("room"))
+        rule = ev.get("rematch_ui")
+        if (self.ui is None or not self.game_running() or not isinstance(rule, dict) or type(rule.get("v")) is not int
+                or rule["v"] != 1 or rule.get("kind", "rematch") != "rematch" or ev.get("ranked")
+                or (ev.get("set") or {}).get("rated") or not ev.get("rematch_window")
+                or rule.get("policy") not in ("both_confirm", "auto_unless_declined")
+                or not isinstance(rule.get("actions"), list) or "accept" not in rule["actions"]):
+            return False
+        mid = ev.get("match")
+        if self._rq is not None and self._rq["match"] == mid:
+            if labels:
+                self._rq_render(self._rq)
             return self.ingame_ui_active
-        else:
-            self.ui.labels(self._ui_labels)
-            return self.ingame_ui_active
-        if offered:
-            self._ui_event = (key, dict(ev))
-            self._ui_offered_at = time.monotonic()
-            self._ui_auto_at = None
-            self._ui_auto_delay = None
-            self._ui_auto_second = None
-            if kind == "match_result" and rule.get("kind") != "community" and rule["policy"] == "auto_unless_declined":
-                delay = _ui_seconds(rule.get("auto_after"))
-                if delay is not None and delay < seconds:
-                    self._ui_auto_delay = delay
+        seconds = _ui_seconds(rule.get("timeout", ev.get("rematch_window")))
+        if seconds is None:
+            return False
+        opp = ((self.match_ev or {}).get("opponent") or {}).get("name") or "?"
+        now = time.monotonic()
+        q = {"match": mid, "opp": opp, "policy": rule["policy"], "mine": None, "theirs": None, "both": False,
+             "ends": now + seconds, "seconds": seconds, "offered_at": now, "closing": None, "why": None,
+             "auto_at": None, "status": ev.get("status"), "fallback": False, "stop_after": False, "second": None,
+             "mine_won": None}
+        slot = getattr(self.session_ticket, "slot", None)
+        if ev.get("winner") is not None and slot is not None:
+            q["mine_won"] = ev["winner"] == slot
+        if rule["policy"] == "auto_unless_declined":
+            delay = _ui_seconds(rule.get("auto_after"))
+            if delay is not None and delay < seconds:
+                q["auto_at"] = now + delay
+        self._rq = q
+        self._ui_was_active = False
+        if mid in self.rematch_sent:
+            q["mine"] = "accept"
+        ok = self.ui.offer(mid, "rematch", self._rq_actions(q), seconds + CLOSE_SECONDS, self._rq_texts(q),
+                           "classic" if rule.get("room_mode") == "classic" else "casual", rule["policy"],
+                           countdown=self._rq_countdown(q, now))
+        if not ok:
+            self._rq = None
+            return False
+        self.note("ingame_ui_offer", match=mid)
         return self.ingame_ui_active
 
-    def _update_community_ui(self, room):
-        if self.ui is None:
-            return
-        if not isinstance(room, dict) or room.get("id") != self._ui_room:
-            self.ui.hide()
-            self._ui_room = None
-            self.note("ingame_ui_fallback")
-            return
-        # A rotation broadcast cannot overwrite an outstanding real ready check.
-        if self._ui_event and self._ui_event[0][0] == "match_found":
-            return
-        me = (getattr(self.client, "me", None) or {}).get("id")
-        in_line = me in (room.get("line") or [])
-        actions = ["sit_out"] if in_line else ["back_to_line"]
-        labels = dict(self._ui_labels)
-        body_key = "community_waiting" if in_line else "community_sitting_out"
-        body = labels.get(body_key, labels.get("body", ""))
-        if labels.get("rotation"):
-            body += " " + labels["rotation"]
-        self._ui_community_body = body
-        labels.update(title=labels.get("community_title", labels.get("title", "")), body=body,
-                      confirm=labels.get("back_to_line", labels.get("confirm", "")),
-                      cancel=labels.get("sit_out", labels.get("cancel", "")))
-        self.ui.offer(self.ui.document.get("match"), "community", actions, 120, labels, "community")
-        self._ui_room_next_at = None
-        self._ui_room_second = None
-        next_turn = room.get("next")
-        if isinstance(next_turn, dict) and isinstance(next_turn.get("at"), (int, float)):
-            left = next_turn["at"] - time.time() - (getattr(self.client, "clock_offset", None) or 0.0)
-            if 0 < left <= 120:
-                self._ui_room_next_at = time.monotonic() + left
-                self.ui.countdown(left)
-        self._ui_offered_at = time.monotonic()
+    def _rq_countdown(self, q, now):
+        end = q["auto_at"] if q["auto_at"] is not None and q["mine"] is None else q["ends"]
+        return max(0.0, end - now) or None
 
-    def _offer_next_ui(self):
-        self._ui_auto_at = None
-        self._ui_auto_delay = None
-        if self.ui is None or self._ui_event is None or not self.game_running():
+    def _rq_actions(self, q):
+        if q["closing"] is not None or q["both"] or q["mine"] == "decline":
+            return []
+        if q["mine"] == "accept":
+            return ["decline"]                      # Circle takes the rematch back
+        return ["accept", "decline"]
+
+    def _rq_texts(self, q):
+        L = self._ui_labels
+
+        def fmt(key, default=""):
+            text = L.get(key, default)
+            try:
+                return text.format(name=q["opp"], seconds=max(0, int(q["ends"] - time.monotonic() + 0.999)))
+            except (KeyError, ValueError, IndexError, AttributeError):
+                return text if isinstance(text, str) else default
+        body = L.get("result_" + str(q["status"]), L.get("body", ""))
+        if q["mine_won"] is not None and q["status"] in ("confirmed", "onesided", "forfeit", "resolved"):
+            body = L.get("won" if q["mine_won"] else "lost", body)
+        elif q["status"] == "confirmed" and q["mine_won"] is None and L.get("draw"):
+            body = L["draw"]
+        theirs = q["theirs"]
+        opp_state = "decline" if theirs == "decline" else "accept" if theirs == "accept" or q["both"] else "deciding"
+        opponent = fmt({"decline": "opp_decline", "accept": "opp_accept"}.get(opp_state, "opp_deciding"))
+        if q["closing"] is not None:
+            status = fmt({"declined": "me_declined", "expired": "expired", "theirs": "back_to_lobby",
+                          "left": "back_to_lobby"}.get(q["why"], "back_to_lobby"))
+        elif q["both"]:
+            status = fmt("starting")
+        elif q["mine"] == "accept":
+            status = fmt("me_accept")
+        elif q["auto_at"] is not None:
+            status = L.get("auto", "")
+            try:
+                status = status.format(seconds=max(0, int(q["auto_at"] - time.monotonic() + 0.999)), name=q["opp"])
+            except (KeyError, ValueError, IndexError, AttributeError):
+                pass
+        else:
+            status = ""
+        return {"title": L.get("title", ""), "body": body, "opponent": opponent, "opp_state": opp_state,
+                "status": status, "confirm": L.get("confirm", ""),
+                "cancel": L.get("take_back" if q["mine"] == "accept" else "cancel", L.get("cancel", "")),
+                "key_confirm": L.get("key_confirm", ""), "key_cancel": L.get("key_cancel", "")}
+
+    def _rq_render(self, q):
+        if self.ui is None or q.get("fallback") or q is not self._rq:
             return
-        original = self._ui_event[1]
-        if original.get("ranked") or (original.get("set") or {}).get("rated"):
+        now = time.monotonic()
+        countdown = self._rq_countdown(q, now) if q["closing"] is None and not q["both"] else None
+        self.ui.update(self._rq_texts(q), self._rq_actions(q))
+        if countdown is None:
+            self.ui.update(countdown=None)
+        elif abs((self.ui.display_deadline or 0) - (now + countdown)) > 0.25:
+            self.ui.countdown(countdown)
+
+    def _rq_vote(self, q, accept):
+        if q["closing"] is not None:
             return
-        if self._ui_room is not None:
-            self._ui_event = (("community", self.ui.document.get("match")), {})
-            self._update_community_ui(getattr(self.client, "my_room", None))
+        if accept:
+            q["mine"] = "accept"
+            q["auto_at"] = None
+            q["both"] = q["theirs"] == "accept"     # (the lobby starts the rematch now)
+            self.note("ingame_vote", match=q["match"], accept=True)
+            self._rq_render(q)
+        else:
+            q["mine"] = "decline"
+            self.note("ingame_vote", match=q["match"], accept=False)
+            self._rq_close(q, "declined")
+
+    def _rq_close(self, q, why):
+        """Say why there is no rematch, for a moment, then give the player back to the launcher (the lobby)."""
+        if q["closing"] is not None or q is not self._rq:
             return
-        mid = self.ui.document.get("match")
-        if mid:
-            labels = dict(self._ui_labels)
-            labels.update(title=labels.get("next", ""), body="", confirm="", cancel="")
-            self._ui_labels.update(labels)
-            self.ui.offer(mid, "next", ["next"], 120, labels,
-                          "classic" if getattr(self.client, "my_room", None) else "casual")
-            self._ui_offered_at = time.monotonic()
+        q["closing"] = time.monotonic() + (CLOSE_SECONDS if why != "declined" else CLOSE_SECONDS / 2)
+        q["why"] = why
+        if self.ui is not None and not q.get("fallback"):
+            self.ui.update(self._rq_texts(q), [], seconds=q["closing"] - time.monotonic() + 0.5, countdown=None)
+
+    def _rq_end(self, fallback=True):
+        """The question is over: hidden in the game; fallback = the launcher takes over (comes to the front)."""
+        q, self._rq = self._rq, None
+        if q is None:
+            return
+        if self.ui is not None:
+            self.ui.hide()
+        self._ui_was_active = False
+        if fallback:
+            self.note("ingame_ui_fallback", match=q["match"])
+        if q.get("stop_after") and self.mode == "process":
+            self.stop_game()
+
+    def _rq_event(self, ev):
+        """Lobby events while the question is open: the opponent's choice, the server's verdict."""
+        q = self._rq
+        if q is None:
+            return
+        kind = ev.get("t")
+        if kind in ("match_start", "match_found"):
+            # the rematch (or anything else) is set up: the game goes on (a rematch over a new connection first lets
+            # its session go -- the game may stand loading for seconds: that is no reason to bring the launcher up)
+            self._rq_end(fallback=False)
+        elif kind in ("match_cancel", "disconnected"):
+            self._rq_end()
+        elif kind == "rematch" and ev.get("match") == q["match"]:
+            state = ev.get("state")
+            if state == "offered":
+                q["theirs"] = "accept"
+                self._rq_render(q)
+            elif state == "accepted":
+                q["both"] = True
+                q["theirs"] = "accept"
+                self._rq_render(q)
+            elif state == "declined":
+                q["theirs"] = "decline"
+                self._rq_close(q, "theirs")
+            elif state == "expired" and not q["both"]:
+                self._rq_close(q, "expired")
+        elif kind == "set_end" and not q["both"] and ev.get("reason") not in ("decided", None):
+            self._rq_close(q, "expired" if ev.get("reason") == "expired" else "left")
 
     def _dispatch_ingame_ui(self, action):
         channel = self.ui
+        q = self._rq
         if channel is None:
             return
         sequence, name, mid = action["seq"], action["action"], action["match"]
-        if (action.get("prompt") != channel.document.get("prompt") or mid != channel.document.get("match")
-                or not channel.active):
+        if (q is None or q["match"] != mid or action.get("prompt") != channel.document.get("prompt")
+                or mid != channel.document.get("match") or not channel.active or name not in self._rq_actions(q)
+                or (name == "accept" and mid in self.rematch_sent) or mid in self.rematch_declined):
             channel.complete(sequence, False)
             return
-        kind = channel.document.get("kind")
-        if kind == "rematch" and name in ("accept", "decline"):
-            if mid in self.rematch_sent:
-                channel.complete(sequence, False)
-                return
-            self.rematch_sent.add(mid)     # reserve before starting the asynchronous call
-            fn, args = self.client.rematch, (mid, name == "accept", name == "accept" and self.connected_game())
-        elif kind == "ready" and name in ("ready", "decline"):
-            fn, args = self.client.ready, (name == "ready", mid)
-        elif kind == "community" and name in ("sit_out", "back_to_line"):
-            room = getattr(self.client, "my_room", None)
-            if not room or room.get("id") != self._ui_room or room.get("size", 2) <= 2:
-                channel.complete(sequence, False)
-                return
-            fn, args = self.client.room_line, (name == "back_to_line",)
-        elif kind == "next" and name == "next":
-            room = getattr(self.client, "my_room", None)
-            if room:
-                if room.get("size", 2) > 2:
-                    fn, args = self.client.room_line, (True,)
-                else:
-                    fn, args = self.client.rematch, ()
-            elif getattr(self.client, "match", None) is None:
-                fn, args = self.client.quick_match, ()
-            else:
-                channel.complete(sequence, False)
-                return
+        accept = name == "accept"
+        if accept:
+            self.rematch_sent.add(mid)              # reserve before starting the asynchronous call
         else:
-            channel.complete(sequence, False)
-            return
-        # Freeze the exact prompt identity for completion. A late callback must
-        # acknowledge its action without changing a later match's menu.
+            self.rematch_declined.add(mid)
+        if accept and self.auto_rematch > 0:
+            self.auto_rematch -= 1
         prompt = channel.document.get("prompt")
-        channel.waiting()
+        args = (mid, accept, accept and self.connected_game())
+        self._rq_vote(q, accept)
+        if not accept and self.mode == "process":
+            q["stop_after"] = True
         if self.async_calls:
             threading.Thread(target=_ingame_call, args=(self._ui_completions, channel, sequence, prompt, name,
-                                                       self.notes, fn, args), daemon=True).start()
+                                                       self.notes, self.client.rematch, args), daemon=True).start()
         else:
-            _ingame_call(self._ui_completions, channel, sequence, prompt, name, self.notes, fn, args)
+            _ingame_call(self._ui_completions, channel, sequence, prompt, name, self.notes, self.client.rematch, args)
 
     def _watch_ingame_ui(self):
         channel = self.ui
@@ -1167,78 +1190,55 @@ class MatchDriver:
                 break
             failed_match = (old_channel.pending or {}).get("match")
             old_channel.complete(sequence, success)
-            if not success and name in ("accept", "decline"):
-                self.rematch_sent.discard(failed_match)
-            if old_channel is channel and prompt == channel.document.get("prompt"):
-                if success and name == "decline":
-                    self._offer_next_ui()
-                elif success and name in ("sit_out", "back_to_line"):
-                    self._update_community_ui(getattr(self.client, "my_room", None))
-                elif not success:
-                    self.note("ingame_ui_fallback")
-                    channel.hide()
+            q = self._rq
+            if not success and q is not None and q["match"] == failed_match and old_channel is channel:
+                # the lobby refused the vote (the window just closed, the opponent left): no rematch
+                self._rq_close(q, "expired")
         while True:
             try:
                 kind, value = channel.events.get_nowait()
             except queue.Empty:
                 break
             if kind == "action":
-                self._ui_auto_at = None
-                self._ui_auto_delay = None
                 self._dispatch_ingame_ui(value)
-            elif (kind == "expired" and channel.document.get("kind") == "hidden"
-                  and self._ui_offered_at is not None):
-                # The worker can expire one prompt before the UI thread offers
-                # its replacement. Do not apply that queued expiry to a newer
-                # ready/rematch prompt, or to a fight which already hid the menu.
-                self._set_over()
-                self.note("ingame_ui_fallback")
+        q = self._rq
+        if q is None:
+            return
         now = time.monotonic()
-        if self._ui_auto_delay is not None and self.ingame_ui_active:
-            # Start the complete cancellable countdown only after this prompt
-            # was rendered and acknowledged, never while the game is booting.
-            self._ui_auto_at = now + self._ui_auto_delay
-            channel.countdown(self._ui_auto_delay)
-            self._ui_auto_delay = None
-        if self._ui_room_next_at is not None and channel.document.get("kind") == "community":
-            seconds = max(0, int(self._ui_room_next_at - now + 0.999))
-            template = self._ui_labels.get("community_next")
-            if isinstance(template, str) and seconds != self._ui_room_second:
-                self._ui_room_second = seconds
-                try:
-                    body = self._ui_community_body + " " + template.format(seconds=seconds)
-                    channel.labels({"body": body}, require_ready=False)
-                except (KeyError, ValueError):
-                    pass
-        if self._ui_auto_at is not None:
-            mid = channel.document.get("match")
-            if not channel.healthy or channel.document.get("kind") != "rematch" or mid in self.rematch_sent:
-                self._ui_auto_at = None
-            elif now >= self._ui_auto_at:
-                self._ui_auto_at = None
-                if self.ingame_ui_active and channel.pending is None:
-                    self.rematch(mid, True)
-            else:
-                seconds = max(0, int(self._ui_auto_at - now + 0.999))
-                template = self._ui_labels.get("auto")
-                if isinstance(template, str) and seconds != self._ui_auto_second:
-                    self._ui_auto_second = seconds
-                    try:
-                        channel.labels({"body": template.format(seconds=seconds)}, require_ready=False)
-                    except (KeyError, ValueError):
-                        pass
+        if q["closing"] is not None:
+            if now >= q["closing"]:
+                self._rq_end()
+                self._set_over()
+            return
         active = self.ingame_ui_active
         if active and not self._ui_was_active:
-            self.note("ingame_ui_ready")
-        if self._ui_offered_at is not None and not active and (
-                (self._ui_was_active and not channel.healthy)
-                or time.monotonic() - self._ui_offered_at >= HEALTH_SECONDS):
-            self.note("ingame_ui_fallback")
-            self._ui_offered_at = None
-            self._ui_auto_at = None
-            self._ui_auto_delay = None
+            self.note("ingame_ui_ready", match=q["match"])
+        if not q.get("fallback") and not q["both"] and not active and (
+                (self._ui_was_active and not channel.healthy) or not self.game_running()
+                or (not self._ui_was_active and now - q["offered_at"] >= HEALTH_SECONDS)):
+            # The game did not show it (an older game, a font without these letters, no overlay) or stopped
+            # answering: the launcher asks instead, as before (its bar is already up).
+            q["fallback"] = True
             channel.hide()
+            self.note("ingame_ui_fallback", match=q["match"])
         self._ui_was_active = active
+        if q.get("fallback"):
+            if now >= q["ends"] + CLOSE_SECONDS:
+                self._rq = None
+            return
+        if q["auto_at"] is not None and q["mine"] is None and now >= q["auto_at"]:
+            q["auto_at"] = None
+            if active and channel.pending is None:
+                self.rematch(q["match"], True)      # the countdown ran out without a decline: this player's vote
+            return
+        if not q["both"] and (now >= q["ends"] + (VOTE_GRACE_SECONDS if q["mine"] == "accept" else 0)):
+            # (with our yes sent, the lobby's answer to a last-moment yes of the opponent may still come)
+            self._rq_close(q, "expired")
+            return
+        second = int(max(0.0, (q["auto_at"] if q["auto_at"] is not None else q["ends"]) - now) + 0.999)
+        if q["auto_at"] is not None and second != q["second"]:
+            q["second"] = second
+            self._rq_render(q)                       # "starts in N s unless you decline"
 
     def _watch_playing(self, t):
         """Tell the lobby once per match when this game has played its fight for a while: a netplay speed or sync line

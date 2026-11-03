@@ -137,14 +137,46 @@ class IngameUITest(unittest.TestCase):
                 stream.write(raw)
             self.assertIsNone(_read(path))
 
-    def test_automatic_countdown_does_not_shorten_authoritative_window(self):
+    def test_countdown_is_separate_from_how_long_the_question_shows(self):
         self.ui.countdown(5)
         self.now += 4
         self.ui.pump()
-        self.assertEqual(_read(os.path.join(self.directory.name, "ui.json"))["remaining_ms"], 1000)
-        self.ui.waiting()
+        doc = _read(os.path.join(self.directory.name, "ui.json"))
+        self.assertEqual((doc["countdown_ms"], doc["remaining_ms"]), (1000, 16000))
+        self.assertEqual(doc["total_ms"], 5000)
+        self.ui.update(countdown=None)
         self.ui.pump()
-        self.assertEqual(_read(os.path.join(self.directory.name, "ui.json"))["remaining_ms"], 16000)
+        doc = _read(os.path.join(self.directory.name, "ui.json"))
+        self.assertEqual((doc["countdown_ms"], doc["total_ms"], doc["remaining_ms"]), (0, 0, 16000))
+
+    def test_ui_json_written_only_when_something_changed(self):
+        path = os.path.join(self.directory.name, "ui.json")
+        self.ui.pump()
+        os.remove(path)
+        self.ui.pump()
+        self.assertFalse(os.path.exists(path))       # same revision: the game already has it
+        self.ui.update({"opponent": "Bob wants a rematch!", "opp_state": "accept"})
+        self.ui.pump()
+        self.assertEqual(_read(path)["opponent"], "Bob wants a rematch!")
+
+    def test_update_keeps_the_question_and_needs_no_new_acknowledgement(self):
+        self.assertTrue(self.ui.active)
+        prompt = self.ui.document["prompt"]
+        self.ui.update({"status": "waiting"}, ["decline"])
+        self.assertEqual(self.ui.document["prompt"], prompt)
+        self.assertEqual(self.ui.document["allowed"], ["decline"])
+        self.assertTrue(self.ui.active)
+        self.ui.update(seconds=2)
+        self.now += 2
+        self.assertFalse(self.ui.active)
+
+    def test_offer_with_countdown_and_key_names(self):
+        self.ui.offer("m2", "rematch", ["accept", "decline"], 13, {"key_confirm": "ENTER-AND-MUCH-MORE-TEXT"},
+                      countdown=10)
+        self.ui.pump()
+        doc = _read(os.path.join(self.directory.name, "ui.json"))
+        self.assertEqual((doc["countdown_ms"], doc["total_ms"], doc["remaining_ms"]), (10000, 10000, 13000))
+        self.assertEqual(len(doc["key_confirm"]), 16)
 
 
 if __name__ == "__main__":

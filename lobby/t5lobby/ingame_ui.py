@@ -1,8 +1,10 @@
-"""Version 1 host menu channel, independent of the persistent fight command sequence.
+"""The in-game question's channel (docs/REMATCH_1.2.0.md), independent of the persistent fight command sequence.
 
-The worker owns file I/O. The launcher thread owns dispatch; an action is reserved before
-dispatch and remains pending until its asynchronous lobby call has finished. This is a
-local UI request, never authority to start a fight or inject a simulated pad input.
+The launcher writes ui.json: what the game shows (texts, the actions the server permits now, how long it stays, the
+countdown). The game draws it over its picture (src/directfight/df_ui.cpp), answers with one action at a time
+(ui_action.json) and keeps ui_ready.json fresh while it shows what it was given. The worker owns file I/O. The
+launcher thread owns dispatch; an action is reserved before dispatch and remains pending until its asynchronous lobby
+call has finished. This is a local UI request, never authority to start a fight or inject a simulated pad input.
 """
 import copy
 import json
@@ -73,6 +75,9 @@ def _open_shared(path):
 
 
 class IngameUI:
+    TEXTS = ("title", "body", "confirm", "cancel", "next", "waiting", "opponent", "status", "opp_state",
+             "key_confirm", "key_cancel")
+
     def __init__(self, directory, session, clock=time.monotonic, worker=True):
         self.dir = os.path.abspath(directory)
         self.session = str(session)
@@ -87,12 +92,18 @@ class IngameUI:
         self.ready_at = None
         self.seen = 0
         self.pending = None
-        self.deadline = 0.0
-        self.display_deadline = None
+        self.deadline = 0.0              # the question is shown until then (clock)
+        self.display_deadline = None     # the countdown on screen ends then (None: no countdown)
+        self.total = 0.0                 # the countdown's full length (the bar)
         self.required_revision = 0
+        self.written = None              # the revision last written to ui.json
         self.document = self._base()
         self.document.update(rev=1, prompt="", match="", kind="hidden", allowed=[],
-                             remaining_ms=0, ack_seq=0, ack_status="")
+                             remaining_ms=0, countdown_ms=0, total_ms=0, ack_seq=0, ack_status="")
+        try:
+            os.makedirs(self.dir, exist_ok=True)
+        except OSError:
+            pass
         self.thread = None
         if worker:
             self.thread = threading.Thread(target=self._work, daemon=True, name="t5-ingame-ui")
@@ -111,69 +122,112 @@ class IngameUI:
             return self.ready_at is not None and self.clock() - self.ready_at < HEALTH_SECONDS
 
     @property
+    def shown(self):
+        """The game has drawn the question it was last asked to show (later text changes need no new answer)."""
+        with self.lock:
+            return self.healthy and self.ready_revision >= self.required_revision
+
+    @property
     def active(self):
         with self.lock:
-            return (self.healthy and self.ready_revision >= self.required_revision
-                    and self.document["kind"] != "hidden" and self.clock() < self.deadline)
+            return self.shown and self.document["kind"] != "hidden" and self.clock() < self.deadline
 
-    def offer(self, match, kind, actions, seconds, labels=None, room_mode="casual", policy="both_confirm"):
+    def _bump(self, require_ready=False):
+        self.revision += 1
+        self.document["rev"] = self.revision
+        if require_ready:
+            self.required_revision = self.revision
+
+    @staticmethod
+    def _allowed(actions):
+        return list(dict.fromkeys(a for a in actions if isinstance(a, str) and a in ACTIONS))
+
+    def _set_labels(self, values):
+        changed = False
+        for key in self.TEXTS:
+            if isinstance(values.get(key), str):
+                value = values[key][:512 if key == "body" else 16 if key.startswith("key_") else 160]
+                if self.document.get(key) != value:
+                    changed = True
+                    self.document[key] = value
+        return changed
+
+    def offer(self, match, kind, actions, seconds, labels=None, room_mode="casual", policy="both_confirm",
+              countdown=None):
+        """A new question: the game ignores the buttons for a moment and wants a held one let go first. seconds: how
+        long it is shown; countdown: the seconds its countdown starts from (None: no countdown)."""
         if not isinstance(match, str) or not 0 < len(match) <= 40:
             return False
         if not isinstance(seconds, (float, int)) or isinstance(seconds, bool) or not 0 < seconds <= 120:
             return False
         with self.lock:
-            self.revision += 1
-            self.deadline = self.clock() + seconds
-            self.display_deadline = None
+            now = self.clock()
+            self.deadline = now + seconds
+            self.display_deadline = now + countdown if countdown else None
+            self.total = float(countdown or 0)
             ack = {k: self.document[k] for k in ("ack_seq", "ack_status")}
-            self.document = dict(self._base(), rev=self.revision, prompt=str(self.revision), match=match,
-                                 kind=kind, allowed=list(dict.fromkeys(a for a in actions if isinstance(a, str) and a in ACTIONS)),
-                                 remaining_ms=int(seconds * 1000), room_mode=room_mode, policy=policy, **ack)
-            self.labels(labels or {})
-            self.required_revision = self.revision
+            self.document = dict(self._base(), rev=self.revision, prompt=str(self.revision + 1), match=match,
+                                 kind=kind, allowed=self._allowed(actions), remaining_ms=int(seconds * 1000),
+                                 countdown_ms=0, total_ms=int(self.total * 1000), room_mode=room_mode, policy=policy,
+                                 **ack)
+            self._set_labels(labels or {})
+            self._bump(require_ready=True)
         return True
 
     def labels(self, values, require_ready=True):
         with self.lock:
-            changed = False
-            for key in ("title", "body", "confirm", "cancel", "next", "waiting"):
-                if isinstance(values.get(key), str):
-                    value = values[key][:512 if key == "body" else 160]
-                    if self.document.get(key) != value:
-                        changed = True
-                        self.document[key] = value
+            if self._set_labels(values):
+                self._bump(require_ready)
+
+    def update(self, labels=None, actions=None, seconds=None, countdown=False):
+        """The same question, changed (the opponent's choice, ours, the closing words): no new acknowledgement is
+        needed. seconds: shown that much longer from now; countdown=None takes the countdown away."""
+        with self.lock:
+            if self.document["kind"] == "hidden":
+                return
+            changed = self._set_labels(labels or {})
+            if actions is not None:
+                allowed = self._allowed(actions)
+                if allowed != self.document["allowed"]:
+                    self.document["allowed"] = allowed
+                    changed = True
+            if seconds is not None:
+                self.deadline = self.clock() + seconds
+                changed = True
+            if countdown is None and self.display_deadline is not None:
+                self.display_deadline = None
+                changed = True
             if changed:
-                self.revision += 1
-                self.document["rev"] = self.revision
-                if require_ready:
-                    self.required_revision = self.revision
+                self._bump()
 
     def countdown(self, seconds=None):
         with self.lock:
             self.display_deadline = self.clock() + seconds if seconds is not None else None
-            self.revision += 1
-            self.document["rev"] = self.revision
+            if seconds is not None:
+                self.total = max(self.total, float(seconds))
+            self._bump()
 
     def hide(self):
         with self.lock:
-            self.revision += 1
-            self.document.update(rev=self.revision, kind="hidden", allowed=[], remaining_ms=0)
+            self.document.update(kind="hidden", allowed=[], remaining_ms=0, countdown_ms=0)
             self.deadline = 0.0
+            self.display_deadline = None
+            self._bump()
 
     def waiting(self):
+        """Our vote is sent: no answer is left but Circle (take it back) where it is permitted."""
         with self.lock:
-            self.display_deadline = None
-            self.revision += 1
-            self.document.update(rev=self.revision, kind="waiting", allowed=[])
-            self.document["body"] = self.document.get("waiting", self.document.get("body", ""))
+            self.document["allowed"] = [a for a in self.document["allowed"] if a == "decline"]
+            if self.document.get("waiting"):
+                self.document["status"] = self.document["waiting"]
+            self._bump()
 
     def complete(self, sequence, success):
         with self.lock:
             if self.pending is not None and self.pending["seq"] == sequence:
                 self.document.update(ack_seq=sequence, ack_status="ok" if success else "rejected")
                 self.pending = None
-                self.revision += 1
-                self.document["rev"] = self.revision
+                self._bump()
 
     def _identity(self, value):
         return (isinstance(value, dict) and type(value.get("v")) is int and value["v"] == VERSION
@@ -191,18 +245,29 @@ class IngameUI:
                 # The game retains its one outstanding request across prompt changes.
                 # Reject stale requests from this launch explicitly so it can re-arm.
                 self.seen = sequence
-                self.revision += 1
-                self.document.update(ack_seq=sequence, ack_status="rejected", rev=self.revision)
+                self.document.update(ack_seq=sequence, ack_status="rejected")
+                self._bump()
                 return
             self.seen = sequence
             if (self.clock() >= self.deadline or not self.active
                     or value.get("action") not in self.document["allowed"]):
                 self.document.update(ack_seq=sequence, ack_status="rejected")
-                self.revision += 1
-                self.document["rev"] = self.revision
+                self._bump()
                 return
             self.pending = copy.deepcopy(value)
             self.events.put(("action", copy.deepcopy(value)))
+
+    def snapshot(self):
+        """What ui.json says now (the remaining times counted from this moment)."""
+        with self.lock:
+            document = copy.deepcopy(self.document)
+            now = self.clock()
+            hidden = document["kind"] == "hidden"
+            document["remaining_ms"] = 0 if hidden else max(0, int((self.deadline - now) * 1000))
+            left = 0 if hidden or self.display_deadline is None else self.display_deadline - now
+            document["countdown_ms"] = max(1, int(left * 1000)) if left > 0 else 0
+            document["total_ms"] = int(self.total * 1000) if document["countdown_ms"] else 0
+            return document
 
     def pump(self):
         """One worker iteration; no launcher callbacks and no simulation work."""
@@ -222,9 +287,9 @@ class IngameUI:
                 self.events.put(("expired", None))
         self.receive(_read(os.path.join(self.dir, "ui_action.json")))
         with self.lock:
-            document = copy.deepcopy(self.document)
-            deadline = self.display_deadline if self.display_deadline is not None else self.deadline
-            document["remaining_ms"] = max(0, int((deadline - self.clock()) * 1000))
+            if self.written == self.document["rev"]:
+                return      # (the game counts the times from when it read the file: nothing new to tell it)
+            document = self.snapshot()
         try:
             raw = json.dumps(document, ensure_ascii=False).encode("utf-8")
         except (ValueError, UnicodeError):
@@ -237,6 +302,8 @@ class IngameUI:
             with open(path + ".tmp", "wb") as stream:
                 stream.write(raw)
             os.replace(path + ".tmp", path)
+            with self.lock:
+                self.written = document["rev"]
         except OSError:
             pass                 # stale capability triggers the launcher's ordinary fallback
 

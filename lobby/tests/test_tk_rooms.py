@@ -161,6 +161,30 @@ class TkRoomsTest(TkBase):
         self.pump(lambda: "Back in line: you play when it is your turn." in tab.status_var.get())
         self.pump(lambda: tab.actions["room_line"].cget("text") == "Sit out")
 
+    def test_automatically_watch_box_in_a_community_room(self):
+        """The room row's "Automatically watch" (on by default): shown in a community room only, its click is the
+        launcher setting at once, Triangle (Y) on a pad presses it."""
+        tab = self.tab
+        self.login()
+        self.create(size="2")
+        self.pump(lambda: tab.client.my_room is not None)
+        self.pump(lambda: "Your room" in tab.rooms_ui.text.get())
+        self.assertFalse(tab.rooms_ui.autowatch_row.winfo_manager())          # a classic room: nobody waits
+        tab.actions["leave"].invoke()
+        self.pump(lambda: tab.client.my_room is None and str(tab.actions["room"].cget("state")) == "normal")
+        self.create(size="4")
+        self.pump(lambda: tab.client.my_room is not None and tab.client.my_room.get("size") == 4)
+        self.pump(lambda: str(tab.actions["room_autowatch"].cget("state")) == "normal")
+        self.assertTrue(tab.rooms_ui.autowatch_row.winfo_manager())
+        self.assertTrue(tab.rooms_ui.autowatch_var.get())                     # on by default
+        self.assertEqual(tab._pad_plan()["triangle"][0], "room_autowatch")
+        tab._pad_plan()["triangle"][1]()                                      # the pad's Triangle
+        self.root.update()
+        self.assertIs(self.app.settings["auto_watch_table"], False)
+        self.assertFalse(tab.rooms_ui.autowatch_var.get())
+        self.app.settings["auto_watch_table"] = True                          # ticked again in Settings
+        self.pump(lambda: tab.rooms_ui.autowatch_var.get())
+
     def test_host_settings_password_and_remove(self):
         tab = self.tab
         self.login()

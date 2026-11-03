@@ -378,6 +378,35 @@ static void test_hud_centre_and_titles(void)
     CHECK(near(placed_n(&edge, 4, &why), 1180.0f) && why == AL_MOVE, "a quad ending at the middle moves right");
 }
 
+/* The round intro's PLAYER DATA strip (trace of a 1.2.0 local fight): two panels at mirrored places, each
+ * reaching past its screen edge, the numbers one draw per glyph. Each panel takes the other's place, the
+ * numbers move by half the width in order and land inside their own moved panel. */
+static void test_hud_player_data(void)
+{
+    int why;
+    const al_quad p1 = Q(PLATE, -13.6f, 565.1f, 522.1f, 594.1f, 0), p2 = Q(PLATE, 716.3f, 1294.9f, 522.1f, 594.1f, 0);
+    CHECK(near(placed_n(&p1, 4, &why), 714.9f) && why == AL_SWAP_PANEL, "P1's panel at P2's place: %f", placed(&p1));
+    CHECK(near(placed_n(&p2, 4, &why), -14.9f) && why == AL_SWAP_PANEL, "P2's panel at P1's place: %f", placed(&p2));
+    for (int side = 0; side < 2; side++) {
+        const al_quad panel = side ? p2 : p1;
+        const float px0 = placed(&panel), px1 = px0 + (panel.x1 - panel.x0) * 640.0f;
+        const float x0 = side ? 916.0f : 195.3f;
+        float last = -1e9f;
+        for (int i = 0; i < 10; i++) {
+            const float gx = x0 + 25.0f * (float)i;
+            const al_quad g = Q(FONT, gx, gx + 23.3f, 557.3f, 580.7f, 0);
+            const float x = placed_n(&g, 4, &why);
+            CHECK(near(x, gx + (side ? -640.0f : 640.0f)) && why == AL_MOVE, "side %d glyph %d moves by half", side, i);
+            CHECK(x > last && x >= px0 && x + 23.3f <= px1, "side %d glyph %d in order, inside its panel", side, i);
+            last = x;
+        }
+    }
+    /* just outside the strip: the intro line (632..656) and REPLAY (582..686) stay; so does a centred title */
+    const al_quad below = Q(FONT, 300, 323, 590, 613, 0), title = Q(TITLE, 380, 900, 520, 590, 0);
+    CHECK(near(placed_n(&below, 4, &why), 300.0f) && why == AL_STAY_BELOW_BAND, "a glyph reaching below 600 stays");
+    CHECK(near(placed_n(&title, 4, &why), 380.0f) && why == AL_STAY_BELOW_BAND, "a centred quad in the strip stays");
+}
+
 /* Diagnostics: a centred raw quad whose visible scissor part is on one side is flagged (side_clipped_center);
  * al_hud_clip keeps texture identity and direction. */
 static void test_hud_scissor_diagnostics(void)
@@ -444,6 +473,7 @@ int main(void)
     test_vp();
     test_hud_game_frame();
     test_hud_centre_and_titles();
+    test_hud_player_data();
     test_hud_scissor_diagnostics();
     test_picture_quad_and_scissor();
     if (g_fails) { printf("FAILED %d of %d checks\n", g_fails, g_checks); return 1; }

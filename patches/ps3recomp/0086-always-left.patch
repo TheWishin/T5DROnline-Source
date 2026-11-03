@@ -1,9 +1,9 @@
 diff --git a/libs/video/rsx_always_left.h b/libs/video/rsx_always_left.h
 new file mode 100644
-index 0000000..6079f35
+index 0000000..f86f97a
 --- /dev/null
 +++ b/libs/video/rsx_always_left.h
-@@ -0,0 +1,250 @@
+@@ -0,0 +1,272 @@
 +/*
 + * ps3recomp patch 0086 (T5DR Online "Always left" / "Always right"): the pure part of showing the fight to one
 + * player as if they stood on the other side -- the 3D picture mirrored, the HUD's two halves swapped with every
@@ -26,7 +26,9 @@ index 0000000..6079f35
 + *                   width to the other side -- frame, fills, plates and every glyph of a side by the same
 + *                   amount, so each side's HUD arrives whole and in order. Anything across the middle (the
 + *                   timer) and anything below the band (ROUND / FIGHT / K.O. / PERFECT titles, intro text,
-+ *                   REPLAY, the winner's name) stays where the game put it: centred or not tied to a player.
++ *                   REPLAY) stays where the game put it: centred or not tied to a player -- except the round
++ *                   intro's PLAYER DATA strip (AL_DATA_TOP..AL_DATA_BOTTOM): each panel goes to the other
++ *                   panel's place, its glyphs move by half the width.
 + *                   A draw of more than six vertices across the middle inside the band (independent elements of
 + *                   both sides in one batch; never seen in Tekken 5 DR) is left as it is, never cut.
 + *
@@ -211,14 +213,34 @@ index 0000000..6079f35
 +           (visible->x1 <= 0.0f || visible->x0 >= 0.0f);
 +}
 +
-+enum { AL_STAY_BELOW_BAND = 1, AL_STAY_ACROSS = 2, AL_STAY_BATCH = 3, AL_MOVE = 4 };
++/* The round intro's PLAYER DATA strip (each player's wins / losses / win rate under their side): a panel per
++ * side, 522..594 of 720 guest pixels, its numbers one draw per glyph at 557..581. Nothing centred is drawn
++ * there in a fight (titles end above 450, the intro line and REPLAY reach below 600). */
++#define AL_DATA_TOP    (500.0f / 720.0f)
++#define AL_DATA_BOTTOM (600.0f / 720.0f)
++/* wider than this (of the width) = a panel, narrower = a glyph */
++#define AL_PANEL_MIN   0.125f
++
++enum { AL_STAY_BELOW_BAND = 1, AL_STAY_ACROSS = 2, AL_STAY_BATCH = 3, AL_MOVE = 4, AL_SWAP_PANEL = 5 };
 +
 +/* Where the HUD draw q (n vertices) goes: -> the clip-space x translation (+1 = half the width to the right,
 + * -1 to the left, 0 = stays); *why = one of the AL_* reasons above. */
 +static float al_hud_place(const al_quad* q, uint32_t n, int* why)
 +{
-+    if (q->y0 < 1.0f - 2.0f * AL_HUD_BAND) { *why = AL_STAY_BELOW_BAND; return 0.0f; }
-+    if (q->x0 < 0.0f && q->x1 > 0.0f) { *why = n > 6 ? AL_STAY_BATCH : AL_STAY_ACROSS; return 0.0f; }
++    const int across = q->x0 < 0.0f && q->x1 > 0.0f;
++    if (q->y0 < 1.0f - 2.0f * AL_HUD_BAND) {
++        /* the PLAYER DATA strip: a side's panel goes to the other side's place (its box mirrored, the art
++         * as drawn: the two panels are drawn at mirrored places, each wider than its half); its numbers move
++         * by half the width like the names above, glyphs in order, inside the moved panel */
++        if (!across && q->y1 <= 1.0f - 2.0f * AL_DATA_TOP && q->y0 >= 1.0f - 2.0f * AL_DATA_BOTTOM) {
++            if (q->x1 - q->x0 > 2.0f * AL_PANEL_MIN) { *why = AL_SWAP_PANEL; return -(q->x0 + q->x1); }
++            *why = AL_MOVE;
++            return (q->x0 + q->x1) < 0.0f ? 1.0f : -1.0f;
++        }
++        *why = AL_STAY_BELOW_BAND;
++        return 0.0f;
++    }
++    if (across) { *why = n > 6 ? AL_STAY_BATCH : AL_STAY_ACROSS; return 0.0f; }
 +    *why = AL_MOVE;
 +    return (q->x0 + q->x1) < 0.0f ? 1.0f : -1.0f;
 +}
@@ -255,7 +277,7 @@ index 0000000..6079f35
 +
 +#endif
 diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
-index 5cbbdc1..3ee8081 100644
+index 5cbbdc1..532fe19 100644
 --- a/libs/video/rsx_live_draw.c
 +++ b/libs/video/rsx_live_draw.c
 @@ -133,6 +133,7 @@ void rsx_live_draw_xo_info(long long* e, unsigned* d, long long* w) { *e = 0; *d
@@ -588,7 +610,7 @@ index 5cbbdc1..3ee8081 100644
 +        g_al.stayed++;
 +        return;
 +    }
-+    g_al_trace.outcome = "hud-moved";
++    g_al_trace.outcome = why == AL_SWAP_PANEL ? "hud-panel-swapped" : "hud-moved";
 +    xf[4] += dx;
 +    *dx_px = dx * W * 0.5f;
 +    g_al.moved++;

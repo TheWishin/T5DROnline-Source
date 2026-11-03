@@ -338,6 +338,31 @@ class DriverIngameUITest(unittest.TestCase):
         self.driver._start({"match": "m2", "fight": {"auto_skip_after_round": True}})
         self.assertEqual(self.client.calls, [("leave_match", "m2")])
 
+    def test_intro_skip_fight_line_only_from_authoritative_server_true(self):
+        """1.2.0: the server's fight.auto_skip_intro -> the fight line's auto_skip_intro=1 (both launchers write it)"""
+        self.assertEqual(fight_rules({"auto_skip_intro": True}), " auto_skip_intro=1")
+        self.assertEqual(fight_rules({"auto_skip_after_round": True, "auto_skip_intro": True}),
+                         " auto_skip_after_round=1 auto_skip_intro=1")
+        for value in (False, 1, "true", None):
+            self.assertEqual(fight_rules({"auto_skip_intro": value}), "")
+
+    def test_old_game_cannot_silently_ignore_agreed_intro_rule(self):
+        self.driver._auto_skip_intro_supported = False
+        self.driver._start({"match": "m3", "fight": {"auto_skip_intro": True}})
+        self.assertEqual(self.client.calls, [("leave_match", "m3")])
+
+    def test_game_marker_for_the_intro_rule(self):
+        import os
+        from t5lobby.match_driver import game_supports_auto_skip_intro
+        with tempfile.TemporaryDirectory() as d:
+            new, old = os.path.join(d, "new.exe"), os.path.join(d, "old.exe")
+            with open(new, "wb") as f:
+                f.write(b"\0x line.find(\"auto_skip_intro=\") \0")
+            with open(old, "wb") as f:
+                f.write(b"\0auto_skip_after_round=\0")
+            self.assertTrue(game_supports_auto_skip_intro([new]))
+            self.assertFalse(game_supports_auto_skip_intro([old]))
+
 
 if __name__ == "__main__":
     unittest.main()

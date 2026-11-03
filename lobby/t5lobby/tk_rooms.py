@@ -50,16 +50,22 @@ def _room_rules_supported(client, size=2, ranked=False, mode="line"):
                 and getattr(client, "ingame_rematch_ok", lambda: False)())
 
 
+def _room_skip_supported(client, size=2, ranked=False, mode="line"):
+    """The room's round-skip wish: a classic casual room on a server that takes it (independent of the in-game
+    rematch question)."""
+    return bool(size == 2 and mode == "line" and not ranked and getattr(client, "auto_skip_ok", lambda: False)())
+
+
 def _room_rule_values(client, size=2, ranked=False, policy="both_confirm", auto_skip_after_round=False, mode="line"):
     """Drop disabled/stale controls before making a request, including on older servers.
 
     Skipping is a room wish only: the server still needs each player's separate consent and both game caps.
     """
-    if not _room_rules_supported(client, size, ranked, mode):
-        return {}
-    policies = [value for _label, value in REMATCH_CHOICES]
-    rules = {"rematch_policy": policy if policy in policies else "both_confirm"}
-    if getattr(client, "auto_skip_ok", lambda: False)():
+    rules = {}
+    if _room_rules_supported(client, size, ranked, mode):
+        policies = [value for _label, value in REMATCH_CHOICES]
+        rules["rematch_policy"] = policy if policy in policies else "both_confirm"
+    if _room_skip_supported(client, size, ranked, mode):
         rules["auto_skip_after_round"] = bool(auto_skip_after_round)
     return rules
 
@@ -655,8 +661,8 @@ def create_window(ui):
             widgets["first_to"].configure(state="readonly" if sets_on and not v["training"].get() else "disabled")
             supported = _room_rules_supported(tab.client, 3 if many else 2, mode="tables" if tables else "line")
             policy.configure(state="readonly" if supported else "disabled")
-            skip.configure(state="normal" if supported and getattr(tab.client, "auto_skip_ok", lambda: False)()
-                           else "disabled")
+            skip_on = _room_skip_supported(tab.client, 3 if many else 2, mode="tables" if tables else "line")
+            skip.configure(state="normal" if skip_on else "disabled")
         except tk.TclError:
             pass
     for key in ("size", "access", "training", "mode"):
@@ -825,18 +831,22 @@ def settings_window(ui, r):
     hide = ttk.Checkbutton(card, text=t("Hide the room from the room list"), variable=v["hidden"],
                            style="Card.TCheckbutton")
     hide.grid(row=3, column=0, columnspan=2, sticky="w", pady=(px(6), 0))
-    can_rules = (_room_rules_supported(tab.client, r.get("size", 2), r.get("ranked", False), r.get("mode", "line"))
-                 and (tab.client.me or {}).get("status") == "room" and r.get("status") != "playing")
+    can_edit = (tab.client.me or {}).get("status") == "room" and r.get("status") != "playing"
+    can_policy = can_edit and _room_rules_supported(tab.client, r.get("size", 2), r.get("ranked", False),
+                                                    r.get("mode", "line"))
+    can_skip = can_edit and _room_skip_supported(tab.client, r.get("size", 2), r.get("ranked", False),
+                                                 r.get("mode", "line"))
+    can_rules = can_policy or can_skip
     ttk.Label(card, text=t("Rematch rule:"), style="Card.Muted.TLabel").grid(
         row=4, column=0, sticky="w", pady=px(3), padx=(0, px(10)))
     policy = ttk.Combobox(card, textvariable=v["rematch_policy"], values=[t(x) for x, _v in REMATCH_CHOICES],
-                          state="readonly" if can_rules else "disabled", style="Card.TCombobox", width=34)
+                          state="readonly" if can_policy else "disabled", style="Card.TCombobox", width=34)
     _fit_choices(policy)
     policy.grid(row=4, column=1, sticky="we", pady=px(3))
     skip = ttk.Checkbutton(card, text=t("Skip replays after rounds (both players must agree)"),
                            variable=v["auto_skip_after_round"], style="Card.TCheckbutton")
     skip.grid(row=5, column=0, columnspan=2, sticky="w", pady=(px(4), 0))
-    if not can_rules or not getattr(tab.client, "auto_skip_ok", lambda: False)():
+    if not can_skip:
         skip.configure(state="disabled")
     err = ttk.Label(card, text="", style="Card.error.TLabel", wraplength=px(360), justify="left")
     err.grid(row=6, column=0, columnspan=2, sticky="w", pady=(px(4), 0))

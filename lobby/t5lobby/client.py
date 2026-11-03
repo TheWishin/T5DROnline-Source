@@ -105,7 +105,8 @@ class LobbyClient(TourCalls, SpectateClientMixin):
                  tournaments=False, spectate=False, live_dir=None, watch_dir=None, test_inbound=None,
                  private_rooms=True, match_rules=False, life150=False, input_delay8=True,
                  badges=True, mentions=True, tcp_fallback_port=443, casual_sets=True, room_tables=True,
-                 ingame_rematch=False, auto_skip_after_round=False, private_chat=True, guest_mutes=()):
+                 ingame_rematch=False, auto_skip_after_round=False, private_chat=True, guest_mutes=(),
+                 auto_skip_intro=False):
         """server: "host[:port]". build: BuildInfo. on_event: optional callable(event) run on the
         client thread (use the `events` queue from a UI). game_port: local UDP port for the game
         (0 = any free one; set it when the player forwarded a port on the router).
@@ -167,7 +168,10 @@ class LobbyClient(TourCalls, SpectateClientMixin):
         The certificate check and protocol stay identical; plain TCP clients never use it.
         ingame_rematch, auto_skip_after_round: explicit game-build capabilities for the optional 1.2 protocol,
         off by default. The launcher checks the corresponding game marker and T5_INGAME_REMATCH switch first;
-        skip consent is a separate, default-off preference (set_auto_skip_after_round)."""
+        skip consent is a separate, default-off preference (set_auto_skip_after_round); the round skip does not
+        need the in-game rematch.
+        auto_skip_intro (1.2.0): this launcher's game skips the fighters' intros by the fight line's rule
+        (auto_skip_intro=1): the server then sets it for every match against another such launcher. No setting."""
         self.host, self.port = proto.parse_hostport(server)
         self.build = build
         self.on_event = on_event
@@ -218,6 +222,7 @@ class LobbyClient(TourCalls, SpectateClientMixin):
         # A launcher advertises these only after checking its game build and the feature switch.
         self.ingame_rematch = bool(ingame_rematch)
         self.auto_skip_after_round = bool(auto_skip_after_round)
+        self.auto_skip_intro = bool(auto_skip_intro)
         self.skip_after_round = False    # the player's consent; a room/server still chooses the agreed rule
         self.life = 100              # this player's health handicap (set_life), as the server confirmed it
         self.casual_prefs = None     # (side None/0/1, stage key or "random"): casual wishes, sent after every login
@@ -408,6 +413,7 @@ class LobbyClient(TourCalls, SpectateClientMixin):
                                                 + (["room_tables"] if self.room_tables else [])
                                                 + (["ingame_rematch_v1"] if self.ingame_rematch else [])
                                                 + (["auto_skip_after_round_v1"] if self.auto_skip_after_round else [])
+                                                + (["auto_skip_intro_v1"] if self.auto_skip_intro else [])
                                                 + [COMPAT_CAP]
                                                 + (["private_chat"] if self.private_chat else [])
                                                 + ["mutes"]})
@@ -1578,12 +1584,15 @@ class LobbyClient(TourCalls, SpectateClientMixin):
         an invite code: .room_code, the reply's "code"); hidden: not in the room list. -> the room (a member's view).
         The password goes to the server only, over this connection; nothing here keeps or logs it."""
         msg = {"t": "room_create", "name": name, "ranked": ranked}
-        if rematch_policy is not None or auto_skip_after_round:
+        # (each rule on its own: the round skip does not need the in-game rematch question)
+        if rematch_policy is not None:
             if not self.ingame_rematch_ok():
                 raise LobbyError(proto.E_NOT_ALLOWED, "this server has no in-game rematch")
-            if rematch_policy is not None:
-                msg["rematch_policy"] = rematch_policy
-            msg["auto_skip_after_round"] = bool(auto_skip_after_round)
+            msg["rematch_policy"] = rematch_policy
+        if auto_skip_after_round:
+            if not self.auto_skip_ok():
+                raise LobbyError(proto.E_NOT_ALLOWED, "this server has no automatic round skips")
+            msg["auto_skip_after_round"] = True
         if mode == "tables":
             if not self.room_tables_ok():
                 raise LobbyError(proto.E_NOT_ALLOWED, "this server has no simultaneous room tables")
@@ -1724,14 +1733,21 @@ class LobbyClient(TourCalls, SpectateClientMixin):
                     and w["ingame_rematch"].get("v") == 1)
 
     def auto_skip_ok(self):
+        """The server takes the round-skip consent (its own switch; independent of the in-game rematch)."""
         w = self.welcome or {}
-        return bool(self.auto_skip_after_round and self.ingame_rematch_ok()
-                    and "auto_skip_after_round_v1" in (w.get("caps") or ()))
+        return bool(self.auto_skip_after_round and "auto_skip_after_round_v1" in (w.get("caps") or ()))
+
+    def auto_skip_intro_ok(self):
+        """Matches against another 1.2.0 launcher on this server skip the fighters' intros (no setting)."""
+        w = self.welcome or {}
+        return bool(self.auto_skip_intro and "auto_skip_intro_v1" in (w.get("caps") or ()))
 
     def room_rules(self, rematch_policy=None, auto_skip_after_round=None):
         """Ask the server to change the hosted room's rule; it checks ownership and eligibility."""
-        if not self.ingame_rematch_ok():
+        if rematch_policy is not None and not self.ingame_rematch_ok():
             raise LobbyError(proto.E_NOT_ALLOWED, "this server has no in-game rematch")
+        if auto_skip_after_round is not None and not (self.auto_skip_ok() or self.ingame_rematch_ok()):
+            raise LobbyError(proto.E_NOT_ALLOWED, "this server has no automatic round skips")
         msg = {"t": "room_rules"}
         if rematch_policy is not None:
             msg["rematch_policy"] = rematch_policy

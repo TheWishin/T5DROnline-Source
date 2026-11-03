@@ -21,13 +21,14 @@ LEGACY = ["delta", "notices", "blind_ready", "old_stages", "ingame_pick", "sets"
           "nat2", "relays", "friends", "tournaments", "spectate", "private_rooms",
           "game_fallback", "boss_chars", "lag_wait", "match_rules"]
 ADDED = ["life150", "input_delay8", "badges", "mentions", "ranked_chars", "casual_sets",
-         "room_tables", "ingame_rematch_v1", "auto_skip_after_round_v1", "compat_groups", "private_chat", "mutes"]
+         "room_tables", "ingame_rematch_v1", "auto_skip_after_round_v1", "auto_skip_intro_v1", "compat_groups",
+         "private_chat", "mutes"]
 
 
 def client(**options):
     enabled = dict(blind_ready=True, ingame_pick=True, sets=True, tournaments=True,
                    spectate=True, match_rules=True, life150=True, ingame_rematch=True,
-                   auto_skip_after_round=True, tcp_fallback_port=443)
+                   auto_skip_after_round=True, auto_skip_intro=True, tcp_fallback_port=443)
     enabled.update(options)
     return LobbyClient("127.0.0.1:7781", BuildInfo("test", "test", "test"), **enabled)
 
@@ -73,21 +74,26 @@ class IntegratedCapabilities(unittest.IsolatedAsyncioTestCase):
         welcome = await LobbyServer.h_hello(server, conn, hello)
         self.assertEqual(set(welcome["caps"]), set(caps))
         self.assertEqual(welcome["ingame_rematch"]["v"], 1)
-        # The agreed after-round skip is an opt-in draft (T5L_AUTO_SKIP): a default server never takes its cap.
+        # 1.2.0: a default server takes the round-skip consent cap (each match still needs both players' box) and
+        # the intro-skip cap; T5L_AUTO_SKIP=0 / T5L_AUTO_SKIP_INTRO=0 drop them.
         server.cfg = Config()
         welcome = await LobbyServer.h_hello(server, SimpleNamespace(player=None, ip="127.0.0.1", writer=conn.writer),
                                             hello)
-        self.assertEqual(set(welcome["caps"]), set(caps) - {"auto_skip_after_round_v1"})
+        self.assertEqual(set(welcome["caps"]), set(caps))
         self.assertEqual(welcome["ingame_rematch"]["v"], 1)            # the in-game rematch question is on
+        server.cfg = Config(auto_skip=False, auto_skip_intro=False)
+        welcome = await LobbyServer.h_hello(server, SimpleNamespace(player=None, ip="127.0.0.1", writer=conn.writer),
+                                            hello)
+        self.assertEqual(set(welcome["caps"]), set(caps) - {"auto_skip_after_round_v1", "auto_skip_intro_v1"})
 
     async def test_optional_caps_can_be_disabled_without_reordering_other_caps(self):
         enabled = (await self.hello(client()))["caps"]
         disabled = (await self.hello(client(input_delay8=False, badges=False, mentions=False,
                                           casual_sets=False, room_tables=False,
                                           ingame_rematch=False, auto_skip_after_round=False,
-                                          private_chat=False)))["caps"]
+                                          auto_skip_intro=False, private_chat=False)))["caps"]
         removed = {"input_delay8", "badges", "mentions", "casual_sets", "room_tables",
-                   "ingame_rematch_v1", "auto_skip_after_round_v1", "private_chat"}
+                   "ingame_rematch_v1", "auto_skip_after_round_v1", "auto_skip_intro_v1", "private_chat"}
         self.assertEqual(disabled, [cap for cap in enabled if cap not in removed])
         self.assertEqual(disabled[:16], LEGACY)
 

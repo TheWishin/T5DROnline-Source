@@ -108,11 +108,26 @@ class RuleConsentTest(unittest.TestCase):
     def test_old_server_gets_no_new_preference_and_cannot_set_room_rule(self):
         c = self.client()
         c.welcome.pop("ingame_rematch")
+        c.welcome["caps"] = [x for x in c.welcome["caps"] if x != "auto_skip_after_round_v1"]
         c.set_auto_skip_after_round(True)
         self.assertNotIn("auto_skip_after_round", c._fire.call_args.args[0])
         with self.assertRaises(LobbyError):
             c.room_rules("auto_unless_declined")
+        with self.assertRaises(LobbyError):
+            c.room_rules(None, True)
         c._call.assert_not_called()
+
+    def test_round_skip_consent_without_the_ingame_rematch(self):
+        """1.2.0: a server with the round skip but without the in-game rematch question still takes the consent
+        and the room's skip wish; the rematch rule itself stays refused"""
+        c = self.client()
+        c.welcome.pop("ingame_rematch")
+        c.set_auto_skip_after_round(True)
+        self.assertIs(c._fire.call_args.args[0]["auto_skip_after_round"], True)
+        c.room_rules(None, True)
+        c._call.assert_called_once_with({"t": "room_rules", "auto_skip_after_round": True})
+        with self.assertRaises(LobbyError):
+            c.room_rules("auto_unless_declined")
 
     def test_server_owns_room_rule_change(self):
         c = self.client()

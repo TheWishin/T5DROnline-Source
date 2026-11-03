@@ -457,6 +457,7 @@ WORDS = (
 
 INGAME_REMATCH = (
     N_("this server has no in-game rematch"),
+    N_("this server has no automatic round skips"),
     N_("invalid rematch policy"),
     N_("auto_skip_after_round must be boolean"),
     N_("rematch rules require an updated launcher"),

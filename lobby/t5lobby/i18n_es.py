@@ -2097,8 +2097,8 @@ MESSAGES = {
     "With a controller: A accepts, B declines.": "Con control: A acepta, B rechaza.",
     "Online nobody can pause the fight: Start does not open the pause menu.":
         "En línea nadie puede pausar el combate: Start no abre el menú de pausa.",
-    "Intros and the replay after a round are skipped once both players have pressed Start.":
-        "Las presentaciones y la repetición tras una ronda se saltan cuando los dos jugadores han pulsado Start.",
+    "Intros are skipped by themselves; the replay after a round once both players have pressed Start.":
+        "Las presentaciones se saltan solas; la repetición tras una ronda, cuando los dos jugadores han pulsado Start.",
     "Lobby": "Lobby",
     "Leaderboard": "Clasificación",
     "Profile": "Perfil",
@@ -2732,6 +2732,7 @@ MESSAGES = {
     "Start automatically unless declined": "Empezar automáticamente si nadie rechaza",
     "Skip replays after rounds (both players must agree)": "Saltar repeticiones tras cada ronda (ambos deben aceptar)",
     "this server has no in-game rematch": "Este servidor no ofrece revancha dentro del juego",
+    "this server has no automatic round skips": "Este servidor no ofrece saltar automáticamente tras las rondas",
     # Server chat-filter notices (1.2.0).
     "Message blocked: hate terms are not allowed.": "Mensaje bloqueado: no se permiten expresiones de odio.",
     "This name is not allowed.": "Este nombre no está permitido.",

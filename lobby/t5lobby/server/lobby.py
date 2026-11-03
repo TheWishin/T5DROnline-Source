@@ -81,6 +81,7 @@ CAPS |= {COMPAT_CAP}           # 1.2.0: server-approved simulation compatibility
 CAPS |= {"input_delay8"}       # 1.2.0: challenge input delay 0..8 and the extended Auto curve
 CAPS |= {"badges", "mentions", "ranked_chars", "casual_sets", "room_tables",
          "ingame_rematch_v1", "auto_skip_after_round_v1"}
+CAPS |= {"auto_skip_intro_v1"}  # 1.2.0: the game skips the fighters' intros by the fight line's rule (matchrules.py)
 QUEUE_MODES = ("quick", "ranked")
 # What this server supports beyond protocol 1's base (the client checks before using them).
 FEATURES = ["ranks", "sessions", "recovery", "passwd", "profile", "history", "chars", "integrity", "rematch",
@@ -1087,7 +1088,9 @@ class LobbyServer(PrivateChatMixin, SpectateMixin, RoomsMixin, CasualMixin, Matc
         caps = msg.get("caps")
         conn.caps = CAPS.intersection(str(c) for c in caps[:32]) if isinstance(caps, list) else frozenset()  # (1.1.5: 32, a 1.1.5 launcher sends 16)
         if not self.cfg.auto_skip:
-            conn.caps = frozenset(conn.caps) - {"auto_skip_after_round_v1"}     # (an opt-in draft: T5L_AUTO_SKIP)
+            conn.caps = frozenset(conn.caps) - {"auto_skip_after_round_v1"}     # (switched off: T5L_AUTO_SKIP=0)
+        if not self.cfg.auto_skip_intro:
+            conn.caps = frozenset(conn.caps) - {"auto_skip_intro_v1"}           # (switched off: T5L_AUTO_SKIP_INTRO=0)
         conn.compat_group = self.build_groups.group(bid, int(build.get("net", 0)), conn.caps)
         conn.region = REGIONS.get(str(build.get("elf", "")).lower(), "?")
         conn.helloed = True
@@ -2109,6 +2112,7 @@ class LobbyServer(PrivateChatMixin, SpectateMixin, RoomsMixin, CasualMixin, Matc
         # agreed skip rule must use a fresh session, even when both games remain.
         next_skip = self._rematch_skip_rule(prev, host, join, prev.ranked, "rematch")
         keep = keep and next_skip == bool(getattr(prev, "auto_skip_after_round", False))
+        keep = keep and self._intro_skip_rule(host, join) == bool(getattr(prev, "auto_skip_intro", False))
         if self._ranked_set_going(prev):
             host, join = gs.players          # the next game of a running ranked set: the set's sides (casual.py)
             keep = keep and prev.players[0] is host
@@ -4459,6 +4463,7 @@ class LobbyServer(PrivateChatMixin, SpectateMixin, RoomsMixin, CasualMixin, Matc
         if keep:
             next_skip = self._rematch_skip_rule(prev, a, b, gs.ranked, "set")
             keep = next_skip == bool(getattr(prev, "auto_skip_after_round", False))
+            keep = keep and self._intro_skip_rule(a, b) == bool(getattr(prev, "auto_skip_intro", False))
         gs.fresh = False
         room = prev.room if prev is not None and prev.room is not None and prev.room.id in self.rooms else None
         m = self.create_match(a, b, ranked=gs.ranked, origin="set", room=room, rematch_of=prev, keep=keep,

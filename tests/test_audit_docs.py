@@ -42,7 +42,7 @@ class AuditDocumentation(unittest.TestCase):
     def test_screen_side_summary_states_the_renderer_rule(self):
         source = (ROOT / "docs/SCREEN_SIDE_120.md").read_text(encoding="utf-8")
         for text in ("actual texture reads and evaluated", "larger than six vertices across the middle are",
-                     "from its own evaluated box alone (no frame history)", "Issue #31",
+                     "from this frame's draws only", "Issue #31",
                      "ALWAYS_LEFT_FIX.md", "**0 mismatches**"):
             with self.subTest(contract=text):
                 self.assertIn(text, source)

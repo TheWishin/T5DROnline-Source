@@ -2,3 +2,5 @@
 *.patch -text
 # The lifted code's PGO profile: generated text (tools/pgo_train.py), checked by tools/profile_check.py
 tools/gamedll/t5dr_lifted.proftext -diff eol=lf
+# Shell scripts run by bash (Git Bash too): LF in every checkout, whatever core.autocrlf says
+tools/*.sh text eol=lf

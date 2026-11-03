@@ -474,6 +474,8 @@ MESSAGES = {
         'Auf den Bildschirm ziehen (keine Balken; Kämpfer wirken breiter)',
     '4:3 (the middle of the picture, bars left and right)':
         '4:3 (die Mitte des Bildes, Balken links und rechts)',
+    'True 4:3 (the game draws for a 4:3 screen; offline only, online the middle of the picture)':
+        'Echtes 4:3 (das Spiel zeichnet für einen 4:3-Bildschirm; nur offline, online die Mitte des Bildes)',
     'For screens that are not 16:9, such as 16:10 and 3:2 laptops. The game draws 16:9, so Fill cuts a little off the sides and Stretch widens everything. Only your picture changes: online, both players can choose differently.':
         'Für Bildschirme, die nicht 16:9 sind, etwa 16:10- und 3:2-Laptops. Das Spiel zeichnet 16:9, darum schneidet Füllen an den Seiten etwas ab und Ziehen macht alles breiter. Nur dein Bild ändert sich: Online können beide Spieler verschieden wählen.',
     # ---- launcher/online.py

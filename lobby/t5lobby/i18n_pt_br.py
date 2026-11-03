@@ -449,6 +449,8 @@ MESSAGES = {
         'Esticar para a tela (sem barras; os lutadores parecem mais largos)',
     '4:3 (the middle of the picture, bars left and right)':
         '4:3 (o centro da imagem, barras à esquerda e à direita)',
+    'True 4:3 (the game draws for a 4:3 screen; offline only, online the middle of the picture)':
+        '4:3 de verdade (o jogo desenha para uma tela 4:3; só offline, online o centro da imagem)',
     'For screens that are not 16:9, such as 16:10 and 3:2 laptops. The game draws 16:9, so Fill cuts a little off the sides and Stretch widens everything. Only your picture changes: online, both players can choose differently.':
         'Para telas que não são 16:9, como notebooks 16:10 e 3:2. O jogo desenha em 16:9, então Preencher corta um pouco das laterais e Esticar alarga tudo. Só a sua imagem muda: online, cada jogador pode escolher diferente.',
     # ---- launcher/online.py

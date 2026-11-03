@@ -50,5 +50,42 @@ class HostPolicyErrorTest(unittest.TestCase):
         say.assert_called_once_with(str(failure))
 
 
+class HostWithoutTermListTest(unittest.TestCase):
+    """The player's release zip has no lobby/t5lobby/server/data/chat_filter_terms.json (package_release leaves it
+    out): Host for friends must still start there (1.2.0's release zip: 'Cannot load the chat filter', exit 2)."""
+
+    def make_host(self):
+        return host.Host(SimpleNamespace(data="test-host-data", json=True, no_tls=True, port=7781, udp_port2=None,
+                                         status_port=0, motd="", guests_only=False))
+
+    def test_no_list_in_the_release_runs_without_the_filter(self):
+        h = self.make_host()
+        with mock.patch.object(host.os.path, "isfile", return_value=False), mock.patch.object(h, "say") as say:
+            self.assertEqual(h.chat_filter_policy({}), {"chat_filter": False})
+        say.assert_called_once()
+
+    def test_list_present_keeps_the_default(self):
+        h = self.make_host()
+        with mock.patch.object(host.os.path, "isfile", return_value=True):
+            self.assertEqual(h.chat_filter_policy({}), {})
+
+    def test_asked_for_explicitly_still_fails_closed(self):
+        h = self.make_host()
+        for env in ({"T5L_CHAT_FILTER": "1"}, {"T5L_CHAT_FILTER_PATH": "missing.json"}):
+            with self.subTest(env=env), mock.patch.object(host.os.path, "isfile", return_value=False):
+                self.assertEqual(h.chat_filter_policy(env), {})
+
+    def test_server_starts_with_the_policy(self):
+        """The policy reaches Config: a LobbyServer with a missing list path and the policy applied constructs."""
+        from t5lobby.server.config import Config
+        from t5lobby.server.lobby import LobbyServer
+        cfg = Config(db=":memory:", chat_filter_path="no-such-dir/none.json", chat_filter=False)
+        srv = LobbyServer(cfg)
+        self.assertFalse(srv.chat_filter.blocked("anything"))
+        srv.store.close()
+        with self.assertRaises(ValueError):
+            LobbyServer(Config(db=":memory:", chat_filter_path="no-such-dir/none.json"))
+
+
 if __name__ == "__main__":
     unittest.main()

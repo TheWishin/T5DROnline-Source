@@ -176,6 +176,7 @@ class SearchWaitsForTheGameState(unittest.TestCase):
         except self.L.tk.TclError as e:
             self.skipTest(f"no display: {e}")
         self.app.withdraw()
+        self.app.settings[self.L.first_start.CONTROLS_HINT_KEY] = True    # (its modal dialog would wait for a click)
         tab = self.app.online
         tab._build_info = lambda: (getattr(self, "BUILD", None), None)
         tab.new_window = self.hidden_window

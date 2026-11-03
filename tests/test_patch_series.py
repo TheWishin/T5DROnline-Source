@@ -30,6 +30,8 @@ class PatchSeries(unittest.TestCase):
             "0103-vrr-pacing.patch",
             "0104-low-end.patch",
             "0105-warmup-hidden.patch",
+            "0106-kernel-edge.patch",
+            "0107-picture-format.patch",
         ]
         self.assertEqual([name for name in names if name >= "0088-"], expected)
 

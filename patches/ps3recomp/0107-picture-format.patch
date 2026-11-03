@@ -87,7 +87,7 @@ index c67a6ea..6cc1972 100644
      } else {
          state->state = 0; /* disabled */
 diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
-index e289700..7402a60 100644
+index 46c7183..5bfa540 100644
 --- a/libs/video/rsx_live_draw.c
 +++ b/libs/video/rsx_live_draw.c
 @@ -225,6 +225,7 @@ static volatile long g_ld_ps1_vram_ready = 0;
@@ -98,7 +98,72 @@ index e289700..7402a60 100644
  #include <sys/stat.h>
  
  #pragma comment(lib, "d3d12.lib")
-@@ -12764,6 +12765,11 @@ float rsx_internal_res_scale(void)
+@@ -10999,6 +11000,34 @@ static int ld_al_is_screen(u32 target, float W, float H)
+     return 0;
+ }
+ 
++/* Patch 0107, True 4:3 online (src/directfight/df_aspect.cpp): the game shows a 4:3 HUD, but its fight
++ * camera keeps the 16:9 framing so that both PCs play the same fight. The 3D picture is then drawn for 16:9
++ * into the 4:3 screen; its copy onto the screen is widened by this factor (4/3) about the middle, so the
++ * screen shows the middle 4:3 of it in shape. 1 = off. Host pixels only. */
++static volatile float g_ld_3d_crop = 1.0f;
++static u64 g_ld_3d_crop_draws;
++void rsx_live_draw_set_3d_crop(float k)
++{
++    if (!(k >= 1.0f && k <= 2.0f)) k = 1.0f;
++    if (k != g_ld_3d_crop)
++        fprintf(stderr, "[display] 3D picture %s (True 4:3 online, patch 0107; %llu copies widened so far)\n",
++                k != 1.0f ? "widened to the middle 4:3 of the 16:9 camera" : "as drawn",
++                (unsigned long long)g_ld_3d_crop_draws);
++    g_ld_3d_crop = k;
++}
++/* The copy of the 3D picture onto the screen: a draw onto a display buffer at its own size that reads a
++ * surface larger than the screen both ways (the 2048 x 1440 3D target; not a 512 x 512 glow buffer). */
++static int ld_is_3d_copy(u32 target, const u32* surf_used, u32 n_surf_used, int view_big, float W, float H)
++{
++    if (!ld_al_is_screen(target, W, H)) return 0;
++    if (view_big >= 0 && (float)g.surfaces[view_big].w > W && (float)g.surfaces[view_big].h > H) return 1;
++    for (u32 i = 0; i < n_surf_used; i++) {
++        const surface_t* s = &g.surfaces[surf_used[i]];
++        if ((float)s->w > W && (float)s->h > H && !ld_al_is_display(surf_used[i])) return 1;
++    }
++    return 0;
++}
++
+ /* This draw's vertices (at most 64), with every attribute as the vertex shader gets it. -> count, 0 = no. */
+ static u32 ld_al_vertices(float (*v)[16][4])
+ {
+@@ -11532,6 +11561,7 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+         : 0;
+     u32 slots[SRV_TABLE_SIZE], smp_slots[SMP_TABLE_SIZE];
+     u32 surf_used[SRV_TABLE_SIZE], n_surf_used = 0;
++    int view_big = -1;   /* patch 0107: a surface this draw reads through its guest-size view (ld_is_3d_copy) */
+     u32 zdepth_used[SRV_TABLE_SIZE], n_zdepth_used = 0;
+     u32 texture_mask = 0;
+     for (u32 u = 0; u < SRV_TABLE_SIZE; u++) slots[u] = SRV_WHITE;
+@@ -11748,6 +11778,7 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+             }
+             if (view != SRV_WHITE) {
+                 slots[u] = view;
++                view_big = sampled;
+             } else {
+                 slots[u] = SRV_SURFACE_BASE + sampled;
+                 int seen = 0;
+@@ -11964,6 +11995,13 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+     float al_dx_px = 0.0f;
+     if (g_al.active || g_al_req || ld_al_trace_enabled())
+         ld_al_draw(target, surf_used, n_surf_used, W, H, xf, &al_mirror, &al_dx_px);
++    if (g_ld_3d_crop != 1.0f && ld_is_3d_copy(target, surf_used, n_surf_used, view_big, W, H)) {
++        /* patch 0107, True 4:3 online: the copy of the 3D picture onto the screen is drawn wider by
++         * g_ld_3d_crop about the middle -- the camera kept its 16:9 framing, so the 4:3 screen shows the
++         * middle 4:3 of it, in shape; the viewport cuts the sides */
++        xf[0] *= g_ld_3d_crop; xf[4] *= g_ld_3d_crop;
++        g_ld_3d_crop_draws++;
++    }
+     /* The vertex constant block (8 KB + viewport) is re-uploaded per draw.
+      * When no constant was written since the previous draw and the viewport
+      * transform is the same, point this draw at the block already uploaded --
+@@ -12805,6 +12843,11 @@ float rsx_internal_res_scale(void)
              g_ld_res_source = oka && okb ? "PS3_RES_SCALE x PS3_RENDER_SCALE"
                                           : oka ? "PS3_RES_SCALE" : "PS3_RENDER_SCALE";
      }
@@ -110,7 +175,7 @@ index e289700..7402a60 100644
      if (!(s >= 0.25f)) s = 0.25f;
      if (s > 4.0f) s = 4.0f;
      cached = s;
-@@ -12775,7 +12781,8 @@ const char* rsx_internal_res_label(void)
+@@ -12816,7 +12859,8 @@ const char* rsx_internal_res_label(void)
  {
      static char label[48];
      static float label_s = 0.0f;
@@ -120,7 +185,7 @@ index e289700..7402a60 100644
      if (!label[0] || label_s != s) {   /* patch 0063: auto may settle after the first call */
          label_s = s;
          if (s == 0.5f)        snprintf(label, sizeof label, "Lowest (0.5x)");
-@@ -13142,25 +13149,38 @@ static void ld_test_backbuffer_shot(ID3D12Resource* bb)
+@@ -13183,25 +13227,38 @@ static void ld_test_backbuffer_shot(ID3D12Resource* bb)
  /* Replaces the present's CopyResource(bb, src). Same contract: src is in
   * COPY_SOURCE, bb in COPY_DEST, and both are left that way. When the sizes
   * match this IS that copy; otherwise src is drawn scaled into the backbuffer,
@@ -167,7 +232,7 @@ index e289700..7402a60 100644
      D3D12_RESOURCE_BARRIER b[2] = {0};
      for (int i = 0; i < 2; i++) {
          b[i].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-@@ -13188,7 +13208,7 @@ static void ld_present_copy(ID3D12Resource* bb, u32 bbi, ID3D12Resource* src, u3
+@@ -13229,7 +13286,7 @@ static void ld_present_copy(ID3D12Resource* bb, u32 bbi, ID3D12Resource* src, u3
      g.dev->lpVtbl->CreateShaderResourceView(g.dev, src, &srv, cpu);
  
      const D3D12_CPU_DESCRIPTOR_HANDLE rtv = rtv_handle(bbi);
@@ -176,7 +241,7 @@ index e289700..7402a60 100644
          static const float black[4] = { 0, 0, 0, 1 };
          LDL->lpVtbl->ClearRenderTargetView(LDL, rtv, black, 0, NULL);
      }
-@@ -14812,6 +14832,12 @@ static void ld_present_body(u32 buffer_id, int display_synced, const hp_target*
+@@ -14853,6 +14910,12 @@ static void ld_present_body(u32 buffer_id, int display_synced, const hp_target*
      if (!g_ld_lock_mode) ld_wait_frame_latency();
      const u32 bbi = g.swap->lpVtbl->GetCurrentBackBufferIndex(g.swap);
      ID3D12Resource* bb = g.backbuf[bbi];
@@ -189,7 +254,7 @@ index e289700..7402a60 100644
  
      D3D12_RESOURCE_BARRIER bar[2] = {0};
      bar[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-@@ -14834,7 +14860,7 @@ static void ld_present_body(u32 buffer_id, int display_synced, const hp_target*
+@@ -14875,7 +14938,7 @@ static void ld_present_body(u32 buffer_id, int display_synced, const hp_target*
          if (dot) snprintf(dot, sizeof loop_path - (size_t)(dot - loop_path), "_loop.ppm");
          const int saved = ld_present_fast();
          g_ld_present_fast = 0;
@@ -198,7 +263,7 @@ index e289700..7402a60 100644
          g_ld_present_fast = saved;
          char keep[MAX_PATH];
          snprintf(keep, sizeof keep, "%s", g_ld_bb_shot_path);
-@@ -14842,9 +14868,9 @@ static void ld_present_body(u32 buffer_id, int display_synced, const hp_target*
+@@ -14883,9 +14946,9 @@ static void ld_present_body(u32 buffer_id, int display_synced, const hp_target*
          ld_test_backbuffer_shot(bb);
          snprintf(g_ld_bb_shot_path, sizeof g_ld_bb_shot_path, "%s", keep);
      }
@@ -211,7 +276,7 @@ index e289700..7402a60 100644
      ld_test_backbuffer_shot(bb);
  
 diff --git a/libs/video/rsx_overlay.c b/libs/video/rsx_overlay.c
-index fde4903..8388bbc 100644
+index fde4903..4b0e68a 100644
 --- a/libs/video/rsx_overlay.c
 +++ b/libs/video/rsx_overlay.c
 @@ -16,6 +16,7 @@
@@ -222,7 +287,7 @@ index fde4903..8388bbc 100644
  
  #include <math.h>
  #include <stdio.h>
-@@ -553,16 +554,15 @@ static float ovl_round(float v) { return floorf(v + 0.5f); }
+@@ -553,16 +554,21 @@ static float ovl_round(float v) { return floorf(v + 0.5f); }
  
  /* The picture's rectangle in the backbuffer: the same letterbox as the
   * present copy (rsx_live_draw.c ld_present_copy). */
@@ -240,6 +305,12 @@ index fde4903..8388bbc 100644
 -    *vy = (float)(long)((fh - *vh) * 0.5f);
 +    rsx_pic_rect r;
 +    rsx_picture_rect(rsx_picture_mode_env(), bw, bh, aw, ah, &r);
++    if ((uint64_t)aw * 720u != (uint64_t)ah * 1280u) {   /* RSX_OVERLAY_CANVAS_W x _H */
++        /* a picture of another shape (the game's own 4:3, patch 0107): the canvas keeps its own shape inside
++         * the visible part, so the overlay's letters are never squeezed */
++        rsx_pic_fit((float)r.cl, (float)r.ct, (float)(r.cr - r.cl), (float)(r.cb - r.ct),
++                    1280u, 720u, &r.ox, &r.oy, &r.ow, &r.oh);
++    }
 +    *vx = r.ox; *vy = r.oy; *vw = r.ow; *vh = r.oh;
  }
  

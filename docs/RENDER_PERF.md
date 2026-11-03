@@ -747,6 +747,15 @@ same result hash on both sides in every match. All 70 lockstep pair runs above
 (Native against 1080p / 1440p / 4K, On against Off): 0 mismatching frames. (The
 PC ran 10-19 other games during these runs, at 16-23 fps for the pairs.)
 
+### The dark bottom row and right column (patch 0106, 1.2.0)
+
+With Stage blur / glow On, every soft-focus stage -- Moonlit Wilderness (stage 5) as well as the four above --
+had a dark last row (about a third as bright) and a darker last column: the 3D pass draws into part of the
+2048 x 1440 target, the rest stays black, and the kernel's taps 2 guest texels past the last drawn row/column
+read that black. A filter kernel now reads such a target through the guest-size view (at Native too) with the
+undrawn margin filled by the last drawn row/column (`ld_kernel_edge`; `RSX_KERNEL_EDGE=0` = before). Details
+and measurements: [MOONLIT_WILDERNESS.md](MOONLIT_WILDERNESS.md).
+
 ### Hit effects: the EWGF's lightning (GitHub #12, 1.1.5)
 
 Player report (#12, PlusUltraVEN: i3-3240, GeForce GT 730 4 GB = feature

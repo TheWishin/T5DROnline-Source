@@ -1,0 +1,143 @@
+diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
+index e289700..46c7183 100644
+--- a/libs/video/rsx_live_draw.c
++++ b/libs/video/rsx_live_draw.c
+@@ -334,7 +334,10 @@ typedef struct {
+     ID3D12Resource* gv_tex;   /* this surface box-filtered to its guest size */
+     ID3D12Resource* gv_src;   /* the tex it was made from */
+     u32 gv_gen;               /* the write generation it shows */
+-    int post_buffer;          /* last drawn by a filter kernel, smaller than the canvas: a glow buffer */
++    u32 gv_lim;               /* patch 0106: the edge it was clamped to (x << 16 | y; 0 = none) */
++    /* patch 0106: how far this frame's draws reached (guest px, their scissors' right/bottom) */
++    u32 ext_frame, ext_r, ext_b;
++    int post_buffer;         /* last drawn by a filter kernel, smaller than the canvas: a glow buffer */
+ #if !defined(YZ_PERF_CLEAN)
+     u32 resource_serial;
+     u32 last_write_generation;
+@@ -10382,7 +10385,7 @@ static int ld_gview_pipeline(void)
+     static const char ps_src[] =
+         "Texture2D src : register(t0);\n"
+         "SamplerState lin : register(s0);\n"
+-        "cbuffer C : register(b0) { float2 ratio; float2 host; float fast; };\n"
++        "cbuffer C : register(b0) { float2 ratio; float2 host; float fast; float2 lim; };\n"
+         "float4 boxloop(float2 p) {\n"
+         "    float2 lo = floor(p) * ratio, hi = lo + ratio;\n"
+         "    int2 a = (int2)floor(lo), b = min((int2)ceil(hi) - 1, (int2)host - 1);\n"
+@@ -10397,6 +10400,7 @@ static int ld_gview_pipeline(void)
+         "    return ws > 0 ? acc / ws : (float4)0;\n"
+         "}\n"
+         "float4 main(float4 pos : SV_Position) : SV_Target {\n"
++        "    pos.xy = min(floor(pos.xy), lim) + 0.5;   /* patch 0106: past the drawn part = its edge */\n"
+         "    const float2 g = floor(pos.xy);\n"
+         "    const float2 t = 1.0 / host;\n"
+         "    [branch] if (fast < 0.5) return boxloop(pos.xy);\n"
+@@ -10465,7 +10469,7 @@ static int ld_gview_pipeline(void)
+         param[0].DescriptorTable.pDescriptorRanges = &range;
+         param[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+         param[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+-        param[1].Constants.Num32BitValues = 5;
++        param[1].Constants.Num32BitValues = 7;
+         param[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+         D3D12_STATIC_SAMPLER_DESC ss = {0};
+         ss.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+@@ -10578,10 +10582,34 @@ static void ld_gview_selfcheck(const char* dir)
+     g_ld_gview_fast = saved;
+ }
+ 
++/* Patch 0106 (Moonlit Wilderness' black line): the edge a filter kernel's view of
++ * surface `slot` is clamped to, x << 16 | y in guest texels (the last texel this
++ * frame's draws could reach), or 0 when they reached the whole surface. The 3D
++ * pass of most stages draws into part of the 2048x1440 target (Moonlit: 1536 x
++ * 1280; scissor = viewport) and the game's clear is held to that scissor too, so
++ * the rest stays black; the soft-focus taps 2 guest texels around the centre
++ * then read that black below the last row and right of the last column, and the
++ * picture got a dark bottom row (about a third as bright) and right column. The
++ * view repeats the last drawn row / column there instead: what the scene's
++ * continuation would be. Every texel inside stays the same. RSX_KERNEL_EDGE=0:
++ * off (the kernels read the surface as before). */
++static int g_ld_kernel_edge = -1;
++static u32 ld_kernel_edge(u32 slot)
++{
++    if (g_ld_kernel_edge < 0) { const char* e = getenv("RSX_KERNEL_EDGE"); g_ld_kernel_edge = !(e && *e == '0'); }
++    const surface_t* s = &g.surfaces[slot];
++    if (!g_ld_kernel_edge || s->ext_frame != g_ld_frames + 1u || !s->ext_r || !s->ext_b) return 0;
++    if (s->ext_r >= s->w && s->ext_b >= s->h) return 0;
++    const u32 lx = (s->ext_r < s->w ? s->ext_r : s->w) - 1u, ly = (s->ext_b < s->h ? s->ext_b : s->h) - 1u;
++    return (lx << 16) | ly | 0x80000000u;    /* never 0 */
++}
++
+ static u32 ld_guest_view_srv(u32 slot)
+ {
+     surface_t* s = &g.surfaces[slot];
+-    if (!s->tex || s->scale <= 1.0f || !s->w || !s->h || !s->pw || !s->ph) return SRV_WHITE;
++    const u32 lim = ld_kernel_edge(slot);
++    if (!s->tex || (s->scale <= 1.0f && !(lim && s->scale == 1.0f)) || !s->w || !s->h || !s->pw || !s->ph)
++        return SRV_WHITE;
+     if (s->fmt != DXGI_FORMAT_R8G8B8A8_UNORM && s->fmt != DXGI_FORMAT_R16G16B16A16_FLOAT) return SRV_WHITE;
+     if (!ld_gview_pipeline()) return SRV_WHITE;
+     if (s->gv_tex && s->gv_src != s->tex) {
+@@ -10619,7 +10647,7 @@ static u32 ld_guest_view_srv(u32 slot)
+         fresh = 1;
+     }
+ #if !defined(YZ_PERF_CLEAN)
+-    if (!fresh && s->gv_gen == s->last_write_generation)
++    if (!fresh && s->gv_gen == s->last_write_generation && s->gv_lim == lim)
+         return SRV_GUESTVIEW_BASE + slot;
+ #endif
+     if (g.srv_ring_used + 1u > SRV_RING_TABLES) {
+@@ -10650,8 +10678,10 @@ static u32 ld_guest_view_srv(u32 slot)
+     LDL->lpVtbl->ResourceBarrier(LDL, 2, b);
+     ld_gp_mark(GP_GUESTVIEW, s->offset, 0, s->w, s->h, s->fmt == DXGI_FORMAT_R16G16B16A16_FLOAT, 0);
+     /* RSX_GVIEW_FAST=0: the loop for every factor (patch 0043's shader), for comparisons */
+-    const float k[5] = { (float)s->pw / (float)s->w, (float)s->ph / (float)s->h, (float)s->pw, (float)s->ph,
+-                         (float)ld_gview_fast() };
++    const float k[7] = { (float)s->pw / (float)s->w, (float)s->ph / (float)s->h, (float)s->pw, (float)s->ph,
++                         (float)ld_gview_fast(),
++                         lim ? (float)((lim >> 16) & 0x7FFFu) : 65535.0f,      /* patch 0106 */
++                         lim ? (float)(lim & 0xFFFFu) : 65535.0f };
+     const D3D12_VIEWPORT vp = { 0.0f, 0.0f, (float)s->w, (float)s->h, 0.0f, 1.0f };
+     const D3D12_RECT sc = { 0, 0, (LONG)s->w, (LONG)s->h };
+     ld_bound_invalidate();   /* patch 0062: the pass below records its own state */
+@@ -10659,7 +10689,7 @@ static u32 ld_guest_view_srv(u32 slot)
+     LDL->lpVtbl->OMSetRenderTargets(LDL, 1, &rtv, FALSE, NULL);
+     LDL->lpVtbl->SetGraphicsRootSignature(LDL, g_ld_gview.rootsig);
+     LDL->lpVtbl->SetGraphicsRootDescriptorTable(LDL, 0, gpu);
+-    LDL->lpVtbl->SetGraphicsRoot32BitConstants(LDL, 1, 5, k, 0);
++    LDL->lpVtbl->SetGraphicsRoot32BitConstants(LDL, 1, 7, k, 0);
+     LDL->lpVtbl->SetPipelineState(LDL, s->fmt == DXGI_FORMAT_R16G16B16A16_FLOAT
+                                                  ? g_ld_gview.pso_rgba16f : g_ld_gview.pso_rgba8);
+     LDL->lpVtbl->RSSetViewports(LDL, 1, &vp);
+@@ -10675,6 +10705,7 @@ static u32 ld_guest_view_srv(u32 slot)
+ #if !defined(YZ_PERF_CLEAN)
+     s->gv_gen = s->last_write_generation;
+ #endif
++    s->gv_lim = lim;
+     g_ld_gview_passes++;
+     return SRV_GUESTVIEW_BASE + slot;
+ }
+@@ -11706,7 +11737,9 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+             u32 view = SRV_WHITE;
+             if ((post_taps >> u) & 1u) {
+                 post_kernel = 1;
+-                if (g_ld_stage_blur && g.surfaces[sampled].scale > 1.0f)
++                /* patch 0106: at Native too when this frame's draws left an undrawn (black) margin */
++                if (g_ld_stage_blur && (g.surfaces[sampled].scale > 1.0f ||
++                                        (g.surfaces[sampled].scale == 1.0f && ld_kernel_edge((u32)sampled))))
+                     view = ld_guest_view_srv((u32)sampled);
+                 ld_post_note(u, (u32)sampled, target,
+                              !g_ld_stage_blur ? "one tap (stage blur off)"
+@@ -12037,6 +12070,14 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+         }
+     }
+     const D3D12_RECT al_sc_before = sc;  /* effective guest scissor, before any display transform */
++    {   /* patch 0106: the part of the target this frame's draws can reach (ld_kernel_edge) */
++        surface_t* es = &g.surfaces[target];
++        if (es->ext_frame != g_ld_frames + 1u) { es->ext_frame = g_ld_frames + 1u; es->ext_r = es->ext_b = 0; }
++        if (sc.right > sc.left && sc.bottom > sc.top) {
++            if ((u32)sc.right > es->ext_r) es->ext_r = (u32)sc.right;
++            if ((u32)sc.bottom > es->ext_b) es->ext_b = (u32)sc.bottom;
++        }
++    }
+     /* Patch 0086: a guest scissor narrower than the target moves or mirrors with its draw. */
+     if ((al_mirror || al_dx_px != 0.0f) && (sc.left > 0 || sc.right < (LONG)W)) {
+         int l = (int)sc.left, rr = (int)sc.right;

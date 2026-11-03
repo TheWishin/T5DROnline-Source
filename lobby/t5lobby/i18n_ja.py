@@ -430,6 +430,24 @@ MESSAGES = {
     "Maximized window": "最大化ウィンドウ",
     "Borderless fullscreen (Alt+Enter or F11 switches in the game)":
         "ボーダーレス全画面（ゲーム中に Alt+Enter または F11 で切り替え）",
+    # Display: own window size, Picture format (ps3recomp patch 0107)
+    'pixels': 'ピクセル',
+    'Window, my own size:':
+        'ウィンドウ（サイズを指定）:',
+    'Width {wmin}-{wmax} and height {hmin}-{hmax}, whole numbers. Until then the game uses {w} x {h}.':
+        '幅 {wmin}～{wmax}、高さ {hmin}～{hmax} の整数で入力してください。それまではゲームは {w} x {h} を使います。',
+    'Picture format':
+        '画面の形',
+    'Whole picture (16:9, black bars on other screens; default)':
+        '全体を表示（16:9、他の画面では黒帯あり・標準）',
+    'Fill the screen (no bars; cuts the left and right edges)':
+        '画面いっぱい（黒帯なし・左右の端が切れる）',
+    'Stretch to the screen (no bars; fighters look wider)':
+        '画面に合わせて引き伸ばす（黒帯なし・キャラが横に広がる）',
+    '4:3 (the middle of the picture, bars left and right)':
+        '4:3（画面の中央、左右に黒帯）',
+    'For screens that are not 16:9, such as 16:10 and 3:2 laptops. The game draws 16:9, so Fill cuts a little off the sides and Stretch widens everything. Only your picture changes: online, both players can choose differently.':
+        '16:10 や 3:2 のノートPCなど、16:9 ではない画面向けです。ゲームは 16:9 で描画するので、「画面いっぱい」は左右が少し切れ、「引き伸ばす」は全体が横に広がります。変わるのは自分の画面だけなので、オンラインでは2人が別々に選べます。',
     # ---- launcher/online.py
     "Online play": "オンラインプレイ",
     "The lobby files (lobby/t5lobby) are missing from this copy of the launcher, so "

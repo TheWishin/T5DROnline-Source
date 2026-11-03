@@ -20,6 +20,20 @@ the line it is the same two again). Whoever declines the ready check or lets it 
 stays in the room, is told so) until they press Back in line (`room_line`); a member can also sit out on purpose.
 Community rooms are casual: who plays whom is the room's business, which is what ranked keeps out.
 
+Casual first-to sets (1.2.0, caps "sets" and "casual_sets"): the host picks first_to 1, 2, 3, 5 or 10.
+One complete set occupies one turn at the table; the line stays put between its games. Winner stays uses
+the set winner; everyone in turn moves the longer-seated player after the set. An unfinished set has no
+set winner, so winner stays moves both players back. Older players play single-game turns instead.
+
+Simultaneous tables (1.2.0, cap "room_tables", mode "tables"): a casual room has size // 2 stable table
+numbers. Each free pair gets its own normal match and first-to set; a set keeps that table between games.
+After the whole set both players return behind the waiting members. The host can rearrange idle countdown
+pairs (`room_pair`); playing matches and active sets cannot move. `room_line` still means available / away.
+A member watching must sit out to keep watching when a match is offered. Failed table setup puts its pair
+away until they explicitly return, so a full relay cannot cause automatic connection retry loops. The room
+size, global relay limits and spectator budgets stay unchanged. Launchers without the new cap get a clear
+update refusal on join (also by invite), rather than receiving an ambiguous single-table room view.
+
 Private room: locked with a password or with an invite code the server makes (XXXX-XXXX-XXXX); also casual. It
 shows in the room list as locked (name, host, players, "private") or, hidden, not at all. Joining needs the password
 or the code -- or a friend's invite into the room (`invite` kind room): the invite is the key, no secret is sent to
@@ -54,12 +68,13 @@ by id is refused with a text they show ("update the launcher"); a friend's invit
 key). Community rooms work for them like any room: they see a ready check when it is their turn.
 
 Messages (client -> server; docs/ONLINE.md "Protocol reference"):
-    room_create {name, ranked, size, rotation, private: password|code, password, hidden}   -> room {room, code?}
+    room_create {name, ranked, size, rotation, first_to, mode, private: password|code, password, hidden} -> room {room, code?}
     room_join   {room, password} | {room?, code}                                           -> room {room}
     room_lock   {lock: password|code|none, password, hidden}   (host)                      -> room {room, code?}
     room_kick   {player}                                       (host)                      -> room {room}
     room_bar    {}                                             (host, password lock)      -> room {room}, barred
     room_line   {in: true|false}                               (community rooms)          -> room {room}
+    room_pair   {table, players: [player, player]}               (host, idle table)          -> room {room}
 server -> client: room {room} (a member's view: line, who plays, the next match; the host's also has `guesses`, the
 wrong passwords of the last 10 minutes), notice room_kicked / room_away.
 """
@@ -72,6 +87,7 @@ import os
 import time
 
 from .. import proto
+from ..compatibility import compatible
 from ..proto import (CODE_ALPHABET, CODE_LEN, LobbyError, clean_room_password,  # noqa: F401 -- (tests use them here)
                      new_room_code as new_code, normalize_room_code as normalize_code)
 from .ratelimit import KeyedBuckets
@@ -91,8 +107,32 @@ def _rid():
     return os.urandom(6).hex()
 
 
+class RoomTable:
+    """One pair's seat in a room; connections, results and sets are ordinary matches."""
+    def __init__(self, room, number):
+        self.room = room
+        self.id = number
+        self.pair = []
+        self.match = None
+        self.set = None
+        self.next_timer = None
+        self.next_at = None
+        self.watch = False
+
+    def active(self):
+        return self.match is not None or (self.set is not None and self.set.state == "active")
+
+    def players(self):
+        """Match sides also order the set's score; reservations keep the host's order."""
+        if self.match is not None:
+            return self.match.players
+        if self.set is not None and self.set.state == "active":
+            return self.set.players
+        return self.pair
+
+
 class Room:
-    def __init__(self, owner, name, ranked, size=2, rotation="winner"):
+    def __init__(self, owner, name, ranked, size=2, rotation="winner", first_to=1, mode="line"):
         self.id = "r" + _rid()
         self.name = name
         self.owner = owner
@@ -101,9 +141,11 @@ class Room:
         self.size = size                # most members at once (2 = a classic room)
         self.rotation = rotation        # community rooms: winner (winner stays) | queue (everyone in turn)
         self.ranked = ranked
+        self.first_to = first_to        # casual set target; effective target is 1 against an older launcher
         self.match = None
         self.set = None                 # the room's running set (rematches in the room keep it)
         self.build_id = owner.build_id
+        self.compat_group = getattr(owner, "compat_group", "")
         self.watch = False              # its match can be watched (spectating.py, set before each lobby list)
         self.lock = None                # None | "password" | "code"
         self.secret = None              # lock "password": its salted scrypt hash -- memory only, never sent or logged
@@ -116,10 +158,14 @@ class Room:
         self.next_at = None             # ... when it ends (unix time, for the members' view)
         self.sent = {}                  # member id -> the last view pushed to it
         self.training = False           # a training room: endless health, no result (matchrules.py)
+        self.rematch_policy = "both_confirm"
+        self.auto_skip_after_round = False
+        self.mode = mode                # line (the existing single table) | tables (independent pairs)
+        self.tables = [RoomTable(self, n + 1) for n in range(size // 2)] if mode == "tables" else []
 
     @property
     def community(self):
-        return self.size > 2
+        return self.size > 2 or self.mode == "tables"
 
     @property
     def private(self):
@@ -127,21 +173,34 @@ class Room:
         return self.lock is not None or self.hidden
 
     def status(self):
-        return "playing" if self.match else ("full" if len(self.members) >= self.size else "open")
+        return "playing" if self.match or self._casual_set_active() or any(t.active() for t in self.tables) else (
+            "full" if len(self.members) >= self.size else "open")
+
+    def _casual_set_active(self):
+        return self.set is not None and getattr(self.set, "casual", False) and self.set.state == "active"
 
     def public(self):
         """The lobby list's entry. Nothing about a lock but that there is one (and which kind, so a launcher asks for
         a password or a code); never a password, a hash or a code."""
         d = {"id": self.id, "name": self.name, "owner": self.owner.brief(),
              "members": [p.id for p in self.members], "ranked": self.ranked,
-             "build": self.build_id, "status": self.status(),
+             "build": self.build_id, "compat_group": self.compat_group if all(
+                 getattr(p, "compat_group", "") == self.compat_group for p in self.members) else "",
+             "status": self.status(),
              "watch": self.watch and not self.private}
         if self.size != 2:
             d.update(size=self.size, rotation=self.rotation)
+        if self.mode == "tables":
+            d.update(mode="tables", tables=[{
+                "id": table.id, "players": [q.id for q in table.players()],
+                "match": table.match.id if table.match is not None else None,
+                "watch": table.watch and not self.private} for table in self.tables])
         if self.lock is not None:
             d.update(private=True, lock=self.lock)
         if self.training:
             d["training"] = True        # (older launchers ignore it; they cannot join: _room_training_check)
+        elif not self.ranked:
+            d["first_to"] = self.first_to
         return d
 
 
@@ -176,6 +235,19 @@ class RoomsMixin:
     def _need_private_cap(self, conn):
         if "private_rooms" not in conn.caps:
             raise LobbyError(proto.E_NOT_ALLOWED, "private rooms need a newer launcher; update it")
+
+    @staticmethod
+    def _room_tables_check(r, p_or_conn):
+        caps = getattr(p_or_conn, "caps", None)
+        if caps is None:
+            caps = getattr(getattr(p_or_conn, "conn", None), "caps", ())
+        if r.mode == "tables" and "room_tables" not in caps:
+            raise LobbyError(proto.E_NOT_ALLOWED, "simultaneous room tables need a newer launcher; update it")
+
+    @staticmethod
+    def _room_table(r, number):
+        number = proto.room_table(number, len(r.tables))
+        return r.tables[number - 1]
 
     def _room_owner(self, p):
         r = p.room
@@ -323,6 +395,9 @@ class RoomsMixin:
         if p.status != "idle":
             raise LobbyError(proto.E_BUSY, f"you are {p.status}")
         ranked = bool(msg.get("ranked", False))
+        mode = proto.room_mode(msg.get("mode", "line"))
+        if mode == "tables" and not {"room_tables", "private_rooms"}.issubset(conn.caps):
+            raise LobbyError(proto.E_NOT_ALLOWED, "simultaneous room tables need a newer launcher; update it")
         size, rotation, lock, hidden, pw = 2, "winner", None, False, None
         if "private_rooms" in conn.caps:          # (an older launcher's room is a classic, open one, as before)
             size = msg.get("size", 2)
@@ -342,20 +417,37 @@ class RoomsMixin:
             if ranked and (size > 2 or lock or hidden):
                 raise LobbyError(proto.E_NOT_ALLOWED, "private and community rooms are casual (unranked)")
         training = self._room_training_opt(conn, msg, ranked)      # (matchrules.py)
+        rematch_policy, auto_skip = self._rematch_room_options(conn, msg, ranked, size, mode)
+        if mode == "tables" and (ranked or training):
+            raise LobbyError(proto.E_NOT_ALLOWED, "simultaneous room tables are casual and cannot be training rooms")
+        first_to = proto.casual_first_to(msg.get("first_to", 1))
+        if ranked or training or not {"sets", "casual_sets"}.issubset(conn.caps):
+            first_to = 1
         if ranked and not self.cfg.ranked_rooms:
             raise LobbyError(proto.E_NOT_ALLOWED, "ranked matches come from the ranked queue on this server")
         if ranked and p.guest and not self.cfg.guest_ranked:
             raise LobbyError(proto.E_NOT_ALLOWED, "ranked needs an account")
         if ranked:
             self._check_speed(p)
+        # Check both submitted and published text: truncation must not hide a term,
+        # and removing control characters can join its letters.
+        raw_name = str(msg.get("name") or f"{p.name}'s room")
+        name = proto.clean_text(raw_name, 32)
+        self._check_filtered_text(raw_name, "room", p)
+        if name != raw_name:
+            self._check_filtered_text(name, "room", p)
         self._abandon_set(p)
         secret = await self._room_hash(p, pw) if pw is not None else None
         if p.status != "idle" or conn.closed:     # (it changed while the password was hashed)
             raise LobbyError(proto.E_BUSY, f"you are {p.status}")
-        name = proto.clean_text(msg.get("name") or f"{p.name}'s room", 32)
-        r = Room(p, name, ranked, size, rotation)
+        if pw is not None:  # The policy may have reloaded while the hash was awaited.
+            self._check_filtered_text(raw_name, "room", p)
+            if name != raw_name:
+                self._check_filtered_text(name, "room", p)
+        r = Room(p, name, ranked, size, rotation, first_to, mode)
         r.hidden = hidden
         r.training = training
+        r.rematch_policy, r.auto_skip_after_round = rematch_policy, auto_skip
         code = None
         if lock == "password":
             r.lock, r.secret = "password", secret
@@ -401,13 +493,14 @@ class RoomsMixin:
         return {"t": "room", "room": self._room_view(r, p)}
 
     def _room_may_join(self, r, p):
+        self._room_tables_check(r, p)
         if p.status != "idle":
             raise LobbyError(proto.E_BUSY, f"you are {p.status}")
         if p in r.members:
             raise LobbyError(proto.E_STATE, "you are in that room")
         if len(r.members) >= r.size:
             raise LobbyError(proto.E_FULL, "room is full")
-        if r.build_id != p.build_id:
+        if not compatible(r, p) or any(not compatible(q, p) for q in r.members):
             raise LobbyError(proto.E_VERSION, "that player runs a different build of the game")
         if r.ranked and p.guest and not self.cfg.guest_ranked:
             raise LobbyError(proto.E_NOT_ALLOWED, "ranked needs an account")
@@ -536,15 +629,134 @@ class RoomsMixin:
                 raise LobbyError(proto.E_BUSY, "finish the match first")
             if p in r.line:
                 r.line.remove(p)
+            if r.mode == "tables":
+                for table in r.tables:
+                    if p not in table.pair:
+                        continue
+                    if table.set is not None and table.set.state == "active":
+                        self._end_set(table.set, "left", by=p)
+                    self._room_table_release(table)
+            if r._casual_set_active() and p in r.set.players:
+                self._end_set(r.set, "left", by=p)       # sitting out between games gives up this table turn
             self._room_schedule(r)
         self.dirty = True
 
+    async def h_room_pair(self, conn, msg):
+        """The host sets an idle table's next pair; an active match or set never moves."""
+        r = self._room_owner(conn.player)
+        self._room_tables_check(r, conn)
+        if r.mode != "tables":
+            raise LobbyError(proto.E_STATE, "this room does not have simultaneous tables")
+        table = self._room_table(r, msg.get("table"))
+        ids = msg.get("players")
+        if not isinstance(ids, list) or len(ids) != 2 or not all(isinstance(i, str) for i in ids) or ids[0] == ids[1]:
+            raise LobbyError(proto.E_BAD_REQUEST, "choose two different players for the table")
+        pair = [next((q for q in r.members if q.id == i), None) for i in ids]
+        if table.active() or any(q is None or not self._room_table_free(r, q) for q in pair):
+            raise LobbyError(proto.E_BUSY, "choose available players and an idle table")
+        if self._is_blocked(*pair):
+            raise LobbyError(proto.E_NOT_ALLOWED, "you cannot pair these players")
+        # Reservations are not matches yet: a host may rearrange them atomically.
+        for other in r.tables:
+            if other is table or any(q in other.pair for q in pair):
+                if other.active():
+                    raise LobbyError(proto.E_BUSY, "choose available players and an idle table")
+        for other in r.tables:
+            if other is table or any(q in other.pair for q in pair):
+                self._room_table_release(other)
+        table.pair = pair
+        self._room_table_schedule(table, SOON)
+        self._room_schedule(r, SOON)
+        return {"t": "room", "room": self._room_view(r, conn.player)}
+
     # ------------------------------------------------------------------ matches in a room
+    def _room_table_free(self, r, q):
+        """Available for a new set, independently of a countdown reservation."""
+        if q not in r.line or not q.online or q.match is not None or q.status != "room" or q.room is not r:
+            return False
+        if any(t.active() and q in t.pair for t in r.tables):
+            return False
+        try:
+            self._set_free(q)
+        except LobbyError:
+            return False
+        return True
+
+    def _room_table_release(self, table):
+        if table.next_timer is not None:
+            table.next_timer.cancel()
+        table.next_timer, table.next_at = None, None
+        table.pair = []
+        if table.set is not None and table.set.state != "active":
+            table.set = None
+        self.dirty = True
+
+    def _room_table_schedule(self, table, delay):
+        if table.next_timer is not None:
+            return
+        table.next_at = time.time() + delay
+        table.next_timer = asyncio.get_running_loop().call_later(delay, self._room_table_next, table)
+        self.dirty = True
+
+    def _room_tables_schedule(self, r, delay=None):
+        if r.id not in self.rooms or self.draining:
+            return
+        delay = self.cfg.room_next_seconds if delay is None else delay
+        # Discard only reservations that became invalid; running sets own their seats.
+        for table in r.tables:
+            if not table.active() and table.pair and not all(self._room_table_free(r, q) for q in table.pair):
+                self._room_table_release(table)
+        reserved = [q for table in r.tables for q in table.pair]
+        free = [q for q in r.line if q not in reserved and self._room_table_free(r, q)]
+        for table in r.tables:
+            if table.active() or table.pair:
+                continue
+            pair = next(([a, b] for i, a in enumerate(free) for b in free[i + 1:]
+                         if not self._is_blocked(a, b)), None)
+            if pair is None:
+                break
+            table.pair = pair
+            free = [q for q in free if q not in pair]
+            self._room_table_schedule(table, delay)
+
+    def _room_table_next(self, table):
+        table.next_timer, table.next_at = None, None
+        r = table.room
+        self.dirty = True
+        if r.id not in self.rooms or self.draining:
+            self._room_table_release(table)
+            return
+        if table.active():
+            return
+        pair = table.pair
+        if len(pair) != 2 or not all(self._room_table_free(r, q) for q in pair) or self._is_blocked(*pair):
+            self._room_table_release(table)
+            self._room_schedule(r)
+            return
+        a, b = pair
+        table.match = self.create_match(*self._casual_sides(a, b), ranked=False, origin="room", room=r,
+                                       first_to=r.first_to, table=table)
+        table.match.line_order = (a, b)
+        if table.match.state == "cancelled":
+            table.match = None
+
+    def _room_table_over(self, r, table, players):
+        """A whole table turn ends: both players return behind the waiting members."""
+        self._room_table_release(table)
+        for q in players:
+            if q in r.line:
+                r.line.remove(q)
+                r.line.append(q)
+        self._room_schedule(r)
+
     def _room_start(self, r, invited=False):
         """Classic room: its two members' match, with a ready check -- except right after a friend accepted an invite
         to the room (origin "invite": both have said yes already). Community room: the first two free players of its
         line (always with a ready check)."""
-        if r.id not in self.rooms or r.match is not None or self.draining:
+        if r.mode == "tables":
+            self._room_schedule(r, SOON)
+            return
+        if r.id not in self.rooms or r.match is not None or r._casual_set_active() or self.draining:
             return
         if r.community:
             pair = self._room_next_pair(r)
@@ -568,7 +780,8 @@ class RoomsMixin:
         else:
             sides = self._drawn_sides(a, b, "ranked room")     # a new ranked set: a coin, not the members' order
         r.match = self.create_match(*sides, ranked=ranked,
-                                    origin="invite" if invited else "room", room=r, game_set=gs)
+                                    origin="invite" if invited else "room", room=r, game_set=gs,
+                                    first_to=r.first_to)
         r.match.line_order = (a, b)              # (the line's order, whatever sides the players asked for: casual.py)
         if r.match.state == "cancelled":
             r.match = None
@@ -593,9 +806,12 @@ class RoomsMixin:
 
     def _room_schedule(self, r, delay=None):
         """Community rooms: count down to the next match when nothing runs and two are free in the line."""
+        if r.mode == "tables":
+            self._room_tables_schedule(r, delay)
+            return
         if not r.community or r.id not in self.rooms:
             return
-        if r.match is not None or self.draining or self._room_next_pair(r) is None:
+        if r.match is not None or r._casual_set_active() or self.draining or self._room_next_pair(r) is None:
             if r.next_timer is not None and r.match is None:
                 r.next_timer.cancel()
                 r.next_timer, r.next_at = None, None
@@ -622,8 +838,13 @@ class RoomsMixin:
         ready check run out sits out; a failed connection puts both at the back of the line; then the next match."""
         if not r.community or r.id not in self.rooms:
             return
-        if reason in ("declined", "ready_timeout"):
-            out = [by] if by is not None else [q for q in m.players]
+        table = getattr(m, "table", None)
+        if m.set is not None and getattr(m.set, "casual", False):
+            m.set._room_turn_done = True        # cancellation already has the line rule below
+        if reason in ("declined", "ready_timeout") or (table is not None and reason not in ("opponent_left",)):
+            # A failed table setup waits for an explicit return, rather than repeatedly
+            # spending relay capacity or retrying a broken UDP route every countdown.
+            out = [by] if reason in ("declined", "ready_timeout") and by is not None else list(m.players)
             for q in out:
                 if q in r.line and q in r.members:
                     r.line.remove(q)
@@ -634,6 +855,8 @@ class RoomsMixin:
                 if q in r.line:
                     r.line.remove(q)
                     r.line.append(q)
+        if table is not None:
+            self._room_table_release(table)
         self._room_schedule(r)
 
     def _room_match_over(self, r, m, status, winner):
@@ -641,10 +864,48 @@ class RoomsMixin:
         match after T5L_ROOM_NEXT_SECONDS."""
         if r is None or not r.community or r.id not in self.rooms:
             return
+        gs = m.set
+        if gs is not None and getattr(gs, "casual", False):
+            if gs.state == "active":
+                return                          # one complete set occupies one turn at the table
+            outcome = gs.outcome or {}
+            self._room_set_over(r, gs, outcome.get("status", "void"), outcome.get("winner"))
+            return
+        table = getattr(m, "table", None)
+        if table is not None:
+            if gs is not None and gs.state == "active" and gs.current is None and not gs.rated:
+                self._end_set(gs, "expired")
+            self._room_table_over(r, table, m.players)
+            return
         order = getattr(m, "line_order", None) or m.players     # (P1 / P2 may be the other way round: casual.py)
+        self._room_turn_over(r, m.players, order, status,
+                             m.players[winner] if winner is not None else None)
+        # Legacy casual games have an open-ended rematch group, not an automatic set.
+        if gs is not None and gs.state == "active" and gs.current is None and not gs.rated:
+            self._end_set(gs, "expired")
+
+    def _room_set_over(self, r, gs, status, winner):
+        """A casual set is one table turn, including an unfinished set left between games.
+
+        Called by the deciding game's result, or by _end_set when there is no current game.
+        The marker prevents a cancellation and its set-ending callback from moving the line twice.
+        """
+        if r is None or not r.community or r.id not in self.rooms or getattr(gs, "_room_turn_done", False):
+            return
+        gs._room_turn_done = True
+        table = getattr(gs, "table", None)
+        if table is not None:
+            self._room_table_over(r, table, gs.players)
+            return
+        first = gs.matches[0] if gs.matches else None
+        order = getattr(first, "line_order", None) or gs.players
+        self._room_turn_over(r, gs.players, order, status, winner)
+
+    def _room_turn_over(self, r, players, order, status, winner):
+        """Move the line once after a single legacy game or a complete/abandoned casual set."""
         if r.rotation == "winner":
             # winner stays; the loser to the back (no winner: both, the first in line first)
-            stay = m.players[winner] if status in COUNTED and winner is not None else None
+            stay = winner if status in COUNTED and winner in players else None
         else:
             # everyone in turn: the one who was at the table longer (first in line) goes to the back, the other
             # stays for one more match -- every member plays two in a row, against both neighbours in the line,
@@ -657,11 +918,6 @@ class RoomsMixin:
         if stay is not None and stay in r.line:
             r.line.remove(stay)
             r.line.insert(0, stay)
-        # the two played their game: no rematch vote in a community room (the room picks the next match; h_rematch
-        # refuses one) -- the match stays in `recent` for the post-game lag check
-        gs = m.set
-        if gs is not None and gs.state == "active" and gs.current is None and not gs.rated:
-            self._end_set(gs, "expired")
         self._room_schedule(r)
 
     # ------------------------------------------------------------------ leaving
@@ -679,13 +935,17 @@ class RoomsMixin:
         if p in r.line:
             r.line.remove(p)
         r.sent.pop(p.id, None)
-        m = r.match
-        if m is not None and p in m.players and m.state not in ("playing", "done"):
-            self.cancel_match(m, "opponent_left", by=p)
-        if r.set is not None and r.set.state == "active" and r.set.current is None and p in r.set.players and not (
-                r.set.rated and not p.online):       # (lost the lobby: the ranked set's away window decides, 1.1.9)
-            self._decline_recent(r.set, p)
-            self._end_set(r.set, "left", by=p)
+        for seat in r.tables if r.mode == "tables" else [r]:
+            m = seat.match
+            if m is not None and p in m.players and m.state not in ("playing", "done"):
+                self.cancel_match(m, "opponent_left", by=p)
+            gs = seat.set
+            if gs is not None and gs.state == "active" and gs.current is None and p in gs.players and not (
+                    gs.rated and not p.online):       # (ranked set's away window decides, 1.1.9)
+                self._decline_recent(gs, p)
+                self._end_set(gs, "left", by=p)
+            if seat is not r and p in seat.pair and not seat.active():
+                self._room_table_release(seat)
         if r.private and p.watching is not None and getattr(p.watching.match, "room", None) is r:
             self._spec_unwatch(p, "not_allowed")
         if not r.members:
@@ -704,6 +964,8 @@ class RoomsMixin:
         if r.next_timer is not None:
             r.next_timer.cancel()
             r.next_timer, r.next_at = None, None
+        for table in r.tables:
+            self._room_table_release(table)
 
     # ------------------------------------------------------------------ spectating (spectating.py asks)
     def _room_spec_check(self, r):
@@ -722,19 +984,43 @@ class RoomsMixin:
         """The room as a member sees it (the `room` message): the list entry plus the line, who plays, the next
         match, its rules. Never a password, a hash or a code."""
         d = r.public()
+        if not r.community and not r.ranked and self._rematch_enabled() and self._rematch_capable(viewer):
+            d.update(rematch_policy=r.rematch_policy, auto_skip_after_round=r.auto_skip_after_round)
         playing = list(r.match.players) if r.match is not None else []
+        if not playing and r._casual_set_active():
+            playing = list(r.set.players)       # the table remains theirs during the between-game countdown
+        if r.mode == "tables":
+            playing = [q for table in r.tables if table.active() for q in table.players()]
         d.update({"size": r.size, "rotation": r.rotation, "lock": r.lock, "hidden": r.hidden,
                   "owner_id": r.owner.id,
                   "players": [dict(q.brief(), state="playing" if q in playing else
                                    ("line" if q in r.line else "away")) for q in r.members],
                   "line": [q.id for q in r.line], "playing": [q.id for q in playing],
                   "next": None, "watch": False})
+        if r.set is not None and getattr(r.set, "casual", False):
+            d["set"] = r.set.info()
         if viewer is r.owner and r.lock == "password":
             d["guesses"] = self._room_guesses(r)         # (the host only: counts, never who or from where)
+        if r.mode == "tables":
+            d["tables"] = [self._room_table_view(r, table, viewer) for table in r.tables]
+            d["watch"] = any(table["watch"] for table in d["tables"])
+            return d
         if r.next_at is not None:
             pair = self._room_next_pair(r)
             d["next"] = {"at": round(r.next_at, 1), "players": [q.id for q in pair] if pair else []}
         m = self._spec_room_match(r)                 # (between a match and its rematch: while its stream is alive)
+        if m is not None and viewer not in m.players and self._can(viewer, "spectate"):
+            d["watch"] = self._spec_refusal(viewer, m) is None
+        return d
+
+    def _room_table_view(self, r, table, viewer):
+        d = {"id": table.id, "players": [q.id for q in table.players()],
+             "match": table.match.id if table.match is not None else None,
+             "set": table.set.info() if table.set is not None else None,
+             "next": None, "watch": False}
+        if table.next_at is not None:
+            d["next"] = {"at": round(table.next_at, 1), "players": d["players"]}
+        m = self._spec_room_match(r, table)
         if m is not None and viewer not in m.players and self._can(viewer, "spectate"):
             d["watch"] = self._spec_refusal(viewer, m) is None
         return d

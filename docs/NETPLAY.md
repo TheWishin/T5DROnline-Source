@@ -234,6 +234,50 @@ match starts:
   passes it on too (it passes any `input_delay` of `match_start`). A rematch
   inside the running games keeps its session's delay.
 
+**Challenge delay, 1.2.0.** The challenge box offers **Auto and 0 through 8 frames** when the server negotiates
+the `input_delay8` capability. The player list carries `input_delay8: true` for a capable opponent, so selecting an
+older client keeps the legacy choices and preview. Both clients must announce the cap for a manual value above 2
+or the new Auto policy; the server also refuses unsupported higher values before sending the challenge. Against an older server
+the box keeps Auto / 0 / 1 / 2; a remembered higher choice uses Auto there without losing the saved preference.
+Ranked stays on the server's existing `T5L_RANKED_INPUT_DELAY` / `T5L_PING_DELAYS` policy. Quick matches, other casual
+matches, and challenge pairs with an older client keep their existing policy too. The Settings tab is unchanged.
+
+For a challenge between two capable clients, the server resolves Auto from the measured round trip at match start
+and sends the same numeric `input_delay` to both PCs, overriding either player's Settings value. The box and both
+challenge cards show an estimate before the connection is measured:
+
+| Round trip | Auto (frames) |
+|---|---|
+| up to 60 ms | 1 |
+| above 60, up to 100 ms | 2 |
+| above 100, up to 150 ms | 3 |
+| above 150, up to 200 ms | 4 |
+| above 200, up to 250 ms | 5 |
+| above 250, up to 300 ms | 6 |
+| above 300, up to 350 ms | 7 |
+| above 350 ms | 8 |
+
+This curve is independent of `T5L_PING_DELAYS`, which remains the legacy/ranked policy. Manual choices override
+Auto, including 0. Rematches retain the challenge's manual choice or Auto policy; inside a running game they keep
+the session's delay. A new connection measures its ping again. A direct connection's relay fallback resolves the
+same policy using the relay's measurement, and sends the same value to both games.
+
+The game already parses numeric rollback delay 0..30 (`netplay_core.cpp`), but clamps it to the session's lockstep
+delay (`T5_NET_DELAY`). For an explicit challenge choice the server therefore raises that ceiling to at least the
+chosen value, even on a LAN; lockstep fallback uses that same delay on both PCs. The new Auto curve fits the normal
+lockstep suggestion. The transport ring has 1,024 slots (`netplay_core.cpp`, `kRing`), rollback input history has
+4,096 (`rb_net.cpp`, `kHist`), and the guest's 16-slot pad ring consumes already resolved input (`t5_hooks.cpp`):
+none requires expansion for 8. No game code, memory address, or netplay protocol change is needed; the game's own
+Auto without the challenge server override still chooses 1 / 2 as described above.
+
+Offline regression coverage: `lobby/tests/test_challenge_delay8.py` and `test_challenge_delay_ui.py` exercise server
+methods with fake connections, capability gating, all choices and Auto thresholds, handover precedence, rematches,
+ranked/legacy behavior, and the picker. These tests have not been run in this working copy: the configured Python
+executable is inaccessible. No build, game, or server was run. Before shipping, deploy the updated lobby server
+(without it the new launcher retains the old choices), run the Python regressions and a real build, then test a
+real 300 ms pair with Auto and explicit 8, including rematches, direct/relay fallback, and lockstep fallback.
+Both PCs must agree on the chosen delay and finish with **0 mismatching frames** and matching results/hashes.
+
 The round trip is measured by the game, not taken from the lobby: from the
 handshake to the match start both games send a PING every 200 ms when nothing
 else goes out, each carrying the sender's clock (microseconds) and the echo of
@@ -323,19 +367,23 @@ when the match starts (a persistent game reads both again with each match, `t5_e
 the next match, and a ranked match after a casual one in the same game is never mirrored). The game mirrors only
 when both say 1 (`al::active`); a game started for online play never uses the offline rule below.
 
+The integrated 1.2.0 launcher replaces the checkbox with **As dealt / Always left / Always right**
+(`screen_side`, `T5_SCREEN_SIDE=dealt/left/right`). Always right uses the same host mirror for
+actual P1; explicit dealt disables it. The legacy Always left description below applies when
+the left preference is selected. See [SCREEN_SIDE_120.md](SCREEN_SIDE_120.md) for migration and exclusions.
+
 While this PC plays P2 in a casual fight (phase 17, round intros and win poses included; not the attract demo,
 not a replay being watched; offline: a Versus fight shows the P2 side, for trying it alone with a second pad):
 
 - **Picture** (ps3recomp patch 0086, `libs/video/rsx_always_left.h`): the game draws its 3D scene into a
   2048 x 1440 target and copies it into the 1280 x 720 display buffer with one full-screen quad, then draws
-  the HUD on top. The renderer mirrors that copy (its viewport transform, x -> -x). Every HUD draw after it
-  (one quad each in Tekken 5 DR) is run through its vertex program on the CPU (`al_vp_eval`) to find where
-  it lands; the quads of the frame are grouped into elements (a string's letters: same texture, same line,
-  next to each other) and flipped pairs (one texture on both sides with the art flipped on one: the bars'
-  frames). The next frame moves each quad to its element's mirrored place -- a name stays readable and its
-  letters stay in order -- and mirrors the quads of a flipped pair, so P2's frame on the left looks like P1's
-  did. A quad that is an element by itself (a bar's fill, an icon) moves by its own box in the frame it is
-  drawn. A guest scissor narrower than the screen follows its draw.
+  the HUD on top. The renderer mirrors that copy (its viewport transform, x -> -x). HUD draws are run
+  through their vertex program on the CPU (`al_vp_eval`) to find their screen coordinates. The 1.2.0
+  source repair replaces previous-frame/per-glyph reflection with stable half-width translation for
+  same-side HUD draws and their scissors, and verifies sampled texture use and full-screen geometry
+  before treating a draw as the scene copy. Draws containing both HUD halves still need verified
+  primitive splitting in the real renderer. This repair is **partial and untested in the game**;
+  see [the repair limits and acceptance matrix](ALWAYS_LEFT_FIX.md).
 - **Controller** (`src/netplay/always_left.cpp`): online, this player's sample has LEFT and RIGHT swapped and
   the sticks' X mirrored (`np::always_left_input`, in `sample_local`) *before* it is exchanged, so both PCs
   simulate the same input and "towards the opponent" stays the direction the player sees the opponent in.
@@ -345,7 +393,62 @@ not a replay being watched; offline: a Versus fight shows the P2 side, for tryin
   screens stay as they are.
 
 Known limits: everything in the 3D scene is mirrored -- one-sided details (scars, writing on clothes or
-stages, a character's dominant hand) appear the other way round. Text and HUD stay readable.
+stages, a character's dominant hand) appear the other way round. The name/bar report is not fully
+resolved; HUD readability and ownership require the acceptance work in [ALWAYS_LEFT_FIX.md](ALWAYS_LEFT_FIX.md).
+For real casual P1/P2 wishes see [SCREEN_SIDE.md](SCREEN_SIDE.md); display-format plans are in
+[PICTURE_FORMAT.md](PICTURE_FORMAT.md).
+
+**Issue #31: empty left bar while the right holds the local player's life.** The exact draw responsible
+has not been identified from this mirror. Patch 0086 classifies a HUD draw using its whole vertex box,
+before applying the guest scissor. A box crossing the middle is kept in place as a central element, even
+when its scissor exposes only one side. If a bar's fill or damage uses such a draw, its frame can move
+while the fill stays on its original side. A possible correction would classify the scissor-clipped
+visible box and keep the draw and its scissor together, after that path is confirmed. This mirror contains
+patch context, not the base renderer's complete effective-scissor construction and constant-upload code,
+so a safe integration cannot assume how disabled or empty guest
+scissors behave. No visual correction is claimed here. The added diagnostics affect host logging only;
+they do not write guest health, alter rollback state, or change which bytes are hashed.
+
+Other possibilities still need draw evidence: both sides in one batch, a vertex program the CPU evaluator
+cannot handle, a pass before the detected picture copy, or an incorrectly detected copy. Do not infer a
+new guest address from the visual symptom. In particular, the drain mover `0x1357A0` must continue during
+resimulation (docs/ROLLBACK.md, "HUD health bars"): cutting it stalls or reverses the orange drain. Its
+drain-state address is not identified here. Changing that mover or the hash skip list is not justified by
+this report.
+
+Maintainer validation, in the real project: compare normal and always-left casual fights with distinct
+player names, local P1 and local P2, both bars full, damage to P1 alone, damage to P2 alone, and unequal
+damage to both. Follow the teal fill and the whole orange drain animation, including the next round's
+refill, and check that each stays inside its frame with the right name. Include a first mirrored frame
+and a rematch. Repeat under rollback with unsteady ping and without rollbacks. An online pair must finish
+with **0 mismatching frames** and matching results; this source review cannot prove that requirement.
+The checks and real build/game run have not been executed in this working copy.
+
+For an unresolved bar, collect a short textual renderer trace for the full, first-damage and drained
+states in the real project, keeping all game artifacts out of this mirror:
+
+- `RSX_ALWAYS_LEFT_TRACE=<first-renderer-frame>:<count>` selects a bounded range (the count defaults to
+  one). Compare the same states with the option off and on. Its `[always-left-trace]` records include
+  rejected/untouched draws, applied placement and actual effective scissor before/after placement. For a
+  recognized quad they also report raw and clipped bounds; `side_clipped_center=1` means the raw box
+  crosses the middle but its nonempty visible intersection lies on one side. This flags the classification
+  limitation; it does not identify the fill or apply a different placement.
+- `RSX_ALWAYS_LEFT_DUMP=<renderer-frame>` records recognized HUD quads (texture, bounds, U coordinates,
+  texture direction), then their grouped elements, once at the next picture copy. Obtain texture offsets
+  from those records; do not guess them. Renderer frame numbers are not simulation frame numbers.
+- Record every relevant draw, including rejected or untouched draws: order; target location, offset and
+  dimensions; display-buffer match; texture-unit-0 binding and sampled surfaces; copy detection state;
+  vertex/index count; vertex-program start and evaluation result; original and scissor-clipped bounds;
+  chosen element; mirror/translation; and scissor before/after. This distinguishes a separate fill pass,
+  a wrong central classification, an unsupported program and a missed copy. The existing quad dump
+  alone cannot explain a draw it never recognized. `RSX_DRAW_CSV` can supply draw order and bindings.
+  For a draw whose aggregate box crosses the middle with a full-width scissor, also collect primitive
+  topology and each primitive's evaluated box and UVs: the aggregate alone cannot distinguish two bars
+  in one batch from a centered overlay. These supplemental fields need real-renderer instrumentation;
+  the bounded trace does not provide per-primitive boxes or identify the chosen element.
+- Correlate those states with `T5_DF_WATCH=100906EC,100906F0,10090FBC,10090FC0`: the documented fighter
+  blocks' +0x6BC current health and +0x6C0 maximum, P1 then P2. Record which player took each hit and whether
+  the frame was live or resimulated. These health words do not identify the separate drain-state address.
 
 ## Design
 
@@ -543,6 +646,61 @@ In the game (build/nopause/runs; two games on this PC, minimized, muted, below-n
 | s1760 / s1900 (main's code) | START in a round's KO slow motion / in its replay | nothing / the replay skipped 5 frames later; no menu either time |
 | off1 | offline direct fight (no netplay), START in the fight | the PAUSE menu opens (0x10092EA0 -> 2 at the press; screenshot) |
 | smoke quick | offline menus, arcade, VS with two pads, practice, title twice | PASS (81 checks) with up to 10 other games running; an earlier run beside 16-20 other games failed `practice` (black frames, no fight HUD) -- main's exe failed it the same way at that load |
+
+### Start + Select soft reset (1.2.0 source fix, not game-tested)
+
+The online START exceptions above must never expose the game's soft-reset chord.
+After **every** START verdict, including post-match passthrough and generated skip
+presses, `NoPauseRule::suppress_soft_reset(PadInput[2])` removes START from both
+players if either player holds SELECT. This is deliberately conservative: the
+actual game's reset-taking function/address is absent from this source mirror,
+so the filter excludes a chord even if that consumer combines both pads. It does
+not guess or patch a reset address. START votes still count normally; holding
+SELECT can postpone a generated skip.
+
+Both input handovers apply this pure rule after input exchange/prediction or replay
+loading, including rollback re-simulation. Menu-driven netplay also applies the
+chord filter. The pad hook filters its final injected/current input pair before
+writing the requested pad, protecting the pre-session/menu injection path as well.
+The last pad writer has a per-pad guard. The passive reference mode keeps its
+original single-pad polling order (polling is stateful); its guard excludes a chord
+on that pad, and is not the synchronized online/replay pair path.
+
+SELECT and all non-START input remain unchanged. SELECT alone still reaches the
+online training rule (hold to give up); the replay viewer's own SELECT-to-exit and
+START-to-pause controls are read separately and remain available. Offline input
+bypasses these online guards, retaining the emergency reset. These are source
+conclusions, not claims of a successful game run. Both peers must use the updated
+rule. `tools/build_game.py` advances `CODE_VERSION` to 11 so this source-only
+simulation change produces a new code/build identity even if carried separately
+from the renderer patch; the existing lobby build checks separate old and new
+builds. New recordings use format 7 and live SESSION 3, so old readers reject the new policy.
+Loaded format 1..6 / SESSION 1..2 recordings retain their original START verdicts at all
+four input guards through `rp::play_soft_reset_guard()`, preserving historical input.
+
+Regression cases were added to `tests/c/no_pause_test.cpp` and source wiring checks
+in `tests/test_no_pause.py`. They cover every digital-button value, both slots,
+each verdict, cross-slot chords, generated START beside SELECT, repeated
+boundaries, and the existing lockstep/rollback/replay model. **They were not built
+or run for this change**, as requested.
+
+Maintainer acceptance requires a real build and a real two-PC pair using the same
+updated code, in both lockstep and rollback, with **0 mismatching frames**:
+
+1. Tap and hold START+SELECT from P1, P2, then both. Also hold SELECT on one pad
+   and START on the other. Repeat in character select, loading, both intros,
+   READY/FIGHT, fighting, KO slow motion, round replay, the next-round transition,
+   the final replay, win pose, rematch select and a new opponent's session.
+2. Repeat through the exchanged scripted/padfile input paths, with late inputs
+   causing rollback across those boundaries, and through driver/menu injections.
+   No reset, crash, pause menu or unexpected session termination is allowed.
+3. Release SELECT and verify the two-player START skips and automatic post-match
+   progression still work. Verify SELECT alone gives up in online training.
+4. Play both peers' new recordings and a chord-containing test recording; verify
+   the original legacy policy, no soft reset in format 7, equal new-code playback, viewer START pause/resume and SELECT
+   exit. Check spectator exit while data is awaited too.
+5. Offline, verify the emergency START+SELECT reset, ordinary START pause, and
+   Practice's SELECT shortcuts. Do this separately from the online pair.
 
 ## Online training and the health handicap (1.1.5, branch online-training-115)
 

@@ -69,6 +69,7 @@ struct Game {
     uint32_t t = 0, rt = 0;      /* frames in the current scene / round state */
     uint32_t post_t = 0, stale_left = 0, matches = 0, skips = 0, pauses = 0, replays = 0, replay_skips = 0;
     uint32_t intros = 0, intro_skips = 0, next_skips = 0, wasted = 0;   /* wasted: START in the KO slow motion */
+    uint32_t soft_resets = 0;    /* deliberately checked in every scene, including slow motion */
     int hp[2] = { 30, 30 }, wins[2] = { 0, 0 };
     uint16_t prev[2] = { 0, 0 };
     uint64_t hash = 1469598103934665603ull;
@@ -79,6 +80,9 @@ struct Game {
 
     void step(const PadInput in[2])
     {
+        /* Conservative model: the unavailable guest consumer might combine the two ports.
+         * Blocking the OR also blocks every same-pad chord. */
+        if (((in[0].buttons | in[1].buttons) & 0x0009u) == 0x0009u) soft_resets++;
         bool press_start = false;
         for (int p = 0; p < 2; p++) if ((in[p].buttons & NoPauseRule::kStart) && !(prev[p] & NoPauseRule::kStart)) press_start = true;
         if (game_mode) {
@@ -134,6 +138,9 @@ static PadInput player_input(uint32_t seed, uint32_t f, uint32_t start_rate)
     if ((x & 7) == 0) in.buttons |= (uint16_t)(0x1000u << ((x >> 3) & 3));   /* one of 1/2/3/4 */
     if (((x >> 6) & 3) == 0) in.buttons |= 0x0010u << ((x >> 8) & 3);           /* a direction */
     if (start_rate && ((x >> 10) % start_rate) == 0) in.buttons |= NoPauseRule::kStart;   /* START, mashed */
+    /* SELECT alone and raw START+SELECT, as scripts / recorded inputs can supply. SELECT can also
+     * overlap the rule's synthetic START even when neither raw input contained a chord. */
+    if (((x >> 15) & 3) == 0) in.buttons |= 0x0001u;
     return in;
 }
 
@@ -277,29 +284,91 @@ static void test_symmetry()
         check(a[0] == b[1] && a[1] == b[0], "symmetry: swapped slots", i);
         check(((ca & 1) << 1 | (ca >> 1)) == cb, "symmetry: cut mask", ca, cb);
         for (int p = 0; p < 2; p++) {
-            check(v == NoPauseRule::kKeep ? a[p] == in[p] : v == NoPauseRule::kPress ? (a[p].buttons & NoPauseRule::kStart) != 0
-                                                                                    : !(a[p].buttons & NoPauseRule::kStart),
+            const bool want_start = !((in[0].buttons | in[1].buttons) & 0x0001u) &&
+                                    (v == NoPauseRule::kPress || (v == NoPauseRule::kKeep && (in[p].buttons & NoPauseRule::kStart)));
+            check(((a[p].buttons & NoPauseRule::kStart) != 0) == want_start,
                   "apply: START", p);
             check((a[p].buttons | NoPauseRule::kStart) == (in[p].buttons | NoPauseRule::kStart) && a[p].lx == in[p].lx &&
-                  a[p].ly == in[p].ly, "apply: nothing else changes", p);
+                  a[p].ly == in[p].ly && a[p].rx == in[p].rx && a[p].ry == in[p].ry, "apply: nothing else changes", p);
         }
     }
     printf("symmetry ok\n");
 }
 
+static void test_soft_reset()
+{
+    /* Exhaust every possible digital input in either slot for every START verdict. This includes
+     * the two old holes: kKeep returned before filtering, and kPress created a chord from SELECT.
+     * The other slot holds SELECT: a synthetic press must never turn that into a reset either. */
+    for (int who = 0; who < 2; who++)
+        for (uint32_t b = 0; b <= 0xFFFFu; b++) {
+            const uint16_t safe = (uint16_t)((b & 0x0009u) == 0x0009u ? b & ~0x0008u : b);
+            check(NoPauseRule::suppress_soft_reset((uint16_t)b) == safe, "reset: scalar mask", b, who);
+            for (int verdict = 0; verdict < 3; verdict++) {
+                const NoPauseRule::Verdict v = (NoPauseRule::Verdict)verdict;
+                PadInput in[2] = { { 0x0001u, 11, 22, 33, 44 }, { 0x0001u, 55, 66, 77, 88 } };
+                in[who].buttons = (uint16_t)b;
+                const PadInput raw[2] = { in[0], in[1] };
+                PadInput legacy[2] = { raw[0], raw[1] };
+                NoPauseRule::apply(v, legacy, false);
+                for (int p = 0; p < 2; p++) {
+                    const uint16_t expected = v == NoPauseRule::kKeep ? raw[p].buttons :
+                        v == NoPauseRule::kPress ? (uint16_t)(raw[p].buttons | NoPauseRule::kStart) :
+                                                  (uint16_t)(raw[p].buttons & ~NoPauseRule::kStart);
+                    check(legacy[p].buttons == expected, "legacy replay: original START verdict preserved", b, verdict);
+                }
+                NoPauseRule::apply(v, in);
+                check(!((in[0].buttons | in[1].buttons) & 0x0008u),
+                      "reset: other slot SELECT blocks every START", b, verdict);
+                for (int p = 0; p < 2; p++) {
+                    check((in[p].buttons & 0x0009u) != 0x0009u, "reset: no final chord", b, verdict);
+                    check((in[p].buttons & ~0x0008u) == (raw[p].buttons & ~0x0008u),
+                          "reset: SELECT and every non-START button preserved", b, verdict);
+                    check(in[p].lx == raw[p].lx && in[p].ly == raw[p].ly &&
+                          in[p].rx == raw[p].rx && in[p].ry == raw[p].ry, "reset: axes preserved", b, verdict);
+                }
+            }
+        }
+    /* A scripted two-player chord during each game phase/round, replayed and re-recorded as a
+     * rollback boundary. Inspect the pad consumed by the game, not only record()'s decision. */
+    for (uint32_t phase = 0; phase < 32; phase++)
+        for (uint32_t round = 0; round < 40; round++) {
+            NoPauseRule rule;
+            const NoPauseRule::State st = { true, phase, false, 14, round };
+            for (int attempt = 0; attempt < 4; attempt++) {
+                PadInput in[2] = { { 0x0009u, 1, 2, 3, 4 }, { 0x0009u, 5, 6, 7, 8 } };
+                if (attempt & 2) { in[0].buttons = 0x0001u; in[1].buttons = 0x0008u; }
+                NoPauseRule::apply(rule.record(0, st, in), in);
+                Game game;
+                game.phase = phase; game.round = round;
+                game.step(in);
+                check(game.soft_resets == 0, "reset: all phases, repeated boundary", phase, round);
+            }
+        }
+    /* The detector has teeth: an unsanitized offline emergency chord is still a chord. */
+    Game offline;
+    PadInput chord[2] = { np::kNeutral, np::kNeutral };
+    chord[1].buttons = 0x0009u;
+    offline.step(chord);
+    check(offline.soft_resets == 1, "reset: model detects an unfiltered offline chord");
+    printf("soft reset ok\n");
+}
+
 /* ---- lockstep / rollback / replay ----------------------------------------------------------- */
-struct Timeline { std::vector<uint64_t> hash; std::vector<PadInput> raw0, raw1; Game end; };
+struct Timeline { std::vector<uint64_t> hash; std::vector<PadInput> raw0, raw1; Game end; bool automatic = false; };
 
 /* The reference: inputs known before every frame (lockstep), the rule in front of the game. */
-static Timeline run_lockstep(uint32_t frames, uint32_t rate0, uint32_t rate1, uint32_t s0, uint32_t s1)
+static Timeline run_lockstep(uint32_t frames, uint32_t rate0, uint32_t rate1, uint32_t s0, uint32_t s1, bool automatic = false)
 {
     Timeline tl;
+    tl.automatic = automatic;
     Game g; NoPauseRule r;
     for (uint32_t f = 0; f < frames; f++) {
         PadInput in[2] = { player_input(s0, f, rate0), player_input(s1, f, rate1) };
         tl.raw0.push_back(in[0]); tl.raw1.push_back(in[1]);
-        NoPauseRule::apply(r.record(f, g.facts(), in), in);
+        NoPauseRule::apply(r.record(f, g.facts(), in, automatic), in);
         g.step(in);
+        check(g.soft_resets == 0, "simulation: START+SELECT reached the game", f);
         check(!g.paused, "lockstep: the pause menu opened", f);
         tl.hash.push_back(g.hash);
     }
@@ -338,8 +407,9 @@ static std::vector<uint64_t> run_rollback(const Timeline& ref, int slot, uint32_
         used[f] = rem;
         PadInput in[2];
         in[slot] = mine[f]; in[1 - slot] = rem;
-        NoPauseRule::apply(r.record(f, g.facts(), in), in);
+        NoPauseRule::apply(r.record(f, g.facts(), in, ref.automatic), in);
         g.step(in);
+        check(g.soft_resets == 0, "simulation: START+SELECT reached the game", f);
         hash[f] = g.hash;
     };
     for (uint32_t t = 0; t < frames; t++) {
@@ -367,12 +437,13 @@ static void test_netplay()
 {
     const uint32_t frames = 30000;
     uint32_t total_matches = 0, total_skips = 0, total_replay_skips = 0;
-    for (int k = 0; k < 6; k++) {
+    for (int k = 0; k < 8; k++) {
+        const bool automatic = k >= 6;
         const uint32_t s0 = 11 + k * 7, s1 = 23 + k * 13;
         /* START from P1 only, from P2 only, from both; mashed hard or now and then */
         const uint32_t rate = k < 3 ? 5 : 40;
         const uint32_t rate0 = k % 3 == 1 ? 0 : rate, rate1 = k % 3 == 0 ? 0 : rate;
-        Timeline ref = run_lockstep(frames, rate0, rate1, s0, s1);
+        Timeline ref = run_lockstep(frames, rate0, rate1, s0, s1, automatic);
         /* without the rule the same inputs open the pause menu (the model is not toothless) */
         {
             Game g; uint32_t opened = 0;
@@ -381,7 +452,10 @@ static void test_netplay()
         }
         check(ref.end.matches >= 3, "lockstep: matches end", (long)ref.end.matches);
         check(ref.end.replays >= ref.end.matches, "lockstep: round replays", (long)ref.end.replays);
-        if (!rate0 || !rate1)   /* one player pressing never skips anything in a round */
+        if (automatic) {
+            check(ref.end.replay_skips > 0 && ref.end.next_skips > 0, "automatic: round parts skipped without both START", k);
+            if (!rate0 || !rate1) check(!ref.end.intro_skips, "automatic: intro still needs both votes", k);
+        } else if (!rate0 || !rate1)   /* one player pressing never skips anything in a round */
             check(!ref.end.replay_skips && !ref.end.intro_skips && !ref.end.next_skips, "lockstep: one player skipped", k,
                   (long)(ref.end.replay_skips + ref.end.intro_skips + ref.end.next_skips));
         else
@@ -400,8 +474,9 @@ static void test_netplay()
             Game g; NoPauseRule r;
             for (uint32_t f = 0; f < frames; f++) {
                 PadInput in[2] = { ref.raw0[f], ref.raw1[f] };
-                NoPauseRule::apply(r.record(f, g.facts(), in), in);
+                NoPauseRule::apply(r.record(f, g.facts(), in, ref.automatic), in);
                 g.step(in);
+                check(g.soft_resets == 0, "simulation: START+SELECT reached the game", f);
                 check(g.hash == ref.hash[f], "replay: differs", f, k);
             }
         }
@@ -415,12 +490,43 @@ static void test_netplay()
     printf("lockstep, rollback, replay ok\n");
 }
 
+static void test_auto_skip()
+{
+    NoPauseRule enabled, disabled;
+    NoPauseRule::State st = { true, 17, false, 14, 8 };
+    PadInput none[2] = { np::kNeutral, np::kNeutral };
+    for (uint32_t f = 0; f < 65; f++) {
+        if (f == 10) st.round = 9;
+        if (f == 30) st.round = 0xC;
+        const auto expected = f % 20 < 3 ? NoPauseRule::kPress : NoPauseRule::kCut;
+        check(enabled.record(f, st, none, true) == expected, "automatic: same pulse cadence across after-round parts", f);
+        check(disabled.record(f, st, none, false) == NoPauseRule::kCut, "disabled: no skip without votes", f);
+    }
+    for (uint32_t round : { 1u, 2u, 4u, 5u }) {
+        enabled.reset(); st.round = round;
+        check(enabled.record(0, st, none, true) == NoPauseRule::kCut, "automatic: intros and fight unchanged", round);
+    }
+    enabled.reset(); st.round = 8; st.decided = true;
+    check(enabled.record(0, st, none, true) == NoPauseRule::kCut, "automatic: stale decision cannot skip");
+    enabled.reset(); st.decided = false; st.round = 5;
+    enabled.record(0, st, none, true);
+    st.decided = true; st.round = 8;
+    for (uint32_t f = 1; f <= NoPauseRule::kDelay; f++)
+        check(enabled.record(f, st, none, true) == NoPauseRule::kCut, "automatic: final KO delay preserved", f);
+    check(enabled.record(NoPauseRule::kDelay + 1, st, none, true) == NoPauseRule::kKeep, "automatic: final skip uses old window");
+    enabled.reset(); st.decided = false; st.mode_next = 6;
+    check(enabled.record(0, st, none, true) == NoPauseRule::kCut, "automatic: select request closes skip");
+    printf("automatic skips ok\n");
+}
+
 int main()
 {
     test_window();
     test_parts();
     test_symmetry();
+    test_soft_reset();
     test_netplay();
+    test_auto_skip();
     printf("PASS %d checks\n", g_checks);
     return 0;
 }

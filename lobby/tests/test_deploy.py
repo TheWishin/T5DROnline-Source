@@ -8,8 +8,10 @@
 3. `admin release X.Y.Z`: launchers of an older release are told to update (a notice they can show), newer ones not
 """
 import contextlib
+import configparser
 import io
 import os
+from pathlib import Path
 import shutil
 import sqlite3
 import tempfile
@@ -21,9 +23,41 @@ import util
 from util import ServerThread, client, expect
 from t5lobby.buildid import BuildInfo
 from t5lobby.server import admin
-from t5lobby.server.store import Store
+from t5lobby.server.store import SCHEMA_VERSION, Store
 
 SETS = {"set_next_seconds": 30.0}        # a long countdown between two games of a set
+
+
+class Tcp443ServiceTest(unittest.TestCase):
+    """The opt-in low-port listener runs as the existing service user, with one capability only."""
+
+    def unit(self, fallback=False):
+        deploy = Path(__file__).resolve().parents[1] / "deploy" / "linux"
+        # The base unit repeats list-valued settings. Only scalar settings are inspected here;
+        # ConfigParser is not an emulator for systemd's list/reset semantics.
+        cfg = configparser.ConfigParser(interpolation=None, strict=False)
+        files = [deploy / "t5lobby.service"]
+        if fallback:
+            files.append(deploy / "t5lobby-tcp443.conf")
+        for path in files:
+            with path.open(encoding="utf-8") as f:
+                cfg.read_file(f)
+        return cfg["Service"]
+
+    def test_fallback_grants_only_low_port_binding_to_the_service_user(self):
+        service = self.unit(fallback=True)
+        self.assertEqual(service["User"], "t5lobby")
+        self.assertEqual(service["Group"], "t5lobby")
+        self.assertEqual(service["NoNewPrivileges"], "yes")
+        self.assertEqual(service["CapabilityBoundingSet"].split(), ["CAP_NET_BIND_SERVICE"])
+        self.assertEqual(service["AmbientCapabilities"].split(), ["CAP_NET_BIND_SERVICE"])
+        self.assertEqual(service["ProtectSystem"], "strict")
+        self.assertEqual(service["ProtectHome"], "yes")
+
+    def test_regular_and_relay_installs_keep_an_empty_capability_set(self):
+        service = self.unit()
+        self.assertEqual(service["CapabilityBoundingSet"], "")
+        self.assertEqual(service["AmbientCapabilities"], "")
 
 
 def run_admin(*args):
@@ -186,7 +220,7 @@ class RollbackTest(unittest.TestCase):
         self.assertEqual(st.account("Ann")["id"], ids["Ann"])
         st.close()
         st = Store(self.db)
-        self.assertEqual(st.schema_version(), 1)
+        self.assertEqual(st.schema_version(), SCHEMA_VERSION)
         self.assertEqual(st.friend_ids(ids["Ann"]), {ids["Ben"], ids["Dot"]})   # untouched by the old server
         st.close()
 

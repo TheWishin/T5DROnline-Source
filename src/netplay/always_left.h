@@ -1,19 +1,20 @@
 /*
- * "Always left" (1.1.9, casual matches; launcher "Always see me on the left", T5_ALWAYS_LEFT=1): the player the
- * game made P2 sees the fight as P1 sees it -- themselves on the left. Only this PC's picture and this PC's
+ * Screen side (1.2.0): T5_SCREEN_SIDE=dealt|left|right; absent keeps the legacy T5_ALWAYS_LEFT setting.
+ * Always left mirrors P2's view; Always right mirrors P1's view using the same mirror from patch 0086.
+ * Only this PC's picture and this PC's
  * controller change: the renderer mirrors the 3D picture and swaps the HUD's halves (ps3recomp patch 0086,
  * rsx_always_left.h), and this player's left and right are swapped before the input reaches the game or the
  * other PC, so "towards the opponent" stays the direction the player sees the opponent in. The game simulates
  * exactly what it did before; the other PC sees the normal picture. docs/NETPLAY.md "Always left".
  *
  * When (active()):
- *   - the option is on (this session's T5_ALWAYS_LEFT: a persistent game gets it with every match), and
+ *   - the choice is left or right (this session's T5_SCREEN_SIDE, with T5_ALWAYS_LEFT fallback), and
  *   - a fight runs (the fight phase 17, round intros and the win pose included; not the attract demo), and
- *   - online (host or join, live): this PC plays P2 (local_slot 1) in a CASUAL match (the session's
+ *   - online (host or join, live): this PC plays the opposite slot to the requested side in a CASUAL match (the session's
  *     T5_NET_CASUAL=1, from the lobby's match_start: a challenge, a friend's invite, a room that is not ranked,
  *     their rematches). Ranked, the Quick queue and tournament sets never: there the sides stay the server's
  *     coin and the picture stays as it is (the owner's rule for 1.1.9);
- *     offline: a Versus fight (two players at one PC: the screen follows the P2 side -- for trying it alone
+ *     offline: a Versus fight (two players at one PC: the screen follows P2 for left, P1 for right -- for trying it alone
  *     with a second pad); the other offline modes stay as they are -- and never in a game started for online
  *     play (online_game), whatever its netplay state. A replay being watched: as recorded, not mirrored.
  *
@@ -45,9 +46,11 @@ inline uint16_t swap_lr(uint16_t b)
 inline uint8_t mirror_axis(uint8_t v) { return (uint8_t)(255u - v); }
 
 enum class Net { Off, Local, Host, Join };
+enum class Side { Dealt, Left, Right };
 
 struct Frame {
-    bool     enabled = false;      /* T5_ALWAYS_LEFT=1 (this session's value) */
+    bool     enabled = false;      /* this session's choice is left or right */
+    Side     side = Side::Left;    /* legacy callers default to Always left; enabled still gates it */
     bool     casual = false;       /* online: T5_NET_CASUAL=1, a casual match (this session's value) */
     bool     online_game = false;  /* the game was started for online play (T5_CTL_DIR, T5_NET_MODE host/join) */
     Net      net = Net::Off;
@@ -59,9 +62,10 @@ struct Frame {
 
 inline bool active(const Frame& f)
 {
-    if (!f.enabled || f.replaying) return false;
+    if (!f.enabled || f.side == Side::Dealt || f.replaying) return false;
     if (f.phase != kPhaseFight || f.game_type == kGtDemo) return false;
-    if (f.net == Net::Host || f.net == Net::Join) return f.local_slot == 1 && f.casual;
+    if (f.net == Net::Host || f.net == Net::Join)
+        return f.casual && f.local_slot == (f.side == Side::Right ? 0 : 1);
     if (f.online_game) return false;
     return f.game_type == kGtVersus;
 }
@@ -80,5 +84,26 @@ inline bool parse_enabled(const char* v)
     };
     return eq(v, "1") || eq(v, "on") || eq(v, "true") || eq(v, "yes");
 }
+
+/* The new choice is authoritative, including invalid/empty values (fail closed). An absent choice keeps
+ * older launchers and saved checkbox environments working. Tokens are deliberately language independent. */
+inline Side parse_side(const char* value, const char* legacy_left)
+{
+    if (!value) return parse_enabled(legacy_left) ? Side::Left : Side::Dealt;
+    auto eq = [](const char* a, const char* b) {
+        for (; *a && *b; ++a, ++b) {
+            char c = *a;
+            if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+            if (c != *b) return false;
+        }
+        return *a == 0 && *b == 0;
+    };
+    if (eq(value, "left")) return Side::Left;
+    if (eq(value, "right")) return Side::Right;
+    return Side::Dealt;
+}
+
+/* Offline Versus previews the corresponding player's view; only that player's pad is mirrored. */
+inline uint32_t mirrored_port(Side side) { return side == Side::Right ? 0u : 1u; }
 
 }  // namespace al

@@ -3,7 +3,7 @@ new file mode 100644
 index 0000000..fe31f2c
 --- /dev/null
 +++ b/libs/video/rsx_always_left.h
-@@ -0,0 +1,313 @@
+@@ -0,0 +1,359 @@
 +/*
 + * ps3recomp patch 0086 (T5DR Online 1.1.8 test, "Always left"): the pure part of showing the fight to the P2
 + * player as if they were P1 -- the 3D picture mirrored, the HUD's halves swapped but every element readable.
@@ -19,12 +19,15 @@ index 0000000..fe31f2c
 + *   al_hud_*      the HUD of one frame: each quad drawn after the 3D picture is recorded; at the frame's end
 + *                 the quads are grouped into elements (the glyphs of one string: same texture, same line, next
 + *                 to each other; the timer's digits, one texture each) and flipped pairs (one texture drawn
-+ *                 at mirrored places with the art flipped on one side: the bars, the round marks). The next frame moves each quad by its element's mirrored place
-+ *                 (dx = -(x0 + x1) in clip space), so a name stays a readable name on the other side, and
-+ *                 mirrors a pair's quads instead, so the P2 frame on the left looks like P1's did. A quad that
-+ *                 is an element by itself (a bar's fill, an icon), or that no element of the previous frame
-+ *                 covers, moves by its own box -- exactly, in the frame it is drawn. A quad across the middle
-+ *                 of the screen stays (the timer, ROUND / FIGHT / K.O.), with what touches it on its line.
++ *                 at mirrored places with the art flipped on one side: the bars, the round marks). Layout
++ *                 history is used only to keep connected centre overlays together. Side HUD draws move by
++ *                 exactly half the target width: every glyph and every fill on that side gets the same
++ *                 translation, including the first frame. Reflecting each glyph's box reverses letter order;
++ *                 using last frame's string box changes the displacement as letters enter or leave it.
++ *                 HUD art and fill direction are retained. This deliberately does not claim exact mirrored
++ *                 anchoring, or split a draw containing independent elements on both sides (see T5DR's
++ *                 docs/ALWAYS_LEFT_FIX.md). A centre-spanning quad stays, with connected overlays from the
++ *                 preceding frame. The full batch/centre-overlay solution still needs renderer work.
 + *
 + * T5DR's tests/c/always_left_render_test.c includes this header and checks it with programs and HUDs made for
 + * the test.
@@ -196,6 +199,28 @@ index 0000000..fe31f2c
 +static float al_minf(float a, float b) { return a < b ? a : b; }
 +static float al_maxf(float a, float b) { return a > b ? a : b; }
 +
++/* Diagnostic only: find pixels the effective guest scissor can show. Pixel coordinates are relative to
++ * the target, y down; q is in clip space, y up. Keep texture coordinates and orientation. The live draw's
++ * placement still uses the original box: this helper supplies a textual trace, not a visual correction. */
++static int al_hud_clip(const al_hud* h, al_quad* q, float left, float top, float right, float bottom)
++{
++    if (!(h->px_w > 0.0f && h->px_h > 0.0f)) return 0;
++    left = al_maxf(left, 0.0f); top = al_maxf(top, 0.0f);
++    right = al_minf(right, 2.0f * h->px_w); bottom = al_minf(bottom, 2.0f * h->px_h);
++    if (!(right > left && bottom > top)) return 0;
++    q->x0 = al_maxf(q->x0, left / h->px_w - 1.0f);
++    q->x1 = al_minf(q->x1, right / h->px_w - 1.0f);
++    q->y0 = al_maxf(q->y0, 1.0f - bottom / h->px_h);
++    q->y1 = al_minf(q->y1, 1.0f - top / h->px_h);
++    return q->x1 > q->x0 && q->y1 > q->y0;
++}
++
++static int al_hud_side_clipped_center(const al_quad* raw, const al_quad* visible)
++{
++    return raw->x0 < 0.0f && raw->x1 > 0.0f && visible->x1 > visible->x0 && visible->y1 > visible->y0 &&
++           (visible->x1 <= 0.0f || visible->x0 >= 0.0f);
++}
++
 +/* q joins e: same texture, same line (centres within half the smaller height), next to it (a gap of at most
 + * one glyph height, overlapping counts). Or, from another texture, a glyph of exactly the size of e's last
 + * one on exactly its line, touching it (the timer's digits). Measured in pixels. */
@@ -289,10 +314,8 @@ index 0000000..fe31f2c
 +    h->n_cur = 0;
 +}
 +
-+/* Where quad q goes this frame: *mirror = 1 -> mirror it (x -> -x, its art flips with it); else move it by
-+ * the returned dx (clip units) -- its element's mirrored place, or its own when no element covers it. A quad
-+ * across the middle of the screen stays where it is (the timer's digits, ROUND / FIGHT / K.O. and their
-+ * letters, one big quad each: moved one by one they would swap places). */
++/* Translate a side HUD draw by half the screen, preserving its art and relative glyph/fill positions.
++ * Never reflect individual glyph boxes or take a string's displacement from the preceding frame. */
 +static float al_hud_place(const al_hud* h, const al_quad* q, int* mirror)
 +{
 +    const float cx = (q->x0 + q->x1) * 0.5f, cy = (q->y0 + q->y1) * 0.5f;
@@ -304,16 +327,39 @@ index 0000000..fe31f2c
 +        if ((e->tex != q->tex && !e->mixed) || cx < e->x0 - ex || cx > e->x1 + ex || cy < e->y0 - ey ||
 +            cy > e->y1 + ey)
 +            continue;
-+        if (e->mirror) {
-+            if (e->uflip != q->uflip) continue;                         /* the other side's quad of the pair */
-+            *mirror = 1;
-+            return 0.0f;
-+        }
 +        if (across || e->across) return 0.0f;
-+        if (e->n > 1) return -(e->x0 + e->x1);                          /* a string: as a whole */
-+        break;                                                          /* one quad: by its own box, exactly */
 +    }
-+    return across ? 0.0f : -(q->x0 + q->x1);
++    return across ? 0.0f : cx < 0.0f ? 1.0f : -1.0f;
++}
++
++/* The scene copy must be a full-screen quad in evaluated screen coordinates. Stale render-target
++ * bindings and camera constants are not proof: all four corners must actually be drawn. */
++static int al_picture_quad(const float xy[][2], uint32_t n, float px_w, float px_h)
++{
++    if ((n != 4 && n != 6) || px_w <= 0.0f || px_h <= 0.0f) return 0;
++    unsigned corners = 0;
++    for (uint32_t i = 0; i < n; i++) {
++        const float x = xy[i][0], y = xy[i][1];
++        if (!isfinite(x) || !isfinite(y) || fabsf(fabsf(x) - 1.0f) * px_w > 2.0f ||
++            fabsf(fabsf(y) - 1.0f) * px_h > 2.0f) return 0;
++        corners |= 1u << ((x > 0.0f ? 1u : 0u) | (y > 0.0f ? 2u : 0u));
++    }
++    return corners == 15u;
++}
++
++/* Guest-pixel horizontal scissor; clamp both ends before any unsigned host-scale conversion. */
++static void al_clip_scissor(float width, float dx, int mirror, int* left, int* right)
++{
++    const int w = (int)width;
++    int l = *left, r = *right;
++    if (mirror) { l = w - *right; r = w - *left; }
++    else { const int d = (int)floorf(dx + 0.5f); l += d; r += d; }
++    if (l < 0) l = 0;
++    if (l > w) l = w;
++    if (r < 0) r = 0;
++    if (r > w) r = w;
++    if (r < l) r = l;
++    *left = l; *right = r;
 +}
 +
 +#endif
@@ -329,7 +375,7 @@ index 5cbbdc1..03ff043 100644
  void rsx_live_draw_set_movie_mode(int on) { (void)on; }
  void rsx_live_draw_present_rgba(const uint8_t* r, u32 w, u32 h) { (void)r; (void)w; (void)h; }
  u32  rsx_live_draw_get_frames(void) { return 0; }
-@@ -10604,6 +10605,203 @@ static void ld_fx_count(void)
+@@ -10604,6 +10605,333 @@ static void ld_fx_count(void)
      const u32 f = t0.format & 0x9Fu;
      if (t0.enabled && t0.width == 64 && t0.height == 64 && f >= 0x86u && f <= 0x88u) g_ld_fx64_n++;
  }
@@ -341,11 +387,13 @@ index 5cbbdc1..03ff043 100644
 + * only: the draws are moved or mirrored through their viewport transform (xf) and scissor, nothing
 + * guest-visible changes, so the two PCs of a match may show it differently.
 + *
-+ *   the 3D picture   the draw into the display buffer that samples a render target larger than it (the
-+ *                    game's filtered copy of its 2048 x 1440 3D target, one full-screen quad): mirrored.
++ *   the 3D picture   a proven full-screen quad sampling an oversized render target in unit 0, confirmed by
++ *                    the current fragment program's sampled-unit mask: mirrored. A bound texture alone
++ *                    is insufficient: HUD draws can retain the scene's bindings as the camera changes.
 + *   the HUD          every later draw into the display buffer in that frame: its vertices run through its
-+ *                    vertex program on the CPU (al_vp_eval), and the quad is moved to its element's mirrored
-+ *                    place, or mirrored when it is one half of a flipped pair (the bars' frames).
++ *                    vertex program on the CPU (al_vp_eval), then its side moves by half the target width.
++ *                    Batched independent elements still need primitive-aware splitting; never split an
++ *                    individual triangle or glyph at an arbitrary x (docs/ALWAYS_LEFT_FIX.md).
 + * -----------------------------------------------------------------------*/
 +#include "rsx_always_left.h"
 +static volatile LONG g_al_req;               /* the game's request (any thread) */
@@ -354,6 +402,78 @@ index 5cbbdc1..03ff043 100644
 +    al_hud hud;
 +    u64 frames, copies, moved, mirrored, left_alone;
 +} g_al;
++
++/* Text only, no pixels, guest bytes or shader programs. A selected renderer frame range also traces
++ * mirror-off draws, so a maintainer can compare the same HUD before enabling the option. */
++static struct {
++    int enabled, raw_known;
++    u32 frame, draw, target, n, start, n_surfaces, surfaces[SRV_TABLE_SIZE];
++    const char* outcome;
++    al_quad raw;
++} g_al_trace;
++
++static int ld_al_trace_enabled(void)
++{
++    static int init;
++    static unsigned first, count;
++    if (!init) {
++        init = 1;
++        const char* e = getenv("RSX_ALWAYS_LEFT_TRACE");
++        if (e) {
++            const int fields = sscanf(e, "%u:%u", &first, &count);
++            if (fields == 1) count = 1;
++            else if (fields != 2) count = 0;
++        }
++    }
++    return count && g_ld_frames >= first && g_ld_frames - first < count;
++}
++
++/* Called with the renderer's actual effective guest-pixel scissor before the mirror/move is applied.
++ * Clipping a COPY diagnoses a possible classification gap; it does not alter this draw or its layout. */
++static void ld_al_trace_scissor(const D3D12_RECT* before, const D3D12_RECT* after, float W, float H,
++                                int mirror, float dx_px)
++{
++    if (!g_al_trace.enabled) return;
++    fprintf(stderr, "[always-left-trace] frame %u draw %u outcome %s request %ld active %d copy_seen %d "
++                    "target %u:%u:%x %.0fx%.0f vp %u vertices %u ranges %u/%u "
++                    "scissor %ld,%ld..%ld,%ld -> %ld,%ld..%ld,%ld applied mirror %d dx %.3f",
++            g_al_trace.frame, g_al_trace.draw, g_al_trace.outcome,
++            (long)InterlockedCompareExchange(&g_al_req, 0, 0), g_al.active, g_al.copy_seen,
++            g_al_trace.target, g.surfaces[g_al_trace.target].location, g.surfaces[g_al_trace.target].offset,
++            W, H, g_al_trace.start, g_al_trace.n, dc.n_arr, dc.n_idx,
++            before->left, before->top, before->right, before->bottom,
++            after->left, after->top, after->right, after->bottom, mirror, dx_px);
++    if (g_al_trace.raw_known) {
++        static al_hud h;
++        h.px_w = W * 0.5f; h.px_h = H * 0.5f;
++        al_quad q = g_al_trace.raw;
++        const int visible = al_hud_clip(&h, &q, (float)before->left, (float)before->top,
++                                         (float)before->right, (float)before->bottom);
++        fprintf(stderr, " raw %.3f,%.3f..%.3f,%.3f tex %llx u %.4f..%.4f uflip %d visible %d",
++                (g_al_trace.raw.x0 + 1) * h.px_w, (1 - g_al_trace.raw.y1) * h.px_h,
++                (g_al_trace.raw.x1 + 1) * h.px_w, (1 - g_al_trace.raw.y0) * h.px_h,
++                (unsigned long long)q.tex, q.u0, q.u1, q.uflip, visible);
++        if (visible) {
++            fprintf(stderr, " box %.3f,%.3f..%.3f,%.3f side_clipped_center=%d",
++                    (q.x0 + 1) * h.px_w, (1 - q.y1) * h.px_h,
++                    (q.x1 + 1) * h.px_w, (1 - q.y0) * h.px_h,
++                    al_hud_side_clipped_center(&g_al_trace.raw, &q));
++        }
++    }
++    for (u32 i = 0; i < g_al_trace.n_surfaces; i++) {
++        const surface_t* s = &g.surfaces[g_al_trace.surfaces[i]];
++        fprintf(stderr, " source=%u:%u:%x:%ux%u", g_al_trace.surfaces[i], s->location, s->offset, s->w, s->h);
++    }
++    for (u32 u = 0; u < 16; u++) {
++        rsx_dsp_texture t; rsx_dsp_get_texture(&g.rsx, u, &t);
++        if (t.enabled) fprintf(stderr, " t%u=%u:%x:%ux%u", u, t.location, t.offset, t.width, t.height);
++    }
++    for (u32 r = 0; r < dc.n_arr; r++)
++        fprintf(stderr, " arr=%u:%u", dc.arr[r].first, dc.arr[r].count);
++    for (u32 r = 0; r < dc.n_idx; r++)
++        fprintf(stderr, " idx=%u:%u", dc.idx[r].first, dc.idx[r].count);
++    fprintf(stderr, "\n");
++}
 +
 +void rsx_live_draw_set_always_left(int on) { InterlockedExchange(&g_al_req, on ? 1 : 0); }
 +
@@ -429,7 +549,7 @@ index 5cbbdc1..03ff043 100644
 +    u32 ids[64], bidx[64], n = 0;
 +    for (u32 r = 0; r < dc.n_arr; r++)
 +        for (u32 i = 0; i < dc.arr[r].count; i++) {
-+            if (n >= 64) return 0;
++            if (n >= 64) { g_al_trace.outcome = "vertices-over-64"; return 0; }
 +            ids[n] = dc.arr[r].first + i; bidx[n] = 0; n++;
 +        }
 +    if (dc.n_idx) {
@@ -441,11 +561,11 @@ index 5cbbdc1..03ff043 100644
 +        for (u32 r = 0; r < dc.n_idx; r++)
 +            for (u32 i = 0; i < dc.idx[r].count; i++) {
 +                const u8* ip = guest_ptr(ia.location, ia.offset + (dc.idx[r].first + i) * esz, esz);
-+                if (!ip) return 0;
++                if (!ip) { g_al_trace.outcome = "index-unavailable"; return 0; }
 +                const u32 index = ia.is_u32 ? (((u32)ip[0] << 24) | ((u32)ip[1] << 16) | ((u32)ip[2] << 8) | ip[3])
 +                                            : (u32)((ip[0] << 8) | ip[1]);
 +                if (restart_en && index == restart_val) continue;
-+                if (n >= 64) return 0;
++                if (n >= 64) { g_al_trace.outcome = "vertices-over-64"; return 0; }
 +                ids[n] = index; bidx[n] = base_index; n++;
 +            }
 +    }
@@ -455,7 +575,7 @@ index 5cbbdc1..03ff043 100644
 +            rsx_dsp_vertex_attr a;
 +            rsx_dsp_get_vertex_attr(&g.rsx, i, &a);
 +            if (a.type && a.size && fetch_attr(i, base, ids[k], bidx[k], v[k][i])) continue;
-+            if (i == 0) return 0;
++            if (i == 0) { g_al_trace.outcome = "position-unavailable"; return 0; }
 +            rsx_dsp_vertex_default(&g.rsx, i, v[k][i]);
 +        }
 +    return n;
@@ -468,44 +588,58 @@ index 5cbbdc1..03ff043 100644
 +                       int* mirror, float* dx_px)
 +{
 +    *mirror = 0; *dx_px = 0.0f;
-+    const int want = InterlockedCompareExchange(&g_al_req, 0, 0) != 0;
-+    if (!want) { if (g_al.active) ld_al_state(0, 0); return; }
-+    if (!ld_al_is_screen(target, W, H)) return;
-+    /* the 3D picture: texture unit 0 is a render target larger than the display buffer (the 2048 x 1440 3D
-+     * target). Only unit 0: other units keep stale bindings that the HUD's programs never read. */
-+    rsx_dsp_texture t0;
-+    rsx_dsp_get_texture(&g.rsx, 0, &t0);
-+    for (u32 i = 0; t0.enabled && i < n_surf_used; i++) {
-+        const surface_t* s = &g.surfaces[surf_used[i]];
-+        if (s->location == t0.location && s->offset == t0.offset && !ld_al_is_display(surf_used[i]) &&
-+            ((float)s->w > W || (float)s->h > H)) {
-+            /* a new frame -- unless the picture is drawn in several passes (no HUD quad between them) */
-+            if (!g_al.active || !g_al.copy_seen || g_al.hud.n_cur > 0) ld_al_state(1, 1);
-+            xf[0] = -xf[0]; xf[4] = -xf[4];          /* the 3D picture */
-+            *mirror = 1;
-+            g_al.copies++;
-+            return;
-+        }
++    g_al_trace.enabled = ld_al_trace_enabled();
++    if (g_al_trace.enabled) {
++        if (g_al_trace.frame != g_ld_frames) g_al_trace.draw = 0;
++        g_al_trace.frame = g_ld_frames; g_al_trace.draw++;
++        g_al_trace.target = target; g_al_trace.n = 0;
++        g_al_trace.n_surfaces = n_surf_used < SRV_TABLE_SIZE ? n_surf_used : SRV_TABLE_SIZE;
++        memcpy(g_al_trace.surfaces, surf_used, g_al_trace.n_surfaces * sizeof(surf_used[0]));
++        g_al_trace.start = rsx_dsp_vp_start(&g.rsx);
++        g_al_trace.raw_known = 0; g_al_trace.outcome = "not-screen";
 +    }
-+    if (!g_al.active || !g_al.copy_seen) return;    /* before the 3D picture: not the fight's HUD */
++    const int want = InterlockedCompareExchange(&g_al_req, 0, 0) != 0;
++    if (!want) {
++        if (g_al.active) ld_al_state(0, 0);
++        if (!g_al_trace.enabled) return;
++    }
++    if (!ld_al_is_screen(target, W, H)) return;
 +    static float v[64][16][4];
++    g_al_trace.outcome = "no-vertices";
 +    const u32 n = ld_al_vertices(v);
++    g_al_trace.n = n;
 +    const u32 start = rsx_dsp_vp_start(&g.rsx);
-+    if (!n || start >= RSX_DSP_VP_INSTR) { g_al.left_alone++; return; }
++    if (!n) { if (want) g_al.left_alone++; return; }
++    if (start >= RSX_DSP_VP_INSTR) {
++        g_al_trace.outcome = "vp-start-unavailable";
++        if (want) g_al.left_alone++;
++        return;
++    }
 +    const u8* uc = (const u8*)(g.rsx.vp + start * 4);
 +    al_quad q = { 0, 1e30f, -1e30f, 1e30f, -1e30f, 0, 0.0f, 0.0f };
 +    /* the texture coordinate at the left and right edge, from the first of TEX0..TEX7 that changes across the
 +     * quad (the HUD's program puts a constant in TEX0 and the coordinate in TEX1) */
 +    float ul[8] = { 0 }, ur[8] = { 0 };
++    float xy[64][2];
 +    for (u32 k = 0; k < n; k++) {
 +        float o[16][4];
 +        if (!al_vp_eval(uc, (RSX_DSP_VP_INSTR - start) * 16, (const float (*)[4])v[k],
-+                        (const uint32_t (*)[4])g.rsx.constants, o) || !(o[0][3] > 0.0f)) {
-+            g_al.left_alone++;
++                        (const uint32_t (*)[4])g.rsx.constants, o)) {
++            g_al_trace.outcome = "vp-unsupported";
++            if (want) g_al.left_alone++;
++            return;
++        }
++        if (!(o[0][3] > 0.0f)) {
++            g_al_trace.outcome = "position-w-nonpositive";
++            if (want) g_al.left_alone++;
 +            return;
 +        }
 +        const float x = (o[0][0] * xf[0] + o[0][3] * xf[4]) / o[0][3];
 +        const float y = (o[0][1] * xf[1] + o[0][3] * xf[5]) / o[0][3];
++        if (!isfinite(x) || !isfinite(y)) {
++            g_al_trace.outcome = "position-nonfinite"; if (want) g_al.left_alone++; return;
++        }
++        xy[k][0] = x; xy[k][1] = y;
 +        if (x < q.x0) { q.x0 = x; for (u32 t = 0; t < 8; t++) ul[t] = o[7 + t][0]; }
 +        if (x > q.x1) { q.x1 = x; for (u32 t = 0; t < 8; t++) ur[t] = o[7 + t][0]; }
 +        if (y < q.y0) q.y0 = y;
@@ -514,16 +648,58 @@ index 5cbbdc1..03ff043 100644
 +    for (u32 t = 0; t < 8; t++)
 +        if (fabsf(ur[t] - ul[t]) > 1e-6f) { q.u0 = ul[t]; q.u1 = ur[t]; break; }
 +    q.uflip = q.u1 < q.u0;
-+    q.tex = t0.enabled ? (((u64)t0.location << 32) | t0.offset) : 0;
++    /* Read the actual current program on every renderer tier. Patch 0081's cached mask is 0xFFFF on
++     * tier 2, which means unknown/all for descriptor binding, not proof that a texture is sampled. */
++    if (!g_ld_current_pso.valid || !g_ld_current_pso.fp_size) {
++        g_al_trace.outcome = "fp-unavailable"; if (want) g_al.left_alone++; return;
++    }
++    const u8* fp = guest_ptr(g_ld_current_pso.fp_location, g_ld_current_pso.fp_offset,
++                             g_ld_current_pso.fp_size);
++    if (!fp) { g_al_trace.outcome = "fp-unavailable"; if (want) g_al.left_alone++; return; }
++    const u32 reads = rsx_fp_texture_mask(fp, g_ld_current_pso.fp_size);
++    rsx_dsp_texture t0;
++    rsx_dsp_get_texture(&g.rsx, 0, &t0);
++    if ((reads & 1u) && t0.enabled && al_picture_quad((const float (*)[2])xy, n, W * 0.5f, H * 0.5f))
++        for (u32 i = 0; i < n_surf_used; i++) {
++            const surface_t* s = &g.surfaces[surf_used[i]];
++            if (s->location != t0.location || s->offset != t0.offset || ld_al_is_display(surf_used[i]) ||
++                !((float)s->w > W || (float)s->h > H)) continue;
++            g_al_trace.outcome = want ? "copy-mirrored" : "copy-off";
++            if (!want) return;
++            if (!g_al.active || !g_al.copy_seen || g_al.hud.n_cur > 0) ld_al_state(1, 1);
++            xf[0] = -xf[0]; xf[4] = -xf[4];
++            *mirror = 1;
++            g_al.copies++;
++            return;
++        }
++    const int hud = want && g_al.active && g_al.copy_seen;
++    /* One bbox cannot place several independent elements on opposite sides. Leave that batch intact;
++     * do not let its giant bbox teach the next frame that both player names are one centre overlay. */
++    if (hud && n > 6 && q.x0 < 0.0f && q.x1 > 0.0f) {
++        g_al_trace.outcome = "mixed-side-batch"; g_al.left_alone++; return;
++    }
++    /* Identify HUD art by sampled textures, never by the stale unit-0 binding. */
++    q.tex = 1469598103934665603ull;
++    for (u32 t = 0; t < SRV_TABLE_SIZE; t++) {
++        if (!((reads >> t) & 1u)) continue;
++        rsx_dsp_texture tex;
++        rsx_dsp_get_texture(&g.rsx, t, &tex);
++        if (!tex.enabled) continue;
++        q.tex = (q.tex ^ (((u64)tex.location << 32) | tex.offset)) * 1099511628211ull;
++    }
++    g_al_trace.raw = q; g_al_trace.raw_known = 1;
++    if (!hud) { g_al_trace.outcome = want ? "before-copy" : "hud-off"; return; }
 +    g_al.hud.px_w = W * 0.5f; g_al.hud.px_h = H * 0.5f;
 +    int m = 0;
 +    const float dx = al_hud_place(&g_al.hud, &q, &m);
 +    al_hud_note(&g_al.hud, &q);
 +    if (m) {
++        g_al_trace.outcome = "hud-mirrored";
 +        xf[0] = -xf[0]; xf[4] = -xf[4];
 +        *mirror = 1;
 +        g_al.mirrored++;
 +    } else {
++        g_al_trace.outcome = dx == 0.0f ? "hud-stays" : "hud-moved";
 +        xf[4] += dx;
 +        *dx_px = dx * W * 0.5f;
 +        g_al.moved++;
@@ -533,33 +709,29 @@ index 5cbbdc1..03ff043 100644
  static void sink_end_impl(void* user, const rsx_dispatch* r)
  {
      (void)user; (void)r;
-@@ -11400,6 +11598,9 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+@@ -11400,6 +11728,10 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
          xf[5] = -((vp.translate[1] - H * 0.5f) / (H * 0.5f));
          xf[6] = vp.translate[2];
      }
 +    int al_mirror = 0;                    /* patch 0086: the fight shown mirrored (ld_al_draw) */
 +    float al_dx_px = 0.0f;
-+    if (g_al.active || g_al_req) ld_al_draw(target, surf_used, n_surf_used, W, H, xf, &al_mirror, &al_dx_px);
++    if (g_al.active || g_al_req || ld_al_trace_enabled())
++        ld_al_draw(target, surf_used, n_surf_used, W, H, xf, &al_mirror, &al_dx_px);
      /* The vertex constant block (8 KB + viewport) is re-uploaded per draw.
       * When no constant was written since the previous draw and the viewport
       * transform is the same, point this draw at the block already uploaded --
-@@ -11505,6 +11706,19 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+@@ -11505,6 +11837,14 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
              if (sc.bottom < sc.top)      sc.bottom = sc.top;
          }
      }
++    const D3D12_RECT al_sc_before = sc;  /* effective guest scissor, before any display transform */
 +    /* Patch 0086: a guest scissor narrower than the target moves or mirrors with its draw. */
 +    if ((al_mirror || al_dx_px != 0.0f) && (sc.left > 0 || sc.right < (LONG)W)) {
-+        if (al_mirror) {
-+            const LONG l = (LONG)W - sc.right, rr = (LONG)W - sc.left;
-+            sc.left = l; sc.right = rr;
-+        } else {
-+            const LONG d = (LONG)floorf(al_dx_px + 0.5f);
-+            sc.left += d; sc.right += d;
-+        }
-+        if (sc.left < 0) sc.left = 0;
-+        if (sc.right > (LONG)W) sc.right = (LONG)W;
-+        if (sc.right < sc.left) sc.right = sc.left;
++        int l = (int)sc.left, rr = (int)sc.right;
++        al_clip_scissor(W, al_dx_px, al_mirror, &l, &rr);
++        sc.left = (LONG)l; sc.right = (LONG)rr;
 +    }
++    if (ld_al_trace_enabled()) ld_al_trace_scissor(&al_sc_before, &sc, W, H, al_mirror, al_dx_px);
      if (tscale != 1.0f) {   /* guest pixels -> host pixels */
          sc.left = (LONG)ld_pxs((u32)sc.left, tscale);   sc.top = (LONG)ld_pxs((u32)sc.top, tscale);
          sc.right = (LONG)ld_pxs((u32)sc.right, tscale); sc.bottom = (LONG)ld_pxs((u32)sc.bottom, tscale);

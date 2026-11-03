@@ -71,7 +71,7 @@ def make_file(path, inputs, matches, bars=(), hashes=(), rollback=True, slot=0, 
         if version >= 3:
             b += struct.pack("<I", 0)                    # format 3: no custom costume blocks
         if version >= 5:
-            b += struct.pack("<I", m.get("rules", 0))    # format 5: the match's rules (training, health handicap)
+            b += struct.pack("<I", m.get("rules", 0))    # format 5: training/health; format 6: automatic skips too
     b += struct.pack("<I", len(bars))
     for x in bars:
         b += struct.pack("<5IQ3I", x["kind"], x["f"], x["nf"], x["seed"], 1, x["f"], 1, 2, 3)
@@ -495,6 +495,75 @@ class GameCodeTest(unittest.TestCase):
     def lines(self, out, tag):
         return [ln[len(tag) + 1:] for ln in out.splitlines() if ln.startswith(tag + " ")]
 
+    def synthetic_live(self, name, *, ended=False, buffered=False):
+        """Only made-up format records; no game executable, input log or server."""
+        def record(kind, payload):
+            return struct.pack("<BI", kind, len(payload)) + payload
+
+        def string(value):
+            data = value.encode("utf-8")
+            return struct.pack("<H", len(data)) + data
+
+        data = bytearray(b"T5LIVE 1\n")
+        if buffered:
+            data += record(1, struct.pack("<8I", 1, 1, 0, 2, 1, 1234, 5678, 60)
+                           + string("synthetic") + string("2026-10-31T00:00:00Z"))
+            match = struct.pack("<I6I", 0, 0, 1, 1, 0, 0, 0)
+            match += struct.pack("<12iQ", 9, 33, 0, 0, 1, 2, 27, 2, 0, -1, 0, 0, 0)
+            match += string("A") + string("B") + struct.pack("<2I", 0, 0)
+            data += record(5, match)
+            # Two held frames: columns XOR the previous input; neutral axes stay zero.
+            columns = bytes([0x20, 0]) + bytes(10) + bytes([0x40, 0]) + bytes(10)
+            data += record(2, struct.pack("<2I", 0, 2) + columns)
+            data += record(6, struct.pack("<IQ", 1, 0))
+        if ended:
+            data += record(7, string("synthetic end"))
+        path = os.path.join(self.tmp, name + ".t5live")
+        with open(path, "wb") as f:
+            f.write(data)
+        return path
+
+    def test_live_end_before_the_first_fight_is_reported_without_advancing_frames(self):
+        path = self.synthetic_live("end-before-fight", ended=True)
+        code, out = self.run_exe("live-exit", path, "idle")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.lines(out, "IDLEEND"), ["synthetic end"])
+
+    def test_live_stream_without_a_first_fight_or_end_keeps_waiting(self):
+        path = self.synthetic_live("waiting-first-fight")
+        code, out = self.run_exe("live-exit", path, "idle")
+        self.assertEqual(code, 2, out)
+        self.assertEqual(self.lines(out, "IDLEEND"), ["none"])
+
+    def test_live_end_preserves_buffered_fight_then_ends_at_next_select(self):
+        path = self.synthetic_live("buffered-end", ended=True, buffered=True)
+        code, out = self.run_exe("live-exit", path, "buffered")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.lines(out, "BUFFERED_PENDING"), ["1"])
+        self.assertEqual(self.lines(out, "BUFFERED_LINE"), ["9,33,27,2 buttons=0|0 names=A|B"])
+        self.assertEqual(self.lines(out, "BUFFERED_INPUT"), ["32 64"])
+        self.assertEqual(self.lines(out, "BUFFERED_FRAMES"), ["1 1 0"])
+        self.assertEqual(self.lines(out, "IDLEEND"), ["synthetic end"])
+
+    def test_live_input_and_sync_waits_poll_registered_local_cancellation(self):
+        path = self.synthetic_live("cancel-empty-stream")
+        for which in ("input-quit", "barrier-quit"):
+            with self.subTest(which=which):
+                code, out = self.run_exe("live-exit", path, which)
+                self.assertEqual(code, 0, out)
+                self.assertEqual(self.lines(out, "QUITPOLLS"), ["1"])
+
+    def test_native_replay_reader_preserves_legacy_reset_policy(self):
+        inputs = [[NEUTRAL], [NEUTRAL]]
+        matches = [{"start": 0, "end": 0, "p1": 9, "p2": 33, "stage": 20, "winner": None}]
+        for version in range(1, 8):
+            with self.subTest(version=version):
+                path = os.path.join(self.tmp, "reset-policy-" + str(version) + replays.EXT)
+                make_file(path, inputs, matches, version=version)
+                code, output = self.run_exe("read", path)
+                self.assertEqual(code, 0, output)
+                self.assertEqual(self.lines(output, "SOFTRESET"), [str(int(version >= 7))])
+
     def test_game_writes_what_python_reads_and_back(self):
         d = tempfile.mkdtemp(dir=self.tmp)
         code, out = self.run_exe("write", d, "3000", "0x5eed")
@@ -527,11 +596,13 @@ class GameCodeTest(unittest.TestCase):
         self.assertEqual(len(self.lines(out, "BARRIER")), 3)
         # format 3: match 1's custom costume blocks (P1 a pattern, P2 none), match 2 without any
         blocks = bytes((i * 13 + 1) & 0xFF for i in range(0x108)) + bytes(0x108)
-        self.assertEqual(p["version"], 5)
+        self.assertEqual(p["version"], 7)
         self.assertEqual(p["matches"][0]["costumes"], [blocks[:0x108].hex(), blocks[0x108:].hex()])
         # format 5: match 2 is a training fight with P1 at 70 % health (match 1: no rules)
         self.assertEqual((p["matches"][0]["training"], p["matches"][0]["life"]), (False, [100, 100]))
         self.assertEqual((p["matches"][1]["training"], p["matches"][1]["life"]), (True, [70, 100]))
+        # Current recordings use format 7 even when automatic skipping stays off.
+        self.assertFalse(any(m["auto_skip_after_round"] for m in p["matches"]))
         self.assertNotIn("training", m1)
         self.assertEqual((m2["training"], m2["life"]), (True, [70, 100]))
         # format 4: the select seed mixes the match number; a session without T5_NET_UNLOCKS is closed
@@ -555,6 +626,49 @@ class GameCodeTest(unittest.TestCase):
         self.assertEqual(replays.read_payload(stripped)["matches"][0]["costumes"], p["matches"][0]["costumes"])
         self.assertEqual(self.lines(out, "LINE")[1], "2 9,33,27,2 buttons=2|1 train=1 life=70|100",
                          "the rules stay in a copy")
+
+    def test_enabled_skip_keeps_guarded_file_and_live_rematch_together(self):
+        """Current reset filtering uses format 7 / SESSION3, rejecting old readers before any MATCH."""
+        if os.path.join(ROOT, "lobby") not in sys.path:
+            sys.path.append(os.path.join(ROOT, "lobby"))
+        from t5lobby import spectate
+        directory = tempfile.mkdtemp(dir=self.tmp)
+        live = os.path.join(directory, "enabled.t5live")
+        with mock.patch.dict(os.environ, {"T5_TEST_AUTO_SKIP": "1"}):
+            os.environ.pop("T5_AUTO_SKIP_AFTER_ROUND", None)  # match 2 introduces automatic skip; SESSION3 guards both matches
+            code, out = self.run_exe("write", directory, "1000", "0x77", live)
+        self.assertEqual(code, 0, out)
+        path = self.lines(out, "FILE")[0]
+        payload, header = replays.read_payload(path), replays.read_header(path)
+        self.assertEqual((payload["version"], header["format"]), (7, 7))
+        self.assertFalse(payload["matches"][0]["auto_skip_after_round"])
+        self.assertTrue(payload["matches"][1]["auto_skip_after_round"])
+        self.assertTrue(header["matches"][1]["auto_skip_after_round"])
+        with open(live, "rb") as source:
+            raw = source.read()
+        parser = spectate.LiveParser()
+        self.assertEqual(parser.feed(raw), raw)
+        self.assertTrue(parser.ready and parser.ended)
+        self.assertEqual(parser.session["version"], 3)
+        self.assertFalse(parser.matches[0]["auto_skip_after_round"])
+        self.assertTrue(parser.matches[1]["auto_skip_after_round"])
+        offset, match_indices = len(spectate.MAGIC), []
+        while offset + 5 <= len(raw):
+            kind, size = struct.unpack_from("<BI", raw, offset)
+            if size > 1 << 24:   # the legacy native parser stops before any reset-filtered MATCH
+                break
+            if kind == spectate.R_MATCH:
+                match_indices.append(struct.unpack_from("<I", raw, offset + 5)[0])
+            offset += 5 + size
+        self.assertEqual((kind, size), (spectate.R_RULES_GUARD, spectate.RULES_GUARD_SIZE))
+        self.assertEqual(match_indices, [])
+        next_kind, _ = struct.unpack_from("<BI", raw, offset + 5)
+        self.assertEqual(next_kind, spectate.R_SESSION)
+        self.assertEqual(struct.unpack_from("<I", raw, offset + 10)[0], 3)
+        for source in (path, live):
+            code, out = self.run_exe("read", source)
+            self.assertEqual(code, 0, out)
+            self.assertIn("auto_skip_after_round=1", "\n".join(self.lines(out, "LINE")))
 
     def test_live_stream_plays_like_the_file(self):
         """Spectating (docs/SPECTATE.md): the live stream written next to the replay holds the same session --
@@ -651,7 +765,7 @@ class GameCodeTest(unittest.TestCase):
         self.assertEqual(code, 0, out)
         path = self.lines(out, "FILE")[0]
         p = replays.read_payload(path)
-        self.assertEqual((p["version"], p["select_mix"], p["unlocks"]), (5, True, "open"))
+        self.assertEqual((p["version"], p["select_mix"], p["unlocks"]), (7, True, "open"))
         self.assertEqual(replays.read_header(path)["unlocks"], "open")
         code, out = self.run_exe("read", path)
         self.assertEqual(code, 0, out)

@@ -13,6 +13,8 @@
  *   replay_test restart <dir> <frames> <seed> <live>   the relay fallback: a session that ends before its
  *                                             handshake, then the same match's session again on the same live
  *                                             file ("SIZE1 <bytes the first left>"), then as write
+ *   replay_test live-exit <file> <case>         synthetic stream exit tests: idle, buffered, input-quit,
+ *                                             barrier-quit (no game or networking)
  */
 #include <windows.h>
 #include <stdarg.h>
@@ -22,6 +24,7 @@
 #include <string.h>
 
 #include "../../src/netplay/replay.h"
+#include "../../src/netplay/replay_paths.h"
 
 extern "C" int t5_replay_costumes(unsigned match, unsigned char* out);
 
@@ -35,6 +38,7 @@ void note(const char* fmt, ...)
     printf("\n");
     va_end(ap);
 }
+std::string path_environment(const char* key) { return replay_paths::env(key); }
 void replay_session_known() { printf("SESSIONKNOWN\n"); }   /* (a live stream's session after the start) */
 }
 /* the session environment (netplay_core.cpp): here the process's */
@@ -103,6 +107,7 @@ static int do_write(const char* dir, uint32_t frames, uint32_t seed, const char*
             rp::rec_barrier(r);
             ft.btn[1] = 1; ft.pick = 0; ft.model[1] = 0x4D;
             ft.rules = 1u | 70u << 8 | 100u << 16;   /* format 5: a training fight, P1 at 70 % health */
+            if (getenv("T5_TEST_AUTO_SKIP")) ft.rules |= 2u;  /* format 6 and guarded live upgrade, no game */
             rp::rec_fight(ft);
             rp::rec_match_begin(half);
         }
@@ -122,6 +127,7 @@ static int do_write(const char* dir, uint32_t frames, uint32_t seed, const char*
 static int do_read(const char* file, int argc, char** argv, bool map)
 {
     if (!rp::play_load(file)) { printf("ERROR %s\n", rp::play_error()); return 2; }
+    printf("SOFTRESET %d\n", rp::play_soft_reset_guard() ? 1 : 0);
     printf("FLAGS select_mix %d unlocks_open %d\n", rp::play_select_mix() ? 1 : 0, t5_replay_unlocks_open());
     printf("SLOT %d DELAY %d ROLLBACK %d SEED %08x MATCHSEED %08x\n", rp::play_slot(), rp::play_delay(),
            rp::play_rollback() ? 1 : 0, rp::play_session_seed(), rp::play_match_seed());
@@ -184,6 +190,54 @@ static int do_restart(const char* dir, uint32_t frames, uint32_t seed, const cha
     return do_write(dir, frames, seed, live);
 }
 
+static unsigned g_quit_polls = 0;
+static bool quit_live_wait()
+{
+    ++g_quit_polls;
+    rp::play_finish("synthetic local cancellation");
+    return true;
+}
+
+/* Exercise the real replay reader on synthetic records supplied by Python.
+ * A separate invocation keeps each test's playback singleton independent. */
+static int do_live_exit(const char* file, const char* which)
+{
+    if (!rp::play_load(file)) { printf("ERROR %s\n", rp::play_error()); return 2; }
+    if (!strcmp(which, "idle")) {
+        const char* why = rp::play_poll_end();
+        printf("IDLEEND %s\n", why ? why : "none");
+        return why ? 0 : 2;
+    }
+    if (!strcmp(which, "buffered")) {
+        printf("BUFFERED_PENDING %d\n", rp::play_poll_end() == nullptr);
+        std::string line;
+        if (!rp::play_fight_line(1, &line)) { printf("ERROR no buffered fight\n"); return 2; }
+        printf("BUFFERED_LINE %s\n", line.c_str());
+        rp::play_match_begin(0);
+        np::PadInput in[2];
+        rp::play_inputs(0, in);
+        printf("BUFFERED_INPUT %u %u\n", in[0].buttons, in[1].buttons);
+        const bool frame0 = rp::play_frame(0), frame1 = rp::play_frame(1), frame2 = rp::play_frame(2);
+        printf("BUFFERED_FRAMES %d %d %d\n", frame0, frame1, frame2);
+        if (rp::play_fight_line(2, &line)) { printf("ERROR unexpected second fight\n"); return 2; }
+        const char* why = rp::play_poll_end();
+        printf("IDLEEND %s\n", why ? why : "none");
+        return why ? 0 : 2;
+    }
+    rp::play_set_quit_poll(quit_live_wait);
+    if (!strcmp(which, "input-quit")) {
+        np::PadInput in[2];
+        rp::play_inputs(0, in);
+    } else if (!strcmp(which, "barrier-quit")) {
+        rp::play_barrier(0, 0);
+    } else {
+        printf("ERROR unknown live-exit case\n");
+        return 2;
+    }
+    printf("QUITPOLLS %u\n", g_quit_polls);
+    return g_quit_polls == 1 ? 0 : 2;
+}
+
 int main(int argc, char** argv)
 {
     setvbuf(stdout, nullptr, _IONBF, 0);
@@ -193,6 +247,7 @@ int main(int argc, char** argv)
         return do_restart(argv[2], (uint32_t)atoi(argv[3]), (uint32_t)strtoul(argv[4], nullptr, 0), argv[5]);
     if (argc >= 3 && !strcmp(argv[1], "read")) return do_read(argv[2], 0, nullptr, false);
     if (argc >= 3 && !strcmp(argv[1], "map")) return do_read(argv[2], argc - 3, argv + 3, true);
-    printf("usage: replay_test write <dir> <frames> <seed> | read <file> | map <file> k:f ...\n");
+    if (argc >= 4 && !strcmp(argv[1], "live-exit")) return do_live_exit(argv[2], argv[3]);
+    printf("usage: replay_test write <dir> <frames> <seed> | read <file> | map <file> k:f ... | live-exit <file> <case>\n");
     return 1;
 }

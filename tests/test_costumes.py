@@ -2,7 +2,9 @@
 
 * tests/c/costume_test.cpp, built against src/directfight/costume_logic.h alone (clang-cl, AddressSanitizer when
   the LLVM install has it), must print PASS: the save's blocks, the wire table (round trip, every malformed one
-  refused whole), the check both PCs make on a block before the game gets it.
+  refused whole), the check both PCs make on a block before the game gets it, and the driver's actual
+  fallback selection (live missing/rejected blocks become canonically unequipped; historical replay zeros
+  and valid blocks stay byte-exact).
 * The netplay side (PKT_COSTUME: pieces, acknowledgements, the hash check, a hostile opponent) is in
   tests/c/netplay_fuzz.cpp (tests/test_netplay_fuzz.py).
 * The driver writes the blocks at FIGHT START, before t5_netplay_start(), and the stage confirm waits for the
@@ -68,6 +70,13 @@ def read(rel):
 
 class DriverAndProtocol(unittest.TestCase):
     """Where the pieces sit (the order matters for determinism)."""
+
+    def test_driver_writes_the_tested_block_selection(self):
+        src = read("src/directfight/df_costume.cpp")
+        apply = src[src.index("void costume_apply("):src.index("const unsigned char* costume_written()")]
+        self.assertIn("costume::select_block(", apply,
+                      "the driver must use the selection exercised by costume_test.cpp")
+        self.assertNotIn("kZero", apply, "the zero fallback selects colour 0, not unequipped")
 
     def test_written_at_fight_start_before_the_lockstep(self):
         src = read("src/directfight/df_fight.cpp")

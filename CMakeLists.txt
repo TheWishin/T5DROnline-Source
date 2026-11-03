@@ -302,7 +302,7 @@ endif()
 file(GLOB DIRECTFIGHT_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/directfight/*.cpp")
 target_sources(t5dr PRIVATE ${DIRECTFIGHT_SOURCES})
 set_source_files_properties(${DIRECTFIGHT_SOURCES} PROPERTIES COMPILE_DEFINITIONS _CRT_SECURE_NO_WARNINGS
-    INCLUDE_DIRECTORIES "${PS3RECOMP_DIR}/runtime/syscalls")
+    INCLUDE_DIRECTORIES "${PS3RECOMP_DIR}/runtime/syscalls;${PS3RECOMP_DIR}/libs/video")
 
 # Training overlay (our own code, src/training/, docs/TRAINING.md): input display and
 # frame data drawn by the runtime's overlay layer (ps3recomp patch 0045). Off unless
@@ -391,7 +391,8 @@ if(WIN32)
     # there and only the movies are skipped (ps3recomp patch 0031, mf_h264.cpp).
     target_link_options(t5dr PRIVATE /DELAYLOAD:mfplat.dll)
     target_link_libraries(t5dr PRIVATE delayimp)
-    target_link_libraries(t5dr PRIVATE ws2_32 bcrypt xinput ole32 winmm d3d12 dxgi dxguid d3dcompiler)
+    # Patch 0088: host overlay rasterizes installed Unicode glyphs with GDI.
+    target_link_libraries(t5dr PRIVATE ws2_32 bcrypt xinput ole32 winmm d3d12 dxgi dxguid d3dcompiler gdi32)
     # Every guest call is a host call, so recompiled call chains nest deeply.
     target_link_options(t5dr PRIVATE /STACK:268435456 /MAP:t5dr.map)
 endif()

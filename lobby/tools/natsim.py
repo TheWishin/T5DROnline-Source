@@ -566,11 +566,15 @@ class Home:
 class TcpDelayProxy:
     """127.0.0.1:<port> -> the lobby server, every chunk delayed by one_way() in order."""
 
+    close_timeout = 2.0
+
     def __init__(self, target, one_way):
         self.target, self.one_way = target, one_way
         self.server = None
         self.port = 0
         self.tasks = set()
+        self.writers = set()
+        self._closing = False
 
     async def start(self):
         self.server = await asyncio.start_server(self._conn, "127.0.0.1", 0)
@@ -578,32 +582,63 @@ class TcpDelayProxy:
         return self
 
     async def _conn(self, cr, cw):
+        task = asyncio.current_task()
+        self.tasks.add(task)
+        self.writers.add(cw)
         try:
-            sr, sw = await asyncio.open_connection(*self.target)
-        except OSError:
-            cw.close()
-            return
-        for a, b in ((cr, sw), (sr, cw)):
-            t = asyncio.ensure_future(self._pump(a, b))
-            self.tasks.add(t)
-            t.add_done_callback(self.tasks.discard)
+            if self._closing:
+                await self._close_writer(cw)
+                return
+            try:
+                sr, sw = await asyncio.open_connection(*self.target)
+            except OSError:
+                await self._close_writer(cw)
+                return
+            self.writers.add(sw)
+            for a, b in ((cr, sw), (sr, cw)):
+                t = asyncio.ensure_future(self._pump(a, b))
+                self.tasks.add(t)
+                t.add_done_callback(self.tasks.discard)
+        except asyncio.CancelledError:
+            await self._close_writer(cw)
+            raise
+        finally:
+            self.tasks.discard(task)
+
+    async def _close_writer(self, writer):
+        writer.close()
+        try:
+            await asyncio.wait_for(writer.wait_closed(), self.close_timeout)
+        except asyncio.TimeoutError:
+            writer.transport.abort()
+        except asyncio.CancelledError:
+            # close() may cancel a pump already draining buffered output. Do not
+            # release ownership until the transport has also been forced closed.
+            writer.transport.abort()
+            raise
+        except (ConnectionError, OSError):
+            pass
+        finally:
+            self.writers.discard(writer)
 
     async def _pump(self, r, w):
         loop = asyncio.get_running_loop()
         q = asyncio.Queue()
 
         async def writer():
-            while True:
-                due, data = await q.get()
-                if data is None:
-                    break
-                wait = due - loop.time()
-                if wait > 0:
-                    await asyncio.sleep(wait)
-                if w.is_closing():
-                    break
-                w.write(data)
-            w.close()
+            try:
+                while True:
+                    due, data = await q.get()
+                    if data is None:
+                        break
+                    wait = due - loop.time()
+                    if wait > 0:
+                        await asyncio.sleep(wait)
+                    if w.is_closing():
+                        break
+                    w.write(data)
+            finally:
+                await self._close_writer(w)
         wt = asyncio.ensure_future(writer())
         self.tasks.add(wt)
         wt.add_done_callback(self.tasks.discard)
@@ -619,9 +654,17 @@ class TcpDelayProxy:
             q.put_nowait((loop.time(), None))
 
     async def close(self):
-        self.server.close()
-        for t in list(self.tasks):
+        self._closing = True
+        if self.server is not None:
+            self.server.close()
+        tasks = list(self.tasks)
+        for t in tasks:
             t.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        # A pump cancelled before its first step never entered its writer's finally.
+        await asyncio.gather(*(self._close_writer(w) for w in list(self.writers)))
+        if self.server is not None:
+            await self.server.wait_closed()
 
 
 # ============================================================================ stub game

@@ -56,7 +56,9 @@ class Patch(unittest.TestCase):
         self.assertIn('os.environ.get("T5DR_LIFT_REGPROMO", "1") != "0"', bg)
         self.assertIn('":regpromo=off"', bg)          # in the lift stamp: switching lifts again
         self.assertIn('["--regpromo", "off"]', bg)
-        self.assertRegex(bg, r"CODE_VERSION = 7\b")
+        version = re.search(r"(?m)^CODE_VERSION\s*=\s*(\d+)\b", bg)
+        self.assertIsNotNone(version)
+        self.assertGreaterEqual(int(version.group(1)), 7)
 
 
 def find_tree():

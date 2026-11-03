@@ -590,7 +590,7 @@ index 9ff24e3..9ae2a26 100644
 +
 +    hr = CoInitializeEx(NULL, COINIT_MULTITHREADED);
 +    if (FAILED(hr) && hr != S_FALSE && hr != RPC_E_CHANGED_MODE) {
-+        printf("[cellAudio] CoInitializeEx failed: 0x%08lX\n", hr);
++        printf("[cellAudio] CoInitializeEx failed: 0x%08lX\n", (unsigned long)hr);
 +        return -1;
      }
 -    if (s_wasapi_client) {

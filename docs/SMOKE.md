@@ -90,6 +90,62 @@ could pause the fight. Scenario steps wait for what the screen shows (the
 attract demo, the title, the HUD), not for fixed times, so a slow machine
 makes a test longer, not wrong.
 
+## Online startup cover validation (1.2.0)
+
+These are pending owner checks, not results. The working-copy change was
+reviewed from source only: no build, unit-test execution, game or server was
+started. The new source checks can detect missing cover policy/integration;
+they cannot prove renderer output, link success or network determinism.
+
+After a real build, validate the [online startup flow](DIRECTFIGHT.md#online-startup-presentation-120)
+with the supported Windows overlay enabled. On **both PCs**, from the very
+first presentation, expect only the plain `Connecting...` cover until an
+interactive character select takes input or the fight reaches phase 17.
+There must be no logo, movie or title flash, including during slow loads and
+network waits. Movie audio is unchanged. Check training-overlay off as well
+as on, windowed/fullscreen and the supported scaling/aspect settings.
+Check both ordinary game-frame presentation and patch 0088's decoded-movie
+`present_rgba` path. Cover release must follow one completed ready frame and
+drain the previous asynchronous present while black remains published;
+stress the handoff with rendering slower than the game so no queued old
+movie/title image appears after the clear. Applying patch 0088 and linking
+its existing overlay entry point also need a real runtime build.
+
+The exact pair acceptance test is:
+
+1. Boot to fight on both PCs in ranked and casual, once with rollback and
+   once with lockstep (`T5_RB_MODE=off`): same selected fighters, costumes,
+   stage and rules, **0 mismatching frames**, equal winner and result hash.
+2. In each netcode mode, rematch in the same session and play the next
+   opponent in the persistent process. Include a played process meeting a
+   freshly booted peer. Require **0 mismatches** for every fight.
+3. End a session, verify the required title visit and boot-state restore in
+   the normal driver trace, then start the next session. The title stays
+   covered; the once-per-fight guard, autosave wait, reader exclusion/wait
+   and loading-end sync point must still hold. Include a cancelled select
+   followed by another session to check that it restarts without an extra
+   title visit.
+4. Repeat boot, rematch and next opponent with a real **2-core PC**, and with
+   one peer's **slow disk** (the existing `PS3_TEST_FS_DELAY` test hook can
+   exercise file-delay handling). Allow autosave to exceed 10 s: start VS
+   must still wait for completion. The cover stays up as long as needed;
+   every resulting rollback and lockstep fight still has **0 mismatches**.
+5. Watch a live stream and a rematch as a spectator: its boot is covered and
+   playback remains identical. A saved replay keeps its old presentation by
+   default; repeat with `T5_ONLINE_FAST_BOOT=1` and require its normal
+   identical verdict. No recorded inputs or barriers may change.
+6. Check `T5_ONLINE_FAST_BOOT=0` restores the former online presentation,
+   ordinary offline boot/modes remain unchanged, and a mixed old/new build
+   cannot pair. The changed code ID is necessary because it contributes to
+   the build ID; a release-version string alone is insufficient.
+
+The existing offline `boot_menu` / `title_twice` smoke procedures continue to
+exercise visible movies and title screens. Their 12 s first-picture/recovery
+wait and 30 s skip budget above are harness limits, not measured startup
+durations or cover reveal timers. Test `RSX_OVERLAY=0` and pipeline failure
+as explicit bypass cases; Metal has no overlay backend in this mirror, so
+these paths cannot establish the hidden-startup acceptance criterion.
+
 ## Checks
 
 Per run (the check ids in the report):

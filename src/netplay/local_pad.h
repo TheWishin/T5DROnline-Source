@@ -88,6 +88,9 @@ public:
     }
     int active() const { return active_; }
     void reset() { *this = Follower(); }
+    /* An independent host menu reader starts on the gameplay reader's chosen
+     * device, then follows raw UI presses without changing gameplay history. */
+    void reset_to(int port) { reset(); if (port >= 0 && port < kPorts) active_ = port; }
 
 private:
     struct Seen { bool have = false; uint16_t buttons = 0; uint8_t dirs = 0; };

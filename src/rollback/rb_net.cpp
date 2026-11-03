@@ -13,6 +13,7 @@
 #include "rb_net.h"
 #include "rb_detour.h"   /* shadowtrace_boundary (diagnostics) */
 #include "../netplay/replay.h"   /* a replay plays back with the loop it was recorded with */
+#include "../netplay/replay_paths.h"
 
 extern "C" uint8_t* vm_base;
 extern "C" void lat_log_(char kind, const char* fmt, ...);   /* ps3recomp patch 0034: PS3_LATENCY_LOG */
@@ -375,7 +376,8 @@ bool offered_by_env()
         if (np::replaying()) return rp::play_rollback();
         /* (rb_hooks.cpp asks during static initialisation, before the netplay core has read the
          * file: then its header line says it) */
-        return rp::peek_rollback(getenv("T5_REPLAY_FILE"));
+        const std::string replay_file = replay_paths::env("T5_REPLAY_FILE");
+        return rp::peek_rollback(replay_file.c_str());
     }
     if (ctl && *ctl) return !m || !*m || !strcmp(m, "net");   /* a persistent game: every session is a direct fight */
     if (!nm || !*nm) return false;

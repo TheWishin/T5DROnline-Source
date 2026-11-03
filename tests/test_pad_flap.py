@@ -85,13 +85,18 @@ class FlapTest(unittest.TestCase):
         cls.exe = exe
 
     def test_phantom_is_quarantined_and_never_presses(self):
-        r = subprocess.run([self.exe], capture_output=True, text=True, timeout=120, cwd=self.tmp.name)
-        out = r.stdout
-        self.assertEqual(r.returncode, 0, out[-3000:])
-        self.assertRegex(out, r"(?m)^PASS \d+ checks$", out[-3000:])
-        self.assertEqual(len(re.findall(r"lost 3 times within 30 s of being found -- ignored from now on", out)), 1,
-                         out[-3000:])
-        self.assertNotIn("port 2 (player 2)", out)
+        # Both identities exercise the runtime itself, including the working device with the same
+        # product name/VID:PID as the phantom. The second is synthetic, not a hardware certification.
+        for identity in ([], ["generic"]):
+            with self.subTest(identity=identity or ["Panthera"]):
+                r = subprocess.run([self.exe, *identity], capture_output=True, text=True, timeout=120,
+                                   cwd=self.tmp.name)
+                out = r.stdout
+                self.assertEqual(r.returncode, 0, out[-3000:])
+                self.assertRegex(out, r"(?m)^PASS \d+ checks$", out[-3000:])
+                self.assertEqual(len(re.findall(r"lost 3 times within 30 s of being found -- ignored from now on", out)),
+                                 1, out[-3000:])
+                self.assertNotIn("port 2 (player 2)", out)
 
     def test_key_given_twice(self):
         ini = os.path.join(self.tmp.name, "twice.ini")

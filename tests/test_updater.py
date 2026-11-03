@@ -1,7 +1,8 @@
 """The launcher's self-update (launcher/updater.py, README "Updating"): version order, the URL
 allow-list, the release check and its cache, download + SHA-256 check + unpack, the swap with
 rollback, the detached swap step, and that the player's native folder is never touched.
-No network: GitHub is a fake opener here."""
+No network: the lobby client and GitHub opener are fakes here."""
+import asyncio
 import hashlib
 import io
 import json
@@ -335,11 +336,235 @@ class Release(unittest.TestCase):
         self.assertIsNone(updater.parse_sums("garbage", "T5DR-Online-1.0.1.zip"))
 
 
+class LobbyRelease(unittest.TestCase):
+    """The public lobby's existing welcome is enough; no player login or game data is read."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = self.tmp.name
+        write(os.path.join(self.root, "lobby", "servers.json"), json.dumps({
+            "format": "t5dr-servers/1", "servers": [
+                {"name": "Public", "host": "public.example", "tls": "pin",
+                 "fingerprint": "a" * 64, "default": True},
+            ]}))
+
+    def test_hello_uses_shipped_server_tls_and_closes_without_login(self):
+        data, _ = release()
+        from t5lobby.client import LobbyClient
+        with mock.patch("t5lobby.client.LobbyClient", autospec=LobbyClient) as factory:
+            client = factory.return_value
+            client.connect.return_value = {"t": "welcome", "latest_release": data}
+            self.assertEqual(updater.fetch_lobby_release(self.root), data)
+        kwargs = factory.call_args.kwargs
+        self.assertEqual(kwargs["server"], "public.example:7781")
+        self.assertEqual(kwargs["tls_fingerprint"], "a" * 64)
+        self.assertFalse(kwargs["tls"])
+        self.assertEqual(kwargs["reconnect"], 0)
+        self.assertEqual(kwargs["request_timeout"], updater.LOBBY_TIMEOUT)
+        client.connect.assert_called_once_with(timeout=updater.LOBBY_TIMEOUT)
+        client.close.assert_called_once_with()
+        self.assertEqual([call[0] for call in client.method_calls], ["connect", "close"])
+
+    def test_missing_field_and_unreachable_lobby_close_the_client(self):
+        from t5lobby.client import LobbyClient
+        with mock.patch("t5lobby.client.LobbyClient", autospec=LobbyClient) as factory:
+            client = factory.return_value
+            client.connect.return_value = {"t": "welcome"}       # an old server
+            self.assertIsNone(updater.fetch_lobby_release(self.root))
+            client.close.assert_called_once_with()
+            client.reset_mock()
+            client.connect.side_effect = OSError("unreachable")
+            with self.assertRaises(OSError):
+                updater.fetch_lobby_release(self.root)
+            client.close.assert_called_once_with()
+
+    def test_ca_certificate_validation_is_kept(self):
+        write(os.path.join(self.root, "lobby", "servers.json"), json.dumps({
+            "format": "t5dr-servers/1", "servers": [
+                {"name": "Public", "host": "public.example", "tls": "ca"},
+            ]}))
+        with mock.patch("t5lobby.client.LobbyClient") as factory:
+            factory.return_value.connect.return_value = {}
+            updater.fetch_lobby_release(self.root)
+        self.assertTrue(factory.call_args.kwargs["tls"])
+        self.assertIsNone(factory.call_args.kwargs["tls_fingerprint"])
+
+    def test_build_rejection_can_supply_metadata_without_admitting_a_login(self):
+        from t5lobby.client import LobbyClient
+        from t5lobby.proto import E_VERSION, LobbyError
+        data, _ = release()
+        for extra in ({"latest_release": data}, {"latest_release": None}, {}):
+            with self.subTest(extra=extra):
+                with mock.patch("t5lobby.client.LobbyClient", autospec=LobbyClient) as factory:
+                    client = factory.return_value
+                    client.connect.side_effect = LobbyError(E_VERSION, "build refused", **extra)
+                    self.assertEqual(updater.fetch_lobby_release(self.root), extra.get("latest_release"))
+                    self.assertEqual([call[0] for call in client.method_calls], ["connect", "close"])
+
+    def test_other_lobby_errors_cannot_supply_release_metadata(self):
+        from t5lobby.client import LobbyClient
+        from t5lobby.proto import E_PROTO, LobbyError
+        with mock.patch("t5lobby.client.LobbyClient", autospec=LobbyClient) as factory:
+            client = factory.return_value
+            error = LobbyError(E_PROTO, "protocol refused", latest_release=release()[0])
+            client.connect.side_effect = error
+            with self.assertRaises(LobbyError) as raised:
+                updater.fetch_lobby_release(self.root)
+            self.assertIs(raised.exception, error)
+            client.close.assert_called_once_with()
+
+
+class LobbyReleaseError(unittest.IsolatedAsyncioTestCase):
+    async def test_build_rejection_preserves_only_the_optional_release_metadata(self):
+        from t5lobby import proto
+        from t5lobby.buildid import BuildInfo
+        from t5lobby.client import LobbyClient
+        data, _ = release()
+        client = LobbyClient("public.example", BuildInfo("", ""))
+        for code, fields, expected in (
+                (proto.E_VERSION, {"latest_release": data}, {"latest_release": data}),
+                (proto.E_VERSION, {"latest_release": None}, {"latest_release": None}),
+                (proto.E_VERSION, {}, {}),
+                (proto.E_VERSION, {"latest_release": "malformed"}, {}),
+                (proto.E_PROTO, {"latest_release": data}, {})):
+            with self.subTest(code=code, fields=fields):
+                future = asyncio.get_running_loop().create_future()
+                client._pending[1] = future
+                await client._dispatch(dict(fields, t="error", re=1, code=code, msg="build refused",
+                                            retry=2, unrelated="not retained"))
+                with self.assertRaises(proto.LobbyError) as raised:
+                    await future
+                self.assertEqual(raised.exception.code, code)
+                self.assertEqual(raised.exception.extra, dict(expected, retry=2))
+
+
+class LobbyCheck(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.cache = os.path.join(self.tmp.name, updater.CACHE_FILE)
+        self.data, _ = release("1.0.1", b"z", code_id="0123456789abcdef")
+        # create=True also permits running this regression against the old updater: it will
+        # ignore the lobby's available answer and hit GitHub, failing the lobby-first assertion.
+        patch = mock.patch.object(updater, "fetch_lobby_release", return_value=self.data, create=True)
+        self.lobby = patch.start()
+        self.addCleanup(patch.stop)
+
+    def test_lobby_first_without_any_github_api_request(self):
+        gh = FakeGitHub(api_status=OSError("GitHub must not be needed"))
+        rel, problem = updater.check_latest(self.cache, opener=gh, force=True)
+        self.assertIsNone(problem)
+        self.assertEqual(rel, updater.parse_release(self.data))
+        self.assertEqual(rel["code_id"], "0123456789abcdef")
+        self.assertEqual(rel["zip"]["sha256"], hashlib.sha256(b"z").hexdigest())
+        self.lobby.assert_called_once_with()
+        self.assertEqual(gh.calls, [])
+
+    def test_lobby_is_asked_before_github_rate_limit_and_cache(self):
+        write(self.cache, json.dumps({"fmt": updater.CACHE_FORMAT, "rate_reset": 5000,
+                                     "checked": 1000, "release": None, "etag": 'W/"old"'}))
+        before = tree(self.tmp.name)
+        gh = FakeGitHub(api_status=429)
+        rel, problem = updater.check_latest(self.cache, opener=gh, now=1001, force=True)
+        self.assertIsNone(problem)
+        self.assertEqual(rel["version"], "1.0.1")
+        self.assertEqual(gh.calls, [])
+        self.assertEqual(tree(self.tmp.name), before)        # no lobby/GitHub cache mixing
+
+    def test_github_when_lobby_has_nothing(self):
+        self.lobby.return_value = None                      # old welcome or release --clear
+        gh = FakeGitHub(api=self.data)
+        rel, problem = updater.check_latest(self.cache, opener=gh)
+        self.assertIsNone(problem)
+        self.assertEqual(rel, updater.parse_release(self.data))
+        self.assertEqual(len(gh.calls), 1)
+        self.assertEqual(gh.calls[0][0], updater.API_LATEST)
+        self.lobby.assert_called_once_with()
+
+    def test_github_when_lobby_is_unreachable(self):
+        self.lobby.side_effect = OSError("unreachable")
+        gh = FakeGitHub(api=self.data)
+        rel, problem = updater.check_latest(self.cache, opener=gh)
+        self.assertIsNone(problem)
+        self.assertEqual(rel, updater.parse_release(self.data))
+        self.assertEqual(len(gh.calls), 1)
+        self.lobby.assert_called_once_with()
+
+    def test_unusable_lobby_metadata_falls_back_through_existing_rules(self):
+        bad_url_assets = [dict(a) for a in self.data["assets"]]
+        bad_url_assets[1]["browser_download_url"] = "https://evil.example/x.zip"
+        for changes in ({"draft": True}, {"prerelease": True},
+                        {"tag_name": "v1.0.1-rc1"}, {"assets": []},
+                        {"assets": bad_url_assets}):
+            with self.subTest(changes=changes):
+                self.lobby.return_value = dict(self.data, **changes)
+                gh = FakeGitHub(api=self.data)
+                rel, problem = updater.check_latest(self.cache, opener=gh)
+                self.assertIsNone(problem)
+                self.assertEqual(rel, updater.parse_release(self.data))
+                self.assertEqual(len(gh.calls), 1)
+
+    def test_bad_signature_is_refused_from_lobby_and_github(self):
+        data, files = release("1.0.1", b"zip must never be requested", sig=b"bad signature")
+        for source in ("lobby", "github"):
+            with self.subTest(source=source):
+                self.lobby.return_value = data if source == "lobby" else None
+                gh = FakeGitHub(files, api=data)
+                rel, problem = updater.check_latest(self.cache, opener=gh, force=True)
+                self.assertIsNone(problem)
+                install = os.path.join(self.tmp.name, "install")
+                os.makedirs(install, exist_ok=True)
+                before = tree(install)
+                with self.assertRaisesRegex(updater.UpdateError, "signature check"):
+                    updater.prepare_update(rel, install, opener=gh, need_python=False)
+                self.assertEqual(tree(install), before)
+                self.assertNotIn(rel["zip"]["url"], [url for url, _ in gh.calls])
+                for stage in updater.stage_roots(install):
+                    self.assertFalse(os.path.exists(stage))
+
+    def test_valid_signed_lobby_release_stages_with_the_existing_checks(self):
+        seed = hashlib.sha256(b"updater lobby regression signing key").digest()
+        data, files = release("1.0.1", make_zip(), sig=seed)
+        self.lobby.return_value = data
+        gh = FakeGitHub(files, api_status=OSError("GitHub API is unnecessary"))
+        rel, problem = updater.check_latest(self.cache, opener=gh)
+        self.assertIsNone(problem)
+        install = os.path.join(self.tmp.name, "install")
+        os.makedirs(install)
+        with mock.patch.object(updater, "RELEASE_PUBLIC_KEYS", (release_sig.public_key(seed).hex(),)):
+            staged = updater.prepare_update(rel, install, opener=gh, need_python=False)
+        self.assertEqual(tree(staged["new"])["launcher/t5dr_launcher.pyw"], b"# new launcher\n")
+        self.assertNotIn(updater.API_LATEST, [url for url, _ in gh.calls])
+
+    def test_signed_sums_must_agree_with_metadata_digest_from_both_sources(self):
+        seed = hashlib.sha256(b"updater lobby digest regression signing key").digest()
+        data, files = release("1.0.1", b"zip must never be requested", sig=seed, api_digest="0" * 64)
+        for source in ("lobby", "github"):
+            with self.subTest(source=source):
+                self.lobby.return_value = data if source == "lobby" else None
+                gh = FakeGitHub(files, api=data)
+                rel, problem = updater.check_latest(self.cache, opener=gh, force=True)
+                self.assertIsNone(problem)
+                install = os.path.join(self.tmp.name, "install")
+                os.makedirs(install, exist_ok=True)
+                with mock.patch.object(updater, "RELEASE_PUBLIC_KEYS", (release_sig.public_key(seed).hex(),)):
+                    with self.assertRaisesRegex(updater.UpdateError, "GitHub disagree"):
+                        updater.prepare_update(rel, install, opener=gh, need_python=False)
+                self.assertEqual(tree(install), {})
+                self.assertNotIn(rel["zip"]["url"], [url for url, _ in gh.calls])
+                for stage in updater.stage_roots(install):
+                    self.assertFalse(os.path.exists(stage))
+
+
 class Check(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.cache = os.path.join(self.tmp.name, updater.CACHE_FILE)
         self.data, _ = release("1.0.1", b"z")
+        patch = mock.patch.object(updater, "fetch_lobby_release", return_value=None, create=True)
+        patch.start()
+        self.addCleanup(patch.stop)
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -555,6 +780,9 @@ class Signature(unittest.TestCase):
     ]
 
     def setUp(self):
+        patch = mock.patch.object(updater, "fetch_lobby_release", return_value=None, create=True)
+        patch.start()
+        self.addCleanup(patch.stop)
         self.tmp = tempfile.TemporaryDirectory()
         self.install = os.path.join(self.tmp.name, "T5DR-Online-1.0.0")
         make_install(self.install)

@@ -85,6 +85,7 @@
 #include "no_pause.h"     /* no pause online: the rule (docs/NETPLAY.md "No pause online") */
 #include "match_score.h"  /* a decided match's score: the fighters' round counts (docs/NETPLAY.md "Match result") */
 #include "match_rules.h"  /* online training and the health handicap (docs/NETPLAY.md "Online training ...") */
+#include "../directfight/df_ui.h"  /* host-only rematch prompt; never a re-simulated frame */
 #include "../rollback/rb_net.h"   /* T5_RB_MODE=net: the rollback loop takes the per-frame decisions */
 namespace rb { void rand_install(); void tls_rand_reseed(uint32_t tls_base, uint32_t seed, bool streams); }   /* rb_rand.cpp: the TLS random generator */
 
@@ -429,12 +430,17 @@ uint32_t g_desync_dump_max = 20;   /* T5_NET_DESYNC_DUMP=<n> (n > 1): this many 
 
 void write_pad_data(uint32_t ea, const np::PadInput& in)
 {
+    /* Last boundary before the game sees a pad, including the direct-fight
+     * driver's injected menu presses before lockstep starts. Keep the offline
+     * emergency reset; new online/replay pads cannot carry START+SELECT; legacy replay policy is retained. The
+     * frame rule below also filters exchanged inputs before they enter g_cur. */
+    const uint16_t buttons = g_offline || !rp::play_soft_reset_guard() ? in.buttons : np::NoPauseRule::suppress_soft_reset(in.buttons);
     const int len = 8;   /* CELL_PAD_LEN_CHANGE_DEFAULT: the title never enables press/sensor mode */
     wr32(ea, (uint32_t)len);
     for (int i = 0; i < 64; i++) wr16(ea + 4 + i * 2, 0);
     wr16(ea + 4 + 1 * 2, (uint16_t)(0x70 | (len / 2)));
-    wr16(ea + 4 + 2 * 2, (uint16_t)(in.buttons & 0xFF));         /* DIGITAL1 */
-    wr16(ea + 4 + 3 * 2, (uint16_t)(in.buttons >> 8));           /* DIGITAL2 */
+    wr16(ea + 4 + 2 * 2, (uint16_t)(buttons & 0xFF));         /* DIGITAL1 */
+    wr16(ea + 4 + 3 * 2, (uint16_t)(buttons >> 8));           /* DIGITAL2 */
     wr16(ea + 4 + 4 * 2, in.rx);
     wr16(ea + 4 + 5 * 2, in.ry);
     wr16(ea + 4 + 6 * 2, in.lx);
@@ -443,9 +449,9 @@ void write_pad_data(uint32_t ea, const np::PadInput& in)
 
 /* t5_netplay_inject(): the direct-fight mode drives the game's menus itself
  * (character/stage select between matches). While a port is injected it reads
- * exactly the injected buttons -- before lockstep starts and during it; both
- * PCs inject the same sequence from the same game state, so the input rings
- * stay equal. */
+ * the injected buttons, subject to the online reset guard -- before lockstep
+ * starts and during it; both PCs inject the same sequence from the same game
+ * state, so the input rings stay equal. */
 std::atomic<uint32_t> g_inject_on{ 0 };       /* bit per port */
 std::atomic<uint16_t> g_inject[2] = { 0, 0 };
 
@@ -453,14 +459,29 @@ void h_cellPadGetData(ppu_context* ctx)
 {
     uint32_t port = (uint32_t)ctx->gpr[3], ea = (uint32_t)ctx->gpr[4];
     if (!ea) { ctx->gpr[3] = (uint64_t)(int64_t)(int32_t)0x80121104; return; }   /* INVALID_PARAMETER */
-    if (port < 2 && (g_inject_on.load() & (1u << port))) {
+    if (g_passive && port < 2) {
+        /* Passive reference mode has no synchronized frame input. poll_now is
+         * stateful (script/pad-file cursors), so keep its one sample per request;
+         * write_pad_data still rejects a reset chord within the requested pad. */
         np::PadInput in = np::kNeutral;
-        in.buttons = g_inject[port].load();
+        if (g_inject_on.load() & (1u << port)) in.buttons = g_inject[port].load();
+        else if (port < (uint32_t)g_pads) in = np::poll_now((int)port);
+        else if (g_active.load()) in = g_cur[port];
         write_pad_data(ea, in);
-    } else if (g_passive && port < (uint32_t)g_pads) {
-        write_pad_data(ea, np::poll_now((int)port));
     } else if (port < 2) {
-        write_pad_data(ea, g_active ? g_cur[port] : np::kNeutral);
+        /* Resolve BOTH final pads before exposing either one. An injected pad
+         * can otherwise combine its SELECT with the other pad's START, outside
+         * the exchanged-input rule. Active sessions use the existing frame's
+         * g_cur only: no additional device sample or local-player decision. */
+        np::PadInput in[2] = { np::kNeutral, np::kNeutral };
+        const uint32_t injected = g_inject_on.load();
+        const bool active = g_active.load();
+        for (int p = 0; p < 2; p++) {
+            if (injected & (1u << p)) in[p].buttons = g_inject[p].load();
+            else if (active) in[p] = g_cur[p];
+        }
+        if (!g_offline && rp::play_soft_reset_guard()) np::NoPauseRule::suppress_soft_reset(in);
+        write_pad_data(ea, in[port]);
     } else {
         wr32(ea, 0);   /* nothing connected there */
     }
@@ -601,7 +622,9 @@ bool intro_input_now() { const uint32_t p = rd32(0x1008F070u); return p <= 12 &&
  * The rule and why both PCs end up with the same inputs: no_pause.h. Each
  * player's own START never even goes out (netplay_core.cpp device_input); the
  * test inputs (T5_NET_SCRIPT, T5_NET_PADFILE) are not filtered there, so tests
- * can play a modified client. */
+ * can play a modified client. The final START verdict also removes the soft
+ * reset chord in every phase, including a synthetic skip while SELECT is held.
+ * Menu-driven netplay uses that chord guard without the direct-fight skip rule. */
 bool g_directfight = false;    /* T5_FIGHT / T5_FIGHT_FILE / persistent game / replay: a direct-fight session */
 /* The round's state (u32; build/nopause probes p7, s1760, s1900: 2 before round 1, 4 READY/FIGHT, 5
  * fighting, 6 the KO frame, 8 KO slow motion, 9 the replay -- START skips it --, 0xC to the next
@@ -629,29 +652,37 @@ np::NoPauseRule::State np_state_now()
  * frame is played for the first time (counts for the log only). */
 void no_pause_rule(uint32_t f, np::PadInput in[2], bool live)
 {
-    if (!g_directfight) return;   /* offline and menu-driven test sessions: START as ever */
+    if (!g_directfight) {
+        /* on_frame_start handles offline before reaching either input handover.
+         * Menu-driven netplay still needs the reset guard, with START and SELECT
+         * alone otherwise unchanged. This also covers script and replay input. */
+        if (rp::play_soft_reset_guard()) np::NoPauseRule::suppress_soft_reset(in);
+        return;
+    }
     const np::NoPauseRule::State st = np_state_now();
-    const np::NoPauseRule::Verdict v = g_np_rule.record(f, st, in);
+    const np::MatchRules rules = np::MatchRules::unpack(t5_df_rules());
+    const np::NoPauseRule::Verdict v = g_np_rule.record(f, st, in, rules.auto_skip_after_round);
     const bool any = ((in[0].buttons | in[1].buttons) & np::NoPauseRule::kStart) != 0;
-    const unsigned cut = np::NoPauseRule::apply(v, in);
+    const unsigned cut = np::NoPauseRule::apply(v, in, rp::play_soft_reset_guard());
     if (!live) return;
-    if (v == np::NoPauseRule::kPress) g_np_skip++;
+    if (v == np::NoPauseRule::kPress && np::NoPauseRule::start_bits(in) == 3) g_np_skip++;
     /* the skip parts: who has pressed START so far (live frames: under rollback a press may still be a
      * prediction that a re-simulation takes back -- the game state is what counts, and it is compared) */
     const unsigned part = g_np_rule.part_at(f), who = g_np_rule.pressed_at(f), key = part << 2 | who;
     if (who && key != g_np_who_noted)
         np::note("frame %u: %s (round state %u): START pressed by %s", f,
                  part == np::NoPauseRule::kIntro ? "the intro" : "after the round", st.round,
-                 who == 3 ? "both players -- skipped" : who == 1 ? "P1 (skipped once P2 presses it too)"
+                 who == 3 ? "both players (skip requested)" : who == 1 ? "P1 (skipped once P2 presses it too)"
                                                                  : "P2 (skipped once P1 presses it too)");
     g_np_who_noted = who ? key : 0;
-    if (!any || v == np::NoPauseRule::kPress) return;
-    if (v == np::NoPauseRule::kKeep) { g_np_kept++; return; }
+    if (!any) return;
+    if (v == np::NoPauseRule::kKeep && !cut) { g_np_kept++; return; }
+    if (!cut) return;
     if (cut & 1) g_np_cut[0]++;
     if (cut & 2) g_np_cut[1]++;
     if (!g_np_noted) {
         g_np_noted = true;
-        np::note("frame %u: START taken out of %s input (no pause online; phase %u, mode %u)", f,
+        np::note("frame %u: START taken out of %s input (no pause/soft reset online; phase %u, mode %u)", f,
                  cut == 3 ? "both players'" : cut == 1 ? "P1's" : "P2's", st.phase, t5_df_mode_cur());
     }
 }
@@ -659,6 +690,8 @@ void no_pause_rule(uint32_t f, np::PadInput in[2], bool live)
 /* This PC's START goes out (netplay_core.cpp pad_into) only while the game shows
  * a skip part at the live boundary whose sample is taken now -- elsewhere the
  * rule takes it out anyway, and sending it would only make the peer mispredict.
+ * This gate is only a sampling optimization: the authoritative rule filters the
+ * final inputs on both PCs, including START+SELECT during any skip part.
  * T5_TEST_SKIP_PRESS=N[:M] (tests): this PC's player presses START for 3 frames
  * N frames into every intro and M frames (default N) into every part after a
  * round (a scripted press, not filtered; -1 = never). */
@@ -811,6 +844,8 @@ bool keyread_parked()
  * 0x106D4D00, which this thread holds across its frame wait: hand the lock
  * over for a moment through the game's own sys_lwmutex calls, let the tick
  * finish and park, take the lock back. Never runs a tick beside the thread's. */
+bool replay_wait_quit();   /* viewer cancellation also works while a loader or keyread is parked */
+
 bool ensure_keyread_parked(ppu_context* ctx)
 {
     const bool parked0 = keyread_parked();
@@ -822,7 +857,10 @@ bool ensure_keyread_parked(ppu_context* ctx)
         for (uint32_t i = 0; i < recur; i++) gcall(kFnLwmUnlock, kFrameLwm);
     }
     const ULONGLONG t0 = GetTickCount64();
-    while (!keyread_parked() && GetTickCount64() - t0 < 5000) WaitForSingleObject(g_kr_event, 2);
+    while (!keyread_parked() && GetTickCount64() - t0 < 5000) {
+        if (np::replaying()) replay_wait_quit();
+        WaitForSingleObject(g_kr_event, 2);
+    }
     const bool parked = keyread_parked();
     if (recur) {
         gcall2(kFnLwmLock, kFrameLwm, 0);
@@ -887,6 +925,7 @@ double drain_wait(uint32_t f)
     ULONGLONG next_note = 2000;
     bool told = false;
     for (;;) {
+        if (np::replaying()) replay_wait_quit();
         const ULONGLONG ms = GetTickCount64() - t0;
         if (workers_idle() && !(hold && ms < g_drain_test_ms)) break;
         WaitForSingleObject(g_drain_event, 1);
@@ -970,6 +1009,7 @@ void side_drain(uint32_t f)
     QueryPerformanceCounter(&q0);
     const ULONGLONG t0 = GetTickCount64();
     while (!geom_idle()) {
+        if (np::replaying()) replay_wait_quit();
         if (g_drain_event) WaitForSingleObject(g_drain_event, 1); else Sleep(1);
         if (GetTickCount64() - t0 > 2000) {
             if (g_sd_timeouts++ < 10)
@@ -1122,6 +1162,9 @@ void watch_match(uint32_t f, bool have_hash = false, uint64_t hash = 0)
 bool g_on_lost_idle = false;
 bool g_lost_written = false;
 std::atomic<bool> g_ending{ false };
+/* Last replay boundary, published as one value for the window ticker. The
+ * ticker must not traverse the main thread's mutable replay data to report it. */
+std::atomic<uint64_t> g_replay_phase{ 0 };
 
 int exit_code_for(const char* reason)
 {
@@ -1179,7 +1222,16 @@ void on_window_closed()
     }
     /* (local mode -- tests, a replay being watched -- is not online: no quit, no question) */
     const bool online = np::enabled() && np::mode() != np::Mode::Local && (g_persistent || !g_offline);
-    if (np::replaying()) rp::play_finish("the game window was closed");
+    if (np::replaying()) {
+        const uint64_t phase = g_replay_phase.load(std::memory_order_relaxed);
+        np::note("replay window close: last boundary frame %u, active %d, idle %d, paused %d, mode %u -> %u, live %d",
+                 (uint32_t)phase, (int)((phase >> 48) & 1), (int)((phase >> 49) & 1), (int)((phase >> 50) & 1),
+                 (unsigned)((phase >> 32) & 0xFF), (unsigned)((phase >> 40) & 0xFF), (int)((phase >> 51) & 1));
+        /* Play belongs to the main thread, which may be mutating a growing
+         * stream right now. Do not race it to write a verdict or close its
+         * handle. Process exit closes the handle; the launcher observes exit
+         * and releases the watch even when no complete verdict was written. */
+    }
     if (online) {
         write_end_result("quit");
         np::rec_pump();
@@ -1402,6 +1454,7 @@ struct ReplayPace {
     LARGE_INTEGER qf = {};
 } g_rp;
 constexpr uint16_t kPadSelect = 0x0001, kPadStart = 0x0008;
+void replay_end(const char* why, bool force = false);
 
 uint16_t replay_pad()
 {
@@ -1417,10 +1470,33 @@ uint16_t replay_pad()
 /* SELECT while a live stream's data is awaited */
 bool replay_quit_poll()
 {
-    const uint16_t b = replay_pad(), press = (uint16_t)(b & ~g_rp.prev);
-    g_rp.prev = b;
-    if (press & kPadSelect) g_rp.quit = true;
+    /* Loader waits also poll between frame-boundary control samples. Leave
+     * START's edge history to replay_frame_wait, otherwise a START first seen
+     * here would be consumed without ever pausing the playback. */
+    if (replay_pad() & kPadSelect) g_rp.quit = true;
     return g_rp.quit;
+}
+
+/* Used inside every blocking live-data wait, including input and sync-point
+ * waits. Merely returning from such a wait would run the guest with missing
+ * inputs or a missing barrier; SELECT ends the playback process instead. */
+bool replay_wait_quit()
+{
+    if (replay_quit_poll()) replay_end("ended by the viewer (SELECT)", true);
+    return false;
+}
+
+/* The first fight has not started yet, or the session is at its select screen:
+ * the lockstep frame does not advance here. Controls and stream completion must
+ * still run before the guest's frame wait (and before its normal pad handling). */
+void replay_control_boundary()
+{
+    const uint64_t phase = (uint64_t)g_frame | ((uint64_t)(t5_df_mode_cur() & 0xFF) << 32) |
+        ((uint64_t)(t5_df_mode_next() & 0xFF) << 40) | ((uint64_t)g_active.load() << 48) |
+        ((uint64_t)g_idle << 49) | ((uint64_t)g_paused << 50) | ((uint64_t)rp::play_live() << 51);
+    g_replay_phase.store(phase, std::memory_order_relaxed);
+    if ((!g_active || g_idle) && replay_quit_poll()) replay_end("ended by the viewer (SELECT)", true);
+    if (const char* why = rp::play_poll_end()) replay_end(why);
 }
 
 /* the frame semaphore's tokens, taken without waiting (they piled up during a pause) */
@@ -1436,12 +1512,20 @@ void replay_take_tokens(ppu_context* ctx)
     ctx->gpr[3] = r3; ctx->gpr[4] = r4;
 }
 
-void replay_end(const char* why)
+void replay_end(const char* why, bool force)
 {
-    rp::play_finish(why);
+    /* play_poll_end may return the live reader's string; finish polls it once
+     * more, so keep the reason stable across the final read and verdict. */
+    const std::string reason = why ? why : "the playback is over";
+    why = reason.c_str();
     static int keep = -1;
     if (keep < 0) { const char* e = getenv("T5_REPLAY_EXIT"); keep = e && *e == '0'; }
-    if (keep) return;
+    if (keep && !force) { rp::play_finish(why); return; }
+    if (g_ending.exchange(true)) for (;;) Sleep(1000);   /* window-close handler owns the exit */
+    np::note("replay exit: %s; frame %u, active %d, idle %d, paused %d, mode %u -> %u, live %d",
+             why, g_frame, (int)g_active.load(), (int)g_idle, (int)g_paused,
+             t5_df_mode_cur(), t5_df_mode_next(), (int)rp::play_live());
+    rp::play_finish(why);
     np::note("replay: %s -- the game closes", why);
     fflush(stdout); fflush(stderr);
     t5p_exit_now(0);
@@ -1460,8 +1544,8 @@ int64_t replay_frame_wait(ppu_context* ctx)
     }
     if (!rp::play_frame(g_frame)) { replay_end(rp::play_live() ? "the live match is over" : "the replay is over"); return g_orig_wait(ctx); }
     if (rp::play_live()) {   /* spectating: the data for the next frames must be here (a short buffer) */
-        const int w = rp::play_live_wait(g_frame, replay_quit_poll);
-        if (w == 0) { replay_end("ended by the viewer (SELECT)"); return g_orig_wait(ctx); }
+        const int w = rp::play_live_wait(g_frame, replay_wait_quit);
+        if (w == 0) { replay_end("ended by the viewer (SELECT)", true); return g_orig_wait(ctx); }
         if (w == 2) replay_take_tokens(ctx);   /* no burst of frames after the wait */
     }
     const uint16_t b = replay_pad(), press = (uint16_t)(b & ~r.prev);
@@ -1481,7 +1565,7 @@ int64_t replay_frame_wait(ppu_context* ctx)
         np::note("replay: going on (paused %.1f s)", (double)(t1.QuadPart - t0.QuadPart) / (double)r.qf.QuadPart);
         replay_take_tokens(ctx);   /* no burst of frames to catch up */
     }
-    if (r.quit) { replay_end("ended by the viewer (SELECT)"); return g_orig_wait(ctx); }
+    if (r.quit) { replay_end("ended by the viewer (SELECT)", true); return g_orig_wait(ctx); }
     return g_orig_wait(ctx);
 }
 
@@ -1522,6 +1606,11 @@ void offline_frame(ppu_context* ctx)
 
 void on_frame_start(ppu_context* ctx)
 {
+    /* One raw UI sample at the live host boundary, including result/idle. The
+     * rollback branch below re-enters this function: it must never read a pad
+     * or publish an action. UI snapshots and actions never enter g_cur[]. */
+    if (!rb::net::bypass() && !np::replaying() &&
+        ctx->thread_id == (g_main_tid != ~0ull ? g_main_tid : 1)) df::ui_tick();
     if (!rb::net::bypass()) t5_training_frame(ctx);   /* src/training: reads the frame that just ran (read only) */
     if (!rb::net::bypass()) t5_always_left_frame();   /* "Always left": this PC's picture and pad only */
     rb::rand_install();   /* the game-DLL build: once the lifted table is out (no-op after the first time) */
@@ -1938,6 +2027,8 @@ int64_t w_sem_wait(ppu_context* ctx)
     if (id < (uint32_t)kMaxSem && g_drain[id]) { g_drain_seen[id] = true; SetEvent(g_drain_event); }
     if (id && id == g_geom_sem.load(std::memory_order_relaxed) && g_drain_event) SetEvent(g_drain_event);
     const uint32_t fs = rd32(kFrameSemPtr);
+    if (fs && id == fs && ctx->thread_id == (g_main_tid != ~0ull ? g_main_tid : 1) &&
+        !rb::net::bypass() && np::replaying()) replay_control_boundary();
     if (fs && id == fs && ctx->thread_id == g_main_tid) g_frame_wait_ctx = ctx;   /* the boundary's tick wait (early rollback) */
     if (fs && id == fs && ctx->thread_id == g_main_tid && rb::net::bypass()) {
         /* a re-simulated frame: no wait, straight to the next boundary */
@@ -2082,6 +2173,7 @@ void h_cellPadInit(ppu_context* ctx)
     ctx->gpr[3] = (uint64_t)(int64_t)r;
     if (g_offline) { install_syscall_hooks(); return; }
     np::init();
+    if (np::replaying()) rp::play_set_quit_poll(replay_wait_quit);
     if (!np::enabled() && !g_persistent) return;
     /* The sound library's heap (rb_sndheap.cpp): in every online session,
      * rollback or lockstep (T5_RB_MODE=off too), before the library's first

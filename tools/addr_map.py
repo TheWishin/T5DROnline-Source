@@ -15,16 +15,18 @@ a pair) and to the neighbours of matched pairs, as long as the masked streams ar
 
 Data: walking each matched pair of functions instruction by instruction, every absolute address both compute
 (lis/addis + addi/ori/load/store displacement, lwz from a TOC slot) is paired; the pairing seen most often for a
-US address wins. A US address without a pair of its own gets the delta of the nearest pair below it -- only a
-hint: where a structure's layout changed (docs/EU.md) the fields must be checked one by one.
+US address wins. Ties and addresses without direct evidence stay unresolved. Nothing interpolates a neighbouring
+address: where a structure's layout changed (docs/EU.md), fields must be checked one by one.
 
 ADDR: US addresses to look up (hex). Prints, per address: the function or data mapping and how it was found.
 """
 import argparse
 import bisect
 import collections
+import csv
 import hashlib
 import json
+from pathlib import Path
 import struct
 import sys
 
@@ -174,10 +176,69 @@ def pair_data(us, ot, fmap):
             elif x >= 0x10000 and y >= 0x10000:
                 seen[(x, y)] += 1
     best = {}
+    tied = set()
     for (x, y), c in seen.items():
         if x not in best or c > best[x][1]:
             best[x] = (y, c)
-    return best
+            tied.discard(x)
+        elif c == best[x][1] and y != best[x][0]:
+            tied.add(x)
+    # Equal evidence is unresolved, never whichever function happened to run first.
+    return {x: pair for x, pair in best.items() if x not in tied}
+
+
+def outside_repository(path):
+    """Game-derived inputs and reports belong in the owner's private scratch tree."""
+    p = Path(path).resolve()
+    root = Path(__file__).resolve().parent.parent
+    if p == root or root in p.parents:
+        raise ValueError("game-derived paths must be outside this repository")
+    return p
+
+
+def review_rows(wanted, us, fmap, dmap):
+    """Candidates for human review; deliberately no nearest-address interpolation."""
+    for a in sorted(set(wanted)):
+        target, status, evidence = "", "unresolved", "no direct evidence"
+        if a in fmap:
+            target, status, evidence = f"{fmap[a]:08X}", "candidate", "normalised function match"
+        else:
+            f = us.containing(a)
+            if f is not None and f in fmap:
+                target, status = f"{fmap[f] + a - f:08X}", "candidate"
+                evidence = f"inside matched function {f:08X}; offset +0x{a - f:X}"
+            elif f is not None:
+                evidence = f"function {f:08X} has no match"
+            elif a in dmap:
+                target, status = f"{dmap[a][0]:08X}", "candidate"
+                evidence = f"absolute address pair observed {dmap[a][1]} time(s)"
+        yield (f"{a:08X}", target, status, evidence, "", "")
+
+
+def write_review(directory, us, ot, fmap, dmap, wanted):
+    """Private CSV tables, with explicit empty owner approval columns."""
+    directory = outside_repository(directory)
+    directory.mkdir(parents=True, exist_ok=False)
+    tables = {
+        "functions.csv": (("us_start", "other_start", "instructions", "status"),
+                          ((f"{x:08X}", f"{fmap[x]:08X}" if x in fmap else "", us.info[x][0],
+                            "candidate" if x in fmap else "unresolved") for x in sorted(us.info))),
+        "data.csv": (("us_address", "other_address", "observations", "status"),
+                     ((f"{x:08X}", f"{y:08X}", n, "candidate") for x, (y, n) in sorted(dmap.items()))),
+        "required.csv": (("us_address", "other_candidate", "status", "evidence", "owner_decision", "notes"),
+                         review_rows(wanted, us, fmap, dmap)),
+    }
+    for name, (header, rows) in tables.items():
+        with (directory / name).open("w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow(header)
+            writer.writerows(rows)
+    with (directory / "summary.json").open("w", encoding="utf-8") as f:
+        json.dump({"schema": 1, "approved_for_runtime": False,
+                   "us_toc": f"{us.toc:08X}", "other_toc": f"{ot.toc:08X}",
+                   "functions_matched": len(fmap), "us_functions": len(us.info),
+                   "data_candidates": len(dmap),
+                   "warning": "Private game-derived review material. No runtime table is generated."}, f, indent=2)
 
 
 def look(a, us, ot, fmap, dmap, dkeys):
@@ -190,12 +251,7 @@ def look(a, us, ot, fmap, dmap, dkeys):
         return f"{a:08X} -> ?  inside function {f:08X}, which has no match (other code)"
     if a in dmap:
         return f"{a:08X} -> {dmap[a][0]:08X}  data, paired {dmap[a][1]}x"
-    i = bisect.bisect_right(dkeys, a) - 1
-    if i < 0:
-        return f"{a:08X} -> ?  no data pair below it"
-    lo = dkeys[i]
-    return (f"{a:08X} -> {a + dmap[lo][0] - lo:08X}?  hint: the delta of the pair {lo:08X} -> {dmap[lo][0]:08X} "
-            f"0x{a - lo:X} below it -- check the field")
+    return f"{a:08X} -> ?  no direct data pair; the address is missing (no interpolation)"
 
 
 def main(argv=None):
@@ -205,8 +261,15 @@ def main(argv=None):
     ap.add_argument("--other", required=True)
     ap.add_argument("--other-functions", required=True)
     ap.add_argument("--out", help="write the maps as JSON (game-derived: a scratch folder)")
+    ap.add_argument("--review-dir", help="new PRIVATE directory outside the repository for review CSV tables")
     ap.add_argument("addr", nargs="*")
     a = ap.parse_args(argv)
+    try:
+        for path in (a.us, a.us_functions, a.other, a.other_functions, a.out, a.review_dir):
+            if path:
+                outside_repository(path)
+    except ValueError as e:
+        ap.error(str(e))
     us, ot = Program(a.us, a.us_functions), Program(a.other, a.other_functions)
     fmap = match_functions(us, ot)
     dmap = pair_data(us, ot, fmap)
@@ -219,6 +282,8 @@ def main(argv=None):
             json.dump({"functions": {f"{k:08X}": f"{v:08X}" for k, v in sorted(fmap.items())},
                        "data": {f"{k:08X}": [f"{v[0]:08X}", v[1]] for k, v in sorted(dmap.items())}}, f, indent=0)
     dkeys = sorted(dmap)
+    if a.review_dir:
+        write_review(a.review_dir, us, ot, fmap, dmap, [int(x, 16) for x in a.addr])
     for x in a.addr:
         print(look(int(x, 16), us, ot, fmap, dmap, dkeys))
     return 0

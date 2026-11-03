@@ -270,7 +270,7 @@ class EndToEnd(unittest.TestCase):
         self.s.stop()
 
     def c(self, name):
-        c = client(self.s, name)
+        c = client(self.s, name, input_delay8=False)  # legacy Auto: the configurable T5L_PING_DELAYS floor
         self.clients.append(c)
         return c
 

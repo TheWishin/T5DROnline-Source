@@ -121,4 +121,98 @@ Every US address in src/ needs its European counterpart, found -- not guessed --
    data; the state hashes then need a layout-independent form or identical layouts).
 
 Never commit or ship anything of a European program either: no package, licence, decrypted program, lifted code,
-data. Only the numbers above go into the repository, as for the US program.
+data. The existing numbers above describe earlier work; newly generated analysis and mapping tables stay private.
+
+## EU Online v02.00: owner-local review handoff
+
+**Status: tooling and a review plan, not EU Online support or proven US cross-play.** No European package,
+program, data, address map or generated report was available or used for this change. The earlier measurements
+above are recorded evidence, not a substitute for repeating the comparison on the owner's exact package.
+EU v01.00 and EU Online v02.00 must remain separate targets; neither is a constant shift of the US program.
+
+`tools/eu_review.py` gives the owner two local steps. All package, key, decrypted-program, prepared ps3recomp
+and scratch paths must be **outside this working copy**. Its guards resolve paths first (including symlinks)
+and refuse this repository. Use fresh scratch directories: the tool refuses to overwrite them. Commands below
+are for a later run on the owner's PC; none were run here. There are no network, build, lifter or game steps.
+
+```powershell
+# Set these to the owner's PRIVATE paths, outside the public working copy.
+# $Deps is an already prepared ps3recomp tree; nothing is downloaded by this tool.
+python tools/eu_review.py extract --package $EuOnlinePackage --deps $Deps --keys $LocalKeys --scratch $ExtractScratch
+```
+
+The tool checks the package header's content ID against the v02.00 ID above, then runs the prepared
+`pkg_extract.py PACKAGE SCRATCH/package --only PARAM.SFO` and the same command with `--only EBOOT.BIN`.
+It does not unpack T55DATA or the rest of the package. The owner checks the extracted SFO's `TITLE_ID`
+(`NPEA00019`), `VERSION` (`02.00`) and `APP_VER` (`01.00`), plus the title. A content ID alone does not prove
+the version or authenticity of a package.
+
+**The next step is still missing:** `tools/unself.py` takes a RAP, always derives the licence key from it and
+does not implement this edition's free-licence path. `build_game.py` deliberately rejects v02.00 before that
+step. The script stops and says so. The owner needs an independently verified, offline free-licence decrypt
+method, or a reviewed addition to `unself.py` supported by format evidence and synthetic tests. Do not pass a
+dummy RAP, invent key bytes, or bypass the refusal. Keep the resulting ELF private; the later comparison
+requires its SHA-1 to equal the existing v02.00 pin `a26bc6e037e5a8faf40250849acfa8a40d027fff`. The US ELF must
+equal the US pin in the table above. Unknown programs stop before analysis.
+
+Once the owner has both verified decrypted programs:
+
+```powershell
+python tools/eu_review.py compare --us $UsElf --eu $EuOnlineElf --deps $Deps --scratch $CompareScratch
+```
+
+For each program the script runs `ppu_loader.py ELF -o ANALYSIS`, then
+`find_functions.py ELF --seed-json ANALYSIS/EBOOT.functions.json -o ANALYSIS/functions.json`, following the
+existing build's analysis commands. It calls the matcher directly; it never runs `ppu_lifter.py`, compiles,
+or launches anything. It verifies both ELF hashes before running those tools. The owner must record which
+prepared ps3recomp revision/patch series supplied them when reviewing the result.
+
+The private `review/` directory contains these reviewable tables:
+
+| File | What the owner reviews |
+|---|---|
+| `functions.csv` | Every US function: candidate EU entry + instruction count, or an unresolved row. Normalised instruction equality masks immediates, so a match is a candidate, not a proof of identical semantics. |
+| `data.csv` | Direct address-pair candidates and observation counts. Equal-count conflicts are omitted as unresolved. No nearest-address delta is applied. Struct sizes, fields and pointer meaning still need individual checks. |
+| `source_literals.csv` | Source file, line and every 5–8 digit hex literal under `src/`, deliberately **unclassified**. The owner separates guest addresses from sizes, masks and constants, and adds calculated addresses, offsets and state ranges found by reading their uses. This is an inventory aid, not a complete address parser. |
+| `required.csv` | Explicitly requested US addresses with candidate/evidence or an empty unresolved target; blank owner decision and notes columns. No address is approved automatically. |
+| `summary.json`, `programs.json` | Program pins, TOCs, coverage and explicit `approved_for_runtime: false` / `crossplay_proven: false`. No opcodes, game bytes, licences or keys are emitted in the review tables. |
+
+The initial `required.csv` has only its header. After classifying the literal inventory and reading the code,
+the owner repeats `compare` into a **new** scratch directory with `--required US_HEX_ADDRESS ...` for the actual
+addresses evidenced by source. Alternatively, with the already generated function lists:
+
+```powershell
+python tools/addr_map.py --us $UsElf --us-functions $UsFunctions --other $EuOnlineElf --other-functions $EuFunctions --review-dir $NewPrivateReview US_HEX_ADDRESS
+```
+
+`addr_map.py` also refuses game-derived input/output paths inside this repository. Its console lookups now
+leave absent data addresses unresolved instead of suggesting a neighbour's delta. There is no runtime-table
+generator: review evidence cannot accidentally become hooks. Keep **all** outputs, even CSV/JSON, on the owner's
+private PC outside this repo; share the review decisions separately without attaching game-derived files here.
+
+### Selecting addresses in the game
+
+Today `src/platform/t5_game.h` identifies the ELF by recorded entry point and file size; the build separately
+pins the decrypted SHA-1. `hooks_ok()` enables the existing address users only for US (and the historical
+`Unread` test-harness fallback). It identifies EU v01.00 and EU Online v02.00 but enables **neither**. Nothing
+in this change redirects the US addresses or changes matchmaking/build IDs.
+
+After the owner verifies every required address, use an explicit per-program address structure, selected
+once from `t5game::Game`, with US values copied unchanged from current source and a separate, complete
+EU Online table. Unknown, unread or incomplete EU tables must fail closed in this new selection path; never
+fall back to US addresses for an identified EU program. Keep EU v01.00 disabled. Migrate every reader/writer,
+hook target, icall, state/hash region, sound detour and struct field to named entries; a mixed US/EU table is
+unsafe. Field layouts need separate verified descriptions where they differ. A review should account for every
+item in the source inventory plus calculated locations, rather than approving an overall address delta.
+
+The owner still needs free-licence support, EU Online sound-core fingerprints/function tables, its SPURS job
+tables, code end, verified data layouts and complete address coverage before adding it to `PROGRAMS` or enabling
+hooks. These values are missing here. Then test reads/late input, training/practice, direct fight, lockstep and
+rollback in stages. Any implementation must preserve the simulation on both PCs. Two EU Online PCs require
+**0 mismatches**, followed by a real EU Online–US pair at **0 mismatches** through picks, complete fights, rematches
+and rollback. Equal fighter data alone proves neither matching simulation nor compatible state hashing;
+cross-version canonical hashes and the complete compatible-build contract need review before approving any
+cross-build group. The integrated lobby defaults to exact build IDs; `T5L_COMPAT_GROUPS` permits only explicit
+operator-approved groups when both clients support them (see [COMPATIBILITY_GROUPS.md](COMPATIBILITY_GROUPS.md)).
+No EU/US group ships, EU v01.00 remains incompatible, and the unsupported EU Online program must not be grouped
+with US merely because fighter data matches. Identifying the region does not enable hooks or grant compatibility.

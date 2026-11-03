@@ -1,0 +1,404 @@
+diff --git a/libs/video/rsx_overlay.h b/libs/video/rsx_overlay.h
+--- a/libs/video/rsx_overlay.h
++++ b/libs/video/rsx_overlay.h
+@@ -60,5 +60,19 @@
+ void  rsx_overlay_prepare(void);
+ void  rsx_overlay_begin(void);
++/* Patch 0089: one host producer, separate published layers. Layer 1 (menu)
++ * wins while nonempty; legacy calls own layer 0 (training). A clear only
++ * clears its own layer. Invalid layers do nothing. */
++void  rsx_overlay_begin_layer(unsigned layer);
++void  rsx_overlay_clear_layer(unsigned layer);
++/* Actual renderer readiness, not just a compiled-in API. Unsupported
++ * backends/disabled or failed pipelines report 0; retain launcher fallback. */
++int   rsx_overlay_ready(void);
++/* Exact bitmap/native font coverage. Never hide launcher text that would
++ * turn into question marks; Windows native fonts cover JP/KR when installed. */
++int   rsx_overlay_text_supported(const char* utf8);
++/* Worker-only glyph prewarm. The live supported/width/draw APIs only look
++ * in the cache and never allocate fonts, poll devices or do file I/O. */
++int   rsx_overlay_text_prepare(const char* utf8);
+ void  rsx_overlay_rect(float x, float y, float w, float h, uint32_t rgba);
+ void  rsx_overlay_text(float x, float y, float px, uint32_t rgba, unsigned flags, const char* utf8);
+ void  rsx_overlay_end(void);       /* publish: drawn from the next present on */
+diff --git a/libs/video/rsx_overlay.c b/libs/video/rsx_overlay.c
+--- a/libs/video/rsx_overlay.c
++++ b/libs/video/rsx_overlay.c
+@@ -215,6 +215,143 @@
+     return c;
+ }
+ 
++/* Native glyphs use the same rectangle renderer, never guest text or a
++ * system window. Cache is bounded; unsupported/missing fonts fail closed.
++ * Windows font linking is not assumed: each selected face must supply the
++ * glyph according to GetGlyphIndicesW. BMP covers our JP/KR catalogs. */
++typedef struct { unsigned cp; int valid, advance; uint16_t rows[16]; } ovl_native_glyph;
++#if defined(_WIN32)
++static SRWLOCK g_native_lock = SRWLOCK_INIT;
++static ovl_native_glyph g_native_cache[512];
++static unsigned g_native_next;
++
++static int ovl_native_get(unsigned cp, ovl_native_glyph* out, int prepare)
++{
++    if (!cp || cp > 0xFFFF || (cp >= 0xD800 && cp <= 0xDFFF)) return 0;
++    AcquireSRWLockShared(&g_native_lock);
++    for (unsigned i = 0; i < 512; i++) if (g_native_cache[i].cp == cp) {
++        *out = g_native_cache[i];
++        ReleaseSRWLockShared(&g_native_lock);
++        return out->valid;
++    }
++    ReleaseSRWLockShared(&g_native_lock);
++    if (!prepare) return 0;  /* live host tick: cache-only, never GDI */
++    ovl_native_glyph glyph = {0};
++    glyph.cp = cp;
++    HDC dc = CreateCompatibleDC(NULL);
++    BITMAPINFO bi = {0};
++    bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
++    bi.bmiHeader.biWidth = 16; bi.bmiHeader.biHeight = -16;
++    bi.bmiHeader.biPlanes = 1; bi.bmiHeader.biBitCount = 32;
++    bi.bmiHeader.biCompression = BI_RGB;
++    uint32_t* pixels = NULL;
++    HBITMAP bitmap = dc ? CreateDIBSection(dc, &bi, DIB_RGB_COLORS, (void**)&pixels, NULL, 0) : NULL;
++    if (dc && bitmap && pixels) {
++        HGDIOBJ old_bitmap = SelectObject(dc, bitmap);
++        static const wchar_t* faces[] = { L"Segoe UI", L"Yu Gothic UI", L"Malgun Gothic",
++            L"Microsoft YaHei UI", L"Noto Sans CJK JP", L"Noto Sans CJK KR", L"Arial Unicode MS" };
++        const wchar_t ch = (wchar_t)cp;
++        for (unsigned f = 0; f < sizeof faces / sizeof faces[0]; f++) {
++            HFONT font = CreateFontW(-14, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
++                DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, NONANTIALIASED_QUALITY,
++                DEFAULT_PITCH, faces[f]);
++            if (!font) continue;
++            HGDIOBJ old_font = SelectObject(dc, font);
++            WORD index = 0xFFFF;
++            SIZE size = {0};
++            if (GetGlyphIndicesW(dc, &ch, 1, &index, GGI_MARK_NONEXISTING_GLYPHS) != GDI_ERROR &&
++                index != 0xFFFF && GetTextExtentPoint32W(dc, &ch, 1, &size) &&
++                size.cx > 0 && size.cx <= 16) {
++                memset(pixels, 0, 16 * 16 * sizeof(uint32_t));
++                SetTextColor(dc, RGB(255,255,255)); SetBkColor(dc, RGB(0,0,0));
++                SetBkMode(dc, OPAQUE);
++                if (TextOutW(dc, 0, 0, &ch, 1)) {
++                    GdiFlush();
++                    glyph.advance = size.cx; glyph.valid = 1;
++                    for (unsigned y = 0; y < 16; y++) for (unsigned x = 0; x < 16; x++)
++                        if (pixels[y * 16 + x] & 0x00FFFFFFu) glyph.rows[y] |= (uint16_t)(1u << x);
++                }
++            }
++            SelectObject(dc, old_font); DeleteObject(font);
++            if (glyph.valid) break;
++        }
++        SelectObject(dc, old_bitmap);
++    }
++    if (bitmap) DeleteObject(bitmap);
++    if (dc) DeleteDC(dc);
++    AcquireSRWLockExclusive(&g_native_lock);
++    g_native_cache[g_native_next++ % 512] = glyph;
++    *out = glyph;
++    ReleaseSRWLockExclusive(&g_native_lock);
++    return glyph.valid;
++}
++#else
++static int ovl_native_get(unsigned cp, ovl_native_glyph* out, int prepare)
++{ (void)cp; (void)out; (void)prepare; return 0; }
++#endif
++
++/* Strict UTF-8, bounded by a terminating NUL in the already bounded list. */
++static unsigned ovl_utf8(const unsigned char** text)
++{
++    const unsigned char* p = *text;
++    unsigned cp = *p++, n = 0, low = 0;
++    if (!cp) return 0;
++    if (cp < 128) { *text = p; return cp; }
++    if (cp >= 0xC2 && cp <= 0xDF) { cp &= 31; n = 1; low = 0x80; }
++    else if (cp >= 0xE0 && cp <= 0xEF) { cp &= 15; n = 2; low = 0x800; }
++    else if (cp >= 0xF0 && cp <= 0xF4) { cp &= 7; n = 3; low = 0x10000; }
++    else return 0xFFFFFFFFu;
++    for (unsigned i = 0; i < n; i++) {
++        if ((*p & 0xC0) != 0x80) return 0xFFFFFFFFu;
++        cp = (cp << 6) | (*p++ & 63);
++    }
++    if (cp < low || cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF)) return 0xFFFFFFFFu;
++    *text = p;
++    return cp;
++}
++
++static unsigned ovl_bitmap_code(unsigned cp)
++{
++    switch (cp) {
++    case 0xC4: return 0x0B; case 0xD6: return 0x0C; case 0xDC: return 0x0E;
++    case 0xE4: return 0x10; case 0xF6: return 0x11; case 0xFC: return 0x12;
++    case 0xDF: return 0x0F; default: return cp;
++    }
++}
++
++static int ovl_native_needed(const char* text)
++{
++    ovl_font_init();
++    const unsigned char* p = (const unsigned char*)text;
++    unsigned n = 0;
++    while (*p && n++ < 16384) {
++        const unsigned cp = ovl_bitmap_code(ovl_utf8(&p));
++        if (cp >= 128 || !g_have_glyph[cp]) return 1;
++    }
++    return n >= 16384;
++}
++
++static int ovl_text_coverage(const char* utf8, int prepare)
++{
++    if (!utf8) return 0;
++    const int native = ovl_native_needed(utf8);
++    const unsigned char* p = (const unsigned char*)utf8;
++    unsigned bytes = 0;
++    while (*p && bytes < 16384) {
++        const unsigned char* prev = p;
++        const unsigned cp = ovl_utf8(&p);
++        if (cp == 0xFFFFFFFFu) return 0;
++        if (native) { ovl_native_glyph glyph; if (!ovl_native_get(cp, &glyph, prepare)) return 0; }
++        bytes += (unsigned)(p - prev);
++    }
++    return bytes < 16384;
++}
++
++int rsx_overlay_text_supported(const char* utf8)
++{ return ovl_text_coverage(utf8, 0); }
++int rsx_overlay_text_prepare(const char* utf8)
++{ return ovl_text_coverage(utf8, 1); }
++
+ static int ovl_count_codes(const char* utf8)
+ {
+     const unsigned char* s = (const unsigned char*)(utf8 ? utf8 : "");
+@@ -226,5 +363,16 @@
+ float rsx_overlay_text_width(const char* utf8, float px)
+ {
++    if (utf8 && ovl_native_needed(utf8)) {
++        if (!rsx_overlay_text_supported(utf8)) return 0;
++        const unsigned char* p = (const unsigned char*)utf8;
++        float width = 0;
++        while (*p) {
++            ovl_native_glyph glyph;
++            if (!ovl_native_get(ovl_utf8(&p), &glyph, 0)) return 0;
++            width += (float)glyph.advance * px * 0.5f;
++        }
++        return width;
++    }
+     const int n = ovl_count_codes(utf8);
+     return n > 0 ? (float)(n * 6 - 1) * px : 0.0f;
+ }
+@@ -233,6 +381,6 @@
+-#define OVL_MAX_ITEMS 1024
++#define OVL_MAX_ITEMS 16384         /* bounded native glyph horizontal runs */
+ #define OVL_MAX_TEXT  16384
+-#define OVL_MAX_QUADS 4096
++#define OVL_MAX_QUADS 16384
+ 
+ typedef struct {
+     float x, y, w, h, px;
+@@ -251,5 +399,8 @@
+ static ovl_list g_build;            /* the producer's list being built */
+ static ovl_list g_pub;              /* the newest published list */
++static ovl_list g_layers[2];        /* training (0), post-result menu (1) */
++static unsigned g_build_layer;
++static int g_ready;                /* protected by g_lock, as is g_pub */
+ static volatile long g_pub_items;   /* items in g_pub (read without the lock as a hint) */
+ static int g_building;
+ static volatile long g_prepare;     /* rsx_overlay_prepare(): build the pipeline at the next present */
+@@ -275,6 +426,36 @@
+ static void list_text(ovl_list* L, float x, float y, float px, uint32_t rgba, unsigned flags, const char* s)
+ {
+     if (!s || !*s || L->n >= OVL_MAX_ITEMS) return;
++    if (ovl_native_needed(s)) {
++        if (!rsx_overlay_text_supported(s)) return;
++        const uint32_t start = L->n;
++        const float scale = (px > 0 ? px : 1) * 0.5f;
++        const float width = rsx_overlay_text_width(s, px > 0 ? px : 1);
++        if (flags & RSX_OVL_RIGHT) x -= width;
++        else if (flags & RSX_OVL_CENTER) x -= width * 0.5f;
++        for (int pass = (flags & RSX_OVL_SHADOW) ? 0 : 1; pass < 2; pass++) {
++            float dx = x + (pass ? 0 : scale), dy = y + (pass ? 0 : scale);
++            const uint32_t col = pass ? rgba : ((rgba & 255u) * 3u / 4u);
++            const unsigned char* text = (const unsigned char*)s;
++            while (*text) {
++                ovl_native_glyph glyph;
++                if (!ovl_native_get(ovl_utf8(&text), &glyph, 0)) { L->n = start; return; }
++                for (unsigned row = 0; row < 16; row++) {
++                    for (unsigned first = 0; first < 16;) {
++                        if (!(glyph.rows[row] & (1u << first))) { first++; continue; }
++                        unsigned last = first + 1;
++                        while (last < 16 && (glyph.rows[row] & (1u << last))) last++;
++                        if (L->n >= OVL_MAX_ITEMS) { L->n = start; return; }
++                        list_rect(L, dx + first * scale, dy + row * scale,
++                                  (last - first) * scale, scale, col);
++                        first = last;
++                    }
++                }
++                dx += glyph.advance * scale;
++            }
++        }
++        return;
++    }
+     const size_t len = strlen(s);
+     if (L->ntext + len + 1 > OVL_MAX_TEXT) return;
+     ovl_item* it = &L->items[L->n++];
+@@ -289,10 +470,40 @@
+ void rsx_overlay_prepare(void)
+ {
++    ovl_font_init();  /* before spawning the worker/prewarming glyphs */
+     g_prepare = 1;
+ }
+ 
++int rsx_overlay_ready(void)
++{
++    const char* off = getenv("RSX_OVERLAY");
++    if (off && off[0] == '0') return 0;
++    OVL_LOCK();
++    const int ready = g_ready;
++    OVL_UNLOCK();
++    return ready;
++}
++
++/* Must hold g_lock. Menu priority is deterministic host composition; no
++ * guest state or simulated input is read or written by the overlay. */
++static void ovl_publish_layers(void)
++{
++    const ovl_list* active = g_layers[1].n ? &g_layers[1] : &g_layers[0];
++    g_pub.n = active->n;
++    g_pub.ntext = active->ntext;
++    memcpy(g_pub.items, active->items, sizeof(ovl_item) * active->n);
++    memcpy(g_pub.text, active->text, active->ntext);
++    g_pub_items = (long)active->n;
++}
++
+ void rsx_overlay_begin(void)
++{
++    rsx_overlay_begin_layer(0);
++}
++
++void rsx_overlay_begin_layer(unsigned layer)
+ {
++    if (layer >= 2) { g_building = 0; return; }
++    g_build_layer = layer;
+     g_build.n = 0;
+     g_build.ntext = 0;
+     g_building = 1;
+@@ -313,22 +524,27 @@
+     if (!g_building) return;
+     g_building = 0;
+     OVL_LOCK();
+-    g_pub.n = g_build.n;
+-    g_pub.ntext = g_build.ntext;
+-    memcpy(g_pub.items, g_build.items, sizeof(ovl_item) * g_build.n);
+-    memcpy(g_pub.text, g_build.text, g_build.ntext);
+-    g_pub_items = (long)g_build.n;
++    ovl_list* dst = &g_layers[g_build_layer];
++    dst->n = g_build.n;
++    dst->ntext = g_build.ntext;
++    memcpy(dst->items, g_build.items, sizeof(ovl_item) * g_build.n);
++    memcpy(dst->text, g_build.text, g_build.ntext);
++    ovl_publish_layers();
+     OVL_UNLOCK();
+ }
+ 
+ void rsx_overlay_clear(void)
+ {
+-    g_building = 0;
+-    if (!g_pub_items) return;
++    rsx_overlay_clear_layer(0);
++}
++
++void rsx_overlay_clear_layer(unsigned layer)
++{
++    if (layer >= 2) return;
++    if (g_building && g_build_layer == layer) g_building = 0;
+     OVL_LOCK();
+-    g_pub.n = 0;
+-    g_pub.ntext = 0;
+-    g_pub_items = 0;
++    g_layers[layer].n = g_layers[layer].ntext = 0;
++    ovl_publish_layers();
+     OVL_UNLOCK();
+ }
+ 
+@@ -483,5 +699,8 @@
+ static void ovl_release_pipeline(void)
+ {
++    OVL_LOCK();
++    g_ready = 0;
++    OVL_UNLOCK();
+     if (g_d.pso) { g_d.pso->lpVtbl->Release(g_d.pso); g_d.pso = NULL; }
+ }
+ 
+@@ -621,5 +840,8 @@
+     }
+     g_d.fmt = fmt;
++    OVL_LOCK();
++    g_ready = 1;
++    OVL_UNLOCK();
+     fprintf(stderr, "[overlay] ready (format %d)\n", (int)fmt);
+     return 0;
+ }
+diff --git a/libs/input/cellPad.h b/libs/input/cellPad.h
+--- a/libs/input/cellPad.h
++++ b/libs/input/cellPad.h
+@@ -215,5 +215,10 @@
+ s32 cellPad_sample_local(u32 port_no, CellPadData* out);
+ s32 cellPad_local_connected(u32 port_no);
++/* Patch 0089: host menu input, no guest writes and no gameplay/local tap
++ * latch consumption. Unsupported backends return len=0 / not focused.
++ * Read only on a live host tick, never while re-simulating. */
++s32 cellPad_peek_local(u32 port_no, CellPadData* out);
++int cellPad_ui_focused(void);
+ 
+ #ifdef __cplusplus
+ }
+diff --git a/libs/input/cellPad.c b/libs/input/cellPad.c
+--- a/libs/input/cellPad.c
++++ b/libs/input/cellPad.c
+@@ -1281,5 +1281,47 @@
+ }
+ 
++/* Host-only UI input: padh_sample returns current mapped buttons, unlike
++ * padh_read it never consumes PADH_READER_GAME or PADH_READER_LOCAL's tap
++ * latch. The menu's release-to-arm/edge state is owned by its caller. */
++s32 cellPad_peek_local(u32 port_no, CellPadData* out)
++{
++    if (!out || port_no >= CELL_PAD_MAX_PORT_NUM)
++        return CELL_PAD_ERROR_INVALID_PARAMETER;
++    memset(out, 0, sizeof *out);
++#if PAD_BACKEND_XINPUT
++    PadHostPort st;
++    padh_sample(port_no, &st, padh_min_interval_us());
++    if (!st.connected) return CELL_OK;
++    const u16 b = st.buttons;
++    out->len = CELL_PAD_LEN_CHANGE_DEFAULT;
++    out->button[1] = (u16)(0x70 | (CELL_PAD_LEN_CHANGE_DEFAULT / 2));
++    out->button[CELL_PAD_BTN_OFFSET_DIGITAL1] = (u16)(b & 0xFF);
++    out->button[CELL_PAD_BTN_OFFSET_DIGITAL2] = (u16)(b >> 8);
++    out->button[CELL_PAD_BTN_OFFSET_ANALOG_RIGHT_X] = st.rx;
++    out->button[CELL_PAD_BTN_OFFSET_ANALOG_RIGHT_Y] = st.ry;
++    out->button[CELL_PAD_BTN_OFFSET_ANALOG_LEFT_X] = st.lx;
++    out->button[CELL_PAD_BTN_OFFSET_ANALOG_LEFT_Y] = st.ly;
++    return CELL_OK;
++#else
++    /* A portable focus + non-consuming device snapshot is required before
++     * claiming this capability. Keep the launcher usable in the meantime. */
++    return CELL_PAD_ERROR_NO_DEVICE;
++#endif
++}
++
++int cellPad_ui_focused(void)
++{
++#if PAD_BACKEND_XINPUT
++    HWND fg = GetForegroundWindow();
++    DWORD pid = 0;
++    if (!fg) return 0;
++    GetWindowThreadProcessId(fg, &pid);
++    return pid == GetCurrentProcessId();
++#else
++    return 0;
++#endif
++}
++
+ /* Is anything (device, keyboard, script) assigned to this port? */
+ s32 cellPad_local_connected(u32 port_no)
+ {

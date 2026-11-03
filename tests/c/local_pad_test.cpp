@@ -55,6 +55,18 @@ extern "C" int32_t cellPad_sample_local(uint32_t port, HostPadData* out)
     return 0;
 }
 extern "C" int32_t cellPad_local_connected(uint32_t port) { return port == 0 || (port < 7 && g_conn[port]); }
+/* The UI has an independent, non-consuming raw read; it must not call the
+ * simulation's cellPad_sample_local reader. */
+static int g_peeks[7];
+extern "C" int32_t cellPad_peek_local(uint32_t port, HostPadData* out)
+{
+    memset(out, 0, sizeof *out);
+    if (port >= 7) return -1;
+    ++g_peeks[port];
+    if (port != 0 && !g_conn[port]) return 0;
+    *out = g_port[port];
+    return 0;
+}
 
 #include "../../src/netplay/local_pad.cpp"
 
@@ -257,6 +269,15 @@ static void glue_checks(const char* tmpdir)
     set_port(1, CROSS);
     p = sample(&out);
     CHECK(p == 1 && out.button[8] == 0x101 && out.button[3] == (CROSS >> 8), "a press on port 2 is the player's (%d)", p);
+    const int before_ui0 = g_reads[0], before_ui1 = g_reads[1];
+    CHECK(t5_local_player_pad_ui(&out) == 0 && out.button[8] == 0x101 && g_peeks[1] == 1,
+          "host UI peeks the already selected device");
+    CHECK(g_reads[0] == before_ui0 && g_reads[1] == before_ui1, "UI never consumes the simulation reader's tap latch");
+    g_conn[1] = false;
+    CHECK(t5_local_player_pad_ui(&out) == 1 && out.button[8] == 0x100,
+          "UI reconnect chooses a present device and requires release");
+    CHECK(g_reads[0] == before_ui0 && g_reads[1] == before_ui1, "UI reconnect leaves gameplay sampling untouched");
+    g_conn[1] = true;
     set_port(1, 0);
     p = sample(&out);
     CHECK(p == 1 && out.button[3] == 0, "released, still port 2");

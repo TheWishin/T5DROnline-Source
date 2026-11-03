@@ -52,6 +52,30 @@ E_FULL = "server_full"
 E_STATE = "bad_state"
 E_INSECURE = "insecure"     # client side: no password over a plain connection to a public server
 
+CASUAL_FIRST_TO = (1, 2, 3, 5, 10)
+ROOM_MODES = ("line", "tables")
+
+
+def casual_first_to(value):
+    """Validate the casual set target without accepting bools, strings or truncated floats."""
+    if type(value) is not int or value not in CASUAL_FIRST_TO:
+        raise LobbyError(E_BAD_REQUEST, "first_to: 1, 2, 3, 5 or 10")
+    return value
+
+
+def room_mode(value):
+    """Room pairing mode: the existing turn queue, or simultaneous casual tables."""
+    if not isinstance(value, str) or value not in ROOM_MODES:
+        raise LobbyError(E_BAD_REQUEST, "mode is line or tables")
+    return value
+
+
+def room_table(value, max_tables):
+    """A room's stable, one-based table number; never coerce a client-supplied value."""
+    if type(value) is not int or not 1 <= value <= max_tables:
+        raise LobbyError(E_BAD_REQUEST, f"table is 1 to {max_tables}")
+    return value
+
 # ---------------------------------------------------------------------------- control channel
 
 def encode(msg):

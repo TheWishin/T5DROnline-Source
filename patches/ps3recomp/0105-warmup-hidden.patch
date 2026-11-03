@@ -1,0 +1,9 @@
+diff --git a/libs/video/rsx_null_backend.c b/libs/video/rsx_null_backend.c
+--- a/libs/video/rsx_null_backend.c
++++ b/libs/video/rsx_null_backend.c
+@@ -434,2 +434,4 @@
+-    if (background)
++    /* The launcher-owned shader warm-up needs no taskbar window. Other
++     * background tools retain the established minimized-window behavior. */
++    if (background && !getenv("PS3_WINDOW_HIDDEN"))
+         ShowWindow(s_state.hwnd, SW_SHOWMINNOACTIVE);

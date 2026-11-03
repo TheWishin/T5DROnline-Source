@@ -10,10 +10,11 @@ room. Most of us play while alt-tabbing"). The tab calls Notifier.notify() for t
     invite      a friend invites this player (to a casual match or to a room)
     tour        "Your tournament set is ready"
     rematch     the opponent asks for a rematch
+    mention     public chat mentions this player (server-resolved player IDs, 1.2.0)
 
 Only when the player is not looking: another program is in front, the launcher is minimized, or its Online tab is
 not the one shown (tk_tab.OnlineTab._notify_away). Settings "Sound and taskbar flash ..." (launcher.json "notify",
-on by default) switches it off. Not on lobby updates, chat or the like, and at most once per event: a key (the match
+on by default) switches it off. Ordinary chat and lobby updates do not ring. At most once per event: a key (the match
 id, the challenge id, the invite id, ...) is told once; the news of a room (join / turn) comes from RoomWatch,
 which compares one `room` message with the one before. Events that come close together (a join and the match it
 starts, a turn and its first countdown tick) make one chime: nothing is played within COALESCE_S of the last one.

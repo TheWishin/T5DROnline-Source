@@ -1108,7 +1108,14 @@ class FakeClient:
     def __init__(self):
         self.me = {"id": "p1", "name": "Me", "guest": False, "rating": 1500, "record": [3, 2, 0], "status": "idle",
                    "main": "jin", "tier": 5, "rank": "2nd Dan", "provisional": False}
+        self.players = []
         self.events = __import__("queue").Queue()
+
+    def badges_ok(self):
+        return True
+
+    def mentions_ok(self):
+        return True
 
     def active_notices(self):
         return []
@@ -1169,13 +1176,15 @@ class OnlineTabGermanTests(German):
         return self.tab.status_var.get()
 
     def test_lists(self):
-        self.tab.on_event({"t": "lobby_state", "players": [
+        event = {"t": "lobby_state", "players": [
             {"id": "p1", "name": "Me", "guest": False, "rating": 1500, "record": [3, 2, 0], "status": "idle",
              "build": "b1", "rtt": 10.0, "rank": "2nd Dan", "provisional": False, "main": "jin"},
             {"id": "p2", "name": "Gu", "guest": True, "record": [0, 1, 0], "status": "playing", "build": "other",
              "rtt": None}],
             "rooms": [{"id": "r1", "name": "R", "owner": {"name": "Me"}, "status": "open", "build": "b1",
-                       "ranked": True}], "queue": {"ranked": 1, "quick": 2}})
+                       "ranked": True}], "queue": {"ranked": 1, "quick": 2}}
+        self.tab.client.players = event["players"]       # LobbyClient applies the roster before emitting the event
+        self.tab.on_event(event)
         rows = [self.tab.tv_players.item(i, "values") for i in self.tab.tv_players.get_children()]
         self.assertEqual(rows[0][0], "Me  (du)")
         self.assertEqual(rows[0][5], "in der Lobby")
@@ -1189,9 +1198,11 @@ class OnlineTabGermanTests(German):
         self.assertEqual(i18n.missing(), [])
 
     def test_profile_selection_finds_the_name_in_german(self):
-        self.tab.on_event({"t": "lobby_state", "players": [
+        event = {"t": "lobby_state", "players": [
             {"id": "p1", "name": "Me", "guest": False, "rating": 1500, "record": [3, 2, 0], "status": "idle",
-             "build": "b1", "rtt": 10.0, "rank": "2nd Dan", "provisional": False}], "rooms": []})
+             "build": "b1", "rtt": 10.0, "rank": "2nd Dan", "provisional": False, "badge": "dev"}], "rooms": []}
+        self.tab.client.players = event["players"]
+        self.tab.on_event(event)
         names = []
         self.tab.show_profile = names.append
         self.tab.tv_players.selection_set("p1")

@@ -168,9 +168,9 @@ class Warmup(unittest.TestCase):
         self.assertIn("shaders", core.STEP_TITLES)
         self.assertIn("shaders", core.STEP_WEIGHT)
 
-    def test_launcher_asks_for_it(self):
+    def test_launcher_build_does_not_wait_for_warmup(self):
         with tempfile.TemporaryDirectory() as d:
-            self.assertIn("--warmup", core.BuildRun("a.pkg", "b.rap", d).cmd)
+            self.assertNotIn("--warmup", core.BuildRun("a.pkg", "b.rap", d).cmd)
 
     def test_shipped(self):
         import package_release

@@ -17,16 +17,21 @@ import asyncio
 import base64
 import os
 import struct
+import threading
 import time
 import zlib
 
-from .proto import LobbyError as LobbyErrorBase, valid_match_id
+from .proto import valid_match_id
 
 MAGIC = b"T5LIVE 1\n"
 EXT = ".t5live"
 
 R_SESSION, R_INPUTS, R_HASH, R_BARRIER, R_MATCH, R_LAST, R_END = 1, 2, 3, 4, 5, 6, 7
 MAX_RECORD = 1 << 24
+# This exact five-byte header has no body. Older native readers stop at their
+# record-size limit before they can silently ignore SESSION 2 and misplay a rematch.
+R_RULES_GUARD = 0xFE
+RULES_GUARD_SIZE = MAX_RECORD + 1
 MAX_RAW = 64 << 20          # a spectator never unpacks more than this (a stream is a few KB a minute)
 HASH_BACK = 3600            # a HASH record at most this many frames before the newest one (a rollback redoes a few)
 WATCH_ASKED = 30.0          # seconds a watch request waits for its `watching` (anything else is not this client's)
@@ -51,10 +56,12 @@ def _str(b, i):
 COSTUME_BLOCK = 0x108       # src/directfight/costume_logic.h kBlock: one side's custom costume block
 
 
-def parse_match(b):
+def parse_match(b, session_version=1):
     """A MATCH record's payload -> dict (the fields the launcher shows). The match is the replay binary's of this
-    build (format 3): after the names, u32 costume flags and -- bit 0 -- both sides' custom costume blocks
-    (docs/DIRECTFIGHT.md "Custom costumes online"; the spectator's game writes them at its FIGHT START)."""
+    build: after the names, u32 costume flags and -- bit 0 -- both sides' custom costume blocks, then the
+    format 5 rules word. SESSION 2 assigns that word's bit 1 to agreed automatic skips (format 6);
+    SESSION 3 also enables the deterministic soft-reset filter (format 7). SESSION 1 never enables
+    automatic skips. Older SESSION 1 streams without a rules word still read as no rules."""
     if len(b) < 4 + 24 + 48 + 8 + 4:
         raise LiveError("short match record")
     idx = _u32(b, 0)
@@ -68,14 +75,24 @@ def parse_match(b):
     if not (0 <= v[0] <= 35 and 0 <= v[1] <= 35 and -1 <= v[6] <= 34):   # (as the game checks a match table)
         raise LiveError("fighters or stage out of range")
     costumes = None
-    if len(b) >= i + 4 and _u32(b, i) & 1:
-        if len(b) < i + 4 + 2 * COSTUME_BLOCK:
-            raise LiveError("short costume blocks")
-        costumes = [b[i + 4:i + 4 + COSTUME_BLOCK].hex(), b[i + 4 + COSTUME_BLOCK:i + 4 + 2 * COSTUME_BLOCK].hex()]
+    if len(b) >= i + 4:
+        costume_flags = _u32(b, i)
+        i += 4
+        if costume_flags & 1:
+            if len(b) < i + 2 * COSTUME_BLOCK:
+                raise LiveError("short costume blocks")
+            costumes = [b[i:i + COSTUME_BLOCK].hex(), b[i + COSTUME_BLOCK:i + 2 * COSTUME_BLOCK].hex()]
+            i += 2 * COSTUME_BLOCK
+    rules = _u32(b, i) if len(b) >= i + 4 else 0
+    if session_version >= 2 and len(b) != i + 4:
+        raise LiveError("short or extended match rules")
     return {"index": idx, "start": start, "end": end, "frames": frames, "desync": desync,
             "have_result": bool(flags & 1), "complete": bool(flags & 4),
             "p1": v[0], "p2": v[1], "stage": v[6], "rounds": v[7], "pick": v[8],
-            "winner": None if v[9] < 0 else v[9], "score": [v[10], v[11]], "names": names, "costumes": costumes}
+            "winner": None if v[9] < 0 else v[9], "score": [v[10], v[11]], "names": names, "costumes": costumes,
+            "training": bool(rules & 1), "auto_skip_after_round": session_version >= 2 and bool(rules & 2),
+            "soft_reset_guard": session_version >= 3,
+            "life": [((rules >> 8) & 0xFF) or 100, ((rules >> 16) & 0xFF) or 100]}
 
 
 class LiveParser:
@@ -95,11 +112,13 @@ class LiveParser:
         self.bad = None
         self.records = 0
         self.hash_max = -1
+        self.rules_guard_pending = False
 
     @property
     def ready(self):
         """The session and its first match are in: a spectator's game can start."""
-        return self.session is not None and bool(self.matches) and self.bad is None
+        return (self.session is not None and bool(self.matches) and self.bad is None
+                and not self.rules_guard_pending)
 
     def feed(self, data):
         if self.bad is not None:
@@ -119,6 +138,15 @@ class LiveParser:
         while len(self.buf) - i >= 5:
             t = self.buf[i]
             n = _u32(self.buf, i + 1)
+            if t == R_RULES_GUARD and n == RULES_GUARD_SIZE:
+                if self.rules_guard_pending:
+                    self.bad = "repeated match-rules guard"
+                    break
+                self.rules_guard_pending = True
+                out += self.buf[i:i + 5]
+                i += 5
+                self.records += 1
+                continue
             if n > MAX_RECORD:
                 self.bad = "a record too long"
                 break
@@ -126,6 +154,8 @@ class LiveParser:
                 break
             payload = bytes(self.buf[i + 5:i + 5 + n])
             try:
+                if self.rules_guard_pending and t != R_SESSION:
+                    raise LiveError("match-rules guard without session upgrade")
                 self._record(t, payload)
             except (LiveError, struct.error) as e:
                 self.bad = f"record {t}: {e}"
@@ -141,25 +171,43 @@ class LiveParser:
             if len(b) < 32:
                 raise LiveError("short session record")
             ver, flags, slot, delay, rb_delay, seed, mseed, every = struct.unpack_from("<8I", b, 0)
+            if ver not in (1, 2, 3):
+                raise LiveError("unsupported live session version")
+            previous = self.session["version"] if self.session is not None else 1
+            if ver < previous:
+                raise LiveError("match-rules session downgrade")
+            if self.rules_guard_pending and ver <= previous:
+                raise LiveError("match-rules guard without session upgrade")
+            if ver > previous and not self.rules_guard_pending:
+                raise LiveError("session upgrade without match-rules guard")
             if slot > 1 or delay > 30:                                          # (as the game checks a header)
                 raise LiveError("player side or input delay out of range")
             build, i = _str(b, 32)
             created, _ = _str(b, i)
             self.session = {"version": ver, "rollback": bool(flags & 1), "slot": slot, "delay": delay,
-                            "hash_every": every, "build": build, "created": created}
+                            "hash_every": every, "build": build, "created": created,
+                            "soft_reset_guard": ver >= 3}
+            self.rules_guard_pending = False
         elif t == R_INPUTS:
             first, cnt = struct.unpack_from("<2I", b, 0)
             if first != self.frames or len(b) != 8 + 12 * cnt:
                 raise LiveError("inputs out of order")
             self.frames = first + cnt
         elif t == R_MATCH:
-            m = parse_match(b)
+            if self.session is None:
+                raise LiveError("match before session")
+            m = parse_match(b, self.session["version"])
             k = m["index"]
             if k > len(self.matches):
                 raise LiveError("match out of order")
             if k == len(self.matches):
                 self.matches.append(m)
             else:
+                # A late result may follow a SESSION upgrade. Refresh the result,
+                # keeping the input policy established when this fight began.
+                previous = self.matches[k]
+                m["soft_reset_guard"] = previous["soft_reset_guard"]
+                m["auto_skip_after_round"] = previous["auto_skip_after_round"]
                 self.matches[k] = m
         elif t == R_HASH:
             # The game keeps its hashes sorted and puts an older one into its place (a rollback records a frame again,
@@ -184,7 +232,8 @@ def end_record(why):
 
 def watch_env(path, result_path=None, status_path=None, controls=True, buffer_frames=None):
     """The game's environment to watch the live stream in `path` (a growing file)."""
-    env = {"T5_NET_MODE": "replay", "T5_REPLAY_FILE": os.path.abspath(path), "T5_NET_START": "external"}
+    env = {"T5_NET_MODE": "replay", "T5_REPLAY_FILE": os.path.abspath(path), "T5_NET_START": "external",
+           "T5_ONLINE_FAST_BOOT": "1"}  # live online viewer; saved replays keep their normal presentation
     if result_path:
         env["T5_REPLAY_RESULT"] = os.path.abspath(result_path)
     if status_path:
@@ -304,9 +353,13 @@ class Receiver:
         try:
             if not self.parser.ended:
                 self.f.write(end_record(why or "the stream stopped"))
-            self.f.close()
         except OSError:
             pass
+        finally:
+            try:
+                self.f.close()
+            except OSError:
+                pass
 
 
 def prune(folder, days=2.0):
@@ -350,6 +403,10 @@ class ClientMixin:
         self.watch_dir = watch_dir       # where a spectator's file goes
         self.spec_prefs = None           # (allow, ranked): sent after every login
         self.spec_watch = None           # what this client watches: {stream, path, receiver, ready, info}
+        self._spec_lock = threading.Lock()
+        self._spec_generation = 0
+        self._spec_asked = None
+        self._spec_request = None        # the actual request dict, including _request's wire rid
         self._uploads = {}               # stream id -> {"up": Uploader, "wanted": bool, "task", "eof_sent"}
 
     def has_spectate(self):
@@ -369,50 +426,124 @@ class ClientMixin:
             await self._safe(self._send({"t": "spec_prefs", "allow": self.spec_prefs[0], "ranked": self.spec_prefs[1]}))
 
     # ---------------------------------------------------------------- watching
-    def watch(self, name=None, room=None, tournament=None, set_id=None):
-        """Watch the match friend `name` plays, room `room`'s match, or the game of tournament set `set_id` of
+    @property
+    def spec_generation(self):
+        """Capture before queuing a watch worker; cancellation invalidates queued workers too."""
+        with self._spec_lock:
+            return self._spec_generation
+
+    def watch(self, name=None, room=None, tournament=None, set_id=None, table=None, generation=None):
+        """Watch friend `name`, room `room` (a parallel room needs `table`), or tournament set `set_id` of
         `tournament` being played (docs/TOURNAMENTS.md). -> the `watching` reply {stream, match, players, ranked,
-        began, spectators[, tournament]}; then spec_ready / spec_end events."""
+        began, spectators[, tournament, table]}; then spec_ready / spec_end events. A UI may capture spec_generation
+        before queuing its worker and pass it here; an invalidated worker returns None without sending."""
         msg = {"t": "watch"}
-        self._spec_asked = time.monotonic()     # (_on_watching: only the answer to this request makes a file)
         if tournament is not None:
             msg.update(tournament=tournament, set=set_id)
         elif room is not None:
             msg["room"] = room
+            if table is not None:
+                msg["table"] = table
         else:
             msg["name"] = name
-        return self._call(msg)
+        if generation is None:
+            generation = self.spec_generation
+        return self._run(self._spec_request_watch(msg, generation), self.request_timeout + 2)
+
+    async def _spec_request_watch(self, msg, generation):
+        # Run the check and send on the client loop. A cancelled worker must not send a watch AFTER unwatch.
+        with self._spec_lock:
+            if generation != self._spec_generation:
+                return None
+            self._spec_asked = time.monotonic()
+            self._spec_request = msg
+        try:
+            return await self._request(msg)
+        finally:
+            with self._spec_lock:
+                if self._spec_request is msg:
+                    self._spec_asked = self._spec_request = None
+
+    def _spec_cancel_state(self):
+        with self._spec_lock:
+            self._spec_generation += 1
+            self._spec_asked = self._spec_request = None
+            return self.spec_watch
+
+    async def _spec_unwatch(self, old):
+        # A delayed cancellation only closes the receiver it owned, never a later watch's file.
+        if self.spec_watch is old:
+            await self._spec_close_watch("left")
+        elif old is not None:
+            old["receiver"].close("left")
+        if self.spec_watch is not None:
+            return                      # a newer watch already owns the server subscription
+        if self.connected:
+            await self._safe(self._send({"t": "unwatch"}))
+
+    def cancel_watch(self):
+        """Invalidate pending replies now and queue unwatch without blocking the UI on the server.
+
+        Call directly on the UI thread before handing the game to the player's match. Any subsequent watch
+        request is queued after this cleanup on the client loop. The caller still owns stopping its game.
+        """
+        queued = False
+        with self._spec_lock:
+            self._spec_generation += 1
+            self._spec_asked = self._spec_request = None
+            old = self.spec_watch
+            if self._loop is not None:
+                def schedule():
+                    task = asyncio.ensure_future(self._spec_unwatch(old))
+                    self._tasks.append(task)
+                try:
+                    # Queue before releasing the barrier: another thread cannot queue a new-generation
+                    # watch ahead of this unwatch, even when it calls watch as cancellation returns.
+                    self._loop.call_soon_threadsafe(schedule)
+                    queued = True
+                except RuntimeError:      # the client loop already closed
+                    pass
+        if not queued:
+            self._spec_close_offline(old)
+
+    def _spec_close_offline(self, old):
+        if old is not None and self.spec_watch is old:
+            self.spec_watch = None
+            old["receiver"].close("left")
 
     def unwatch(self):
         """Stop watching (the spectator's game is the caller's to close)."""
+        old = self._spec_cancel_state()
         if self._loop is not None:
-            self._run(self._spec_close_watch("left"))
-        if self.connected:
-            try:
-                self._fire({"t": "unwatch"})
-            except LobbyErrorBase:
-                pass
+            self._run(self._spec_unwatch(old))
+        else:
+            self._spec_close_offline(old)
 
     async def _spec_close_watch(self, why):
-        w, self.spec_watch = self.spec_watch, None
+        with self._spec_lock:
+            w, self.spec_watch = self.spec_watch, None
         if w is not None:
             w["receiver"].close(why)
 
     async def _on_watching(self, msg):
         # Only the answer to this client's own watch request: a server -- any server a player adds -- sending `watching`
         # by itself made a new file of up to MAX_RAW (64 MB) unpacked from a few KB each time (security review 3).
-        asked = getattr(self, "_spec_asked", None)
-        if msg.get("re") is None or asked is None or time.monotonic() - asked > WATCH_ASKED:
-            return False
-        self._spec_asked = None
-        sid = msg.get("stream")
-        if not valid_match_id(sid) or not self.watch_dir:
-            return False
-        await self._spec_close_watch("switched")
-        os.makedirs(self.watch_dir, exist_ok=True)
-        path = os.path.join(self.watch_dir, "watch-" + sid + EXT)
-        self.spec_watch = {"stream": sid, "path": path, "receiver": Receiver(path), "ready": False, "info": msg,
-                           "bytes": 0}
+        with self._spec_lock:
+            asked, req = self._spec_asked, self._spec_request
+            if msg.get("re") is None or req is None or msg["re"] != req.get("rid") or \
+                    asked is None or time.monotonic() - asked > WATCH_ASKED:
+                return False
+            self._spec_asked = self._spec_request = None
+            sid = msg.get("stream")
+            if not valid_match_id(sid) or not self.watch_dir:
+                return False
+            old = self.spec_watch
+            if old is not None:
+                old["receiver"].close("switched")
+            os.makedirs(self.watch_dir, exist_ok=True)
+            path = os.path.join(self.watch_dir, "watch-" + sid + EXT)
+            self.spec_watch = {"stream": sid, "path": path, "receiver": Receiver(path), "ready": False, "info": msg,
+                               "bytes": 0}
 
     async def _on_spec_data(self, msg):
         w = self.spec_watch
@@ -500,6 +631,7 @@ class ClientMixin:
             await asyncio.sleep(UPLOAD_TICK)
 
     async def _spec_shutdown(self):
+        self._spec_cancel_state()
         for u in self._uploads.values():
             u["wanted"] = False
         await self._spec_close_watch("closed")

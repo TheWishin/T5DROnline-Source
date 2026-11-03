@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "review": {
+    "status": "Starter list: maintainer and native-speaker review required before deployment.",
+    "scope": "Group-directed racial, ethnic and antisemitic slurs only; not a general profanity list or a complete list of hate speech.",
+    "languages": ["en", "de", "es", "fr", "pt-BR", "ja", "ko"],
+    "matching": "Latin-script entries use whole-word matching. Explicit plural forms are separate entries. Only the specific Japanese and Korean entries opt into substring matching for unspaced text and attached particles.",
+    "ambiguity": "Common words, nationality names and context-dependent terms are intentionally omitted. The French youpin/youpins forms are omitted because spacing normalization would also match ordinary English 'you pin'/'you pins'. Blocking is lexical and cannot distinguish quotation, reclamation or historical discussion.",
+    "privacy": "Server-only policy data. Do not copy this file into client packages or language catalogs."
+  },
+  "terms": [
+    {"term": "nigger", "languages": ["en"], "match": "word", "category": "anti-Black slur"},
+    {"term": "niggers", "languages": ["en"], "match": "word", "category": "anti-Black slur"},
+    {"term": "nigga", "languages": ["en"], "match": "word", "category": "anti-Black slur", "note": "Reclaimed use is also blocked; lexical filtering has no speaker context."},
+    {"term": "niggas", "languages": ["en"], "match": "word", "category": "anti-Black slur"},
+    {"term": "Neger", "languages": ["de"], "match": "word", "category": "anti-Black slur"},
+    {"term": "Kanake", "languages": ["de"], "match": "word", "category": "ethnic slur", "note": "Reclaimed use is also blocked."},
+    {"term": "Kanaken", "languages": ["de"], "match": "word", "category": "ethnic slur"},
+    {"term": "negrata", "languages": ["es"], "match": "word", "category": "anti-Black slur"},
+    {"term": "negratas", "languages": ["es"], "match": "word", "category": "anti-Black slur"},
+    {"term": "sudaca", "languages": ["es"], "match": "word", "category": "anti-South-American slur"},
+    {"term": "sudacas", "languages": ["es"], "match": "word", "category": "anti-South-American slur"},
+    {"term": "bougnoule", "languages": ["fr"], "match": "word", "category": "racist slur"},
+    {"term": "bougnoules", "languages": ["fr"], "match": "word", "category": "racist slur"},
+    {"term": "judeuzada", "languages": ["pt-BR"], "match": "word", "category": "antisemitic slur", "note": "Ambiguous words such as animal names and cultural identity terms are omitted."},
+    {"term": "pretalhada", "languages": ["pt-BR"], "match": "word", "category": "anti-Black slur"},
+    {"term": "チョン公", "languages": ["ja"], "match": "substring", "category": "anti-Korean slur", "note": "Specific multi-character slur; the shorter sound expression is not listed."},
+    {"term": "짱깨", "languages": ["ko"], "match": "substring", "category": "anti-Chinese slur"},
+    {"term": "짱개", "languages": ["ko"], "match": "substring", "category": "anti-Chinese slur"},
+    {"term": "쪽바리", "languages": ["ko"], "match": "substring", "category": "anti-Japanese slur"}
+  ]
+}

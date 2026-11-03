@@ -43,6 +43,8 @@ unsigned char* rp_zlib_decompress(const unsigned char*, int, int* n) { *n = 0; r
 #define stderr (__acrt_iob_func(2))
 
 extern "C" int32_t cellPad_sample_local(uint32_t, HostPadData* out) { out->len = 0; return 0; }
+static unsigned g_vrr_external_holds;
+extern "C" void cellGcm_vrr_external_hold(void) { g_vrr_external_holds++; }
 extern "C" int t5_unlock_online_open(void) { return 0; }   /* src/directfight/df_unlock.cpp (a recording keeps it) */
 /* src/netplay/local_pad.cpp (which controller is this PC's player): no controller here */
 int np::local_player_sample(HostPadData* out) { memset(out, 0, sizeof *out); return 0; }
@@ -119,6 +121,19 @@ static std::vector<uint8_t> input(uint32_t first, uint8_t count, bool keyed, uin
 static bool at(const sockaddr_in& a) { return same_addr(S().peer, a); }
 
 /* ------------------------------------------------------------------ unit checks */
+
+static void check_vrr_budget_excludes_online_frames()
+{
+    for (Mode mode : { Mode::Host, Mode::Join, Mode::Local, Mode::Off }) {
+        reset(mode, false);
+        const unsigned before = g_vrr_external_holds;
+        account_frame(0);   /* even no measured input wait is conservatively excluded online */
+        const bool online = mode == Mode::Host || mode == Mode::Join;
+        CHECK(g_vrr_external_holds == before + (online ? 1u : 0u), "VRR budget online exclusion, zero wait");
+        rb_account_frame(18000);   /* rollback's peer/time-sync wait takes the same path */
+        CHECK(g_vrr_external_holds == before + (online ? 2u : 0u), "VRR budget rollback exclusion");
+    }
+}
 
 static void check_siphash()
 {
@@ -445,6 +460,41 @@ static void fuzz(uint32_t iterations)
     }
 }
 
+/* No files: exercise the real path accessor across the Unicode environment
+ * boundary, session override and explicit unset. No netplay init or sockets. */
+static void check_replay_path_environment()
+{
+    const char* key = "T5_TEST_REPLAY_UNICODE_PATH";
+    const wchar_t* wide_key = L"T5_TEST_REPLAY_UNICODE_PATH";
+    const std::string saved_process = replay_paths::env(key);
+    const std::string map_key = env_key(key);
+    bool had_overlay;
+    std::pair<bool, std::string> saved_overlay;
+    {
+        std::lock_guard<std::mutex> lock(g_env_mu);
+        const auto found = g_env_over.find(map_key);
+        had_overlay = found != g_env_over.end();
+        if (had_overlay) saved_overlay = found->second;
+        g_env_over.erase(map_key);
+    }
+    CHECK(SetEnvironmentVariableW(wide_key, L"C:\\synthetic\\\x4E2D\x6587\\live") != 0,
+          "set synthetic Unicode path environment");
+    const std::string process_path = "C:\\synthetic\\\xE4\xB8\xAD\xE6\x96\x87\\live";
+    CHECK(np::path_environment(key) == process_path, "Unicode process path must remain UTF-8");
+    const std::string overlay_path = "C:/synthetic/overlay-\xE6\x97\xA5/live";
+    t5_env_overlay_set(key, overlay_path.c_str());
+    CHECK(np::path_environment("t5_test_replay_unicode_path") == overlay_path,
+          "session UTF-8 path overrides process environment case-insensitively");
+    t5_env_overlay_set(key, nullptr);
+    CHECK(np::path_environment(key).empty(), "explicit unset must suppress process path fallback");
+    const std::wstring restore = replay_paths::wide(saved_process.c_str());
+    SetEnvironmentVariableW(wide_key, saved_process.empty() ? nullptr : restore.c_str());
+    {
+        std::lock_guard<std::mutex> lock(g_env_mu);
+        if (had_overlay) g_env_over[map_key] = saved_overlay;
+        else g_env_over.erase(map_key);
+    }
+}
 #ifdef T5_LIBFUZZER
 extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size)
 {
@@ -464,6 +514,7 @@ int main(int argc, char** argv)
 {
     const uint32_t iterations = argc > 1 ? (uint32_t)strtoul(argv[1], nullptr, 0) : 300000u;
     fopen_s(&g_np_log, "NUL", "w");                     /* the [netplay] log lines */
+    check_replay_path_environment();
     check_siphash();
     check_foreign_version_hello();
     check_wrong_tags_change_nothing();
@@ -471,6 +522,7 @@ int main(int argc, char** argv)
     check_join_delay_is_clamped();
     check_costume_tables();
     check_loading_and_bye_reasons();
+    check_vrr_budget_excludes_online_frames();
     const int unit = g_checks;
     fuzz(iterations);
     printf("unit checks %d, fuzz iterations %u\n", unit, iterations);

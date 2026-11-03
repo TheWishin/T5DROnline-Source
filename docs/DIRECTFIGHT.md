@@ -8,9 +8,10 @@ select from the frame boundary hook, applies the fight settings where the game
 reads them, calls the netplay hook at fight start, reports the result and waits
 at character select for the next fight -- in the same game process for a
 rematch (`T5_FIGHT_FILE`) and, in a persistent game (`T5_CTL_DIR`, below), for
-every new opponent too. No ps3recomp change (patch series unchanged);
-everything is off unless `T5_FIGHT`, `T5_FIGHT_FILE`, `T5_CTL_DIR` or a
-`T5_DF_*` variable is set.
+every new opponent too. The driver is in this tree; ps3recomp patch 0088 also
+draws the existing renderer overlay over decoded-movie presents. Direct-fight
+driving is off unless `T5_FIGHT`, `T5_FIGHT_FILE`, `T5_CTL_DIR`, replay playback
+or a relevant `T5_DF_*` diagnostic enables it.
 
 All guest addresses are for NPUB30009 v01.00.
 
@@ -24,6 +25,7 @@ T5_DF_STATUS_FILE=<path>                             JSON status for the launche
 T5_HUD_NAMES=<P1 name>|<P2 name>                     names under the health bars (lobby names, 16 characters)
 T5_HUD_RANKS=<P1 tier>,<P2 tier>                     rank badges, 0-36 in the game's order (0 Beginner, 10 1st Dan, ...)
 T5_CTL_DIR=<dir>                                     persistent game: every match is a control command (below)
+T5_ONLINE_FAST_BOOT=0|1                              online loading cover (default on for host/join/persistent games)
 T5_DF_PICK=<seconds>                                 pick=<seconds> for fight lines without one (tests)
 T5_COSTUME_SAVE=<SYS-DATA>|0                         netplay: this player's own save, its customization goes to the opponent
                                                      ("Custom costumes online"; the launcher sets it); offline tests: P1's
@@ -119,13 +121,105 @@ T5_DF_RULES="train=1 life=70|100"                    train= / life= for fight li
   `T5_DF_STUCK_SECONDS` (persistent game, "After a session ends"),
   `T5_DF_SELECT_STUCK_SECONDS`, `T5_DF_READER_GUARD=0` ("Select stall after a fight").
 
-Timeline on this PC (60 fps, frames counted from the first frame after boot):
+Recorded baseline on this PC (60 fps, frames counted from the first frame
+after boot; these are not measurements of the 1.2.0 startup change):
 title mode at ~890, start-VS call at +30, select mode at ~925, both characters
 and costumes confirmed by ~995 (closed-loop cursor moves every 8 frames),
 stage confirm at ~1025, game mode (= FIGHT START, `t5_netplay_start()`) at
 ~1075, i.e. the fight loads about 19 s after boot instead of ~80 s through the
 menus; a second match (rematch or, in a persistent game, a new opponent)
 needs only the select-screen part: 3-6 s from the command to FIGHT START.
+
+## Online startup presentation (1.2.0)
+
+Ranked and casual online games use a plain black loading screen with centered
+`Connecting...` text, published through the existing renderer overlay. It is
+armed during direct-fight initialization before the first game presentation,
+including a persistent process that boots before its first online command.
+Patch 0088 connects the host-decoded movie's `present_rgba` path to the same
+overlay after its image copy and before presentation; patch 0045's normal
+game-frame overlay path alone does not cover those movies. Neither patch
+0088 nor the driver changes decoding or movie completion.
+`T5_ONLINE_FAST_BOOT=0` restores the previous presentation; `1` enables the
+cover for a configured direct-fight process. The switch is read at process
+startup, so changing it needs a new process. With no switch, host/join and
+`T5_CTL_DIR` games enable it; ordinary offline play and saved replay playback
+keep their existing presentation. The spectator launcher explicitly enables
+it for its replay-based live viewer. A saved replay can opt in with `1` without
+adding or changing recorded input.
+
+What the player sees on the supported Windows renderer:
+
+| Step | Visible picture | Work that still happens |
+|---|---|---|
+| Boot, logos, opening movies, title | `Connecting...` | The game boots normally and reaches its title mode. |
+| Settled title | `Connecting...` | The verified 30-frame wait, autosave completion, reader guard, and boot-state take/restore run before the game's start-VS routine. |
+| Interactive character select | The select screen, once it takes input | The existing pick timer and pick exchange run unchanged. The screen stays visible while waiting for the opponent's pick. |
+| Automatic character/stage confirmation, fight loading and fighter intros | `Connecting...` | The existing driver confirms the fighters and stage; FIGHT START and the loading-end sync point run at their existing states. |
+| Loaded fight, phase 17 or later | The fight | Normal input, simulation and overlays resume. |
+| Rematch, next opponent, or session-end reset | `Connecting...` until the next interactive select or loaded fight | Existing post-match skips, select restarts, required title visit and restore still run. An idle persistent select stays covered. |
+
+Readiness also requires no mode change pending and must remain true across
+two frame-boundary observations, keeping one complete ready frame covered.
+Before clearing the cover, the Windows producer calls `rsx_live_draw_sync`
+with the black list still published, draining patch 0067's single outstanding
+asynchronous present so a queued hidden picture cannot be exposed by the
+clear. This waits for host presentation; it does not advance a guest frame
+or use a wall-clock reveal timeout. The cover is retained while a load or
+network barrier waits; a timer does not reveal the title on a slow PC.
+The first phase-17 observation latches fight readiness until the driver
+leaves that fight, so later round transitions keep the fight visible. The
+extra covered ready frame is nominally about 16.7 ms at 60 fps; presentation
+draining can take longer and has not been measured here.
+It covers the game's image and does not mute its audio. It shares the overlay
+producer with the training display, so switching training off does not remove
+the loading cover.
+
+This change hides the boot sequence; it does not shorten the guest's boot or
+force a mode jump. There is no verified decoder-first-picture gate in this
+mirror that would let the driver skip only an opening movie without guessing
+an address or sending START into another mode. Patch 0053 and
+[the smoke intro procedure](SMOKE.md#tests) establish that START can skip a
+movie once it progresses, including after decoder recovery. They do not
+establish that gate for the direct-fight driver. The existing safe skips
+(title-menu navigation, post-match replay/win pose) remain. The prewarm,
+5-second decoder watchdog and movie completion path from patch 0053 remain
+unchanged; see [movie troubleshooting](TROUBLESHOOTING.md#the-movies-do-not-play).
+No startup speedup is claimed or measured for this change.
+
+The recorded timeline above is the timing evidence available: about 14.8 s
+to title at 60 fps, then at least 0.5 s for the title's 30 frames; select around
+frame 925, automatic picks around 995, stage confirmation around 1025 and
+FIGHT START around 1075 (reported as about 19 s). It does not give individual
+logo/movie durations or a duration from FIGHT START to the visible fight.
+An autosave usually takes well under a second, but start VS waits until it
+finishes. The reader guard waits up to 10 s from the title's start, with reader
+state excluded from the copy. Historical persistent-session measurements
+below are 4.5-8.0 s in rollback and 4.0-6.3 s in lockstep from command to
+FIGHT START, not a promise for another PC or for the visible fight.
+
+The title is still visited at most once after a fight, with the same boot-state
+copy and autosave/reader guards. FIGHT START still waits for game phase 7;
+the loading-end sync point still uses the first boundary in phases 11..17.
+Both PCs follow the same simulation path. The additions affect host
+presentation state, overlay lists and the decoded-movie renderer path: no
+guest writes, pad presses, seeds, frame counts or barriers depend on the
+cover. This startup change originally raised `CODE_VERSION` from 7 to 8; the
+integrated source now uses 11 for the reset-input rule change. Patch 0088 also
+changes the patch digest, so the code ID and derived build ID change. Source
+files alone are not themselves hashed by `tools/build_game.py`. Exact build
+IDs remain the default matching rule. Explicit operator compatibility groups
+(see [COMPATIBILITY_GROUPS.md](COMPATIBILITY_GROUPS.md)) must never group these
+old/new simulation rules without separate real-pair proof at **0 mismatches**.
+
+The existing overlay backend is Windows/D3D only in this mirror. Metal has no
+overlay implementation here. `RSX_OVERLAY=0` or an overlay-pipeline failure
+also bypasses the cover; those paths can still show the original startup.
+Source ordering arms the cover before the first presentation, but a real
+build and first-frame visual check are still needed to prove no logo/title
+flash, correct text and coverage at every window size. No build, test or game
+run was performed for this change; the pending pair and slow-PC checks are
+listed in [SMOKE.md](SMOKE.md#online-startup-cover-validation-120).
 
 ## How the game is driven
 
@@ -141,8 +235,10 @@ param)`; the factory is `func_0025E6AC`.
    game's own "start game type" routine (4 = VS BATTLE, 3 = both players
    human). It fills the battle config at 0x1008EBAC (+0 game type, +0x28 =
    0x1008EBD4 rounds to win from the options, handicaps 100/100, ...) and
-   requests mode 6. The namco logo / intro / title menu are skipped by never
-   waiting for them.
+   requests mode 6. This avoids navigating the title menu; it does not remove
+   the game's boot, logo, movie or title initialization. The settled-title
+   wait, autosave and reader guards, and boot-state copy described below are
+   required even when the player cannot see the title.
 2. Select mode: per player, the select record at 0x10093F58 + p*0x78: +0 the
    cursor cell, +8 the portrait id under it, +0x0C the picked model id
    (character + costume), +0x20 the state byte (3 choosing, 9 the handicap bar,
@@ -1156,9 +1252,12 @@ on both PCs, under rollback and lockstep.
   name and rank of the HUD) starts with the same 0x108 bytes for the fighter
   it plays. Offline the select screen's confirm builds it from the side's
   profile (0x2A77B0, profile pointers 0x106C9E38[side]); online there is no
-  profile and it is zeros (the default costumes). The fight's loading reads it
-  for the models: writing a block there between the select and the loading
-  dresses the fighter (cos1 of the Unlocks work; here runs o5/o6: Lili's Lace
+  profile and it starts as zeros. Those zeros are not an unequipped block:
+  worn colour 0 means colour index 0, while 0xFF means none. The driver now
+  writes the canonical unequipped block when no valid customization is selected.
+  The fight's loading reads it for the models: writing a block there between
+  the select and the loading dresses the fighter (cos1 of the Unlocks work;
+  here runs o5/o6: Lili's Lace
   Hairband and the item on her back, Heihachi's Topknot and belt, Kazuya's long
   hair and shoulder piece).
 - *Which block:* the fighter object (*(0x10091AB0)[side]) +0x40 holds the item
@@ -1196,10 +1295,30 @@ on both PCs, under rollback and lockstep.
    `t5_netplay_start()`, lockstep frame 0), each side's VS custom data gets the
    block of the character it fights with from that player's table -- when the
    table has one and it passes the check both PCs make (below); otherwise the
-   zero block the game has there online today (the default costumes). Both PCs
-   log the same line: `costumes written: P1 item char 31 (...): custom, P2 item
+   canonical unequipped block (below). Both PCs log the same line:
+   `costumes written: P1 item char 31 (...): custom, P2 item
    char 13 (...): custom; blocks hash 3BB3...`, and read the blocks back once
    the loading is over (`blocks hash ... after the loading`).
+
+**Unequipped fallback (white-costume fix).** A missing character block, invalid
+wire table, unknown item character, rejected customization or unavailable item
+rules selects the same fixed 0x108 bytes on both PCs. In each of its three
+0x58-byte costumes, the four worn parts at +0x40 are big-endian 0xFFFF and the
+three worn colours at +0x54 are 0xFF; all other bytes are zero. The previous
+all-zero fallback selected colour index 0, which could turn costumes white.
+Valid custom blocks are copied byte for byte, including colour index 0 when
+the player actually bought and equipped it. The fallback does not depend on
+which PC owns the side or on its local save.
+
+**Replays and spectators.** Costume blocks have been recorded since replay
+format 3; no replay format or wire format changes here. New recordings carry
+the actual canonical fallback bytes. Valid recorded custom blocks remain
+unchanged. Missing blocks (including older formats) and legacy all-zero blocks
+retain their historical zero bytes and colour-0 appearance, without requiring
+item-table validation. Replay setup verification compares exact blocks, so
+playback must not replace those historical defaults with the new live fallback.
+Rejected nonzero recorded customizations still use the canonical fallback and
+report a setup difference. Full playback compatibility still needs a real run.
 
 **The check** (`costume::block_valid`, the same code and data on both PCs):
 every bought part an item of that character (the game's own price table
@@ -1240,20 +1359,37 @@ gave the same parts per place and colour counts for all 81 costumes (1,570
 part entries, 0 different). The int113 test saves are still custom on both
 PCs; the review's two forged Lili saves now fall back to the default.
 
-**Why it cannot desync.** The blocks are written before lockstep frame 0 and
+**Determinism and hashes.** The blocks are written before lockstep frame 0 and
 never change during the fight; both PCs write the same bytes for both sides
 (the same tables, the same fighters, the same check); the VS custom data is
-outside the netplay state hash and the rollback state never restores past
-FIGHT START. Whatever an item changes in the match (the models; any item
+outside the netplay gameplay state hash and the rollback state never restores
+past FIGHT START. The costume blocks' diagnostic FNV hash changes wherever the
+fallback bytes change. The VS custom data is also in rollback's saved memory
+and page hash (when enabled), so those bytes can change that hash; no hash
+algorithm, region or exclusion changes. Effects of the corrected colours on
+later gameplay hashes have not been checked. Both PCs must use the fix. Whatever an item
+changes in the match (the models; any item
 move) is then the same on both PCs. Items with a gameplay effect, if T5 has
 any, would be a question for ranked fairness, not for sync (open).
+
+**Required validation of this fix (not run here).** Build and run the
+game-free fallback-selection regression, then use a real pair with the same
+characters and confirm buttons with customs on and off, in both lockstep and
+rollback. Cover rematches, both default, both custom, mixed custom/default
+(with each side custom in turn), and rejected customizations. Both PCs must
+write identical blocks for both sides before and after loading, show the
+intended parts and colours, and finish with matching results and gameplay
+hashes and **0 mismatching frames**. Include new replay playback and an old
+format-3 recording with zero fallback bytes and a format-2 recording without
+blocks to prove exact setup preservation. The historical runs below predate this correction and do not
+prove it.
 
 **Mirrors and costumes.** A block holds all three costumes of the character;
 the costume a player fights in is still the confirm button (and, in a mirror
 of one costume, the game's rule that P2 gets the other costume): a
 customization shows when the player customized that costume offline.
 
-**Open (1.1.4 investigation of "with custom skins both customs turn white"):
+**Historical investigation (before the unequipped fallback correction):
 a side keeps the previous fight's look when its model does not change.** In one
 game process, when a side fights with the same model (character + costume) as
 in that side's previous fight, the game keeps the fighter it has loaded and the
@@ -1274,7 +1410,9 @@ seen: a new opponent's session goes through the title first (`T5_DF_RESET`,
 on by default), which makes the game load the fighters again -- a persistent
 pair with the joiner's customization changed between two sessions showed the
 new one, and so did an in-game pick pair; within a session a side with the same
-model has the same block. So the player's white costumes are not explained yet.
+model has the same block. This investigation did not check whether the zero
+fallback actually encoded an unequipped costume; the correction above addresses
+that separate source of colour-0 costumes.
 Not found yet either: what makes the game reload without the title; poking
 the per-side model words 0x10098E90, 0x104235E4/0x1042360C[side] and
 0x104257D4[side] at FIGHT START or at the stage panel changed nothing, and the
@@ -1322,18 +1460,20 @@ always brings the same block; a new session (another opponent, a room's Ready,
 swapped sides -- a new session too, lobby.py) goes through the title first; a
 spectator's game is a process of its own per stream.
 
-**1.1.7: tried again, not reproduced as a fault.** The e2e scenario `int_fw_costumes` needs two offline system
+**Historical 1.1.7 investigation (before the fallback correction).** The e2e scenario `int_fw_costumes` needs two offline system
 saves with customizations, named by `E2E_COSTUME_A` / `E2E_COSTUME_B` (the SYS-DATA files; game data, kept outside
 the repository -- on this PC `build/bugfix114/saves/col_sysdata` and `build/int113/saves/B_sysdata`). With both
 customized (a match moved onto the relay, a spectator watching): PASS, 45 checks, the same blocks hash on both PCs
 and the spectator. With mixed customization (B's save empty, `the save cannot be read`): A's block is written on both
-PCs and the spectator, B fights in the default costume (`nothing customized`) -- correct; the scenario's "both
-custom" check fails by design. What both runs show is the likeliest explanation of "fighters in white / plain
-costumes": in the in-game pick the confirm button is the costume, and both players confirmed with Square (costume 1)
+PCs and the spectator, B was described as wearing the default costume (`nothing customized`),
+but the fallback bytes were zero and did not encode "nothing worn"; the scenario's "both
+custom" check fails by design. The runs also showed another possible explanation of plain
+costumes: in the in-game pick the confirm button is the costume, and both players confirmed with Square (costume 1)
 while their customization was on costume 2 -- `costumes worn: P1 costume 1 (model 0x24): nothing worn, customized:
 costume 2` on both PCs: the game shows the picked costume's own default look -- and the other way round (customized
 costume 1, picked with a button that gives costume 2) that look is white for many second costumes. So for a player
-report, ask for the game log of that match and read `costumes worn` (line 5 below) first.
+report, read `costumes written` and `costumes worn` (lines 4 and 5 below), and distinguish
+the old zero fallback from a valid block for a different costume.
 
 **Reading a player's log** (each line is in both PCs' logs, the same on both):
 
@@ -1359,10 +1499,10 @@ report, ask for the game log of that match and read `costumes worn` (line 5 belo
 7. `the VS custom data changed during the loading`: something overwrote the
    blocks after FIGHT START.
 
-When all of these say the fighter wears its customization and the picture is
-still white, the game built the look (the textures in memory) and the cause is
-on the drawing side: then the graphics card and settings named in the same log
-are the next thing to look at.
+These lines describe the selected bytes; they do not by themselves prove that
+the loaded textures or the rendered appearance match them. A remaining white
+costume needs a real run to distinguish the selected costume, loader reuse and
+rendering.
 
 **Spectators** (docs/SPECTATE.md "Custom costumes in the stream"): the live stream's MATCH records are the
 replay's matches with the blocks, so a spectator's game writes them at its FIGHT START like a replay (`custom
@@ -1373,12 +1513,14 @@ fallback** (docs/NETPLAY.md): the session started again exchanges both tables ag
 `T5_COSTUME_SAVE2` for P2; `T5_DF_SHOT=++n` takes a picture n frames after
 every FIGHT START (each match of a session; `+n` stays the first match only).
 `tests/c/costume_test.cpp` (tests/test_costumes.py): the save's blocks, the
-wire table (round trip, every malformed one refused whole), the check;
+wire table (round trip, every malformed one refused whole), the check and the
+production `costume::select_block` fallback selection (canonical bytes on
+live missing/rejected data, historical replay zeros and valid custom bytes preserved);
 `tests/c/netplay_fuzz.cpp`: the COSTUME parser (shuffled and repeated pieces,
 a wrong hash, malformed pieces, acknowledgements, a restarted peer, random
 packets).
 
-**Results** (this PC, runs in build/costume/runs). Test saves: the Unlocks
+**Historical results (before the fallback correction)** (this PC, runs in build/costume/runs). Test saves: the Unlocks
 work's Lili (Lace Hairband 0x33, item 0x34, COLOR1 1 on costume 1), and
 Heihachi (Topknot 0x03, belt 0x0D, COLOR1 1) and Kazuya (Long Hair 0x03,
 shoulder piece 0x0D) bought in the item shop with free items and taken from the

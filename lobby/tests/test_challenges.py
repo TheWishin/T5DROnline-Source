@@ -20,8 +20,8 @@ class Base(unittest.TestCase):
             c.close()
         self.s.stop()
 
-    def c(self, name):
-        c = client(self.s, name)
+    def c(self, name, **kw):
+        c = client(self.s, name, **kw)
         self.clients.append(c)
         return c
 
@@ -89,7 +89,7 @@ class ChallengesTest(Base):
         self.assertEqual(m.casual_delay, 1)
 
     def test_auto_keeps_the_old_rule(self):
-        a, b = self.c("Alice"), self.c("Bob")
+        a, b = self.c("Alice", input_delay8=False), self.c("Bob", input_delay8=False)
         cid = a.challenge(b.me["id"])                  # auto: the players' own settings, as before
         expect(b, "challenged")
         b.answer_challenge(cid, accept=True)
@@ -107,7 +107,7 @@ class ChallengesTest(Base):
         self.assertEqual(x.exception.code, proto.E_RATE)
         b = players[1]
         with self.assertRaises(LobbyError) as x:        # a delay out of range
-            b.send_challenge(players[6].me["id"], 3)
+            b.send_challenge(players[6].me["id"], 9)
         self.assertEqual(x.exception.code, proto.E_BAD_REQUEST)
         b.challenge(players[6].me["id"])
         with self.assertRaises(LobbyError) as x:        # right after another one: too fast

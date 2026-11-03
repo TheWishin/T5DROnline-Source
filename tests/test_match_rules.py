@@ -91,10 +91,43 @@ class Source(unittest.TestCase):
 
     def test_replay_keeps_the_rules(self):
         rp = read("src/netplay/replay.cpp")
-        self.assertIn("constexpr uint32_t kVersion = 5;", rp)
+        self.assertIn("constexpr uint32_t kVersion = 7;", rp)
         self.assertIn("put32(b, m.ft.rules);", rp)
         self.assertIn("if (ver >= 5) m.ft.rules = r.u32();", rp)
         self.assertIn('*line += " train=1";', rp)
+        self.assertIn('*line += " auto_skip_after_round=1";', rp)
+        self.assertIn('if (ver < 6) m.ft.rules &= ~2u;', rp)
+
+    def test_skip_requires_peer_agreement_for_every_match(self):
+        core = read("src/netplay/netplay_core.cpp")
+        self.assertIn("kHelloMatchRules = 2u", core)
+        self.assertIn("PKT_RULES = 8", core)
+        self.assertIn("bool verify_match_rules(uint32_t ordinal, uint32_t rules)", core)
+        self.assertIn("if (rules & 2u)", core)
+        self.assertIn("s.match_rules.begin(ordinal, rules)", core)
+        self.assertIn("s.match_rules.ready()", core)
+        self.assertIn("s.match_rules.ready() ? kPingMs : 100", core)
+        df = read("src/directfight/df_fight.cpp")
+        self.assertIn("np::verify_match_rules", df)
+
+    def test_live_spectators_explicitly_version_skip_rules(self):
+        rp = read("src/netplay/replay.cpp")
+        self.assertIn("put32(b, rules_version(d) >= 7 ? 3u : rules_version(d) >= 6 ? 2u : 1u);", rp)
+        self.assertIn("if (version < 1 || version > 3) return false;", rp)
+        self.assertIn("const uint32_t match_version = version + 4;", rp)
+        self.assertIn("p.live_match_version = match_version;", rp)
+        self.assertIn("get_match(r, p.live_match_version)", rp)
+        self.assertIn("put32(b, rules_version(d));", rp)
+        self.assertIn("return kVersion;  /* the input filter changed even when automatic round skipping is off */", rp)
+        upgrade = rp[rp.index("void live_match_locked("):]
+        self.assertLess(upgrade.index("L_SESSION, session_payload(st.d)"), upgrade.index("L_MATCH, b"))
+        self.assertIn("kLiveRulesGuard = 0xFE", rp)
+        self.assertIn("kLiveRulesGuardLength = kLiveMaxRecord + 1", rp)
+        writer = rp[rp.index("void live_queue_locked("):]
+        self.assertLess(writer.index("put32(st.live_pend, kLiveRulesGuardLength)"), writer.index("live_rec(st.live_pend, type, payload)"))
+        parser = rp[rp.index("bool live_poll("):]
+        self.assertLess(parser.index("type == kLiveRulesGuard && len == kLiveRulesGuardLength"), parser.index("if (len > kLiveMaxRecord)"))
+        self.assertIn('t5_env("T5_AUTO_SKIP_AFTER_ROUND")', rp)
 
     def test_rule_is_the_same_for_both_slots(self):
         hdr = read("src/netplay/match_rules.h")

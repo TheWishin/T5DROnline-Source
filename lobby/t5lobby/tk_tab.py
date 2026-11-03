@@ -64,17 +64,19 @@ import subprocess
 import sys
 import threading
 import time
+import weakref
 import tkinter as tk
 from tkinter import filedialog, ttk
 
-from . import discord_rpc, fighters, fwcheck, lag, notify, padmap, padnav, proto, ranks, servers, sets
+from . import chat, discord_rpc, fighters, fwcheck, lag, notify, padmap, padnav, proto, ranks, servers, sets
 from .buildid import BuildInfo
 from .client import LobbyClient
 from .i18n import N_, stamp, t, translate_message
 from .match_driver import MatchDriver, fps_from_logs, game_files, game_supports_pick, game_supports_rules, \
-    game_supports_life150
+    game_supports_life150, game_supports_ingame_ui, game_supports_auto_skip
 from .proto import DEFAULT_PORT, LobbyError
 from . import theme, tk_casual, tk_challenges, tk_rooms, tk_rules, tk_spectate, tk_tour, tk_views, tklist, winfront
+from .tk_private_chat import PrivateChat
 from .ranks import record_label as _record
 
 
@@ -144,7 +146,15 @@ def _word(table, key):
 def lobby_error_text(e):
     """What a player reads for a failed lobby request: the server's (or client's) English message in the
     player's language when it is a known one, else as it came."""
-    return t("Lobby: {message}", message=translate_message(e.msg or e.code))
+    message = translate_message(e.msg or e.code)
+    until = (getattr(e, "extra", None) or {}).get("muted_until")
+    if isinstance(until, (int, float)) and not isinstance(until, bool) and 0 < until < 32503680000:
+        try:
+            deadline = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(until))
+            message = t("Chat is muted until {until}.", until=deadline)
+        except (OverflowError, OSError, ValueError):
+            pass
+    return t("Lobby: {message}", message=message)
 
 
 def _work(results, key, fn, args):
@@ -236,6 +246,8 @@ class OnlineTab:
     def __init__(self, parent, app):
         self.app = app
         self.parent = parent
+        self._closed = False
+        self._after = None
         self.client = None
         self.driver = None
         self.ui_q = queue.Queue()        # callables to run on the Tk thread
@@ -283,6 +295,7 @@ class OnlineTab:
         self.set_bar = None              # (set info, my slot, monotonic end of the countdown) between two games of a set
         self.blocks_window = None        # the "Blocked players..." dialog
         self.blocks_list = None
+        self.mutes_window = None
         self.pad = None                  # padnav.PadNav once the tab has been shown (controller buttons)
         self.pad_visible = self._tab_viewable      # tests replace it (their window is withdrawn)
         self.invite = None               # an invite from a friend waiting for this player's answer (the `invited` event)
@@ -396,6 +409,7 @@ class OnlineTab:
         self.friends_note_var = tk.StringVar(value="")
         self.friends_count_var = tk.StringVar(value="")
         self.requests_count_var = tk.StringVar(value="")
+        self.private_chat = PrivateChat(self)
         self.view = tk_views.OnlineView(self)
         self._set_account_view(False)
 
@@ -432,6 +446,7 @@ class OnlineTab:
         self.char_cb.configure(state="disabled" if self.set_locked else "readonly")
         self.strict_check.configure(state="normal" if me and not guest else "disabled")
         self._set_friend_actions()
+        self.private_chat.refresh()
         self._pad_relabel()
         self.view.refresh()
 
@@ -507,10 +522,12 @@ class OnlineTab:
         self.view.hide_bar()
         self._pad_relabel()
 
-    def chat_line(self, text, sender=None):
+    def chat_line(self, text, sender=None, badge="", mentioned=False):
         """A line in the lobby chat. `sender`: the player who wrote it -- their name in bold in their own colour
         (yours in the accent colour) above their lines, again whenever another sender comes between; None: a line of
         the launcher or the server, muted (tk_views draws the tags)."""
+        if sender is not None and self._is_muted(sender):
+            return
         log = self.chat_log
         log.configure(state="normal")
         try:
@@ -519,11 +536,23 @@ class OnlineTab:
                 self._chat_last = None
             else:
                 me = (getattr(self.client, "me", None) or {}).get("name") if self.client is not None else None
-                if sender != getattr(self, "_chat_last", None):
+                content_tag = self._mute_content_tag(sender)
+                header = (sender, badge == "dev")
+                if header != getattr(self, "_chat_last", None):
                     mine = bool(me) and sender.casefold() == str(me).casefold()
-                    log.insert("end", sender + "\n", ("chat_head", self.view.chat_name_tag(sender, mine)))
-                    self._chat_last = sender
-                log.insert("end", text + "\n", ("chat_msg",))
+                    tags = ("chat_head", self.view.chat_name_tag(sender, mine), content_tag)
+                    log.insert("end", sender, tags)
+                    if badge == "dev":
+                        log.insert("end", "  \u25c6 " + t("DEV"), ("chat_head", "chat_dev", content_tag))
+                    if not mine:
+                        action_tag = "mute_action_" + sender.lower().encode("utf-8").hex()
+                        log.tag_configure(action_tag, underline=True)
+                        log.tag_bind(action_tag, "<Button-1>", lambda _e, name=sender: self.toggle_mute(name))
+                        log.insert("end", "  [" + t("Mute") + "]", (action_tag, content_tag))
+                    log.insert("end", "\n", tags)
+                    self._chat_last = header
+                tags = ("chat_msg", "chat_mention", content_tag) if mentioned else ("chat_msg", content_tag)
+                log.insert("end", text + "\n", tags)
             log.see("end")
         finally:
             log.configure(state="disabled")
@@ -546,6 +575,16 @@ class OnlineTab:
         threading.Thread(target=_work, args=(self.results_q, key, fn, args), daemon=True).start()
 
     def _poll(self):
+        if self._closed:
+            return
+        # A caller may request a poll before the scheduled one runs. Keep just
+        # one timer, so on_close can cancel every pending poll before Tk teardown.
+        if self._after is not None:
+            try:
+                self.parent.after_cancel(self._after)
+            except (tk.TclError, ValueError):
+                pass
+            self._after = None
         try:
             alive = bool(self.parent.winfo_exists()) and bool(self.view.box.winfo_exists())
         except tk.TclError:
@@ -557,6 +596,27 @@ class OnlineTab:
                 self.ui_q.get_nowait()()
         except queue.Empty:
             pass
+        def client_events():
+            c = self.client
+            if c is not None and not self._closed:
+                try:
+                    while self.client is c:         # ("disconnected" drops the client: its queue is done)
+                        ev = c.events.get_nowait()
+                        self.spec.before_event(ev)   # release spectator ownership before a match can launch
+                        if self.driver is not None:
+                            self.driver.on_event(ev)
+                        self.on_event(ev)
+                        self.casual.after_event(ev)
+                except queue.Empty:
+                    pass
+                # A successful leave clears my_room locally. Creating and leaving
+                # between broadcasts can produce no lobby delta at all.
+                if self.client is c and c.my_room is None:
+                    self.room_watch.reset()
+
+        client_events()
+        # A completed watch request must see any ready check/challenge already in
+        # the event queue before its callback is allowed to start a game.
         try:
             while True:
                 key, ok, value = self.results_q.get_nowait()
@@ -571,17 +631,10 @@ class OnlineTab:
                 self._set_actions()
         except queue.Empty:
             pass
-        c = self.client
-        if c is not None:
-            try:
-                while self.client is c:             # ("disconnected" drops the client: its queue is done)
-                    ev = c.events.get_nowait()
-                    if self.driver is not None:
-                        self.driver.on_event(ev)
-                    self.on_event(ev)
-                    self.casual.after_event(ev)
-            except queue.Empty:
-                pass
+        # Requests can complete while callbacks are being handled. Drain their
+        # events before the UI exposes a completed create/join, and forget a leave
+        # completed by a callback even if no lobby broadcast will follow it.
+        client_events()
         if self.driver is not None:
             for n in self.driver.poll():
                 self.on_driver(n)
@@ -601,10 +654,11 @@ class OnlineTab:
         self.spec.poll()
         self.rooms_ui.tick()
         self.view.tick()
-        try:
-            self._after = self.parent.after(100, self._poll)
-        except tk.TclError:
-            pass
+        if not self._closed:
+            try:
+                self._after = self.parent.after(100, self._poll)
+            except tk.TclError:
+                pass
 
     # ------------------------------------------------------------------ the firewall hint
     def _game_exe(self):
@@ -721,11 +775,14 @@ class OnlineTab:
         elif spec.lower().startswith("tls://"):
             spec, tls = spec[6:], True
         c = LobbyClient(spec, build, tls=tls, tls_fingerprint=fp,
+                        guest_mutes=(self.cfg.get("guest_mutes") or {}).get(self._server_key(), []),
                         game_port=int(self.cfg.get("game_port", 0) or 0),
                         plain_passwords=bool(self.cfg.get("plain_passwords")), blind_ready=True,
                         ingame_pick=self._game_can_pick(),
                         match_rules=self._game_has_rules(),     # training rooms, the health handicap
                         life150=self._game_has_life150(),       # the handicap above 100 % (1.1.7)
+                        ingame_rematch=self._game_has_ingame_ui(),
+                        auto_skip_after_round=self._game_has_auto_skip(),
                         sets=bool(self.cfg.get("sets", True)),   # online.json "sets": false: no ranked sets
                         # launcher Settings -> "Open the game's port on my router" (docs/NETPLAY.md)
                         port_mapping=bool(getattr(self.app, "settings", {}).get("router_ports", True)),
@@ -760,6 +817,14 @@ class OnlineTab:
         out = getattr(self.app.settings, "out_dir", os.getcwd())
         return game_supports_life150([os.path.join(out, "build", "cmake", "t5dr.exe"),
                                       os.path.join(out, "build", "cmake", "t5dr_game.dll")])
+
+    def _game_has_ingame_ui(self):
+        out = getattr(self.app.settings, "out_dir", os.getcwd())
+        return os.environ.get("T5_INGAME_REMATCH") == "1" and game_supports_ingame_ui(game_files(out))
+
+    def _game_has_auto_skip(self):
+        out = getattr(self.app.settings, "out_dir", os.getcwd())
+        return self._game_has_ingame_ui() and game_supports_auto_skip(game_files(out))
 
     def do_login(self, mode, session=None):
         if mode != "session":
@@ -941,7 +1006,8 @@ class OnlineTab:
                                   table=self.table, mode=self.cfg.get("game_mode", "auto"), game_files=game_files(out),
                                   async_calls=True,
                                   input_delay=(getattr(self.app, "settings", None) or {}).get("input_delay"),
-                                  always_left=lambda: bool((getattr(self.app, "settings", None) or {}).get("always_left")))
+                                  always_left=lambda: bool((getattr(self.app, "settings", None) or {}).get("always_left")),
+                                  screen_side=lambda: (getattr(self.app, "settings", None) or {}).get("screen_side", "dealt"))
 
     def _launch(self, env):
         g = getattr(self.app, "game", None)
@@ -952,6 +1018,8 @@ class OnlineTab:
             t_end = time.monotonic() + 5
             while g.running() and time.monotonic() < t_end:
                 time.sleep(0.1)
+            if g.running():
+                return None                         # start_game would return the old process with the wrong mode
         return self.app.start_game(env)
 
     def do_logout(self):
@@ -961,6 +1029,7 @@ class OnlineTab:
             forget = self.ask_yes_no(t("Log out"), t("Also forget the saved login on this PC?\n\n"
                                                       "(No = you are logged in automatically next time.)"),
                                      parent=self.parent)
+        self.spec.stop()
         c, self.client = self.client, None
         if forget:
             self._remember_session(None, None)
@@ -975,6 +1044,9 @@ class OnlineTab:
         self._set_actions()
 
     def _reset_lobby_view(self):
+        self.private_chat.reset()
+        self._mention_completion = chat.Completion()
+        self.view.mention_hint.configure(text="")
         self.match = None
         self.invite = None
         self.outgoing_invite = None
@@ -986,6 +1058,7 @@ class OnlineTab:
         self.requests_count_var.set("")
         self._friends_tab_label(0)
         self.ready_deadline = None
+        self.ready_sent = False
         self.set_locked = False
         self.rematch_bar = None
         self.set_bar = None
@@ -1129,6 +1202,135 @@ class OnlineTab:
             return
         self.call(self.client.blocks, then=self._blocks_window)
 
+    @staticmethod
+    def _mute_content_tag(name):
+        return "mute_content_" + name.lower().encode("utf-8").hex()
+
+    def _is_muted(self, name):
+        c = self.client
+        return bool(c and getattr(c, "is_muted", lambda _name: False)(name))
+
+    def toggle_mute(self, name):
+        """One click changes only this player's chat visibility, never matchmaking."""
+        c = self.client
+        if c is None or not c.me or not name or name.lower() == c.me.get("name", "").lower():
+            return
+        muted = not self._is_muted(name)
+
+        def done(_reply):
+            if self.client is not c:
+                return
+            self._mutes_changed()
+            self.status(t("Muted {name}.", name=name) if muted else t("Unmuted {name}.", name=name))
+        self.call(c.mute, name, muted, then=done)
+
+    def on_player_mute_click(self, event):
+        """The mute cell acts directly; selecting a player's other cells stays unchanged."""
+        tv = self.tv_players
+        if tv.identify_region(event.x, event.y) != "cell":
+            return
+        columns = tuple(tv["columns"])
+        if "mute" not in columns or tv.identify_column(event.x) != "#" + str(columns.index("mute") + 1):
+            return
+        player_id = tv.identify_row(event.y)
+        c = self.client
+        player = next((p for p in c.players if p.get("id") == player_id), None) if c else None
+        if player is not None:
+            self.toggle_mute(player.get("name"))
+        return "break"
+
+    def _mutes_changed(self):
+        c = self.client
+        if c is None:
+            return
+        if (c.me or {}).get("guest"):
+            self.cfg.setdefault("guest_mutes", {})[self._server_key()] = [
+                r["name"] for r in getattr(c, "mute_rows", []) if isinstance(r, dict) and r.get("name")]
+            self._save_cfg()
+        for tag in self.chat_log.tag_names():
+            if tag.startswith("mute_content_"):
+                try:
+                    name = bytes.fromhex(tag[len("mute_content_"):]).decode("utf-8")
+                except (ValueError, UnicodeError):
+                    continue
+                self.chat_log.tag_configure(tag, elide=self._is_muted(name))
+        invite = getattr(self, "invite", None)
+        if invite and self._is_muted((invite.get("from") or {}).get("name")):
+            self.invite = None
+            if self.challenge is None and self.match is None:
+                self.hide_bar()
+        self.relist()
+        self.rooms_ui.refresh()
+        self.private_chat.refresh()
+        self.view._update_profile_mute()
+
+    def _chat_moderation_notice(self, muted_until):
+        if (isinstance(muted_until, (int, float)) and not isinstance(muted_until, bool)
+                and time.time() < muted_until <= 32503680000):
+            self.status(lobby_error_text(LobbyError(proto.E_NOT_ALLOWED, "Chat is muted for this account.",
+                                                   muted_until=muted_until)))
+
+    def do_muted(self):
+        c = self.client
+        if c is not None:
+            def done(reply):
+                if self.client is c:
+                    self._muted_window(reply)
+            self.call(c.mutes, then=done)
+
+    def _muted_window(self, reply):
+        client = self.client
+        rows = reply.get("rows", []) if isinstance(reply, dict) else reply
+        rows = rows if isinstance(rows, list) else []
+        old = getattr(self, "mutes_window", None)
+        if old is not None:
+            try:
+                old.destroy()
+            except tk.TclError:
+                pass
+        px = self.view.px
+        w = self.mutes_window = self.new_window(self.parent)
+        w.title(t("Muted players"))
+        bar = self.view.card(w, pad=16)
+        bar.pack(fill="both", expand=True, padx=px(10), pady=px(10))
+        bar.columnconfigure(1, weight=1)
+        ttk.Label(bar, text=t("Muted players"), style="Card.H2.TLabel").grid(
+            row=0, column=0, columnspan=2, sticky="w")
+        ttk.Label(bar, wraplength=px(420), justify="left", style="Card.Muted.TLabel", text=t(
+            "Mute hides their lobby, room and private chat, mentions and invites for you. You can still play together. "
+            "Block also prevents matches and ends friendship. Accounts remember mutes on this server; guests remember "
+            "them on this device.")).grid(row=1, column=0, columnspan=2, sticky="w", pady=(px(4), px(10)))
+        names = [r["name"] for r in rows if isinstance(r, dict) and isinstance(r.get("name"), str)]
+        lb = tk.Listbox(bar, height=max(4, min(12, len(names))), width=32, activestyle="none")
+        for name in names:
+            lb.insert("end", name)
+        lb.grid(row=2, column=0, columnspan=2, sticky="we")
+
+        def unmute():
+            selected = lb.curselection()
+            if not selected or self.client is None or self.client is not client:
+                return
+            index = selected[0]
+            name = names[index]
+
+            def done(_reply):
+                if self.client is not client:
+                    return
+                if name in names:
+                    index = names.index(name)
+                    names.pop(index)
+                    try:
+                        lb.delete(index)
+                    except tk.TclError:
+                        pass
+                self._mutes_changed()
+                self.status(t("Unmuted {name}.", name=name))
+            self.call(self.client.unmute, name, then=done)
+        ttk.Button(bar, text=t("Unmute"), style="Card.TButton", command=unmute).grid(
+            row=3, column=0, sticky="w", pady=(px(12), 0))
+        ttk.Button(bar, text=t("Close"), style="Card.Accent.TButton", command=w.destroy).grid(
+            row=3, column=1, sticky="e", pady=(px(12), 0))
+
     def _blocks_window(self, rows):
         px = self.view.px
         w = self.new_window(self.parent)
@@ -1181,6 +1383,27 @@ class OnlineTab:
         if text and self.client:
             self.chat_var.set("")
             self.call(self.client.chat, text)
+
+    def complete_mention(self, event):
+        c = self.client
+        if c is None or not c.me or not c.mentions_ok():
+            return None                         # old server: Tab retains its usual focus action
+        if not hasattr(self, "_mention_completion"):
+            self._mention_completion = chat.Completion()
+        result = self._mention_completion.complete(self.chat_var.get(), event.widget.index("insert"), c.players)
+        if result is None:
+            return None
+        text, cursor = result
+        self.chat_var.set(text)
+        event.widget.icursor(cursor)
+        return "break"
+
+    def _chat_mentions_me(self, event):
+        c = self.client
+        return bool(c is not None and c.mentions_ok() and chat.mentions_me(event, c.me))
+
+    def _player_badge(self, player):
+        return "dev" if self.client is not None and self.client.badges_ok() and chat.dev_badge(player) else ""
 
     # ------------------------------------------------------------------ friends (docs/ONLINE.md "Friends and invites")
     def _friends_ok(self):
@@ -1456,7 +1679,7 @@ class OnlineTab:
             st = info.get("set") if isinstance(info.get("set"), dict) else {}
             score = None
             w = st.get("wins")
-            if st.get("rated") and isinstance(w, (list, tuple)) and len(w) == 2 and                     all(isinstance(v, int) and not isinstance(v, bool) and 0 <= v < 100 for v in w):
+            if (st.get("rated") or st.get("casual")) and isinstance(w, (list, tuple)) and len(w) == 2 and                     all(isinstance(v, int) and not isinstance(v, bool) and 0 <= v < 100 for v in w):
                 score = (w[0], w[1]) if slot == 0 else (w[1], w[0])
             spec = dict(kind="match", ranked=info.get("ranked"), fighters=fighters, set_score=score)
         elif c.me.get("status") == "queue":
@@ -1563,8 +1786,10 @@ class OnlineTab:
     def _profile_of_selected(self):
         sel = self.tv_players.selection()
         if sel and sel[0] != tk_challenges.AWAY:
-            name = self.tv_players.item(sel[0], "values")[0].replace(self._you_suffix(), "")
-            self.show_profile(name)
+            for player in self.client.players if self.client is not None else ():
+                if player["id"] == sel[0]:
+                    self.show_profile(player["name"])
+                    break
 
     @staticmethod
     def _you_suffix():
@@ -1582,6 +1807,7 @@ class OnlineTab:
         self.nb.select(self.prof_page)
 
         def done(p):
+            self.profile_name = p["name"]
             self.view.profile_shown(p)
             self.prof_title.set(t("{name} -- {rank}", name=p["name"], rank=rank_text(p))
                                 + ("" if p.get("account") else " (" + t("guest") + ")"))
@@ -1651,8 +1877,13 @@ class OnlineTab:
         return " -- ".join(parts)
 
     def on_event(self, ev):
+        self.spec.before_event(ev)                       # also covers callers dispatching directly (idempotent)
         kind = ev["t"]
         c = self.client
+        if kind == "mutes":
+            self._mutes_changed()
+        self.private_chat.event(ev)
+        self._offer_ingame_ui(ev)
         self._notify_event(ev)                             # (before anything brings the window forward)
         self.chal.on_event(ev)                             # open challenges and their chat lines (tk_challenges.py)
         if kind.startswith("tour_") or kind == "match_found":
@@ -1664,7 +1895,8 @@ class OnlineTab:
             self._fill_lists(ev)
             self._show_me()
         elif kind == "chat":
-            self.chat_line(ev["text"], sender=ev["from"]["name"])
+            self.chat_line(ev["text"], sender=ev["from"]["name"], badge=self._player_badge(ev["from"]),
+                           mentioned=self._chat_mentions_me(ev))
         elif kind == "challenged":
             # (both before show_bar: it draws the card at once -- who and the ping, 1.1.7; the view's own
             # after_event comes later, too late for the card's first and only drawing)
@@ -1726,6 +1958,7 @@ class OnlineTab:
                     self.show_bar(text + " -- " + t("connecting..."), [])
         elif kind == "match_reveal":
             self.ready_deadline = None
+            self.ready_sent = False
             text = self._opponent_text(ev["opponent"], bool((self.match or {}).get("ranked")))
             self.show_bar(text + " -- " + t("connecting..."), [])
         elif kind == "opponent_ready":
@@ -1743,6 +1976,7 @@ class OnlineTab:
         elif kind == "match_cancel":
             self.match = None
             self.ready_deadline = None
+            self.ready_sent = False
             self.hide_bar()
             self.status(_word(CANCEL_TEXT, ev["reason"]) if ev["reason"] in CANCEL_TEXT
                         else t("Match cancelled ({reason}).", reason=ev["reason"]))
@@ -1751,6 +1985,7 @@ class OnlineTab:
         elif kind == "match_start":
             self.hide_bar()
             self.ready_deadline = None
+            self.ready_sent = False
             self.rematch_bar = None
             self.set_bar = None
             self.lag = None
@@ -1791,6 +2026,8 @@ class OnlineTab:
             if ev.get("state") == "declined":
                 self.rematch_bar = None
                 self.hide_bar()
+        elif kind == "chat_moderation":
+            self._chat_moderation_notice(ev.get("muted_until"))
         elif kind == "notice":
             self.status(translate_message(ev.get("msg", "")))
         elif kind == "reconnecting":
@@ -1847,6 +2084,8 @@ class OnlineTab:
             self.show_bar(t("{opponent} wants a rematch", opponent=n["opponent"]) + swapped,
                           [(t("Rematch"), lambda: self._rematch(True), "cross"),
                            (t("No thanks"), lambda: self._rematch(False), "circle")] + more)
+        elif k == "ingame_ui_fallback":
+            self._come_forward(("ingame_fallback", n.get("match")))
         self.view.after_driver(n)
         if k == "rematch_offer":
             self._come_forward(("rematch", n.get("match")))     # a decision for the player
@@ -1875,7 +2114,9 @@ class OnlineTab:
         news in their room). Never an error for the tab."""
         try:
             kind, n = ev.get("t"), self.notifier
-            if kind == "match_found":
+            if kind == "chat" and self._chat_mentions_me(ev):
+                n.notify("mention", ((ev.get("from") or {}).get("id"), ev.get("time"), ev.get("text")))
+            elif kind == "match_found":
                 if ev.get("blind") or ev.get("ready_check"):         # (the Accept bar; not a match that starts itself)
                     n.notify(notify.MATCH, ev.get("match"))
             elif kind == "challenged":
@@ -1920,6 +2161,11 @@ class OnlineTab:
         if key == self._fronted or self.set_bar is not None:
             return
         drv = self.driver
+        if key[0] != "ask" and (bool(getattr(drv, "ingame_ui_active", False))
+                                or bool(getattr(drv, "ingame_ui_pending", False))):
+            # A game with a healthy handshake gets at most three seconds to acknowledge this prompt;
+            # the driver emits fallback on expiry or unsupported glyphs and this key stays unconsumed.
+            return
         if drv is not None and drv.ticket is not None and drv.game_state not in (None, "over", "neutral"):
             return                                  # a match is on (the fight, its loading): never then
         self._fronted = key
@@ -1933,6 +2179,47 @@ class OnlineTab:
             self.bring_forward(self.parent)
         except Exception:                           # noqa: BLE001 -- a window that cannot come forward is no error
             pass
+
+    def _offer_ingame_ui(self, ev):
+        """Publish translated display text; the driver's protocol validates server-permitted actions."""
+        drv = self.driver
+        offer = getattr(drv, "offer_ingame_ui", None)
+        if offer is None or ev.get("t") not in (
+                "match_result", "rematch", "match_found", "opponent_ready", "room", "set_end",
+                "match_start", "match_cancel", "disconnected"):
+            return False
+        if ev.get("t") not in ("match_result", "match_found"):
+            return offer(ev)                         # preserve the current result/policy while votes arrive
+        rule = ev.get("rematch_ui") or {}
+        community = rule.get("kind") == "community" and rule.get("room_mode") == "community"
+        community_waiting = t("Waiting for your turn. Room rotation continues.")
+        community_sitting_out = t("Sitting out. Choose Back in line to take a turn.")
+        rotation = t("Winner stays") if rule.get("rotation") == "winner" else t("Everyone in turn")
+        body = (t("Rematch starts automatically unless you decline.")
+                if rule.get("policy") == "auto_unless_declined"
+                else t("Both players must confirm the rematch."))
+        if community:
+            body = (community_sitting_out if "back_to_line" in rule.get("actions", ())
+                    else community_waiting) + " " + rotation
+        if ev.get("t") == "match_result":
+            result = _word(RESULT_TEXT, ev.get("status", ""))
+            body = result + ". " + body
+        else:
+            body = t("Opponent found")
+        title = (t("Opponent found") if ev.get("t") == "match_found" else
+                 t("Community room") if community else t("Rematch?"))
+        return offer(ev, {"title": title,
+                          "body": body,
+                          "community_title": t("Community room"), "community_waiting": community_waiting,
+                          "community_sitting_out": community_sitting_out, "rotation": rotation,
+                          "community_next": t("Next turn in {seconds} s.", seconds="{seconds}"),
+                          "back_to_line": t("Back in line"), "sit_out": t("Sit out"),
+                          "auto": t("Rematch starts in {seconds} s unless you decline.", seconds="{seconds}"),
+                          "confirm": (t("Accept") if ev.get("t") == "match_found" else
+                                      t("Back in line") if community else t("Rematch")),
+                          "cancel": t("Sit out") if community else t("No thanks"),
+                          "next": "" if community else t("Next game"), "waiting": t("waiting for the opponent..."),
+                          "expired": t("The rematch offer expired. Return to the lobby.")})
 
     def _game_forward(self, key):
         """A match starts in the game (its in-game select, else its loading): if the launcher's window is the
@@ -1983,33 +2270,41 @@ class OnlineTab:
         rtt_of = {}
         plates = self.view.plates_on()
         challenged = self.chal.challenged_ids()
+        self.view.mention_hint.configure(text=t("Mention a player with @name; press Tab to complete.")
+                                         if self.client is not None and self.client.mentions_ok() else "")
         for p in ev.get("players", []):
             # another version: that is what matters (no challenge either way), not what they are doing
-            status = _word(STATUS_TEXT, p["status"]) if p["build"] == mine else t("other version")
+            same = self.client.compatible(p) if self.client else p["build"] == mine
+            status = _word(STATUS_TEXT, p["status"]) if same else t("other version")
             # (1.1.5: the best relay both measured, as the server estimates it; measured in a match: no "~")
             ms, measured = _list_ping(self.client, p, me)
             rtt_of[p["id"]] = (ms, measured)
             ping = _ping_cell(ms, measured)
             rating = "" if p["guest"] else p["rating"]
             rec = p.get("record") or [0, 0, 0]
-            name = p["name"] + (self._you_suffix() if me and p["id"] == me["id"] else "")
+            name = chat.display_name(dict(p, badge=self._player_badge(p))) + (
+                self._you_suffix() if me and p["id"] == me["id"] else "")
+            if p.get("region") in ("US", "EU"):
+                name += " [" + p["region"] + "]"
             main = self.table.fighter_name(p.get("main")) if p.get("main") else ""
-            tags = ("me",) if me and p["id"] == me["id"] else ("other",) if p["build"] != mine else ()
-            if not self.chal.playable(p, me, mine):
+            tags = ("me",) if me and p["id"] == me["id"] else ("other",) if not same else ()
+            if not self.chal.playable(p, me, mine, compatible_build=same):
                 tags += ("away",)              # (1.1.9: below the players you can play now)
             if p["id"] in challenged:
                 tags += ("challenged",)            # (your open challenge: the accent colour, tk_challenges.py)
-            entries.append((p["id"], (name, rank_text(p, plates), rating, _record(rec), main, status, ping),
+            mute = "" if me and p["id"] == me["id"] else t("Unmute") if self._is_muted(p["name"]) else t("Mute")
+            entries.append((p["id"], (name, rank_text(p, plates), rating, _record(rec), main, status, ping, mute),
                             self.view.player_image(ms, p), tags, p, ms))
         self._list_rtt = rtt_of
         tklist.sync(self.tv_players, self.chal.order_players(entries, (me or {}).get("id")))
         rows = []
         for r in ev.get("rooms", []):
+            same = self.client.compatible(r) if self.client else r["build"] == mine
             state = " ".join([_word(ROOM_STATE_TEXT, r["status"])] + self.rooms_ui.list_state(r)
-                             + ([t("(other version)")] if r["build"] != mine else [])
+                             + ([t("(other version)")] if not same else [])
                              + ([t("ranked")] if r["ranked"] else []))
             # the lock: nobody can join it now -- or only with its password / invite code
-            closed = r["status"] != "open" or r["build"] != mine or bool(r.get("private"))
+            closed = r["status"] != "open" or not same or bool(r.get("private"))
             ms, measured = rtt_of.get(r["owner"].get("id"), (None, False))
             rows.append((r["id"], (r["name"], r["owner"]["name"], state, _ping_cell(ms, measured)),
                          self.view.room_image(closed), ("closed",) if closed else ()))
@@ -2062,15 +2357,16 @@ class OnlineTab:
 
     def _set_ended(self, ev):
         self.set_locked = False
-        if ev.get("rated") and ev.get("games"):
+        if (ev.get("rated") or ev.get("casual")) and ev.get("games"):
             # a ranked set is over: its result and its one rating change, on the last game's result card
             self.set_bar = None
             text = sets.result_text(ev)
             if ev.get("tournament") and ev.get("status") not in ("confirmed", "forfeit"):
                 text = t("The set has no result; the tournament calls it again or its organizer decides")
             w = ev.get("wins") or [0, 0]
-            self.set_var.set(t("Set {mine}-{theirs}", mine=w[0], theirs=w[1]))
-            self.status(text + ".")
+            self.set_var.set(sets.status_text(dict(ev, state="ended")) if ev.get("casual") else
+                             t("Set {mine}-{theirs}", mine=w[0], theirs=w[1]))
+            self.status(text if text.endswith(".") else text + ".")
             if self.last_result is not None:
                 res = ev.get("result")
                 self.view.result(self.last_result, True if res == "win" else False if res == "loss" else None, text,
@@ -2130,7 +2426,8 @@ class OnlineTab:
     def _show_set_bar(self):
         """Between two games of a ranked set: the countdown to the next game (no vote), and a way out."""
         info, slot, _end = self.set_bar
-        buttons = [(t("Leave set (counts as a loss)"), self._leave_set, "circle")]
+        buttons = [(t("Leave set") if info.get("casual") else t("Leave set (counts as a loss)"),
+                    self._leave_set, "circle")]
         check = self.lag
         if check and lag.lagged(check.get("verdict")) and check.get("can_leave"):
             buttons.insert(0, (t("Leave: too laggy"), self._leave_for_lag))
@@ -2151,6 +2448,10 @@ class OnlineTab:
         if info.get("tournament"):
             ok = self.ask_yes_no(t("Leave the tournament set"),
                                  t("Leave this tournament set?\n\nYou lose the set."), parent=self.parent)
+        elif info.get("casual"):
+            ok = self.ask_yes_no(t("Leave the casual set"),
+                                 t("Leave this casual set?\n\nCompleted games keep their results. No set penalty or rating change."),
+                                 parent=self.parent)
         else:
             ok = self.ask_yes_no(t("Leave the ranked set"),
                                  t("Leave this ranked set?\n\nLeaving a ranked set counts as losing it."),
@@ -2192,9 +2493,9 @@ class OnlineTab:
         self.hide_bar()
         s = ev.get("set") or {}
         slot = self.driver.session_ticket.slot if self.driver and self.driver.session_ticket else 0
-        if s.get("rated"):
+        if s.get("rated") or s.get("casual"):
             self.set_var.set(sets.status_text(dict(s, next=None), slot))     # the cards' gold tag (no countdown)
-        if s.get("rated") and s.get("next"):
+        if (s.get("rated") or s.get("casual")) and s.get("next"):
             # the set goes on by itself: count down to the next game
             self.set_bar = (s, slot, time.monotonic() + float(s["next"].get("in") or 0))
             self._show_set_bar()
@@ -2405,10 +2706,17 @@ class OnlineTab:
             self.try_saved_login()
 
     def on_close(self):
-        try:
-            self.parent.after_cancel(self._after)
-        except (tk.TclError, ValueError):
-            pass
+        if self._closed:
+            return
+        self._closed = True
+        self.private_chat.reset()
+        if self._after is not None:
+            try:
+                self.parent.after_cancel(self._after)
+            except (tk.TclError, ValueError):
+                pass
+            self._after = None
+        self.spec.stop()
         self._stop_presence(wait=True)
         self.view.close()
         if self.pad is not None:
@@ -2442,15 +2750,34 @@ class OnlineTab:
         self.status(t("Starting a lobby server on this PC and asking the router to forward its ports...")
                     if self.map_var.get() else t("Starting a lobby server on this PC..."))
         proc = self.host_proc
+        ui_q = self.ui_q
+        tab_ref = weakref.ref(self)
+
+        def deliver(ev):
+            # Resolve only when the UI polls its queue. A reader finishing after
+            # on_close must never own the last reference to Tk objects.
+            tab = tab_ref()
+            if tab is not None and not tab._closed:
+                tab._host_event(proc, ev)
 
         def read():
-            for line in proc.stdout:
+            try:
+                for line in proc.stdout:
+                    try:
+                        ev = json.loads(line)
+                    except ValueError:
+                        continue
+                    ui_q.put(lambda ev=ev: deliver(ev))
+            finally:
+                proc.stdout.close()
+                # The host emits "stopped" before its process exits. Keep owning
+                # it until the reader reaps it, without waiting on the UI thread.
+                proc.wait()
                 try:
-                    ev = json.loads(line)
-                except ValueError:
-                    continue
-                self.ui_q.put(lambda ev=ev: self._host_event(proc, ev))
-            self.ui_q.put(lambda: self._host_event(proc, {"event": "exited"}))
+                    proc.stdin.close()
+                except (OSError, ValueError):
+                    pass
+                ui_q.put(lambda: deliver({"event": "exited"}))
         threading.Thread(target=read, daemon=True).start()
 
     def _host_event(self, proc, ev):
@@ -2476,7 +2803,7 @@ class OnlineTab:
             self.view.hosting(ev)
         elif kind == "error":
             self.status(t("Hosting failed: {message}", message=translate_message(ev.get("message"))), error=True)
-        elif kind in ("stopped", "exited"):
+        elif kind == "exited":
             self.host_proc = None
             self.host_info = None
             self.view.hosting(None)
@@ -2494,14 +2821,19 @@ class OnlineTab:
         try:
             proc.stdin.write("stop\n")
             proc.stdin.flush()
-            proc.stdin.close()
         except (OSError, ValueError):
             pass
+        finally:
+            try:
+                proc.stdin.close()
+            except (OSError, ValueError):
+                pass
         if wait:
             try:
                 proc.wait(wait)
             except subprocess.TimeoutExpired:
                 proc.kill()
+                proc.wait()
 
 
 def fighters_random():

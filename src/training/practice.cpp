@@ -370,7 +370,9 @@ extern "C" void t5_practice_pads(uint16_t* p1, uint16_t* p2)
 
     /* the dummy: recording (your pad plays it), a recording, its behaviour, or the game's own */
     if (g_rec.state() == Recorder::State::Recording) {
-        const uint16_t rel = hide ? 0 : to_rel((uint16_t)(raw & ~(kSelect | kStart)), me.right);
+        /* Your pad controls the dummy directly: store forward/back using its current
+         * side, not P1's. Decoding with that same side preserves the live pad direction. */
+        const uint16_t rel = hide ? 0 : to_rel((uint16_t)(raw & ~(kSelect | kStart)), dm.right);
         g_rec.record(rel);
         *p2 = from_rel(rel, dm.right);
         *p1 = 0;

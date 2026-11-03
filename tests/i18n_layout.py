@@ -275,6 +275,12 @@ class Client:
     def private_rooms_ok(self):
         return True
 
+    def badges_ok(self):
+        return True
+
+    def mentions_ok(self):
+        return True
+
     life = 100
 
     def training_ok(self):          # (training rooms, the health handicap: tk_rules.py)
@@ -298,6 +304,7 @@ class Client:
     def __init__(self):
         self.me = {"id": "p1", "name": "Me", "guest": False, "rating": 1500, "record": [3, 2, 0], "status": "idle",
                    "main": "jin", "tier": 31, "rank": "Lord of War", "provisional": False}
+        self.players = [dict(player) for player in PLAYERS]
         self.events = __import__("queue").Queue()
 
     friend_list = {

@@ -163,9 +163,19 @@ before it was public; it closed 2 s after its start on every PC with a .pkg, als
     update). Only now may players be told it is out. Then check the release page: the zip, `SHA256SUMS` and
     `SHA256SUMS.sig` are attached, the notes are right.
 
-**What players' launchers do with it** (`launcher/updater.py`, README "Updating"): launchers with the
-self-update ask `GET /repos/TheWishin/T5DROnline/releases/latest` at start (at most once an hour) and
-offer what it returns. That endpoint never returns drafts or pre-releases, so:
+**What players' launchers do with it** (`launcher/updater.py`, README "Updating"): at start and from
+**Check for updates**, new launchers first ask the shipped default lobby for release metadata in
+`welcome.latest_release`. The server caches GitHub's latest published release, only when it matches
+the version announced with `t5lobby-admin release <new>`. It refreshes in the background, rather than
+spending a GitHub API request for every launcher check. The launcher parses this metadata with the
+same rules as a direct GitHub response. An older or unavailable lobby, or one without usable metadata,
+falls back to `GET /repos/TheWishin/T5DROnline/releases/latest`, retaining the conditional request and
+rate-limit cache. Older launchers continue using GitHub directly; the lobby protocol stays at version 1.
+The cache expires after five minutes and failed refreshes leave the lobby metadata unavailable.
+`release --clear` clears the lobby announcement and metadata; launchers can still find updates through
+GitHub. Servers with `T5L_BUILDS` also return the metadata in the build-rejection reply, allowing an
+update check without admitting that build to play. The maintainer must deploy the server changes to
+enable the lobby path. That endpoint never returns drafts or pre-releases, so:
 
 - a draft is offered to nobody, nor is a published pre-release (step 7: the workflow makes every draft a
   pre-release); marking it latest (step 9) offers it to everyone within about an hour;

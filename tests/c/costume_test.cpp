@@ -10,6 +10,8 @@
  *     shop's tables (hardening 1.1.4): a part worn in another part's place, a part the costume does not
  *     have, a colour the costume does not have (security review 3: colour 31) are refused, a costume the
  *     character does not have wears nothing;
+ *   - FIGHT START's actual selection: missing/rejected blocks use all three unequipped costumes,
+ *     valid blocks stay byte for byte, both slot mappings agree, old replay zero blocks stay exact;
  *   - the tables as the game keeps them, built here from made-up items (no game data): a data entry
  *     XOR-coded and summed like T55DATA1.BIN's, the pack, PAC nodes named and not, a directory XOR-coded,
  *     the colour file, a model without one; every malformed pack refused whole, random packs never read
@@ -206,6 +208,102 @@ static void check_valid()
     CHECK(!block_custom(b), "a fresh block is not customized");
 }
 
+static void check_selection()
+{
+    uint8_t expected[kBlock], out[kBlock];
+    fresh_block(expected);  /* independent expected layout, including every bought and spare byte */
+    const Items items = lili_items();
+    const CharRules rules = lili_rules();
+    bool rules_ok = true;
+    int checks = 0;
+    auto validate = [&](const uint8_t* b, int c, const char** why) {
+        checks++;
+        CHECK(c == 31, "selection validated unexpected character %d", c);
+        if (!rules_ok) { *why = "the game's item tables could not be read"; return false; }
+        return block_valid(b, items, rules, why);
+    };
+    auto fallback = [&](const std::vector<uint8_t>& wire, int c, bool replay, const uint8_t* recorded,
+                        const char* what) {
+        memset(out, 0xA5, sizeof out);  /* no bytes may survive from an earlier match */
+        const char* why = nullptr;
+        CHECK(!select_block(out, c, wire.data(), wire.size(), replay, recorded, validate, &why),
+              "%s selected a custom block", what);
+        CHECK(!memcmp(out, expected, kBlock), "%s did not select the complete unequipped block", what);
+        CHECK(!block_custom(out), "%s left a part or colour worn", what);
+        CHECK(block_valid(out, Items(), CharRules()), "%s fallback needs item rules", what);
+        CHECK(why != nullptr, "%s has no diagnostic", what);
+    };
+
+    Table table, empty;
+    table.have[31] = true;
+    lili_block(table.blk[31]);
+    put16(table.blk[31] + 0x42, 0);  /* a valid zero worn-part sentinel stays unchanged too */
+    put32(table.blk[31] + kCostume + 0x50, 1); table.blk[31][kCostume + 0x56] = 0;
+    const std::vector<uint8_t> wire = to_wire(table), empty_wire = to_wire(empty);
+    fallback({}, 31, false, nullptr, "missing table");
+    auto malformed = wire; malformed[0] = 'X';
+    fallback(malformed, 31, false, nullptr, "malformed table");
+    fallback(empty_wire, 31, false, nullptr, "empty table");
+    fallback(wire, 30, false, nullptr, "character without a block");
+    fallback(wire, -1, false, nullptr, "unknown item character");
+    fallback(wire, kChars, false, nullptr, "out-of-range item character");
+    CHECK(checks == 0, "missing blocks reached the item validator");
+
+    CHECK(select_block(out, 31, wire.data(), wire.size(), false, nullptr, validate), "valid custom not selected");
+    CHECK(!memcmp(out, table.blk[31], kBlock), "valid custom bytes changed");
+    for (int bad = 0; bad < 3; bad++) {
+        Table rejected = table;
+        if (bad == 0) rejected.blk[31][0x57] = 1;
+        if (bad == 1) put16(rejected.blk[31] + kCostume + 0x46, 0x33);
+        if (bad == 2) rejected.blk[31][kCostume + 0x55] = 0;
+        fallback(to_wire(rejected), 31, false, nullptr, "rejected custom");
+    }
+    rules_ok = false;
+    fallback(wire, 31, false, nullptr, "missing item rules");
+    rules_ok = true;
+
+    /* Preserve historical zero/absent replay bytes, including without item rules.
+     * These are safe old default blocks, not a request for new customization. */
+    uint8_t zero[kBlock] = {}, rejected[kBlock];
+    memcpy(rejected, table.blk[31], kBlock); rejected[0x57] = 1;
+    rules_ok = false;
+    for (int legacy = 0; legacy < 2; legacy++) {
+        for (const int item_char : { -1, 31 }) {
+            const int before = checks;
+            memset(out, 0xA5, sizeof out);
+            CHECK(!select_block(out, item_char, nullptr, 0, true, legacy ? zero : nullptr, validate),
+                  "legacy replay selected a custom block");
+            CHECK(!memcmp(out, zero, kBlock), "legacy replay default bytes changed");
+            CHECK(checks == before, "legacy replay default needed item rules");
+        }
+    }
+    rules_ok = true;
+    fallback({}, 31, true, rejected, "rejected replay block");
+    fallback({}, -1, true, table.blk[31], "replay with unknown item character");
+    CHECK(select_block(out, 31, nullptr, 0, true, table.blk[31], validate), "valid replay block not selected");
+    CHECK(!memcmp(out, table.blk[31], kBlock), "valid replay bytes changed");
+    CHECK(select_block(out, 31, nullptr, 0, true, expected, validate), "canonical replay block refused");
+    CHECK(!memcmp(out, expected, kBlock), "canonical replay bytes changed");
+
+    /* Host and joiner place their own sent wire at their own slot, the peer's at the other slot.
+     * The selection has no dependence on ownership or a previous match: test mixed and all-default rematches. */
+    uint8_t pc[2][2][kBlock];
+    for (int match = 0; match < 4; match++) {
+        for (int me = 0; me < 2; me++) {
+            std::vector<uint8_t> wires[2];
+            const std::vector<uint8_t>& p1 = match & 1 ? wire : empty_wire;
+            const std::vector<uint8_t>& p2 = match & 2 ? wire : empty_wire;
+            wires[me] = me == 0 ? p1 : p2;
+            wires[1 - me] = me == 0 ? p2 : p1;
+            for (int s = 0; s < 2; s++)
+                select_block(pc[me][s], 31, wires[s].data(), wires[s].size(), false, nullptr, validate);
+        }
+        CHECK(!memcmp(pc[0], pc[1], sizeof pc[0]), "PCs selected different bytes in match %d", match);
+        CHECK(!memcmp(pc[0][0], match & 1 ? table.blk[31] : expected, kBlock), "P1 selection in match %d", match);
+        CHECK(!memcmp(pc[0][1], match & 2 ? table.blk[31] : expected, kBlock), "P2 selection in match %d", match);
+    }
+}
+
 /* ---- the tables as the game keeps them, built from made-up items ---- */
 static void put32le(std::vector<uint8_t>& v, size_t at, uint32_t x) { for (int i = 0; i < 4; i++) v[at + i] = (uint8_t)(x >> (8 * i)); }
 static void push32le(std::vector<uint8_t>& v, uint32_t x) { for (int i = 0; i < 4; i++) v.push_back((uint8_t)(x >> (8 * i))); }
@@ -397,6 +495,7 @@ int main()
     check_save();
     check_wire();
     check_valid();
+    check_selection();
     check_entry();
     check_pack();
     check_hash();

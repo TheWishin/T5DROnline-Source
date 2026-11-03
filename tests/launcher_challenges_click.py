@@ -321,8 +321,12 @@ def scenario():
         sel = select_player(A_, "Bob")
         check("a click on Bob's row selects Bob", sel and sel[0].startswith("Bob"), sel)
         labels = A_.run("list(tab.chal.delay_cb.cget('values'))")
-        check("the delay box offers auto / 0 / 1 / 2", len(labels) == 4 and labels[0].startswith("Delay: auto"),
-              labels)
+        extended = A_.run("hasattr(tab.client, 'challenge_delay_max') and "
+                          "tab.client.challenge_delay_max(tab.tv_players.selection()[0]) == 8")
+        top = 8 if extended else 2
+        check(f"the delay box offers auto and 0 through {top}",
+              len(labels) == top + 2 and labels[0].startswith("Delay: auto")
+              and labels[1:] == [f"Delay: {n}" for n in range(top + 1)], labels)
         A_.run("tab.chal.delay_var.set(tab.chal.delay_cb.cget('values')[3]); "
                "tab.chal.delay_cb.event_generate('<<ComboboxSelected>>')")
         check("choosing 'Delay: 2' is remembered in online.json",

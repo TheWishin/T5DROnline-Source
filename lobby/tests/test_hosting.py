@@ -576,8 +576,13 @@ class HostTest(unittest.TestCase):
             self.assertIn("[dry run]", log)
             self.assertIn("HostedGuest", log)
         finally:
-            if proc.poll() is None:
-                proc.kill()
+            try:
+                if proc.poll() is None:
+                    proc.kill()
+                proc.wait(15)
+            finally:
+                proc.stdin.close()
+                proc.stdout.close()
 
     def test_run_py_usage(self):
         r = subprocess.run([sys.executable, os.path.join(LOBBY, "run.py")], capture_output=True, text=True)
@@ -848,6 +853,7 @@ class FakeIgd:
     def stop(self):
         self.running = False
         self.http.shutdown()
+        self.http.server_close()
         self.ssdp.close()
 
 

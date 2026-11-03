@@ -19,14 +19,16 @@ what the match before it left.
 """
 import datetime
 import glob
+import hashlib
 import json
 import os
+import shutil
 import struct
 import zlib
 
 MAGIC = b"T5REPLAY 1\n"
 EXT = ".t5replay"
-DEFAULT_KEEP = 200              # newest files kept in native/replays (older ones are deleted at launcher start)
+DEFAULT_KEEP = 200              # default for the explicit prune helper; the launcher never prunes automatically
 
 NAMES = ["Paul", "Law", "Lei", "King", "Yoshimitsu", "Nina", "Hwoarang", "Xiaoyu", "Christie", "Jin", "Julia", "Kuma",
          "Panda", "Bryan", "Heihachi", "Kazuya", "Lee", "Steve", "Marduk", "Mokujin", "Eddy", "Jack-5", "Roger Jr.",
@@ -77,6 +79,16 @@ def split(path):
 
 
 COSTUME_BLOCK = 0x108          # src/directfight/costume_logic.h kBlock (format 3)
+MAX_VERSION = 7               # format 7: guarded START+SELECT; format 6 adds agreed automatic skips
+
+
+def _payload_version(b):
+    if len(b) < 8 or b[:4] != b"T5RP":
+        raise ReplayError("not a replay payload")
+    version = struct.unpack_from("<I", b, 4)[0]
+    if not 1 <= version <= MAX_VERSION:
+        raise ReplayError(f"replay format {version} (this launcher reads 1 to {MAX_VERSION})")
+    return version
 
 
 class _R:
@@ -114,11 +126,10 @@ def read_payload(path):
         b = zlib.decompress(z)
     except zlib.error as e:
         raise ReplayError("damaged data") from e
-    if b[:4] != b"T5RP":
-        raise ReplayError("not a replay payload")
+    version = _payload_version(b)
     r = _R(b)
     r.i = 4
-    out = {"version": r.u32()}
+    out = {"version": r.u32(), "soft_reset_guard": version >= 7}
     hf = r.u32()
     out["rollback"] = bool(hf & 1)
     # format 4: bit 1 the select screen's generator mixes the match number (older: one seed per session),
@@ -147,9 +158,11 @@ def read_payload(path):
             m["costumes"] = [b[r.i:r.i + COSTUME_BLOCK].hex(), b[r.i + COSTUME_BLOCK:r.i + 2 * COSTUME_BLOCK].hex()]
             r.i += 2 * COSTUME_BLOCK
         # format 5: the match's rules (src/netplay/match_rules.h): bit 0 a training fight, bits 8-15 / 16-23 each
-        # side's health in percent (0 = 100)
+        # side's health in percent (0 = 100). Format 6 assigns bit 1 to automatic after-round skips;
+        # an older file's reserved bit must not change how that recording is simulated.
         rules = r.u32() if out["version"] >= 5 else 0
         m["training"] = bool(rules & 1)
+        m["auto_skip_after_round"] = version >= 6 and bool(rules & 2)
         m["life"] = [((rules >> 8) & 0xFF) or 100, ((rules >> 16) & 0xFF) or 100]
         ms.append(m)
     out["matches"] = ms
@@ -258,7 +271,7 @@ def for_history(entries, when, mine=None, theirs=None, opponent=None, score=None
 def list_replays(folder):
     """Every match of every replay file in folder, newest first; files that cannot be read are skipped."""
     out = []
-    for path in glob.glob(os.path.join(folder, "*" + EXT)):
+    for path in glob.glob(os.path.join(glob.escape(folder), "*" + EXT)):
         try:
             h = read_header(path)
             # a header line that is JSON but not what the game writes (a damaged or hand-made file: a side other
@@ -274,11 +287,10 @@ def list_replays(folder):
 
 
 def _by_age(folder):
-    """The replay files in folder, newest first. A file that goes between the listing and its time (deleted by the
-    Replays tab or another launcher pruning at the same moment) is left out: prune() runs while the launcher starts,
-    and a FileNotFoundError there kept the launcher from opening."""
+    """Replay files, newest first; skip a file deleted between listing and stat (for example in another
+    launcher's Replays tab). Folder changes never prune older files automatically."""
     out = []
-    for p in glob.glob(os.path.join(folder, "*" + EXT)):
+    for p in glob.glob(os.path.join(glob.escape(folder), "*" + EXT)):
         try:
             out.append((os.path.getmtime(p), p))
         except OSError:
@@ -291,6 +303,62 @@ def newest(folder):
     """The newest replay file in folder, or None."""
     files = _by_age(folder)
     return files[0] if files else None
+
+
+def move_replays(source, destination):
+    """Move replay files on the player's request, returning (moved, retained).
+
+    A collision or any per-file failure leaves the original in place. Copy exclusively, flush and
+    verify the complete bytes before removing the source (including across drives). Replay timestamps
+    are kept so the problem report still chooses the newest recording. Unrelated files stay put.
+    The caller must prevent a live game from recording while this runs.
+    """
+    if os.path.samefile(source, destination):
+        return 0, 0
+    if not os.path.isdir(destination):
+        raise NotADirectoryError(destination)
+    with os.scandir(source) as entries:
+        paths = [e.path for e in entries if e.name.lower().endswith(EXT) and e.is_file(follow_symlinks=False)]
+    moved = retained = 0
+    for path in paths:
+        target = os.path.join(destination, os.path.basename(path))
+        created = verified = False
+        try:
+            before = os.stat(path)
+            with open(path, "rb") as src, open(target, "xb") as dst:
+                created = True
+                shutil.copyfileobj(src, dst)
+                dst.flush()
+                os.fsync(dst.fileno())
+            # A game still writing, a full disk, or a damaged copy must leave the original intact.
+            after = os.stat(path)
+            if (before.st_size, before.st_mtime_ns, before.st_ino) != (after.st_size, after.st_mtime_ns, after.st_ino):
+                raise OSError("replay changed while copying")
+            if _file_digest(path) != _file_digest(target):
+                raise OSError("replay copy verification failed")
+            shutil.copystat(path, target)
+            final = os.stat(path)
+            if (before.st_size, before.st_mtime_ns, before.st_ino) != (final.st_size, final.st_mtime_ns, final.st_ino):
+                raise OSError("replay changed while verifying")
+            verified = True
+            os.remove(path)
+            moved += 1
+        except OSError:
+            retained += 1
+            if created and not verified:
+                try:
+                    os.remove(target)
+                except OSError:
+                    pass
+    return moved, retained
+
+
+def _file_digest(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        for block in iter(lambda: f.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.digest()
 
 
 def prune(folder, keep=DEFAULT_KEEP):
@@ -358,7 +426,7 @@ def strip_names(path, placeholder="<player>"):
         raise ReplayError("damaged data") from e
     # walk to the names in the match table and drop them
     r = _R(bytes(b))
-    version = struct.unpack_from("<I", b, 4)[0]
+    version = _payload_version(b)
     # magic, version, flags/slot/delay/rb_delay/seed/match seed, frames, hash every (, last frame)
     r.i = 4 + 4 + 4 * 6 + 4 * 2 + (4 if version >= 2 else 0)
     nm = r.u32()

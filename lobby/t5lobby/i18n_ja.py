@@ -10,6 +10,87 @@ Same keys and groups as i18n_de.py; tests/test_i18n.py and tools/i18n_extract.py
 """
 
 MESSAGES = {
+    "Intel HD Graphics 4400: graphics device lost": "Intel HD Graphics 4400：グラフィックスデバイスが失われました",
+    "Game log: Intel HD Graphics 4400 was selected and the graphics device was lost.":
+        "ゲームログ：Intel HD Graphics 4400 が選択され、グラフィックスデバイスが失われました。",
+    "private messages are unavailable": "プライベートメッセージを利用できません",
+    "private messages: slow down": "プライベートメッセージ：少し待ってください",
+    "write a private message first": "先にプライベートメッセージを入力してください",
+    "muted is a boolean": "muted は真偽値で指定してください",
+    "the private mute list is full": "プライベートメッセージのミュートリストがいっぱいです",
+    "private reports: slow down": "プライベート通報：少し待ってください",
+    "choose between 1 and 5 private message lines": "プライベートメッセージを1〜5行選択してください",
+    "these private message lines cannot be verified; reconnect and try new lines":
+        "これらのプライベートメッセージ行を検証できません。再接続して新しい行で試してください",
+    "Intel HD Graphics 4400 lost the graphics device (exit code 12). Try the latest graphics driver offered by your PC maker, close GPU-heavy programs and overlays, and choose Lowest (0.5x) Internal resolution. If this PC has another GPU, select it for t5dr.exe in Windows Graphics settings. These steps may not fix it. If it still fails, click Report a problem and send the report to the maintainer.":
+        "Intel HD Graphics 4400 のグラフィックスデバイスが失われました（終了コード 12）。PC メーカーが提供する最新のグラフィックスドライバーを試し、GPU 負荷の高いプログラムやオーバーレイを閉じ、内部解像度を最低（0.5x）にしてください。別の GPU がある場合は、Windows のグラフィック設定で t5dr.exe 用に選択してください。これらの手順で解決するとは限りません。引き続き失敗する場合は「問題を報告」をクリックし、レポートを管理者に送ってください。",
+    # Private chat.
+    "Private messages": "プライベートメッセージ",
+    "Private messages ({count})": "プライベートメッセージ ({count})",
+    "Message player": "メッセージを送る",
+    "Private messages are relayed, not saved by the server. Only lines you select are sent with a report.":
+        "プライベートメッセージはサーバーが中継し、保存はしません。通報時は選択した行だけが送信されます。",
+    "Message {name}": "{name} にメッセージ",
+    "Report selected lines": "選択した行を通報",
+    "Select up to {count} lines to report.": "通報する行を {count} 行まで選択してください。",
+    "Send selected lines to moderators?": "選択した行をモデレーターに送信しますか？",
+    "Report sent to moderators.": "モデレーターに通報を送信しました。",
+    "Private chat is unavailable on this server.": "このサーバーではプライベートチャットを利用できません。",
+    "Private messages are kept only until you log out or close the launcher.":
+        "プライベートメッセージはログアウトするかランチャーを閉じるまでだけ保持されます。",
+    "Block {name}? This also leaves any running match against them.":
+        "{name} をブロックしますか？この相手との進行中の対戦からも退出します。",
+    "DEV": "DEV",
+    "Mention a player with @name; press Tab to complete.": "@nameでプレイヤーに呼びかけます。Tabキーで名前を補完できます。",
+    # ---- lobby/t5lobby/tk_ranked_chars.py and its profile column headings (1.2.0)
+    "Ranked by character": "キャラクター別 Ranked 戦績",
+    "No ranked games played.": "Ranked の対戦記録はありません。",
+    "Games": "対戦数",
+    "Losses": "敗北",
+    "Draws": "引き分け",
+    # Simultaneous room tables (1.2.0)
+    "mode is line or tables": "モードはlineかtablesです",
+    "table is 1 to {count}": "対戦台は1から{count}です",
+    "simultaneous room tables need a newer launcher; update it": "複数対戦台には新しいランチャーが必要です。更新してください",
+    "simultaneous room tables are casual and cannot be training rooms": "複数対戦台はカジュアル専用で、トレーニングルームにはできません",
+    "this room does not have simultaneous tables": "このルームには複数対戦台がありません",
+    "choose two different players for the table": "対戦台で対戦する別々のプレイヤーを2人選んでください",
+    "choose available players and an idle table": "対戦可能なプレイヤーと空いている対戦台を選んでください",
+    "you cannot pair these players": "このプレイヤー同士は対戦できません",
+    "One match, taking turns": "順番に1試合ずつ",
+    "Several matches at once": "複数の試合を同時進行",
+    "Room format:": "ルーム形式:",
+    "Tables...": "対戦台...",
+    "Room tables": "ルームの対戦台",
+    "Table {table}: {players}": "対戦台 {table}: {players}",
+    "Empty table": "空いている対戦台",
+    "Available: {names}": "対戦可能: {names}",
+    "Away: {names}": "離席中: {names}",
+    "Table:": "対戦台:",
+    "Player 1:": "プレイヤー1:",
+    "Player 2:": "プレイヤー2:",
+    "Set pair": "組み合わせを設定",
+    "Watch table": "対戦台を観戦",
+    "Select two different available players.": "対戦可能な別々のプレイヤーを2人選んでください。",
+    "Select a table.": "対戦台を選んでください。",
+    "Available to play": "対戦に参加",
+    "You are away until you press Available to play.": "「対戦に参加」を押すまで離席扱いになります。",
+    "You are available for a free table.": "空いている対戦台で対戦できる状態です。",
+    "this server has no simultaneous room tables": "このサーバーはルーム内の複数対戦台に対応していません",
+    # Casual first-to sets (1.2.0)
+    "the casual set goes on by itself": "カジュアルセットは自動で続行されます",
+    "FT{wins}": "FT{wins}",
+    "Casual sets:": "カジュアルセット:",
+    "First to:": "先取数:",
+    "Older launchers play single games.": "古いランチャーでは単発の対戦になります。",
+    "Casual set": "カジュアルセット",
+    "Casual set vs {name}": "{name}とのカジュアルセット",
+    "CASUAL SET · FT{wins}": "カジュアルセット · FT{wins}",
+    "Leave set": "セットを退出",
+    "Leave the casual set": "カジュアルセットを退出",
+    "Leave this casual set?\n\nCompleted games keep their results. No set penalty or rating change.": "このカジュアルセットを退出しますか？\n\n終了した対戦の結果は残ります。セットのペナルティやレーティングの変動はありません。",
+    "The casual set ended {mine}-{theirs}. Completed games keep their results; no rating change.": "カジュアルセットは{mine}-{theirs}で終了しました。終了した対戦の結果は残り、レーティングは変わりません。",
+    "first_to: 1, 2, 3, 5 or 10": "first_to: 1、2、3、5、10",
     # ---- launcher/controls_edit.py
     "Removed {sources} from your buttons: that is L2 / R2 at rest on a PlayStation pad, so the game held them all the time. Save to keep this.":
         "ボタンから {sources} を外しました。PlayStation パッドで L2 / R2 を離した状態のため、ゲームではずっと押されたままになっていました。残すには保存してください。",
@@ -560,7 +641,7 @@ MESSAGES = {
         "にバックアップします）。オンラインでは両プレイヤーが常に同じステージになります。Jinpachi と Random はカジュアルマッチとルームで使えますが、Ranked では使えません。",
     "Sound and start": "サウンドと起動",
     "Mute sound": "ミュート",
-    "Sound and taskbar flash when a match is found, I am challenged or invited, or someone joins my room": "対戦相手が見つかったとき、対戦の申し込みや招待を受けたとき、誰かが自分のルームに入ったときに、音を鳴らしてタスクバーを点滅させる",
+    "Sound and taskbar flash for lobby notifications": "ロビーの通知時に音を鳴らしてタスクバーを点滅させる",
     "Start minimized, without taking focus (for testing)": "最小化して起動、フォーカスを奪わない（テスト用）",
     "Advanced: extra settings, one NAME=VALUE per line": "詳細：追加設定（1行に1つ、NAME=VALUE）",
     "Internal resolution": "内部解像度",
@@ -2245,6 +2326,8 @@ MESSAGES = {
         "観戦",
     "Friends and room visitors may watch my online matches":
         "フレンドとルームの訪問者が自分のオンライン対戦を観戦できる",
+    "Automatically watch matches while idle":
+        "待機中は自動で対戦を観戦する",
     "Also my ranked matches":
         "Ranked 対戦も観戦できる",
     "They see the match a few seconds late, in their own game. Only when both players allow it; a "
@@ -2483,6 +2566,7 @@ MESSAGES = {
     "Casual L": "カジュアル敗",
     "Casual W": "カジュアル勝",
     "Challenge withdrawn: a match started.": "対戦申し込みは取り下げられました: 試合が始まりました。",
+    "input delays above 2 frames need a newer launcher and server": "3フレーム以上の入力遅延には新しいランチャーとサーバーが必要です",
     "Delay: auto": "遅延: 自動",
     "Delay: {frames}": "遅延: {frames}",
     "Input delay {frames} (auto, from the ping)": "入力遅延 {frames}（自動、Pingから）",
@@ -2511,7 +2595,79 @@ MESSAGES = {
     # launcher Settings "Screen side" and the Online tab's casual row ("Always left", 1.1.9, casual matches only;
     # docs/NETPLAY.md)
     "Screen side": '画面の向き',
-    "Always see me on the left": '自分を常に左側に表示',
+    "As dealt": "割り当てどおり",
+    "Always left": "常に左側",
+    "Always right": "常に右側",
+    "Casual matches only: show your fighter on the chosen side and swap left/right controls when mirrored. Ranked and Quick matches keep the dealt side. Offline: Versus previews the chosen side.":
+        "カジュアル対戦のみ：選んだ側に自分のキャラクターを表示し、左右反転時は左右の操作も入れ替えます。Ranked と Quick Match は割り当てられた側のままです。オフライン：Versus で選んだ側の表示を確認できます。",
+    "Graphics compatibility warning": "グラフィックス互換性の警告",
+    "Could not stop the shader warm-up": "シェーダーのウォームアップを停止できませんでした",
+    "This PC lists older Intel graphics ({gpus}). Intel HD 4400-class graphics may lack a working Direct3D 12 driver and may not run the game. Building the game does not add graphics support. If this PC has another graphics card, select it in Windows Graphics settings. Continue building?":
+        "この PC には古い Intel グラフィックス（{gpus}）が搭載されています。Intel HD 4400 クラスでは、動作する Direct3D 12 ドライバーがなく、ゲームを実行できない場合があります。ゲームをビルドしてもグラフィックスの対応状況は変わりません。別のグラフィックスカードがある場合は、Windows のグラフィックス設定で選択してください。ビルドを続けますか？",
+    "Launcher button bindings and macros take priority over the game's Controller Setup. Set them in Settings > Set up controllers… in the launcher.":
+        "ランチャーのボタン割り当てとマクロは、ゲーム内の Controller Setup より優先されます。ランチャーの「設定 > コントローラー設定…」で変更してください。",
     "Casual matches only (challenges, friends' invites, rooms): when you are P2, your screen shows the fight mirrored with you on the left, and your left and right are swapped. Your opponent sees the normal picture. Ranked and Quick matches stay as they are. Offline: Versus fights show the P2 side.":
         'カジュアル対戦のみ（対戦申し込み・フレンドの招待・ルーム）：P2 のとき、自分の画面だけ対戦が左右反転して自分が左側に表示され、左右の入力も入れ替わります。相手には通常の画面が表示されます。Ranked 対戦と Quick Match はそのままです。オフライン：Versus の対戦は P2 側の視点になります。',
+    # Replay folder in Settings (docs/REPLAYS.md)
+    "Replay folder":
+        "リプレイフォルダー",
+    "Choose an existing folder for new replays. Leave this empty to use the default. Old replays stay where they are unless you choose to move them.":
+        "新しいリプレイの保存先として既存のフォルダーを選んでください。空欄にすると既定のフォルダーを使います。移動を選ばない限り、古いリプレイは元の場所に残ります。",
+    "Browse...":
+        "参照...",
+    "Use default folder":
+        "既定のフォルダーを使う",
+    "Apply folder":
+        "フォルダーを適用",
+    "Using replay folder: {folder}":
+        "使用中のリプレイフォルダー: {folder}",
+    "Move existing replays from {source} to {destination}? Choose No to leave them where they are.":
+        "既存のリプレイを {source} から {destination} に移動しますか？ 元の場所に残すには「いいえ」を選んでください。",
+    "Moved {moved} replay file(s). {retained} file(s) remain in {source}; existing files were not replaced.":
+        "リプレイファイルを {moved} 個移動しました。{retained} 個のファイルは {source} に残っています。既存のファイルは置き換えていません。",
+    "Could not move replays: {error}. The original files have been kept.":
+        "リプレイを移動できませんでした: {error}。元のファイルは保持されています。",
+    "Close the running game before changing the replay folder.":
+        "リプレイフォルダーを変更する前に、起動中のゲームを終了してください。",
+    "Replay folder {folder} is missing or is not writable. Using the default folder: {default}.":
+        "リプレイフォルダー {folder} が見つからないか、書き込みできません。既定のフォルダーを使います: {default}。",
+    "The default replay folder {folder} is not writable. Replays cannot be saved there.":
+        "既定のリプレイフォルダー {folder} に書き込みできません。ここにはリプレイを保存できません。",
+    "Community room": "コミュニティルーム",
+    "Next turn in {seconds} s.": "次の対戦まで{seconds}秒。",
+    "Waiting for your turn. Room rotation continues.": "順番をお待ちください。ルームの交代ルールが続きます。",
+    "Sitting out. Choose Back in line to take a turn.": "休憩中です。「列に戻る」を選ぶと再び参加できます。",
+    "Rematch starts in {seconds} s unless you decline.": "辞退しなければ{seconds}秒後に再戦します。",
+    "invalid rematch policy": "再戦ルールが無効です",
+    "auto_skip_after_round must be boolean": "スキップ設定は有効か無効で指定してください",
+    "rematch rules require an updated launcher": "再戦ルールにはランチャーの更新が必要です",
+    "rematch rules require a classic casual room": "再戦ルールは通常のカジュアルルームで利用できます",
+    "round skips require an updated launcher": "ラウンドのスキップにはランチャーの更新が必要です",
+    "Rematch starts automatically unless you decline.": "辞退しなければ自動的に再戦します。",
+    "Both players must confirm the rematch.": "再戦には両プレイヤーの確認が必要です。",
+    "The rematch offer expired. Return to the lobby.": "再戦の受付時間が終了しました。ロビーに戻ってください。",
+    "Auto-skip replays and round endings (both players agree)": "リプレイとラウンド終了演出を自動スキップ（両者の同意）",
+    "Rematch rule:": "再戦ルール：",
+    "Both players confirm": "両プレイヤーが確認",
+    "Start automatically unless declined": "辞退しなければ自動開始",
+    "Skip replays after rounds (both players must agree)": "ラウンド後のリプレイをスキップ（両者の同意が必要）",
+    "this server has no in-game rematch": "このサーバーはゲーム内の再戦に対応していません",
+    # Server chat-filter notices (1.2.0).
+    "Message blocked: hate terms are not allowed.": "メッセージは送信されませんでした。差別的な表現は使用できません。",
+    "This name is not allowed.": "この名前は使用できません。",
+    "This room name is not allowed.": "このルーム名は使用できません。",
+    "Chat is muted for this account.": "このアカウントのチャットはミュートされています。",
+    "Cannot load the chat filter. Check T5L_CHAT_FILTER_PATH.": "チャットフィルターを読み込めません。T5L_CHAT_FILTER_PATH を確認してください。",
+    # Personal player mutes (1.2.0).
+    "Muted players...": "ミュート中のプレイヤー...",
+    "Muted players": "ミュート中のプレイヤー",
+    "Mute": "ミュート",
+    "Unmute": "ミュート解除",
+    "Muted {name}.": "{name} をミュートしました。",
+    "Unmuted {name}.": "{name} のミュートを解除しました。",
+    "Mute hides their lobby, room and private chat, mentions and invites for you. You can still play together. Block also prevents matches and ends friendship. Accounts remember mutes on this server; guests remember them on this device.": "ミュートすると、そのプレイヤーのロビー・ルーム・プライベートチャット、メンション、招待が自分に表示されなくなります。対戦は引き続き可能です。ブロックすると対戦もできなくなり、フレンド関係が解除されます。アカウントのミュート設定はこのサーバーに、ゲストの設定はこの端末に保存されます。",
+    "Mute hides this player's chat, mentions and invites for you. Block also prevents matches and private messages.": "ミュートすると、このプレイヤーのチャット、メンション、招待が自分に表示されなくなります。ブロックすると対戦とプライベートメッセージもできなくなります。",
+
+    "Personal mute is unavailable on this server.": "このサーバーでは個別ミュートを利用できません。",
+    "Chat is muted until {until}.": "チャットは {until} までミュートされています。",
 }

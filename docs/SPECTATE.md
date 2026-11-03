@@ -34,6 +34,38 @@ the same netcode playback path while it grows.
 - A launcher without spectating (before 1.1.3) is never watched (it cannot say yes) and never sees
   any of it; its player's matches just have no Watch.
 
+### Automatically watch while idle (1.2.0)
+
+Settings -> Spectators -> **Automatically watch matches while idle** is off by default. When enabled,
+the launcher can use the ordinary Watch action after 15 seconds of being idle in the lobby or waiting
+in a room. It does not start a spectator game while a game is already running, including an idle
+persistent online game: keeping that process for the player's own match saves its boot time.
+
+The order is the player's own room, a watchable friend, then a watchable public room. Friends and
+public rooms are ordered using the advertised rank, then rating, with a stable name or room-id tie
+break. A public room's available rank can describe its strongest advertised member or owner rather
+than the pair currently fighting; the lobby does not advertise an unrestricted global match list.
+Private or hidden rooms are never searched for. The client's `watch` flags are only hints: the
+existing server Watch handler checks both players' privacy, ranked permission, blocks, build and
+all guest, address and stream limits again. Auto-watch gets no extra place or priority.
+
+There is at most one automatic attempt per 30 seconds, and attempts at the same target are spaced
+by 120 seconds. Explicitly stopping a watch pauses automatic watching for 120 seconds. Queueing,
+ready checks, challenges and the player's own match take precedence; a pending answer cannot start
+a spectator game after that priority changes. Auto-watch uses existing spectate messages, so it
+needs no new server protocol. Servers without spectating simply have no eligible targets.
+
+Leaving a watch closes its owned spectator process rather than trying to turn that process into
+the player's game. The next match uses the match driver's own process. A server event is handled
+on the Online tab's nominal 100 ms poll; this is a scheduling interval, not a measured upper bound
+on leaving. Playback termination kills its captured process and waits at most 250 ms for the
+process to exit. A failed stop keeps that process visible to the launcher's running-game guard;
+it cannot silently free the game slot. An own-match launch waits up to 5 seconds for the previous
+process to be observed dead and refuses to reuse a still-running spectator. OS scheduling and
+process calls add overhead, so boot and
+termination times still need a real-machine check; no instant boot or strict wall-clock shutdown
+bound is claimed.
+
 ## How it works
 
 ```
@@ -67,8 +99,9 @@ the same netcode playback path while it grows.
    `T5_NET_MODE=replay T5_REPLAY_FILE=<that file>`. The game boots while the players' games still
    load: the SESSION record goes out at the players' handshake (`rec_session_known`, from
    `connect_locked`: the host's seed and delay, rollback when both offer it -- what frame 0 records),
-   the netplay core waits for it (`T5_REPLAY_LIVE_WAIT`, 300 s), the title starts VS and the select
-   screen waits for the first fight's line like a persistent game waits for its command. The
+   the live loader polls the available records once and returns without blocking. The title starts
+   VS and the select screen polls for the first fight's line like a persistent game waits for its
+   command; SESSION parameters are applied when they arrive. The
    playback sees the `T5LIVE` magic and reads the file as it grows: everything is the replay path
    (the recorder's slot, its sync points, seeds and counters, the direct fight's lines, the rollback
    or lockstep loop), plus:
@@ -206,7 +239,7 @@ Windows Firewall blocks the game"): both games start the session again, for the 
 stream id, so the same live file. A session that ends before its handshake writes nothing but the magic
 (no LAST, no END; `live_append`), so the new session's file (`CREATE_ALWAYS`, the magic again) continues
 the stream byte for byte where the uploader stands, and a spectator already watching gets the new
-session (its game was waiting for the first SESSION record anyway). The server keeps the stream while the
+session (its game polls for SESSION and the first fight while waiting at select). The server keeps the stream while the
 match is on its way to the relay (`_spec_tick`: `fallback` and state `relay` count as being played).
 A stream that never gets a session is ended by the server as before.
 
@@ -224,6 +257,10 @@ A stream that never gets a session is ended by the server as before.
 - `lobby/tests/test_tournaments.py` `SpectateSetTest`, `lobby/tests/test_tk_tour.py` `TkTourWatchTest`: a
   tournament set watched (the bracket's `watch`, the Tournaments page's Watch, the refusals).
 - `tests/test_replays.py`: the live stream's costume blocks played back, a restarted session's stream.
+  Its 1.2.0 synthetic `live-exit` fixture in `tests/c/replay_test.cpp` also covers END before the first
+  fight, waiting without END, preserving a buffered fight before END, and registered cancellation
+  during input and sync-point waits. These four new tests (five scenarios) were written but not
+  compiled or executed for this no-run change.
 - `tools/e2e/run.py --only int_tour_watch,int_tour_watch_ls,int_fw_costumes`: a tournament set with both
   players in custom costumes watched from the bracket (rollback, lockstep); a match moving onto the relay
   with costumes and a spectator who watched before the move.

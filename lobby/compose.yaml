@@ -8,6 +8,10 @@
 # Data (database, backups) lives in the named volume "t5lobby-data" (/data in the container).
 # TLS: put cert.pem/key.pem in ./tls (see docs/HOSTING.md) and set T5L_TLS_CERT=/tls/cert.pem,
 # T5L_TLS_KEY=/tls/key.pem in t5lobby.env; the server reloads them when they change.
+# For a separately managed hate-term list, create ./chat-filter/, copy the starter list from
+# t5lobby/server/data/chat_filter_terms.json into it, enable the directory mount below, and set
+# T5L_CHAT_FILTER_PATH=/chat-filter/chat_filter_terms.json in t5lobby.env. Mount the directory so
+# atomic file replacement stays visible inside the container; list edits need no server restart.
 services:
   lobby:
     build: .
@@ -28,6 +32,7 @@ services:
     volumes:
       - t5lobby-data:/data
       - ./tls:/tls:ro
+      # - ./chat-filter:/chat-filter:ro
     read_only: true
     tmpfs:
       - /tmp:size=16m

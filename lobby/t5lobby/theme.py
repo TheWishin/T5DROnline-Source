@@ -1249,6 +1249,29 @@ class Theme:
         return self._blank(f"empty_{w}_{h}", w, h)
 
 
+def _bind_edit_shortcuts(root):
+    """Windows editing shortcuts by virtual key, independent of the keyboard layout."""
+    if root.tk.call("tk", "windowingsystem") != "win32":
+        return
+    shortcuts = {0x56: "<<Paste>>", 0x43: "<<Copy>>", 0x58: "<<Cut>>", 0x41: "<<SelectAll>>"}
+
+    def edit(event):
+        # Tk's stock TEntry and Text shortcuts use Latin keysyms. Windows keycodes
+        # are virtual keys, so these also work with non-Latin keysyms. Leave
+        # AltGr / Ctrl+Alt to Tk (Windows' Alt mask is 0x20000).
+        if event.state & 0x20000:
+            return
+        virtual = shortcuts.get(event.keycode)
+        if virtual:
+            event.widget.event_generate(virtual)
+            return "break"              # stop propagation after exactly one operation
+
+    for cls in ("TEntry", "Text"):
+        # Keep Tk's virtual events (selection replacement, readonly/disabled checks)
+        # and its more specific shortcuts, including Shift+Insert, intact.
+        root.bind_class(cls, "<Control-KeyPress>", edit, add="+")
+
+
 def apply(widget):
     """The theme for this widget's Tk interpreter (made once)."""
     root = widget._root() if hasattr(widget, "_root") else widget
@@ -1256,6 +1279,7 @@ def apply(widget):
     if th is None:
         th = Theme(root)
         root._t5_theme = th
+        _bind_edit_shortcuts(root)
         # dark title bars for the main window and every dialog (Windows 10 20H1+ / 11)
         root.bind("<Map>", lambda e: dark_title_bar(e.widget) if e.widget is root else None, add="+")
         root.bind_class("Toplevel", "<Map>", lambda e: dark_title_bar(e.widget), add="+")

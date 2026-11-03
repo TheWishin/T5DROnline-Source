@@ -129,9 +129,10 @@ fi
 # ---------------------------------------------------------------------------- code
 step "code -> $CODE"
 run rm -rf "$CODE/t5lobby"
-run mkdir -p "$CODE/t5lobby/server" "$CODE/t5lobby/data"
+run mkdir -p "$CODE/t5lobby/server/data" "$CODE/t5lobby/data"
 for f in "$SRC"/t5lobby/*.py; do run install -m 0644 "$f" "$CODE/t5lobby/"; done
 for f in "$SRC"/t5lobby/server/*.py; do run install -m 0644 "$f" "$CODE/t5lobby/server/"; done
+for f in "$SRC"/t5lobby/server/data/*.json; do run install -m 0644 "$f" "$CODE/t5lobby/server/data/"; done
 for f in "$SRC"/t5lobby/data/*.json; do run install -m 0644 "$f" "$CODE/t5lobby/data/"; done
 run install -m 0644 "$SRC/servers.json" "$SRC/run.py" "$CODE/"
 own -R root:root "$CODE"

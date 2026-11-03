@@ -63,10 +63,16 @@
 
 #include "net_bind.h"
 #include "netplay.h"
+#include "rollback_delay.h"
 #include "replay.h"
+#include "replay_paths.h"
+#include "match_rule_agreement.h"
 
 /* libs/input/cellPad.c (patch 0009): the local input for a PS3 port, host-endian (HostPadData: netplay.h). */
 extern "C" int32_t cellPad_sample_local(uint32_t port_no, HostPadData* out);
+/* Runtime patch 0103: a host-only marker, not simulated state or a peer message.
+ * The VRR budget must not learn peer/barrier waits as local render cost. */
+extern "C" void cellGcm_vrr_external_hold(void);
 
 namespace np {
 namespace {
@@ -97,7 +103,8 @@ constexpr int      kMaxDelay = 30;            /* input delay frames, at most (T5
  * (in-game select, docs/DIRECTFIGHT.md "Character select in the game").
  * COSTUME: a piece of the sender's custom costume table and how much of the
  * receiver's it holds (docs/DIRECTFIGHT.md "Custom costumes online"). */
-enum : uint8_t { PKT_HELLO = 1, PKT_INPUT = 2, PKT_BYE = 3, PKT_PING = 4, PKT_REJECT = 5, PKT_PICK = 6, PKT_COSTUME = 7 };
+enum : uint8_t { PKT_HELLO = 1, PKT_INPUT = 2, PKT_BYE = 3, PKT_PING = 4, PKT_REJECT = 5, PKT_PICK = 6, PKT_COSTUME = 7,
+                PKT_RULES = 8 };
 enum : uint8_t { REJ_BUILD = 1, REJ_SESSION = 2 };
 
 #pragma pack(push, 1)
@@ -115,6 +122,7 @@ struct PingExt  { uint8_t flags; uint32_t frame; uint32_t t_us; uint32_t echo_us
 constexpr uint8_t PING_STARTED = 1;    /* the sender's lockstep has begun (frame 0 ran) */
 constexpr uint8_t PING_ROLLBACK = 2;   /* the sender offers rollback (as in its HELLO; the first HELLOs may predate the offer) */
 constexpr uint8_t PING_LOADING = 4;    /* the sender's main thread holds its frame for its loaders (set_loading) */
+constexpr uint8_t PING_MATCH_RULES = 8; /* repeats optional capability when the HELLO echo was lost */
 /* BYE may carry one byte after the header: why the sender leaves (none: it quit) */
 constexpr uint8_t BYE_QUIT = 0, BYE_LOAD_TIMEOUT = 1;
 struct RejectExt { uint8_t why; };
@@ -122,6 +130,7 @@ struct RejectExt { uint8_t why; };
  * pick: the sender's pick (0 = none yet; packed by the direct-fight code); ack: the
  * key of the peer's pick the sender holds -- the peer stops resending there */
 struct PickExt  { uint32_t key; uint32_t pick; uint32_t ack; };
+struct RulesExt { uint32_t ordinal; uint32_t rules; uint32_t ack; };
 /* COSTUME: hash/total describe the sender's whole table (FNV-1a 32, bytes); offset/len the
  * piece that follows (len 0: an acknowledgement only); ack_mask the pieces of the receiver's
  * table the sender holds, ack_hash that table's hash once the sender has all of it (else 0). */
@@ -129,6 +138,7 @@ struct CostumeExt { uint32_t hash; uint16_t total; uint16_t offset; uint16_t len
 constexpr uint32_t kCostumeMax   = 10240;   /* a table, at most (src/directfight/costume_logic.h: 9,283) */
 constexpr uint32_t kCostumeChunk = 1024;    /* a piece: at most 10, one bit each in ack_mask */
 constexpr uint32_t kHelloRollback = 1u;
+constexpr uint32_t kHelloMatchRules = 2u;  /* optional v4 extension; old peers ignore it */
 constexpr int      kRbAuto = 0xFF;    /* T5_RB_NET_DELAY=auto: the input delay follows the measured round trip */
 #pragma pack(pop)
 
@@ -223,6 +233,9 @@ struct Session {
     uint32_t build = 0;                /* FNV-1a of T5_NET_BUILD, 0 = not given */
     uint32_t seed = 0;                 /* T5_NET_SEED (the host's wins), 0 = use the session id */
     bool rb_peer = false;              /* the peer's HELLO offered rollback */
+    bool peer_match_rules = false, peer_match_rules_known = false;
+    MatchRuleAgreement match_rules;
+    ULONGLONG rules_sent_ms = 0, rules_started_ms = 0;
     /* Rollback input delay (docs/NETPLAY.md "Input delay"): each player's setting
      * (T5_RB_NET_DELAY = auto | 0 | 1 | 2 ..., HELLO flags bits 8-15); the host
      * picks the match's value when its match starts -- the setting both chose,
@@ -234,6 +247,8 @@ struct Session {
     int  rb_decided = -1;              /* host / local: the match's value once picked */
     int  peer_rbd = -1;                /* joiner: the host's pick, once received */
     int  rb_auto_ms = 60;              /* T5_RB_NET_DELAY_AUTO: round trip up to which auto picks 1 frame */
+    bool rb_adaptive_delay = false;     /* opt-in jitter policy, frozen at match start */
+    int  rb_adaptive_cap = 3;           /* never above the existing lockstep delay */
     uint32_t peer_ping_us = 0;         /* t_us of the peer's last PING, and when it arrived (our clock) */
     uint64_t peer_ping_rx_us = 0;
     float rtt_ms[32] = {};             /* round-trip samples from PING echoes */
@@ -377,6 +392,18 @@ const char* env_raw(const char* k)
 
 const char* env(const char* k) { const char* v = env_raw(k); return (v && *v) ? v : nullptr; }
 
+/* A replay started through the session overlay already has a UTF-8 path. A
+ * process started by the launcher needs the original Unicode environment. */
+std::string path_env(const char* k)
+{
+    {
+        std::lock_guard<std::mutex> lk(g_env_mu);
+        auto it = g_env_over.find(env_key(k));
+        if (it != g_env_over.end()) return it->second.first ? it->second.second : std::string();
+    }
+    return replay_paths::env(k);
+}
+
 /* What decides this PC's floating-point results, for the log: the target the
  * lifted code was compiled for (t5dr_game.dll exports it; a one-exe build has
  * it from CMake) and the guest thread's MXCSR. Both PCs must compute the same
@@ -438,13 +465,26 @@ uint16_t script_mask(const std::vector<ScriptEvent>& ev, uint32_t f)
  * keyboard's Enter, a remap or macro in controls.ini) arrives here as the START
  * bit. */
 std::atomic<bool> g_no_start{ false };
+/* Diagnostics only: once per result per process, even if START is held or a
+ * device is sampled repeatedly. This does not decide any frame's inputs. */
+std::atomic<unsigned> g_start_noted{ 0 };
 
 /* One port's HostPadData into *in (nothing when the port had nothing). */
 void pad_into(const HostPadData& d, PadInput* in)
 {
     if (d.len == 0) return;
     uint16_t b = (uint16_t)((d.button[2] & 0xFF) | ((d.button[3] & 0xFF) << 8));
+    const uint16_t mapped = b;
     if (g_no_start.load(std::memory_order_relaxed)) b &= (uint16_t)~B_START;
+    if (mapped & B_START) {
+        const bool blocked = (b & B_START) == 0;
+        const unsigned seen = blocked ? 1u : 2u;
+        if (!(g_start_noted.fetch_or(seen, std::memory_order_relaxed) & seen))
+            note_("START received from mapped local input: %s (controller mapping reached netplay; "
+                  "first observation of this result in this process)",
+                  blocked ? "blocked by no-pause online before sending"
+                          : "passed by the local START gate; online skips still require both players");
+    }
     in->buttons |= b;
     in->rx = (uint8_t)d.button[4]; in->ry = (uint8_t)d.button[5];
     in->lx = (uint8_t)d.button[6]; in->ly = (uint8_t)d.button[7];
@@ -627,7 +667,8 @@ Hdr make_hdr(uint8_t type)
 void send_hello_locked(const sockaddr_in* to = nullptr)
 {
     State& s = S();
-    struct { Hdr h; HelloExt x; } p = { make_hdr(PKT_HELLO), { s.build, s.seed, s.rb_offer ? (kHelloRollback | ((uint32_t)(s.rb_delay & 0xFF) << 8)) : 0u } };
+    struct { Hdr h; HelloExt x; } p = { make_hdr(PKT_HELLO), { s.build, s.seed, kHelloMatchRules |
+        (s.rb_offer ? (kHelloRollback | ((uint32_t)(s.rb_delay & 0xFF) << 8)) : 0u) } };
     send_to(&p, sizeof p, to);
     s.last_hello_ms = GetTickCount64();
 }
@@ -640,7 +681,7 @@ void send_ping_locked()
     const uint64_t now = qpc_us();
     struct { Hdr h; PingExt x; } p = { make_hdr(PKT_PING), { (uint8_t)((s.started ? PING_STARTED : 0) |
                                                                       (s.rb_offer ? PING_ROLLBACK : 0) |
-                                                                      (s.loading ? PING_LOADING : 0)), s.local_hash_max,
+                                                                      (s.loading ? PING_LOADING : 0) | PING_MATCH_RULES), s.local_hash_max,
                                                             (uint32_t)now, s.peer_ping_us,
                                                             s.peer_ping_us ? (uint32_t)(now - s.peer_ping_rx_us) : 0u,
                                                             (uint8_t)(s.mode == Mode::Host && s.rb_decided >= 0 ? s.rb_decided : 0xFF) } };
@@ -655,6 +696,15 @@ void send_pick_locked()
     struct { Hdr h; PickExt x; } p = { make_hdr(PKT_PICK), { s.pick_key, s.pick_val, s.peer_pick_key } };
     send_raw(&p, sizeof p);
     s.pick_sent_ms = GetTickCount64();
+}
+
+void send_rules_locked()
+{
+    State& s = S();
+    struct { Hdr h; RulesExt x; } p = { make_hdr(PKT_RULES),
+        { s.match_rules.ordinal, s.match_rules.rules, s.match_rules.peer_ordinal } };
+    send_raw(&p, sizeof p);
+    s.rules_sent_ms = GetTickCount64();
 }
 
 /* Custom costumes: FNV-1a 32 of a table; the pieces a table of n bytes has. */
@@ -784,6 +834,13 @@ void decide_rb_delay_locked()
                  rtt, samples, samples ? "" : ", lobby's measurement", pick, s.rb_auto_ms,
                  s.rb_delay == kRbAuto ? "auto" : std::to_string(s.rb_delay).c_str(),
                  peer < 0 ? "?" : peer == kRbAuto ? "auto" : std::to_string(peer).c_str());
+        if (s.rb_adaptive_delay && s.mode == Mode::Host) {
+            const int before = pick;
+            pick = detail::jitter_delay(s.rtt_ms, std::min<uint32_t>(s.nrtt, 32), pick,
+                                       std::min(s.rb_adaptive_cap, s.delay));
+            note("jitter delay: %d -> %d frame(s), %d PING samples, cap %d (fixed for this match)",
+                 before, pick, samples, std::min(s.rb_adaptive_cap, s.delay));
+        }
     }
     if (pick > s.delay) pick = s.delay;
     s.rb_decided = pick;
@@ -983,6 +1040,10 @@ void forget_peer_locked()
     s.peer_ack = 0;
     s.peer_started = false;
     s.rb_peer = false;
+    s.peer_match_rules = false;
+    s.peer_match_rules_known = false;
+    s.match_rules = MatchRuleAgreement();
+    s.rules_started_ms = s.rules_sent_ms = 0;
     s.cos_acked = 0; s.cos_peer_has_ours = false;           /* a new process: our table again, its own anew */
     s.cos_peer.clear(); s.cos_peer_hash = 0; s.cos_peer_total = 0; s.cos_peer_mask = 0; s.cos_peer_done = false;
 }
@@ -1112,9 +1173,13 @@ void handle_packet(const uint8_t* p, int n, const sockaddr_in& from)
                 relatch_locked(from);
             }
             s.last_rx_ms = GetTickCount64();
+            s.peer_match_rules = (x.flags & kHelloMatchRules) != 0;
+            s.peer_match_rules_known = true;
             if (s.mode == Mode::Host) send_hello_locked();   /* it may have missed ours */
             return;
         }
+        s.peer_match_rules = (x.flags & kHelloMatchRules) != 0;
+        s.peer_match_rules_known = true;
         s.rb_peer = (x.flags & kHelloRollback) != 0;
         if (s.rb_peer) s.peer_rb_delay = (int)((x.flags >> 8) & 0xFF);
         if (s.mode == Mode::Host) {
@@ -1184,6 +1249,8 @@ void handle_packet(const uint8_t* p, int n, const sockaddr_in& from)
     if (h->type == PKT_PING) {
         if (n >= (int)(sizeof(Hdr) + sizeof(PingExt))) {
             PingExt x; memcpy(&x, h + 1, sizeof x);
+            s.peer_match_rules = (x.flags & PING_MATCH_RULES) != 0;
+            s.peer_match_rules_known = true;
             if (x.flags & PING_STARTED) s.peer_started = true;
             if (x.flags & PING_LOADING) s.peer_loading_ms = GetTickCount64();
             if (!s.started) s.rb_peer = (x.flags & PING_ROLLBACK) != 0;   /* settled before lockstep begins */
@@ -1195,6 +1262,15 @@ void handle_packet(const uint8_t* p, int n, const sockaddr_in& from)
             }
             s.peer_ping_us = x.t_us; s.peer_ping_rx_us = now;
             if (x.rbd != 0xFF && s.mode == Mode::Join) s.peer_rbd = x.rbd;
+        }
+        SetEvent(s.rx_event);
+        return;
+    }
+    if (h->type == PKT_RULES) {
+        if (s.peer_match_rules && n == (int)(sizeof(Hdr) + sizeof(RulesExt))) {
+            RulesExt x; memcpy(&x, h + 1, sizeof x);
+            if (!s.match_rules.receive(x.ordinal, x.rules, x.ack))
+                fail_locked("build_mismatch", "the opponent's rules differ for match %u", x.ordinal);
         }
         SetEvent(s.rx_event);
         return;
@@ -1366,6 +1442,13 @@ DWORD WINAPI tick_thread(LPVOID)
                     send_pick_locked();
                 }
                 costume_tick_locked(now);
+                /* Keep the last acknowledgement alive even after this side is ready: all of its
+                 * first copies may have been lost while the other side is still waiting. This is
+                 * bounded timer traffic, never an immediate packet-response loop. */
+                if (s.peer_match_rules && s.match_rules.ordinal &&
+                    now - s.rules_sent_ms >= (s.match_rules.ready() ? kPingMs : 100)) {
+                    send_rules_locked();
+                }
                 if (s.timeout_s > 0 && now - s.last_rx_ms >= (ULONGLONG)s.timeout_s * 1000)
                     lose_locked("peer_timeout", "nothing from the opponent's game for %d s", s.timeout_s);
             }
@@ -1434,6 +1517,8 @@ void configure()
     if (const char* v = env("T5_RB_NET_DELAY"))
         s.rb_delay = (!_stricmp(v, "auto") || !_stricmp(v, "a")) ? kRbAuto : std::max(0, std::min(30, atoi(v)));
     if (const char* v = env("T5_RB_NET_DELAY_AUTO")) s.rb_auto_ms = std::max(0, std::min(1000, atoi(v)));
+    if (const char* v = env("T5_RB_NET_ADAPTIVE_DELAY")) s.rb_adaptive_delay = !strcmp(v, "1");
+    if (const char* v = env("T5_RB_NET_ADAPTIVE_CAP")) s.rb_adaptive_cap = std::max(1, std::min(6, atoi(v)));
     if (s.delay < 0) s.delay = 0;
     if (s.delay > kMaxDelay) s.delay = kMaxDelay;
     if (const char* v = env("T5_NET_TIMEOUT")) s.timeout_s = atoi(v);
@@ -1486,7 +1571,8 @@ void configure()
         /* Playback: no socket, no devices; the side, delay and seeds the
          * recorded session had (replay.cpp). A file that cannot be played ends
          * the game at once -- a "Watch" must never turn into another fight. */
-        const char* file = env("T5_REPLAY_FILE");
+        const std::string replay_file = path_env("T5_REPLAY_FILE");
+        const char* file = replay_file.empty() ? nullptr : replay_file.c_str();
         if (!rp::play_load(file)) {
             rp::play_fail(file, rp::play_error());
             note("replay: cannot play %s: %s -- the game closes", file ? file : "(T5_REPLAY_FILE not set)", rp::play_error());
@@ -1577,6 +1663,7 @@ void do_init() { configure(); }
 bool wait_connected()
 {
     State& s = S();
+    cellGcm_vrr_external_hold();   /* handshake can hold the frame before begin_frame returns */
     ULONGLONG t0 = GetTickCount64(), last_note = t0;
     for (;;) {
         {
@@ -1605,6 +1692,10 @@ uint64_t qpc_us()
 void account_frame(uint64_t wait_us)
 {
     State& s = S();
+    /* Conservatively exclude every online frame, including rollback's accounting
+     * path. Per-flip wait attribution is not available here; an online zero-wait
+     * sample is not evidence that the whole release-to-ready window was local. */
+    if (s.mode == Mode::Host || s.mode == Mode::Join) cellGcm_vrr_external_hold();
     const uint64_t now = qpc_us();
     if (s.last_frame_qpc) {
         const uint64_t dt = now - s.last_frame_qpc;
@@ -1642,6 +1733,8 @@ void rec_pump_locked()
 } // namespace
 
 /* ---- public API --------------------------------------------------------- */
+
+std::string path_environment(const char* key) { return path_env(key); }
 
 void note(const char* fmt, ...)
 {
@@ -1684,6 +1777,7 @@ uint32_t scene_barrier(uint32_t f)
         }
     }
     if (replay) return rp::play_barrier(k, f);   /* where the recorded session went on (live: it may wait for it, unlocked) */
+    cellGcm_vrr_external_hold();   /* tag before waiting for the peer's scene, not afterward */
     ULONGLONG t0 = GetTickCount64(), last_note = t0;
     StallClock stall(t0);   /* (the time the peer says it waits for its loaders is not a stall) */
     uint32_t peer_f = f;
@@ -1746,6 +1840,37 @@ const char* lost_reason()
 }
 
 bool connected() { State& s = S(); std::lock_guard<std::mutex> lk(s.mu); return s.connected; }
+
+bool verify_match_rules(uint32_t ordinal, uint32_t rules)
+{
+    init();
+    State& s = S();
+    std::lock_guard<std::mutex> lk(s.mu);
+    if (s.mode == Mode::Off || s.mode == Mode::Local) return true;  /* replay checks its per-match word */
+    if (!s.fail_reason.empty() || s.peer_lost || !s.connected) return false;
+    if (!s.peer_match_rules_known) return false;  /* a non-HELLO packet can complete the handshake */
+    if (!s.peer_match_rules) {
+        if (rules & 2u) {
+            fail_locked("build_mismatch", "automatic round skips require peer match-rule verification");
+            return false;
+        }
+        return true;
+    }
+    const bool first = ordinal != s.match_rules.ordinal;
+    if (!s.match_rules.begin(ordinal, rules)) {
+        fail_locked("build_mismatch", "the rules differ or changed for match %u", ordinal);
+        return false;
+    }
+    if (first) {
+        s.rules_started_ms = GetTickCount64();
+        send_rules_locked();
+    }
+    if (s.match_rules.ready()) return true;
+    const int timeout = s.start_timeout_s > 0 ? s.start_timeout_s : 120;
+    if (GetTickCount64() - s.rules_started_ms >= (ULONGLONG)timeout * 1000)
+        lose_locked("start_timeout", "the opponent did not acknowledge match %u rules within %d s", ordinal, timeout);
+    return false;
+}
 
 void match_begin(uint32_t f)
 {
@@ -1849,6 +1974,9 @@ void begin_frame(uint32_t f, uint64_t state_hash, PadInput out[2], bool neutral_
     out[0] = out[1] = kNeutral;
     if (s.mode == Mode::Off) return;
 
+    /* Tag before a possible initial handshake/input wait. account_frame also
+     * tags its completion; neither marker changes inputs or wait policy. */
+    if (s.mode == Mode::Host || s.mode == Mode::Join) cellGcm_vrr_external_hold();
     if (f == 0) {
         if (s.mode != Mode::Local) wait_connected();
         std::lock_guard<std::mutex> lk(s.mu);

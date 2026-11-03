@@ -70,6 +70,7 @@ import threading
 import time
 
 from . import proto
+from .compatibility import CAP as COMPAT_CAP, wire_compatible
 from .handover import MatchTicket, match_casual, match_unlocks
 from .i18n import t
 from .nat import GameSocket, RelayBridge, local_ipv4s, server_rtt, test_inbound_mode
@@ -102,7 +103,9 @@ class LobbyClient(TourCalls, SpectateClientMixin):
                  reconnect=60.0, plain_passwords=False, blind_ready=False, ingame_pick=False, sets=False,
                  port_mapping=False, nat2=True, relay_bridge=True, relays=True, friends=True, old_stages=True,
                  tournaments=False, spectate=False, live_dir=None, watch_dir=None, test_inbound=None,
-                 private_rooms=True, match_rules=False, life150=False):
+                 private_rooms=True, match_rules=False, life150=False, input_delay8=True,
+                 badges=True, mentions=True, tcp_fallback_port=443, casual_sets=True, room_tables=True,
+                 ingame_rematch=False, auto_skip_after_round=False, private_chat=True, guest_mutes=()):
         """server: "host[:port]". build: BuildInfo. on_event: optional callable(event) run on the
         client thread (use the `events` queue from a UI). game_port: local UDP port for the game
         (0 = any free one; set it when the player forwarded a port on the router).
@@ -122,6 +125,8 @@ class LobbyClient(TourCalls, SpectateClientMixin):
         next {in}, result}, the next game starts by itself (call set_next(), the match driver does), and
         `set_end` has the set's result and rating change. Off by default: every ranked game is rated on its
         own, as before (the launcher turns it on).
+        casual_sets: with sets enabled, accept server-owned casual first-to sets in challenges, invites and
+        rooms. Both peers need the extra capability; an older peer or server plays ordinary single games.
         port_mapping: forward the game socket's port on the home router (PCP / NAT-PMP / UPnP) for each
         match, so the opponent's punches get in whatever its NAT does (docs/NETPLAY.md "Getting a direct
         connection"). Off by default (the launcher's setting turns it on; T5_PORTMAP=0 always wins).
@@ -147,16 +152,33 @@ class LobbyClient(TourCalls, SpectateClientMixin):
         private_rooms: rooms for more than two players who take turns, rooms locked with a password or an invite
         code, hidden rooms (docs/ONLINE.md "Rooms"); False behaves like a 1.1.2 client (the server then lists no
         locked room for it).
+        room_tables: also accept simultaneous tables in casual rooms; requires private_rooms. The server owns
+        their players, availability, countdowns and sets. False keeps the original room format only.
         match_rules: this player's game can play training rooms (endless health) and the health handicap
         (docs/ONLINE.md "Training rooms and the health handicap"; the cap "match_rules"). Off by default:
         the launcher turns it on when its game build has them (match_driver.game_supports_rules).
         life150: this player's game can play a health handicap above 100 % (up to 150; 1.1.7, the cap "life150";
-        match_driver.game_supports_life150)."""
+        match_driver.game_supports_life150).
+        input_delay8: challenge input delays up to 8 frames (1.2.0); False emulates an older launcher.
+        badges / mentions: account badges and server-resolved chat mentions (1.2.0); False leaves their
+        capability unannounced, as on an older client.
+        tcp_fallback_port: same host's alternate TLS control port (443; 0 disables). TLS clients try
+        it after an unreachable primary and prefer it when an established primary connection breaks.
+        The certificate check and protocol stay identical; plain TCP clients never use it.
+        ingame_rematch, auto_skip_after_round: explicit game-build capabilities for the optional 1.2 protocol,
+        off by default. The launcher checks the corresponding game marker and T5_INGAME_REMATCH switch first;
+        skip consent is a separate, default-off preference (set_auto_skip_after_round)."""
         self.host, self.port = proto.parse_hostport(server)
         self.build = build
         self.on_event = on_event
         self.tls = tls or bool(tls_fingerprint)
         self.tls_fingerprint = (tls_fingerprint or "").replace(":", "").lower() or None
+        if isinstance(tcp_fallback_port, bool) or not isinstance(tcp_fallback_port, int) or not 0 <= tcp_fallback_port < 65536:
+            raise ValueError("tcp_fallback_port must be a port from 0 to 65535")
+        self.tcp_fallback_port = tcp_fallback_port if self.tls else 0
+        self.tcp_port = self.port       # actual control port; the advertised UDP ports never use this
+        self._prefer_tcp_fallback = False
+        self._connecting = False
         self.game_port = game_port
         self.auto_ready = auto_ready
         self.handover = handover
@@ -168,6 +190,8 @@ class LobbyClient(TourCalls, SpectateClientMixin):
         self.blind_ready = blind_ready
         self.ingame_pick = ingame_pick
         self.sets = sets
+        self.casual_sets = bool(sets and casual_sets)
+        self.casual_first_to = 1     # launcher preference; the server owns each accepted set
         self.old_stages = old_stages
         self.notices = {}            # id -> {"text", "expires"}: server notices showing now
         self.friends = friends
@@ -175,8 +199,25 @@ class LobbyClient(TourCalls, SpectateClientMixin):
         self.invites = {}            # invite id -> the `invited` event: invites waiting for this player's answer
         self.invite_waits = {}       # friend's name (lower case) -> monotonic time this player may invite them again
         self.private_rooms = private_rooms
+        self.private_chat = bool(private_chat)
+        # Guests keep names in launcher settings; accounts load durable server rows.
+        self._guest_mutes = [name for name in list(guest_mutes or ())[:200]
+                             if proto.valid_name(name)]
+        self.mute_rows = []
+        self.chat_moderation = {}
+        self._mute_replay_task = None
+        self._mute_replay_generation = None
+        self._guest_unmuting = {}
+        self.room_tables = bool(private_rooms and room_tables)
         self.match_rules = match_rules
         self.life150 = bool(match_rules and life150)
+        self.input_delay8 = bool(input_delay8)
+        self.badges = bool(badges)
+        self.mentions = bool(mentions)
+        # A launcher advertises these only after checking its game build and the feature switch.
+        self.ingame_rematch = bool(ingame_rematch)
+        self.auto_skip_after_round = bool(auto_skip_after_round)
+        self.skip_after_round = False    # the player's consent; a room/server still chooses the agreed rule
         self.life = 100              # this player's health handicap (set_life), as the server confirmed it
         self.casual_prefs = None     # (side None/0/1, stage key or "random"): casual wishes, sent after every login
         self.my_room = None          # this player's room as its members see it (the last `room` message)
@@ -271,12 +312,43 @@ class LobbyClient(TourCalls, SpectateClientMixin):
         """Open the control connection and say hello. -> the server's welcome dict."""
         self._ensure_loop()
         try:
-            return self._run(self._connect(timeout), timeout + 2)
+            # Each endpoint gets its own connect/TLS and hello budget. A blackholed primary must not
+            # exhaust the synchronous wrapper before the fallback gets its turn.
+            attempts = len(self._tcp_ports())
+            return self._run(self._connect(timeout), attempts * (timeout + self.request_timeout + 2) + 2)
         except BaseException:
             self.close()            # no thread or socket left behind by a failed attempt
             raise
 
+    def _tcp_ports(self):
+        ports = [self.port]
+        if self.tcp_fallback_port and self.tcp_fallback_port != self.port:
+            ports.append(self.tcp_fallback_port)
+        if self._prefer_tcp_fallback:
+            ports.reverse()
+        return ports
+
     async def _connect(self, timeout):
+        self._connecting = True
+        try:
+            ports = self._tcp_ports()
+            for index, port in enumerate(ports):
+                try:
+                    welcome = await self._connect_one(port, timeout)
+                except (LobbyError, OSError) as e:
+                    # Only a transport failure is retried. Version/refusal/pin errors fail closed;
+                    # no login, chat, challenge or result is ever replayed on the alternate port.
+                    transport_failure = not isinstance(e, LobbyError) or e.code in ("connect_failed", "disconnected", "timeout")
+                    if not transport_failure or index == len(ports) - 1:
+                        raise
+                else:
+                    self.tcp_port = port
+                    self._prefer_tcp_fallback = port == self.tcp_fallback_port
+                    return welcome
+        finally:
+            self._connecting = False
+
+    async def _connect_one(self, port, timeout):
         ctx = None
         if self.tls:
             ctx = ssl.create_default_context()
@@ -285,11 +357,11 @@ class LobbyClient(TourCalls, SpectateClientMixin):
                 ctx.verify_mode = ssl.CERT_NONE
         try:
             self._reader, self._writer = await asyncio.wait_for(
-                asyncio.open_connection(self.host, self.port, ssl=ctx, limit=proto.MAX_LINE_FROM_SERVER,
+                asyncio.open_connection(self.host, port, ssl=ctx, limit=proto.MAX_LINE_FROM_SERVER,
                                         server_hostname=self.host if ctx else None), timeout)
         except (OSError, asyncio.TimeoutError) as e:
             # (the exception names every address it tried, the lobby's included: say what was typed, not that)
-            raise LobbyError("connect_failed", f"cannot reach {self.host}:{self.port} "
+            raise LobbyError("connect_failed", f"cannot reach {self.host}:{port} "
                                                f"({proto.scrub_addresses(str(e))})") from None
         if self.tls_fingerprint:
             der = self._writer.get_extra_info("ssl_object").getpeercert(binary_form=True)
@@ -306,6 +378,7 @@ class LobbyClient(TourCalls, SpectateClientMixin):
             sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         self.connected = True
         reader_task = asyncio.ensure_future(self._read_loop())
+        self._reader_task = reader_task
         self._tasks.append(reader_task)
         try:
             self.welcome = await self._request({"t": "hello", "proto": proto.PROTO_VERSION,
@@ -325,17 +398,38 @@ class LobbyClient(TourCalls, SpectateClientMixin):
                                                 # (last: a server reads a client's first 16 caps)
                                                 + (["match_rules"] if self.match_rules else [])
                                                 # (1.1.7; a 1.1.5+ server reads 32 caps)
-                                                + (["life150"] if self.life150 else [])})
-        except LobbyError:
+                                                + (["life150"] if self.life150 else [])
+                                                + (["input_delay8"] if self.input_delay8 else [])
+                                                + (["badges"] if self.badges else [])
+                                                + (["mentions"] if self.mentions else [])
+                                                + ["ranked_chars"]
+                                                + (["casual_sets"] if self.casual_sets else [])
+                                                + (["room_tables"] if self.room_tables else [])
+                                                + (["ingame_rematch_v1"] if self.ingame_rematch else [])
+                                                + (["auto_skip_after_round_v1"] if self.auto_skip_after_round else [])
+                                                + [COMPAT_CAP]
+                                                + (["private_chat"] if self.private_chat else [])
+                                                + ["mutes"]})
+        except (LobbyError, OSError, asyncio.CancelledError):
             # Refused (version) or no answer (e.g. TLS on one side only): leave nothing half open.
             closing, self._closing = self._closing, True
             reader_task.cancel()
             self._writer.close()
             await asyncio.gather(reader_task, return_exceptions=True)
+            try:
+                await asyncio.wait_for(self._writer.wait_closed(), 2)
+            except (OSError, asyncio.TimeoutError):
+                pass
             self.connected = False
             self._closing = closing
             raise
         return self.welcome
+
+    def compatible(self, entry):
+        """Only the connected server can grant a group; older servers use exact ids."""
+        welcome = self.welcome or {}
+        group = welcome.get("compat_group") if COMPAT_CAP in welcome.get("caps", ()) else ""
+        return wire_compatible(self.build.build_id, group, entry)
 
     def _can_fallback(self):
         """A game that hears nothing on the direct path can be moved onto the relay (nat_fallback): only through the
@@ -384,14 +478,35 @@ class LobbyClient(TourCalls, SpectateClientMixin):
             reason = "closed"
         finally:
             self.connected = False
+            if self._mute_replay_task is not None:
+                self._mute_replay_task.cancel()
+                await asyncio.gather(self._mute_replay_task, return_exceptions=True)
+                self._mute_replay_task = None
+            writer = self._writer
+            if writer is not None:
+                writer.close()
             for fut in self._pending.values():
                 if not fut.done():
                     fut.set_exception(LobbyError("disconnected", reason))
             await self._drop_game_socket()
+            if writer is not None:
+                # Finish this stream's shutdown before reconnect replaces the writer.
+                # A reset (especially on Windows) can also fail wait_closed().
+                try:
+                    await asyncio.wait_for(writer.wait_closed(), 2)
+                except asyncio.TimeoutError:
+                    writer.transport.abort()
+                except asyncio.CancelledError:
+                    writer.transport.abort()
+                    raise
+                except OSError:
+                    pass
             if self._kicked and self._kick_reason:
                 reason = f"removed from the lobby: {self._kick_reason}"   # e.g. logged in from another place
-            if not self._closing and not self._reconnecting:
+            if not self._closing and not self._reconnecting and not self._connecting:
                 if self.token and self.me and not self._kicked and self.reconnect_window > 0:
+                    if self.tcp_fallback_port and self.tcp_port == self.port:
+                        self._prefer_tcp_fallback = True
                     self._tasks.append(asyncio.ensure_future(self._reconnect(reason)))
                 else:
                     self._emit({"t": "disconnected", "reason": reason})
@@ -414,11 +529,17 @@ class LobbyClient(TourCalls, SpectateClientMixin):
                 try:
                     r = await self._request({"t": "login", "mode": "resume", "token": self.token},
                                             self.request_timeout)
-                except LobbyError as e:
-                    if e.code == proto.E_AUTH:
+                except (LobbyError, OSError) as e:
+                    # A resume refusal or lost reply must not leave another live reader behind
+                    # when the next attempt replaces self._reader / self._writer.
+                    self._writer.close()
+                    self._reader_task.cancel()
+                    await asyncio.gather(self._reader_task, return_exceptions=True)
+                    if isinstance(e, LobbyError) and e.code == proto.E_AUTH:
                         break       # the server forgot the session (restart, or too late)
                     continue
                 self.me = r["you"]
+                await self._mutes_after_login(r)
                 self._start_keepalive()
                 await self._spec_after_login()
                 await self._casual_after_login()
@@ -434,6 +555,9 @@ class LobbyClient(TourCalls, SpectateClientMixin):
 
     async def _dispatch(self, msg):
         t = msg["t"]
+        # Hide envelopes before they can update unread/invite state or notify the UI.
+        if self._muted_event(msg):
+            return
         rid = msg.get("re")
         if msg.get("match") is not None and not proto.valid_match_id(msg["match"]):
             # never a path or a fight-line option from a server's message: the id goes into file names
@@ -447,6 +571,15 @@ class LobbyClient(TourCalls, SpectateClientMixin):
                 if t == "error":
                     sec = _seconds(msg.get("retry"))
                     extra = {"retry": sec} if sec is not None else {}
+                    until = msg.get("muted_until")
+                    if (isinstance(until, (int, float)) and not isinstance(until, bool)
+                            and math.isfinite(until) and until >= 0):
+                        extra["muted_until"] = until
+                    if msg.get("code") == proto.E_VERSION and "latest_release" in msg and \
+                            (msg["latest_release"] is None or isinstance(msg["latest_release"], dict)):
+                        # An update check needs no accepted game build. Keep the refusal, but let
+                        # the updater read the same metadata a successful hello would have carried.
+                        extra["latest_release"] = msg["latest_release"]
                     fut.set_exception(LobbyError(msg.get("code", "error"), proto.scrub_addresses(msg.get("msg", "")),
                                                  **extra))
                 else:
@@ -454,7 +587,7 @@ class LobbyClient(TourCalls, SpectateClientMixin):
             if t in ("error", "ok", "welcome", "login_ok", "queued", "result_ack", "pong", "challenge",
                      "leaderboard", "bye", "profile", "history", "passwd_ok", "recovered", "recovery_codes",
                      "rematch", "blocked", "unblocked", "blocks", "set_next", "friend_added", "invite_sent",
-                     "tour_list", "tour"):
+                     "tour_list", "tour", "muted", "mutes", "private_muted"):
                 return
         handler = getattr(self, "_on_" + t, None)
         if handler is not None:
@@ -463,6 +596,73 @@ class LobbyClient(TourCalls, SpectateClientMixin):
         self._emit(msg)
 
     # ================================================================ server events
+    def _muted_event(self, msg):
+        if msg.get("t") not in ("chat", "room_chat", "private_message", "invited", "challenged"):
+            return False
+        sender = msg.get("from")
+        name = sender.get("name") if isinstance(sender, dict) else sender
+        return self.is_muted(name)
+
+    def _set_mute_rows(self, rows, emit=True):
+        unique = {}
+        for row in (rows if isinstance(rows, list) else ())[:10000]:
+            if isinstance(row, str):
+                row = {"name": row, "guest": True, "since": 0}
+            if isinstance(row, dict) and proto.valid_name(row.get("name")):
+                unique[row["name"].lower()] = dict(row)
+        self.mute_rows = list(unique.values())
+        if (self.me or {}).get("guest"):
+            self._guest_mutes = [row["name"] for row in self.mute_rows]
+        for iid, invite in list(self.invites.items()):
+            if self._muted_event(invite):
+                self.invites.pop(iid, None)
+        if emit:
+            self._emit({"t": "mutes", "rows": list(self.mute_rows)})
+
+    async def _on_mutes(self, msg):
+        if (self.me or {}).get("guest"):
+            msg["rows"] = list(self.mute_rows)
+        else:
+            self._set_mute_rows(msg.get("rows"), emit=False)
+
+    async def _mutes_after_login(self, reply):
+        if self._mute_replay_task is not None:
+            self._mute_replay_task.cancel()
+            await asyncio.gather(self._mute_replay_task, return_exceptions=True)
+            self._mute_replay_task = None
+        self._mute_replay_generation = object()
+        moderation = reply.get("chat_moderation")
+        until = moderation.get("muted_until") if isinstance(moderation, dict) else None
+        self.chat_moderation = {}
+        if (isinstance(until, (int, float)) and not isinstance(until, bool)
+                and math.isfinite(until) and until > time.time()):
+            self.chat_moderation = {"muted_until": until}
+            self._emit(dict(self.chat_moderation, t="chat_moderation"))
+        if (self.me or {}).get("guest"):
+            names = list(self._guest_mutes)
+            self._set_mute_rows(names, emit=False)
+            if names and self.mutes_ok():
+                # Up to 200 round trips must not consume the login/resume timeout.
+                # Local hiding is already effective while server replies arrive.
+                self._mute_replay_task = asyncio.ensure_future(
+                    self._replay_guest_mutes(names, self._mute_replay_generation))
+                self._tasks.append(self._mute_replay_task)
+            self._emit({"t": "mutes", "rows": list(self.mute_rows)})
+        else:
+            self._set_mute_rows(reply.get("mutes", []))
+
+    async def _replay_guest_mutes(self, names, generation):
+        for name in names:
+            if self._mute_replay_generation is not generation:
+                return
+            if name.lower() in self._guest_unmuting.values() or not self.is_muted(name):
+                continue
+            try:
+                await self._request({"t": "mute", "name": name, "muted": True})
+            except (LobbyError, OSError):
+                # Local hiding remains effective even when replay cannot finish.
+                return
+
     async def _on_lobby_state(self, msg):
         self.players = msg.get("players", [])
         self.rooms = msg.get("rooms", [])
@@ -638,12 +838,12 @@ class LobbyClient(TourCalls, SpectateClientMixin):
         if not self.match or self.match["match"] != msg["match"]:
             return False
         self.match["state"] = "nat"
-        self._nat_phase(self._nat_register(msg))
+        self._nat_phase(self._nat_register, msg)
 
     async def _on_nat_punch(self, msg):
         if not self._gs or not self.match or self.match["match"] != msg["match"]:
             return False
-        self._nat_phase(self._nat_punch(msg))
+        self._nat_phase(self._nat_punch, msg)
         return False
 
     async def _on_nat_peer_punching(self, msg):
@@ -660,9 +860,9 @@ class LobbyClient(TourCalls, SpectateClientMixin):
                 return False
             # The games could not connect directly (nat_fallback): the game holds the old socket's port, so the
             # relay gets a new one -- any free port, bound with the match's token like the first.
-            self._nat_phase(self._nat_relay_again(msg))
+            self._nat_phase(self._nat_relay_again, msg)
             return False
-        self._nat_phase(self._nat_relay(msg))
+        self._nat_phase(self._nat_relay, msg)
         return False
 
     async def _nat_relay_again(self, msg):
@@ -674,6 +874,10 @@ class LobbyClient(TourCalls, SpectateClientMixin):
         await self._nat_relay(msg)
 
     async def _on_match_start(self, msg):
+        if msg.get("build") and not self.compatible(msg):
+            await self._safe(self._send({"t": "leave_match", "match": msg["match"]}))
+            self._emit({"t": "notice", "code": "version_mismatch", "msg": "opponent runs a different build"})
+            return False
         self._remember_peer_ping(msg)
         gs = self._gs
         if msg.get("continue") and self.match and self.match["match"] == msg["match"] and \
@@ -704,11 +908,6 @@ class LobbyClient(TourCalls, SpectateClientMixin):
                     peer, local_port = ("127.0.0.1", b.port), b.game_port
         else:
             peer = tuple(msg["peer"])
-        if msg.get("build") and msg["build"] != self.build.build_id:
-            # Should never happen (the server pairs equal builds only) -- refuse rather than desync.
-            await self._safe(self._send({"t": "leave_match", "match": msg["match"]}))
-            self._emit({"t": "notice", "code": "version_mismatch", "msg": "opponent runs a different build"})
-            return False
         ticket = MatchTicket(match_id=msg["match"], role=msg["role"], slot=msg["slot"], local_port=local_port,
                              peer=peer, path=msg["path"], rtt_ms=msg.get("rtt_ms", 0.0),
                              jitter_ms=msg.get("jitter_ms", 0.0), delay=msg.get("delay", 3),
@@ -731,14 +930,16 @@ class LobbyClient(TourCalls, SpectateClientMixin):
         return False
 
     # ================================================================ NAT traversal
-    def _nat_phase(self, coro):
+    def _nat_phase(self, phase, msg):
         if self._nat_task is not None and not self._nat_task.done():
             self._nat_task.cancel()
-        self._nat_task = asyncio.ensure_future(self._guard(coro))
+        self._nat_task = asyncio.ensure_future(self._guard(phase, msg))
 
-    async def _guard(self, coro):
+    async def _guard(self, phase, msg):
         try:
-            await coro
+            # A task cancelled before its first turn never enters this guard. Create
+            # the phase coroutine here so that cancellation cannot leave it unawaited.
+            await phase(msg)
         except asyncio.CancelledError:
             pass
         except Exception as e:   # report, never crash the client loop
@@ -1111,6 +1312,7 @@ class LobbyClient(TourCalls, SpectateClientMixin):
     async def _login_async(self, msg):
         r = await self._request(msg, self.request_timeout + 5)
         self.me = r["you"]
+        await self._mutes_after_login(r)
         self.token = r["token"]
         if r.get("session"):
             self.session = r["session"]
@@ -1277,12 +1479,15 @@ class LobbyClient(TourCalls, SpectateClientMixin):
     def remove_friend(self, name):
         return self._call({"t": "friend_remove", "name": name})
 
-    def invite(self, name, kind="casual"):
+    def invite(self, name, kind="casual", first_to=None):
         """Invite a friend who is online: kind "casual" (a casual match) or "room" (this player's room).
         -> {"invite", "name", "kind", "expires"}. Refused while a no holds the next invite back: LobbyError with
         .extra["retry"] (the seconds left; also noted for invite_wait())."""
+        msg = {"t": "invite", "name": name, "kind": kind}
+        if kind == "casual" and self.casual_sets_ok():
+            msg["first_to"] = proto.casual_first_to(self.casual_first_to if first_to is None else first_to)
         try:
-            return self._call({"t": "invite", "name": name, "kind": kind})
+            return self._call(msg)
         except LobbyError as e:
             sec = e.extra.get("retry") if getattr(e, "extra", None) else None
             if sec is None and e.code == proto.E_RATE:
@@ -1325,7 +1530,7 @@ class LobbyClient(TourCalls, SpectateClientMixin):
         return self._call(msg)
 
     def set_next(self, match_id=None, keep=False):
-        """Between two games of a ranked set (the next one starts by itself after a countdown): keep=True
+        """Between two games of a ranked or casual first-to set (the next starts after a countdown): keep=True
         when this player's game still runs connected to the opponent's, so the next game continues in the
         running games. -> {"state": waiting|started, "in": seconds}"""
         return self._call({"t": "set_next", "match": match_id, "keep": bool(keep)})
@@ -1365,12 +1570,25 @@ class LobbyClient(TourCalls, SpectateClientMixin):
         return self._call({"t": "unqueue"})
 
     def create_room(self, name=None, ranked=False, size=2, rotation="winner", private=None, password=None,
-                    hidden=False, training=False):
+                    hidden=False, training=False, first_to=1, mode="line", rematch_policy=None,
+                    auto_skip_after_round=False):
         """A room. size 2 = a classic room; 3.. = a community room whose members take turns (rotation "winner":
         winner stays, "queue": everyone in turn). private "password" (with `password`) or "code" (the server makes
         an invite code: .room_code, the reply's "code"); hidden: not in the room list. -> the room (a member's view).
         The password goes to the server only, over this connection; nothing here keeps or logs it."""
         msg = {"t": "room_create", "name": name, "ranked": ranked}
+        if rematch_policy is not None or auto_skip_after_round:
+            if not self.ingame_rematch_ok():
+                raise LobbyError(proto.E_NOT_ALLOWED, "this server has no in-game rematch")
+            if rematch_policy is not None:
+                msg["rematch_policy"] = rematch_policy
+            msg["auto_skip_after_round"] = bool(auto_skip_after_round)
+        if mode == "tables":
+            if not self.room_tables_ok():
+                raise LobbyError(proto.E_NOT_ALLOWED, "this server has no simultaneous room tables")
+            msg["mode"] = mode
+        if not ranked and not training and self.casual_sets_ok():
+            msg["first_to"] = proto.casual_first_to(first_to)
         if training:
             # a training room (docs/ONLINE.md "Training rooms and the health handicap"): endless health, no result
             if not self.training_ok():
@@ -1439,6 +1657,18 @@ class LobbyClient(TourCalls, SpectateClientMixin):
         """Community rooms: back=False sits out (stay in the room, skip your turns), True puts you back in line."""
         return self._call({"t": "room_line", "in": bool(back)})["room"]
 
+    def room_pair(self, table, players):
+        """The host seats two available members at an idle table; the server owns the pairing."""
+        if not self.room_tables_ok():
+            raise LobbyError(proto.E_NOT_ALLOWED, "this server has no simultaneous room tables")
+        return self._call({"t": "room_pair", "table": table, "players": list(players)})["room"]
+
+    def room_tables_ok(self):
+        """Both this launcher and the server support simultaneous tables in casual rooms."""
+        w = self.welcome or {}
+        return bool(self.room_tables and "room_tables" in (w.get("features") or ())
+                    and "room_tables" in (w.get("caps") or ()))
+
     def _rules_ok(self, cap):
         w = self.welcome or {}
         return bool(self.match_rules and cap in (w.get("features") or ()) and "match_rules" in (w.get("caps") or ()))
@@ -1485,10 +1715,45 @@ class LobbyClient(TourCalls, SpectateClientMixin):
             msg["swap"] = True
         return self._call(msg)
 
+    def ingame_rematch_ok(self):
+        """The server explicitly offers the versioned, optional room/casual rule."""
+        w = self.welcome or {}
+        return bool(self.ingame_rematch and "ingame_rematch_v1" in (w.get("caps") or ())
+                    and isinstance(w.get("ingame_rematch"), dict)
+                    and w["ingame_rematch"].get("v") == 1)
+
+    def auto_skip_ok(self):
+        w = self.welcome or {}
+        return bool(self.auto_skip_after_round and self.ingame_rematch_ok()
+                    and "auto_skip_after_round_v1" in (w.get("caps") or ()))
+
+    def room_rules(self, rematch_policy=None, auto_skip_after_round=None):
+        """Ask the server to change the hosted room's rule; it checks ownership and eligibility."""
+        if not self.ingame_rematch_ok():
+            raise LobbyError(proto.E_NOT_ALLOWED, "this server has no in-game rematch")
+        msg = {"t": "room_rules"}
+        if rematch_policy is not None:
+            msg["rematch_policy"] = rematch_policy
+        if auto_skip_after_round is not None:
+            msg["auto_skip_after_round"] = bool(auto_skip_after_round)
+        return self._call(msg)
+
+    def set_auto_skip_after_round(self, enabled):
+        """Consent for future casual fights; never changes an already running fight."""
+        self.skip_after_round = bool(enabled)
+        side, stage = self.casual_prefs or (None, "random")
+        self.set_casual_prefs(side, stage)
+
     # ------------------------------------------------------------------ casual choices (server/casual.py)
     def casual_ok(self):
         """Does the server take side and stage wishes for casual matches?"""
         return "casual_choice" in ((self.welcome or {}).get("features") or ())
+
+    def casual_sets_ok(self):
+        """Both this launcher and the server support server-owned casual first-to sets."""
+        w = self.welcome or {}
+        return bool(self.casual_sets and "casual_sets" in (w.get("features") or ())
+                    and "casual_sets" in (w.get("caps") or ()) and "sets" in (w.get("caps") or ()))
 
     def casual_stages(self):
         """The stage keys this launcher may offer (the server's list; the stage select's on an older server)."""
@@ -1501,27 +1766,49 @@ class LobbyClient(TourCalls, SpectateClientMixin):
         without them."""
         self.casual_prefs = (side if side in (0, 1) else None, str(stage or "random"))
         if self.connected and self.me and self.casual_ok():
-            self._fire({"t": "casual_prefs", "side": self.casual_prefs[0], "stage": self.casual_prefs[1]})
+            msg = {"t": "casual_prefs", "side": self.casual_prefs[0], "stage": self.casual_prefs[1]}
+            if self.auto_skip_ok():
+                msg["auto_skip_after_round"] = self.skip_after_round
+            self._fire(msg)
 
     async def _casual_after_login(self):
         if self.casual_prefs is not None and self.casual_ok():
             side, stage = self.casual_prefs
             if stage not in self.casual_stages():
                 stage = "random"                 # (a stage this server does not offer, e.g. a Tekken 5 one)
-            await self._safe(self._send({"t": "casual_prefs", "side": side, "stage": stage}))
+            msg = {"t": "casual_prefs", "side": side, "stage": stage}
+            if self.auto_skip_ok():
+                msg["auto_skip_after_round"] = self.skip_after_round
+            await self._safe(self._send(msg))
 
-    def challenge(self, player_id, delay=None):
+    def challenge(self, player_id, delay=None, first_to=1):
         """-> the challenge's id (send_challenge: the whole reply)."""
-        return self.send_challenge(player_id, delay)["challenge"]
+        return self.send_challenge(player_id, delay, first_to)["challenge"]
 
-    def send_challenge(self, player_id, delay=None):
+    def send_challenge(self, player_id, delay=None, first_to=1):
         """-> the server's reply: {"challenge": id, "ping": ..., and from a 1.1.9 server "delay": {"frames", "auto"},
-        "to": the player}. `delay`: the input delay the challenger chose (frames 0-2), None = auto -- sent only to a
-        server that takes it (multi_challenge_ok)."""
+        "to": the player}. `delay`: the input delay the challenger chose (frames 0-8 with input_delay8, otherwise
+        0-2), None = auto -- sent only to a server that takes it (multi_challenge_ok)."""
         msg = {"t": "challenge", "player": player_id}
-        if delay is not None and self.multi_challenge_ok():
-            msg["delay"] = int(delay)
+        if self.casual_sets_ok():
+            msg["first_to"] = proto.casual_first_to(first_to)
+        frames = int(delay) if delay is not None else None
+        if frames is not None and not 0 <= frames <= 8:
+            raise LobbyError(proto.E_BAD_REQUEST, "bad field: delay")
+        if frames is not None and frames > 2 and self.challenge_delay_max(player_id) < 8:
+            raise LobbyError(proto.E_NOT_ALLOWED, "input delays above 2 frames need a newer launcher and server")
+        if frames is not None and self.multi_challenge_ok():
+            msg["delay"] = frames
         return self._call(msg)
+
+    def challenge_delay_max(self, player_id=None):
+        """Higher challenge choices need this launcher's cap, the server, and the selected opponent (1.2.0)."""
+        w = self.welcome or {}
+        extended = (self.input_delay8 and self.multi_challenge_ok() and "input_delay8" in (w.get("caps") or ())
+                    and "input_delay8" in (w.get("features") or ()))
+        if player_id is not None:
+            extended = extended and (self._pmap.get(player_id) or {}).get("input_delay8") is True
+        return 8 if extended else 2
 
     def multi_challenge_ok(self):
         """Does the server take several open challenges at once and the challenger's input delay (1.1.9)?"""
@@ -1539,6 +1826,100 @@ class LobbyClient(TourCalls, SpectateClientMixin):
 
     def chat(self, text):
         self._fire({"t": "chat", "text": text})
+
+    def badges_ok(self):
+        """Account badges are available only when negotiated with this server."""
+        w = self.welcome or {}
+        return bool(self.badges and "badges" in (w.get("caps") or ())
+                    and "badges" in (w.get("features") or ()))
+
+    def mentions_ok(self):
+        """Mention targets and autocomplete come from a server supporting mentions."""
+        w = self.welcome or {}
+        return bool(self.mentions and "mentions" in (w.get("caps") or ())
+                    and "mentions" in (w.get("features") or ()))
+
+    def private_chat_ok(self):
+        """Private chat is opt-in on both ends; older servers get no new requests."""
+        w = self.welcome or {}
+        return bool(self.private_chat and "private_chat" in (w.get("caps") or ())
+                    and "private_chat" in (w.get("features") or ()))
+
+    def _private_call(self, request):
+        if not self.private_chat_ok():
+            raise LobbyError(proto.E_BAD_REQUEST, "Private chat is unavailable on this server.")
+        return self._call(request)
+
+    def private_message(self, name, text):
+        """Relay to an online player; sender renders only the server's accepted reply.message."""
+        return self._private_call({"t": "private_message", "name": name, "text": text})
+
+    def private_mute(self, name, muted=True):
+        """Compatibility alias; new servers share the personal mute across all chat."""
+        if self.mutes_ok():
+            return self.mute(name, muted)
+        return self._private_call({"t": "private_mute", "name": name, "muted": bool(muted)})
+
+    def mutes_ok(self):
+        w = self.welcome or {}
+        return "mutes" in (w.get("caps") or ()) and "mutes" in (w.get("features") or ())
+
+    def is_muted(self, name):
+        return isinstance(name, str) and any(row.get("name", "").lower() == name.lower()
+                                            for row in getattr(self, "mute_rows", ()))
+
+    def mutes(self):
+        """The one personal mute list; account rows come from the server."""
+        if self.mutes_ok():
+            reply = self._call({"t": "mutes"})
+            if not (self.me or {}).get("guest"):
+                self._set_mute_rows(reply.get("rows", []))
+            return dict(reply, rows=list(self.mute_rows))
+        return {"t": "mutes", "rows": list(self.mute_rows)}
+
+    def mute(self, name, muted=True):
+        """Hide this player's chat, mentions and invites; matchmaking is unchanged."""
+        if not proto.valid_name(name):
+            raise LobbyError(proto.E_BAD_REQUEST, "bad field: name")
+        if (self.me or {}).get("guest"):
+            # Local guest choices stay authoritative even when a replay was rate limited.
+            rows = [row for row in self.mute_rows if row["name"].lower() != name.lower()]
+            if muted:
+                if len(rows) >= 200:
+                    raise LobbyError("private_limit", "the private mute list is full")
+                rows.append({"name": name, "guest": True, "since": time.time()})
+            # Replay must skip an unmute until its server reply and local update
+            # finish. Each call owns a token so overlapping requests stay covered.
+            unmuting = object() if not muted else None
+            if unmuting is not None:
+                self._guest_unmuting[unmuting] = name.lower()
+            try:
+                if self.mutes_ok():
+                    try:
+                        self._call({"t": "mute", "name": name, "muted": bool(muted)})
+                    except (LobbyError, OSError):
+                        # Failed unmute may still be enforced by the server. Keep the row
+                        # until the server accepts it, rather than falsely claiming success.
+                        if not muted:
+                            raise
+                        # Muting is safe locally even when server synchronization failed.
+                self._set_mute_rows(rows)
+                return {"t": "muted", "name": name, "muted": bool(muted), "rows": list(self.mute_rows)}
+            finally:
+                if unmuting is not None:
+                    self._guest_unmuting.pop(unmuting, None)
+        if not self.mutes_ok():
+            raise LobbyError(proto.E_BAD_REQUEST, "Personal mute is unavailable on this server.")
+        reply = self._call({"t": "mute", "name": name, "muted": bool(muted)})
+        self._set_mute_rows(reply.get("rows", []))
+        return reply
+
+    def unmute(self, name):
+        return self.mute(name, False)
+
+    def private_report(self, name, lines, reason=""):
+        """Submit only explicitly selected original envelopes, with their signed receipts."""
+        return self._private_call({"t": "private_report", "name": name, "lines": lines, "reason": reason})
 
     def game_started(self, match_id=None):
         mid = match_id or (self.ticket.match_id if self.ticket else None)

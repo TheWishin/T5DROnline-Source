@@ -81,7 +81,8 @@ class LogicAndLayoutTest(unittest.TestCase):
         cc = f'"{clang}"' if clang else "cl"
         flags = " ".join(f'/I "{d}"' for d in inc)
         cmd = (f'"{vcvars}" >nul 2>&1 && {cc} /nologo /O1 /W0 /EHsc /std:c++17 /DRSX_OVERLAY_NO_D3D {flags} '
-               + " ".join(f'"{s}"' for s in srcs) + f' /Fe:"{exe}" /Fo:"{cls.tmp.name}\\\\"')
+               + " ".join(f'"{s}"' for s in srcs) + f' /Fe:"{exe}" /Fo:"{cls.tmp.name}\\\\"'
+               + " gdi32.lib user32.lib")
         r = subprocess.run(f'cmd /s /c "{cmd}"', capture_output=True, text=True, timeout=600, cwd=cls.tmp.name)
         if not os.path.isfile(exe):
             raise AssertionError("could not build tests/c/training_test.cpp: " + (r.stdout + r.stderr)[-2000:])
@@ -136,9 +137,12 @@ class ReadOnlyTest(unittest.TestCase):
                 self.assertIsNone(m, f"src/training/{name}: {what}: {m.group(0) if m else ''}")
 
     def test_every_guest_access_is_a_read_helper(self):
-        """Every statement that names vm_base is one of the three read helpers or the research trace."""
+        """Every vm_base use is a read helper, checked shadow reader, or research trace."""
         allowed = (r"^memcpy\(\s*&v\s*,\s*vm_base\s*\+\s*a\s*,\s*[24]\s*\)$",
                    r"^return\s+vm_base\[a\]$",
+                   # shadow_read_memory: read-only full-span checks are also covered by
+                   # test_training_advantage_shadow.SourceContracts.
+                   r"^const\s+uintptr_t\s+base\s*=\s*\(uintptr_t\)vm_base$",
                    r"^fwrite\(\s*vm_base\s*\+\s*0x[0-9A-Fa-f]+u?\s*,\s*1\s*,\s*(0x[0-9A-Fa-f]+|\d+)\s*,\s*g_cfg\.trace\s*\)$",
                    # T5_TRAINING_TRACE_RANGES: page by page, uncommitted pages as zeros (trace_range)
                    r"^const\s+bool\s+ok\s*=\s*VirtualQuery\(\s*vm_base\s*\+\s*a\s*,\s*&mi\s*,\s*sizeof\s+mi\s*\)",
@@ -189,6 +193,19 @@ class PracticeGateTest(unittest.TestCase):
 
     def test_no_calls_into_the_game(self):
         self.assertNotRegex(self.src, r"ppu_guest_call|gcall\s*\(|g_lv2_syscalls|ps3_hle_register")
+
+    def test_recording_uses_the_controlled_dummy_side(self):
+        """P1's pad controls the dummy directly; only slot storage is facing-relative."""
+        body = self.src.split("void t5_practice_pads(")[1]
+        self.assertRegex(body, r"const Sample me = read_fighter\(kFighter\[0\]\), dm = read_fighter\(kFighter\[1\]\);")
+        recording = re.search(r"if \(g_rec\.state\(\) == Recorder::State::Recording\) \{(.*?)\} else \{",
+                              body, re.S)
+        self.assertIsNotNone(recording)
+        self.assertRegex(recording.group(1),
+                         r"const uint16_t rel = hide \? 0 : to_rel\(\(uint16_t\)\(raw & ~\(kSelect \| kStart\)\), dm\.right\);")
+        self.assertRegex(recording.group(1), r"g_rec\.record\(rel\);\s*\*p2 = from_rel\(rel, dm\.right\);\s*\*p1 = 0;")
+        # Both recording and playback use this frame's dummy side, including after crossing up.
+        self.assertRegex(body, r"if \(g_rec\.next\(&rel\)\) \*p2 = from_rel\(rel, dm\.right\);")
 
     def test_guest_writes_only_in_the_put_helpers(self):
         """Every statement that names vm_base is a read helper or one of the gated put helpers."""

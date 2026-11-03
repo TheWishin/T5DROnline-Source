@@ -179,11 +179,11 @@ class TkCasualTest(TkBase):
         tab = self.tab
         self.login()
         cas = tab.casual
-        self.assertEqual(cas.left_check.cget("text"), "Always see me on the left")
-        self.assertIs(cas.left_check.master, cas.row)                 # in the row: hidden with it
-        self.assertFalse(cas.left_var.get())
+        self.assertEqual([w.cget("text") for w in cas.screen_checks], ["As dealt", "Always left", "Always right"])
+        self.assertIs(cas.left_check.master.master, cas.row)          # in the row: hidden with it
+        self.assertEqual(cas.left_var.get(), "dealt")
         cas.left_check.invoke()                                       # (a click: toggles and runs the command)
-        self.assertTrue(cas.left_var.get())
+        self.assertEqual(cas.left_var.get(), "left")
         self.assertTrue(self.app.settings["always_left"])
         # a challenge: casual
         game, _text = self.challenge_from_rival()
@@ -193,7 +193,7 @@ class TkCasualTest(TkBase):
         self.other.close()
         self.other = None
         self.pump(lambda: tab.actions["quick"].instate(["!disabled"]), timeout=30)
-        cas.left_check.invoke()                                       # off ...
+        cas.screen_checks[0].invoke()                                # as dealt ...
         self.assertFalse(self.app.settings["always_left"])
         n = len(self.app.games)
         self.other = client(self.s, "Rival2", auto_ready=True)
@@ -206,6 +206,18 @@ class TkCasualTest(TkBase):
         self.pump(lambda: len(self.app.games) == n + 1)
         game = self.app.games[-1]
         self.assertEqual((game.env.get("T5_NET_CASUAL"), game.env.get("T5_ALWAYS_LEFT")), ("0", "1"))
+
+    def test_always_right_uses_the_raw_token_and_can_reset(self):
+        self.login()
+        cas = self.tab.casual
+        cas.screen_checks[2].invoke()
+        self.assertEqual(cas.left_var.get(), "right")
+        self.assertEqual(self.app.settings["screen_side"], "right")
+        self.assertFalse(self.app.settings["always_left"])
+        game, _text = self.challenge_from_rival()
+        self.assertEqual(game.env.get("T5_SCREEN_SIDE"), "right")
+        cas.screen_checks[0].invoke()
+        self.assertEqual(self.app.settings["screen_side"], "dealt")
 
 
 @unittest.skipIf(tk is None, "no tkinter")

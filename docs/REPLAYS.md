@@ -8,11 +8,36 @@ the same netcode, checked against the live match while it plays. Code: `src/netp
 (each match's setup), `launcher/replays.py` + `launcher/replays_ui.py` (the list, Watch),
 `tools/replay_play.py` (play files back and check them).
 
+## Choosing the replay folder
+
+In **Settings**, choose a **Replay folder** by browsing or entering a path, then click **Apply folder**.
+Relative paths start from the folder containing `launcher.json`. An empty choice uses
+the default `<native folder>\replays` (normally `native\replays`). Spaces and Unicode characters
+in folder names are supported. The launcher saves the choice in `launcher.json` as `replay_dir`
+and passes the effective folder to the game as `T5_REPLAY_DIR` while recording is enabled. This
+choice also controls the **Replays** list, **Open replays folder**, the Online profile's replay
+links, and the newest replay attached to **Report a problem**. Playback opens the selected file
+from that folder. The folder choice takes precedence over `T5_REPLAY_DIR` in Extra settings.
+
+Changing the folder leaves existing replay files where they are unless the player chooses to
+move them. A move handles replay files only and removes a source file only after its destination
+copy has been verified. If a name already exists in the destination, the original stays in the
+old folder; neither file is overwritten. A failed move also keeps the source copy and reports the
+problem. To view files left in an older folder, choose that folder again. Folder selection itself
+does not delete old replays.
+
+The chosen custom folder must already exist and allow reading and writing. If it is missing,
+is a file, or cannot be written, the launcher explains the problem and uses the default folder;
+it keeps the saved choice so it can be used again when available. The default folder is created
+when needed. If the default cannot be written either, the launcher reports that too. Recheck
+Settings if a removable drive was disconnected or folder permissions changed. The launcher no
+longer deletes old replay files at startup; delete recordings explicitly in the **Replays** tab.
+
 ## What is recorded
 
 One file per netplay session -- one opponent: the first match and every rematch after it (a
 persistent game starts a new session for every new opponent). It is written into
-`native\replays` (`T5_REPLAY_DIR`, set by the launcher while **Save online matches as replays** is
+the chosen replay folder (`T5_REPLAY_DIR`, set by the launcher while **Save online matches as replays** is
 on, the default) and holds:
 
 - the session: this PC's side (P1/P2), the build id (`T5_NET_BUILD`), the netcode the session ran
@@ -47,11 +72,11 @@ the game does.
 
 ```
 T5REPLAY 1                       first line
-{"format": 1, "build": ..., ...}  one line of JSON: what the Replays tab lists
+{"format": 7, "build": ..., ...}  one line of JSON: what the Replays tab lists
 <zlib stream>                     the binary below (Python's zlib reads it)
 ```
 
-The binary (little-endian): `T5RP`, version 4, flags (bit 0 rollback; format 4: bit 1 the select
+The binary (little-endian): `T5RP`, version 7 for new recordings, flags (bit 0 rollback; since format 4: bit 1 the select
 screen's random generator is pinned to the session seed mixed with the match number, bit 2 the match
 kind offered Jinpachi and the random cell -- `T5_NET_UNLOCKS=open`), side, delay, rollback delay,
 session seed, match seed, frames, hash interval, the last frame the recording game ran (its inputs
@@ -62,6 +87,24 @@ points; the hashes (frame, 64-bit hash); then the inputs as 12 columns (P1 butto
 ly, rx, ry, then P2) of one byte per frame, each XORed with the frame before, so a held input is a
 run of zeros. The JSON line is a view of the binary (format 4 adds `"unlocks": "open"|"closed"`); the
 game reads only the binary. `launcher/replays.py` reads both (`read_header`, `read_payload`).
+
+**Format 7 (1.2.0 integrated).** All new native recordings use format 7, including when automatic
+round skipping is disabled. Its layout matches format 6, but it selects the new deterministic START+SELECT
+soft-reset guard. SELECT takes priority when the combined inputs could reach the game's reset chord;
+START is removed symmetrically after the ordinary skip decision. Native readers of older formats reject
+format 7. The current reader preserves the historical input policy for formats 1–6; it must not apply the
+new guard retroactively. Historical absent/all-zero costume blocks also keep their original setup bytes.
+
+New live streams use guarded SESSION 3 from the first session record, with the same payload layout as
+SESSION 2. The guard makes older native spectators refuse before unsupported input rules can run.
+Legacy SESSION 1/2 keeps the historical reset policy. Strict guarded upgrades 1->2, 1->3 and 2->3 are
+accepted; downgrade, same-version guard and unguarded upgrade are rejected. A match keeps the policy it
+was recorded with, including after a later stream upgrade or a repeated result update. Build, old/new
+replay and live-viewer rejection checks and real pairs with **0 mismatches** remain unexecuted release gates.
+
+**Format 6 (earlier 1.2.0 draft).** Enabled automatic after-round skips set bit 1 of the per-match rules
+word and used format 6 / guarded SESSION 2; skip-off recordings used format 5 / SESSION 1. These are
+legacy reader paths retained by format 7, rather than the new recording formats.
 
 **Format 5 (1.1.5).** Each match also keeps its rules word (after the costume blocks): bit 0 a training
 room's fight (endless health, no round timer, SELECT held to give up), bits 8-15 / 16-23 P1's / P2's
@@ -114,6 +157,34 @@ The game closes by itself a few seconds after the watched match's KO, and the ta
 ("identical to the live match (N checks, same result)", or the frame from which it went another way).
 `T5_REPLAY_CONTROLS=0` takes the pad away from the playback (tests), `T5_REPLAY_EXIT=0` keeps the
 game open after the end.
+
+### Leaving playback cleanly (1.2.0 source review)
+
+SELECT is a viewer command, including before the first fight, during loading, in the fight, during
+a pause or a live-data wait, and on character select between fights. It closes the replay process;
+the launcher observes that process ending and releases a live watch. It does not send SELECT into
+the recorded players' input or attempt to resume an ordinary game with playback already finished.
+Explicit SELECT takes precedence over `T5_REPLAY_EXIT=0`.
+
+The source-supported suspect for a SELECT/white-picture report is **the initial character-select
+or loading phase before the replay lockstep becomes active**: the old replay controls were called
+only when `g_active` was true. SELECT was ignored by the replay controls while it waited for its
+first fight; the inactive pad hook supplies neutral input, so this is not evidence of SELECT
+triggering a guest mode transition. A separate stuck route existed in live input/sync-point waits, which had no quit
+callback, and between fights, where the playback frame could stop advancing while the stream's
+END or inactivity timeout was never turned into a process exit. These are control-flow findings;
+the source alone cannot establish which route produced a particular white picture.
+
+The exit path now polls the viewer before the active-lockstep gate, shares the quit callback with
+live input and sync-point waits, and checks for a finished or timed-out stream while the driver is
+waiting for its next fight. A buffered fight is played before an ordinary stream end closes the
+game. Finishing playback also closes the live file handle. The existing runtime window-close
+callback closes a replay with exit code 0 independently of the guest's playback wait; both exit
+paths now log the phase. Window close uses the last cached boundary snapshot and exits directly;
+it does not traverse replay data from the runtime thread, so its verdict can be absent or incomplete.
+The launcher still releases the watch after observing process death. See
+[the 1.2.0 review checklist](AUTOSPECTATE_1.2.0_REVIEW.md) for the phase matrix, window-close checks
+and the real-game evidence still required.
 
 **No faster pace.** Double speed, and the earlier matches of a session as fast as possible, were
 built and measured: the frame did not wait for its vblank tick, but the game still shows one picture
@@ -177,7 +248,8 @@ What a replay never holds: IP addresses, ports, the match key, the lobby's match
 Player names only as the HUD shows them, and only while **Keep the players' names in replays** is on.
 **Report a problem** adds the newest replay (`replay/` in the zip) with every name taken out
 (`replays.strip_names`: the JSON's names become `<player>`, the binary's are emptied; the copy still
-plays back), the same rule as for the logs.
+plays back), the same rule as for the logs. Known replay folder paths in report text are replaced
+with `<replays>`, including a saved custom choice that is currently unavailable.
 
 ## Cost
 
@@ -274,7 +346,7 @@ never stops before a recorded match's end).
 
 | | |
 |---|---|
-| `T5_REPLAY_DIR` | record online sessions into this folder (the launcher: `native\replays`) |
+| `T5_REPLAY_DIR` | record online sessions into the Settings replay folder (default: `<native folder>\replays`) |
 | `T5_REPLAY_NAMES=0` | leave the players' names out |
 | `T5_REPLAY_HASH_EVERY` | hash interval in frames (default 60) |
 | `T5_NET_MODE=replay` + `T5_REPLAY_FILE` | play a file back |
@@ -282,5 +354,5 @@ never stops before a recorded match's end).
 | `T5_REPLAY_RESULT` | the verdict (JSON) |
 | `T5_REPLAY_CONTROLS`, `T5_REPLAY_EXIT`, `T5_REPLAY_TAIL` | pad control, close at the end, frames shown after the KO (360) |
 | `tools/replay_play.py` | play files or folders back, print the table, exit 0 when all are identical; `--press` tests the controls |
-| `launcher/replays.py` | read, list, prune (the newest 200 files are kept), strip names |
+| `launcher/replays.py` | read, list, safely move files, strip names; `prune` remains an explicit tool helper |
 | `tests/test_replays.py`, `tests/c/replay_test.cpp` | format, both readers and writers against each other, the frame renumbering, the tab, the report |

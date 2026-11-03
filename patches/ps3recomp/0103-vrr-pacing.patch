@@ -1,0 +1,890 @@
+diff --git a/runtime/ppu/tests/boot_main.cpp b/runtime/ppu/tests/boot_main.cpp
+--- a/runtime/ppu/tests/boot_main.cpp
++++ b/runtime/ppu/tests/boot_main.cpp
+@@ -471,7 +471,14 @@
+ extern "C" float rsx_internal_res_scale(void);
+ extern "C" const char* rsx_internal_res_label(void);
+ /* Patch 0067: presents handed to the renderer's present thread (rsx_live_draw.h) */
++extern "C" unsigned rsx_live_draw_present_async(void);
++/* Patch 0103: host-only pacing; unsupported backends expose no-op stubs. */
++extern "C" int rsx_live_draw_pace_mode(void);
++extern "C" long long rsx_live_draw_pace_due(long long now);
++extern "C" void rsx_live_draw_pace_release(long long now);
++extern "C" void rsx_live_draw_pace_skip(void);
++extern "C" void rsx_live_draw_pace_ticker_wait(long long deadline, long long qpf);
++extern "C" void cellGcm_vrr_external_hold(void);
+-extern "C" unsigned rsx_live_draw_present_async(void);
+ extern "C" void rsx_live_draw_xo_info(long long* end_qpc, unsigned* done, long long* wait_ticks);
+ extern "C" volatile long long g_rsx_pf[];
+ extern "C" volatile long long g_rsx_next_tick_qpc;   /* rsx_live_draw.c: the present's waits end before it */
+@@ -963,7 +970,7 @@
+  * tick that came during the wait having been counted, not at all. Timing only:
+  * the game runs the same frames. */
+ static std::atomic<int> g_skip_ticks{ 0 };
++extern "C" void cellGcm_skip_ticks(int n) { if (n > 0) { g_skip_ticks.fetch_add(n); cellGcm_vrr_external_hold(); } }
+-extern "C" void cellGcm_skip_ticks(int n) { if (n > 0) g_skip_ticks.fetch_add(n); }
+ static DWORD WINAPI vblank_ticker(LPVOID)
+ {
+     g_ticker_tid = GetCurrentThreadId();
+@@ -1019,7 +1026,9 @@
+     static DisplayLock lock;
+     lock.init((double)vb_freq.QuadPart);
+     s_slow.init((double)vb_freq.QuadPart);
++    int present_at_xlat;
++    int vrr_mode = 0; /* 0 old, 1 timer-only comparison, 2 coordinated targets */
++    double vrr_heartbeat_next = 0; /* no-flip vblank/handler safety stays alive */
+-    int present_at_xlat;
+     { const char* e = getenv("PS3_PRESENT_AT_XLAT"); present_at_xlat = !(e && *e == '0'); }
+     /* Patch 0059: PS3_LATE_FLIP (default 1; 0 = the old way). A flip
+      * completes on a vblank tick, like the PS3's. A frame whose game part
+@@ -1045,7 +1054,7 @@
+     int held = 0;            /* the frame in progress had its tick held already */
+     /* a flip the walker has reached is presented now (PS3_PRESENT_AT_XLAT) */
+     auto early_present = [&](void) {
++        if (!rsx_ok || !s_rsx_live || (!present_at_xlat && vrr_mode != 2)) return;
+-        if (!rsx_ok || !s_rsx_live || !present_at_xlat) return;
+         if (cellGcm_flip_held() && cellGcm_take_flip_pending()) {
+             present_guest_frame();
+             cellGcm_note_presented();
+@@ -1075,16 +1084,26 @@
+          * ceiling when nothing kicks, and drains on demand when something
+          * does. */
+         g_rsx_next_tick_qpc = (long long)(hold_until > 0 ? hold_until : next_tick);
++        lock.poll_async();   /* patch 0067: a handed-off present that has returned */
++        QueryPerformanceCounter(&vb_now);
++        const int previous_vrr = vrr_mode;
++        vrr_mode = rsx_live_draw_pace_mode();
++        if (vrr_mode == 2) {
++            hold_until = 0; held = 0;
++            next_tick = (double)rsx_live_draw_pace_due(vb_now.QuadPart);
++            if (!cellGcm_flip_held() && next_tick < vrr_heartbeat_next) next_tick = vrr_heartbeat_next;
++        } else if (previous_vrr == 2) {
++            hold_until = 0; held = 0; next_tick = (double)vb_now.QuadPart + vb_period;
++        }
+-        lock.poll_async();   /* patch 0067: a handed-off present that has returned */
+-        QueryPerformanceCounter(&vb_now);
+         { const double us = ((hold_until > 0 ? hold_until : next_tick) - (double)vb_now.QuadPart) * 1e6 /
+                             (double)vb_freq.QuadPart;
+           const double spin_us = spin_cfg >= 0 ? (double)spin_cfg : host_sched_laptop() ? 0.0 : 250.0;
++          if (vrr_mode) rsx_live_draw_pace_ticker_wait((long long)(hold_until > 0 ? hold_until : next_tick), vb_freq.QuadPart);
++          else cellGcm_fifo_kick_wait_us(us <= spin_us ? 0u : us - spin_us >= 4000.0 ? 4000u : (unsigned)(us - spin_us)); }
+-          cellGcm_fifo_kick_wait_us(us <= spin_us ? 0u : us - spin_us >= 4000.0 ? 4000u : (unsigned)(us - spin_us)); }
+         QueryPerformanceCounter(&vb_now);
+         const double now = (double)vb_now.QuadPart;
+         /* PS3_LATE_FLIP: the first tick the frame in progress misses waits for it */
++        if (vrr_mode != 2 && late_cfg && rsx_ok && !held && hold_until <= 0 && now >= next_tick && t_rel > 0 &&
+-        if (late_cfg && rsx_ok && !held && hold_until <= 0 && now >= next_tick && t_rel > 0 &&
+             next_tick > t_rel && !cellGcm_flip_held()) {
+             hold_until = next_tick + vb_period;
+             held = 1;
+@@ -1110,14 +1129,23 @@
+          * recorded in between: the present still runs before the next drain. */
+         static int late_present = -1;
+         if (late_present < 0) { const char* e = getenv("PS3_PRESENT_LATE"); late_present = !(e && *e == '0'); }
++        while (hold_until <= 0 && now >= next_tick && fired < 240) {
++            const int vrr_heartbeat = vrr_mode == 2 && !cellGcm_flip_held();
++            if (vrr_mode == 2 && !vrr_heartbeat) {
++                /* Hand off the completed picture before changing its release
++                 * snapshot. A late actual Present rebases the next release. */
++                early_present();
++                next_tick = (double)rsx_live_draw_pace_due((long long)now);
++                if (now < next_tick) break;
++            }
+-        while (hold_until <= 0 && now >= next_tick && fired < 240) {
+             /* patch 0080: a tick that would complete a flip, given up on request */
+             if (g_skip_ticks.load() > 0 && cellGcm_flip_held()) {
+                 g_skip_ticks.fetch_sub(1);
+                 lat_log('Y', "%lld", (long long)next_tick);   /* a vblank tick skipped (as scheduled) */
++                rsx_live_draw_pace_skip(); /* consumed once, never compensated as a local miss */
++                if (vrr_mode == 2) next_tick = (double)rsx_live_draw_pace_due((long long)now);
++                else { next_tick += vb_period; lock.adjust(&next_tick, &vb_period, vb_nominal); }
++                continue;
+-                next_tick += vb_period;
+-                lock.adjust(&next_tick, &vb_period, vb_nominal);
+-                continue;
+             }
+             g_rsx_next_tick_qpc = (long long)(next_tick + vb_period);   /* presents in here: the tick after this one */
+             cellGcmTickVBlank();
+@@ -1140,7 +1168,11 @@
+                 }
+                 /* An in-FIFO flip is shown on the vblank, and only then does
+                  * the walker go on and the flip complete (TickFlip below). */
++                if (completes) {
++                    LARGE_INTEGER release; QueryPerformanceCounter(&release);
++                    rsx_live_draw_pace_release(release.QuadPart); /* before guest wake/late pad sample */
++                }
++                cellGcm_flip_presented();
+-                cellGcm_flip_presented();
+             }
+             cellGcmTickFlip();
+             if (present_due || completes) {
+@@ -1165,9 +1197,15 @@
+              * Doing it here (not after present) keeps those fences advancing at 60Hz
+              * even when present() throttles on a hidden/occluded window. */
+             if (rsx_ok) { cellGcm_rsx_process_fifo(); early_present(); }
++            if (vrr_mode == 2) {
++                vrr_heartbeat_next = now + vb_period;
++                next_tick = vrr_heartbeat ? vrr_heartbeat_next : (double)rsx_live_draw_pace_due((long long)now);
++            } else {
++                next_tick += vb_period; /* original fixed-refresh/display-lock path */
++                lock.adjust(&next_tick, &vb_period, vb_nominal);
++            }
++            fired++;
++            if (vrr_mode == 2) break; /* a slow frame never bursts simulated releases */
+-            next_tick += vb_period;          /* 59.94 Hz, or the display's period (display lock) */
+-            lock.adjust(&next_tick, &vb_period, vb_nominal);
+-            fired++;
+         }
+         lock.check(GetTickCount64());
+         if (fired >= 240) next_tick = now;   /* fell too far behind -> resync */
+diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
+--- a/libs/video/rsx_live_draw.c
++++ b/libs/video/rsx_live_draw.c
+@@ -148,7 +148,14 @@
+ { (void)sl; (void)sa; (void)dl; (void)da; }
+ void rsx_live_draw_flush(void) {}
+ void rsx_live_draw_present(u32 b) { (void)b; }
++void rsx_live_draw_sync(void) {}
++int rsx_live_draw_pace_mode(void) { return 0; }
++long long rsx_live_draw_pace_due(long long now) { return now; }
++void rsx_live_draw_pace_release(long long now) { (void)now; }
++void rsx_live_draw_pace_skip(void) {}
++void rsx_live_draw_pace_actual_release(long long qpc, unsigned flip) { (void)qpc; (void)flip; }
++void cellGcm_vrr_external_hold(void) {}
++void rsx_live_draw_pace_ticker_wait(long long deadline, long long qpf) { (void)deadline; (void)qpf; }
+-void rsx_live_draw_sync(void) {}
+ unsigned rsx_live_draw_present_async(void) { return 0; }
+ int  rsx_live_draw_xlat_overlap(void) { return 0; }
+ void rsx_live_draw_xo_info(long long* e, unsigned* d, long long* w) { *e = 0; *d = 0; *w = 0; }
+@@ -212,4 +219,6 @@
++#include <d3d12.h>
++#include "../../runtime/platform/host_pacer.h"
++#include "../../runtime/platform/host_pacer_win.h"
+-#include <d3d12.h>
+ #include <d3d12sdklayers.h>
+ #include <dxgi1_4.h>
+ #include <dxgi1_5.h>   /* IDXGIFactory5: DXGI_FEATURE_PRESENT_ALLOW_TEARING */
+@@ -900,7 +909,7 @@
+ /* The command list this thread records into: the recorder on the walker while
+  * it streams (and does not own the list), the real list everywhere else. */
+ #define LDL ((t_ld_stream && !t_ld_own) ? (ID3D12GraphicsCommandList*)&g_rq_proxy : g.list)
++static void ld_present_body(u32 buffer_id, int display_synced, const hp_target* pace);
+-static void ld_present_body(u32 buffer_id, int display_synced);
+ 
+ /* GPU time per frame (RSX_GPU_TIME=1, on with PS3_FRAMELOG): a timestamp
+  * query at the start and at the end of every command list submitted; the
+@@ -924,9 +933,149 @@
+     u64 stat_ticks, stat_lists;    /* ... at the previous [render-stats] line */
+ } g_gt = { -1 };
+ 
++static void ld_gt_harvest(void);
++
++/* Patch 0103: one host schedule, protected only for short snapshot/feedback
++ * operations. Never hold this lock while waiting, submitting or calling DXGI. */
++extern u32 cellGcm_lat_walk_seq(void); /* declaration before release snapshots */
++static SRWLOCK g_pace_lock = SRWLOCK_INIT;
++static volatile LONG g_pace_generation = 1, g_pace_external_hold;
++static hp_policy g_pace;
++static hp_target g_pace_previous;
++static int g_pace_mode;
++static hp_wait_result g_pace_ticker_wait;
++static PVOID volatile g_pace_renderer_wait_state;
++static unsigned g_pace_pending_entry;
++static LONGLONG g_pace_handoff;
++static int rsx_live_draw_pace_config(void)
++{
++    static int cfg = -1;
++    if (cfg < 0) { const char* e = getenv("PS3_VRR_PACING"); cfg = e && *e == '1' ? 1 : e && *e == '2' ? 2 : 0; }
++    return cfg;
++}
++static void ld_pace_reset_locked(LONGLONG now)
++{
++    LARGE_INTEGER f; QueryPerformanceFrequency(&f);
++    const char* e = getenv("PS3_VRR_BUDGET_MS");
++    const double ms = e && *e ? atof(e) : 0.0;
++    hp_reset(&g_pace, f.QuadPart, now, (uint64_t)InterlockedIncrement(&g_pace_generation),
++             ms > 0 && ms < 16.68 ? (LONGLONG)(ms * (double)f.QuadPart / 1000.0) : 0);
++    g_pace_pending_entry = 0;
++    memset(&g_pace_previous, 0, sizeof g_pace_previous);
++}
++static void ld_pace_reset(void)
++{
++    AcquireSRWLockExclusive(&g_pace_lock);
++    ld_pace_reset_locked(hp_qpc());
++    ReleaseSRWLockExclusive(&g_pace_lock);
++}
++void cellGcm_vrr_external_hold(void) { InterlockedIncrement(&g_pace_external_hold); }
++long long rsx_live_draw_pace_due(long long now)
++{
++    AcquireSRWLockExclusive(&g_pace_lock);
++    if (!g_pace.qpf) ld_pace_reset_locked(now);
++    LONGLONG due = hp_release_due(&g_pace);
++    /* A late handed-off frame must enter Present before the next release is
++     * selected; its actual entry rebases that next target. Pump between slices.
++     * A missing/failed present cannot leave the ticker waiting forever. */
++    if (g_pace_pending_entry && now >= due) {
++        if (now - g_pace_handoff > 2 * hp_period_ceil(&g_pace)) ld_pace_reset_locked(now);
++        due = g_pace_pending_entry ? now + g_pace.qpf / 1000 : hp_release_due(&g_pace);
++    }
++    ReleaseSRWLockExclusive(&g_pace_lock);
++    return due;
++}
++void rsx_live_draw_pace_release(long long now)
++{
++    AcquireSRWLockExclusive(&g_pace_lock);
++    if (!g_pace.qpf) ld_pace_reset_locked(now);
++    g_pace_previous = g_pace.current;
++    if (g_pace_mode == 2) hp_release(&g_pace, now, 2);
++    else {
++        memset(&g_pace.current, 0, sizeof g_pace.current);
++        g_pace.current.generation = g_pace.generation;
++        g_pace.current.slot = ++g_pace.slot;
++        g_pace.current.release_qpc = now; g_pace.current.mode = (uint32_t)g_pace_mode;
++        g_pace.current.intentional_skip_ticks = g_pace.pending_skips; g_pace.pending_skips = 0;
++    }
++    g_pace.current.release_after_flip = (uint64_t)cellGcm_lat_walk_seq();
++    g_pace.current.external_hold_serial = (uint32_t)InterlockedCompareExchange(&g_pace_external_hold, 0, 0);
++    g_pace.current.ticker_wake_error = g_pace_ticker_wait.wake_error;
++    g_pace.current.timer_fallback = g_pace_ticker_wait.fallback;
++    ReleaseSRWLockExclusive(&g_pace_lock);
++}
++void rsx_live_draw_pace_actual_release(long long qpc, unsigned flip)
++{
++    /* Called immediately BEFORE publishing DONE/waking the guest, so a fast
++     * game thread cannot tag a network hold before this serial is snapped. */
++    AcquireSRWLockExclusive(&g_pace_lock);
++    if (g_pace.current.release_after_flip == (uint64_t)flip) {
++        g_pace.current.release_qpc = qpc;
++        g_pace.current.external_hold_serial = (uint32_t)InterlockedCompareExchange(&g_pace_external_hold, 0, 0);
++    }
++    ReleaseSRWLockExclusive(&g_pace_lock);
++}
++void rsx_live_draw_pace_skip(void)
++{
++    AcquireSRWLockExclusive(&g_pace_lock);
++    if (g_pace_mode == 2) hp_skip(&g_pace); else g_pace.pending_skips++;
++    ReleaseSRWLockExclusive(&g_pace_lock);
++}
++void rsx_live_draw_pace_ticker_wait(long long deadline, long long qpf)
++{
++    extern void* cellGcm_fifo_kick_event(void);
++    g_pace_ticker_wait = hp_wait_until_qpc(deadline, qpf, (HANDLE)cellGcm_fifo_kick_event(),
++                      NULL, 0, 0, 1); /* return for FIFO/shutdown/message work */
++}
++
++typedef struct ld_pace_present_sample {
++    hp_target target;
++    LONGLONG ready, entry, returned, wait_ticks, wake_error;
++    LONGLONG previous_entry, previous_return;
++    uint64_t previous_generation, previous_flip;
++    HRESULT hr;
++    unsigned valid, fallback;
++    const char* status;
++} ld_pace_present_sample;
++static ld_pace_present_sample g_present_sample;
++
++/* Bounded SPSC text ring: formatting stays with renderer counters; only this
++ * worker writes/flushes disk. Overflow drops a row and increments a cumulative
++ * counter. Frame/flip identities expose the gap to the analysis tool. */
++enum { LD_PF_ROWS = 256, LD_PF_ROW_BYTES = 4096 };
++static struct { char text[LD_PF_ROW_BYTES]; unsigned bytes; } g_pf_rows[LD_PF_ROWS];
++static volatile LONG g_pf_write, g_pf_read, g_pf_stop;
++static HANDLE g_pf_writer;
++static unsigned long long g_pf_dropped;
++static DWORD WINAPI ld_pf_writer_main(LPVOID unused)
++{
++    (void)unused;
++    for (;;) {
++        const LONG r = InterlockedCompareExchange(&g_pf_read, 0, 0);
++        const LONG end = InterlockedCompareExchange(&g_pf_write, 0, 0);
++        if (r == end) {
++            if (InterlockedCompareExchange(&g_pf_stop, 0, 0)) break;
++            WaitOnAddress((volatile VOID*)&g_pf_write, &end, sizeof end, 50);
++            continue;
++        }
++        const unsigned slot = (unsigned)r % LD_PF_ROWS;
++        fwrite(g_pf_rows[slot].text, 1, g_pf_rows[slot].bytes, g_pf_log);
++        InterlockedIncrement(&g_pf_read);
++    }
++    fflush(g_pf_log);
++    return 0;
++}
++static void ld_pf_enqueue(const char* row, unsigned bytes)
++{
++    const LONG w = InterlockedCompareExchange(&g_pf_write, 0, 0);
++    const LONG r = InterlockedCompareExchange(&g_pf_read, 0, 0);
++    if ((unsigned)w - (unsigned)r >= LD_PF_ROWS || bytes >= LD_PF_ROW_BYTES) { g_pf_dropped++; return; }
++    const unsigned slot = (unsigned)w % LD_PF_ROWS;
++    memcpy(g_pf_rows[slot].text, row, bytes); g_pf_rows[slot].bytes = bytes;
++    InterlockedIncrement(&g_pf_write); WakeByAddressSingle((PVOID)&g_pf_write);
++}
++
++static void ld_pf_frame_log(LONGLONG present_begin)
+-static void ld_gt_harvest(void);
+-
+-static void ld_pf_frame_log(LONGLONG present_begin)
+ {
+     if (g_pf_log_state < 0) {
+         const char* path = getenv("PS3_FRAMELOG");
+@@ -952,10 +1101,17 @@
+                         "ph_layout_us,ph_fetch_us,ph_upload_us,ph_pso_us,"
+                         "ph_const_us,ph_texbind_us,clear_us,texhash_us,"
+                         "fifo_cpu_us,gpu_us,"
++                        "ph_desc_us,ph_cbcopy_us,ph_api_us,ph_post_us,"
++                        "pace_mode,generation,slot,flip_sequence,release_target_qpc,present_target_qpc,"
++                        "release_qpc,submit_ready_qpc,present_entry_qpc,present_return_qpc,present_hresult,"
++                        "present_status,present_interval_valid,present_interval_us,present_return_interval_us,"
++                        "target_late_us,timer_wake_error_us,target_wait_us,swapchain_wait_us,"
++                        "renderer_sync_wait_us,ring_wait_us,gpu_wait_us,intentional_skip_ticks,"
++                        "timer_fallback,trace_dropped\n",
+-                        "ph_desc_us,ph_cbcopy_us,ph_api_us,ph_post_us\n",
+                         (long long)f.QuadPart);
++                g_pf_writer = CreateThread(NULL, 0, ld_pf_writer_main, NULL, 0, NULL);
++                if (g_pf_writer) { g_pf_log_state = 1; g_pf_phases = 1; }
++                else { fclose(g_pf_log); g_pf_log = NULL; } /* no synchronous per-frame fallback */
+-                g_pf_log_state = 1;
+-                g_pf_phases = 1;
+             }
+         }
+     }
+@@ -994,12 +1150,13 @@
+         gpu_us = (double)(g_gt.done_ticks - g_gt.log_ticks) * g_gt.us_per_tick;
+         g_gt.log_ticks = g_gt.done_ticks;
+     }
++    char row[LD_PF_ROW_BYTES];
++    const int prefix = snprintf(row, sizeof row,
++            "%u,%lld,%.0f,%lld,%lld,%.0f,%lld,%.0f,%.0f,%.0f,"
+-    fprintf(g_pf_log,
+-            "%u,%lld,%.0f,%lld,%lld,%.0f,%lld,%.0f,%.0f,%.0f,"
+             "%u,%.0f,%u,%.0f,%u,%.0f,%u,%.0f,%u,%u,%.0f,%u,%.0f,%.0f,%.0f,"
+             "%u,%u,%u,%lld,%u,%.0f,%.0f,"
+             "%.0f,%.0f,%.0f,%.0f,%.0f,%.0f,%.0f,%.0f,%.0f,%.0f,"
++            "%.0f,%.0f,%.0f,%.0f,",
+-            "%.0f,%.0f,%.0f,%.0f\n",
+             g_ld_frames, (long long)present_begin,
+             g_pf_prev_present_qpc
+                 ? (double)(present_begin - g_pf_prev_present_qpc) * us : 0.0,
+@@ -1030,10 +1187,30 @@
+             (double)PFD(RSX_PF_FIFO_CYC) / tsc_per_us, gpu_us,
+             (double)PFC(ph_desc_ticks) * us, (double)PFC(ph_cbcopy_ticks) * us,
+             (double)PFC(ph_api_ticks) * us, (double)PFC(ph_post_ticks) * us);
++    const ld_pace_present_sample* ps = &g_present_sample;
++    const hp_target* t = &ps->target;
++    if (prefix > 0 && (unsigned)prefix < sizeof row) {
++        const int tail = snprintf(row + prefix, sizeof row - (unsigned)prefix,
++            "%u,%llu,%llu,%llu,%lld,%lld,%lld,%lld,%lld,%lld,0x%08lX,%s,%u,"
++            "%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%u,%u,%llu\n",
++            t->mode, (unsigned long long)t->generation, (unsigned long long)t->slot,
++            (unsigned long long)t->flip_sequence, (long long)t->release_target_qpc,
++            (long long)t->present_target_qpc, (long long)t->release_qpc,
++            (long long)ps->ready, (long long)ps->entry, (long long)ps->returned,
++            (unsigned long)ps->hr, ps->status ? ps->status : "resize", ps->valid,
++            ps->valid ? (double)(ps->entry - ps->previous_entry) * us : 0.0,
++            ps->valid ? (double)(ps->returned - ps->previous_return) * us : 0.0,
++            t->present_target_qpc && ps->entry > t->present_target_qpc ? (double)(ps->entry - t->present_target_qpc) * us : 0.0,
++            (double)ps->wake_error * us, (double)ps->wait_ticks * us,
++            (double)PFC(latency_wait_ticks) * us, (double)t->renderer_sync_ticks * us,
++            (double)t->ring_wait_ticks * us, (double)PFC(flush_wait_ticks) * us,
++            t->intentional_skip_ticks, ps->fallback, g_pf_dropped);
++        if (tail > 0 && (unsigned)tail < sizeof row - (unsigned)prefix)
++            ld_pf_enqueue(row, (unsigned)(prefix + tail));
++        else g_pf_dropped++;
++    } else g_pf_dropped++;
++#undef PFD
++#undef PFC
+-#undef PFD
+-#undef PFC
+-    if ((g_ld_frames & 63u) == 0)
+-        fflush(g_pf_log);
+     for (int i = 0; i < RSX_PF_COUNT; i++)
+         g_pf_ext_prev[i] = ext[i];
+     g_pf_prev = g_pf;
+@@ -12741,7 +12918,8 @@
+     }
+     u32 cw, ch;
+     ld_display_client_size(g_ldp.hwnd, g_ldp.bb_w, g_ldp.bb_h, &cw, &ch);
++    if (!force && cw == g_ldp.bb_w && ch == g_ldp.bb_h) return;
++    ld_pace_reset(); /* resize/mode discontinuity cancels queued deadlines */
+-    if (!force && cw == g_ldp.bb_w && ch == g_ldp.bb_h) return;
+     ld_flush(LD_FLUSH_READBACK);              /* nothing may still use the buffers */
+     for (u32 i = 0; i < LD_SWAP_BUFFERS; i++)
+         if (g.backbuf[i]) { g.backbuf[i]->lpVtbl->Release(g.backbuf[i]); g.backbuf[i] = NULL; }
+@@ -14233,8 +14411,20 @@
+  * thread after rsx_live_draw_present handed the frame off -- with the
+  * guest-memory reads and the display's size/fullscreen sync (display_synced)
+  * done already. */
++static void ld_present_body(u32 buffer_id, int display_synced, const hp_target* pace)
++{
+-static void ld_present_body(u32 buffer_id, int display_synced)
+-{
+     if (!g.ready) return;
++    /* Every call owns a fresh sample, including paths which skip DXGI
++     * Present. Retain only the previous_* history used for valid intervals;
++     * a skipped frame must not dereference NULL or repeat an older sample. */
++    memset(&g_present_sample.target, 0, sizeof g_present_sample.target);
++    if (pace) g_present_sample.target = *pace;
++    g_present_sample.ready = g_present_sample.entry = g_present_sample.returned = 0;
++    g_present_sample.wait_ticks = g_present_sample.wake_error = 0;
++    g_present_sample.hr = S_FALSE;
++    g_present_sample.valid = g_present_sample.fallback = 0;
++    g_present_sample.status = "no_present";
++    /* The actual Present branch below replaces these values. */
++
+     ld_begin_recording();
+ 
+@@ -14540,12 +14730,51 @@
+         host_sched_trace(HS_EV_PRESENT0, g_ld_frames + 1u);
+         ld_pacing_check();
+         ld_test_display_wait();
++        /* Submit before target wait. The next walk retains its original
++         * renderer ownership sync; no extra fence or buffered picture. */
++        ld_pace_present_sample* ps = &g_present_sample;
++        memset(&ps->target, 0, sizeof ps->target);
++        if (pace) ps->target = *pace;
++        ps->ready = ld_pf_qpc(); ps->wait_ticks = 0;
++        ps->wake_error = pace ? pace->ticker_wake_error : 0;
++        ps->fallback = pace ? pace->timer_fallback : 0;
++        if (pace && pace->mode == 2 && pace->present_target_qpc &&
++            pace->generation == (uint64_t)InterlockedCompareExchange(&g_pace_generation, 0, 0)) {
++            AcquireSRWLockExclusive(&g_pace_lock);
++            hp_observe_ready(&g_pace, pace, ps->ready,
++                pace->external_hold_serial == (uint32_t)InterlockedCompareExchange(&g_pace_external_hold, 0, 0));
++            ReleaseSRWLockExclusive(&g_pace_lock);
++            static int spin_cfg = -1;
++            if (spin_cfg < 0) { const char* e = getenv("PS3_VRR_SPIN_US"); const int v = e ? atoi(e) : 0; spin_cfg = v < 0 ? 0 : v > 200 ? 200 : v; }
++            const hp_wait_result wr = hp_wait_until_qpc(pace->present_target_qpc, g_ld_qpc_frequency,
++                NULL, &g_pace_generation, (LONG)pace->generation,
++                host_sched_laptop() ? 0u : (unsigned)spin_cfg, 0);
++            ps->wait_ticks = wr.waited; ps->wake_error = wr.wake_error; ps->fallback |= wr.fallback;
++            InterlockedExchangePointer(&g_pace_renderer_wait_state, &hp_wait_thread);
++        }
++        /* Immediately bracket actual DXGI Present. Old dt_us stays unchanged. */
++        ps->entry = ld_pf_qpc();
++        g_ld_gs.present_qpc0 = ps->entry;
++        const HRESULT present_hr = g.swap->lpVtbl->Present(
+-        g_ld_gs.present_qpc0 = ld_pf_qpc();
+-        const HRESULT present_hr = g.swap->lpVtbl->Present(
+             g.swap, g_ld_lock_mode ? 0u : g_ld_present_interval,
+             (g_ldp.fs_exclusive || g_ld_lock_mode) ? (g_ld_present_flags & ~(UINT)DXGI_PRESENT_ALLOW_TEARING) : g_ld_present_flags);
++        ps->returned = ld_pf_qpc();
++        g_ld_gs.present_qpc1 = ps->returned; g_ld_gs.present_frame = g_ld_frames + 1u;
++        ps->hr = present_hr;
++        ps->status = present_hr == DXGI_STATUS_OCCLUDED ? "occluded" :
++            FAILED(present_hr) ? "device_error" :
++            ps->target.generation != (uint64_t)InterlockedCompareExchange(&g_pace_generation, 0, 0) ? "resize" : "ok";
++        ps->valid = strcmp(ps->status, "ok") == 0 && ps->previous_entry > 0 &&
++            ps->target.generation == ps->previous_generation &&
++            ps->target.flip_sequence == ps->previous_flip + 1;
++        g_pf.present_call_ticks += ps->returned - ps->entry;
++        AcquireSRWLockExclusive(&g_pace_lock);
++        if (pace && pace->generation == g_pace.generation) {
++            hp_presented(&g_pace, pace, ps->ready, ps->entry);
++            g_pace_pending_entry = 0;
++        }
++        if (present_hr == DXGI_STATUS_OCCLUDED || FAILED(present_hr)) ld_pace_reset_locked(ps->returned);
++        ReleaseSRWLockExclusive(&g_pace_lock);
+-        g_ld_gs.present_qpc1 = ld_pf_qpc(); g_ld_gs.present_frame = g_ld_frames + 1u;   /* patch 0076 */
+-        g_pf.present_call_ticks += ld_pf_qpc() - pf_present_flushed;
+         ld_test_device_removed();
+         if (SUCCEEDED(present_hr)) {
+             ld_present_measure_record(g_ld_frames + 1u);
+@@ -14601,7 +14830,11 @@
+         g_ld_fx_n = g_ld_fx64_n = 0;
+     }
+     g_ld_frames++;
++    ld_pf_frame_log(pf_present_begin);
++    g_present_sample.previous_entry = strcmp(g_present_sample.status, "ok") == 0 ? g_present_sample.entry : 0;
++    g_present_sample.previous_return = g_present_sample.returned;
++    g_present_sample.previous_generation = g_present_sample.target.generation;
++    g_present_sample.previous_flip = g_present_sample.target.flip_sequence;
+-    ld_pf_frame_log(pf_present_begin);
+     ld_pso_lib_maybe_save(0);
+     { static int hl = -1; if (hl < 0) hl = getenv("RSX_HITCH_LOG") ? 1 : 0;
+       if (hl && (g_ld_frames % 600u) == 0)
+@@ -15530,7 +15763,8 @@
+ static unsigned g_xo_last_async;  /* the last present's hand-off number, 0 = on the caller */
+ 
+ static ID3D12GraphicsCommandList* ld_xo_list(void) { return g.list; }
++static void ld_xo_present(u32 buffer_id) { ld_present_body(buffer_id, 1, NULL); }
++static void ld_xo_present_target(u32 buffer_id, const hp_target* pace) { ld_present_body(buffer_id, 1, pace); }
+-static void ld_xo_present(u32 buffer_id) { ld_present_body(buffer_id, 1); }
+ static DWORD WINAPI ld_xo_main(LPVOID unused)
+ {
+     (void)unused;
+@@ -15550,7 +15784,8 @@
+         const char* e = getenv("RSX_XLAT_OVERLAP");
+         g_xo_on = e && *e == '0' ? 0 : e && *e == '1' ? 1 : 2;
+         if (g_xo_on) {
++            g_rq_on_present = ld_xo_present;
++            g_rq_on_present_target = ld_xo_present_target;
+-            g_rq_on_present = ld_xo_present;
+             HANDLE t = ld_rq_alloc() ? CreateThread(NULL, 512 * 1024, ld_xo_main, NULL, 0, NULL) : NULL;
+             if (t) CloseHandle(t);
+             else {
+@@ -15643,24 +15878,74 @@
+     }
+ }
+ 
++/* Capability is explicit tearing opt-in; never infer VRR from refresh rate.
++ * Exclusive/inline, fixed-refresh lock and unsupported backends use old paths.
++ * Monitor/focus/occlusion/mode transitions cancel old immutable targets. */
++int rsx_live_draw_pace_mode(void)
++{
++    const int cfg = rsx_live_draw_pace_config();
++    static int baseline_log = -1;
++    if (baseline_log < 0) { const char* p = getenv("PS3_FRAMELOG"); baseline_log = p && *p ? 1 : 0; }
++    if (cfg == 0 && !baseline_log) return 0; /* no monitor/window syscalls in default-off hot loop */
++    static HMONITOR monitor;
++    static int last_eligible = -1;
++    static LONGLONG last_poll;
++    const LONGLONG now = hp_qpc();
++    const HMONITOR mon = g_ldp.hwnd ? MonitorFromWindow(g_ldp.hwnd, MONITOR_DEFAULTTONEAREST) : NULL;
++    const int eligible = cfg == 2 && g.ready && g_xo_on > 0 && !g_ldp.fs_exclusive &&
++        !g_ld_lock_mode && g_ld_present_interval == 0 &&
++        (g_ld_present_flags & DXGI_PRESENT_ALLOW_TEARING) &&
++        !getenv("PS3_VBLANK_HZ") && !getenv("RSX_XLAT_OVERLAP_AB") &&
++        g_ldp.hwnd && IsWindowVisible(g_ldp.hwnd) && !IsIconic(g_ldp.hwnd) &&
++        GetForegroundWindow() == g_ldp.hwnd;
++    LARGE_INTEGER f; QueryPerformanceFrequency(&f);
++    if (eligible != last_eligible || mon != monitor || (last_poll && now - last_poll > f.QuadPart / 4))
++        ld_pace_reset();
++    last_eligible = eligible; monitor = mon; last_poll = now;
++    g_pace_mode = eligible ? 2 : cfg == 1 ? 1 : 0;
++    return g_pace_mode;
++}
++static hp_target ld_pace_snapshot(void)
++{
++    hp_target t;
++    AcquireSRWLockExclusive(&g_pace_lock);
++    if (!g_pace.qpf) ld_pace_reset_locked(hp_qpc());
++    const uint64_t flip = (uint64_t)cellGcm_lat_walk_seq();
++    t = flip > g_pace.current.release_after_flip ? g_pace.current : g_pace_previous;
++    if (!t.generation) { t.generation = g_pace.generation; t.mode = (uint32_t)g_pace_mode; }
++    t.flip_sequence = (uint64_t)cellGcm_lat_walk_seq();
++    if (t.mode == 2 && t.present_target_qpc) {
++        g_pace_pending_entry = 1; g_pace_handoff = hp_qpc();
++    }
++    ReleaseSRWLockExclusive(&g_pace_lock);
++    static LONGLONG sync_prev, ring_prev;
++    const LONGLONG sync = g_xo_wait_ticks, ring = g_rq_full_wait_ticks;
++    t.renderer_sync_ticks = sync - sync_prev; sync_prev = sync;
++    t.ring_wait_ticks = ring - ring_prev; ring_prev = ring;
++    return t;
++}
++void rsx_live_draw_present(u32 buffer_id)
++{
++    if (!g.ready) return;
++    g_xo_last_async = 0;
++    /* Capture by value before releasing the guest or publishing RQ_PRESENT. */
++    hp_target pace = ld_pace_snapshot();
+-void rsx_live_draw_present(u32 buffer_id)
+-{
+-    if (!g.ready) return;
+-    g_xo_last_async = 0;
+     ld_frame_end_extras();
++    if (!g_xo_on) { pace.present_target_qpc = 0; ld_present_body(buffer_id, 0, &pace); return; }
+-    if (!g_xo_on) { ld_present_body(buffer_id, 0); return; }
+     ld_vjob_drain();                  /* the frame's last guest-memory reads: before its flip completes */
+     ld_display_sync();                /* resize / fullscreen switch: here, on the window's thread (it
+                                          takes the list over from the renderer thread when it flushes) */
+     if (g_ldp.fs_exclusive || (g_xo_ab > 0 && g_xo_ab_alt)) {
+         g_xo_inline++;
+         ld_own_enter();
++        pace.present_target_qpc = 0; /* inline must keep servicing window/FIFO responsibilities */
++        ld_present_body(buffer_id, 1, &pace);
+-        ld_present_body(buffer_id, 1);
+         ld_own_leave();
+         ld_xo_ab();
+         return;
+     }
++    rq_present* packet = (rq_present*)ld_rq_put(RQ_PRESENT, sizeof(rq_present));
++    packet->v = buffer_id; packet->target = pace; /* immutable, not g_rsx_next_tick_qpc */
+-    ((rq_u32*)ld_rq_put(RQ_PRESENT, sizeof(rq_u32)))->v = buffer_id;
+     g_xo_present_end = g_rq_wl;
+     if (g_ldg_on > 0 && (g_xo_async % 600u) == 0)
+         fprintf(stderr, "[ring-guard] %llu ring ranges checked, %llu reused before the GPU was done with them\n",
+@@ -15689,9 +15974,20 @@
+     *wait_ticks = g_xo_wait_ticks;
+ }
+ 
++void rsx_live_draw_shutdown(void)
++{
++    ld_pace_reset(); /* cancel the renderer timer before waiting for ownership */
++    ld_xo_sync();
++    hp_wait_state* renderer_wait = (hp_wait_state*)InterlockedExchangePointer(&g_pace_renderer_wait_state, NULL);
++    if (renderer_wait) {
++        if (renderer_wait->timer) CloseHandle(renderer_wait->timer);
++        memset(renderer_wait, 0, sizeof *renderer_wait); /* idle after ld_xo_sync; safe for a later re-init */
++    }
++    if (g_pf_writer) {
++        InterlockedExchange(&g_pf_stop, 1); WakeByAddressAll((PVOID)&g_pf_write);
++        WaitForSingleObject(g_pf_writer, INFINITE); CloseHandle(g_pf_writer); g_pf_writer = NULL;
++    }
++    hp_wait_close();
+-void rsx_live_draw_shutdown(void)
+-{
+-    ld_xo_sync();
+     if (!g.ready) return;
+     ld_vertex_diag_emit("shutdown", 1);
+     ld_present_measure_dump();
+diff --git a/libs/video/rsx_record_ring.h b/libs/video/rsx_record_ring.h
+--- a/libs/video/rsx_record_ring.h
++++ b/libs/video/rsx_record_ring.h
+@@ -20,7 +20,8 @@
+ #include <d3d12.h>
+ #include <immintrin.h>   /* _mm_pause */
+ #include <stddef.h>
++#include <stdint.h>
++#include "../../runtime/platform/host_pacer.h"
+-#include <stdint.h>
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
+@@ -32,7 +33,9 @@
+     if (!f) { LARGE_INTEGER v; QueryPerformanceFrequency(&v); f = v.QuadPart; }
+     return f;
+ }
++static void (*g_rq_on_present)(uint32_t buffer_id);   /* set by the includer */
++static void (*g_rq_on_present_target)(uint32_t buffer_id, const hp_target* target);
++typedef struct rq_present { uint32_t v; hp_target target; } rq_present;
+-static void (*g_rq_on_present)(uint32_t buffer_id);   /* set by the includer */
+ 
+ /* ---- Patch 0067: the renderer's own thread (RSX_XLAT_OVERLAP) -----------------
+  *
+@@ -68,7 +71,8 @@
+ static LONGLONG g_rq_wl;                      /* the walker's write position (published or not) */
+ static volatile LONG g_rq_sleep;              /* the renderer thread waits for g_rq_w */
+ static volatile LONG g_rq_waiter;             /* a thread waits for g_rq_r */
++static uint64_t g_rq_packets, g_rq_full_waits;
++static LONGLONG g_rq_full_wait_ticks;
+-static uint64_t g_rq_packets, g_rq_full_waits;
+ static uint64_t g_xo_async, g_xo_inline;           /* presents handed off / made on the walker */
+ 
+ static void ld_rq_wake(void);
+@@ -153,10 +157,12 @@
+         if (g_rq_wl + tail + need - r <= (LONGLONG)LD_RQ_BYTES) break;
+         ld_rq_publish();
+         ld_rq_wake();
++        g_rq_full_waits++;
++        const LONGLONG wait0 = rq_qpc();
++        InterlockedExchange(&g_rq_waiter, 1);
++        if (__atomic_load_n(&g_rq_r, __ATOMIC_SEQ_CST) == r)
++            WaitOnAddress((volatile VOID*)&g_rq_r, &r, sizeof r, 2);
++        g_rq_full_wait_ticks += rq_qpc() - wait0;
+-        g_rq_full_waits++;
+-        InterlockedExchange(&g_rq_waiter, 1);
+-        if (__atomic_load_n(&g_rq_r, __ATOMIC_SEQ_CST) == r)
+-            WaitOnAddress((volatile VOID*)&g_rq_r, &r, sizeof r, 2);
+     }
+     if (tail) {
+         ld_rq_hdr* t = (ld_rq_hdr*)(g_rq_buf + off);
+@@ -471,7 +477,10 @@
+     const void* p = h + 1;
+     switch (h->op) {
+     case RQ_PRESENT:
++        /* Old ring harnesses retain their scalar payload/callback. */
++        if (g_rq_on_present_target && h->bytes >= sizeof(ld_rq_hdr) + sizeof(rq_present))
++            g_rq_on_present_target(((const rq_present*)p)->v, &((const rq_present*)p)->target);
++        else g_rq_on_present(((const rq_u32*)p)->v);
+-        g_rq_on_present(((const rq_u32*)p)->v);
+         g_xo_end_qpc = rq_qpc();
+         InterlockedIncrement(&g_xo_done);
+         break;
+diff --git a/runtime/platform/host_pacer.h b/runtime/platform/host_pacer.h
+new file mode 100644
+--- /dev/null
++++ b/runtime/platform/host_pacer.h
+@@ -0,0 +1,105 @@
++/* Host-only 60000/1001 deadline policy. No guest clock, input or memory access. */
++#ifndef PS3RECOMP_HOST_PACER_H
++#define PS3RECOMP_HOST_PACER_H
++#include <stdint.h>
++#include <string.h>
++
++typedef struct hp_target {
++    uint64_t generation, slot, flip_sequence;
++    int64_t release_target_qpc, present_target_qpc, release_qpc;
++    uint32_t intentional_skip_ticks, mode, external_hold_serial;
++    int64_t renderer_sync_ticks, ring_wait_ticks, ticker_wake_error;
++    uint64_t release_after_flip;
++    uint32_t timer_fallback;
++} hp_target;
++
++typedef struct hp_policy {
++    int64_t qpf, whole, next_present, budget, guard, fixed_budget;
++    uint32_t fraction, remainder, ncost, since, pending_skips;
++    uint64_t generation, slot;
++    int64_t costs[240];
++    hp_target current;
++} hp_policy;
++
++static void hp_advance(hp_policy* p)
++{
++    p->next_present += p->whole;
++    p->remainder += p->fraction;
++    if (p->remainder >= 60000u) { p->next_present++; p->remainder -= 60000u; }
++    p->slot++;
++}
++static int64_t hp_period_ceil(const hp_policy* p) { return p->whole + (p->fraction != 0); }
++static int64_t hp_release_due(const hp_policy* p) { return p->next_present - p->budget; }
++static int64_t hp_clamp_budget(const hp_policy* p, int64_t v)
++{
++    const int64_t lo = p->qpf / 2000; /* 0.5 ms */
++    const int64_t hi = p->whole - p->qpf / 5000; /* strictly below one period */
++    return v < lo ? lo : v > hi ? hi : v;
++}
++static void hp_reset(hp_policy* p, int64_t qpf, int64_t now, uint64_t generation,
++                     int64_t fixed_budget)
++{
++    memset(p, 0, sizeof *p);
++    p->qpf = qpf;
++    /* Quotient/remainder first: no hours*n*QPF intermediate overflow. */
++    p->whole = (qpf / 60000) * 1001 + ((qpf % 60000) * 1001) / 60000;
++    p->fraction = (uint32_t)(((qpf % 60000) * 1001) % 60000);
++    p->generation = generation;
++    p->guard = qpf / 5000; /* 0.2 ms; calibrate against visible latency */
++    p->fixed_budget = fixed_budget > 0 ? hp_clamp_budget(p, fixed_budget) : 0;
++    p->budget = p->fixed_budget ? p->fixed_budget : hp_clamp_budget(p, qpf / 250); /* 4 ms bootstrap */
++    p->next_present = now + p->budget;
++    p->slot = 1;
++}
++static void hp_release(hp_policy* p, int64_t now, unsigned mode)
++{
++    hp_target* t = &p->current;
++    memset(t, 0, sizeof *t);
++    t->generation = p->generation; t->slot = p->slot; t->mode = mode;
++    t->present_target_qpc = p->next_present;
++    t->release_target_qpc = hp_release_due(p); t->release_qpc = now;
++    t->intentional_skip_ticks = p->pending_skips; p->pending_skips = 0;
++    hp_advance(p);
++}
++static void hp_skip(hp_policy* p)
++{
++    /* Exactly one host slot for exactly one consumed cellGcm_skip_ticks tick. */
++    hp_advance(p);
++    p->pending_skips++;
++}
++static void hp_presented(hp_policy* p, const hp_target* t, int64_t ready, int64_t entry)
++{
++    if (t->generation != p->generation || !t->present_target_qpc) return;
++    /* A late picture presents once now. Reserve a whole period after actual
++     * entry: no short catch-up interval, no extra simulated frame. Rebase the
++     * host phase explicitly; keep the rational remainder and slot identity. */
++    if (ready > t->present_target_qpc || entry - t->present_target_qpc > p->guard) {
++        const int64_t minimum = entry + hp_period_ceil(p);
++        if (p->next_present < minimum) p->next_present = minimum;
++    }
++}
++static void hp_observe_ready(hp_policy* p, const hp_target* t, int64_t ready,
++                             int local_cost_known)
++{
++    /* Unknown/network waits are never silently trained as render cost.
++     * The integration freezes automatic adaptation unless the caller can
++     * classify a sample as local. Fixed-budget A/B runs always stay fixed. */
++    if (!local_cost_known || p->fixed_budget || t->generation != p->generation ||
++        t->intentional_skip_ticks || !t->release_qpc) return;
++    const int64_t cost = ready - t->release_qpc;
++    if (cost <= 0) return;
++    if (cost >= p->whole) { p->budget = hp_clamp_budget(p, cost + p->guard); return; }
++    p->costs[p->ncost++ % 240u] = cost;
++    if (cost > p->budget) p->budget = hp_clamp_budget(p, cost + p->guard);
++    if (++p->since >= 30u && p->ncost >= 60u) {
++        int64_t sorted[240]; const unsigned n = p->ncost < 240u ? p->ncost : 240u;
++        unsigned i, j; memcpy(sorted, p->costs, n * sizeof sorted[0]);
++        for (i = 1; i < n; i++) { const int64_t v = sorted[i]; j = i;
++            while (j && sorted[j - 1] > v) { sorted[j] = sorted[j - 1]; j--; } sorted[j] = v; }
++        const int64_t want = hp_clamp_budget(p, sorted[(99u * (n - 1u)) / 100u] + p->guard);
++        const int64_t step = p->qpf / 2000; /* reduce at most 0.5 ms / 30 frames */
++        p->budget = want > p->budget ? want : p->budget - want > step ? p->budget - step : want;
++        p->since = 0;
++    }
++}
++#endif
+diff --git a/runtime/platform/host_pacer_win.h b/runtime/platform/host_pacer_win.h
+new file mode 100644
+--- /dev/null
++++ b/runtime/platform/host_pacer_win.h
+@@ -0,0 +1,68 @@
++/* Windows QPC deadlines; relative timer due times are in 100 ns, never QPC dates. */
++#ifndef PS3RECOMP_HOST_PACER_WIN_H
++#define PS3RECOMP_HOST_PACER_WIN_H
++#ifdef _WIN32
++#include <windows.h>
++#include <stdint.h>
++#include <string.h>
++#include <immintrin.h>
++#ifdef __cplusplus
++#define HP_TLS thread_local
++#else
++#define HP_TLS _Thread_local
++#endif
++typedef struct hp_wait_result { int64_t wake_error, waited; unsigned fallback; } hp_wait_result;
++typedef struct hp_wait_state { HANDLE timer; int tried, fallback; } hp_wait_state;
++static HP_TLS hp_wait_state hp_wait_thread;
++static int64_t hp_qpc(void) { LARGE_INTEGER v; QueryPerformanceCounter(&v); return v.QuadPart; }
++static void hp_wait_close(void)
++{
++    if (hp_wait_thread.timer) CloseHandle(hp_wait_thread.timer);
++    memset(&hp_wait_thread, 0, sizeof hp_wait_thread);
++}
++static hp_wait_result hp_wait_until_qpc(int64_t deadline, int64_t qpf,
++    HANDLE wake_event, volatile LONG* generation, LONG expected,
++    unsigned spin_us, int service_slice)
++{
++    hp_wait_result r = {0, 0, 0};
++    hp_wait_state* w = &hp_wait_thread;
++    const int64_t begin = hp_qpc();
++    if (spin_us > 200u) spin_us = 200u;
++    if (!w->tried) {
++        w->tried = 1;
++        w->timer = CreateWaitableTimerExW(NULL, NULL, 0x00000002u /* HIGH_RESOLUTION */, TIMER_ALL_ACCESS);
++        if (!w->timer) { w->fallback = 1; w->timer = CreateWaitableTimerW(NULL, FALSE, NULL); }
++    }
++    for (;;) {
++        const int64_t now = hp_qpc();
++        if (generation && InterlockedCompareExchange(generation, 0, 0) != expected) break;
++        if (now >= deadline) { r.wake_error = now - deadline; break; }
++        const int64_t spin = (int64_t)spin_us * qpf / 1000000;
++        if (spin && deadline - now <= spin) { _mm_pause(); continue; }
++        /* Four ms cancellation/service ceiling; after every wake recompute
++         * from the same deadline. FIFO events return to the caller to pump. */
++        int64_t left = deadline - now - spin;
++        if (left > qpf / 250) left = qpf / 250;
++        LARGE_INTEGER due;
++        due.QuadPart = -((left * 10000000 + qpf - 1) / qpf);
++        if (due.QuadPart == 0) due.QuadPart = -1;
++        if (w->timer && SetWaitableTimer(w->timer, &due, 0, NULL, NULL, FALSE)) {
++            HANDLE hs[2] = {w->timer, wake_event};
++            const DWORD result = WaitForMultipleObjects(wake_event ? 2u : 1u, hs, FALSE, 8);
++            CancelWaitableTimer(w->timer);
++            if (result == WAIT_OBJECT_0 + 1u || service_slice) break;
++            if (result == WAIT_FAILED) { w->fallback = 1; Sleep(1); }
++        } else {
++            w->fallback = 1;
++            if (wake_event) WaitForSingleObject(wake_event, 1); else Sleep(1);
++            if (service_slice) break;
++        }
++    }
++    const int64_t end = hp_qpc();
++    r.waited = end - begin; r.fallback = (unsigned)w->fallback;
++    if (end >= deadline) r.wake_error = end - deadline;
++    return r;
++}
++#undef HP_TLS
++#endif
++#endif
+diff --git a/libs/video/cellGcmSys.c b/libs/video/cellGcmSys.c
+--- a/libs/video/cellGcmSys.c
++++ b/libs/video/cellGcmSys.c
+@@ -842,5 +842,11 @@ void ppu_gcm_pump(void)
+     }
+     if (p & 2) {
++        /* Patch 0103: actual release stamp/hold marker before the guest wake.
++         * No guest values or handler ordering change. */
++        extern void rsx_live_draw_pace_actual_release(long long qpc, unsigned flip);
++        LARGE_INTEGER release_qpc;
++        QueryPerformanceCounter(&release_qpc);
++        rsx_live_draw_pace_actual_release(release_qpc.QuadPart, (unsigned)s_lat_walk_seq);
+         s_flip_status = CELL_GCM_FLIP_STATUS_DONE;
+         gcm_flip_wake();
+         rsx_pf_stamp(RSX_PF_FLIPDONE_QPC);

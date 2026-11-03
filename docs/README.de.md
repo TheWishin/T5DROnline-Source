@@ -495,9 +495,11 @@ Docker, auf einem Mac oder mit **Host for friends** im Launcher. Siehe
 
 Der Launcher bietet neue Versionen an; klicke auf **Update**.
 
-- Beim Start (höchstens einmal pro Stunde) und mit **Check for updates** oben
-  fragt der Launcher GitHub nach dem neuesten veröffentlichten Release. Er zeigt
-  die Version, was neu ist und die Downloadgröße.
+- Beim Start und mit **Check for updates** oben fragt der Launcher zuerst den
+  öffentlichen Lobbyserver nach dem neuesten veröffentlichten Release. Ist die Lobby
+  nicht erreichbar oder hat sie keine Release-Informationen (auch bei älteren Servern),
+  fragt er GitHub. Er zeigt die Version, was neu ist und die Downloadgröße.
+  Downloads kommen weiterhin aus den GitHub-Releases des Projekts und werden wie bisher geprüft.
 - **Update now** lädt das Zip (etwa 90 MB), prüft es gegen die veröffentlichte
   SHA-256-Prüfsumme und (ab 1.1.5) die Signatur des Releases mit dem
   Release-Schlüssel des Projekts, ersetzt die Programmdateien und startet den Launcher neu.

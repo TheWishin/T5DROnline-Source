@@ -15,6 +15,26 @@ from .i18n import N_
 
 # lobby/t5lobby/server/lobby.py: errors answering a request ({"t": "error", "msg": ...}), notices, kick reasons
 SERVER = (
+    # relay-only private chat (server/private_chat.py)
+    N_("private messages are unavailable"),
+    N_("private messages: slow down"),
+    N_("write a private message first"),
+    N_("muted is a boolean"),
+    N_("the private mute list is full"),
+    N_("private reports: slow down"),
+    N_("choose between 1 and 5 private message lines"),
+    N_("these private message lines cannot be verified; reconnect and try new lines"),
+    # Simultaneous room tables (server/rooms.py, 1.2.0)
+    N_("mode is line or tables"),
+    N_("table is 1 to {count}"),
+    N_("simultaneous room tables need a newer launcher; update it"),
+    N_("simultaneous room tables are casual and cannot be training rooms"),
+    N_("this room does not have simultaneous tables"),
+    N_("choose two different players for the table"),
+    N_("choose available players and an idle table"),
+    N_("you cannot pair these players"),
+    N_("the casual set goes on by itself"),
+    N_("first_to: 1, 2, 3, 5 or 10"),
     # login, accounts
     N_("login timeout"),
     N_("idle timeout"),
@@ -71,6 +91,11 @@ SERVER = (
     N_("this PC ran its last match at {fps} fps; ranked needs at least {min_fps} (both games run at the slower "
        "PC's speed). Close other programs or lower the resolution scale, then play a casual match to measure again"),
     N_("chat: slow down"),
+    N_("Message blocked: hate terms are not allowed."),
+    N_("This name is not allowed."),
+    N_("This room name is not allowed."),
+    N_("Chat is muted for this account."),
+    N_("Cannot load the chat filter. Check T5L_CHAT_FILTER_PATH."),
     N_("history is kept for accounts only"),
     N_("no such player"),
     N_("no such room"),
@@ -89,6 +114,7 @@ SERVER = (
     N_("you challenged that player already"),
     N_("too many challenges at once"),
     N_("bad field: delay"),
+    N_("input delays above 2 frames need a newer launcher and server"),
     N_("that player has challenges pending"),
     N_("no such challenge"),
     N_("challenge no longer possible"),
@@ -234,6 +260,8 @@ TOURNAMENTS = (
 
 # lobby/t5lobby/client.py: LobbyError texts and the reasons a connection ended
 CLIENT = (
+    N_("Personal mute is unavailable on this server."),
+    N_("this server has no simultaneous room tables"),
     N_("not connected to the lobby"),
     N_("the lobby server did not answer"),
     N_("no answer to {type}"),
@@ -424,7 +452,16 @@ WORDS = (
 )
 
 
-GROUPS = (SERVER, TOURNAMENTS, CLIENT, BUILD_TOOL, PREREQS, REPORT, UPDATER)
+INGAME_REMATCH = (
+    N_("this server has no in-game rematch"),
+    N_("invalid rematch policy"),
+    N_("auto_skip_after_round must be boolean"),
+    N_("rematch rules require an updated launcher"),
+    N_("rematch rules require a classic casual room"),
+    N_("round skips require an updated launcher"),
+)
+
+GROUPS = (SERVER, TOURNAMENTS, CLIENT, BUILD_TOOL, PREREQS, REPORT, UPDATER, INGAME_REMATCH)
 
 
 def templates():

@@ -3,6 +3,26 @@
 All notable changes, newest first. The project is a test release. Short commit hashes are in parentheses. The state of each
 part is in the README's status table.
 
+## v1.2.0 (UNRELEASED)
+
+Draft integration for maintainer review. Nothing has been built or released; game and network acceptance checks remain pending.
+
+- `paste-fix`: Windows copy, paste, cut and select-all shortcuts work with non-Latin keyboard layouts; training contact tracking and optional advantage diagnostics are improved.
+- `update`: The updater tries cached release metadata from the default lobby before GitHub, retaining release validation and signed-download checks.
+- `delay`: Casual challenges support negotiated Auto or 0-8 frame input delay, with legacy choices preserved for older peers and servers.
+- `badge`: Administrator-owned developer badges, public-chat mentions and mention completion/notifications use negotiated client capabilities.
+- `port443`: An opt-in TLS lobby listener on TCP 443 adds automatic control-connection fallback with the same certificate checks; game traffic stays on UDP.
+- `charstats`: Profiles list every ranked fighter's games, wins, losses, draws and win rate from stored history; account rating and rank remain unchanged.
+- `replaydir`: Replay storage can use a chosen folder, with launcher, runtime, replay browser and problem-report handling kept together, including Unicode paths.
+- `costume-fix`: Missing or rejected live customization uses canonical unequipped costume bytes on both PCs; playback preserves historical absent or zero customization blocks for old replay compatibility.
+- `titleskip`: Online startup uses a Connecting cover over logo, movie and title presentation until interactive selection or the fight is ready.
+- `rooms`: Casual challenges, invites and rooms gain FT1/2/3/5/10 sets, and community rooms can run independent simultaneous tables with table spectating.
+- `rematch`: Opt-in in-game rematch controls add server-owned votes/countdowns and mutually agreed automatic round skipping, with guarded replay/session compatibility.
+- `pacing`: An opt-in host VRR pacing candidate and timing-analysis tools preserve simulation steps; performance and latency benefits remain unmeasured.
+- `practice-tip`: An opt-in shadow advantage reader and synthetic regressions retain the current training display; unresolved live move identity fails closed and needs game evidence.
+- `rest`: Adds screen-side choices, hidden post-build warmup, first-start control guidance, GPU build warnings, opt-in build compatibility groups and frozen match-start jitter delay; low-end/practice investigations remain explicitly gated.
+- `waiting`: Adds capability-gated private chat and explicitly selected-line reports, START/device-loss diagnostics, and safer EU address-review tools; EU online support remains unapproved.
+
 ## v1.1.9 (2026-10-29)
 
 **Fair ranked sets, several challenges at once, frame data for every hit, "always see me on the left", the European

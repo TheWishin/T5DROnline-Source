@@ -10,7 +10,7 @@ import time
 import tkinter as tk
 from tkinter import ttk
 
-from . import spectate, theme
+from . import auto_spectate, spectate, theme
 from .i18n import t
 from .theme import C
 
@@ -41,6 +41,11 @@ class Spectating:
         self.card = None
         self._sig = None
         self._prefs = None       # the (allow, ranked) last sent
+        self._generation = 0
+        self._pending = None     # one worker request; a late answer never owns a game
+        self._pending_end = None
+        self._auto = auto_spectate.Policy()
+        self._before_ev = None
 
     # ------------------------------------------------------------------ settings
     def prefs(self):
@@ -55,6 +60,9 @@ class Spectating:
 
     def new_client(self, c):
         """A new LobbyClient (before it connects): the privacy setting goes with every login."""
+        if self._pending is not None or self.w is not None:
+            self._preempt("stopped")
+            self.w = None
         self._prefs = self.prefs()
         c.set_spectate_prefs(*self._prefs)
 
@@ -148,7 +156,7 @@ class Spectating:
         if busy is None:
             busy = tab.match is not None or (tab.driver is not None and tab.driver.ticket is not None) or \
                 tab.set_bar is not None
-        ok = self.ok() and not busy and self.w is None
+        ok = self.ok() and not busy and self.w is None and self._pending is None
         fb = (getattr(tab, "friend_actions", None) or {}).get("watch")
         if fb is not None:
             f = tab._selected_friend() if ok else None
@@ -201,29 +209,93 @@ class Spectating:
     def watch_room(self):
         r = self._selected_room()
         if r is not None:
-            self._watch(room=r["id"])
+            if r.get("mode") == "tables":
+                self.tab.rooms_ui.tables(r)
+            else:
+                self._watch(room=r["id"])
 
     def watch_tour(self, tid, sid):
         """The Tournaments page's Watch: the game of bracket set `sid` being played (tk_tour.py)."""
         if tid and sid:
             self._watch(tournament=tid, set_id=sid)
 
-    def _watch(self, name=None, room=None, tournament=None, set_id=None):
+    def _busy(self):
+        """Recheck both Tk state and the client's already received match before every boot."""
+        tab, c = self.tab, self.tab.client
+        drv = tab.driver
+        room = getattr(c, "my_room", None) or {}
+        uid = (getattr(c, "me", None) or {}).get("id")
+        return bool(c is None or getattr(c, "match", None) or
+                    getattr(tab, "match", None) or (drv is not None and drv.ticket is not None) or
+                    any(getattr(tab, k, None) is not None for k in
+                        ("challenge", "invite", "outgoing_invite", "set_bar", "rematch_bar", "ready_deadline")) or
+                    getattr(tab, "ready_sent", False) or
+                    getattr(getattr(tab, "chal", None), "out", None) or
+                    getattr(getattr(tab, "chal", None), "incoming", None) or
+                    getattr(getattr(tab, "tours", None), "call", None) is not None or
+                    uid in (room.get("playing") or ()) or
+                    uid in ((room.get("next") or {}).get("players") or ()) or
+                    any(uid in ((table.get("next") or {}).get("players") or ())
+                        for table in room.get("tables") or ()) or
+                    ((getattr(c, "me", None) or {}).get("status") in ("match", "playing")))
+
+    def _cancel_client(self, c):
+        if c is None:
+            return
+        cancel = getattr(c, "cancel_watch", None)
+        if cancel is not None:
+            cancel()             # synchronous generation barrier; cleanup is ordered on the client loop
+        else:
+            self.tab.call(c.unwatch)
+
+    def _stop_owned_game(self, w):
+        g = w.get("game") if w is not None else None
+        drv = self.tab.driver
+        # Never stop a process the match driver owns, even if stale UI state refers to it.
+        if g is not None and (drv is None or g is not getattr(drv, "game", None)) and g.running():
+            g.stop()
+
+    def _watch(self, name=None, room=None, tournament=None, set_id=None, table=None, automatic=False):
         tab = self.tab
-        if self.w is not None or not self.ok():
+        if self.w is not None or self._pending is not None or not self.ok() or self._busy():
             return
         g = getattr(tab.app, "game", None)
         drv = tab.driver
-        if g is not None and g.running() and (drv is None or g is not drv.game):
-            tab.status(t("Close the running game first (Stop game on the Play tab)."), error=True)
+        if (g is not None and g.running()) or (drv is not None and drv.game_running()):
+            if not automatic:
+                tab.status(t("Close the running game first (Stop game on the Play tab)."), error=True)
             return
+        c = tab.client
+        self._generation += 1
+        generation = self._generation
+        self._pending = (generation, c, automatic)
+        self._pending_end = None
 
         def done(r):
+            if self._pending != (generation, c, automatic):
+                return
+            self._pending = None
+            if c is not tab.client:
+                self._cancel_client(c)
+                return
+            if not r or self._busy() or not self.ok() or (automatic and
+                    (not tab.app.settings.get("auto_spectate", False) or not auto_spectate.idle(tab))):
+                self._cancel_client(c)
+                return
             self.w = {"stream": r["stream"], "match": r.get("match"), "players": r.get("players"),
                       "ranked": r.get("ranked"), "room": r.get("room"), "began": r.get("began"),
                       "tournament": r.get("tournament"),
                       "spectators": r.get("spectators"), "state": "waiting", "game": None, "t0": time.monotonic(),
-                      "end": None, "delay": None}
+                      "end": None, "delay": None, "client": c, "automatic": automatic}
+            current = getattr(c, "spec_watch", None) or {}
+            if current.get("stream") != r["stream"]:
+                ended = self._pending_end
+                reason = ended[2] if ended and ended[:2] == (generation, r["stream"]) else "stopped"
+                self.w["state"], self.w["end"] = "over", reason
+                self._auto.pause()
+                self._cancel_client(c)
+                tab._set_actions()
+                return                    # an END/privacy event can arrive before the worker callback
             names = [p.get("name", "?") for p in r.get("players") or ()] + ["?", "?"]
             tab.status(t("Watching {p1} vs {p2}.", p1=names[0], p2=names[1]))
             # the game starts now: it boots while the players' games load the fight, and waits for the data
@@ -231,13 +303,29 @@ class Spectating:
             if path and self.w["stream"] == (tab.client.spec_watch or {}).get("stream"):
                 self._start_game(path)
             tab._set_actions()
-        tab.call(tab.client.watch, name, room, tournament, set_id, then=done)
+
+        def failed():
+            if self._pending == (generation, c, automatic):
+                self._pending = None
+                self._cancel_client(c)
+
+        args = (name, room, tournament, set_id)
+        if hasattr(c, "spec_generation"):
+            args += (table, c.spec_generation)
+        elif table is not None:
+            args += (table,)
+        tab.call(c.watch, *args, then=done, fail=failed)
 
     def _start_game(self, path):
         tab, w = self.tab, self.w
+        if w is None or w.get("client") is not tab.client or self._busy():
+            self._preempt("your_match")
+            return
         drv = tab.driver
-        if drv is not None and drv.ticket is None and drv.game_running():
-            drv.stop_game()                  # the idle online game (persistent mode): it starts again for a match
+        g = getattr(tab.app, "game", None)
+        if (g is not None and g.running()) or (drv is not None and drv.game_running()):
+            self._preempt("stopped")
+            return                       # start_game otherwise returns that unrelated process unchanged
         out = getattr(tab.app.settings, "out_dir", os.getcwd())
         d = os.path.join(out, "logs", "online")
         os.makedirs(d, exist_ok=True)
@@ -251,27 +339,43 @@ class Spectating:
         g = tab.app.start_game(spectate.watch_env(path, w["result"], w["status"]))
         if g is None:
             w["state"], w["end"] = "over", "stopped"
+            self._cancel_client(w.get("client"))
             return
         w["game"] = g
         w["state"] = "starting"
 
     def stop(self):
-        w = self.w
-        if w is None:
-            return
-        if w["state"] != "over":
-            g = w.get("game")
-            if g is not None and g.running():
-                g.stop()
-            c = self.tab.client
-            if c is not None:
-                self.tab.call(c.unwatch)
+        self._auto.pause()
+        self._preempt("left")
         self.w = None
         self._sig = None
         self.tab._set_actions()
 
+    def _preempt(self, reason):
+        pending, w = self._pending, self.w
+        self._generation += 1
+        self._pending = None
+        c = pending[1] if pending is not None else w.get("client") if w is not None else None
+        self._cancel_client(c)
+        self._stop_owned_game(w)
+        if w is not None:
+            w["state"], w["end"] = "over", reason
+
+    def before_event(self, ev):
+        """Called before MatchDriver sees an event: its own game must get the process first."""
+        if self._before_ev is ev:
+            return
+        self._before_ev = ev
+        kind = ev.get("t")
+        if kind in ("match_found", "match_reveal", "match_start", "challenged", "invited", "tour_call",
+                    "disconnected", "reconnecting", "kicked"):
+            self._auto.pause()
+            if self._pending is not None or self.w is not None:
+                self._preempt("stopped" if kind in ("disconnected", "reconnecting", "kicked") else "your_match")
+
     # ------------------------------------------------------------------ the tab's poll and events
     def on_event(self, ev):
+        self.before_event(ev)
         kind = ev.get("t")
         tab = self.tab
         if kind == "spectators":
@@ -287,7 +391,10 @@ class Spectating:
                 self._start_game(ev["path"])
             return True
         if kind == "spec_end":
+            if w is None and self._pending is not None:
+                self._pending_end = (self._pending[0], ev.get("stream"), ev.get("reason") or "over")
             if w is not None and ev.get("stream") == w["stream"]:
+                self._auto.pause()
                 w["end"] = ev.get("reason") or "over"
                 if w["game"] is None:
                     w["state"] = "over"           # (the game never started: nothing to watch)
@@ -295,15 +402,9 @@ class Spectating:
                         (w["state"] == "starting" and not ev.get("ready")):
                     # privacy and the player's own match: at once; a game still waiting for a first fight
                     # that never came has nothing to show (with a fight in the file it plays to its end)
-                    if w["game"].running():
-                        w["game"].stop()
+                    self._stop_owned_game(w)
                     w["state"] = "over"
             return True
-        if kind in ("match_found", "disconnected") and w is not None and w["state"] != "over":
-            g = w.get("game")
-            if g is not None and g.running():
-                g.stop()
-            w["state"], w["end"] = "over", "your_match" if kind == "match_found" else "stopped"
         if kind == "match_start":
             self.count = None
         return False
@@ -311,7 +412,24 @@ class Spectating:
     def poll(self):
         self._check_prefs()
         w = self.w
+        enabled = bool(self.tab.app.settings.get("auto_spectate", False))
+        if self._pending is not None and self._pending[2] and not enabled:
+            self._auto.pause()
+            self._preempt("left")
+        if self._busy() and (self._pending is not None or (w is not None and w["state"] != "over")):
+            self._preempt("your_match")
+            w = self.w
+        if w is not None and w.get("automatic") and not enabled:
+            self.stop()
+            w = None
+        if w is not None and w.get("automatic") and w["state"] == "over":
+            self.w = w = None
         if w is None:
+            if self._pending is None:
+                target = self._auto.due(self.tab)
+                if target:
+                    self._auto.attempted()
+                    self._watch(**target, automatic=True)
             return
         g = w.get("game")
         if g is not None and w["state"] in ("starting", "playing"):
@@ -324,9 +442,8 @@ class Spectating:
                         w["end"] = "over" if v.get("stream_end") or v.get("end") else "stopped"
                     except (OSError, ValueError):
                         w["end"] = "stopped"
-                c = self.tab.client
-                if c is not None and getattr(c, "spec_watch", None) is not None:
-                    self.tab.call(c.unwatch)
+                self._auto.pause()
+                self._cancel_client(w.get("client"))
             elif time.monotonic() - w.get("t_status", 0) > 1.0:
                 w["t_status"] = time.monotonic()
                 try:

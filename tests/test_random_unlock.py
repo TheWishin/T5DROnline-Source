@@ -116,7 +116,9 @@ class GameSide(unittest.TestCase):
 
     def test_replay_format_4(self):
         src = text("src", "netplay", "replay.cpp")
-        self.assertRegex(src, r"constexpr uint32_t kVersion = [45];")   # (5 in 1.1.5: a match's rules word)
+        version = re.search(r"constexpr uint32_t kVersion\s*=\s*(\d+);", src)
+        self.assertIsNotNone(version)
+        self.assertGreaterEqual(int(version.group(1)), 4)  # Format 4 introduced these flags.
         self.assertIn("d.select_mix = ver >= 4 && (hf & kFlagSelectMix);", src)
         self.assertIn("d.unlocks_open = ver >= 4 && (hf & kFlagUnlocksOpen);", src)
 

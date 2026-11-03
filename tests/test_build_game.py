@@ -74,6 +74,25 @@ class Pins(unittest.TestCase):
         with mock.patch.object(bg, "patch_digest", lambda: "something else"):
             self.assertNotEqual(bg.code_id(), a)
 
+    def test_online_boot_cover_requires_a_new_build_id(self):
+        # src/ is not part of code_id(): the 1.2.0 boot change must explicitly
+        # invalidate older builds, even with identical runtime patches and game.
+        bg = self.bg
+        self.assertGreater(bg.CODE_VERSION, 7)
+        current = bg.code_id()
+        with mock.patch.object(bg, "CODE_VERSION", 7):
+            self.assertNotEqual(bg.code_id(), current)
+
+
+    def test_integrated_runtime_rejects_boot_cover_only_build_id(self):
+        # Both drafts change src/, which code_id does not hash directly. Costume
+        # bytes and skip-rule agreement require separation from the title-only draft.
+        bg = self.bg
+        self.assertGreater(bg.CODE_VERSION, 8)
+        current = bg.code_id()
+        with mock.patch.object(bg, "CODE_VERSION", 8):
+            self.assertNotEqual(bg.code_id(), current)
+
 
 class PackageCheck(unittest.TestCase):
     """The launcher's line under the chosen .pkg (core.describe_pkg): both PSN content IDs of the supported

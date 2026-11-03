@@ -15,9 +15,14 @@ or simply the wrapper `t5lobby-admin`; Docker: `docker compose exec lobby t5lobb
     user NAME                            one account and its last matches
     ban NAME [--days D | --hours H] [--reason TEXT]       (no duration: for good)
     unban NAME
+    badge NAME dev|--clear               set or clear the account's developer badge (not a player permission)
     ban-ip ADDRESS|CIDR [--days D | --hours H] [--reason TEXT]   (guests have no account: ban the address)
     unban-ip ADDRESS|CIDR
     bans                                 banned accounts and addresses
+    chat-counts [--limit N]               aggregate blocked attempts and active chat mutes
+    mute NAME [--days D | --hours H]       mute chat on every channel (no duration: for good)
+    unmute NAME                          lift an account's chat mute
+    flagged-names [--terms FILE]          inspect existing account names without changing them
     tour-host add NAME [--admin]         the account may create tournaments (a host; at most T5L_TOUR_MAX_HOSTS,
                                          default 20) -- with --admin it runs every tournament, like T5L_TOUR_ADMINS
                                          (no limits, not counted). Again with or without --admin: changes the role
@@ -39,6 +44,8 @@ or simply the wrapper `t5lobby-admin`; Docker: `docker compose exec lobby t5lobb
                                          20 min"); the launcher shows it in its status bar. Default: 60 minutes
     notice --clear                       take the message down
     notices                              the latest messages and whether they are showing
+    private-reports [--limit N] [--json]  moderator inbox: only lines explicitly selected by reporters
+    private-reports --delete ID          remove one reviewed report (does not change backups)
     drain [--wait SECONDS] [--off]       before a restart (an update): no new matches -- queues, rooms,
                                          challenges and rematches are refused -- while the running ones
                                          finish; --wait returns when none is left (exit 1 on timeout).
@@ -50,6 +57,7 @@ or simply the wrapper `t5lobby-admin`; Docker: `docker compose exec lobby t5lobb
 """
 import argparse
 import json
+import math
 import os
 import secrets
 import sys
@@ -245,6 +253,7 @@ def cmd_user(a):
     r = _account(st, a.name)
     ban = st.ban_state(r)
     print(f"name      {r['name']} (id {r['id']})")
+    print(f"badge     {r['badge'] or '-'}")
     print(f"created   {_fmt_t(r['created'])}   last seen {_fmt_t(r['last_seen'])}   "
           f"password changed {_fmt_t(r['pw_changed'])}")
     print(f"rating    {r['rating']:.1f}  rd {r['rd']:.1f}  vol {r['vol']:.4f}  games {r['games']} "
@@ -254,6 +263,20 @@ def cmd_user(a):
     print(f"friends   {st.friend_count(r['id'])}")
     print(f"banned    {_fmt_t(ban[0]) + ' ' + ban[1] if ban else 'no'}")
     _print_matches(st.recent_matches(10, r["name"]))
+    return 0
+
+
+def cmd_badge(a):
+    if bool(a.badge) == bool(a.clear):
+        sys.exit("use badge NAME dev or badge NAME --clear")
+    st = _open(a)
+    try:
+        r = _account(st, a.name)
+        st.set_badge(r["id"], "" if a.clear else a.badge)
+        st.flush()
+        print(f"{r['name']}: badge {a.badge or '-'}")
+    finally:
+        st.close()
     return 0
 
 
@@ -312,6 +335,72 @@ def cmd_bans(a):
     for b in st.ip_bans():
         print(f"address  {b['net']:<17} until {_fmt_t(b['until']):<18} {b['reason'] or ''}")
     return 0
+
+
+def cmd_chat_counts(a):
+    if a.limit < 1:
+        sys.exit("--limit must be at least 1")
+    st = _open(a)
+    try:
+        rows = st.list_chat_moderation(a.limit)
+        print(f"{'name':<17}{'blocked':>9}  muted until")
+        for r in rows:
+            muted = r["muted_until"]
+            print(f"{r['name']:<17}{r['blocked_count']:>9}  "
+                  f"{_fmt_t(muted) if muted and muted > time.time() else '-'}")
+        print(f"({len(rows)} shown; no automatic ban)")
+        return 0
+    finally:
+        st.close()
+
+
+def cmd_mute(a):
+    for value in (a.days, a.hours):
+        if value is not None and (not math.isfinite(value) or value <= 0):
+            sys.exit("mute duration must be a positive, finite number")
+    st = _open(a)
+    try:
+        r = _account(st, a.name)
+        until = min(_duration(a), PERMANENT)
+        st.mute_account(r["name"], until)
+        print(f"chat muted for {r['name']} until {_fmt_t(until)} (all channels; account stays usable)")
+        return 0
+    finally:
+        st.close()
+
+
+def cmd_unmute(a):
+    st = _open(a)
+    try:
+        r = _account(st, a.name)
+        st.unmute_account(r["name"])
+        print(f"chat unmuted for {r['name']}")
+        return 0
+    finally:
+        st.close()
+
+
+def cmd_flagged_names(a):
+    from .chatfilter import ChatFilter
+    from .config import Config
+    path = a.terms or Config.from_env().chat_filter_path
+    try:
+        # Deliberately inspect the list even if filtering is switched off. This command
+        # is an explicit, local administrator report, never part of the public protocol.
+        matcher = ChatFilter(path, enabled=True)
+    except (OSError, ValueError) as e:
+        sys.exit(f"cannot load hate-term list: {e}")
+    st = _open(a)
+    try:
+        count = 0
+        for r in st._x("SELECT id, name FROM accounts ORDER BY id"):
+            if matcher.blocked(r["name"]):
+                print(f"{r['name']} (id {r['id']})")
+                count += 1
+        print(f"({count} flagged; existing names and accounts left unchanged)")
+        return 0
+    finally:
+        st.close()
 
 
 def _tour_hosts(a):
@@ -438,7 +527,7 @@ def cmd_purge_guests(a):
     st = _open(a)
     n = st.purge_guest_matches(a.days)
     print(f"deleted {n} guest-only match record(s) older than {a.days} days "
-          "(guests themselves are never stored; ban an address with ban-ip)")
+          "(private reports are retained separately; ban an address with ban-ip)")
     return 0
 
 
@@ -516,6 +605,27 @@ def cmd_notices(a):
     if not rows:
         print("(no notices yet)")
     return 0
+
+
+def cmd_private_reports(a):
+    st = _open(a)
+    try:
+        if a.delete is not None:
+            st._x("DELETE FROM private_reports WHERE id = ?", (a.delete,))
+            return 0
+        rows = st.private_reports(a.limit)
+        if a.json:
+            print(json.dumps(rows, indent=2, ensure_ascii=True))
+        else:
+            for r in rows:
+                print(f"#{r['id']} {_fmt_t(r['created'])}  {r['reporter_name']} reports {r['peer_name']}: {r['reason']}")
+                for line in r["lines"]:
+                    print(f"  {_fmt_t(line['time'])} {line['from']['name']}: {line['text']}")
+            if not rows:
+                print("(no private reports)")
+        return 0
+    finally:
+        st.close()
 
 
 def cmd_release(a):
@@ -642,6 +752,10 @@ def main(argv=None):
     p.add_argument("--banned", action="store_true")
     p.add_argument("--limit", type=int, default=50)
     add("user", cmd_user, "show one account").add_argument("name")
+    p = add("badge", cmd_badge, "set or clear an account's developer badge")
+    p.add_argument("name")
+    p.add_argument("badge", nargs="?", choices=("dev",))
+    p.add_argument("--clear", action="store_true")
     p = add("ban", cmd_ban, "ban an account")
     p.add_argument("name")
     duration(p)
@@ -651,6 +765,16 @@ def main(argv=None):
     duration(p)
     add("unban-ip", cmd_unban_ip, "lift an address ban").add_argument("net")
     add("bans", cmd_bans, "list bans")
+    p = add("chat-counts", cmd_chat_counts, "blocked-attempt counts and active chat mutes; no message text")
+    p.add_argument("--limit", type=int, default=50)
+    p = add("mute", cmd_mute, "mute an account's chat on all channels")
+    p.add_argument("name")
+    g = p.add_mutually_exclusive_group()
+    g.add_argument("--days", type=float, help="mute for this many days (default: for good)")
+    g.add_argument("--hours", type=float)
+    add("unmute", cmd_unmute, "lift an account's chat mute").add_argument("name")
+    p = add("flagged-names", cmd_flagged_names, "report existing names matching hate terms without changing them")
+    p.add_argument("--terms", metavar="FILE", help="term list (default T5L_CHAT_FILTER_PATH or server default)")
     p = add("tour-host", cmd_tour_host, "add or remove a tournament host (or admin)")
     p.add_argument("action", choices=("add", "remove"))
     p.add_argument("name")
@@ -689,6 +813,10 @@ def main(argv=None):
     g.add_argument("--clear", action="store_true", help="take the showing notice(s) down")
     p = add("notices", cmd_notices, "the latest notices")
     p.add_argument("--limit", type=int, default=10)
+    p = add("private-reports", cmd_private_reports, "moderator inbox of explicitly selected private message lines")
+    p.add_argument("--limit", type=int, default=20)
+    p.add_argument("--json", action="store_true")
+    p.add_argument("--delete", type=int, metavar="ID")
     p = add("release", cmd_release, "tell launchers of an older release to update (after publishing)")
     p.add_argument("version", nargs="?", help="the newest published release, e.g. 1.1.2 (none: show it)")
     p.add_argument("--clear", action="store_true", help="nobody is told to update any more")
@@ -715,7 +843,8 @@ def main(argv=None):
     p.add_argument("--note")
     a = ap.parse_args(argv)
     if getattr(a, "name", None) and a.cmd in ("ban", "unban", "user", "reset-password", "reset-rating",
-                                               "delete-user", "recovery-codes", "logout-all", "tour-host") \
+                                               "delete-user", "recovery-codes", "logout-all", "tour-host", "badge",
+                                               "mute", "unmute") \
             and not valid_name(a.name):
         sys.exit(f"{a.name!r} is not a valid player name")
     return a.fn(a) or 0

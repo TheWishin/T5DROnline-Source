@@ -33,6 +33,8 @@ import tkgc  # noqa: E402
 import replays  # noqa: E402
 import replays_ui  # noqa: E402
 import updater  # noqa: E402
+import first_start  # noqa: E402
+import gpu_support  # noqa: E402
 try:
     import controls_ui  # noqa: E402  (needs lobby/t5lobby; without it the Settings tab has no button for it)
 except ImportError:
@@ -256,9 +258,8 @@ class App(tk.Tk):
             wine = core.run_game.under_wine()
             if wine:          # (Linux / Steam Deck: the game gets two defaults there, tools/run_game.py WINE_ENV)
                 core.log(core.run_game.wine_note(wine))
-            gone = replays.prune(self.settings.replay_dir)       # the newest replays.DEFAULT_KEEP files stay
-            if gone:
-                core.log(f"replays: {gone} old replay file(s) deleted (the newest {replays.DEFAULT_KEEP} are kept)")
+            # Folder changes and optional imports must never delete the player's older recordings.
+            # Replay files are removed only through the Replays tab's explicit Delete action.
         self.title(f"{APP_TITLE} {self.info.get('version', '')}".strip())
         self.minsize(900, 680)
         self.geometry("1000x780" + ("+60+60" if offscreen else ""))
@@ -275,6 +276,13 @@ class App(tk.Tk):
         self.after(300, self.refresh_prereqs)
         self.after(400, self.refresh_game_state)
         self.after(600, self.refresh_rank_art)
+        if not self.readonly:
+            self.after(800, self._controls_first_start)
+
+    def _controls_first_start(self):
+        first_start.show_controls_hint(
+            self.settings, lambda text: dialogs.show_info(APP_TITLE, text, parent=self),
+            self.save_settings, readonly=self.readonly)
 
     def report_callback_exception(self, exc, val, tb):
         """An error inside a button or timer: Tk would only print it (nowhere, under pythonw). It goes
@@ -766,15 +774,14 @@ class App(tk.Tk):
         ttk.Label(pr, style="Muted.TLabel", wraplength=300, justify="left", text=t(core.PRACTICE_HELP)).pack(
             anchor="w", pady=(4, 0))
 
-        # "Always left" (T5_ALWAYS_LEFT, docs/NETPLAY.md): as P2 in a casual match the fight is shown mirrored on
-        # this PC only (never ranked, Quick or a tournament set). The Online tab's casual row has the same checkbox
-        # on this variable (tk_casual.py).
+        # Settings and the Online casual row share the three-way screen-side choice.
         sd = ttk.LabelFrame(left, text="  " + t("Screen side") + "  ", padding=(12, 6))
         sd.pack(fill="x", pady=(6, 0))
-        self.always_left_var = tk.BooleanVar(value=bool(self.settings.get("always_left", False)))
-        ttk.Checkbutton(sd, text=t("Always see me on the left"), variable=self.always_left_var,
-                        style=self.wrap_style("TCheckbutton", 300), command=self.save_settings).pack(anchor="w")
-        ttk.Label(sd, style="Muted.TLabel", wraplength=300, justify="left", text=t(core.ALWAYS_LEFT_HELP)).pack(
+        self.screen_side_var = tk.StringVar(value=self.settings.get("screen_side", "dealt"))
+        for key, label in core.SCREEN_SIDES.items():
+            ttk.Radiobutton(sd, text=t(label), variable=self.screen_side_var, value=key,
+                            command=self.save_settings).pack(anchor="w")
+        ttk.Label(sd, style="Muted.TLabel", wraplength=300, justify="left", text=t(core.SCREEN_SIDE_HELP)).pack(
             anchor="w", pady=(4, 0))
 
         right = ttk.Frame(box)
@@ -788,7 +795,7 @@ class App(tk.Tk):
         self.notify_var = tk.BooleanVar(value=bool(self.settings.get("notify", True)))
         # (1.1.7: challenges ring too; the label names them and invites)
         ttk.Checkbutton(other, text=t(
-            "Sound and taskbar flash when a match is found, I am challenged or invited, or someone joins my room"),
+            "Sound and taskbar flash for lobby notifications"),
                         variable=self.notify_var, style=self.wrap_style("TCheckbutton", 440),
                         command=self.save_settings).pack(anchor="w", pady=(4, 0))
         ttk.Checkbutton(other, text=t("Start minimized, without taking focus (for testing)"), variable=self.bg_var,
@@ -800,6 +807,27 @@ class App(tk.Tk):
         self.env_text.insert("1.0", self.settings["extra_env"])
         self.env_text.pack(anchor="w", fill="x")
         self.env_text.bind("<FocusOut>", lambda _e: (self.save_settings(), self._power_saving_changed(save=False)))
+
+        replay_box = ttk.LabelFrame(right, text="  " + t("Replay folder") + "  ", padding=(12, 6))
+        replay_box.pack(fill="x", pady=(6, 0))
+        ttk.Label(replay_box, text=t(
+            "Choose an existing folder for new replays. Leave this empty to use the default. "
+            "Old replays stay where they are unless you choose to move them."),
+            wraplength=self.px(390), justify="left", style="Muted.TLabel").pack(anchor="w")
+        self.replay_dir_var = tk.StringVar(value=self.settings["replay_dir"])
+        replay_entry = ttk.Entry(replay_box, textvariable=self.replay_dir_var, width=38)
+        replay_entry.pack(fill="x", pady=(6, 4))
+        replay_entry.bind("<Return>", lambda _e: self._apply_replay_folder())
+        row = ttk.Frame(replay_box)
+        row.pack(fill="x")
+        ttk.Button(row, text=t("Browse..."), command=self._browse_replay_folder).pack(side="left")
+        ttk.Button(row, text=t("Apply folder"), command=self._apply_replay_folder).pack(
+            side="left", padx=(6, 0))
+        ttk.Button(replay_box, text=t("Use default folder"), command=self._default_replay_folder).pack(
+            anchor="w", pady=(4, 0))
+        self.replay_dir_hint = ttk.Label(replay_box, wraplength=self.px(390), justify="left")
+        self.replay_dir_hint.pack(anchor="w", pady=(4, 0))
+        self._replay_folder_status()
 
         # One "Internal resolution" like an emulator's (PS3_INTERNAL_RES, docs/RENDER_PERF.md
         # "Internal resolution"): below Native for weak graphics cards, above for big screens.
@@ -860,6 +888,7 @@ class App(tk.Tk):
         spc.pack(fill="x", pady=(6, 0))
         self.spectators_var = tk.BooleanVar(value=bool(self.settings.get("spectators", True)))
         self.spectators_ranked_var = tk.BooleanVar(value=bool(self.settings.get("spectators_ranked", False)))
+        self.auto_spectate_var = tk.BooleanVar(value=self.settings.get("auto_spectate", False) is True)
         ttk.Checkbutton(spc, text=t("Friends and room visitors may watch my online matches"),
                         variable=self.spectators_var, style=self.wrap_style("TCheckbutton", 440),
                         command=self.save_settings).pack(anchor="w")
@@ -869,6 +898,9 @@ class App(tk.Tk):
         ttk.Label(spc, style="Muted.TLabel", wraplength=300, justify="left", text=t(
             "They see the match a few seconds late, in their own game. Only when both players allow it; a ranked "
             "match only when both allow ranked too.")).pack(anchor="w", pady=(4, 0))
+        ttk.Checkbutton(spc, text=t("Automatically watch matches while idle"), variable=self.auto_spectate_var,
+                        style=self.wrap_style("TCheckbutton", 440), command=self.save_settings).pack(anchor="w",
+                                                                                                    pady=(4, 0))
 
         # Unlocks (T5_UNLOCK_STAGES / T5_UNLOCK_ITEMS / T5_UNLOCK_JINPACHI, docs/DIRECTFIGHT.md "Unlocks"): offline
         # only; the game never changes the save for them. An online game answers as a fresh save does, on both PCs
@@ -1160,13 +1192,19 @@ class App(tk.Tk):
         if self.game and self.game.running():
             dialogs.show_info(APP_TITLE, t("Close the game first."), parent=self)
             return
+        if self.settings.get("gpu_build_warning", True):
+            warning = gpu_support.build_warning()
+            if warning and not dialogs.ask_yes_no(t(warning["title"]),
+                                                  t(warning["message"], **warning["values"]), parent=self):
+                return
         self.refresh_inputs()
         self.error.set("")
         self.log.configure(state="normal")
         self.log.delete("1.0", "end")
         self.log.configure(state="disabled")
+        scheduled = steps or core.build_game.DEFAULT_STEPS
         for s in self.step_state:
-            self.step_state[s] = "pending" if (not steps or s in steps) else "skip"
+            self.step_state[s] = "pending" if s in scheduled else "skip"
             self._paint_step(s)
         self.progress["value"] = 0
         self.build = core.BuildRun(self.settings["pkg"], self.settings["rap"], self.settings.out_dir,
@@ -1280,6 +1318,7 @@ class App(tk.Tk):
             self.progress["value"] = 1000
             self.detail.set(t("Done in {elapsed}. Open the Play tab.", elapsed=core.clock(el)))
             self.status.set(t("Build finished."))
+            core.warmup.start(self.build.out)
             self.refresh_rank_art()          # (the game is unpacked now: its rank plates for the Online tab)
         else:
             if self.cur_step and self.step_state.get(self.cur_step) == "running":
@@ -1426,6 +1465,57 @@ class App(tk.Tk):
         if save:
             self.save_settings()
 
+    def _replay_folder_status(self):
+        folder, warning = self.settings.replay_dir_status()
+        self.replay_dir_hint.configure(
+            text=warning or t("Using replay folder: {folder}", folder=folder),
+            style="warn.TLabel" if warning else "Muted.TLabel")
+        return folder, warning
+
+    def _browse_replay_folder(self):
+        if self.readonly:
+            return
+        folder = filedialog.askdirectory(parent=self, title=t("Replay folder"),
+                                         initialdir=self.settings.replay_dir, mustexist=True)
+        if folder:
+            self.replay_dir_var.set(folder)
+
+    def _default_replay_folder(self):
+        if not self.readonly:
+            self.replay_dir_var.set("")
+            self._apply_replay_folder()
+
+    def _apply_replay_folder(self):
+        if self.readonly:
+            return
+        if self.game and self.game.running():
+            dialogs.show_info(t("Replay folder"), t(
+                "Close the running game before changing the replay folder."), parent=self)
+            return
+        source = self.settings.replay_dir
+        self.settings["replay_dir"] = self.replay_dir_var.get()
+        destination, warning = self._replay_folder_status()
+        self.settings.save()
+        same = os.path.normcase(os.path.realpath(source)) == os.path.normcase(os.path.realpath(destination))
+        if warning:
+            dialogs.show_info(t("Replay folder"), warning, parent=self)
+        elif not same and os.path.isdir(source):
+            try:
+                with os.scandir(source) as entries:
+                    have_replays = any(e.is_file() and e.name.endswith(replays.EXT) for e in entries)
+                if have_replays and dialogs.ask_yes_no(t("Replay folder"), t(
+                        "Move existing replays from {source} to {destination}? Choose No to leave them where they are.",
+                        source=source, destination=destination), parent=self):
+                    moved, retained = replays.move_replays(source, destination)
+                    dialogs.show_info(t("Replay folder"), t(
+                        "Moved {moved} replay file(s). {retained} file(s) remain in {source}; existing files were not replaced.",
+                        moved=moved, retained=retained, source=source), parent=self)
+            except OSError as error:
+                dialogs.show_error(t("Replay folder"), t(
+                    "Could not move replays: {error}. The original files have been kept.", error=error), parent=self)
+        if hasattr(self, "replays"):
+            self.replays.refresh()
+
     def save_settings(self):
         if self.readonly:
             return
@@ -1451,13 +1541,16 @@ class App(tk.Tk):
                 (k for k, v in self._practice_dummy_labels.items() if v == label), "game")
         if hasattr(self, "router_ports_var"):
             self.settings["router_ports"] = bool(self.router_ports_var.get())
-        if hasattr(self, "always_left_var"):
-            self.settings["always_left"] = bool(self.always_left_var.get())
+        if hasattr(self, "screen_side_var"):
+            self.settings["screen_side"] = self.screen_side_var.get()
+            self.settings["always_left"] = self.settings["screen_side"] == "left"
         if hasattr(self, "discord_var"):
             self.settings["discord_presence"] = bool(self.discord_var.get())
         if hasattr(self, "spectators_var"):
             self.settings["spectators"] = bool(self.spectators_var.get())
             self.settings["spectators_ranked"] = bool(self.spectators_ranked_var.get())
+        if hasattr(self, "auto_spectate_var"):
+            self.settings["auto_spectate"] = bool(self.auto_spectate_var.get())
         self.settings["mute"] = bool(self.mute_var.get())
         if hasattr(self, "notify_var"):
             self.settings["notify"] = bool(self.notify_var.get())
@@ -1481,6 +1574,9 @@ class App(tk.Tk):
             return None
         if self.game and self.game.running():
             return self.game
+        _folder, warning = self._replay_folder_status()
+        if warning:
+            dialogs.show_info(t("Replay folder"), warning, parent=self)
         g = core.GameRun(self.settings.out_dir, self.settings)
         try:
             pid = g.start(env, monitor_point=core.window_center(self._hwnd()))
@@ -1595,6 +1691,7 @@ class App(tk.Tk):
         except tk.TclError:
             pass
         out = self.settings.out_dir
+        replay_dir = self.settings.replay_dir
         labels = {"display": dict(core.DISPLAY_MODES), "internal_res": core.INTERNAL_RES_LABELS,
                   "vsync": core.VSYNC_MODES, "stage_blur": core.STAGE_BLUR_MODES,
                   "input_delay": core.INPUT_DELAYS, "power_saving": core.POWER_SAVING,
@@ -1611,7 +1708,8 @@ class App(tk.Tk):
         def make_context():
             return report.Context(out, root=core.ROOT, launcher_log=core.LAUNCHER_LOG, settings_lines=lines,
                                   release=info, build_info=lambda: report.build_info_for(out, info, core.ROOT),
-                                  online_dir=online_dir, online_info=online_info, build_problem=build_problem)
+                                  online_dir=online_dir, online_info=online_info, build_problem=build_problem,
+                                  replay_dir=replay_dir)
         core.log("report window opened")
         self._report_dlg = report_ui.ReportDialog(self, make_context, core.desktop_dir(), reveal=core.reveal_file,
                                                   issues_url=core.ISSUES_URL, log=core.log,
@@ -1660,7 +1758,8 @@ class App(tk.Tk):
             elif self._run_shown:
                 self._run_shown = False
                 why = core.explain_exit(self.game.proc.returncode, self.game.last_lines,
-                                        getattr(self.game, "dialogs", ()))
+                                        getattr(self.game, "dialogs", ()),
+                                        getattr(self.game, "gpu_adapter", None))
                 # patch 0063: the game log's [slow-frames] verdicts -- the graphics were the limit
                 speed = self._speed_notes()
                 core.log(f"game ended: exit code {self.game.proc.returncode}" + (", explained to the player"
@@ -1725,6 +1824,7 @@ class App(tk.Tk):
             return                              # unsaved button changes: the person chose to stay
         if self.build:
             self.build.cancel()
+        core.warmup.close_all()
         updater.confirm_started()          # closed by hand (or restarting): it did start, the update stays
         self.save_settings()
         self.nb.unbind("<<NotebookTabChanged>>")          # (destroying the tabs would fire it with none selected)

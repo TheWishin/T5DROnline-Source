@@ -5,7 +5,9 @@ and replays online"; src/netplay/no_pause.h).
   decision, slot symmetry, and two PCs in lockstep, under rollback (late inputs, predictions,
   re-simulations) and in a replay -- the same inputs reach both games, the pause menu never opens,
   the post-match skip by START still works, intros, round replays and the way to the next round are
-  skipped once both players pressed START and never by one player alone. Built with clang-cl; skipped without a C++ compiler.
+  skipped once both players pressed START and never by one player alone; START+SELECT never reaches the
+  game, even from scripts, repeated rollback boundaries or replay input, while SELECT alone is preserved.
+  Built with clang-cl; skipped without a C++ compiler.
 * The source checks: every place in src/netplay/t5_hooks.cpp that hands a frame's inputs to the
   game runs the rule first, and the local devices' START is taken out before it is sent except in a
   skip part."""
@@ -53,11 +55,54 @@ class RuleModel(unittest.TestCase):
         out = r.stdout[-3000:] + r.stderr[-2000:]
         self.assertEqual(r.returncode, 0, out)
         self.assertRegex(r.stdout, r"(?m)^PASS \d+ checks$", out)
-        for part in ("window ok", "parts ok", "symmetry ok", "lockstep, rollback, replay ok"):
+        for part in ("window ok", "parts ok", "symmetry ok", "soft reset ok", "lockstep, rollback, replay ok", "automatic skips ok"):
             self.assertIn(part, r.stdout)
 
 
 class Source(unittest.TestCase):
+    def test_changed_simulation_requires_a_new_code_id(self):
+        """The reset filter changes simulated pad inputs; a launcher must rebuild the old host,
+        including when the reset fix is carried independently of the renderer patch."""
+        build = read("tools/build_game.py")
+        version = re.search(r"(?m)^CODE_VERSION\s*=\s*(\d+)", build)
+        self.assertIsNotNone(version)
+        self.assertGreaterEqual(int(version.group(1)), 11, "integrated version 10 predates the online reset policy")
+        start = build.index("def code_id():")
+        code_id = build[start:build.index("\n\ndef ", start)]
+        self.assertIn('h.update(f"{CODE_VERSION}:{PS3RECOMP_COMMIT}:{CODE_END}".encode())', code_id)
+
+    def test_online_pad_handover_always_suppresses_soft_reset(self):
+        """The final pad write covers injected menu input before netplay starts, passive/scripted
+        samples and the live/replayed frame cache alike. Offline and legacy recordings retain their policy."""
+        src = read("src/netplay/t5_hooks.cpp")
+        start = src.index("void write_pad_data(")
+        writer = src[start:src.index("\n}\n", start)]
+        self.assertRegex(writer, r"const uint16_t buttons\s*=\s*g_offline\s*\|\|\s*!rp::play_soft_reset_guard\(\)\s*\?\s*in\.buttons\s*:\s*"
+                                 r"np::NoPauseRule::suppress_soft_reset\(in\.buttons\);")
+        self.assertIn("(buttons & 0xFF)", writer)
+        self.assertIn("(buttons >> 8)", writer)
+        self.assertNotRegex(writer, r"wr16\([^\n]*in\.buttons")
+        self.assertEqual(src.count("rp::play_soft_reset_guard()"), 4)
+        self.assertIn("np::NoPauseRule::apply(v, in, rp::play_soft_reset_guard());", src)
+        start = src.index("void h_cellPadGetData(")
+        reader = src[start:src.index("\n}\n", start)]
+        passive, active = reader.split("} else if (port < 2) {", 1)
+        self.assertIn("if (g_passive && port < 2)", passive)
+        self.assertEqual(passive.count("np::poll_now("), 1)  # stateful cursor: sample only requested port
+        self.assertIn("np::poll_now((int)port)", passive)
+        self.assertIn("write_pad_data(ea, in);", passive)   # scalar guard on the final requested pad
+        self.assertNotIn("np::poll_now(", active)
+        self.assertIn("if (injected & (1u << p)) in[p].buttons = g_inject[p].load();", active)
+        self.assertIn("else if (active) in[p] = g_cur[p];", active)
+        self.assertRegex(active, r"if \(!g_offline && rp::play_soft_reset_guard\(\)\) np::NoPauseRule::suppress_soft_reset\(in\);\s*"
+                                 r"write_pad_data\(ea, in\[port\]\);")
+        start = src.index("void no_pause_rule(")
+        rule = src[start:src.index("\n}\n", start)]
+        rule = re.sub(r"/\*.*?\*/", "", rule, flags=re.S)
+        self.assertRegex(rule, r"if \(!g_directfight\)\s*\{\s*"
+                               r"if \(rp::play_soft_reset_guard\(\)\) np::NoPauseRule::suppress_soft_reset\(in\);\s*return;")
+
+
     def test_every_input_hand_over_runs_the_rule(self):
         """g_cur (what cellPadGetData gives the game during a session) gets a frame's inputs only
         right after no_pause_rule() ran on them -- lockstep, rollback (live and re-simulated) and
@@ -101,8 +146,15 @@ class Source(unittest.TestCase):
         hdr = read("src/netplay/no_pause.h")
         code = re.sub(r"/\*.*?\*/", "", hdr, flags=re.S)
         self.assertNotRegex(code, r"local_slot|slot|Mode::|enabled\(|replaying\(")
-        self.assertIn("static unsigned apply(Verdict v, PadInput in[2])", hdr)
-        self.assertIn("Verdict record(uint32_t f, const State& st, const PadInput in[2])", hdr)
+        self.assertIn("static unsigned apply(Verdict v, PadInput in[2], bool soft_reset_guard = true)", hdr)
+        self.assertIn("Verdict record(uint32_t f, const State& st, const PadInput in[2], bool auto_skip_after_round = false)", hdr)
+
+    def test_automatic_skip_is_part_of_the_deterministic_rule(self):
+        hdr = read("src/netplay/no_pause.h")
+        self.assertIn("auto_skip_after_round && pt == kAfter && !st.decided", hdr)
+        self.assertIn("% kPressEvery < kPressFrames", hdr)
+        hooks = read("src/netplay/t5_hooks.cpp")
+        self.assertIn("rules.auto_skip_after_round", hooks)
 
 
 if __name__ == "__main__":

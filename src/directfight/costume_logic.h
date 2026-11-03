@@ -301,6 +301,60 @@ inline bool from_wire(const uint8_t* w, size_t n, Table& t)
     return true;
 }
 
+/* The canonical default: nothing bought or worn in any of the three costumes.
+ * Zero is a colour index, so an all-zero block is not an unequipped block. */
+inline void unequipped_block(uint8_t* out)
+{
+    memset(out, 0, kBlock);
+    for (int k = 0; k < 3; k++) {
+        uint8_t* cs = out + k * kCostume;
+        memset(cs + 0x40, 0xFF, 4 * 2);
+        memset(cs + 0x54, 0xFF, 3);
+    }
+}
+
+/* FIGHT START's actual selection, shared with the game-free regression test.
+ * Both PCs use the same wire table for each side and the same check. A missing
+ * or rejected block always produces the canonical default; a valid one is
+ * copied byte for byte. `check` also refuses blocks when item rules are missing.
+ * Historical replays used zero for no customization. Preserve those bytes:
+ * replay setup verification compares the actual bytes that were recorded. */
+template<class Check>
+inline bool select_block(uint8_t* out, int c, const uint8_t* wire, size_t n,
+                         bool replay, const uint8_t* recorded, Check check, const char** why = nullptr)
+{
+    unequipped_block(out);
+    const char* reason = "nothing customized";
+    const uint8_t* src = nullptr;
+    Table t;
+    if (replay) {
+        bool any = false;
+        if (recorded) {
+            for (uint32_t i = 0; i < kBlock; i++) if (recorded[i]) { any = true; break; }
+        }
+        if (!any) {
+            /* Format 2 has no blocks; format 3+ can record an all-zero block.
+             * Both previously wrote zeros, even when item tables are absent. */
+            memset(out, 0, kBlock);
+            if (why) *why = "default (legacy replay)";
+            return false;
+        }
+        src = recorded;
+    } else if (!from_wire(wire, n, t)) reason = "no table (not a valid one)";
+    else if (c >= 0 && c < kChars && t.have[c]) src = t.blk[c];
+    if (c < 0 || c >= kChars) {
+        reason = "item character unknown";
+        src = nullptr;
+    }
+    const bool custom = src && check(src, c, &reason);
+    if (custom) {
+        memcpy(out, src, kBlock);
+        reason = replay ? "custom (replay)" : "custom";
+    }
+    if (why) *why = reason;
+    return custom;
+}
+
 /* FNV-1a 64: logged by both PCs for the bytes they wrote, so two logs can be compared. */
 inline uint64_t fnv64(const uint8_t* p, size_t n, uint64_t h = 0xcbf29ce484222325ull)
 {

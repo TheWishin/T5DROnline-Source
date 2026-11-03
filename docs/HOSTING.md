@@ -19,6 +19,7 @@ packages. It needs one TCP port and two UDP ports, about 35 MB of RAM, and very 
 - [Adding a relay server](#adding-a-relay-server): relay-only nodes in other regions (Hetzner, Ubuntu 26.04)
 - [Operations](#operations): admin tool, status and metrics, logs, backups, updates
 - [Abuse protection: defaults for a public server](#abuse-protection-defaults-for-a-public-server)
+- [Chat filter (1.2.0)](CHAT_FILTER.md): server term list, counts, mutes and review
 - [Firewall rules](#firewall-rules)
 - [Resource estimate (measured)](#resource-estimate-measured)
 - [What the owner decides](#what-the-owner-decides)
@@ -565,6 +566,9 @@ notices, drains, tournament hosts) every 5 s (`T5L_ADMIN_POLL`) and kicks the pl
 | `users [TEXT] [--banned]`, `user NAME`, `matches [--player NAME]` | look things up |
 | `ban NAME [--days D \| --hours H] [--reason ...]`, `unban NAME` | accounts. Without a duration, the ban is permanent. The player is kicked and their remembered logins end. Later logins are refused with the reason, but only after the correct password, so a ban never reveals that an account exists |
 | `ban-ip ADDR\|CIDR ...`, `unban-ip`, `bans` | guests have no account: ban the address or network |
+| `chat-counts [--limit N]` | accounts with blocked text attempts or an active chat mute; counts contain no message text |
+| `mute NAME [--days D \| --hours H]`, `unmute NAME` | refuse that account's chat until the duration expires; no duration means a permanent mute. Does not ban or disconnect the account |
+| `flagged-names [--terms FILE]` | report existing account names matching the current hate-term list to this admin console only; no renames or login restrictions. See [Chat filter](CHAT_FILTER.md) |
 | `reset-password NAME [--password-env VAR]` | a new password from an environment variable, or a random one that is printed once (there is no e-mail, by design); the account's remembered logins end. The player changes it in the launcher |
 | `recovery-codes NAME`, `logout-all NAME` | a new set of recovery codes (printed once), or end every remembered login. The same account commands as `accounts_admin` |
 | `reset-rating NAME` | back to 1500 / RD 350 and unranked (placement again); the win/loss record stays |
@@ -705,6 +709,7 @@ a public server.
 | Names | 2–16 safe characters. Reserved names refused (`admin…`, `moderator…`, `official…`, `t5lobby…`, `system`, `server`, `p1`, ... ignoring case, punctuation, look-alike letters and digits for letters: `Adm1n`, `M0derat0r`, `5ystem`; see RANKED.md), plus any name containing a word from `T5L_NAME_BLOCKLIST`. A new name (guest or account) must not look like an account or a player online: `W1shin`, `WIshin`, `Wish.in` next to `Wishin` are refused | add a word file | Impersonation, offensive names |
 | Text from clients | printable characters only (no control or direction-changing characters), at most 2 combining marks in a row; a character that cannot be sent becomes `?` | same | One unsendable character in a client's build name used to stop the lobby list for everybody |
 | Chat | 1 line/s per player (burst 5), 2/s per address, **20/s for the whole lobby** (`T5L_CHAT_TOTAL_RATE`), 200 characters | same | Every line goes to every player |
+| Hate terms (1.2.0) | Server filter on (`T5L_CHAT_FILTER=1`), separate reloadable JSON list (`T5L_CHAT_FILTER_PATH`) | maintainer reviews the starter list | Blocked chat reaches nobody; only the sender gets a normal error. New player/room names are checked. Account counts and manual mutes, no automatic bans. Existing names are report-only: [deployment and review](CHAT_FILTER.md) |
 | UDP control packets | 100/s per address **and 5000/s in total for pings** (`T5L_UDP_CTL_PPS`) | same | The total stops spoofed-source ping floods from being reflected at many victims. Answers are never larger than requests. Registrations and relay binds are answered only for a token the server handed out, so they do not count against the total: a flood that uses it up cannot stop the players' NAT setup (1.1.2) |
 | Relay per player | 512 kbit/s, 400 packets/s | **256 kbit/s, 240 packets/s** | The game needs ~85 kbit/s at ~60 packets/s. 3–4× headroom, and the relay can't be used as a traffic cannon |
 | What the relay carries | the game's own packets (`T5NP`) and the lobby's peer packets, at most 2048 bytes (`T5L_RELAY_MAX_BYTES`); everything else is dropped | same | Two accounts can always force the relay: it must not be a free tunnel or proxy |
@@ -840,9 +845,12 @@ Every scrypt hash costs ~16 MB while it runs; before, nothing bounded how many r
    The self-signed route ties players to that one key, so keep it backed up.
 3. **Accounts and guests, or guests only**: accounts give ranked play and kept ratings, but they
    are personal data (a name, a scrypt hash, last-seen time, match history). Guests-only
-   (`T5L_ACCOUNTS=0`) stores nothing about people except unranked match records, which
-   `purge-guests` cleans. A privacy note for players should say what is stored and that the logs
-   contain IP addresses for a short time.
+   (`T5L_ACCOUNTS=0`) avoids account records but still stores unranked match records, which
+   `purge-guests` cleans. Guests can also submit selected private-chat reports when private chat is
+   enabled; those reports retain names and chosen message text under the separate
+   [private-report retention policy](PRIVATE_CHAT.md). `purge-guests` does not delete private reports.
+   A privacy note for players should say what is stored and that the logs contain IP addresses
+   for a short time.
 4. **Relay every match (privacy) or direct**: direct is faster and cheaper, but players see each
    other's IP address. Relaying every match hides it at ~170 kbit/s per match.
 5. **Who moderates**: who gets SSH and `t5lobby-admin`, and where players report cheaters (the MOTD).

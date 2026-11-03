@@ -5,6 +5,10 @@
         [--runs 2] [--lock C:/T5DROnline/build/int115/HEAVY.lock --lock-name NAME]
     python tools/perf_compare.py table DIR/results.json
     python tools/perf_compare.py compare BEFORE/results.json AFTER/results.json
+    python tools/perf_compare.py pacing frames.csv [--series intervals.csv]
+
+`pacing` only reads an existing frame log: it never starts a game or connects to a server.
+It reports DXGI call-entry cadence, which is not displayed-frame or input latency evidence.
 
 --game is a built game's output folder (build/cmake/t5dr.exe [+ t5dr_game.dll], game/vfs). Every
 measurement runs the real game; nothing is faked. Parts (--parts, comma list, default all):
@@ -43,6 +47,7 @@ differs a lot.
 import argparse
 import csv
 import json
+import math
 import os
 import re
 import statistics
@@ -141,6 +146,223 @@ def pct(xs, p):
     return xs[f] + (xs[c] - xs[f]) * (k - f)
 
 
+# ------------------------------------------------------------------ read-only presentation cadence
+NOMINAL_PRESENT_US = 1000000.0 * 1001 / 60000
+
+
+def _number(row, key):
+    try:
+        value = float(row[key])
+        return value if math.isfinite(value) else None
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def read_frame_log(path):
+    """Read old/new PS3_FRAMELOG CSV, keeping QPC metadata separate from its columns."""
+    metadata, lines = {}, []
+    with open(path, encoding="utf-8-sig", errors="replace", newline="") as stream:
+        for line in stream:
+            if line.lstrip().startswith("#"):
+                for key, value in re.findall(r"(\w+)=([^\s,]+)", line):
+                    metadata[key] = value
+            elif line.strip():
+                lines.append(line)
+    return metadata, list(csv.DictReader(lines))
+
+
+def _adjacent(left, right):
+    """Do not bridge missing rows, a mode reset, or a missing flip in the time series."""
+    if left is None:
+        return False
+    for key in ("generation", "pace_mode"):
+        if key in left or key in right:
+            if left.get(key) != right.get(key):
+                return False
+    found = False
+    for key in ("frame", "flip_sequence"):
+        if key in left or key in right:
+            try:
+                before, after = int(left[key]), int(right[key])
+            except (KeyError, TypeError, ValueError):
+                return False
+            if after != before + 1:
+                return False
+            found = True
+    return found
+
+
+def _missing_between(left, right, key):
+    if left is None or left.get("generation") != right.get("generation"):
+        return 0
+    try:
+        return max(0, int(right[key]) - int(left[key]) - 1)
+    except (KeyError, TypeError, ValueError):
+        return 0
+
+
+def _distribution(points, tolerance_us):
+    """points are (source-row index, interval us); correlation never crosses an excluded row."""
+    values = [value / 1000 for _, value in points]
+    pairs = [(a[1], b[1]) for a, b in zip(points, points[1:]) if b[0] == a[0] + 1]
+    correlation = None
+    if len(pairs) >= 2:
+        xs, ys = zip(*pairs)
+        mx, my = statistics.mean(xs), statistics.mean(ys)
+        denominator = math.sqrt(sum((x - mx) ** 2 for x in xs) * sum((y - my) ** 2 for y in ys))
+        if denominator:
+            correlation = sum((x - mx) * (y - my) for x, y in pairs) / denominator
+    return {
+        "count": len(values),
+        **{name: pct(values, percentile) if values else None for name, percentile in
+           (("p50_ms", 50), ("p95_ms", 95), ("p99_ms", 99), ("p99_5_ms", 99.5), ("p99_9_ms", 99.9))},
+        "worst_ms": max(values) if values else None,
+        "stddev_ms": statistics.pstdev(values) if values else None,
+        "neighbor_correlation": correlation,
+        "neighbor_pairs": len(pairs),
+        "outside_tolerance": sum(abs(value - NOMINAL_PRESENT_US) > tolerance_us for _, value in points),
+        **{name: sum(value > threshold for value in values) for name, threshold in
+           (("over_17_5_ms", 17.5), ("over_20_ms", 20), ("over_33_4_ms", 33.4))},
+    }
+
+
+def _phase_distribution(values):
+    values = [value / 1000 for value in values]
+    return {"count": len(values),
+            **{name: pct(values, percentile) if values else None for name, percentile in
+               (("p50_ms", 50), ("p95_ms", 95), ("p99_ms", 99), ("p99_5_ms", 99.5), ("p99_9_ms", 99.9))},
+            "min_ms": min(values) if values else None, "max_ms": max(values) if values else None}
+
+
+def pacing_report(rows, metadata=None, tolerance_us=500.0):
+    """Summarize actual Present entry/return intervals; never relabel legacy dt_us as entry timing.
+
+    The all-valid population retains late frames and intentional time-sync skips. The steady
+    population additionally requires both ends to have been submit-ready by their assigned
+    targets, with no intentional skip. Missing targets (including old logs) are not inferred.
+    """
+    metadata = metadata or {}
+    try:
+        frequency = float(metadata.get("qpc_frequency", 0))
+    except (ValueError, TypeError):
+        frequency = 0
+    if not math.isfinite(frequency) or frequency <= 0:
+        frequency = 0
+    series, entry_points, return_points, steady_points = [], [], [], []
+    phase_fields = ("target_late_us", "timer_wake_error_us", "target_wait_us", "swapchain_wait_us",
+                    "renderer_sync_wait_us", "ring_wait_us", "gpu_wait_us", "present_call_us")
+    phases = {key: [] for key in phase_fields}
+    counters = {key: 0 for key in ("rows", "invalid_entry_intervals", "discontinuities", "local_ready_misses",
+                                  "intentional_skip_frames", "intentional_skip_ticks", "unsuccessful_presents",
+                                  "unknown_present_status", "missing_target_rows", "timer_fallback_frames",
+                                  "entry_late_over_tolerance", "timer_wake_late_over_tolerance",
+                                  "missing_rows_from_frame_counter", "missing_flips", "trace_dropped",
+                                  "invalid_return_intervals")}
+    previous, previous_ready = None, False
+    streak, max_streak = 0, 0
+    status_counts = {}
+    for index, row in enumerate(rows):
+        counters["rows"] += 1
+        contiguous = _adjacent(previous, row)
+        if previous is not None and not contiguous:
+            counters["discontinuities"] += 1
+        counters["missing_rows_from_frame_counter"] += _missing_between(previous, row, "frame")
+        counters["missing_flips"] += _missing_between(previous, row, "flip_sequence")
+        counters["trace_dropped"] = max(counters["trace_dropped"], _number(row, "trace_dropped") or 0)
+        status = str(row.get("present_status", "unknown")).lower()
+        status_counts[status] = status_counts.get(status, 0) + 1
+        success = status in ("ok", "success", "0", "s_ok")
+        if status == "unknown":
+            counters["unknown_present_status"] += 1
+        elif not success:
+            counters["unsuccessful_presents"] += 1
+        skip = max(0, _number(row, "intentional_skip_ticks") or 0)
+        counters["intentional_skip_frames"] += bool(skip)
+        counters["intentional_skip_ticks"] += skip
+        counters["timer_fallback_frames"] += bool(_number(row, "timer_fallback") or 0)
+        for key in phase_fields:
+            value = _number(row, key)
+            if value is not None:
+                phases[key].append(value)
+        counters["entry_late_over_tolerance"] += (_number(row, "target_late_us") or 0) > tolerance_us
+        counters["timer_wake_late_over_tolerance"] += (_number(row, "timer_wake_error_us") or 0) > tolerance_us
+        target, ready = _number(row, "present_target_qpc"), _number(row, "submit_ready_qpc")
+        target_known = target is not None and target > 0 and ready is not None and ready > 0
+        counters["missing_target_rows"] += not target_known
+        miss = target_known and ready > target
+        counters["local_ready_misses"] += miss
+        ready_on_time = success and target_known and not miss and not skip
+        entry = _number(row, "present_interval_us")
+        returned = _number(row, "present_return_interval_us")
+        valid_marker = _number(row, "present_interval_valid")
+        reason = "valid"
+        if previous is None:
+            reason = "first"
+        elif not contiguous:
+            reason = "discontinuity"
+        elif "present_interval_valid" in row and valid_marker != 1:
+            reason = "runtime_invalid"
+        elif not success or str(previous.get("present_status", "unknown")).lower() not in ("ok", "success", "0", "s_ok"):
+            reason = "present_status"
+        elif entry is None or entry <= 0:
+            reason = "missing_entry_interval"
+        valid = reason == "valid"
+        if valid:
+            entry_points.append((index, entry))
+            if returned is not None and returned > 0:
+                return_points.append((index, returned))
+            if ready_on_time and previous_ready:
+                steady_points.append((index, entry))
+        else:
+            counters["invalid_entry_intervals"] += 1
+        counters["invalid_return_intervals"] += not (valid and returned is not None and returned > 0)
+        stalled = valid and entry > 17500
+        streak = streak + 1 if stalled else 0
+        max_streak = max(streak, max_streak)
+        point = {"row": index, "frame": row.get("frame"), "flip_sequence": row.get("flip_sequence"),
+                 "pace_mode": row.get("pace_mode"),
+                 "generation": row.get("generation"), "slot": row.get("slot"), "status": status,
+                 "entry_interval_us": entry, "return_interval_us": returned,
+                 "interval_valid": valid, "invalid_reason": None if valid else reason,
+                 "steady": valid and ready_on_time and previous_ready,
+                 "local_ready_miss": bool(miss), "intentional_skip_ticks": skip}
+        for key in ("release_target_qpc", "release_qpc", "submit_ready_qpc", "present_target_qpc", "present_entry_qpc",
+                    "present_return_qpc", "target_late_us", "timer_wake_error_us", "target_wait_us",
+                    "swapchain_wait_us", "renderer_sync_wait_us", "ring_wait_us", "gpu_wait_us", "present_call_us",
+                    "dt_us", "present_hresult", "dxgi_present_count", "trace_dropped", "timer_fallback"):
+            point[key] = row.get(key)
+        series.append(point)
+        previous, previous_ready = row, ready_on_time
+    report = {"measurement": "DXGI Present call-entry intervals; not scanout or input latency",
+              "qpc_frequency": frequency or None, "nominal_interval_us": NOMINAL_PRESENT_US,
+              "tolerance_us": tolerance_us, "counters": counters, "present_status_counts": status_counts,
+              "all_valid": _distribution(entry_points, tolerance_us),
+              "ready_on_time_steady": _distribution(steady_points, tolerance_us),
+              "return_intervals": _distribution(return_points, tolerance_us),
+              "phase_distributions": {key: _phase_distribution(values) for key, values in phases.items()},
+              "max_consecutive_over_17_5_ms": max_streak,
+              "worst_frames": sorted((point for point in series if point["interval_valid"]),
+                                     key=lambda point: point["entry_interval_us"], reverse=True)[:20]}
+    return report, series
+
+
+def report_pacing(path, series_path=None, tolerance_us=500.0):
+    if not math.isfinite(tolerance_us) or tolerance_us < 0:
+        raise ValueError("tolerance must be finite and nonnegative")
+    if series_path and os.path.normcase(os.path.realpath(path)) == os.path.normcase(os.path.realpath(series_path)):
+        raise ValueError("time-series output must not overwrite the input frame log")
+    metadata, rows = read_frame_log(path)
+    report, series = pacing_report(rows, metadata, tolerance_us)
+    if series_path:
+        with open(series_path, "w", encoding="utf-8", newline="") as stream:
+            fields = list(series[0]) if series else ["row", "entry_interval_us", "interval_valid"]
+            writer = csv.DictWriter(stream, fieldnames=fields)
+            writer.writeheader()
+            writer.writerows(series)
+    print(json.dumps(report, indent=2, allow_nan=False))
+    return 0
+
+
 # ------------------------------------------------------------------ offline fights
 RE_GPU_PASS = re.compile(r"\[gpu-pass\] (\d+) frames, ([0-9.]+) ms GPU per frame.*?binding (\d+) draws")
 
@@ -150,13 +372,12 @@ def offline_extra(d, js):
     [gpu-pass] lines of the fight (those with more than 300 draws a frame: not menus or loading)."""
     out = {}
     try:
-        with open(os.path.join(d, "frames.csv")) as f:
-            f.readline()
-            rows = list(csv.DictReader(f))
+        metadata, rows = read_frame_log(os.path.join(d, "frames.csv"))
     except OSError:
-        rows = []
+        metadata, rows = {}, []
     lo, hi = js.get("window_qpc", [0, 0])
     w = [r for r in rows if lo <= float(r["qpc"]) <= hi]
+    out["present_pacing"], _ = pacing_report(w, metadata)
 
     def col(k):
         xs = []
@@ -460,15 +681,17 @@ def summarize_rows(results):
             m["same_hash"] = all(r["host"].get("hash") and r["host"].get("hash") == r["join"].get("hash") for r in rs)
             m["delay"] = "/".join(sorted({str(r["host"].get("delay")) for r in rs}))
         else:
-            r = rs[-1]
-            m["status"] = r["status"]
-            m["failed"] = len(r["failed"])
-            fps = [x for mm in r["matches"] for x in mm["fps"]]
+            # Repeated scenarios all contribute evidence: a later PASS must
+            # never hide an earlier failed run or a run without match hashes.
+            m["status"] = next((r["status"] for r in rs if r["status"] != "PASS"), "PASS")
+            m["failed"] = sum(len(r["failed"]) for r in rs)
+            matches = [mm for r in rs for mm in r["matches"]]
+            fps = [x for mm in matches for x in mm["fps"]]
             m["fps_min"] = min(fps) if fps else float("nan")
             m["fps_mean"] = statistics.mean(fps) if fps else float("nan")
-            m["matches"] = len(r["matches"])
-            m["same_hash"] = all(mm["same_hash"] for mm in r["matches"])
-            sm = r.get("smooth") or []
+            m["matches"] = len(matches)
+            m["same_hash"] = all(r["matches"] and all(mm["same_hash"] for mm in r["matches"]) for r in rs)
+            sm = [case for r in rs for case in (r.get("smooth") or [])]
             if sm:
                 m["smooth"] = "; ".join(
                     f"{c['case'][0]:g}ms rb/s {f1(c['host']['rb_per_s'])}/{f1(c['join']['rb_per_s'])} "
@@ -543,8 +766,14 @@ def compare(before, after):
             print(f"- {k[1]}: {b['status']} -> {a_['status']}; failed checks {b['failed']} -> {a_['failed']}; "
                   f"fps min {f1(b['fps_min'])} -> {f1(a_['fps_min'])}, mean {f1(b['fps_mean'])} -> {f1(a_['fps_mean'])}; "
                   f"same hash {b['same_hash']} -> {a_['same_hash']}")
-    bad = [k for k in keys if k[0] == "rollback" and not sa[k]["synced"]] + \
-          [k for k in keys if k[0] == "e2e" and sa[k]["status"] != "PASS"]
+    net_keys = [k for k in sb if k[0] in ("rollback", "e2e")]
+    bad = [k for k in net_keys if k not in sa] + \
+          [k for k in sa if k[0] == "rollback" and (not sa[k]["synced"] or not sa[k]["same_hash"])] + \
+          [k for k in sa if k[0] == "e2e" and
+           (sa[k]["status"] != "PASS" or sa[k]["failed"] or not sa[k]["matches"] or not sa[k]["same_hash"])]
+    if not net_keys:
+        print("\nverdict: NOT OK: no comparable rollback or e2e evidence")
+        return 1
     print("\nverdict: " + ("NOT OK: " + ", ".join(k[1] for k in bad) if bad else
                            "every rollback pair in sync and every e2e scenario PASS in the after build"))
     return 1 if bad else 0
@@ -578,7 +807,14 @@ def main():
     c = sub.add_parser("compare")
     c.add_argument("before")
     c.add_argument("after")
+    p = sub.add_parser("pacing", help="read an existing frame CSV; no game run")
+    p.add_argument("frames", help="PS3_FRAMELOG CSV")
+    p.add_argument("--series", help="write the interval/time-line CSV (separate from input)")
+    p.add_argument("--tolerance-us", type=float, default=500.0,
+                   help="deviation from 1001/60000 seconds (default 500 us); record why when changing it")
     a = ap.parse_args()
+    if a.cmd == "pacing":
+        return report_pacing(a.frames, a.series, a.tolerance_us)
     if a.cmd == "table":
         table(json.load(open(a.results)))
         return 0

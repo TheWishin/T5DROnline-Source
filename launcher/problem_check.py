@@ -26,9 +26,11 @@ import sys
 
 try:
     import problem_report as report
+    import gpu_error
 except ImportError:      # pragma: no cover -- run from elsewhere
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import problem_report as report
+    import gpu_error
 
 
 def N_(text):
@@ -169,12 +171,16 @@ def check_game_log(out_dir):
         return []
     out = []
     gpu = None
+    selected_adapter = None
+    device_lost = False
     dialog = None
     try:
         with open(path, encoding="utf-8", errors="replace") as f:
             for n, line in enumerate(f):
                 if n > 400_000:
                     break
+                selected_adapter = gpu_error.adapter_name(line) or selected_adapter
+                device_lost = device_lost or gpu_error.device_lost(line)
                 if gpu is None:
                     m = RE_GPU.match(line)
                     if m:
@@ -201,6 +207,12 @@ def check_game_log(out_dir):
                "chip, GTX 750, Radeon HD 7000 and newer) run the game at full speed."),
             N_("Game log: {gpu}, resource binding tier {tier}."),
             {"gpu": gpu[0], "tier": gpu[1]}, help="low-frame-rate", kind="hint"))
+    if device_lost and gpu_error.is_hd4400(selected_adapter):
+        out.append(Finding(
+            "intel_hd4400_device_lost", N_("Intel HD Graphics 4400: graphics device lost"),
+            gpu_error.HD4400_ADVICE,
+            N_("Game log: Intel HD Graphics 4400 was selected and the graphics device was lost."),
+            help="intel-hd-4400-exit-code-12-at-start"))
     return out
 
 

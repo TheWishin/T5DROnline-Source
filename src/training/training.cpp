@@ -20,6 +20,12 @@
  *   T5_TRAINING_POS      top (default) | bottom: where the lists sit on the screen
  *   T5_TRAINING_LOG      file: one line per frame-data result and per new input
  *                        row (tests)
+ *   T5_TRAINING_DIAG     file: per-frame move/contact/recovery diagnostics during
+ *                        tracked moves (offline only; unset by default)
+ *   T5_TRAINING_ADV_COMPARE=1  experimental offline Practice comparison, frames
+ *                        mode and a working LOG required (default off). The
+ *                        supplied MovePtr conflicts with position X: new
+ *                        values remain unavailable until that map is corrected.
  *   T5_TRAINING_STATS=1  every 600 fight frames: the main thread's time in this
  *                        hook (mean / max microseconds)
  *   T5_TRAINING_AB=<n>   cost measurement: in every other block of n fight frames
@@ -42,9 +48,12 @@
 #include "ppu_recomp.h"     /* ppu_context, vm_base */
 #include "rsx_overlay.h"    /* ps3recomp patch 0045 */
 #include "training_logic.h"
+#include "advantage_shadow_reader.h"
 
+extern "C" void rsx_live_draw_sync(void);       /* patch 0067: drain a handed-off present before uncovering */
 extern "C" int t5_netplay_enabled(void);       /* src/netplay/t5_hooks.cpp */
 extern "C" int t5_netplay_local_slot(void);
+extern "C" int t5_df_boot_cover(void);         /* host-only presentation state; no guest access */
 extern "C" int t5_practice_on(void);                                   /* practice.cpp: the practice tools */
 extern "C" int t5_practice_status(char* out, unsigned n, int de);      /* ... their status line ("" = none) */
 
@@ -62,7 +71,9 @@ inline uint32_t rd32(uint32_t a) { uint32_t v; memcpy(&v, vm_base + a, 4); retur
 inline uint16_t rd16(uint32_t a) { uint16_t v; memcpy(&v, vm_base + a, 2); return _byteswap_ushort(v); }
 inline uint8_t  rd8(uint32_t a)  { return vm_base[a]; }
 
-Sample read_fighter(uint32_t b)
+struct FighterDiagnostic { uint32_t move, w20c, w214, w21c, w220; };
+
+Sample read_fighter(uint32_t b, FighterDiagnostic* diagnostic = nullptr)
 {
     Sample s;
     const uint32_t w220 = rd32(b + 0x220), w21c = rd32(b + 0x21C);
@@ -70,16 +81,18 @@ Sample read_fighter(uint32_t b)
     s.right    = rd8(b + 0x1D2) != 0;
     s.can_act  = (w220 & 0xFF) == 1 && ((w220 & 0x01000000u) || (w21c & 1));
     s.end_window = (w220 & 0xFF) == 1 && (w220 & 0x01000000u);
-    s.new_move = (rd32(b + 0x20C) >> 24) & 1;
-    s.active   = (rd32(b + 0x214) & 0x30000u) != 0;
+    const uint32_t w20c = rd32(b + 0x20C), w214 = rd32(b + 0x214);
+    s.new_move = (w20c >> 24) & 1;
+    s.active   = (w214 & 0x30000u) != 0;
     s.cls      = rd32(b + 0x15C);
     s.hp       = (int16_t)rd16(b + 0x6BC);
-    const uint32_t mv = rd32(b + 0x168) >> 16;
+    const uint32_t move = rd32(b + 0x168), mv = move >> 16;
     s.down     = (mv & 0xFF00) == 0x8000 && mv >= 0x8004;    /* lying; 0x8002 is crouching */
     s.stand    = mv == 0x8001;
     const uint32_t yu = rd32(b + 0x734);
     memcpy(&s.y, &yu, 4);
     if (!(s.y > 0 && s.y < 100000.0f)) s.y = 0;               /* not a height (NaN, garbage): not used */
+    if (diagnostic) *diagnostic = { move, w20c, w214, w21c, w220 };
     return s;
 }
 
@@ -91,10 +104,13 @@ struct Config {
     int  rows = 14;
     bool bottom = false;        /* T5_TRAINING_POS=bottom */
     bool stats = false;
+    bool adv_compare = false;   /* observation only; never changes overlay results */
+    bool adv_offline = false;   /* no netplay, control-directory or replay launch */
     int  ab = 0;                /* T5_TRAINING_AB=<frames>: cost measurement, on and off in turns */
     bool online_game = false;   /* started for online play (T5_NET_MODE / T5_CTL_DIR): online rules all the time */
     bool local_net = false;     /* T5_NET_MODE=local: both players on this PC (tests): offline rules */
     FILE* log = nullptr;
+    FILE* diagnostic = nullptr;
     FILE* trace = nullptr;
 } g_cfg;
 bool g_init = false;
@@ -130,11 +146,24 @@ void init()
     }
     if (const char* ps = getenv("T5_TRAINING_POS")) g_cfg.bottom = !_stricmp(ps, "bottom");
     if (const char* f = getenv("T5_TRAINING_LOG"); f && *f) g_cfg.log = fopen(f, "w");
+    { const char* ac = getenv("T5_TRAINING_ADV_COMPARE"); g_cfg.adv_compare = ac && !strcmp(ac, "1"); }
+    if (g_cfg.adv_compare && !g_cfg.log)
+        fprintf(stderr, "[training] advantage comparison requires a working T5_TRAINING_LOG file\n");
+    if (const char* f = getenv("T5_TRAINING_DIAG"); f && *f) {
+        g_cfg.diagnostic = fopen(f, "w");
+        if (g_cfg.diagnostic) {
+            fprintf(g_cfg.diagnostic, "# training diagnostics: offline live frames only; tick is the tracker frame\n"
+                    "# timestamps 0 = not recorded; contact flags indexed by attacker; state is after frame\n");
+            fflush(g_cfg.diagnostic);
+        } else fprintf(stderr, "[training] cannot open T5_TRAINING_DIAG file\n");
+    }
     { const char* st = getenv("T5_TRAINING_STATS"); g_cfg.stats = st && *st == '1'; }
     if (const char* ab = getenv("T5_TRAINING_AB")) g_cfg.ab = atoi(ab) > 0 ? atoi(ab) : 0;
     { const char* nm = getenv("T5_NET_MODE"); const char* ctl = getenv("T5_CTL_DIR");
       g_cfg.local_net = nm && !_stricmp(nm, "local");
-      g_cfg.online_game = (nm && *nm && !g_cfg.local_net) || (ctl && *ctl); }
+      g_cfg.online_game = (nm && *nm && !g_cfg.local_net) || (ctl && *ctl);
+      const char* replay = getenv("T5_REPLAY_FILE");
+      g_cfg.adv_offline = !(nm && *nm) && !(ctl && *ctl) && !(replay && *replay); }
     if (const char* f = getenv("T5_TRAINING_TRACE"); f && *f) {
         g_cfg.trace = fopen(f, "wb");
         parse_trace_ranges(getenv("T5_TRAINING_TRACE_RANGES"));
@@ -155,9 +184,120 @@ Result g_results[3];
 int g_nresults = 0;
 uint64_t g_live = 0;            /* live frames in the current fight */
 bool g_shown = false;           /* a list is published */
+bool g_boot_cover_shown = false; /* the plain online loading screen owns the overlay list */
 bool g_in_fight = false;
 int g_f2_mode = -1;             /* F2's choice for this session (-1: the setting) */
 bool g_f2_down = false;
+
+/* This path can only observe the existing live-frame hook. It has no guest
+ * stores, game calls, input changes, overlay publication or network activity. */
+shadow::Tracker g_adv_compare;
+shadow::Sample g_adv_sample[2];
+shadow::ReadDetails g_adv_details[2];
+bool g_adv_active = false;
+uint64_t g_adv_since = 0;
+uint64_t g_old_tick = 1;       /* same domain as Tracker::t_: zero is unknown */
+constexpr size_t kOldPollHistory = 1024;
+struct OldPoll { uint64_t tick = 0, live = 0; bool known = false; };
+OldPoll g_old_poll[kOldPollHistory];
+
+/* Check every region of a complete span before copying any guest bytes. This
+ * validates host readability, not the meaning or ownership of guest pointers. */
+bool shadow_read_memory(void*, uint32_t guest, void* out, size_t bytes)
+{
+    if (!out || !bytes || guest < 0x10000u ||
+        (uint64_t)guest + bytes > 0x100000000ull) return false;
+    const uintptr_t base = (uintptr_t)vm_base;
+    if (base > UINTPTR_MAX - guest) return false;
+    const uintptr_t start = base + guest;
+    if (bytes > UINTPTR_MAX - start) return false;
+    const uintptr_t end = start + bytes;
+    for (uintptr_t p = start; p < end;) {
+        MEMORY_BASIC_INFORMATION mi = {};
+        if (!VirtualQuery((const void*)p, &mi, sizeof mi) || mi.State != MEM_COMMIT ||
+            (mi.Protect & (PAGE_GUARD | PAGE_NOACCESS))) return false;
+        const DWORD protection = mi.Protect & 0xFF;
+        if (protection != PAGE_READONLY && protection != PAGE_READWRITE &&
+            protection != PAGE_WRITECOPY && protection != PAGE_EXECUTE_READ &&
+            protection != PAGE_EXECUTE_READWRITE && protection != PAGE_EXECUTE_WRITECOPY) return false;
+        const uintptr_t region = (uintptr_t)mi.BaseAddress;
+        if (mi.RegionSize > UINTPTR_MAX - region) return false;
+        const uintptr_t next = region + mi.RegionSize;
+        if (next <= p) return false;
+        p = next < end ? next : end;
+    }
+    memcpy(out, (const void*)start, bytes);
+    return true;
+}
+
+bool shadow_allowed(int mode, uint32_t phase, uint32_t gt, bool netplay)
+{
+    return g_cfg.adv_compare && g_cfg.log && mode == kFrames && phase == 17 &&
+           gt == kGtPractice && g_cfg.adv_offline && !netplay && !g_cfg.online_game && !g_cfg.local_net;
+}
+
+void shadow_reset(const char* why)
+{
+    if (!g_adv_active) return;
+    if (g_cfg.log) {
+        fprintf(g_cfg.log, "%llu adv_compare reset reason=%s\n", (unsigned long long)g_live, why);
+        fflush(g_cfg.log);
+    }
+    g_adv_compare.reset();
+    g_adv_active = false;
+}
+
+void shadow_frame()
+{
+    const shadow::MemoryAccess memory = { nullptr, shadow_read_memory, nullptr };
+    for (unsigned p = 0; p < 2; ++p)
+        shadow::read_sample(memory, kFighter[p], p, g_adv_sample[p], &g_adv_details[p]);
+    if (!g_adv_active) {
+        g_adv_since = g_live;
+        /* The scalar claims are diagnostic only. In particular raw_move_word
+         * is position-X bits in this build and is NEVER followed as a pointer. */
+        for (int p = 0; p < 2; ++p) {
+            const shadow::Sample& s = g_adv_sample[p];
+            const shadow::ReadDetails& d = g_adv_details[p];
+            fprintf(g_cfg.log, "%llu adv_compare mapping P%d status=%s raw_move_word=%08X anim=%u length=%u hitbox=%u char=%u indirect=%08X\n",
+                    (unsigned long long)g_live, p + 1, d.status, d.raw_move_word,
+                    s.anim_frame, (unsigned)s.anim_length, s.hitbox_active ? 1u : 0u,
+                    (unsigned)s.char_id, d.move_base_indirect);
+        }
+        fflush(g_cfg.log);
+    }
+    g_adv_active = true;
+    const int count = g_adv_compare.frame(g_adv_sample, g_live);
+    for (int i = 0; i < count; ++i) {
+        const shadow::Result& r = g_adv_compare.result(i);
+        /* INFERRED pairing policy: claimed-hitbox edges and the established
+         * active window are distinct claims. Never pair by most recent result. */
+        fprintf(g_cfg.log, "%llu adv_compare shadow P%d id=%llu edge_poll=%llu end_poll=%llu move=%08X char=%u name=%s new=%s value=%+d flags=%u status=%s old=unmatched\n",
+                (unsigned long long)g_live, r.attacker + 1, (unsigned long long)r.id,
+                (unsigned long long)r.start_poll, (unsigned long long)r.end_poll,
+                r.move_ptr, (unsigned)r.char_id, r.name, r.available ? "candidate" : "unavailable",
+                r.advantage, r.flags, r.status);
+        fflush(g_cfg.log);
+    }
+}
+
+void shadow_log_old(const Result& r)
+{
+    if (!g_adv_active) return;
+    const OldPoll& anchor = g_old_poll[r.active_frame % kOldPollHistory];
+    const bool known = r.active_frame != 0 && anchor.known && anchor.tick == r.active_frame &&
+                       anchor.live >= g_adv_since;
+    const char* old_status = r.no_adv ? "no-advantage" : r.kind == Kind::Whiff ? "whiff" :
+                             r.kind == Kind::Down ? "down" : "available";
+    const shadow::Sample& s = g_adv_sample[r.attacker];
+    const shadow::ReadDetails& d = g_adv_details[r.attacker];
+    fprintf(g_cfg.log, "%llu adv_compare move P%d active_poll=%llu anchor=%s old=%+d old_status=%s new=unavailable new_status=%s sample_poll=%llu raw_move_word=%08X anim=%u length=%u hitbox=%u char=%u\n",
+            (unsigned long long)g_live, r.attacker + 1,
+            (unsigned long long)(known ? anchor.live : 0), known ? "old-active-window" : "unknown",
+            r.adv, old_status, d.status, (unsigned long long)g_live, d.raw_move_word, s.anim_frame,
+            (unsigned)s.anim_length, s.hitbox_active ? 1u : 0u, (unsigned)s.char_id);
+    fflush(g_cfg.log);
+}
 
 #if defined(_WIN32)
 bool window_focused()
@@ -297,6 +437,37 @@ void log_result(const Result& r)
     fflush(g_cfg.log);
 }
 
+void log_diagnostic(const Sample s[2], const FighterDiagnostic raw[2], const Diagnostic& d, int n)
+{
+    if (!d.tracked) return;
+    FILE* f = g_cfg.diagnostic;
+    fprintf(f, "%llu tick %llu frame P1.move=%08X P2.move=%08X\n",
+            (unsigned long long)g_live, (unsigned long long)d.frame, raw[0].move, raw[1].move);
+    for (int p = 0; p < 2; p++) {
+        fprintf(f, "  P%d cls=%08X hp=%d input=%04X new=%d active=%d can_act=%d end_window=%d acts=%d"
+                " down=%d y=%.1f 20c=%08X 214=%08X 21c=%08X 220=%08X"
+                " live=%d start=%llu window=%llu-%llu\n",
+                p + 1, s[p].cls, s[p].hp, (unsigned)s[p].input, s[p].new_move, s[p].active,
+                s[p].can_act, s[p].end_window, acts(s[p]), s[p].down, s[p].y,
+                raw[p].w20c, raw[p].w214, raw[p].w21c, raw[p].w220, d.live[p],
+                (unsigned long long)d.move[p], (unsigned long long)d.win_start[p], (unsigned long long)d.win_end[p]);
+        if (d.reaction[p] || d.damage[p])
+            fprintf(f, "  contact P%d->P%d reaction=%d damage=%d\n",
+                    p + 1, 2 - p, d.reaction[p], d.damage[p]);
+    }
+    fprintf(f, "  exchange open=%d settled=%d attacker=P%d contact=%llu att_act=%llu def_act=%llu def_flag=%llu\n",
+            d.open, d.settled, d.attacker + 1, (unsigned long long)d.contact,
+            (unsigned long long)d.att_act, (unsigned long long)d.def_act, (unsigned long long)d.def_flag);
+    static const char* kinds[] = { "block", "hit", "counter", "whiff", "down" };
+    for (int i = 0; i < n; i++) {
+        const Result& r = g_track.result(i);
+        const bool advantage = !r.no_adv && (r.kind == Kind::Block || r.kind == Kind::Hit || r.kind == Kind::Counter);
+        fprintf(f, "  result P%d kind=%s startup=%d active_end=%d adv=%+d adv_valid=%d noadv=%d total=%d\n",
+                r.attacker + 1, kinds[(int)r.kind], r.startup, r.active_end, r.adv, advantage, r.no_adv, r.total);
+    }
+    fflush(f);
+}
+
 /* T5_TRAINING_TRACE_RANGES="addr:len[:every],..." (hex addresses and lengths,
  * every in frames, default 1): more guest ranges for the research trace, each
  * appended to the frames it is due in (n % every == 0), in the order given */
@@ -354,6 +525,50 @@ void trace_frame()
 
 } // namespace
 
+/* The direct-fight driver calls this during its boot initialisation, before
+ * the first picture can be presented, and whenever its readiness changes.
+ * Keep this independent of training init and guest memory: the very first
+ * loading screen must work with the training overlay switched off. The
+ * runtime keeps the published list until replaced, including slow loads and
+ * a network barrier that holds the main thread. Only the main thread is a
+ * producer, just as for the training lists below. */
+extern "C" void t5_boot_cover_publish(void)
+{
+    if (t5_df_boot_cover()) {
+        if (!g_boot_cover_shown) {
+            rsx_overlay_prepare();
+            rsx_overlay_begin();
+            rsx_overlay_rect(0.0f, 0.0f, RSX_OVERLAY_CANVAS_W, RSX_OVERLAY_CANVAS_H,
+                             RSX_OVL_RGBA(0, 0, 0, 255));
+            rsx_overlay_text(640.0f, 352.0f, 2.0f, RSX_OVL_RGBA(240, 240, 240, 255),
+                             RSX_OVL_CENTER, "Connecting...");
+            rsx_overlay_end();
+            g_boot_cover_shown = true;
+            g_shown = false;
+            /* Covered selects still separate matches. Do not carry the old
+             * training history into an automatic next match (no visible Pick).
+             * At cold boot the driver calls us during static registration:
+             * leave the other translation unit's dynamic objects untouched. */
+            if (g_in_fight) {
+                shadow_reset("boot-cover");
+                g_track.reset();
+                g_old_tick = 1;
+                if (g_cfg.adv_compare) memset(g_old_poll, 0, sizeof g_old_poll);
+                g_hist[0].clear(); g_hist[1].clear();
+                g_nresults = 0;
+                g_in_fight = false;
+            }
+        }
+    } else if (g_boot_cover_shown) {
+        /* The driver has seen one complete ready frame. Drain the single
+         * handed-off present with the cover still published: it may belong
+         * to the last hidden frame (patch 0067's asynchronous presentation). */
+        rsx_live_draw_sync();
+        rsx_overlay_clear();
+        g_boot_cover_shown = false;
+    }
+}
+
 /* One live frame boundary on the main thread (t5_hooks.cpp on_frame_start, not
  * called in re-simulated frames): the frame that just ran is complete. */
 static bool frame_body();
@@ -361,9 +576,11 @@ static bool frame_body();
 extern "C" void t5_training_frame(ppu_context* ctx)
 {
     (void)ctx;
+    t5_boot_cover_publish();
+    if (g_boot_cover_shown) return;   /* cover also works with T5_TRAINING=off */
     if (!g_init) init();
     if (g_cfg.trace) trace_frame();
-    if (g_cfg.mode == kOff && g_f2_mode < 0 && !g_cfg.trace && !t5_practice_on()) return;
+    if (g_cfg.mode == kOff && g_f2_mode < 0 && !g_cfg.trace && !g_cfg.diagnostic && !t5_practice_on()) return;
     /* T5_TRAINING_STATS: wall time and this thread's own CPU time (cycles, so a
      * busy PC preempting the thread does not count) */
     LARGE_INTEGER t0, t1;
@@ -403,11 +620,18 @@ static bool frame_body()
     const int mode = g_f2_mode >= 0 ? g_f2_mode : g_cfg.mode;
 
     const uint32_t phase = rd32(kPhase), gt = rd32(kGameType);
-    const bool online = !g_cfg.local_net && (g_cfg.online_game || t5_netplay_enabled() != 0);
+    /* Preserve the existing query's short circuit: np::enabled() can initialise
+     * the netplay subsystem. Shadow-eligible launches always take this query;
+     * launches which skip it are independently excluded by shadow_allowed. */
+    const bool netplay = !g_cfg.local_net && !g_cfg.online_game && t5_netplay_enabled() != 0;
+    const bool online = !g_cfg.local_net && (g_cfg.online_game || netplay);
     const bool fight = phase == 17 && gt != kGtDemo;
     if (!fight) {
+        shadow_reset("outside-fight");
         if (g_in_fight) {
             g_track.reset();
+            g_old_tick = 1;
+            if (g_cfg.adv_compare) memset(g_old_poll, 0, sizeof g_old_poll);
             g_hist[0].clear(); g_hist[1].clear();
             g_nresults = 0;
             g_in_fight = false;
@@ -427,10 +651,16 @@ static bool frame_body()
             QueryPerformanceCounter(&q);
             fprintf(stderr, "[training] ab %s qpc %lld\n", off ? "off" : "on", (long long)q.QuadPart);
         }
-        if (off) { hide(); return true; }
+        if (off) { shadow_reset("ab-gap"); hide(); return true; }
     }
 
-    Sample s[2] = { read_fighter(kFighter[0]), read_fighter(kFighter[1]) };
+    if (shadow_allowed(mode, phase, gt, netplay)) shadow_frame();
+    else shadow_reset("disabled-or-ineligible");
+
+    const bool diagnose = g_cfg.diagnostic && !online;
+    FighterDiagnostic raw[2];
+    Sample s[2] = { read_fighter(kFighter[0], diagnose ? &raw[0] : nullptr),
+                    read_fighter(kFighter[1], diagnose ? &raw[1] : nullptr) };
     /* the history and the tracker always run in a fight, so F2 shows a full list;
      * online only this PC's own player is followed at all */
     const int me = online ? t5_netplay_local_slot() : -1;
@@ -445,13 +675,24 @@ static bool frame_body()
         }
     }
     if (!online) {
-        const int n = g_track.frame(s);
+        if (g_adv_active) {
+            OldPoll& poll = g_old_poll[g_old_tick % kOldPollHistory];
+            poll.tick = g_old_tick; poll.live = g_live; poll.known = true;
+        }
+        ++g_old_tick;
+        int n;
+        if (diagnose) {
+            Diagnostic diagnostic;
+            n = g_track.frame(s, &diagnostic);
+            log_diagnostic(s, raw, diagnostic, n);
+        } else n = g_track.frame(s);
         for (int i = 0; i < n; i++) {        /* oldest first: the newest ends on top */
             const Result& r = g_track.result(i);
             memmove(&g_results[1], &g_results[0], sizeof(Result) * 2);
             g_results[0] = r;
             if (g_nresults < 3) g_nresults++;
             log_result(r);
+            shadow_log_old(r);
         }
     }
 

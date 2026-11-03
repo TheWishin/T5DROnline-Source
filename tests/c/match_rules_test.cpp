@@ -32,6 +32,7 @@
 #include <vector>
 
 #include "../../src/netplay/match_rules.h"
+#include "../../src/netplay/match_rule_agreement.h"
 
 using np::MatchRules;
 using np::PadInput;
@@ -92,6 +93,11 @@ static void test_rules()
     MatchRules r;
     CHECK(r.pack() == 0 && !r.any(), "no rules pack to 0");
     CHECK(MatchRules::unpack(0) == r, "0 unpacks to no rules");
+    CHECK(!r.auto_skip_after_round, "old replays/default rules never auto skip");
+    MatchRules automatic;
+    automatic.auto_skip_after_round = true;
+    CHECK(automatic.any() && automatic != r && (automatic.pack() & 2u), "auto skip changes rules identity");
+    CHECK(MatchRules::unpack(automatic.pack()) == automatic, "auto skip packed round trip");
     r.training = true; r.life[0] = 70;
     const uint32_t w = r.pack();
     CHECK(w == (1u | 70u << 8 | 100u << 16), "pack 0x%X", w);
@@ -108,6 +114,44 @@ static void test_rules()
     MatchRules h; h.life[1] = 50;
     CHECK(MatchRules::unpack(h.pack()).life[1] == 50 && !MatchRules::unpack(h.pack()).training, "handicap only");
     printf("rules ok\n");
+}
+
+static void test_rule_agreement()
+{
+    np::MatchRuleAgreement a, b;
+    CHECK(a.begin(1, 2) && b.begin(1, 2), "offer first match");
+    CHECK(!a.ready() && !b.ready(), "no unacknowledged release");
+    CHECK(a.receive(1, 2, 0) && b.receive(1, 2, 0), "offers can arrive before acknowledgements");
+    CHECK(!a.ready() && !b.ready(), "both received still wait for peer acknowledgement");
+    CHECK(a.receive(1, 2, 1) && b.receive(1, 2, 1) && a.ready() && b.ready(), "both acknowledged release");
+    CHECK(a.receive(1, 2, 0) && a.ready(), "lost/reordered ACK cannot revoke readiness");
+    CHECK(a.begin(1, 2) && a.ready(), "repeated guard remains ready");
+    CHECK(!a.begin(1, 0), "same match rules immutable");
+    CHECK(a.begin(2, 2) && b.begin(2, 2) && !a.ready() && !b.ready(), "same-session rematch needs fresh ACK");
+    CHECK(a.receive(1, 2, 1) && !a.ready(), "delayed prior ACK cannot release rematch");
+    CHECK(a.receive(2, 2, 2) && b.receive(2, 2, 2) && a.ready() && b.ready(), "rematch agreed");
+    CHECK(a.begin(3, 0) && b.begin(3, 2), "changed rematch rules offered");
+    CHECK(!a.receive(3, 2, 3) && !b.receive(3, 0, 3), "mismatching enabled/disabled rule rejected on both sides");
+    np::MatchRuleAgreement early;
+    CHECK(early.receive(1, 2, 0) && early.begin(1, 2), "peer can reach stage before local offer");
+    CHECK(!early.ready() && early.receive(1, 2, 1) && early.ready(), "early peer still needs ACK");
+    np::MatchRuleAgreement restarted;
+    CHECK(!restarted.ready() && !restarted.begin(2, 2), "new session cannot use old ordinal");
+    /* A has B's offer/ACK, but five successive copies of A's final ACK are dropped.
+     * B's retries carry an ACK for A, which must not make A forget its own readiness.
+     * The transport's bounded periodic resend continues even for a ready sender. */
+    np::MatchRuleAgreement loss_a, loss_b;
+    CHECK(loss_a.begin(1, 2) && loss_b.begin(1, 2), "loss case offers");
+    CHECK(loss_b.receive(1, 2, 0) && loss_a.receive(1, 2, 1), "one final ACK delivered");
+    CHECK(loss_a.ready() && !loss_b.ready(), "one peer still waiting after final ACK loss");
+    for (int dropped = 0; dropped < 5; dropped++) {
+        CHECK(loss_a.receive(loss_b.ordinal, loss_b.rules, loss_b.peer_ordinal) && loss_a.ready(),
+              "waiting peer retry cannot revoke ready sender");
+        CHECK(!loss_b.ready(), "five outgoing ACK copies lost");
+    }
+    CHECK(loss_b.receive(loss_a.ordinal, loss_a.rules, loss_a.peer_ordinal) && loss_b.ready(),
+          "periodic ready-sender ACK recovers after more than three losses");
+    printf("rule agreement ok\n");
 }
 
 static void test_refill()
@@ -369,6 +413,7 @@ static void test_netplay()
 int main()
 {
     test_rules();
+    test_rule_agreement();
     test_refill();
     test_no_ko();
     test_give_up();

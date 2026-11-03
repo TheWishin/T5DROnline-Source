@@ -82,6 +82,7 @@ class MatchRulesMixin:
         if rematch_of is not None and getattr(rematch_of, "training", False):
             m.training = True
         m.life = self._rules_apply_life(host, join, ranked, origin)
+        m.auto_skip_after_round = self._rematch_skip_rule(m, host, join, ranked, origin)
 
     @staticmethod
     def _rules_found(m, side):
@@ -91,6 +92,8 @@ class MatchRulesMixin:
             d["training"] = True
         if m.life:
             d["life"] = {"you": m.life[side], "opponent": m.life[1 - side]}
+        if getattr(m, "auto_skip_after_round", False):
+            d["auto_skip_after_round"] = True
         return d
 
     @staticmethod
@@ -101,6 +104,8 @@ class MatchRulesMixin:
             d.update(training=True, rounds=TRAINING_ROUNDS)
         if m.life:
             d["life"] = list(m.life)
+        if getattr(m, "auto_skip_after_round", False):
+            d["auto_skip_after_round"] = True
         return d
 
     # a training fight that ended in the game (a give-up, a KO): reason None -- the launchers go back to the select

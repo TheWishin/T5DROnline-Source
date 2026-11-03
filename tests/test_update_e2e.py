@@ -61,6 +61,9 @@ class Settings:
 @unittest.skipIf(tk is None, "no tkinter")
 class OneClickUpdate(unittest.TestCase):
     def setUp(self):
+        p = mock.patch.object(updater, "fetch_lobby_release", return_value=None)
+        p.start()
+        self.addCleanup(p.stop)
         self.tmp = tempfile.mkdtemp(prefix="t5dr_e2e_update_")
         self.install = os.path.join(self.tmp, "T5DR-Online-1.1.4")
         for rel, data in {**PROGRAM_FILES, **PLAYER_FILES}.items():
@@ -205,11 +208,14 @@ class OneClickUpdate(unittest.TestCase):
 
 @unittest.skipIf(tk is None, "no tkinter")
 class OfferAtStart(unittest.TestCase):
-    """1.1.7, the owner's wish: at every start the launcher asks GitHub (conditionally) and opens "Update available"
+    """1.1.7, the owner's wish: at every start the launcher checks and opens "Update available"
     right away -- not while a build, the game or a match runs (then when it ends), once per session; the button
     opens it again. The Updater as the launcher makes it (its own start check), a real main loop, FakeGitHub."""
 
     def setUp(self):
+        p = mock.patch.object(updater, "fetch_lobby_release", return_value=None)
+        p.start()
+        self.addCleanup(p.stop)
         self.tmp = tempfile.mkdtemp(prefix="t5dr_start_offer_")
         self.addCleanup(shutil.rmtree, self.tmp, True)
         self.install = os.path.join(self.tmp, "T5DR-Online-1.1.4")

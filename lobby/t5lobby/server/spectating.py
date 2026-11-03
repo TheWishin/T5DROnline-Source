@@ -38,8 +38,8 @@ server and every place at a match):
 
 Messages (client -> server):
     spec_prefs {allow, ranked}             a player's privacy setting (sent after login and on change)
-    watch {name} | {room} | {tournament, set}   watch the match a friend plays / a room's match / the game
-                                           of a tournament set being played -> watching
+    watch {name} | {room, table?} | {tournament, set}   watch a friend's, room table's or tournament match
+                                                     -> watching
     unwatch {}                             stop watching
     spec_data {stream, off, data, eof}     the streamer's next piece (base64), in order
     spec_fail {stream, why}                the streamer cannot send this stream
@@ -200,12 +200,18 @@ class SpectateMixin:
         alive until the rematch (_spec_gap_stream)."""
         return m is not None and (m.state == "playing" or self._spec_gap_stream(m) is not None)
 
-    def _spec_room_match(self, r):
-        """The match a room's Watch shows: the one being played, else -- between a match and its rematch -- the
-        room's last match while its session's stream is alive."""
-        if r.match is not None:
-            return r.match
-        last = r.set.last if r.set is not None else None
+    def _spec_room_match(self, r, table=None):
+        """A room or table's current match, including its live stream between set games.
+
+        Parallel rooms need an explicit table: never choose somebody else's match because another table ended.
+        The Match still belongs to the actual room, which keeps all privacy checks shared with classic rooms.
+        """
+        if table is None and getattr(r, "mode", None) == "tables":
+            return None
+        place = table if table is not None else r
+        if place.match is not None:
+            return place.match
+        last = place.set.last if place.set is not None else None
         if last is not None and last.room is r and self._spec_gap_stream(last) is not None:
             return last
         return None
@@ -286,9 +292,14 @@ class SpectateMixin:
         return bool(m is not None and self._can(viewer, "spectate") and self._spec_refusal(viewer, m) is None)
 
     def _spec_refresh_rooms(self):
-        """Room.public's "watch": a room's match anybody may watch (before each lobby list)."""
+        """Room.public's "watch": at least one watchable match (before each lobby list)."""
         for r in self.rooms.values():
-            r.watch = self._spec_watchable(self._spec_room_match(r))
+            if getattr(r, "mode", None) == "tables":
+                for table in r.tables:
+                    table.watch = not r.private and self._spec_watchable(self._spec_room_match(r, table))
+                r.watch = any(table.watch for table in r.tables)
+            else:
+                r.watch = self._spec_watchable(self._spec_room_match(r))
 
     # ------------------------------------------------------------------ requests
     async def h_spec_prefs(self, conn, msg):
@@ -319,6 +330,14 @@ class SpectateMixin:
             r = self.rooms.get(str(msg["room"]))
             if r is None:
                 raise LobbyError(proto.E_NOT_FOUND, "no such room")
+            if getattr(r, "mode", None) == "tables":
+                table_id = msg.get("table")
+                if type(table_id) is not int:
+                    raise LobbyError(proto.E_BAD_REQUEST, "bad request")
+                table = next((t for t in r.tables if t.id == table_id), None)
+                if table is None:
+                    raise LobbyError(proto.E_BAD_REQUEST, "bad request")
+                return self._spec_room_match(r, table)
             return self._spec_room_match(r)
         name = str(msg.get("name") or "")
         q = self.by_name.get(name.lower())
@@ -360,6 +379,7 @@ class SpectateMixin:
         return {"t": "watching", "stream": st.id, "match": m.id, "players": [q.brief() for q in m.players],
                 "ranked": m.ranked, "room": m.room.name if m.room is not None else None, "began": st.began,
                 "spectators": len(st.viewers),
+                **({"table": m.table.id} if getattr(m, "table", None) is not None else {}),
                 **({"tournament": {"id": tour.get("id"), "name": tour.get("name"), "set": tour.get("set")}}
                    if tour else {})}
 

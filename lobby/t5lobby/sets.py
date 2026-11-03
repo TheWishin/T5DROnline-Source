@@ -1,5 +1,5 @@
-"""Texts for ranked sets (docs/RANKED.md "Ranked sets"): a ranked set is best of 3, the first player to win
-2 games wins it, and the rating changes once, at its end.
+"""Texts for server-owned ranked and casual sets. Ranked is best of 3 with one rating update; casual first-to
+sets (docs/ONLINE.md "Rooms") show their target and score with no rating update.
 
 No UI here: the Online tab (and any other front end) shows these strings in one label. Every text goes
 through t5lobby.i18n (German in i18n_de.py).
@@ -68,13 +68,14 @@ def leave_text(reason, by, seconds=None):
 
 def status_text(info, slot=0):
     """Where the set stands, from this player's side: 'Set 1-0 -- game 2 of 3' (+ ' -- starts in N s' during
-    the countdown between two games). '' when `info` is not a rated set (casual, or every game rated on its
-    own)."""
-    if not info or not info.get("rated"):
+    the countdown between two games). Casual sets include FTn; '' for ordinary single-game matches."""
+    if not info or not (info.get("rated") or info.get("casual")):
         return ""
     w = info.get("wins") or [0, 0]
     mine, theirs = (w[0], w[1]) if slot == 0 else (w[1], w[0])
     text = t("Set {mine}-{theirs}", mine=mine, theirs=theirs)
+    if info.get("casual"):
+        text = t("FT{wins}", wins=info.get("first_to") or info.get("wins_needed") or 1) + " -- " + text
     if info.get("state") == "ended":
         return text
     nxt = info.get("next")
@@ -107,10 +108,17 @@ def rank_change_text(r):
 
 
 def result_text(ev):
-    """The end of a rated set (a set_end event): who won, the score, the one rating change."""
-    if not ev or not ev.get("rated"):
+    """The end of a set: who won and the score; only rated sets append a rating change."""
+    if not ev or not (ev.get("rated") or ev.get("casual")):
         return ""
     res = ev.get("result")
+    if ev.get("casual"):
+        w = ev.get("wins") or [0, 0]
+        if ev.get("status") == "confirmed" and res in ("win", "loss"):
+            return (t("You won the set {mine}-{theirs}", mine=w[0], theirs=w[1]) if res == "win" else
+                    t("You lost the set {mine}-{theirs}", mine=w[0], theirs=w[1]))
+        return t("The casual set ended {mine}-{theirs}. Completed games keep their results; no rating change.",
+                 mine=w[0], theirs=w[1])
     if ev.get("status") not in ("confirmed", "forfeit") or res not in ("win", "loss"):
         why = REASON_TEXT.get(ev.get("outcome_reason") or ev.get("reason") or "")
         if why:

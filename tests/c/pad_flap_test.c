@@ -15,6 +15,7 @@
  *   3. the stick unplugged and plugged in again with B3 held: no CIRCLE until B3 is released and pressed again.
  *
  *   pad_flap_test               the scenario; prints the counts and "PASS <n> checks" (exit 0) or the failures
+ *   pad_flap_test generic       same scenario, with a synthetic non-Razer PS-layout stick identity
  *   pad_flap_test ini=<file>    load <file> as controls.ini and print [general] tap_latch as the runtime reads it
  *
  * The runtime file is included as it is (its functions are static). Built by tests/test_pad_flap.py with
@@ -68,6 +69,19 @@ static FakeSpec g_spec[NSPEC] = {
     { { 0x11111111, 1, 1, { 1, 1, 1, 1, 1, 1, 1, 1 } }, L"\\\\?\\hid#vid_1532&pid_0401&mi_00#7&aa&0&0000#{4d1e55b2-f16f-11cf-88cb-001111000030}", 1, 0, 0 },
     { { 0x22222222, 2, 2, { 2, 2, 2, 2, 2, 2, 2, 2 } }, L"\\\\?\\hid#vid_1532&pid_0401&mi_03#7&bb&0&0000#{4d1e55b2-f16f-11cf-88cb-001111000030}", 1, 0, 0 },
 };
+static DWORD g_product = 0x04011532;
+static const WCHAR* g_product_name = L"Razer Panthera PS4";
+
+/* Deliberately synthetic identifiers, not a claim about any real stick's USB identity/report format.
+ * Keep identical product names/VID:PIDs for the working device and its phantom: quarantine must use
+ * the instance/path, and must not ban the healthy stick or depend on a Panthera special case. */
+static void fake_generic_identity(void)
+{
+    g_product = 0x0001F00D;
+    g_product_name = L"Synthetic PS-layout stick";
+    g_spec[STICK].path = L"\\\\?\\hid#vid_f00d&pid_0001&mi_00#synthetic-stick";
+    g_spec[PHANTOM].path = L"\\\\?\\hid#vid_f00d&pid_0001&mi_03#synthetic-phantom";
+}
 
 typedef struct {
     IDirectInputDevice8W iface;
@@ -150,9 +164,9 @@ static HRESULT STDMETHODCALLTYPE fi_enum(IDirectInput8W* t, DWORD type, LPDIENUM
         DIDEVICEINSTANCEW in; memset(&in, 0, sizeof in);
         in.dwSize = sizeof in;
         in.guidInstance = g_spec[i].inst;
-        in.guidProduct.Data1 = 0x04011532;     /* PID 0401, VID 1532 */
-        wcscpy_s(in.tszProductName, MAX_PATH, L"Razer Panthera PS4");
-        wcscpy_s(in.tszInstanceName, MAX_PATH, L"Razer Panthera PS4");
+        in.guidProduct.Data1 = g_product;
+        wcscpy_s(in.tszProductName, MAX_PATH, g_product_name);
+        wcscpy_s(in.tszInstanceName, MAX_PATH, g_product_name);
         if (cb(&in, ref) == DIENUM_STOP) break;
     }
     return DI_OK;
@@ -285,6 +299,7 @@ static int scenario(void)
 int main(int argc, char** argv)
 {
     setvbuf(stdout, NULL, _IONBF, 0);
+    if (argc > 1 && !strcmp(argv[1], "generic")) fake_generic_identity();
     for (int i = 1; i < argc; i++)
         if (!strncmp(argv[i], "ini=", 4)) {
             _putenv_s("PS3_CONTROLS", argv[i] + 4);

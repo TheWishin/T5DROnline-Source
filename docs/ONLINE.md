@@ -23,6 +23,7 @@ install for players or for whoever runs the server.
 - [Rooms](#rooms) (classic, community rooms that take turns, private rooms with a password or an invite code)
 - [Training rooms and the health handicap](#training-rooms-and-the-health-handicap) (1.1.5)
 - [Friends and invites](#friends-and-invites)
+- [Developer badges and chat mentions](#developer-badges-and-chat-mentions) (1.2.0)
 - [Sides and stages by choice](#sides-and-stages-by-choice) (casual: P1 / P2, the stage, Swap sides on a rematch)
 - [Discord Rich Presence](#discord-rich-presence)
 - [Chime and taskbar flash](#chime-and-taskbar-flash)
@@ -437,20 +438,54 @@ when there is one (`resolved`), else `disputed`.
 ## Rooms
 
 (Code: `server/rooms.py`, `client.py`, the launcher's `tk_rooms.py`. Private and community rooms: 1.1.3, capability
-and feature `private_rooms`.) A room is where players meet by choice instead of by the queue. Three kinds:
+and feature `private_rooms`; simultaneous tables: 1.2.0, capability and feature `room_tables`.) A room is where
+players meet by choice instead of by the queue. Its host chooses a classic room, a community room with a line,
+or a community room with simultaneous tables; each can also be private:
 
 **Classic room** (2 players; what every launcher before 1.1.3 makes, and still the default). The match starts when the
 second player joins (with the ready check; right after a friend accepted an invite into it, without one). Afterwards
 the two pick **Rematch** (the running games go on) or one presses Ready again for a new match. Ranked rooms are
 classic rooms.
 
-**Community room** (3 to 8 players, `T5L_ROOM_MAX_SIZE`). The room keeps a **line**, the turn order: the first two in it
-play (with the ready check, always), the others wait in the room. When a match has a result the line moves on by the
-room's rule and the next match starts by itself after `T5L_ROOM_NEXT_SECONDS` (8 s) -- nobody votes for a rematch:
+### Casual first-to sets (1.2.0)
 
-| rule (Create room -> Turns) | after a match |
+For a casual challenge or a friend's casual invite, the sender chooses **FT1, FT2, FT3, FT5 or FT10** before
+sending it. A casual room's host chooses the same target when creating the room. FT3 means the first player to
+win three **games**, with the usual rounds inside each game. The default is FT1. Quick Match keeps its single-game
+queue; Ranked keeps its own best-of setting and rating rules ([RANKED.md](RANKED.md#ranked-sets-best-of-3)).
+Training rooms have no results and do not play first-to sets.
+
+The server owns the target, score, next-game countdown and end of the set, using the existing `GameSet` flow
+also used by ranked and tournament sets (`TourSet`). The launcher sends a target and displays the server's
+state. It shows the FT target on the offer and the set score during and between games. The next game starts
+after the server's usual set countdown, without a rematch vote; reaching the target ends the set. A Rematch
+afterwards starts a new set. Characters remain a **per-game casual choice**, with no ranked character lock.
+Every game's result is recorded as before; casual sets never add another W/L result or change rating. Set
+summaries and game-to-set links use the existing database fields, with no schema migration.
+
+A counted game with a winner advances the score. A draw, desync, too-short game or game without a result is replayed up to
+the existing `T5L_SET_REPLAYS` limit; exhausting it ends the set without a winner. A crash, dispute or abandoned
+game ends the unfinished set without a set winner. The game's normal casual result still stands.
+
+Both players need the `casual_sets` capability **and** `sets`; the server advertises feature `casual_sets`.
+If either player lacks them, the pair plays single games, including in a room whose host chose a longer target.
+A new launcher on an older server uses single games too. There is no protocol-version bump.
+
+**Leaving mid-set follows the existing casual leave rule.** Leaving during a running game is handled as a casual
+leave of that game; leaving between games stops the set without an extra set loss, rating change or ranked
+away timer. Already recorded games remain recorded. A casual first-to score does not create a ranked penalty.
+Losing the lobby connection between games also ends the unfinished casual set immediately; ranked's 90-second
+set-away grace does not apply.
+
+**Community room** (3 to 8 players, `T5L_ROOM_MAX_SIZE`). The room keeps a **line**, the turn order: the first two in it
+play (with the ready check, always), the others wait in the room. **One first-to set is one turn at the table**:
+the same two keep their places while its games continue. Only when the set ends does the line move on by the
+room's rule and the next pair start after `T5L_ROOM_NEXT_SECONDS` (8 s) -- nobody votes for a rematch.
+With an older player, one single game is the turn as before:
+
+| rule (Create room -> Turns) | after a set (or a legacy single game) |
 |---|---|
-| **Winner stays** (`winner`, default) | the loser goes to the back of the line, the next one plays the winner. No winner (void, draw): both go to the back |
+| **Winner stays** (`winner`, default) | the set loser goes to the back of the line, the next one plays the set winner. No winner (void, draw, an unfinished set): both go to the back |
 | **Everyone in turn** (`queue`) | whoever wins, the player who was at the table longer goes to the back and the other plays the next one in line: everyone plays two in a row, against both neighbours in the line (with three players everyone meets everyone) |
 
 Who declines the ready check or lets it run out **sits out**: they stay in the room, the line skips them, they are
@@ -464,7 +499,82 @@ room, the same for everyone, shown to every member), so no launcher can skip the
 stop the room (the ready check finds them). Rematch votes would let two members keep the table for ever, so a
 community room has none.
 
-**Private room** (a classic or a community room). Locked with a **password** (4-64 characters, any script, no space
+### Simultaneous tables (1.2.0)
+
+Create a casual room with `mode: "tables"` to let several pairs play at once. The existing room limit stays
+`T5L_ROOM_MAX_SIZE` (8 by default): a room of size N has `floor(N / 2)` stable tables, numbered from 1. Eight
+members can therefore play four matches at once; an odd member waits for a free opponent. Leaving `mode` out
+keeps the existing `"line"` mode. Ranked and training rooms cannot use tables.
+
+The server owns the tables and pairing. It pairs free, available members in room order, reserving each member
+for at most one table. The host can choose the two available members of an idle table with `room_pair`, including
+changing pairs whose ready checks have not started; this never moves somebody out of a running match or an
+unfinished first-to set. **Sit out** (`room_line {in: false}`)
+keeps a member in the room without pairing them; **Available to play** makes them available again. A declined or
+expired ready check also makes its absent member sit out, so one away player does not stop the other tables.
+Failed connection setup, including a full relay, makes both members sit out until they explicitly return;
+it does not keep automatically retrying a broken pair. If one member leaves, the other remains available.
+
+Each table owns its pair, next-match countdown, ordinary `Match` and casual `GameSet`. The room's FT target
+applies separately to every pair, including the existing single-game fallback when a player lacks the set
+capabilities. A table remains reserved between its set's games. Its deciding result, cancellation or abandoned set
+releases that table alone; both players return to the end of the available order when its whole set ends. The
+line mode's winner-stays and everyone-in-turn rotation rules do not apply to tables. Another table's score,
+ready check and connection continue independently. Every game
+has its own normal match id, connection negotiation, relay admission, result checks and result record. This
+uses the same principle as tournaments calling several independent sets, without a room-wide shared game.
+
+The launcher displays the server's `tables` list and lets a member select a table to watch. `watch {room, table}`
+identifies it explicitly; the server does not guess a table from a room with several matches. Existing player
+spectator preferences, blocks, stream limits and private-room membership checks apply to each selected match.
+An available member can still be paired while watching; their normal match start stops their watch. Choose
+**Sit out** to keep watching without being paired.
+Locking or hiding a room removes nonmembers from every table's spectators. Passwords, invite codes, host
+transfer, kick exclusions and turning away password guessers remain room-wide rules.
+Tables are in-memory room state and disappear with the room or a server restart; they add no database schema.
+
+**Older launchers:** table rooms require `room_tables`. A join, including a friend's room invite, is refused
+with a clear instruction to update the launcher when that capability is missing. This avoids starting a match
+whose table state that launcher cannot display. Classic rooms and community rooms in line mode keep their
+existing compatibility. A new launcher offers tables only when the server advertises `room_tables`.
+
+#### Capacity and deployment
+
+No room-size or relay limit is raised for this feature. A room with N members needs at most `floor(N / 2)`
+simultaneous live matches, and each member still plays only one. Compared with the same N players in separate
+two-player rooms, this does not add game connections; compared with one old community-room line it can multiply
+that room's concurrent game and relay demand by `floor(N / 2)`. Room views and pairing are bounded by the room
+size and sent through the existing change-only room updates. Host pairing requests use the lobby's state-change
+rate limiter (`T5L_STATE_RATE` / `T5L_STATE_BURST`); they cannot bypass readiness or ordinary match admission.
+
+At the documented typical game rate of about 85 kbit/s per player, eight players on four relayed matches mean
+about 680 kbit/s received and 680 kbit/s forwarded by the relay, before network overhead and spectating. At the
+default per-player ceiling of 512 kbit/s those figures become 4096 kbit/s in each direction. These are capacity
+estimates, not a measured load test. Direct matches do not send their game traffic through the lobby.
+Recently finished games can retain connections during the normal rematch window while a table starts a new
+pair. Budget relay sessions for those retained games as well as the currently playing tables; the live-table
+count alone is not a bound on transient relay occupancy.
+
+`T5L_MAX_RELAYS` (100) and `T5L_MAX_RELAYS_PER_IP` (3) still apply. Four matches using one shared internet address
+may therefore be refused relay admission; an operator should assess a LAN deployment before changing that
+anti-abuse limit. Regional relay nodes keep their own session, packet, byte, bind and lease limits. A failed
+table connection uses the ordinary setup failure path and puts the pair away until they explicitly return.
+
+Watching four tables can consume four of `T5L_MAX_STREAMS` (50) and, at `T5L_SPECTATE_BUFFER_KB` (2048), up to
+8 MiB of compressed stream buffers for that room, plus viewers and output queues. The per-match spectator cap
+(`T5L_MAX_SPECTATORS`, 8) and global stream cap still apply; room membership retains the existing trusted-viewer
+priority, not an unlimited stream budget. Match records, set progression and result writes scale with the number
+of games played, just as they do for parallel tournament sets.
+
+Before deploying, run the offline table tests and stub session, then check the deployed server's capability
+advertisement with current launchers. Real clients must prove concurrent ready checks, independent FT scores,
+host pairing, away/return, leaving and disconnecting, password/code joins, kicking and barred guesses, and
+switching table spectators. Exercise direct and forced-relay matches, relay exhaustion and private-room changes
+while another table keeps playing. Every real playing pair must finish with **0 mismatches**; spectators must
+also reproduce their selected session. A real launcher build, real-game runs and production load validation
+remain maintainer checks; the offline stubs cannot prove them.
+
+**Private room** (a classic or either community-room mode). Locked with a **password** (4-64 characters, any script, no space
 at either end) or an **invite code** the server makes (`XXXX-XXXX-XXXX`, ~59 bits, no 0/O/1/I/L). The room list shows
 it locked: its name, host, players and "private", with the lock icon -- or, **hidden**, not at all (its members show
 as "in a room", not which one). Joining needs the password (Join room asks for it, in a masked field) or the code
@@ -521,13 +631,14 @@ launcher (the one that made it) and launchers that joined with it know it.
 **Older launchers** (no `private_rooms` cap) never see a locked room: the server sends them a lobby list without it
 (two lists, one per kind of launcher, each with its own deltas). A join by id is refused with "private rooms need a
 newer launcher; update it"; a friend's invite still brings them in. Community rooms work for them like any room: they
-get the ready check when it is their turn, and their result card simply has no Rematch button. A new launcher on an
+get the ready check when it is their turn in line mode, and their result card simply has no Rematch button. A new launcher on an
 older server finds no `private_rooms` feature: Create room makes a classic room at once, as before.
 
 | Limit | Default | Variable |
 |---|---|---|
-| most players in a community room | 8 | `T5L_ROOM_MAX_SIZE` |
-| pause between a community room's matches | 8 s | `T5L_ROOM_NEXT_SECONDS` |
+| most players in a community room (line or tables) | 8 | `T5L_ROOM_MAX_SIZE` |
+| simultaneous tables in a table room of size N | `floor(N / 2)` (4 at size 8) | derived from the chosen room size |
+| pause between a community room's turns (per table in tables mode) | 8 s | `T5L_ROOM_NEXT_SECONDS` |
 | wrong passwords / codes per player, then one per | 5, 30 s | `T5L_ROOM_GUESSES`, `T5L_ROOM_GUESS_SECONDS` |
 | ... per internet address | 10, then one per 15 s | (2 x the above) |
 | ... per room, all players together | 20, then one per 10 s | (4 x, 3 x as often) |
@@ -538,6 +649,10 @@ nothing secret in the log, events or status), `lobby/tests/test_tk_rooms.py` (th
 the code field, the clipboard untouched), `lobby/tools/room_session.py` (N players with stub games taking turns in a
 private room, the rule checked match by match), e2e `private_room_turns` (three launchers, stub games) and
 `private_room` (a real-game match in a private room, rollback).
+Table coverage: `lobby/tests/test_room_tables_*.py` and `lobby/tools/room_tables_session.py` (an in-memory session
+with stub clients, no sockets or game). These check independent matches and sets, pairing, away members,
+spectating, compatibility, room-wide kick/bar rules and cleanup. They do not replace the real-client deployment
+checks above.
 
 ## Training rooms and the health handicap
 
@@ -665,10 +780,16 @@ feature flag `challenges2`.)
   delay and a Cancel button. The **first one accepted wins**: the match starts and the server withdraws all the other
   challenges of both players (`challenge_update` state `withdrawn`). Both sides get a line in the lobby chat for sending,
   taking back, a no, the end after 30 s and the withdrawal.
-- **Input delay.** The challenger picks Auto, 0, 1 or 2 frames in the box left of Challenge (the box shows what Auto
-  gives for the selected player: 1 frame up to 60 ms, 2 above, 3 above 150 ms, 4 above 250 ms; the choice is kept in
-  online.json). The challenged player sees it on the card before accepting (`delay` {frames, auto} in `challenged`);
-  the match and its rematches use it on both PCs. An older server ignores the box (it is hidden).
+- **Input delay.** From 1.2.0 the challenger picks Auto or 0 through 8 frames in the box left of Challenge when the
+  server negotiates `input_delay8` (both clients must announce that cap for values above 2 and the new Auto curve).
+  Auto is 1 frame up to 60 ms, then steps up above 60 / 100 / 150 / 200 / 250 / 300 / 350 ms, up to 8; a 300 ms
+  match gets 6. The box shows an estimate; the server resolves Auto from the connection's measurement and sends
+  the same value to both games. The challenged player sees it before accepting (`delay` {frames, auto}); the
+  choice is kept in online.json and for rematches. The session's lockstep delay is raised to preserve a manual
+  choice even on a LAN. Ranked stays fixed by the server. An older server with `challenges2` offers Auto / 0 / 1 / 2
+  and a remembered higher choice uses Auto; a server without `challenges2` hides the box. Older client pairs keep
+  the legacy Auto policy (1 / 2 / 3 / 4 with default `T5L_PING_DELAYS`); a manual choice above 2 against an older
+  client is refused. See docs/NETPLAY.md "Input delay" for the full table, game limits, and required pair checks.
 - **The player list** sorts by clicking a heading (player, rank, status, ping; the choice is kept in online.json). Players
   you cannot play right now -- in a match, another version, no connection to the lobby server's UDP -- come below a line
   "Unavailable". Your open challenges' rows are in the accent colour.
@@ -784,8 +905,8 @@ shows it to anyone who looks).
 
 ## Chime and taskbar flash
 
-(1.1.4; code: `notify.py`, the hooks in `tk_tab.py`, Settings -> "Sound and taskbar flash when a match is found, I am
-challenged or invited, or someone joins my room" (1.1.7; before: "... found or someone joins my room"), launcher.json
+(1.1.4; code: `notify.py`, the hooks in `tk_tab.py`, Settings -> "Sound and taskbar flash for lobby notifications"
+(1.2.0; includes public chat mentions), launcher.json
 `"notify"`, on by default.) Players wait for a match in another window, so the tab tells them when something needs
 them -- one chime and the launcher's taskbar button flashing until its window is in front
 (FlashWindowEx, `FLASHW_TRAY | FLASHW_TIMERNOFG`; it also ends when the launcher brings itself forward after a match):
@@ -799,8 +920,10 @@ them -- one chime and the launcher's taskbar button flashing until its window is
 | invite | `invited`: a friend's invite to a casual match or a room |
 | tournament set | `tour_call`: "Your tournament set is ready" |
 | rematch | the opponent's rematch question |
+| mention | another player's public chat line includes this player in the server's resolved mention IDs (1.2.0) |
 
-Not for chat, friend requests or any lobby update. (A challenge rings since 1.1.7 -- players minimize the launcher
+Since 1.2.0, a public chat mention of this player also rings. Ordinary chat, friend requests and lobby updates do
+not ring. (A challenge rings since 1.1.7 -- players minimize the launcher
 while they wait. Anybody can challenge, so the server's limits apply -- one pending challenge per challenger, 30 s
 before the same two again after a decline -- and the tab rings for the same challenger at most once a minute; Block
 stops one for good.) Only while the player is elsewhere: another program (or a launcher dialog) in front, the launcher
@@ -814,6 +937,32 @@ no game audio, no file. winsound cannot play a memory image asynchronously, so a
 thread never waits; if Windows refuses it (no sound card), the system's "SystemAsterisk" plays instead. `T5_NOTIFY=0`
 turns the real sound and flash off (every test sets it; the tests give the tab a fake player and a fake flash).
 
+## Developer badges and chat mentions
+
+Since 1.2.0, an administrator can assign a developer badge to an account with
+`t5lobby-admin badge NAME dev` and remove it with `t5lobby-admin badge NAME --clear`.
+Quote names containing spaces. This uses the existing administrator tool's access to the server's database;
+there is no player request to assign a badge. Guests have none. Badges do not grant permissions.
+Changes reach connected players within `T5L_ADMIN_POLL` seconds, including removal.
+The launcher shows a distinct DEV label beside the player name in the roster and chat.
+
+Public lobby chat supports `@name`. Press Tab after a name prefix to complete a name from the server's current
+player list; repeated Tab cycles matching names. Matching is case-insensitive and supports spaces and punctuation
+in account names. The server resolves targets from online players after cleaning and limiting the chat text;
+client-supplied badge fields or target lists are ignored. Unknown or offline names do not ping anyone.
+The message remains public and uses the ordinary chat rate limits. Private conversations use the separately negotiated relay described in [PRIVATE_CHAT.md](PRIVATE_CHAT.md); ordinary private transcripts are not stored.
+
+A mention of this player highlights the line. When the player is elsewhere, the existing notification setting
+controls the chime and taskbar flash, with the existing notification coalescing. Own messages do not ring.
+
+These features negotiate `badges` and `mentions` independently in `hello.caps` and `welcome.caps`, with matching
+entries in `welcome.features`. Player rows (including chat senders) carry `badge: "dev"` or `badge: ""` only to
+badge-capable clients. Public `chat` events add `mentions: [player_id, ...]` only to mention-capable clients.
+The client sends only chat text; even an older sender can mention a player using a newer launcher. Legacy clients
+receive their original chat and roster shape. New clients connected to older servers retain ordinary chat without
+mention autocomplete or notifications. Storage uses numbered migration 2 (`accounts.badge`); see
+[DEPLOY_1.2.0.md](DEPLOY_1.2.0.md).
+
 ## Protocol reference
 
 ### Control channel
@@ -823,11 +972,22 @@ from a client. Every message has `"t"`. A request may carry `"rid"` (integer);
 the reply carries it back as `"re"` (`{"t":"ok"}` when there is nothing else to
 say, `{"t":"error","code":...,"msg":...}` on refusal).
 
+`welcome.latest_release` is optional release metadata, available before login. It is a GitHub-shaped
+release object (tag, publication flags, notes and asset URLs, sizes and digests), or `null` when the
+server has no fresh metadata matching `t5lobby-admin release`. The public lobby caches and refreshes
+this information in the background. New launchers ask the shipped default lobby first and use the
+same release validation and signed-download checks as for GitHub; a missing, unusable or unreachable
+lobby response falls back to GitHub. Older launchers ignore the additional field. This is an additive
+change within lobby protocol version 1; it requires the maintainer to deploy the server changes.
+Servers restricting accepted game builds also include `latest_release` in the `version_mismatch`
+error reply to `hello`, so an update check works without an accepted game build. The build remains
+rejected; this field grants no login or matchmaking access.
+
 Client to server:
 
 | t | fields | reply / effect |
 |---|---|---|
-| `hello` | `proto`, `client`, `build: {elf, code, net, release, id}`, `caps` (optional: `delta`, `blind_ready`, `notices`, `ingame_pick`, `sets`, `nat2`, `relays`, `friends`, `tournaments`, `spectate`, `game_fallback`, `private_rooms`) | `welcome {server, proto, udp_port, udp_port2, build, accounts, guests, motd, ip, time, ..., caps, relay_only}`; with the `private_rooms` cap also `room_limits {max_size, next_seconds}`; with the `relays` cap also `relays [{id, name, host, port}]` (regional relays); with the `friends` cap also `friend_limits {max, per_day, invite_seconds}`; with the `tournaments` cap also `tournaments {noshow, organizers}` (the `tour_*` messages: docs/TOURNAMENTS.md "Protocol"); `casual {stages}` (1.1.5: the stages this launcher may offer for casual matches, feature `casual_choice`) |
+| `hello` | `proto`, `client`, `build: {elf, code, net, release, id}`, `caps` (optional: `delta`, `blind_ready`, `notices`, `ingame_pick`, `sets`, `casual_sets`, `nat2`, `relays`, `friends`, `tournaments`, `spectate`, `game_fallback`, `private_rooms`, `room_tables`) | `welcome {server, proto, udp_port, udp_port2, build, accounts, guests, motd, ip, time, ..., caps, relay_only}`; with the `private_rooms` cap also `room_limits {max_size, next_seconds}`; with the `relays` cap also `relays [{id, name, host, port}]` (regional relays); with the `friends` cap also `friend_limits {max, per_day, invite_seconds}`; with the `tournaments` cap also `tournaments {noshow, organizers}` (the `tour_*` messages: docs/TOURNAMENTS.md "Protocol"); `casual {stages}` (1.1.5: the stages this launcher may offer for casual matches, feature `casual_choice`) |
 | `login` | `mode: guest\|account\|register\|resume`, `name`, `password`, `token` | `login_ok {you, token, resumed?}` |
 | `ping` | | `pong {time}` (keepalive; silent clients are dropped after 90 s) |
 | `udp_rtt` | `ms` | the client's UDP ping to the server (lobby list, matchmaking) |
@@ -837,15 +997,17 @@ Client to server:
 | `stats` | (feature `stats`, 1.1.5) | `stats {made, accounts, players, matches, ranked, matches_24h, players_24h, fighters [{char, ranked [games, wins, draws], casual [...]}]}`: counted matches only (a mirror match counts one win and one loss), computed at most every 5 minutes for everybody (`STATS_SECONDS`), read-only |
 | `chat` | `text` (200 chars) | `chat` to everyone |
 | `queue` / `unqueue` | `mode: quick\|ranked`, `char`, `strict` (ranked) | `queued {mode, strict}` |
-| `room_create` | `name`, `ranked`; with `private_rooms`: `size` (2..`T5L_ROOM_MAX_SIZE`), `rotation: winner\|queue`, `private: password\|code`, `password`, `hidden` | `room {room, code}` (`code`: the invite code, to the host only) |
-| `room_join` | `room`; `password` (a locked room); or `code` (the room id optional) | `room {room}`; a classic room's two members start a ready check, a community room's line its next match. Wrong: `auth_failed` "wrong room password" / "no room has that invite code"; too many: `rate_limited` with `retry` |
+| `room_create` | `name`, `ranked`; with `casual_sets`: `first_to` (integer 1, 2, 3, 5 or 10; default 1, casual only); with `private_rooms`: `size` (2..`T5L_ROOM_MAX_SIZE`), `rotation: winner\|queue`, `private: password\|code`, `password`, `hidden`; with `room_tables`: `mode: line\|tables` (default `line`; tables are casual, not training) | `room {room, code}` (`code`: the invite code, to the host only) |
+| `room_join` | `room`; `password` (a locked room); or `code` (the room id optional) | `room {room}`; a classic room's two members start a ready check; a community room schedules its next eligible pair(s). Table rooms require `room_tables`, including for invited joins. Wrong: `auth_failed` "wrong room password" / "no room has that invite code"; too many: `rate_limited` with `retry` |
 | `room_leave` / `rematch` | (`rematch` without `match`: Ready again; in a community room: back in line) | `room {room}` |
 | `rematch` | `match` (the finished one), `accept`, `keep` (this game still runs connected), `swap` (1.1.5: P1 and P2 the other way round; casual matches by choice, ignored elsewhere) | `rematch {state: waiting\|accepted, next}`; the other player gets `rematch {state: offered, from, timeout, swap}` |
 | `casual_prefs` | `side: 0\|1\|null` (P1, P2, any), `stage` (a key of `welcome.casual.stages` or `random`); 1.1.5, sent after every login and on change | `ok`; the wishes for challenges, invites and rooms ([Sides and stages by choice](#sides-and-stages-by-choice)) |
 | `room_lock` | (`private_rooms`, the host) `lock: password\|code\|none`, `password`, `hidden` | `room {room, code}` -- `code` again makes a new invite code (the old one stops working) |
 | `room_kick` | (`private_rooms`, the host) `player` (id) | `room {room}`; refused while they play the room's match; they get `notice room_kicked` and cannot come back |
 | `room_line` | `in: true\|false` (community rooms) | `room {room}`: sit out / back in line |
-| `challenge` | `player` (id) | `challenge {challenge}`; target gets `challenged` |
+| `room_pair` | (`room_tables`, the host of a table room) `table` (integer 1..`floor(size / 2)`, never a boolean), `players` (two distinct available member ids) | `room {room}`; reserves or changes an unstarted pair; refused for an occupied match or active set |
+| `watch` | (`spectate`) `room`; for a table room also `table` (its stable integer id); friend and tournament selectors are described in [SPECTATE.md](SPECTATE.md) | `watching`; existing privacy, eligibility and capacity checks apply to the selected table's match |
+| `challenge` | `player` (id), `first_to` (with `casual_sets`: integer 1, 2, 3, 5 or 10; default 1) | `challenge {challenge}`; target gets `challenged`, including the effective `first_to` |
 | `challenge_reply` | `challenge`, `accept` | accepted: match without ready check |
 | `challenge_cancel` | `challenge` | |
 | `ready` | `match`, `accept` | |
@@ -864,7 +1026,7 @@ Client to server:
 | `friend_add` | `name` (an account) | `friend_added {name, state: pending\|friends}`; the other side gets `friend_request {name, time}` |
 | `friend_answer` | `name`, `accept` | `ok`; the asker gets `friend_update {name, state: accepted\|declined}` |
 | `friend_cancel` / `friend_remove` | `name` | `ok` (take back a request / end a friendship) |
-| `invite` | `name` (a friend online), `kind: casual\|room` | `invite_sent {invite, name, kind, expires}`; the friend gets `invited`. Held back after a no or a take-back (`T5L_INVITE_RETRY_SECONDS`): `error` `rate_limited` "... try again in N s" with `retry` N (1.1.3) |
+| `invite` | `name` (a friend online), `kind: casual\|room`; casual invite with `casual_sets`: `first_to` (integer 1, 2, 3, 5 or 10; default 1); room invite uses the room's target | `invite_sent {invite, name, kind, expires}`; the friend gets `invited`, including the effective `first_to`. Held back after a no or a take-back (`T5L_INVITE_RETRY_SECONDS`): `error` `rate_limited` "... try again in N s" with `retry` N (1.1.3) |
 | `invite_answer` | `invite`, `accept` | accepted: casual -> `match_found` (origin `invite`, no ready check) for both; room -> `room {room}` and the room's match starts (origin `invite`, no ready check) |
 | `invite_cancel` | `invite` | `ok`; both get `invite_update` |
 | `logout` | | `bye`, connection closed |
@@ -873,7 +1035,7 @@ Server to client (pushed):
 
 | t | fields |
 |---|---|
-| `lobby_state` | `players [{id, name, guest, status, rating, rd, record, room, rtt, build, release}]` (`room` null for a hidden room), `rooms [{id, name, owner, members, ranked, build, status, watch, size, rotation, private, lock}]` (a client without `private_rooms` gets no locked room; nobody a hidden one), `queue {quick, ranked}` |
+| `lobby_state` | `players [{id, name, guest, status, rating, rd, record, room, rtt, build, release}]` (`room` null for a hidden room), `rooms [{id, name, owner, members, ranked, build, status, watch, size, rotation, private, lock, first_to, mode, tables}]` (`mode: tables` identifies a table room and adds safe public `tables [{id, players, match, watch}]`; private tables have no public Watch; a client without `private_rooms` gets no locked room; nobody a hidden one), `queue {quick, ranked}` |
 | `lobby_delta` | only to clients with `caps: ["delta"]`, after one `lobby_state`: `players` (changed or new), `gone` (ids), `rooms` (changed or new), `rooms_gone`, `queue` -- each only when it changed. The client library merges it and emits a complete `lobby_state` |
 | `chat` | `from`, `text`, `time` |
 | `challenged` / `challenge_update` | `challenge`, `from`, `ping`, `wish {side, stage}` (1.1.5: the challenger's) / `state: accepted\|declined\|cancelled\|expired` |
@@ -898,11 +1060,23 @@ Server to client (pushed):
 | `invited` | `invite`, `from` (brief), `kind: casual\|room`, `room {id, name, ranked}`, `expires`; a casual one also `wish {side, stage}` (1.1.5) |
 | `invite_update` | `invite`, `state: accepted\|declined\|cancelled\|expired`, `name` (the other side), `kind`; to the inviter also `retry` (1.1.3): whole seconds until the next invite to that friend (30 after a no or a take-back, else 0) |
 | `kicked` | `reason` |
-| `room` | `room`: this player's room as its members see it -- the list entry plus `size`, `rotation`, `lock`, `hidden`, `owner_id`, `players [{brief, state: playing\|line\|away}]`, `line` (ids in turn order), `playing` (ids), `next {at, players}` (a community room's countdown, server time), `watch` (this member may watch its match). Pushed when it changes; never a password or a code |
+| `room` | `room`: this player's room as its members see it -- the list entry plus `size`, `rotation`, `lock`, `hidden`, `owner_id`, `first_to` (casual rooms), `set` (line mode's active casual set), `players [{brief, state: playing\|line\|away}]`, `line` (ids in turn / available order), `playing` (ids), `next {at, players}` (a line room's countdown, server time), `watch`. Table rooms add `mode: tables`, `tables [{id, players, match, set, next, watch}]`: per-table reserved ids, current match id, set state, countdown and this viewer's permission to watch. Pushed when it changes; never a password or a code |
 
 Error codes: `bad_request`, `proto_mismatch`, `version_mismatch`,
 `auth_failed`, `name_taken`, `bad_name`, `not_allowed`, `not_found`, `busy`,
 `rate_limited`, `server_full`, `bad_state`.
+
+**Casual set fields (1.2.0).** `hello.caps` may include `casual_sets` together with `sets`; the server's
+feature list includes `casual_sets`. A request's `first_to` is validated as an integer from the five allowed
+targets (strings, booleans and fractional numbers are rejected). Room metadata carries the host's `first_to`;
+an individual pair's negotiated `set` carries its effective target. A legacy opponent has no casual set
+metadata and plays single games. For a negotiated casual set, the existing `set` object in match events adds
+`casual: true`, `rated: false`,
+`first_to`, `wins_needed`, `wins` (P1/P2 order), `number`, `state` and the usual `next` countdown. `set_next`
+acknowledges whether the game can continue (`keep`); `leave_set` stops it. The `set_end` result view uses
+`set` as the set id, with `casual`, `rated`, `first_to`, `wins_needed`, `status`, `outcome_reason`, `result`,
+`wins` in you/opponent order and `rating: null`. Room members receive the active `room.set` too. These fields let another launcher display the set
+without implementing scoring or room rotation itself.
 
 **Lobby list updates.** At most every 0.3 s (`T5L_LOBBY_INTERVAL`), when something changed. A
 client that announced `caps: ["delta"]` (this library does) gets the whole list after login or

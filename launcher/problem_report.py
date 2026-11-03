@@ -17,7 +17,7 @@ What goes in (each part only when it exists):
   online/        the lobby/online files of the last match (result, status, fight line, control files)
   controls.ini   when there is one
   desync/        np_desync_*.bin / rb_desync_*.bin (game state numbers of a desync, binary)
-  replay/        the newest replay (native/replays, docs/REPLAYS.md): both players' inputs and the game's
+  replay/        the newest replay in the chosen replay folder (docs/REPLAYS.md): both players' inputs and the game's
                  state checks of the last online session, so the match can be played again here; the
                  players' names are taken out of it first (replays.strip_names)
   contents.txt   what is in the zip, what was shortened, what was removed
@@ -52,6 +52,7 @@ import getpass
 import glob
 import ipaddress
 import json
+import ntpath
 import os
 import platform
 import re
@@ -160,10 +161,22 @@ class Scrubber:
     keep         hex strings that may stay (the game program's SHA-1)
     """
 
-    def __init__(self, secrets=(), user_names=None, pc_names=None, keep=(), player_names=()):
+    def __init__(self, secrets=(), user_names=None, pc_names=None, keep=(), player_names=(), replay_paths=()):
         self.counts = collections.Counter()
         self.secrets = sorted({s for s in secrets if isinstance(s, str) and len(s) >= 6}, key=len, reverse=True)
         self.keep = {k.lower() for k in keep}
+        # A chosen folder can contain private names outside Windows' Users directory. Match the
+        # path in plain logs and in JSON, using either separator, before the other scrubbers run.
+        paths = set()
+        for path in replay_paths:
+            if not isinstance(path, str) or not path:
+                continue
+            for variant in (path, path.replace("\\", "/"), path.replace("/", "\\")):
+                paths.add(variant)
+                paths.add(json.dumps(variant, ensure_ascii=False)[1:-1])
+                paths.add(json.dumps(variant, ensure_ascii=True)[1:-1])
+        self._replay_paths = re.compile("|".join(re.escape(p) for p in sorted(paths, key=len, reverse=True)),
+                                        re.I) if paths else None
         if user_names is None:
             try:
                 login = getpass.getuser()
@@ -265,6 +278,8 @@ class Scrubber:
     def text(self, s):
         if not s:
             return s
+        if self._replay_paths is not None:
+            s = self._replay_paths.sub(lambda m: (self._count("user") or "<replays>"), s)
         for v in self.secrets:                        # exact values first: they may sit inside anything
             if v in s:
                 self.counts["secret"] += s.count(v)
@@ -923,7 +938,8 @@ def system_text(ctx, now=None, game_log=None):
 
 
 SETTING_KEYS = ("display", "internal_res", "vsync", "stage_blur", "shadows", "effects", "power_saving", "input_delay",
-                "mute", "background", "low_priority", "unlock_stages", "unlock_items", "unlock_jinpachi", "always_left")
+                "mute", "background", "low_priority", "unlock_stages", "unlock_items", "unlock_jinpachi", "always_left",
+                "screen_side")
 
 
 def settings_lines(settings, labels=None, env_overrides=None, out_dir=None):
@@ -953,6 +969,7 @@ def settings_lines(settings, labels=None, env_overrides=None, out_dir=None):
          f"Unlock all customization items (offline): {yesno(st.get('unlock_items'))}",
          f"Unlock Jinpachi and Random select (offline): {yesno(st.get('unlock_jinpachi'))}",
          f"Always see me on the left (casual matches): {yesno(st.get('always_left'))}",
+         f"Screen side (casual matches): {st.get('screen_side', 'left' if st.get('always_left') else 'dealt')}",
          f"Player name set: {yesno((st.get('nickname') or '').strip())}",
          f"Package and license chosen: {yesno(st.get('pkg') and st.get('rap'))}"]
     if out_dir:
@@ -1022,8 +1039,9 @@ class Context:
 
     def __init__(self, out_dir, root=None, launcher_log=None, settings_lines=(), release=None, build_info=None,
                  online_dir=None, online_info=None, build_problem=None, extra_secrets=(), user_names=None,
-                 pc_names=None, game_logs=2, player_names=()):
+                 pc_names=None, game_logs=2, player_names=(), replay_dir=None):
         self.out_dir = os.path.abspath(out_dir)
+        self.replay_dir = os.path.abspath(replay_dir) if replay_dir else os.path.join(self.out_dir, "replays")
         self.root = root
         self.launcher_log = launcher_log
         self.settings_lines = list(settings_lines)
@@ -1037,6 +1055,17 @@ class Context:
         self.pc_names = pc_names
         self.game_logs = game_logs
         self.extra_player_names = list(player_names)
+
+    def replay_paths(self):
+        """Known replay folder spellings to keep out of report text, including an unavailable choice."""
+        paths = {self.replay_dir}
+        st = read_json(os.path.join(self.root, "launcher.json")) if self.root else None
+        chosen = st.get("replay_dir") if isinstance(st, dict) else None
+        if isinstance(chosen, str) and chosen:
+            paths.add(os.path.abspath(os.path.join(self.root, chosen)))
+            if os.path.isabs(chosen) or ntpath.isabs(chosen):
+                paths.add(chosen)
+        return paths
 
     @property
     def build_info(self):
@@ -1296,7 +1325,8 @@ def discover(ctx, note="", now=None):
     ctl = _controls_ini(ctx)
     if ctl:
         groups.append(Group("controls", "controls.ini (your button settings)", [Item("controls.ini", ctl, limit=256 << 10)]))
-    rep = _newest(os.path.join(out, "replays", "*.t5replay"), 1)
+    rep = [replays.newest(ctx.replay_dir)] if replays is not None else []
+    rep = [p for p in rep if p]
     if rep and replays is not None:
         groups.append(Group("replay", "The last replay (the inputs of the last online session, without names)",
                             [Item("replay/" + os.path.basename(rep[0]), rep[0], kind="replay", limit=4 << 20)]))
@@ -1382,7 +1412,7 @@ def build(ctx, dest_dir, note="", enabled=None, cap=DEFAULT_CAP, now=None, group
     on = [g for g in groups if not g.can_untick or (enabled or {}).get(g.key, g.default_on)]
     sc = Scrubber(secrets=ctx.secrets(), user_names=ctx.user_names, pc_names=ctx.pc_names,
                   keep=[ctx.build_info.get("elf_sha1") or "", ctx.release.get("commit") or ""],
-                  player_names=ctx.player_names())
+                  player_names=ctx.player_names(), replay_paths=ctx.replay_paths())
     res = Result()
     res.cap = cap
     members = []                                         # (arcname, bytes, original size, removed, note)
@@ -1529,9 +1559,13 @@ def main(argv=None):
     root = a.root or os.path.dirname(a.out.rstrip("\\/"))
     rel = read_json(os.path.join(root, "release.json")) or {}
     st = read_json(os.path.join(root, "launcher.json")) or {}
+    # Share the launcher's validation and fallback rather than independently guessing a folder.
+    from core import Settings
+    settings = Settings(os.path.join(root, "launcher.json"))
+    settings["out"] = os.path.abspath(a.out)
     ctx = Context(a.out, root=root, launcher_log=os.path.join(root, "launcher.log"), release=rel,
                   settings_lines=settings_lines(st if isinstance(st, dict) else {}, out_dir=os.path.abspath(a.out)),
-                  build_info=build_info_for(os.path.abspath(a.out), rel, root))
+                  build_info=build_info_for(os.path.abspath(a.out), rel, root), replay_dir=settings.replay_dir)
     res = build(ctx, a.dest_dir, a.note, {"build": True} if a.with_build_log else None, int(a.cap_mb * (1 << 20)))
     print(res.path, human(res.zip_size))
     for m in res.members:

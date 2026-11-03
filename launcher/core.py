@@ -14,6 +14,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 
@@ -23,6 +24,8 @@ sys.path.insert(0, TOOLS)
 import build_game  # noqa: E402  (constants, pkg/sfo readers, code_id)
 import prereqs     # noqa: E402
 import run_game    # noqa: E402
+import warmup      # noqa: E402
+import gpu_error   # noqa: E402
 
 # The player's language (lobby/t5lobby/i18n.py): t("English text", name=value) and N_("text") to mark a text that
 # is translated where it is shown. The launcher chooses the language once, at start (apply_language).
@@ -93,6 +96,8 @@ DEFAULTS = {
     "internal_res": "native",  # internal resolution: lowest | lower | native | 1080p | 1440p | 4k | auto, PS3_INTERNAL_RES
     "internal_res_set": False, # ... picked by the player; until then Auto on integrated graphics (internal_res_choice)
     "clock_hint_shown": False, # the Play tab's "Your processor ran at X GHz" (clock_hint) was shown: once
+    "controls_hint_shown": False,
+    "gpu_build_warning": True, # local adapter-name advisory before starting the build
     "settings_version": 0,     # SETTINGS_VERSION once Settings migrated an older launcher.json
     "vsync": "on",             # on | off (PS3_VSYNC=0): only how pictures reach the screen; the game stays at 60 fps
     "stage_blur": "off",       # on | off (PS3_STAGE_BLUR=0): the blur / glow some stages put on the picture
@@ -106,6 +111,7 @@ DEFAULTS = {
     "practice": True,          # practice tools in Practice (offline): SELECT combos, dummy, recordings, T5_PRACTICE
     "practice_dummy": "game",  # the dummy's behaviour at the start: game | block | crouch | walk | step, T5_PRACTICE_DUMMY
     "always_left": False,      # as P2 in a casual match this PC shows the fight mirrored, you on the left (T5_ALWAYS_LEFT=1)
+    "screen_side": "dealt",    # dealt | left | right; old always_left settings migrate on load
     "router_ports": True,      # online: forward the game's port on the router for a match (PCP / NAT-PMP / UPnP)
     "language": "auto",        # auto (the Windows language) | en | de | es | ko | ja | pt-BR | fr -- applies at start
     "discord_presence": False, # online: show the lobby / search / match in Discord (Rich Presence, docs/ONLINE.md)
@@ -115,10 +121,12 @@ DEFAULTS = {
     "background": False,       # start minimized without focus (testing)
     "extra_env": "",           # NAME=VALUE lines
     "low_priority": False,     # build at below-normal priority: the PC stays responsive, the build is slower
-    "replays": True,           # online matches are saved as replays in <out>/replays (T5_REPLAY_DIR, docs/REPLAYS.md)
+    "replays": True,           # online matches are saved as replays (T5_REPLAY_DIR, docs/REPLAYS.md)
+    "replay_dir": "",          # empty: <out>/replays; otherwise an existing folder chosen in Settings
     "replay_names": True,      # ... with the players' lobby names in them (off: T5_REPLAY_NAMES=0)
     "spectators": True,        # online: friends and room visitors may watch this player's matches (docs/SPECTATE.md)
     "spectators_ranked": False,  # ... the ranked ones too (both players must allow it)
+    "auto_spectate": False,    # watch an available match while idle; always yield to this player's match
     "power_saving": "auto",    # auto | on | off: PS3_LAPTOP (POWER_SAVING)
     "unlock_stages": False,    # offline: the Tekken 5 stages without clearing Arcade (T5_UNLOCK_STAGES, docs/DIRECTFIGHT.md "Unlocks")
     "unlock_items": False,     # offline: every customization item free in the item shop (T5_UNLOCK_ITEMS)
@@ -179,6 +187,18 @@ class Settings(dict):
             self["internal_res_set"] = False
         if not isinstance(self["clock_hint_shown"], bool):
             self["clock_hint_shown"] = False
+        if not isinstance(self["controls_hint_shown"], bool):
+            self["controls_hint_shown"] = False
+        if not isinstance(self["gpu_build_warning"], bool):
+            self["gpu_build_warning"] = True
+        if isinstance(saved, dict) and "screen_side" not in saved:
+            self["screen_side"] = "left" if saved.get("always_left") is True else "dealt"
+        if not isinstance(self["screen_side"], str) or self["screen_side"] not in SCREEN_SIDES:
+            self["screen_side"] = "dealt"
+        # Keep the legacy setting useful to launchers predating the three-way choice.
+        self["always_left"] = self["screen_side"] == "left"
+        if not isinstance(self["auto_spectate"], bool):
+            self["auto_spectate"] = False
         if not isinstance(self["vsync"], str) or self["vsync"] not in VSYNC_MODES:
             self["vsync"] = "on"
         if not isinstance(self["power_saving"], str) or self["power_saving"] not in POWER_SAVING:
@@ -196,21 +216,75 @@ class Settings(dict):
             self["practice"] = True
         if not isinstance(self["practice_dummy"], str) or self["practice_dummy"] not in PRACTICE_DUMMY:
             self["practice_dummy"] = "game"
+        if not isinstance(self["replay_dir"], str):
+            self["replay_dir"] = ""
 
     def save(self):
+        side = self.get("screen_side", "dealt")
+        self["screen_side"] = side if isinstance(side, str) and side in SCREEN_SIDES else "dealt"
+        self["always_left"] = self["screen_side"] == "left"
+        temporary = None
         try:
-            with open(self.path, "w", encoding="utf-8") as f:
+            # Never truncate the only settings copy before its replacement is complete.
+            # A sibling file keeps the final rename on the same filesystem.
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", delete=False,
+                                             prefix=".launcher-settings-", suffix=".tmp",
+                                             dir=os.path.dirname(os.path.abspath(self.path))) as f:
+                temporary = f.name
                 json.dump(dict(self), f, indent=1)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temporary, self.path)
         except OSError:
             pass
+        finally:
+            if temporary is not None:
+                try:
+                    os.remove(temporary)
+                except OSError:
+                    pass
 
     @property
     def out_dir(self):
         return os.path.abspath(self["out"] or os.path.join(ROOT, "native"))
 
     @property
-    def replay_dir(self):
+    def default_replay_dir(self):
         return os.path.join(self.out_dir, "replays")
+
+    def replay_dir_status(self):
+        """(effective folder, warning), shared by recording, browsing, playback and reports.
+
+        A disconnected drive must not be silently recreated. Keep the custom preference so reconnecting
+        it restores that folder; only the default may be created. A real write probe catches Windows ACLs
+        (os.access alone can claim a read-only folder is writable). No replay is touched here.
+        """
+        default = self.default_replay_dir
+        selected = self.get("replay_dir") or ""
+        warning = ""
+        if selected:
+            try:
+                settings_folder = os.path.dirname(os.path.abspath(self.path))
+                folder = os.path.abspath(os.path.join(settings_folder, selected))
+                if _replay_folder_writable(folder):
+                    return folder, ""
+            except (OSError, ValueError):
+                pass
+            warning = t("Replay folder {folder} is missing or is not writable. Using the default folder: {default}.",
+                        folder=selected, default=default)
+        try:
+            os.makedirs(default, exist_ok=True)
+            writable = _replay_folder_writable(default)
+        except (OSError, ValueError):
+            writable = False
+        if not writable:
+            warning = (warning + "\n" if warning else "") + t(
+                "The default replay folder {folder} is not writable. Replays cannot be saved there.", folder=default)
+        return default, warning
+
+    @property
+    def replay_dir(self):
+        return self.replay_dir_status()[0]
 
     def internal_res_choice(self, integrated=None):
         """The Internal resolution the game gets: the step the player chose in Settings, else Auto on integrated
@@ -254,7 +328,6 @@ class Settings(dict):
         if self["replays"]:
             # every online session is recorded (src/netplay/replay.cpp); offline games and a replay being
             # watched record nothing
-            env["T5_REPLAY_DIR"] = self.replay_dir
             if not self["replay_names"]:
                 env["T5_REPLAY_NAMES"] = "0"
         if self["training"] in TRAINING_MODES:
@@ -272,8 +345,10 @@ class Settings(dict):
         if self["practice"]:
             env["T5_PRACTICE_DUMMY"] = self["practice_dummy"] if self["practice_dummy"] in PRACTICE_DUMMY else "game"
             env.setdefault("T5_TRAINING_LANG", i18n.resolve(self["language"]) if I18N else "en")
-        # "Always left" (docs/NETPLAY.md): this PC's picture and pad only, so the two players may choose differently
-        if self["always_left"]:
+        # Explicit dealt also clears a previous side in the persistent online game.
+        side = self.get("screen_side", "dealt")
+        env["T5_SCREEN_SIDE"] = side if isinstance(side, str) and side in SCREEN_SIDES else "dealt"
+        if side == "left":
             env["T5_ALWAYS_LEFT"] = "1"
         # Unlocks count offline only: a game started for online play answers as a fresh save does,
         # whatever it is given (both PCs must build the same select screens and stage lists); online, Jinpachi
@@ -289,7 +364,32 @@ class Settings(dict):
             if line and not line.startswith("#") and "=" in line:
                 k, v = line.split("=", 1)
                 env[k.strip()] = v.strip()
+        # One folder for recording, the Replays tab and problem reports. Extra settings cannot send
+        # recordings somewhere the launcher cannot find; recording Off also removes an old override.
+        if self["replays"]:
+            env["T5_REPLAY_DIR"] = self.replay_dir
+        else:
+            env.pop("T5_REPLAY_DIR", None)
         return env
+
+
+def _replay_folder_writable(folder):
+    """Check an existing directory without leaving a probe or changing a replay file."""
+    if not os.path.isdir(folder):
+        return False
+    try:
+        fd, probe = tempfile.mkstemp(prefix=".t5-replay-write-", dir=folder)
+        try:
+            try:
+                os.write(fd, b"1")
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+        finally:
+            os.remove(probe)
+        return True
+    except (OSError, ValueError):
+        return False
 
 
 # --------------------------------------------------------------------------- input files
@@ -756,8 +856,7 @@ class BuildRun:
             cmd.append("--force")
         if steps:
             cmd += ["--steps"] + list(steps)
-        # 1.1.5: the shader warm-up after the build (once per built game; it never fails the build)
-        cmd.append("--warmup")
+        # The launcher starts its bounded shader queue after this build has finished.
         self.cmd = cmd
         self.step = None                        # the step build_game.py is in
         self.tool = None                        # the program it started last ("  > ..." lines)
@@ -767,6 +866,7 @@ class BuildRun:
         self._log_lock = threading.Lock()
 
     def start(self):
+        warmup.close_all(self.out)
         # PYTHONUTF8: the build's tools write their files in UTF-8 on any Windows code page (cp949 broke the lift)
         env = dict(os.environ, PYTHONUNBUFFERED="1", PYTHONIOENCODING="utf-8", PYTHONUTF8="1")
         if sys.executable.lower().endswith("pythonw.exe"):     # tools must not run windowless-python
@@ -867,11 +967,16 @@ def kill_tree(pid):
 
 # --------------------------------------------------------------------------- game process
 
-def explain_exit(code, lines, dialogs=()):
+def explain_exit(code, lines, dialogs=(), gpu_adapter=None):
     """One plain sentence for the Play tab when the game ended on its own; None when it closed normally. `dialogs`:
     the game's own message boxes (GameRun.dialogs); one after which the game stops explains the end."""
     text = "\n".join(lines[-80:])
-    if code == 12 or "[gpu] device lost" in text:
+    if code == 12 or any(gpu_error.device_lost(line) for line in lines):
+        # The adapter is normally near the start, long before the bounded crash tail. GameRun keeps it.
+        for line in lines:
+            gpu_adapter = gpu_error.adapter_name(line) or gpu_adapter
+        if gpu_error.is_hd4400(gpu_adapter):
+            return t(gpu_error.HD4400_ADVICE)
         return t("The graphics card stopped working for the game (the driver crashed, was reset or updated). "
                  "Start the game again. If it happens again, update the graphics driver.")
     if code == 13 or "Direct3D 12 not available" in text or "needs a graphics card with Direct3D 12" in text:
@@ -1025,22 +1130,32 @@ def costume_env(out_dir, env_over):
 class GameRun:
     """The running game: its process, log file and the last fps line."""
 
+    PLAYBACK_STOP_WAIT = 0.25
+
     def __init__(self, out, settings):
         self.out = out
         self.settings = settings
         self.proc = None
+        self._playback = False
         self.log_path = None
         self.fps = None
+        self.gpu_adapter = None     # selected adapter from this run, retained when it leaves last_lines
         self.last_lines = []
         self.dialogs = []          # the texts of the game's own message boxes, oldest first (DialogScan; the last 20)
         self.dialog_count = 0      # how many it showed in all
         self.started = None
+        self._warmup_lease = None
 
     def start(self, extra_env=None, monitor_point=None):
+        self.gpu_adapter = None     # never diagnose a new run using the previous run's selected adapter
+        self.last_lines = []
         env_over = self.settings.env_overrides()
         if monitor_point and "PS3_WINDOW_MONITOR" not in env_over:
             env_over["PS3_WINDOW_MONITOR"] = "%d,%d" % monitor_point   # open on the launcher's monitor
         env_over.update(extra_env or {})
+        # run_game removes None values from the inherited environment. Otherwise an old Windows
+        # T5_REPLAY_DIR would keep recording even when the launcher checkbox is Off.
+        env_over["T5_REPLAY_DIR"] = self.settings.replay_dir if self.settings["replays"] else None
         if is_online_env(env_over):
             for k in UNLOCK_ENV:            # the game ignores them online anyway; keep its log and reports plain
                 env_over.pop(k, None)
@@ -1052,6 +1167,7 @@ class GameRun:
             backup_saves_once(self.out, "free-items")
         costume_env(self.out, env_over)
         cmd, env, cwd = run_game.game_command(self.out, env_over)
+        self._playback = env.get("T5_NET_MODE") == "replay"
         if not os.path.exists(cmd[0]):
             raise FileNotFoundError(t("t5dr.exe is not built yet"))
         logs = os.path.join(self.out, "logs")
@@ -1078,10 +1194,19 @@ class GameRun:
             si = subprocess.STARTUPINFO()
             si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
             si.wShowWindow = 7   # SW_SHOWMINNOACTIVE
-        self.proc = subprocess.Popen(cmd, env=env, cwd=cwd, stdout=logf, stderr=subprocess.STDOUT,
-                                     stdin=subprocess.DEVNULL, startupinfo=si,
-                                     creationflags=CREATE_NO_WINDOW if IS_WIN else 0)
-        logf.close()
+        try:
+            # Stop the hidden worker and its game before the player's process can start.
+            self._warmup_lease = warmup.pause_all(self.out)
+            self.proc = subprocess.Popen(cmd, env=env, cwd=cwd, stdout=logf, stderr=subprocess.STDOUT,
+                                         stdin=subprocess.DEVNULL, startupinfo=si,
+                                         creationflags=CREATE_NO_WINDOW if IS_WIN else 0)
+        except OSError:
+            if self._warmup_lease is not None:
+                warmup.resume_all(self._warmup_lease)
+                self._warmup_lease = None
+            raise
+        finally:
+            logf.close()
         self.started = time.time()
         threading.Thread(target=self._tail, daemon=True).start()
         if IS_WIN and not env_over.get("PS3_WINDOW_BACKGROUND") and \
@@ -1094,9 +1219,29 @@ class GameRun:
 
     def stop(self):
         if self.running():
-            kill_tree(self.proc.pid)
+            if self._playback:
+                # A replay/spectator is the executable itself (game_command), not a build tree.
+                # Kill the captured process handle: taskkill can block the UI indefinitely and
+                # delay an incoming match. Keep the handle if the OS has not confirmed its exit.
+                try:
+                    self.proc.kill()
+                    self.proc.wait(timeout=self.PLAYBACK_STOP_WAIT)
+                except (OSError, subprocess.TimeoutExpired):
+                    pass
+            else:
+                kill_tree(self.proc.pid)
+        return not self.running()
 
     def _tail(self):
+        try:
+            self._read_tail()
+        finally:
+            # Never restart a hidden game while the real one still runs (including log read failures).
+            if not self.running():
+                warmup.resume_all(self._warmup_lease)
+                self._warmup_lease = None
+
+    def _read_tail(self):
         scan = DialogScan()
         with open(self.log_path, encoding="utf-8", errors="replace") as f:
             while True:
@@ -1111,6 +1256,7 @@ class GameRun:
                     time.sleep(0.25)
                     continue
                 line = line.rstrip()
+                self.gpu_adapter = gpu_error.adapter_name(line) or self.gpu_adapter
                 dialog = scan.feed(line)
                 if dialog:
                     self.dialogs = (self.dialogs + [dialog])[-20:]
@@ -1359,7 +1505,12 @@ PRACTICE_DUMMY = {       # English; t(label) where it is shown -- the dummy's be
     "walk": N_("Walks forward and back"),
     "step": N_("Sidesteps"),
 }
-# Settings -> Screen side (docs/NETPLAY.md "Always left"); the Online tab's casual row has the same checkbox
+# Settings and Online share the same variable; this only changes this PC's presentation and local input.
+SCREEN_SIDES = {"dealt": N_("As dealt"), "left": N_("Always left"), "right": N_("Always right")}
+SCREEN_SIDE_HELP = N_(
+    "Casual matches only: show your fighter on the chosen side and swap left/right controls when mirrored. "
+    "Ranked and Quick matches keep the dealt side. Offline: Versus previews the chosen side.")
+# Kept for older callers embedding the launcher.
 ALWAYS_LEFT_HELP = N_(
     "Casual matches only (challenges, friends' invites, rooms): when you are P2, your screen shows the fight mirrored "
     "with you on the left, and your left and right are swapped. Your opponent sees the normal picture. Ranked and "

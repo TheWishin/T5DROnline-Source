@@ -90,11 +90,13 @@ OUR_FILES = [
     "tools/shader_warmup.py",      # 1.1.5: build_game.py --warmup (the launcher's BUILD GAME)
     "launcher/t5dr_launcher.pyw", "launcher/core.py", "launcher/online.py", "launcher/updater.py",
     "launcher/release_sig.py",
+    "launcher/warmup.py", "launcher/first_start.py", "launcher/gpu_support.py",
     "launcher/problem_report.py", "launcher/problem_report_ui.py",
     "launcher/problem_check.py", "launcher/problem_check_ui.py", "launcher/tab_look.py",
     "launcher/controls_ui.py", "launcher/controls_edit.py", "launcher/stub/t5dr_stub.c",
     "launcher/replays.py", "launcher/replays_ui.py",
     "launcher/tkgc.py",            # 1.1.9: garbage freed on the Tk thread only (t5dr_launcher.pyw imports it)
+    "launcher/gpu_error.py",       # selected-adapter evidence and HD 4400 device-loss advice
     "docs/RELEASE.md",
     # online: "Host for friends" entry point (works with the bundled, isolated Python) and the server list
     "lobby/run.py", "lobby/servers.json",
@@ -126,7 +128,9 @@ PS3_SKIP = ["*/__pycache__/*", "*.pyc", "*.prx", "*.sprx", "*.elf", "*.self", "*
 
 FORBIDDEN_NAMES = ["*.pkg", "*.rap", "*.rif", "*.edat", "*.sdat", "*.self", "*.sprx", "*.prx", "*.elf",
                    "eboot.bin", "eboot.elf", "param.sfo", "t55data*", "*.keys", "ppu_recomp*", "spu_recomp*",
+                   "*.t5replay", "*.t5replay.*",  # player matches, including interrupted/backup writes
                    "spu_workloads.c", "launcher.json", "*.log", "t5dr.map", "*.dmp", "t5dr_game.dll", "t5dr_game.lib",
+                   ".launcher-settings-*.tmp",  # failed atomic-save cleanup may retain private settings
                    # the game's rank plates, read by the launcher from the player's own game (lobby/t5lobby/
                    # rank_art.py) into native/cache/ranks: never in a release
                    "rank_[0-9][0-9].png", "rank_[0-9][0-9]_h*.png"]
@@ -136,7 +140,8 @@ FORBIDDEN_NAMES = ["*.pkg", "*.rap", "*.rif", "*.edat", "*.sdat", "*.self", "*.s
 # only expected in toolchain/llvm.
 BIG_BINARY = 20_000_000
 RE_LIFTED = re.compile(rb"func_[0-9A-Fa-f]{8}")   # lifted code: ~1.5 per KB; ps3recomp's own files: < 40 in total
-FORBIDDEN_DIRS = ["keys", "game", "native", "build", "gamedata", "scratch", "logs", "fw_spu"]
+FORBIDDEN_DIRS = ["keys", "game", "native", "build", "gamedata", "scratch", "logs", "fw_spu",
+                  "replays", "saves", "savedata", "screenshots"]
 
 # MAJOR.MINOR.PATCH with an optional SemVer pre-release suffix: 0.1.0, 0.1.0-preview, 0.2.0-rc.1
 VERSION_RE = re.compile(r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*)?$")
@@ -798,8 +803,10 @@ def load_key_patterns(keys_file):
 def classify(name, data):
     """Reasons this file looks game-derived (empty list: fine)."""
     why = []
-    base = os.path.basename(name).lower()
-    parts = [p.lower() for p in re.split(r"[\\/]", name)[:-1]]
+    # ZIP names can use either separator, independent of the scanner's host OS.
+    path_parts = [p.lower() for p in re.split(r"[\\/]", name)]
+    base = path_parts[-1]
+    parts = path_parts[:-1]
     for pat in FORBIDDEN_NAMES:
         if fnmatch.fnmatch(base, pat):
             why.append(f"name matches {pat}")
@@ -818,6 +825,10 @@ def classify(name, data):
         why.append("PS3 package")
     if data[:4] == b"\0PSF":
         why.append("PARAM.SFO")
+    # Custom replay folders and renamed files must not hide match data. These
+    # are the on-disk and decompressed payload signatures in netplay/replay.cpp.
+    if data.startswith((b"T5REPLAY ", b"T5LIVE ", b"T5RP")):
+        why.append("player replay or live spectator stream")
     # lifted code under any name or cut into pieces: it names guest functions func_XXXXXXXX
     # everywhere (a 100 KB piece has ~150); the most any ps3recomp source has is 38.
     if is_profile_path(name):

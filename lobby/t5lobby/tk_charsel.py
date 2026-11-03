@@ -16,6 +16,7 @@ the names alone.
 `tab.char_cb` is the button's stand-in for the old list (state "readonly" = open to choose, "disabled" = locked):
 tests, the e2e runner and the tab's own code keep using it as before; `tab.char_var` still holds the fighter's name.
 """
+import threading
 import tkinter as tk
 from tkinter import ttk
 
@@ -66,14 +67,66 @@ class CharSelect:
         self.columns = COLUMNS
         self.button = ttk.Button(parent, style="Card.TButton", command=self.toggle, cursor="hand2")
         self.chip = _Chip(self, self.button)
-        tab.char_var.trace_add("write", lambda *_a: self._label())
+        self._destroyed = False
+        self._after_ids = set()
+        self._after_lock = threading.Lock()
+        self._char_trace = tab.char_var.trace_add("write", lambda *_a: self._label())
+        self.button.bind("<Destroy>", self._destroy, add="+")
         self._label()
         self._styles()
         self.pic_size = self.px(PICTURE)
         self.blank = None                  # the Random tile's empty picture (the tiles' text lines up)
         fighter_art.FACES.listeners.append(self._pictures_ready)
         try:
-            self.button.after(2500, self.prepare_pictures)      # (the first use after BUILD GAME reads them)
+            self._after(2500, self.prepare_pictures)      # (the first use after BUILD GAME reads them)
+        except tk.TclError:
+            pass
+
+    def _after(self, delay, callback):
+        """Keep widget timers so destruction cancels them before Tk deletes their commands."""
+        with self._after_lock:
+            if self._destroyed:
+                return None
+        pending = {"timer": None, "fired": False}
+
+        def run():
+            with self._after_lock:
+                pending["fired"] = True
+                self._after_ids.discard(pending["timer"])
+                alive = not self._destroyed
+            if alive:
+                callback()
+
+        timer = self.button.after(delay, run)
+        with self._after_lock:
+            pending["timer"] = timer
+            destroyed = self._destroyed
+            if not destroyed and not pending["fired"]:
+                self._after_ids.add(timer)
+        if destroyed:
+            try:
+                self.button.after_cancel(timer)
+            except (tk.TclError, RuntimeError):
+                pass
+        return timer
+
+    def _destroy(self, event):
+        if event.widget is not self.button:
+            return
+        with self._after_lock:
+            if self._destroyed:
+                return
+            self._destroyed = True
+            timers = tuple(self._after_ids)
+            self._after_ids.clear()
+        for timer in timers:
+            try:
+                self.button.after_cancel(timer)
+            except tk.TclError:
+                pass
+        fighter_art.FACES.listeners[:] = [f for f in fighter_art.FACES.listeners if f != self._pictures_ready]
+        try:
+            self.tab.char_var.trace_remove("write", self._char_trace)
         except tk.TclError:
             pass
 
@@ -118,6 +171,8 @@ class CharSelect:
 
     def prepare_pictures(self):
         """Read the pictures from the built game once (a thread); the grid fills them in when they are there."""
+        if self._destroyed:
+            return
         faces, out = fighter_art.FACES, self.out_dir()
         if out:
             faces.set_folder(fighter_art.folder_for(out))
@@ -125,7 +180,7 @@ class CharSelect:
             return
         try:
             from .tk_tab import _launcher_log
-            faces.prepare([self.pic_size], out_dir=out, after=self.button.after, log=_launcher_log)
+            faces.prepare([self.pic_size], out_dir=out, after=self._after, log=_launcher_log)
         except (tk.TclError, RuntimeError):
             pass
 

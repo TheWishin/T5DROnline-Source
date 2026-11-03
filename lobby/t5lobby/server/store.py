@@ -71,6 +71,14 @@ CREATE TABLE IF NOT EXISTS blocks (
     created REAL NOT NULL,
     PRIMARY KEY (account_id, blocked_id)
 );
+CREATE TABLE IF NOT EXISTS personal_mutes (
+    account_id INTEGER NOT NULL,
+    muted_key TEXT NOT NULL,           -- a:<account id> or g:<lower-case guest name>
+    muted_id INTEGER,                 -- NULL for a guest name
+    muted_name TEXT NOT NULL,
+    created REAL NOT NULL,
+    PRIMARY KEY (account_id, muted_key)
+);
 CREATE TABLE IF NOT EXISTS notices (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     created REAL NOT NULL,
@@ -96,6 +104,16 @@ CREATE TABLE IF NOT EXISTS kv (
     value TEXT,
     updated REAL
 );
+-- An explicit report is the only private-message content stored. This is NOT a transcript.
+CREATE TABLE IF NOT EXISTS private_reports (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created REAL NOT NULL,
+    reporter_name TEXT NOT NULL,
+    reporter_account INTEGER,
+    peer_name TEXT NOT NULL,
+    lines TEXT NOT NULL,
+    reason TEXT NOT NULL
+);
 CREATE INDEX IF NOT EXISTS sessions_account ON sessions (account_id);
 CREATE INDEX IF NOT EXISTS recovery_account ON recovery (account_id);
 """
@@ -120,10 +138,12 @@ RANKED_COLUMNS = [
     ("matches", "set_id", "TEXT"),         # a game of a ranked set (sets.id): rated with the set, not on its own
     ("matches", "set_game", "INTEGER"),    # its number in the set (1, 2, 3; a replay keeps the number)
 ]
-# Moderation (the admin tool, docs/HOSTING.md): account bans. Address bans live in ip_bans.
+# Account bans, aggregate filter counts and server-wide chat mutes. No chat text is retained here.
 MODERATION_COLUMNS = [
     ("accounts", "banned_until", "REAL"),          # unix time; PERMANENT = for ever; NULL = not banned
     ("accounts", "ban_reason", "TEXT"),
+    ("accounts", "blocked_count", "INTEGER NOT NULL DEFAULT 0"),
+    ("accounts", "muted_until", "REAL"),
 ]
 # What a name looks like (proto.name_skeleton): a new name may not look like an existing account's.
 NAME_COLUMNS = [
@@ -160,6 +180,9 @@ CREATE TABLE IF NOT EXISTS friend_requests (
 );
 CREATE INDEX IF NOT EXISTS friend_requests_from ON friend_requests (from_id, created);
 CREATE INDEX IF NOT EXISTS friend_requests_to ON friend_requests (to_id, state);
+"""),
+    (2, "account developer badges (1.2.0)", """
+ALTER TABLE accounts ADD COLUMN badge TEXT NOT NULL DEFAULT '' CHECK (badge IN ('', 'dev'));
 """),
 ]
 SCHEMA_VERSION = MIGRATIONS[-1][0]
@@ -234,6 +257,7 @@ class Store:
         self._backfill_skeletons()
         self.migrated = self._migrate()
         self._drop_stale_friends()
+        self._drop_stale_mutes()
         self._schedule = None
         self.commit_errors = 0
         self.writes = 0
@@ -285,6 +309,16 @@ class Store:
         if n:
             log.warning("dropped %d friends row(s) of deleted accounts (an older server deleted them)", n)
         return n
+
+    def _drop_stale_mutes(self):
+        """A rollback may delete/reuse account ids without knowing this additive table."""
+        return self.db.execute(
+            "DELETE FROM personal_mutes WHERE "
+            "NOT EXISTS (SELECT 1 FROM accounts a WHERE a.id = personal_mutes.account_id "
+            "AND a.created <= personal_mutes.created) OR "
+            "(muted_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM accounts a "
+            "WHERE a.id = personal_mutes.muted_id AND a.created <= personal_mutes.created))"
+        ).rowcount
 
     def _add_columns(self):
         for table, col, decl in RANKED_COLUMNS + MODERATION_COLUMNS + NAME_COLUMNS:
@@ -344,6 +378,25 @@ class Store:
         self.flush()
         self.db.close()
 
+    def add_private_report(self, reporter, account_id, peer, lines, reason, days=30, maximum=1000):
+        """Save only the lines the reporting player explicitly selected, within a bounded inbox."""
+        now = time.time()
+        self.prune_private_reports(days, now)
+        rid = self._x("INSERT INTO private_reports (created, reporter_name, reporter_account, peer_name, lines, reason) "
+                      "VALUES (?, ?, ?, ?, ?, ?)",
+                      (now, reporter, account_id, peer, json.dumps(lines, ensure_ascii=True), reason)).lastrowid
+        self._x("DELETE FROM private_reports WHERE id NOT IN "
+                "(SELECT id FROM private_reports ORDER BY id DESC LIMIT ?)", (max(1, int(maximum)),))
+        return rid
+
+    def prune_private_reports(self, days=30, now=None):
+        cutoff = (time.time() if now is None else now) - max(0.0, float(days)) * 86400
+        return self._x("DELETE FROM private_reports WHERE created < ?", (cutoff,)).rowcount
+
+    def private_reports(self, limit=20):
+        rows = self._x("SELECT * FROM private_reports ORDER BY id DESC LIMIT ?", (max(1, min(100, int(limit))),)).fetchall()
+        return [dict(r, lines=json.loads(r["lines"])) for r in rows]
+
     # ----------------------------------------------------------------- after a crash or restart
     def void_interrupted(self, now=None):
         """Matches the database still shows as running: the server stopped (crash, restart, update)
@@ -373,6 +426,12 @@ class Store:
 
     def account_by_id(self, aid):
         return self._x("SELECT * FROM accounts WHERE id = ?", (aid,)).fetchone()
+
+    def set_badge(self, aid, badge):
+        """Admin-only account metadata; no lobby request may call this."""
+        if badge not in ("", "dev"):
+            raise ValueError("unknown badge")
+        return self._x("UPDATE accounts SET badge = ? WHERE id = ?", (badge, aid)).rowcount
 
     # Account ids are never given twice. Without AUTOINCREMENT, SQLite gives a new row the highest id + 1 -- after the
     # newest account was deleted (delete-user, purge-inactive), its id again, and with it everything stored by
@@ -702,6 +761,27 @@ class Store:
         out["fighters"] = sorted(chars.values(), key=lambda c: (-(c["ranked"][0] + c["casual"][0]), c["char"]))
         return out
 
+    def ranked_chars(self, aid):
+        """Every fighter's counted ranked games for this account, including stored history.
+
+        As match_stats, each game of a set counts once. Only the account's side of a
+        mirror counts; draws are games and contribute to the win-rate denominator.
+        """
+        played = "ranked = 1 AND status IN ('confirmed','onesided','forfeit','resolved')"
+        rows = self._x(
+            "SELECT ch, COUNT(*) AS games, COALESCE(SUM(won), 0) AS wins, SUM(drawn) AS draws FROM ("
+            "SELECT p1_char AS ch, winner = 0 AS won, winner IS NULL AS drawn FROM matches "
+            f"WHERE p1_account = ? AND {played} UNION ALL "
+            "SELECT p2_char AS ch, winner = 1 AS won, winner IS NULL AS drawn FROM matches "
+            f"WHERE p2_account = ? AND {played}) WHERE ch IS NOT NULL AND ch != '' "
+            "GROUP BY ch ORDER BY games DESC, wins DESC, ch", (aid, aid))
+        out = []
+        for r in rows:
+            games, wins, draws = r["games"], r["wins"] or 0, r["draws"] or 0
+            out.append({"char": r["ch"], "games": games, "wins": wins, "losses": games - wins - draws,
+                        "draws": draws, "win_rate": round(100.0 * wins / games, 2)})
+        return out
+
     def char_usage(self, aid, limit=5):
         """[{char, games, wins}] over counted matches, most played first."""
         rows = self._x(
@@ -774,6 +854,39 @@ class Store:
         return {r[0] for r in self._x("SELECT id FROM accounts WHERE banned_until > ?",
                                                (now or time.time(),))}
 
+    def record_chat_filter(self, aid, context):
+        """Count a refused submission for an account, without storing its text or matched term.
+
+        Guests and refused registrations have no account to count against. The context is a fixed
+        caller label only; it is validated and never persisted. Counting never bans or mutes anyone.
+        """
+        if context not in ("chat", "private", "name", "room"):
+            raise ValueError("unknown chat-filter context")
+        if aid is None:
+            return False
+        return self._x("UPDATE accounts SET blocked_count = blocked_count + 1 WHERE id = ?",
+                       (aid,)).rowcount > 0
+
+    def chat_moderation(self, aid):
+        """Fresh state, including changes made by a separate running admin tool."""
+        row = self._x("SELECT blocked_count, muted_until FROM accounts WHERE id = ?", (aid,)).fetchone()
+        return dict(row) if row is not None else {"blocked_count": 0, "muted_until": None}
+
+    def mute_account(self, name, until):
+        return self._x("UPDATE accounts SET muted_until = ? WHERE name = ?",
+                       (until, name)).rowcount > 0
+
+    def unmute_account(self, name):
+        return self._x("UPDATE accounts SET muted_until = NULL WHERE name = ?",
+                       (name,)).rowcount > 0
+
+    def list_chat_moderation(self, limit=50):
+        """Accounts with refusals or an active manual mute, for admins only."""
+        return [dict(r) for r in self._x(
+            "SELECT id, name, blocked_count, muted_until FROM accounts "
+            "WHERE blocked_count > 0 OR muted_until > ? ORDER BY blocked_count DESC, name LIMIT ?",
+            (time.time(), limit))]
+
     def ban_ip(self, net, until, reason=""):
         self._x("INSERT OR REPLACE INTO ip_bans (net, until, reason, created) VALUES (?, ?, ?, ?)",
                         (net, until, reason, time.time()))
@@ -808,6 +921,8 @@ class Store:
             self._x(f"DELETE FROM {table} WHERE account_id NOT IN (SELECT id FROM accounts)")
         self._x("DELETE FROM blocks WHERE account_id NOT IN (SELECT id FROM accounts) "
                         "OR blocked_id NOT IN (SELECT id FROM accounts)")
+        self._x("DELETE FROM personal_mutes WHERE account_id NOT IN (SELECT id FROM accounts) "
+                "OR (muted_id IS NOT NULL AND muted_id NOT IN (SELECT id FROM accounts))")
         self._x("DELETE FROM friends WHERE account_id NOT IN (SELECT id FROM accounts) "
                 "OR friend_id NOT IN (SELECT id FROM accounts)")
         self._x("DELETE FROM friend_requests WHERE from_id NOT IN (SELECT id FROM accounts) "
@@ -851,6 +966,47 @@ class Store:
         n = self._x(sql, (cut, time.time())).rowcount
         self._drop_orphans()
         return n
+
+    # ----------------------------------------------------------------- personal chat mutes (never matchmaking blocks)
+    @staticmethod
+    def _mute_key(target_id, name=None):
+        if target_id is not None:
+            if isinstance(target_id, bool) or not isinstance(target_id, int) or target_id < 1:
+                raise ValueError("invalid muted account id")
+            return f"a:{target_id}"
+        if not isinstance(name, str) or not name:
+            raise ValueError("a guest mute needs a name")
+        return "g:" + name.lower()
+
+    def add_mute(self, aid, target_id, name):
+        """Remember a personal mute; accounts keep their identity, guests use their name.
+
+        This does not modify friendships, matchmaking blocks or server-wide admin mutes.
+        """
+        key = self._mute_key(target_id, name)
+        if self.account_by_id(aid) is None:
+            return False
+        if target_id is not None:
+            row = self.account_by_id(target_id)
+            if row is None or target_id == aid:
+                return False
+            name = row["name"]
+        return self._x("INSERT OR IGNORE INTO personal_mutes "
+                       "(account_id, muted_key, muted_id, muted_name, created) VALUES (?, ?, ?, ?, ?)",
+                       (aid, key, target_id, name, time.time())).rowcount == 1
+
+    def remove_mute(self, aid, target_id, name=None):
+        return self._x("DELETE FROM personal_mutes WHERE account_id = ? AND muted_key = ?",
+                       (aid, self._mute_key(target_id, name))).rowcount > 0
+
+    def mutes_of(self, aid):
+        return [dict(r) for r in self._x(
+            "SELECT muted_id, muted_name, created FROM personal_mutes WHERE account_id = ? "
+            "ORDER BY created, muted_key", (aid,))]
+
+    def is_muted_by(self, aid, other, name=None):
+        return self._x("SELECT 1 FROM personal_mutes WHERE account_id = ? AND muted_key = ?",
+                       (aid, self._mute_key(other, name))).fetchone() is not None
 
     # ----------------------------------------------------------------- blocked players (per account)
     def add_block(self, aid, target_id, name):

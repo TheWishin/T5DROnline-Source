@@ -1,9 +1,10 @@
 /*
- * "Always left" (1.1.9, casual matches; always_left.h has the rule; docs/NETPLAY.md "Always left"):
+ * Screen side (1.2.0, casual matches; always_left.h has the rule):
  *
- *   T5_ALWAYS_LEFT=1   (launcher "Always see me on the left", Settings and the Online tab) on; unset = off.
+ *   T5_SCREEN_SIDE=dealt|left|right   the requested screen side; unset uses T5_ALWAYS_LEFT for old launchers.
+ *   T5_ALWAYS_LEFT=1   legacy setting, used only without T5_SCREEN_SIDE. Default = as dealt.
  *   T5_NET_CASUAL=1    (the launcher, from the lobby's match_start) this online match is casual: only then
- *                      is an online P2 shown mirrored. Both are the SESSION's values (t5_env): a persistent
+ *                      is an online P2 shown mirrored for left, P1 for right. These are SESSION values (t5_env): a persistent
  *                      game gets them again with every match, so a ranked match after a casual one is never
  *                      mirrored, and the option changed in the launcher counts from the next match on.
  *
@@ -12,7 +13,7 @@
  * renderer (ps3recomp patch 0086) whether to show this frame mirrored. While it does:
  *   - online: this player's sample has left and right swapped (always_left_input, netplay_core.cpp
  *     sample_local) -- before it is exchanged, so both PCs simulate the same, swapped input;
- *   - offline (a Versus fight): port 2's data has left and right swapped as the game reads it
+ *   - offline (a Versus fight): P2's (left) or P1's (right) pad has left and right swapped as the game reads it
  *     (t5_always_left_pad_fix, from the late-input pad hook or the direct fight's; T5_LATE_INPUT=0 without a
  *     direct fight has no such hook and stays unswapped).
  *
@@ -41,15 +42,17 @@ namespace {
 constexpr uint32_t kPhase = 0x1008F070u, kGameType = 0x1008EBACu;
 
 std::atomic<bool> g_active{ false };
+std::atomic<uint32_t> g_mirrored_port{ 1 };
 int g_enabled = -1;
 
 /* The session's values (t5_env: a persistent game's match overlay, else the process environment), read again
  * whenever the fight phase changes -- a new match always passes through the select screen -- not every frame. */
-struct Session { bool enabled = false, casual = false; };
+struct Session { bool enabled = false, casual = false; al::Side side = al::Side::Dealt; };
 Session read_session()
 {
     Session s;
-    s.enabled = al::parse_enabled(t5_env("T5_ALWAYS_LEFT"));
+    s.side = al::parse_side(t5_env("T5_SCREEN_SIDE"), t5_env("T5_ALWAYS_LEFT"));
+    s.enabled = s.side != al::Side::Dealt;
     const char* c = t5_env("T5_NET_CASUAL");
     s.casual = c && c[0] == '1' && c[1] == 0;
     return s;
@@ -88,7 +91,8 @@ al::Net net_mode()
 /* The process's value (the offline pad hook is registered by it, from a static constructor). */
 bool t5_always_left_enabled()
 {
-    if (g_enabled < 0) g_enabled = al::parse_enabled(getenv("T5_ALWAYS_LEFT")) ? 1 : 0;
+    if (g_enabled < 0)
+        g_enabled = al::parse_side(getenv("T5_SCREEN_SIDE"), getenv("T5_ALWAYS_LEFT")) != al::Side::Dealt ? 1 : 0;
     return g_enabled == 1;
 }
 
@@ -104,18 +108,15 @@ extern "C" void t5_always_left_frame(void)
         last_phase = phase;
         const Session was = sess;
         sess = read_session();
-        if (sess.enabled != was.enabled || (sess.enabled && sess.casual != was.casual))
-            np::note("always left: %s", !sess.enabled ? "off"
-                     : online_game() ? (sess.casual ? "on -- this casual match: as P2 this PC shows the fight mirrored "
-                                                      "(you on the left) and swaps your left and right; the game and "
-                                                      "the other PC are unchanged"
-                                                    : "on, but not in this match (ranked, Quick or a tournament set: "
-                                                      "only casual matches)")
-                     : "on -- offline Versus fights show the P2 side mirrored");
+        if (sess.side != was.side || (sess.enabled && sess.casual != was.casual))
+            np::note("screen side: %s%s", sess.side == al::Side::Left ? "always left"
+                                          : sess.side == al::Side::Right ? "always right" : "as dealt",
+                     online_game() && sess.enabled && !sess.casual ? " (disabled: casual matches only)" : "");
     }
     if (!sess.enabled && !g_active.load(std::memory_order_relaxed) && !trace) return;
     al::Frame f;
     f.enabled = sess.enabled;
+    f.side = sess.side;
     f.casual = sess.casual;
     f.online_game = online_game();
     f.net = net_mode();
@@ -124,10 +125,11 @@ extern "C" void t5_always_left_frame(void)
     f.phase = phase;
     f.game_type = rd32(kGameType);
     const bool a = al::active(f);
+    g_mirrored_port.store(al::mirrored_port(sess.side), std::memory_order_relaxed);
     if (a != g_active.load(std::memory_order_relaxed)) {
         g_active.store(a, std::memory_order_relaxed);
         rsx_live_draw_set_always_left(a ? 1 : 0);
-        np::note("always left: %s (%s, game type %u)", a ? "the fight is shown mirrored, left/right swapped"
+        np::note("screen side: %s (%s, game type %u)", a ? "the fight is shown mirrored, left/right swapped"
                                                           : "normal picture",
                  f.net == al::Net::Off || f.net == al::Net::Local ? "offline" : f.local_slot == 1 ? "P2" : "P1",
                  f.game_type);
@@ -154,13 +156,14 @@ PadInput always_left_input(PadInput in)
 
 }  // namespace np
 
-/* Offline: port 2's data as the game is about to read it (s32 len, u16 button[], big-endian), mirrored while
+/* Offline: the selected side's data as the game is about to read it (s32 len, u16 button[], big-endian), mirrored while
  * the Versus fight is: [2] DIGITAL1 (LEFT 0x80, RIGHT 0x20), [4] right stick X, [6] left stick X, and in
  * press mode [8] / [9] the RIGHT / LEFT pressure. Called by both offline pad hooks: the one below (late
  * input) and the direct fight's (df_hooks.cpp, its scripts and devices). */
 extern "C" void t5_always_left_pad_fix(uint32_t port, uint32_t ea)
 {
-    if (port != 1 || !ea || !g_active.load(std::memory_order_relaxed)) return;
+    if (port != g_mirrored_port.load(std::memory_order_relaxed) || !ea ||
+        !g_active.load(std::memory_order_relaxed)) return;
     const int32_t len = (int32_t)rd32(ea);
     if (len < 8) return;
     const uint32_t b = ea + 4;

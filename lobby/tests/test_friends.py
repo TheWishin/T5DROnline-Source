@@ -14,6 +14,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 
 import util
 from util import BUILD, ServerThread, client, expect
@@ -675,8 +676,9 @@ class MigrationTest(unittest.TestCase):
     def old_db(self, version=0):
         """A database as 1.1.1 left it: every table of the old schema, an account, a block, no version."""
         p = os.path.join(self.dir, "lobby.db")
-        st = Store(p)
-        st.close()
+        with mock.patch.object(store_mod, "MIGRATIONS", store_mod.MIGRATIONS[:1]):
+            st = Store(p)
+            st.close()
         conn = sqlite3.connect(p)
         conn.executescript("DROP TABLE friends; DROP TABLE friend_requests;")
         conn.execute(f"PRAGMA user_version = {version}")
@@ -699,8 +701,8 @@ class MigrationTest(unittest.TestCase):
     def test_an_old_database_is_upgraded_once(self):
         p = self.old_db()
         st = Store(p)
-        self.assertEqual(st.migrated, [1])
-        self.assertEqual(st.schema_version(), 1)
+        self.assertEqual(st.migrated, [v for v, _what, _sql in store_mod.MIGRATIONS])
+        self.assertEqual(st.schema_version(), store_mod.SCHEMA_VERSION)
         self.assertTrue({"friends", "friend_requests"} <= self.tables(st))
         self.assertIsNotNone(st.account("Old"))                       # the data stays
         self.assertTrue(st.is_blocked_by(1, 2))
@@ -717,17 +719,18 @@ class MigrationTest(unittest.TestCase):
         conn.executescript(SCHEMA)                                    # (the first release's tables, no columns added)
         conn.close()
         st = Store(p)
-        self.assertEqual(st.schema_version(), 1)
+        self.assertEqual(st.schema_version(), store_mod.SCHEMA_VERSION)
         self.assertEqual(st.friend_count(1), 0)
         st.close()
 
     def test_a_failed_step_changes_nothing(self):
         st = Store(os.path.join(self.dir, "x.db"))
-        bad = store_mod.MIGRATIONS + [(2, "broken", "CREATE TABLE half (a); INSERT INTO nowhere VALUES (1);")]
+        bad = store_mod.MIGRATIONS + [(store_mod.SCHEMA_VERSION + 1, "broken",
+                                       "CREATE TABLE half (a); INSERT INTO nowhere VALUES (1);")]
         with self.assertLogs("t5lobby.store", "ERROR"):
             with self.assertRaises(sqlite3.Error):
                 st._migrate(bad)
-        self.assertEqual(st.schema_version(), 1)
+        self.assertEqual(st.schema_version(), store_mod.SCHEMA_VERSION)
         self.assertNotIn("half", self.tables(st))
         self.assertFalse(st.db.in_transaction)
         st.close()
@@ -762,7 +765,7 @@ class MigrationTest(unittest.TestCase):
         st = oldstore.Store(p)
         self.assertIsNotNone(st.account("Old"))
         st.close()
-        self.assertEqual(Store(p).schema_version(), 1)
+        self.assertEqual(Store(p).schema_version(), store_mod.SCHEMA_VERSION)
 
 
 # ============================================================================== older launchers and servers

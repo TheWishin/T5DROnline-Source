@@ -231,7 +231,7 @@ void t5_unlock_install(void)
                      g_stages ? "unlocked (T5_UNLOCK_STAGES=1; the save is not changed)" : "as the save has them",
                      g_jinpachi ? "unlocked (T5_UNLOCK_JINPACHI=1; the save is not changed)" : "as the save has them");
     }
-    /* Items: offline only. Online the VS custom data stays the game's own (no customization in a direct fight). */
+    /* Free item prices: offline only. Online df_costume.cpp applies the exchanged customization blocks. */
     if (g_mode == Mode::Save && (g_items || g_trace)) {
         const bool ok = rb::detour(kFnPricePart, h_price_part, &o_price_part) & rb::detour(kFnPriceColor, h_price_color, &o_price_color);
         if (g_trace) { rb::detour(kFnPartOwned, h_part, &o_part); rb::detour(kFnColorOwned, h_color, &o_color); }

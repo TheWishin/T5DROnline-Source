@@ -18,6 +18,7 @@ def _list(v):
 class Config:
     host: str = "0.0.0.0"           # T5L_HOST: bind address (TCP and UDP)
     port: int = DEFAULT_PORT        # T5L_PORT: TCP control port
+    tcp_fallback_port: int = 0      # T5L_TCP_FALLBACK_PORT: additional TLS control port (443); 0 = off
     udp_port: int = DEFAULT_PORT    # T5L_UDP_PORT: UDP registration / ping / relay port
     udp_port2: int = DEFAULT_PORT + 1  # T5L_UDP_PORT2: NAT mapping probe; 0 = off
     db: str = "t5lobby.db"          # T5L_DB: SQLite file (":memory:" for tests)
@@ -26,6 +27,7 @@ class Config:
     guests: bool = True             # T5L_GUESTS: allow guest logins
     guest_ranked: bool = False      # T5L_GUEST_RANKED: guests may use the ranked queue (rating lives for the session)
     builds: list = field(default_factory=list)   # T5L_BUILDS: allowed build ids (comma list); empty = any
+    compat_groups: str = ""         # T5L_COMPAT_GROUPS: approved build groups JSON; empty = exact builds only
     tls_cert: str = ""              # T5L_TLS_CERT / T5L_TLS_KEY: PEM files -> control channel over TLS
     tls_key: str = ""
     max_clients: int = 500          # T5L_MAX_CLIENTS
@@ -70,6 +72,8 @@ class Config:
     strike_limit: int = 3           # T5L_STRIKE_LIMIT: voids caused within 24 h before they count as losses
     pair_cap: int = 10              # T5L_PAIR_CAP: ranked matches per pair of accounts per 24 h that count
     rematch_window: float = 20.0    # T5L_REMATCH_WINDOW: seconds to agree on a rematch
+    ingame_rematch: bool = False    # T5L_INGAME_REMATCH: optional protocol, default off
+    casual_rematch_policy: str = "both_confirm"  # T5L_CASUAL_REMATCH_POLICY: both_confirm | auto_unless_declined
     rematch_direct: bool = True     # T5L_REMATCH_DIRECT: a rematch after a match on the relay tries the direct path again
                                     # (a new connection) instead of continuing on the relay; a second failure keeps it
     # ranked sets (docs/RANKED.md "Ranked sets"): first to this many games wins the set, rated once at its end;
@@ -137,6 +141,9 @@ class Config:
     quick_ping_any_seconds: float = 30.0  # T5L_QUICK_PING_ANY_SECONDS
     pair_cooldown: float = 30.0     # T5L_PAIR_COOLDOWN: seconds before two players who just finished a ranked game are queue-matched again
     max_blocks: int = 200           # T5L_MAX_BLOCKS: blocked players per account / guest session
+    private_chat: bool = True      # T5L_PRIVATE_CHAT: optional private_chat cap; no ordinary PM storage
+    private_report_days: float = 30.0  # T5L_PRIVATE_REPORT_DAYS: retain only explicitly reported lines
+    max_private_reports: int = 1000 # T5L_MAX_PRIVATE_REPORTS: bounded moderator inbox (oldest removed first)
     # friends and invites (docs/ONLINE.md "Friends and invites"): accounts only
     max_friends: int = 100          # T5L_MAX_FRIENDS: friends per account
     friend_requests_day: int = 20   # T5L_FRIEND_REQUESTS_DAY: friend requests an account may send per 24 h
@@ -178,6 +185,9 @@ class Config:
     lobby_interval: float = 0.3     # T5L_LOBBY_INTERVAL: seconds between lobby list updates (at most)
     udp_ctl_pps: int = 5000         # T5L_UDP_CTL_PPS: server-addressed UDP packets per second, all senders
     name_blocklist: str = ""        # T5L_NAME_BLOCKLIST: file, one word per line; names containing one are refused
+    chat_filter: bool = True       # T5L_CHAT_FILTER: server-side hate-term filtering (0 = off)
+    chat_filter_path: str = os.path.abspath(os.path.join(os.path.dirname(__file__), "data", "chat_filter_terms.json"))
+                                    # T5L_CHAT_FILTER_PATH: server-only JSON; changes reload without a restart
     status_host: str = "127.0.0.1"  # T5L_STATUS_HOST: HTTP status/health/metrics endpoint (keep it local) ...
     status_port: int = 7780         # T5L_STATUS_PORT: ... on this TCP port; 0 = off
     status_log_minutes: float = 15  # T5L_STATUS_LOG_MINUTES: a one-line status in the log this often; 0 = never

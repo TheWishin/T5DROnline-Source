@@ -38,6 +38,7 @@ def main(argv=None):
     ap = argparse.ArgumentParser(prog="python -m t5lobby.server", description="T5DR Online lobby server")
     ap.add_argument("--host")
     ap.add_argument("--port", type=int)
+    ap.add_argument("--tcp-fallback-port", type=int, help="additional TLS control port (443), 0 = off")
     ap.add_argument("--udp-port", type=int)
     ap.add_argument("--udp-port2", type=int, help="NAT probe port, 0 = off")
     ap.add_argument("--db")
@@ -56,7 +57,8 @@ def main(argv=None):
     async def run():
         await srv.start()
         if sys.stdout is not None:
-            print(f"t5lobby: TCP {srv.port}, UDP {srv.udp.port}" + (f"/{srv.udp.port2}" if srv.udp.port2 else ""),
+            print(f"t5lobby: TCP {srv.port}" + (f"/{srv.tcp_fallback_port}" if srv.tcp_fallback else "") +
+                  f", UDP {srv.udp.port}" + (f"/{srv.udp.port2}" if srv.udp.port2 else ""),
                   flush=True)
         for sig in (signal.SIGINT, signal.SIGTERM):
             try:

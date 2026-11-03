@@ -10,6 +10,87 @@ Same keys and groups as i18n_de.py; tests/test_i18n.py and tools/i18n_extract.py
 """
 
 MESSAGES = {
+    "Intel HD Graphics 4400: graphics device lost": "Intel HD Graphics 4400: 그래픽 장치 연결 끊김",
+    "Game log: Intel HD Graphics 4400 was selected and the graphics device was lost.":
+        "게임 로그: Intel HD Graphics 4400이 선택되었고 그래픽 장치 연결이 끊겼습니다.",
+    "private messages are unavailable": "개인 메시지를 사용할 수 없습니다",
+    "private messages: slow down": "개인 메시지: 잠시 기다려 주세요",
+    "write a private message first": "먼저 개인 메시지를 입력하세요",
+    "muted is a boolean": "muted는 참 또는 거짓이어야 합니다",
+    "the private mute list is full": "개인 메시지 음소거 목록이 가득 찼습니다",
+    "private reports: slow down": "개인 신고: 잠시 기다려 주세요",
+    "choose between 1 and 5 private message lines": "개인 메시지 줄을 1개에서 5개까지 선택하세요",
+    "these private message lines cannot be verified; reconnect and try new lines":
+        "이 개인 메시지 줄을 확인할 수 없습니다. 다시 연결한 후 새 줄로 시도하세요",
+    "Intel HD Graphics 4400 lost the graphics device (exit code 12). Try the latest graphics driver offered by your PC maker, close GPU-heavy programs and overlays, and choose Lowest (0.5x) Internal resolution. If this PC has another GPU, select it for t5dr.exe in Windows Graphics settings. These steps may not fix it. If it still fails, click Report a problem and send the report to the maintainer.":
+        "Intel HD Graphics 4400의 그래픽 장치 연결이 끊겼습니다(종료 코드 12). PC 제조사에서 제공하는 최신 그래픽 드라이버를 시도하고, GPU 사용량이 많은 프로그램과 오버레이를 닫은 뒤 내부 해상도를 최저(0.5x)로 선택하세요. 다른 GPU가 있다면 Windows 그래픽 설정에서 t5dr.exe에 사용하도록 선택하세요. 이 방법으로 해결되지 않을 수도 있습니다. 계속 실패하면 문제 신고를 눌러 관리자에게 보고서를 보내세요.",
+    # Private chat.
+    "Private messages": "개인 메시지",
+    "Private messages ({count})": "개인 메시지 ({count})",
+    "Message player": "메시지 보내기",
+    "Private messages are relayed, not saved by the server. Only lines you select are sent with a report.":
+        "서버는 개인 메시지를 전달하며 저장하지 않습니다. 신고할 때 선택한 줄만 전송됩니다.",
+    "Message {name}": "{name}에게 메시지",
+    "Report selected lines": "선택한 줄 신고",
+    "Select up to {count} lines to report.": "신고할 줄을 최대 {count}개 선택하세요.",
+    "Send selected lines to moderators?": "선택한 줄을 운영진에게 보내시겠습니까?",
+    "Report sent to moderators.": "운영진에게 신고를 보냈습니다.",
+    "Private chat is unavailable on this server.": "이 서버에서는 개인 채팅을 사용할 수 없습니다.",
+    "Private messages are kept only until you log out or close the launcher.":
+        "개인 메시지는 로그아웃하거나 런처를 닫을 때까지만 유지됩니다.",
+    "Block {name}? This also leaves any running match against them.":
+        "{name}을(를) 차단하시겠습니까? 이 상대와 진행 중인 대전에서도 나갑니다.",
+    "DEV": "DEV",
+    "Mention a player with @name; press Tab to complete.": "@name으로 플레이어를 멘션하세요. Tab 키로 이름을 자동 완성할 수 있습니다.",
+    # ---- lobby/t5lobby/tk_ranked_chars.py and its profile column headings (1.2.0)
+    "Ranked by character": "캐릭터별 Ranked 기록",
+    "No ranked games played.": "아직 플레이한 Ranked 게임이 없습니다.",
+    "Games": "게임 수",
+    "Losses": "패배",
+    "Draws": "무승부",
+    # Simultaneous room tables (1.2.0)
+    "mode is line or tables": "모드는 line 또는 tables입니다",
+    "table is 1 to {count}": "대전대는 1부터 {count}까지입니다",
+    "simultaneous room tables need a newer launcher; update it": "여러 대전대를 이용하려면 최신 런처가 필요합니다. 업데이트하세요",
+    "simultaneous room tables are casual and cannot be training rooms": "여러 대전대는 캐주얼 전용이며 트레이닝 방으로 사용할 수 없습니다",
+    "this room does not have simultaneous tables": "이 방에는 동시 진행 대전대가 없습니다",
+    "choose two different players for the table": "대전대에 서로 다른 플레이어 두 명을 선택하세요",
+    "choose available players and an idle table": "대전 가능한 플레이어와 빈 대전대를 선택하세요",
+    "you cannot pair these players": "이 플레이어끼리는 대전할 수 없습니다",
+    "One match, taking turns": "한 경기씩 돌아가며 대전",
+    "Several matches at once": "여러 경기 동시 진행",
+    "Room format:": "방 형식:",
+    "Tables...": "대전대...",
+    "Room tables": "방의 대전대",
+    "Table {table}: {players}": "대전대 {table}: {players}",
+    "Empty table": "빈 대전대",
+    "Available: {names}": "대전 가능: {names}",
+    "Away: {names}": "자리 비움: {names}",
+    "Table:": "대전대:",
+    "Player 1:": "플레이어 1:",
+    "Player 2:": "플레이어 2:",
+    "Set pair": "대진 지정",
+    "Watch table": "대전대 관전",
+    "Select two different available players.": "대전 가능한 서로 다른 플레이어 두 명을 선택하세요.",
+    "Select a table.": "대전대를 선택하세요.",
+    "Available to play": "대전 참가",
+    "You are away until you press Available to play.": "대전 참가를 누를 때까지 자리 비움 상태입니다.",
+    "You are available for a free table.": "빈 대전대에서 대전할 수 있습니다.",
+    "this server has no simultaneous room tables": "이 서버는 방 안에서 여러 대전대를 동시에 지원하지 않습니다",
+    # Casual first-to sets (1.2.0)
+    "the casual set goes on by itself": "캐주얼 세트는 자동으로 계속됩니다",
+    "FT{wins}": "FT{wins}",
+    "Casual sets:": "캐주얼 세트:",
+    "First to:": "목표 승수:",
+    "Older launchers play single games.": "이전 런처는 단판으로 진행합니다.",
+    "Casual set": "캐주얼 세트",
+    "Casual set vs {name}": "{name}님과 캐주얼 세트",
+    "CASUAL SET · FT{wins}": "캐주얼 세트 · FT{wins}",
+    "Leave set": "세트 나가기",
+    "Leave the casual set": "캐주얼 세트 나가기",
+    "Leave this casual set?\n\nCompleted games keep their results. No set penalty or rating change.": "이 캐주얼 세트에서 나가시겠습니까?\n\n완료된 게임의 결과는 유지됩니다. 세트 페널티나 레이팅 변동은 없습니다.",
+    "The casual set ended {mine}-{theirs}. Completed games keep their results; no rating change.": "캐주얼 세트가 {mine}-{theirs}로 종료되었습니다. 완료된 게임의 결과는 유지되며 레이팅은 변하지 않습니다.",
+    "first_to: 1, 2, 3, 5 or 10": "first_to: 1, 2, 3, 5 또는 10",
     # ---- launcher/controls_edit.py
     "Removed {sources} from your buttons: that is L2 / R2 at rest on a PlayStation pad, so the game held them all the time. Save to keep this.":
         "버튼에서 {sources}을(를) 뺐습니다: PlayStation 패드에서 L2 / R2를 놓은 상태라 게임이 계속 누른 것으로 처리했습니다. 유지하려면 저장하세요.",
@@ -556,7 +637,7 @@ MESSAGES = {
         "백업합니다). 온라인에서는 두 플레이어가 항상 같은 스테이지를 씁니다. Jinpachi와 Random은 캐주얼 매치와 방에서 쓸 수 있고, Ranked에서는 쓸 수 없습니다.",
     "Sound and start": "소리 및 시작",
     "Mute sound": "소리 끄기",
-    "Sound and taskbar flash when a match is found, I am challenged or invited, or someone joins my room": "매치가 잡히거나, 도전이나 초대를 받거나, 누군가 내 방에 들어오면 소리와 작업 표시줄 깜박임",
+    "Sound and taskbar flash for lobby notifications": "로비 알림 시 소리 및 작업 표시줄 깜박임",
     "Start minimized, without taking focus (for testing)": "최소화 상태로 포커스 없이 시작 (테스트용)",
     "Advanced: extra settings, one NAME=VALUE per line": "고급: 추가 설정, 한 줄에 하나씩 NAME=VALUE",
     "Internal resolution": "내부 해상도",
@@ -2213,6 +2294,8 @@ MESSAGES = {
         "관전",
     "Friends and room visitors may watch my online matches":
         "친구와 내 방 방문자가 내 온라인 매치를 관전할 수 있음",
+    "Automatically watch matches while idle":
+        "대기 중 자동으로 매치 관전",
     "Also my ranked matches":
         "Ranked 매치도 허용",
     "They see the match a few seconds late, in their own game. Only when both players allow it; a "
@@ -2451,6 +2534,7 @@ MESSAGES = {
     "Casual L": "일반 패",
     "Casual W": "일반 승",
     "Challenge withdrawn: a match started.": "도전이 철회되었습니다: 매치가 시작되었습니다.",
+    "input delays above 2 frames need a newer launcher and server": "2프레임을 넘는 입력 지연은 더 새로운 런처와 서버가 필요합니다",
     "Delay: auto": "지연: 자동",
     "Delay: {frames}": "지연: {frames}",
     "Input delay {frames} (auto, from the ping)": "입력 지연 {frames} (자동, Ping 기준)",
@@ -2479,7 +2563,79 @@ MESSAGES = {
     # launcher Settings "Screen side" and the Online tab's casual row ("Always left", 1.1.9, casual matches only;
     # docs/NETPLAY.md)
     "Screen side": '화면 방향',
-    "Always see me on the left": '항상 내가 왼쪽에 보이게',
+    "As dealt": "배정된 대로",
+    "Always left": "항상 왼쪽",
+    "Always right": "항상 오른쪽",
+    "Casual matches only: show your fighter on the chosen side and swap left/right controls when mirrored. Ranked and Quick matches keep the dealt side. Offline: Versus previews the chosen side.":
+        "일반 매치 전용: 선택한 쪽에 내 캐릭터를 표시하고 화면 반전 시 좌우 조작도 바꿉니다. Ranked와 Quick Match는 배정된 쪽을 유지합니다. 오프라인: Versus에서 선택한 쪽을 미리 볼 수 있습니다.",
+    "Graphics compatibility warning": "그래픽 호환성 경고",
+    "Could not stop the shader warm-up": "셰이더 워밍업을 중지하지 못했습니다",
+    "This PC lists older Intel graphics ({gpus}). Intel HD 4400-class graphics may lack a working Direct3D 12 driver and may not run the game. Building the game does not add graphics support. If this PC has another graphics card, select it in Windows Graphics settings. Continue building?":
+        "이 PC에서 구형 Intel 그래픽({gpus})이 감지되었습니다. Intel HD 4400급 그래픽은 정상 작동하는 Direct3D 12 드라이버가 없어 게임을 실행하지 못할 수 있습니다. 게임을 빌드해도 그래픽 지원이 추가되지는 않습니다. 다른 그래픽 카드가 있다면 Windows 그래픽 설정에서 선택하세요. 빌드를 계속할까요?",
+    "Launcher button bindings and macros take priority over the game's Controller Setup. Set them in Settings > Set up controllers… in the launcher.":
+        "런처의 버튼 배정과 매크로가 게임의 Controller Setup보다 우선합니다. 런처의 설정 > 컨트롤러 설정…에서 변경하세요.",
     "Casual matches only (challenges, friends' invites, rooms): when you are P2, your screen shows the fight mirrored with you on the left, and your left and right are swapped. Your opponent sees the normal picture. Ranked and Quick matches stay as they are. Offline: Versus fights show the P2 side.":
         '일반 매치에서만 (도전, 친구 초대, 방): P2일 때 내 화면에서 대전이 좌우 반전되어 내가 왼쪽에 보이고, 좌우 입력도 바뀝니다. 상대는 평소 화면을 봅니다. Ranked 매치와 Quick Match는 그대로입니다. 오프라인: Versus 대전은 P2 쪽 화면으로 보입니다.',
+    # Replay folder in Settings (docs/REPLAYS.md)
+    "Replay folder":
+        "리플레이 폴더",
+    "Choose an existing folder for new replays. Leave this empty to use the default. Old replays stay where they are unless you choose to move them.":
+        "새 리플레이를 저장할 기존 폴더를 선택하세요. 비워 두면 기본 폴더를 사용합니다. 옮기기를 선택하지 않으면 기존 리플레이는 원래 위치에 남습니다.",
+    "Browse...":
+        "찾아보기...",
+    "Use default folder":
+        "기본 폴더 사용",
+    "Apply folder":
+        "폴더 적용",
+    "Using replay folder: {folder}":
+        "사용 중인 리플레이 폴더: {folder}",
+    "Move existing replays from {source} to {destination}? Choose No to leave them where they are.":
+        "기존 리플레이를 {source}에서 {destination}(으)로 옮길까요? 원래 위치에 두려면 아니요를 선택하세요.",
+    "Moved {moved} replay file(s). {retained} file(s) remain in {source}; existing files were not replaced.":
+        "리플레이 파일 {moved}개를 옮겼습니다. 파일 {retained}개는 {source}에 남아 있습니다. 기존 파일은 덮어쓰지 않았습니다.",
+    "Could not move replays: {error}. The original files have been kept.":
+        "리플레이를 옮길 수 없습니다: {error}. 원본 파일은 보존되었습니다.",
+    "Close the running game before changing the replay folder.":
+        "리플레이 폴더를 변경하기 전에 실행 중인 게임을 종료하세요.",
+    "Replay folder {folder} is missing or is not writable. Using the default folder: {default}.":
+        "리플레이 폴더 {folder}가 없거나 쓸 수 없습니다. 기본 폴더를 사용합니다: {default}.",
+    "The default replay folder {folder} is not writable. Replays cannot be saved there.":
+        "기본 리플레이 폴더 {folder}에 쓸 수 없습니다. 이 폴더에는 리플레이를 저장할 수 없습니다.",
+    "Community room": "커뮤니티 방",
+    "Next turn in {seconds} s.": "다음 차례까지 {seconds}초.",
+    "Waiting for your turn. Room rotation continues.": "차례를 기다리는 중입니다. 방의 순환 규칙이 계속됩니다.",
+    "Sitting out. Choose Back in line to take a turn.": "쉬는 중입니다. 다시 참가하려면 다시 줄 서기를 선택하세요.",
+    "Rematch starts in {seconds} s unless you decline.": "거절하지 않으면 {seconds}초 후 재대결합니다.",
+    "invalid rematch policy": "잘못된 재대결 규칙입니다",
+    "auto_skip_after_round must be boolean": "건너뛰기 옵션은 켜기 또는 끄기로 지정해야 합니다",
+    "rematch rules require an updated launcher": "재대결 규칙을 사용하려면 런처를 업데이트하세요",
+    "rematch rules require a classic casual room": "재대결 규칙은 일반 캐주얼 방에서 사용할 수 있습니다",
+    "round skips require an updated launcher": "라운드를 건너뛰려면 런처를 업데이트하세요",
+    "Rematch starts automatically unless you decline.": "거절하지 않으면 자동으로 재대결합니다.",
+    "Both players must confirm the rematch.": "두 플레이어가 모두 재대결을 확인해야 합니다.",
+    "The rematch offer expired. Return to the lobby.": "재대결 제안 시간이 만료되었습니다. 로비로 돌아가세요.",
+    "Auto-skip replays and round endings (both players agree)": "리플레이와 라운드 종료 연출 자동 건너뛰기 (양쪽 동의)",
+    "Rematch rule:": "재대결 규칙:",
+    "Both players confirm": "두 플레이어 모두 확인",
+    "Start automatically unless declined": "거절하지 않으면 자동 시작",
+    "Skip replays after rounds (both players must agree)": "라운드 후 리플레이 건너뛰기 (양쪽 동의 필요)",
+    "this server has no in-game rematch": "이 서버는 게임 내 재대결을 지원하지 않습니다",
+    # Server chat-filter notices (1.2.0).
+    "Message blocked: hate terms are not allowed.": "메시지가 차단되었습니다. 혐오 표현은 허용되지 않습니다.",
+    "This name is not allowed.": "이 이름은 사용할 수 없습니다.",
+    "This room name is not allowed.": "이 방 이름은 사용할 수 없습니다.",
+    "Chat is muted for this account.": "이 계정의 채팅은 음소거되었습니다.",
+    "Cannot load the chat filter. Check T5L_CHAT_FILTER_PATH.": "채팅 필터를 불러올 수 없습니다. T5L_CHAT_FILTER_PATH를 확인하세요.",
+    # Personal player mutes (1.2.0).
+    "Muted players...": "음소거한 플레이어...",
+    "Muted players": "음소거한 플레이어",
+    "Mute": "음소거",
+    "Unmute": "음소거 해제",
+    "Muted {name}.": "{name} 님을 음소거했습니다.",
+    "Unmuted {name}.": "{name} 님의 음소거를 해제했습니다.",
+    "Mute hides their lobby, room and private chat, mentions and invites for you. You can still play together. Block also prevents matches and ends friendship. Accounts remember mutes on this server; guests remember them on this device.": "음소거하면 해당 플레이어의 로비, 방 및 개인 채팅, 멘션과 초대가 내게 표시되지 않습니다. 함께 대전할 수는 있습니다. 차단하면 대전도 막고 친구 관계도 해제합니다. 계정의 음소거 설정은 이 서버에, 게스트의 설정은 이 기기에 저장됩니다.",
+    "Mute hides this player's chat, mentions and invites for you. Block also prevents matches and private messages.": "음소거하면 이 플레이어의 채팅, 멘션과 초대가 내게 표시되지 않습니다. 차단하면 대전과 개인 메시지도 막습니다.",
+
+    "Personal mute is unavailable on this server.": "이 서버에서는 개인 음소거를 사용할 수 없습니다.",
+    "Chat is muted until {until}.": "채팅이 {until}까지 음소거됩니다.",
 }

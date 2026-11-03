@@ -6,8 +6,8 @@
 * Several challenges at once (a 1.1.9 server: up to five, to different players): the first one accepted starts the
   match and the server withdraws the others; both sides of each see it.
 * The input delay of a casual challenge: the challenger picks Auto (from the ping; the box shows what Auto gives for
-  the selected player) or 0 / 1 / 2 frames; the challenged player sees it on the card before accepting, and the match
-  (and its rematches) use it on both PCs.
+  the selected player) or 0 through 8 frames (0 through 2 on an older server); the challenged player sees it on the
+  card before accepting, and the match (and its rematches) use it on both PCs.
 * The player list sorts by ping, rank, name or status (click the column's heading; the choice is kept in
   online.json); players you cannot play right now -- in a match, another version, no connection to the lobby
   server's UDP -- come below the others, under a line of their own.
@@ -15,12 +15,14 @@
   ranked_losses, casual_wins, casual_losses; an older server: the one Record column as before), every column
   sortable by its heading.
 """
+import math
 import tkinter as tk
 from tkinter import ttk
 
 from .i18n import N_, t
 
-DELAY_CHOICES = ("auto", "0", "1", "2")              # the Settings tab's choices (server: CHALLENGE_DELAYS)
+DELAY_CHOICES = ("auto",) + tuple(str(n) for n in range(9))  # server: CHALLENGE_DELAYS; Settings stays separate
+LEGACY_DELAY_CHOICES = DELAY_CHOICES[:4]
 PLAYER_SORTS = {"player": "name", "rank": "rank", "status": "status", "ping": "ping"}    # heading -> sort key
 STATUS_ORDER = {"idle": 0, "queue": 1, "room": 2, "match": 3, "playing": 4}
 AWAY = "sep:away"                                    # the line between the players you can and cannot play now
@@ -39,11 +41,16 @@ END_TEXT_IN = {"cancelled": N_("{name} took back the challenge."),
                "withdrawn": N_("The challenge from {name} was withdrawn: a match started.")}
 
 
-def auto_delay(ms):
+def auto_delay(ms, extended=False):
     """The input delay the games pick by themselves for a round trip of `ms` (docs/NETPLAY.md "Input delay": 1 frame up
-    to 60 ms, 2 above; the lobby server's default T5L_PING_DELAYS: 3 above 150 ms, 4 above 250). None: not known."""
+    to 60 ms, 2 above; the lobby server's default T5L_PING_DELAYS: 3 above 150 ms, 4 above 250). New-cap challenges
+    use 1 through 8, stepping above 60, 100, 150, 200, 250, 300 and 350 ms. None: not known."""
     if not isinstance(ms, (int, float)):
         return None
+    if extended:
+        if isinstance(ms, bool) or not math.isfinite(ms) or ms < 0:
+            return None
+        return 1 + sum(ms > threshold for threshold in (60, 100, 150, 200, 250, 300, 350))
     if ms > 250:
         return 4
     if ms > 150:
@@ -89,6 +96,18 @@ class ChallengesUI:
         c = self.client
         return c is not None and hasattr(c, "multi_challenge_ok") and c.multi_challenge_ok()
 
+    def delay_choices(self):
+        c = self.client
+        tree = getattr(self.tab, "tv_players", None)
+        sel = tree.selection() if tree is not None else ()
+        pid = sel[0] if sel and sel[0] != AWAY else None
+        extended = c is not None and hasattr(c, "challenge_delay_max") and c.challenge_delay_max(pid) == 8
+        return DELAY_CHOICES if extended else LEGACY_DELAY_CHOICES
+
+    def effective_delay(self):
+        """Keep a remembered high choice, but show and send Auto where the server or opponent cannot take it."""
+        return self.delay if self.delay in self.delay_choices() else "auto"
+
     # ------------------------------------------------------------------ widgets (tk_views' lobby page)
     def build_tools(self, tools, px):
         """The input delay box left of Challenge (hidden on a server that does not take it)."""
@@ -116,19 +135,19 @@ class ChallengesUI:
     def _choice_labels(self):
         auto = self._auto_for
         first = t("Delay: auto") + (f" ({auto})" if auto is not None else "")
-        return [first] + [t("Delay: {frames}", frames=n) for n in DELAY_CHOICES[1:]]
+        return [first] + [t("Delay: {frames}", frames=n) for n in self.delay_choices()[1:]]
 
     def _fill_delay(self):
         if self.delay_cb is None:
             return
         labels = self._choice_labels()
         self.delay_cb.configure(values=labels)
-        self.delay_var.set(labels[DELAY_CHOICES.index(self.delay)])
+        self.delay_var.set(labels[self.delay_choices().index(self.effective_delay())])
 
     def _delay_chosen(self):
         labels = list(self.delay_cb.cget("values"))
         v = self.delay_var.get()
-        self.delay = DELAY_CHOICES[labels.index(v)] if v in labels else "auto"
+        self.delay = self.delay_choices()[labels.index(v)] if v in labels else "auto"
         self.tab.cfg["challenge_delay"] = self.delay
         self.tab._save_cfg()
 
@@ -141,15 +160,14 @@ class ChallengesUI:
         ms = None
         if sel:
             ms = (getattr(self.tab, "_list_rtt", {}) or {}).get(sel[0], (None, False))[0]
-        auto = auto_delay(ms)
-        if auto != self._auto_for:
-            self._auto_for = auto
-            self._fill_delay()
+        self._auto_for = auto_delay(ms, extended=self.delay_choices() == DELAY_CHOICES)
+        self._fill_delay()                         # equal pings can still have different supported choices
 
     def refresh(self):
         """After a login / logout and every change of the tab's buttons: the delay box only where it counts."""
         if self.delay_cb is None:
             return
+        self.selection_changed()
         on = self.multi_ok()
         if on and not self.delay_cb.winfo_manager():
             self.delay_cb.pack(side="left", padx=(0, self._px(6)), before=self.tab.actions["challenge"])
@@ -169,6 +187,8 @@ class ChallengesUI:
             d = delay_text(c.get("delay"))
             if d:
                 text += "  --  " + t("input delay {delay}", delay=d)
+            if c.get("first_to"):
+                text += "  --  " + t("FT{wins}", wins=c["first_to"])
             ttk.Label(self.rows, text=text, style="Card.TLabel").grid(row=i, column=0, sticky="w", pady=(px(3), 0))
             ttk.Button(self.rows, text=t("Cancel"), style="Card.Small.TButton",
                        command=lambda cid=cid: self.cancel(cid)).grid(row=i, column=1, sticky="e", pady=(px(3), 0))
@@ -190,8 +210,10 @@ class ChallengesUI:
             tab.status(t("You challenged that player already: your open challenges are under the list."))
             return
         name = self._name_of(pid)
-        delay = None if self.delay == "auto" or not self.multi_ok() else int(self.delay)
-        tab.call(tab.client.send_challenge, pid, delay, then=lambda r: self._sent(r, pid, name))
+        choice = self.effective_delay()
+        delay = None if choice == "auto" or not self.multi_ok() else int(choice)
+        first_to = getattr(getattr(tab, "casual", None), "first_to", 1)
+        tab.call(tab.client.send_challenge, pid, delay, first_to, then=lambda r: self._sent(r, pid, name))
 
     def _name_of(self, pid):
         for p in (getattr(self.tab, "_last_lobby", None) or {}).get("players", []):
@@ -211,7 +233,8 @@ class ChallengesUI:
         if state is not None:                 # (answered before the reply was read)
             self._ended_out(state, name)
             return
-        self.out[cid] = {"pid": pid, "name": name, "delay": delay}
+        self.out[cid] = {"pid": pid, "name": name, "delay": delay,
+                         "first_to": r.get("first_to") if isinstance(r, dict) else None}
         self._show_open()
         self.tab.relist()
 
@@ -262,12 +285,13 @@ class ChallengesUI:
 
     def card_line(self, ev):
         """The challenge card's line about the input delay (the challenged player, before the answer); '' if none."""
-        d = ev.get("delay") if isinstance(ev, dict) else None
-        if not isinstance(d, dict) or d.get("frames") is None:
-            return ""
-        if d.get("auto"):
-            return t("Input delay {frames} (auto, from the ping)", frames=d["frames"])
-        return t("Input delay {frames} (chosen by the challenger)", frames=d["frames"])
+        ev = ev if isinstance(ev, dict) else {}
+        lines = [t("FT{wins}", wins=ev["first_to"])] if ev.get("first_to") else []
+        d = ev.get("delay")
+        if isinstance(d, dict) and d.get("frames") is not None:
+            lines.append(t("Input delay {frames} (auto, from the ping)", frames=d["frames"]) if d.get("auto") else
+                         t("Input delay {frames} (chosen by the challenger)", frames=d["frames"]))
+        return " -- ".join(lines)
 
     # ------------------------------------------------------------------ the player list
     def order_players(self, entries, me_id):
@@ -297,12 +321,12 @@ class ChallengesUI:
         return rows
 
     @staticmethod
-    def playable(p, me, mine_build):
+    def playable(p, me, mine_build, compatible_build=None):
         """Can this player be played right now (challenge, invite, their room)? Not: in a match, another version,
         nothing known of their connection to the lobby server (no UDP: unreachable)."""
         if me and p.get("id") == me.get("id"):
             return True
-        if p.get("build") != mine_build:
+        if not (p.get("build") == mine_build if compatible_build is None else compatible_build):
             return False
         if p.get("status") in ("match", "playing"):
             return False

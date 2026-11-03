@@ -5,7 +5,10 @@ fight with themselves on the left. No game needed.
   offline Versus; never the attract demo, a replay or outside a fight) and the input mapping (left <-> right,
   stick X mirrored, nothing else).
 * tests/c/always_left_render_test.c (ps3recomp patch 0086, libs/video/rsx_always_left.h, taken from the patch
-  itself): the vertex program run on the CPU, and the HUD laid out mirrored with strings kept readable.
+  itself): the vertex program run on the CPU, stable half-width HUD translation from the first frame,
+  picture-copy geometry and bounded scissor shifts; mixed-side batches remain unverified.
+  Synthetic scissored bars check the issue-31 diagnostic marker on both sides, full/damaged/draining bars,
+  and the absence of that marker for centred/empty draws; these checks do not prove a game display fix.
   With a patched ps3recomp tree (PS3RECOMP_DIR) the test program is also checked against the runtime's
   decompiler.
 * The wiring: the swap is in the exchanged local sample (both PCs simulate the same input), the frame hook
@@ -115,9 +118,57 @@ class Renderer(unittest.TestCase):
         self.assertEqual(sorted(files), ["libs/video/rsx_always_left.h", "libs/video/rsx_live_draw.c",
                                          "libs/video/rsx_live_draw.h"])
         self.assertIn("void rsx_live_draw_set_always_left(int on)", body)
-        # off unless the game asks: every change sits behind g_al.active or its request
-        self.assertIn("if (g_al.active || g_al_req) ld_al_draw(", body)
+        # The off-by-default trace can inspect ordinary draws too; actual placement still requires the HUD gate.
+        self.assertRegex(body, r"if \(g_al.active \|\| g_al_req \|\| ld_al_trace_enabled\(\)\)\s+ld_al_draw\(")
         self.assertIn("(al_mirror || al_dx_px != 0.0f)", body)
+
+    def test_scissor_trace_uses_actual_scissor_and_does_not_change_placement(self):
+        """Source-only wiring check: no compiler, external runtime tree, game, or server is consulted."""
+        body = "\n".join(l[1:] for l in self.patch.splitlines() if l.startswith("+") and not l.startswith("+++"))
+        trace = re.search(r"static void ld_al_trace_scissor\(.*?\n\}\n", body, re.S)
+        self.assertIsNotNone(trace)
+        trace = trace.group(0)
+        self.assertIn("if (!g_al_trace.enabled) return;", trace)
+        self.assertIn("al_quad q = g_al_trace.raw;", trace)
+        self.assertRegex(trace, r"al_hud_clip\(&h, &q, \(float\)before->left, \(float\)before->top,\s*"
+                                r"\(float\)before->right, \(float\)before->bottom\)")
+        self.assertIn("al_hud_side_clipped_center(&g_al_trace.raw, &q)", trace)
+        self.assertIn("side_clipped_center=%d", trace)
+        self.assertNotIn("al_hud_place(", trace)
+        self.assertNotIn("al_hud_note(", trace)
+        self.assertNotRegex(trace, r"(?:before|after)->\w+\s*=(?!=)")
+        self.assertNotRegex(trace, r"g_al_trace\.raw\s*=")
+        # The clipped COPY appears only in this diagnostic; the layout and transform keep the original q.
+        draw = re.search(r"static void ld_al_draw\(.*?\n\}\n", body, re.S)
+        self.assertIsNotNone(draw)
+        draw = draw.group(0)
+        self.assertNotIn("al_hud_clip(", draw)
+        self.assertIn("const int hud = want && g_al.active && g_al.copy_seen;", draw)
+        self.assertIn("al_hud_place(&g_al.hud, &q, &m)", draw)
+        self.assertIn("al_hud_note(&g_al.hud, &q)", draw)
+        self.assertLess(draw.index("g_al_trace.raw = q;"), draw.index("al_hud_place("))
+        # Capture the renderer's already-computed scissor before mirror/move, then trace before host scaling.
+        capture = self.patch.index("+    const D3D12_RECT al_sc_before = sc;")
+        transform = self.patch.index("+    if ((al_mirror || al_dx_px != 0.0f)")
+        emit = self.patch.index("+    if (ld_al_trace_enabled()) ld_al_trace_scissor(&al_sc_before, &sc,")
+        scale = self.patch.index("     if (tscale != 1.0f)", emit)
+        self.assertLess(capture, transform)
+        self.assertLess(transform, emit)
+        self.assertLess(emit, scale)
+
+    def test_scene_copy_requires_evaluated_geometry_and_actual_texture_reads(self):
+        added = "\n".join(l[1:] for l in self.patch.splitlines() if l.startswith("+") and not l.startswith("+++"))
+        start = added.index("static void ld_al_draw(")
+        draw = added[start:added.index("\n}\n", start)]
+        # A stale render-target binding cannot identify the copy on its own. Use the current FP's
+        # actual TEX instructions even on tier 2 (its cached descriptor mask is intentionally all).
+        self.assertIn("rsx_fp_texture_mask(fp, g_ld_current_pso.fp_size)", draw)
+        self.assertRegex(draw, r"if \(\(reads & 1u\) && t0\.enabled && al_picture_quad\(")
+        self.assertLess(draw.index("al_vp_eval("), draw.index("al_picture_quad("))
+        self.assertIn("xy[k][0] = x; xy[k][1] = y;", draw)
+        self.assertIn("if (!((reads >> t) & 1u)) continue;", draw)
+        # Guest scissors must be clipped before the unsigned host-pixel scaling in the renderer.
+        self.assertIn("al_clip_scissor(W, al_dx_px, al_mirror, &l, &rr);", added)
 
     def test_series_order(self):
         names = sorted(n for n in os.listdir(os.path.join(ROOT, "patches", "ps3recomp")) if n.endswith(".patch"))
@@ -144,11 +195,11 @@ class Wiring(unittest.TestCase):
 
     def test_game_side_writes_only_the_pad_data_the_game_reads(self):
         src = text("src", "netplay", "always_left.cpp").replace("\r\n", "\n")
-        # writes: only port 2's pad data the game asked for (inside t5_always_left_pad_fix)
+        # Writes: only the selected mirrored port's requested pad data.
         start = src.index('extern "C" void t5_always_left_pad_fix')
         fn = src[start:src.index("\n}\n", start)]
         self.assertEqual(src.count("wr16("), fn.count("wr16(") + 1)   # + its definition
-        self.assertIn("port != 1", fn)
+        self.assertIn("port != g_mirrored_port.load(std::memory_order_relaxed)", fn)
         self.assertNotIn("wr32(", src)
         # both offline pad hooks mirror port 2 through it; the direct fight's menu inject does not
         df = text("src", "directfight", "df_hooks.cpp").replace("\r\n", "\n")
@@ -168,32 +219,59 @@ class Setting(unittest.TestCase):
                 json.dump(saved, f)
         return p
 
-    def test_off_by_default_on_gives_env(self):
+    def test_as_dealt_by_default_and_choices_give_session_env(self):
         s = core.Settings(self.path())
-        self.assertFalse(s["always_left"])
-        self.assertNotIn("T5_ALWAYS_LEFT", s.env_overrides())
-        s["always_left"] = True
-        self.assertEqual(s.env_overrides()["T5_ALWAYS_LEFT"], "1")
+        self.assertEqual(s["screen_side"], "dealt")
+        self.assertEqual(s.env_overrides()["T5_SCREEN_SIDE"], "dealt")
+        for side in ("dealt", "left", "right"):
+            s["screen_side"] = side
+            self.assertEqual(s.env_overrides()["T5_SCREEN_SIDE"], side)
 
     def test_saved_and_loaded(self):
         p = self.path()
         s = core.Settings(p)
-        s["always_left"] = True
+        s["screen_side"] = "right"
         s.save()
-        self.assertTrue(core.Settings(p)["always_left"])
-        self.assertEqual(core.Settings(p).env_overrides()["T5_ALWAYS_LEFT"], "1")
+        self.assertEqual(core.Settings(p)["screen_side"], "right")
+        self.assertEqual(core.Settings(p).env_overrides()["T5_SCREEN_SIDE"], "right")
+
+    def test_old_checkbox_migrates_but_new_choice_wins(self):
+        for legacy, expected in ((False, "dealt"), (True, "left")):
+            s = core.Settings(self.path({"always_left": legacy}))
+            self.assertEqual(s["screen_side"], expected)
+        s = core.Settings(self.path({"always_left": True, "screen_side": "right"}))
+        self.assertEqual(s["screen_side"], "right")
+
+    def test_invalid_choice_fails_closed(self):
+        for invalid in ("unknown", "", None, True, ["left"], {"side": "right"}):
+            s = core.Settings(self.path({"always_left": True, "screen_side": invalid}))
+            self.assertEqual(s["screen_side"], "dealt")
+            self.assertEqual(s.env_overrides()["T5_SCREEN_SIDE"], "dealt")
+            self.assertFalse(s["always_left"])
+
+    def test_save_synchronizes_legacy_checkbox(self):
+        import json
+        s = core.Settings(self.path())
+        for side in ("left", "right", "dealt"):
+            s["screen_side"] = side
+            s.save()
+            with open(s.path, encoding="utf-8") as f:
+                saved = json.load(f)
+            self.assertEqual(saved["screen_side"], side)
+            self.assertEqual(saved["always_left"], side == "left")
 
     def test_problem_report(self):
         self.assertIn("always_left", report.SETTING_KEYS)
         lines = report.settings_lines({"always_left": True})
         self.assertIn("Always see me on the left (casual matches): yes", lines)
 
-    def test_launcher_has_the_checkbox(self):
+    def test_launcher_has_three_screen_side_choices(self):
         ui = text("launcher", "t5dr_launcher.pyw")
-        self.assertIn('t("Always see me on the left")', ui)
-        self.assertIn('self.settings["always_left"] = bool(self.always_left_var.get())', ui)
-        self.assertIn("t(core.ALWAYS_LEFT_HELP)", ui)
-        self.assertIn("Casual matches only", core.ALWAYS_LEFT_HELP)
+        self.assertIn("screen_side_var", ui)
+        self.assertIn('self.settings["screen_side"]', ui)
+        labels = text("launcher", "core.py") + ui
+        for choice in ("As dealt", "Always left", "Always right"):
+            self.assertIn(f'"{choice}"', labels)
 
 
 LOBBY = os.path.join(ROOT, "lobby")
@@ -246,7 +324,25 @@ class CasualOnly(unittest.TestCase):
         self.assertIn('t5_env("T5_ALWAYS_LEFT")', src)
         self.assertIn('t5_env("T5_NET_CASUAL")', src)
         hdr = text("src", "netplay", "always_left.h")
-        self.assertIn("return f.local_slot == 1 && f.casual;", hdr)
+        self.assertIn("f.casual", hdr)
+        self.assertIn("f.side == Side::Right ? 0 : 1", hdr)
+        self.assertIn('t5_env("T5_SCREEN_SIDE")', src)
+
+    def test_every_match_gets_three_way_choice_and_clear(self):
+        from t5lobby.handover import MatchTicket
+        from t5lobby.match_driver import MatchDriver
+        d = tempfile.mkdtemp(prefix="t5dr-side")
+        self.addCleanup(shutil.rmtree, d, True)
+        choice = ["right"]
+        drv = MatchDriver(client=None, launch=lambda env: None, workdir=d, mode="process",
+                          screen_side=lambda: choice[0])
+        ticket = MatchTicket(match_id="m", role="host", slot=0, local_port=1, peer=("127.0.0.1", 2),
+                             path="lan", rtt_ms=0.0, jitter_ms=0.0, delay=2, casual=True)
+        for side in ("right", "left", "dealt", "unknown"):
+            choice[0] = side
+            env = drv.match_env({}, ticket)
+            self.assertEqual(env["T5_SCREEN_SIDE"], side if side != "unknown" else "dealt")
+            self.assertEqual(env["T5_ALWAYS_LEFT"], "1" if side == "left" else "0")
 
 
 if __name__ == "__main__":

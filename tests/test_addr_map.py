@@ -89,7 +89,20 @@ class AddrMap(unittest.TestCase):
             keys = sorted(dmap)
             self.assertIn("-> 00020104  inside function 00010100 (+0x4), matched", m.look(0x10104, U, E, fmap, dmap, keys))
             self.assertIn("which has no match", m.look(0x10304, U, E, fmap, dmap, keys))
-            self.assertIn("-> 1007E108?  hint", m.look(0x10091008, U, E, fmap, dmap, keys))
+            self.assertIn("-> ?  no direct data pair", m.look(0x10091008, U, E, fmap, dmap, keys))
+            row, = m.review_rows([0x10091008], U, fmap, dmap)
+            self.assertEqual(row[1:3], ("", "unresolved"))
+
+    def test_tied_data_evidence_is_missing_not_first_candidate(self):
+        from types import SimpleNamespace
+        from unittest import mock
+        m = load_tool("addr_map")
+        us = SimpleNamespace(info={1: (1, None, []), 2: (1, None, [])})
+        eu = SimpleNamespace(info={3: (1, None, []), 4: (1, None, [])})
+        def addresses(p, start, n):
+            return {0: {1: 0x10000, 2: 0x10000, 3: 0x20000, 4: 0x30000}[start]}
+        with mock.patch.object(m, "addresses", addresses):
+            self.assertEqual(m.pair_data(us, eu, {1: 3, 2: 4}), {})
 
 
 if __name__ == "__main__":

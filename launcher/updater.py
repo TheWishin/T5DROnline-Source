@@ -1,12 +1,14 @@
 r"""Updates: the launcher offers new releases and installs them itself, like Tekken 6 Native Online
 ("The launcher offers the update; the game is then updated by itself in a few seconds").
 
-    python launcher/updater.py --check            the public repository's latest release (diagnostics)
+    python launcher/updater.py --check            the latest release (diagnostics)
     pythonw <runner>/t5dr_update.py --apply PLAN  the swap step; the launcher starts it (5. below)
 
 1. Check. At every start (1.1.7; before, an answer up to an hour old was reused) and from the
-   "Check for updates" button, the latest *published* release of the public repository is read with
-   GitHub's REST API, unauthenticated (60 requests an hour per address). The request is conditional
+   "Check for updates" button, the public lobby is asked first (hello only, no login or game needed).
+   Its optional welcome.latest_release is the published release metadata cached by the server for
+   `t5lobby-admin release`. Missing, unavailable or unusable metadata falls back to GitHub's REST
+   API, unauthenticated (60 requests an hour per address). The GitHub request is conditional
    (the cached answer's ETag and Last-Modified, update-check.json next to launcher.json): an
    unchanged release is a 304, which does not count against that limit. That API never returns
    drafts, so a release the owner has not published yet (VirusTotal first) is never offered. No
@@ -108,11 +110,12 @@ RELEASE_PUBLIC_KEYS = (
 SIG_ASSET = "SHA256SUMS.sig"
 
 CHECK_INTERVAL = 3600            # how old a cached answer may be to stand in while GitHub rate-limits us
-START_CHECK_MS = 2000            # the check after the launcher's start (1.1.7: every start asks GitHub, conditionally)
+START_CHECK_MS = 2000            # the check after the launcher's start (lobby first, then GitHub conditionally)
 FREE_POLL_MS = 2000              # a found update waits for the build / game / match to end, looking this often
 CACHE_FILE = "update-check.json"
 CACHE_FORMAT = 3                 # 2: releases carry "sig" (1.1.2); 3: notes reflowed (1.1.7); older: asked again
 TIMEOUT = 15
+LOBBY_TIMEOUT = 3                # connection / hello each; failure quietly falls back to GitHub
 MAX_SUMS = 64 * 1024
 MAX_SIG = 4096
 MAX_ZIP = 1_000_000_000          # the zip is ~90 MB
@@ -387,13 +390,54 @@ def _write_json(path, data):
         pass
 
 
-def check_latest(cache_path, force=False, opener=None, now=None, max_age=0):
-    """(release or None, problem or None) -- never raises. GitHub is asked every time (1.1.7: 1.1.4's
-    launchers reused an hour-old answer and kept offering the withdrawn 1.1.5 after 1.1.6 was out), but
-    conditionally: with the cached answer's ETag and Last-Modified, so an unchanged release is a 304
-    that does not use up the 60 requests an hour. `max_age` > 0 reuses a younger answer without asking.
+def fetch_lobby_release(root=ROOT):
+    """Raw release metadata from the shipped default lobby's hello response, or None.
+
+    Use the same CA / certificate pin checks as online play. The public server list shipped with
+    the launcher is the update source; a player's friend servers do not change it. No login, game
+    files, UDP socket or router mapping is needed, and the temporary control connection is closed.
+    Errors are handled by check_latest, which falls back to GitHub without a new player message.
+    """
+    from t5lobby import servers
+    from t5lobby.buildid import BuildInfo
+    from t5lobby.client import LobbyClient
+    from t5lobby.proto import E_VERSION, LobbyError
+
+    entries, _ = servers.load_file(os.path.join(root, "lobby", "servers.json"))
+    entry = servers.default_entry(entries)
+    if entry is None:
+        return None
+    client = LobbyClient(build=BuildInfo("", "", local_version(root)),
+                         request_timeout=LOBBY_TIMEOUT, reconnect=0, **entry.client_kwargs())
+    try:
+        welcome = client.connect(timeout=LOBBY_TIMEOUT)
+        return welcome.get("latest_release") if isinstance(welcome, dict) else None
+    except LobbyError as e:
+        if e.code == E_VERSION:
+            # Servers with a build allowlist still refuse the synthetic, game-free build;
+            # their optional metadata lets this launcher update without admitting it to play.
+            return e.extra.get("latest_release")
+        raise
+    finally:
+        client.close()
+
+
+def check_latest(cache_path, force=False, opener=None, now=None, max_age=0, lobby_fetcher=None):
+    """(release or None, problem or None) -- lobby first, GitHub when it has no usable answer.
+
+    Both sources pass through parse_release and the same download / signature checks. Always ask
+    the lobby before consulting GitHub's rate limit or cache; its fresh answer can still work when
+    GitHub has limited this IP. A lobby answer never replaces GitHub's conditional cache or ETag.
+    GitHub fallback is conditional with the cached answer's ETag and Last-Modified.
+    `max_age` > 0 reuses a younger GitHub answer without asking GitHub.
     A rate limit is remembered until GitHub's reset time; meanwhile the cached answer stands in only
     when it is younger than CHECK_INTERVAL (a problem sentence for force, the button)."""
+    try:
+        data = (lobby_fetcher or fetch_lobby_release)()
+        if data is not None:
+            return parse_release(data), None
+    except Exception:           # noqa: BLE001 -- optional lobby lookup must never block GitHub fallback
+        pass
     now = time.time() if now is None else now
     opener = opener or open_url
     cache = _read_json(cache_path) or {}
@@ -1478,7 +1522,7 @@ def main(argv=None):
         return apply_plan(a.apply)
     if a.check:
         import tempfile
-        with tempfile.TemporaryDirectory() as d:           # no cache: always ask GitHub
+        with tempfile.TemporaryDirectory() as d:           # no cache: lobby first, then GitHub
             rel, problem = check_latest(os.path.join(d, CACHE_FILE), force=True)
         print(json.dumps({"local": local_version(), "latest": rel, "problem": problem,
                           "newer": bool(rel and is_newer(rel["version"], local_version()))}, indent=1))

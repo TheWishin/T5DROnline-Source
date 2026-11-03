@@ -1,6 +1,6 @@
 """The launcher's Replays tab (docs/REPLAYS.md): every recorded online match, Watch plays it in the game.
 
-The game writes the files (src/netplay/replay.cpp) into <native folder>/replays while a session runs; this
+The game writes the files (src/netplay/replay.cpp) into the chosen replay folder while a session runs; this
 tab lists one row per match (date, fighters, result, opponent), starts the game in playback mode for the
 selected one and shows the game's verdict when it ends: the same as the live match frame for frame (every
 recorded state hash and the result), or where it parted.
@@ -73,6 +73,9 @@ class ReplaysTab:
                         command=self._save).pack(side="left", padx=(16, 0))
         self.count_var = tk.StringVar(value="")
         ttk.Label(box, textvariable=self.count_var, style="Muted.TLabel").pack(anchor="w", pady=(6, 0))
+        self.folder_warning = tk.StringVar(value="")
+        ttk.Label(box, textvariable=self.folder_warning, style="warn.TLabel", wraplength=860,
+                  justify="left").pack(anchor="w", pady=(4, 0))
 
     # ------------------------------------------------------------------ data
     @property
@@ -89,7 +92,10 @@ class ReplaysTab:
         self.refresh()
 
     def refresh(self):
-        self.entries = replays.list_replays(self.folder) if os.path.isdir(self.folder) else []
+        folder, warning = self.app.settings.replay_dir_status()
+        self.folder_warning.set(warning)
+        self.entries = replays.list_replays(folder) if os.path.isdir(folder) else []
+        self._listed, self._listed_folder, self._read_at = self.entries, folder, time.time()
         self.tv.delete(*self.tv.get_children())
         for i, e in enumerate(self.entries):
             self.tv.insert("", "end", iid=str(i), values=(
@@ -101,7 +107,7 @@ class ReplaysTab:
             ))
         files = len({e.path for e in self.entries})
         self.count_var.set(t("{matches} match(es) in {files} file(s) in {folder}", matches=len(self.entries), files=files,
-                             folder=self.folder) if self.entries else t("No replays yet. Play an online match: it is saved here."))
+                             folder=folder) if self.entries else t("No replays yet. Play an online match: it is saved here."))
         self._buttons()
 
     @staticmethod
@@ -148,8 +154,10 @@ class ReplaysTab:
     # ------------------------------------------------------------------ the Online tab's match history (1.1.5)
     def entries_now(self, max_age=10.0):
         """Every replay on this PC, read again when the last reading is older than max_age seconds."""
-        if time.time() - getattr(self, "_read_at", 0.0) > max_age:
-            self._listed = replays.list_replays(self.folder) if os.path.isdir(self.folder) else []
+        folder = self.folder
+        if folder != getattr(self, "_listed_folder", None) or time.time() - getattr(self, "_read_at", 0.0) > max_age:
+            self._listed = replays.list_replays(folder) if os.path.isdir(folder) else []
+            self._listed_folder = folder
             self._read_at = time.time()
         return self._listed
 
@@ -265,5 +273,7 @@ class ReplaysTab:
         self.refresh()
 
     def open_folder(self):
-        os.makedirs(self.folder, exist_ok=True)
-        core.open_path(self.folder)
+        folder, warning = self.app.settings.replay_dir_status()
+        self.folder_warning.set(warning)
+        if os.path.isdir(folder):
+            core.open_path(folder)

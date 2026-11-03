@@ -119,8 +119,9 @@ def program_of(content_id=None, title_id=None):
     return None
 
 STEPS = ["deps", "keys", "decrypt", "unpack", "vfs", "lift", "spu", "compile", "shaders"]
-# "shaders" (1.1.5, tools/shader_warmup.py) runs only with --warmup (the launcher passes it) or when named in
+# "shaders" (tools/shader_warmup.py) runs only with --warmup or when named in
 # --steps: it starts the built game for a few minutes, which a developer's or CI build does not want.
+# The launcher schedules a shorter background warm-up after a successful build instead.
 DEFAULT_STEPS = [s for s in STEPS if s != "shaders"]
 
 
@@ -399,7 +400,7 @@ def patch_digest(d=None):
 
 # Bump when a change to the steps below changes what ends up in t5dr.exe (lifter
 # arguments, SPU handling, compile flags); messages and the like do not count.
-CODE_VERSION = 7   # 2: sound core lifted with SPU_CORE_EXTRA_FUNCS; 3: sound core with SPU_NEAR_FLOAT;
+CODE_VERSION = 11  # 2: sound core lifted with SPU_CORE_EXTRA_FUNCS; 3: sound core with SPU_NEAR_FLOAT;
                    # 4 (1.1.3): lifted code compiled with the PGO profile (tools/gamedll/t5dr_lifted.proftext);
                    # 5 (1.1.4 work): lifted PPU code with register promotion (ps3recomp patch 0066), compiled with
                    # -fno-finite-loops (build_game_dll.py);
@@ -407,6 +408,14 @@ CODE_VERSION = 7   # 2: sound core lifted with SPU_CORE_EXTRA_FUNCS; 3: sound co
                    # computes differently with random-unlock-114 (seeds, unlocks) and skip-114 (START gate);
                    # 7 (1.1.5): online training rooms (endless health) and the health handicap change what the
                    # game simulates online (src/netplay/match_rules.h)
+                   # 8 (1.2.0): online boot cover (src/directfight, src/training); source-only module changes
+                   # need a bump too, since code_id() does not hash src/. Old builds must not meet this one.
+                   # 9 (1.2.0 integrated draft): canonical costume bytes, rematch/skip rule agreement and
+                   # replay/runtime changes must also stay apart from the boot-cover-only draft (8).
+                   # 10 (1.2.0 integrated): screen-side input routing, frozen jitter-delay policy and
+                   # training shadow diagnostics require a rebuild of the previous integrated draft (9).
+                   # 11 (1.2.0 integrated): online START+SELECT suppression changes simulated pad input;
+                   # both peers must rebuild and use the same reset policy (src/netplay/no_pause.h).
 
 # Guest functions src/ detours: a macOS online build lifts them with hook slots (step_lift).
 HOOK_SLOTS = os.path.join(ROOT, "src", "rollback", "hook_slots.txt")

@@ -48,9 +48,10 @@
 #include <ctype.h>
 #include <string>
 #include <vector>
+#include <atomic>
 #include "df.h"
 #include "../netplay/match_score.h"   /* a decided match's score: the fighters' round counts */
-#include "../netplay/match_rules.h"   /* online training and the health handicap (train=, life=) */
+#include "../netplay/match_rules.h"   /* agreed simulation rules (train=, life=, auto_skip_after_round=) */
 
 extern "C" void t5_netplay_start(void);
 extern "C" int  t5_netplay_lockstep_active(void);
@@ -63,6 +64,7 @@ extern "C" void t5_netplay_session_end(const char* why);
 extern "C" const char* t5_netplay_take_session_lost(void);
 extern "C" void t5_netplay_give_up(const char* reason, const char* text);   /* src/netplay/t5_hooks.cpp: this side ends the session */
 extern "C" const char* t5_env(const char* key);
+extern "C" void t5_boot_cover_publish(void);   /* training.cpp: the shared presentation overlay */
 extern "C" void t5_netplay_pick_send(unsigned key, unsigned pick);
 extern "C" int  t5_netplay_pick_peer(unsigned key, unsigned* pick);
 extern "C" int  t5_netplay_connected(void);
@@ -236,7 +238,8 @@ std::string g_rules_default;
 bool parse_fight(const char* s0, Fight& out)
 {
     std::string line = s0 ? s0 : "";
-    if (!g_rules_default.empty() && line.find("train=") == std::string::npos && line.find("life=") == std::string::npos)
+    if (!g_rules_default.empty() && line.find("train=") == std::string::npos && line.find("life=") == std::string::npos &&
+        line.find("auto_skip_after_round=") == std::string::npos)
         line += " " + g_rules_default;
     const char* s = line.c_str();
     Fight f; f.text = s;
@@ -257,6 +260,10 @@ bool parse_fight(const char* s0, Fight& out)
         else if (_stricmp(k.c_str(), "ranks") == 0) ranks = cur.substr(eq + 1);
         else if (_stricmp(k.c_str(), "pick") == 0) { const int n = atoi(cur.substr(eq + 1).c_str()); f.pick = n < 0 ? 0 : n > 120 ? 120 : n; }
         else if (_stricmp(k.c_str(), "train") == 0) f.rules.training = atoi(cur.substr(eq + 1).c_str()) != 0;
+        /* Only the authoritative fight line chooses this rule. A local UI
+         * preference must never alter the simulated START sequence. */
+        else if (_stricmp(k.c_str(), "auto_skip_after_round") == 0)
+            f.rules.auto_skip_after_round = cur.substr(eq + 1) == "1";
         else if (_stricmp(k.c_str(), "life") == 0) {   /* life=P1|P2: each side's health in percent (the handicap) */
             const std::string v = cur.substr(eq + 1);
             const size_t bar = v.find('|');
@@ -445,6 +452,14 @@ bool read_fight_file(Fight& out)
  * screen, then the peer's pick is awaited; Select drives the peer's side). */
 enum class Ph { Boot, Title, Select, Stage, WaitGame, Fight, Over, Neutral, Reset, Leave, Pick, PickWait };
 Ph g_ph = Ph::Boot;
+/* Presentation only: the renderer reads this host atomic, never the guest's
+ * mode manager. Arm it during static registration, before the first picture.
+ * The driver's title, autosave, reader and sync-point paths stay unchanged. */
+bool g_boot_cover_enabled = false;   /* T5_ONLINE_FAST_BOOT=0/1; default: online processes */
+std::atomic<int> g_boot_cover{ 0 };
+bool g_boot_ready_last = false;   /* keep the cover through a whole ready frame before revealing */
+bool g_boot_fight_ready = false;  /* once revealed, later round transitions keep their normal picture */
+void boot_cover_update();
 uint32_t g_ph_frame = 0;        /* frame the phase began */
 uint32_t g_title_seen = UINT32_MAX;
 uint32_t g_fight_frame = 0;     /* frame the fight (game mode) started */
@@ -1114,6 +1129,34 @@ struct Pick {
 };
 Pick g_pick;
 
+void boot_cover_update()
+{
+    if (!g_boot_cover_enabled) return;
+    bool ready = false;
+    const bool fight = mode_manager() && (g_ph == Ph::Fight || g_ph == Ph::Over) && mode_cur() == kModeGame;
+    if (!fight) g_boot_fight_ready = false;
+    if (g_boot_cover_enabled && mode_manager() && mode_next() == kModeNone) {
+        /* Reveal only an interactive select that has actually begun taking
+         * input, or the loaded fight. FIGHT START is earlier (phase 7), and
+         * must not expose the loading/title picture while the peer catches up. */
+        if ((g_ph == Ph::Pick || g_ph == Ph::PickWait) && g_pick.live &&
+            mode_cur() == kModeSelect && rd32(kSelectState) == 3) ready = true;
+        if (fight && (g_boot_fight_ready || rd32(kSelectState) >= 17)) {
+            g_boot_fight_ready = true;
+            ready = true;
+        }
+    }
+    /* The frame boundary precedes the next game update/draw. Seeing readiness
+     * twice keeps the first ready frame covered through its draw. On release
+     * the overlay producer also drains the previous asynchronous present
+     * while black is still published (patch 0067 has one present in flight).
+     * No elapsed-time assumption, even on a starved CPU or a slow disk. */
+    const bool reveal = ready && g_boot_ready_last;
+    g_boot_ready_last = ready;
+    g_boot_cover.store(g_boot_cover_enabled && !reveal ? 1 : 0, std::memory_order_relaxed);
+    t5_boot_cover_publish();
+}
+
 /* Mirror matches: the select screen gives the SECOND of two confirms of the
  * same model the character's other costume (Steve Square 0x29 twice: the one
  * confirmed later becomes 0x2A). Which one is second must not depend on which
@@ -1429,6 +1472,7 @@ std::string rules_text()
     std::string o;
     char b[160];
     if (g_rules.training) o += ", training (endless health, no timer, SELECT held 1 s gives up)";
+    if (g_rules.auto_skip_after_round) o += ", agreed automatic after-round skip";
     snprintf(b, sizeof b, ", health P1 %d %% / P2 %d %% (handicap words %u / %u)", g_rules.life[0], g_rules.life[1],
              rd32(kLifeP1), rd32(kLifeP2));
     o += b;
@@ -1472,6 +1516,9 @@ void pick_fight_start(uint32_t f)
 void fight_on_frame(uint32_t f)
 {
     if (!g_configured) return;
+    /* Publish after every path, including a mode manager not yet found and
+     * an idle/reset command. No guest state or input depends on the cover. */
+    struct CoverAtFrameEnd { ~CoverAtFrameEnd() { boot_cover_update(); } } cover_at_frame_end;
     service_presses(f);
     const uint32_t mgr = mode_manager();
     if (!mgr) return;
@@ -1597,6 +1644,10 @@ void fight_on_frame(uint32_t f)
         }
         break; }
     case Ph::Stage:
+        /* Agree before confirming the stage, while the existing select hold
+         * can safely wait. Every fight (including a reused-session rematch)
+         * gets its own ordinal; an earlier acknowledgement cannot release it. */
+        if (session_netplay() && !np::verify_match_rules(g_session_matches + 1, g_cfg.rules.pack())) break;
         if (mode == kModeGame) { g_wait_setup = false; set_phase(Ph::WaitGame, "loading", f); break; }
         /* The stage confirm writes the panel's own pick (random, different on
          * the two PCs: fd_rematch showed 0x1d vs 0x11 for 50 frames in
@@ -1642,6 +1693,9 @@ void fight_on_frame(uint32_t f)
          * loading stays a sync point as before. The pads stay held meanwhile
          * (the driver's injection is still on). */
         if (mode == kModeGame && rd32(kSelectState) < 7 && f < g_ph_frame + 60) break;
+        /* Defensive check for paths which arrive in game mode without the
+         * stage-confirm phase; no counter/latch or input hold changes yet. */
+        if (session_netplay() && !np::verify_match_rules(g_session_matches + 1, g_cfg.rules.pack())) break;
         g_wait_setup = false;
         for (int p = 0; p < 2; p++) inject(p, false, 0);   /* (before lockstep: the hooks' own injection, cleared) */
         g_intro_hold = false;
@@ -1653,7 +1707,7 @@ void fight_on_frame(uint32_t f)
         g_over_wait = false;
         g_held = false;
         g_fight_frame = f;
-        g_rules = g_cfg.rules;   /* the training rule (t5_hooks.cpp) reads them from the next frame on */
+        g_rules = g_cfg.rules;   /* all simulation rules, fixed before netplay/replay frames begin */
         note("frame %u: FIGHT START match %u%s%s: %s vs %s, stage %d (field 0x%X), rounds %u, game type %u%s",
              f, g_match, g_cfg.match.empty() ? "" : " id ", g_cfg.match.c_str(), kName[g_cfg.chr[0]], kName[g_cfg.chr[1]],
              g_cfg.stage, rd32(kStageId), rd8(kRoundsToWin), rd32(kConfig), rules_text().c_str());
@@ -1866,6 +1920,8 @@ bool fight_configured() { return g_configured; }
 
 /* tests (T5_NET_SCRIPT_FIGHT): the scripted fight input applies only in a fight */
 extern "C" int t5_df_in_fight(void) { return df::g_ph == df::Ph::Fight ? 1 : 0; }
+/* Host-only presentation query: safe on a renderer thread, including boot. */
+extern "C" int t5_df_boot_cover(void) { return df::g_boot_cover.load(std::memory_order_relaxed); }
 /* the fight's rules (match_rules.h MatchRules::pack), latched at FIGHT START: the training rule in t5_hooks.cpp */
 extern "C" uint32_t t5_df_rules(void) { return df::g_rules.pack(); }
 /* Fights started in this netplay session (FIGHT START counts; a new session starts at 0): the same on
@@ -1902,6 +1958,17 @@ void fight_init()
     { const char* nm = getenv("T5_NET_MODE"); g_replay = nm && !_stricmp(nm, "replay") && !g_ctl; }
     if (!(fight && *fight) && !(file && *file) && !g_ctl && !g_replay) return;
     g_configured = true;
+    {
+        const char* nm = getenv("T5_NET_MODE");
+        const bool online = g_ctl || (nm && (!_stricmp(nm, "host") || !_stricmp(nm, "join")));
+        const char* sw = getenv("T5_ONLINE_FAST_BOOT");
+        /* Replay/local/offline boots keep their presentation by default.
+         * An explicit 1 also lets a spectator/replay hide its boot without
+         * inventing any input that was absent from the recorded session. */
+        g_boot_cover_enabled = sw && *sw ? *sw == '1' : online;
+        g_boot_cover.store(g_boot_cover_enabled ? 1 : 0, std::memory_order_relaxed);
+        t5_boot_cover_publish();
+    }
     { const char* r = getenv("T5_DF_RESET"); g_reset_titles = !(r && *r == '0'); }
     { const char* r = getenv("T5_DF_SELECT_RESTART"); g_restart_inplace = r && !strcmp(r, "inplace"); }
     { const char* k = getenv("T5_DF_SKIP"); g_skip = !(k && *k == '0'); }

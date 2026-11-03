@@ -40,6 +40,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 SHIM = os.path.join(HERE, "shim")   # pthread.h for Win32
 
 TESTS = [
+    ("vmx_soft2", ["@c/vmx_soft2_test.c"], ["runtime/ppu"],
+     ["/DPPU_VMX_SOFT2=1", "/clang:-ffp-contract=off", "/clang:-mno-fma"], 300,
+     "Experimental SSE2 VMX single FMA vs scalar, exact bits and aliased destinations (patch 0104)"),
     # name, sources, include dirs (ps3recomp-relative, or SHIM), extra flags, timeout (s), why
     ("spu_float", ["runtime/spu/tests/test_spu_float_neon.c"], ["runtime/spu"], ["-msse4.1"], 300,
      "SSE4.1 spu_fa/fs/fm/fma/fms/fnms bit-exact vs. scalar (patch 0003)"),

@@ -27,6 +27,7 @@ from collections import namedtuple
 from tkinter import ttk
 
 import controls_edit as ce
+from first_start import CONTROLS_HINT
 from controls_edit import N_, t  # noqa: F401  (N_ marks texts for translation)
 from controls_edit import DeviceRef
 from t5lobby import dialogs, padmap, padnav, theme
@@ -411,8 +412,13 @@ class ControlsDialog:
         ttk.Label(top, text=t("Controls"), style="H1.TLabel").grid(row=0, column=0, sticky="w", padx=16, pady=(12, 0))
         self.intro_var = tk.StringVar(value=t(
             "Press a button on a controller to pick it, then set its buttons. The game reads the file when it starts."))
-        ttk.Label(top, textvariable=self.intro_var, style="Muted.TLabel", wraplength=px(900), justify="left").grid(
-            row=1, column=0, sticky="we", padx=16, pady=(0, 6))
+        intro = ttk.Frame(top)
+        intro.grid(row=1, column=0, sticky="we", padx=16, pady=(0, 6))
+        intro.columnconfigure(0, weight=1)
+        ttk.Label(intro, textvariable=self.intro_var, style="Muted.TLabel", wraplength=px(900), justify="left").grid(
+            row=0, column=0, sticky="we")
+        ttk.Label(intro, text=t(CONTROLS_HINT), style="Muted.TLabel", wraplength=px(900), justify="left").grid(
+            row=1, column=0, sticky="we", pady=(4, 0))
 
         body = ttk.Frame(top)
         body.grid(row=2, column=0, sticky="nsew", padx=12)

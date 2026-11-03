@@ -49,7 +49,7 @@ struct Fight {
      * the 0x108 bytes the driver wrote into each side's VS custom data at FIGHT START (format 3) */
     bool costumes = false;
     uint8_t cos[2][0x108] = {};
-    /* the match's rules (format 5; match_rules.h MatchRules::pack): a training fight, the health handicap */
+    /* the match's rules (format 5/6; match_rules.h MatchRules::pack): training, handicap, agreed round skips */
     uint32_t rules = 0;
 };
 
@@ -107,7 +107,16 @@ bool play_select_mix();                             /* the select seed mixes the
  * Spectators: T5_REPLAY_FILE=<that file, growing> plays it like a replay; the
  * frame waits for the data (a buffer of T5_REPLAY_LIVE_BUFFER frames, default 120),
  * hashes and results are compared when the recorded ones come. */
+/* Formats 1..6 retain their original START/SELECT semantics. New recordings
+ * use format 7 / SESSION 3; a live match retains its policy across upgrades. */
+bool play_soft_reset_guard();
 bool play_live();                                   /* the playback reads a live stream */
+/* The hooks' local exit poll (SELECT / window close), also used inside live
+ * input and sync-point waits. It must end playback before returning true. */
+void play_set_quit_poll(bool (*quit)());
+/* Poll while the driver awaits its first/next fight without advancing replay
+ * frames. Non-null only when that missing fight can no longer arrive. */
+const char* play_poll_end();
 /* every playback frame boundary (main thread), after play_frame(): 0 = the viewer
  * quit while it waited (quit() polled), 1 = go on, 2 = go on after a wait */
 int  play_live_wait(uint32_t p, bool (*quit)());

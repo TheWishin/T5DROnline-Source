@@ -9,6 +9,8 @@
  *   al_hud_*          one frame's HUD is laid out mirrored in the next: a string keeps its letters in order and
  *                     moves as a whole to the mirrored place, a flipped pair (the bars' frames) is mirrored, a
  *                     lone quad moves by itself, a centred one stays.
+ *   al_hud_clip       diagnostics can distinguish a centred raw quad from its side-clipped visible fill,
+ *                     including separate damage/drain passes. The renderer's placement is unchanged.
  *
  * The programs are written for this test (the decompiler's encoding, rsx_vp_decompiler.c), not taken from the
  * game. With -DAL_WITH_DECOMPILER (a ps3recomp tree on the include path) the HUD program is also run through
@@ -306,9 +308,9 @@ static void test_hud(void)
     H.px_w = 640.0f; H.px_h = 360.0f;
     int m;
 
-    /* the first frame: nothing known yet, every quad goes to its own mirrored place */
+    /* The first frame needs no learned name bounds: every glyph in a half gets the same shift. */
     al_quad g1 = Q(FONT, 1000, 1020, 40, 60, 0);
-    CHECK(near(placed_x0(&g1, &m), 260.0f) && !m, "first frame: a lone glyph to its own mirrored place");
+    CHECK(near(placed_x0(&g1, &m), 360.0f) && !m, "first frame: a lone glyph shifts half a target");
 
     hud_frame(0);
     al_hud_frame_end(&H);
@@ -316,34 +318,34 @@ static void test_hud(void)
     /* elements: P1 name, P2 name, timer, two bar frames, two fills = 7 */
     CHECK(H.n_el == 7, "7 elements, got %u", H.n_el);
 
-    /* P2's name -> the left, letters in order, at P1's name's mirrored place (1280 - 1064 = 216) */
+    /* P2's name -> the left, letters in order, every glyph shifted by -640. */
     al_quad a = Q(FONT, 1000, 1020, 40, 60, 0), b = Q(FONT, 1022, 1042, 40, 60, 0), c = Q(FONT, 1044, 1064, 40, 60, 0);
     const float xa = placed_x0(&a, &m), xb = placed_x0(&b, &m), xc = placed_x0(&c, &m);
-    CHECK(near(xa, 216.0f) && near(xb, 238.0f) && near(xc, 260.0f) && !m, "P2's name: %f %f %f", xa, xb, xc);
-    /* P1's name -> the right (1280 - 258 = 1022) */
+    CHECK(near(xa, 360.0f) && near(xb, 382.0f) && near(xc, 404.0f) && !m, "P2's name: %f %f %f", xa, xb, xc);
+    /* P1's name -> the right (+640). */
     al_quad p = Q(FONT, 216, 236, 40, 60, 0);
-    CHECK(near(placed_x0(&p, &m), 1022.0f) && !m, "P1's name to the right: %f", placed_x0(&p, &m));
+    CHECK(near(placed_x0(&p, &m), 856.0f) && !m, "P1's name to the right: %f", placed_x0(&p, &m));
     /* the timer stays, digits in order */
     al_quad t0 = Q(FONT, 620, 638, 30, 70, 0), t1 = Q(FONT, 642, 660, 30, 70, 0);
     CHECK(near(placed_x0(&t0, &m), 620.0f) && near(placed_x0(&t1, &m), 642.0f), "the timer stays as it is");
     /* a changed digit (other letter, same place) still belongs to the timer */
     al_quad t2 = Q(FONT, 621, 637, 30, 70, 0);
     CHECK(near(placed_x0(&t2, &m), 621.0f), "a new digit in the timer's place stays");
-    /* the bar frames: mirrored, each takes the other's look */
+    /* Bar art and fills move with the same half; neither texture coordinates nor the art flip. */
     al_quad f1 = Q(BAR, 100, 560, 70, 90, 0), f2 = Q(BAR, 720, 1180, 70, 90, 1);
-    CHECK(near(placed_x0(&f1, &m), 720.0f) && m == 1, "P1's frame mirrored to the right");
-    CHECK(near(placed_x0(&f2, &m), 100.0f) && m == 1, "P2's frame mirrored to the left");
-    /* the fills: different lengths, no pair: moved, anchored at the outer edge on the other side */
+    CHECK(near(placed_x0(&f1, &m), 740.0f) && !m, "P1's frame to the right");
+    CHECK(near(placed_x0(&f2, &m), 80.0f) && !m, "P2's frame to the left");
+    /* Unequal fills preserve their offsets relative to their own frames. */
     al_quad l1 = Q(FILL, 100, 400, 72, 88, 0), l2 = Q(FILL, 900, 1180, 72, 88, 1);
-    CHECK(near(placed_x0(&l1, &m), 880.0f) && !m, "P1's fill to the right, ending at the edge: %f",
+    CHECK(near(placed_x0(&l1, &m), 740.0f) && !m, "P1's fill to the right: %f",
           placed_x0(&l1, &m));
-    CHECK(near(placed_x0(&l2, &m), 100.0f) && !m, "P2's fill to the left, from the edge");
-    /* the fill shrank since the last frame: still moved by its own box's mirror (anchored at the edge) */
+    CHECK(near(placed_x0(&l2, &m), 260.0f) && !m, "P2's fill to the left");
+    /* Shrinking changes only the source edge; no learned bounding box moves the fill back. */
     al_quad l3 = Q(FILL, 950, 1180, 72, 88, 1);
-    CHECK(near(placed_x0(&l3, &m), 100.0f) && !m, "a shrunk fill stays at the edge: %f", placed_x0(&l3, &m));
-    /* something new (no element of the last frame covers it): its own mirrored place */
+    CHECK(near(placed_x0(&l3, &m), 310.0f) && !m, "a shrunk fill keeps its geometry: %f", placed_x0(&l3, &m));
+    /* New art moves by exactly the same half-width as the existing elements. */
     al_quad e = Q(ICON, 1100, 1140, 100, 140, 0);
-    CHECK(near(placed_x0(&e, &m), 140.0f) && !m, "a new quad: its own mirrored place");
+    CHECK(near(placed_x0(&e, &m), 460.0f) && !m, "a new quad: stable half shift");
 
     /* a frame with the extra icon, then one without: the layout follows the last frame only */
     hud_frame(1);
@@ -362,7 +364,7 @@ static void test_hud(void)
     al_hud_frame_end(&H);
     CHECK(H.n_el == 2, "two strings on one line: %u elements", H.n_el);
     CHECK(!H.el[0].mirror && !H.el[1].mirror, "the same text on both sides is not mirrored");
-    CHECK(near(placed_x0(&r[0], &m), 1138.0f) && near(placed_x0(&r[1], &m), 1160.0f) && !m,
+    CHECK(near(placed_x0(&r[0], &m), 740.0f) && near(placed_x0(&r[1], &m), 762.0f) && !m,
           "the left text, readable, at the right");
 
     /* a glyph shadow pass and the glyphs again (drawn twice, overlapping): one element */
@@ -401,8 +403,8 @@ static void test_hud_game_shapes(void)
     al_quad f = Q(ICON, 575.8f, 1330.9f, 254.1f, 591.2f, 0);
     CHECK(near(placed_x0(&f, &m), 575.8f) && !m, "a letter of FIGHT stays");
     CHECK(!placed_mirror(&g1) && !placed_mirror(&g2), "different letters at mirrored places are not mirrored");
-    CHECK(near(placed_x0(&g1, &m), 1160.0f), "a letter moves readable");
-    /* the marks: a flipped pair, mirrored (the marks stay next to the timer) */
+    CHECK(near(placed_x0(&g1, &m), 740.0f), "a letter moves readable");
+    /* Marks follow their own half; readable art is never mirrored. */
     {   /* "ROUND" across the middle and its "1", another quad touching it: both stay ("R1UND" otherwise) */
         al_hud r2;
         memcpy(&r2, &H, sizeof r2);
@@ -413,14 +415,158 @@ static void test_hud_game_shapes(void)
         al_hud_note(&H, &rd); al_hud_note(&H, &one); al_hud_note(&H, &far);
         al_hud_frame_end(&H);
         CHECK(near(placed_x0(&rd, &m), 445.0f) && near(placed_x0(&one, &m), 719.0f), "ROUND 1 stays together");
-        CHECK(near(placed_x0(&far, &m), 350.0f), "something far from it on the line still moves");
+        CHECK(near(placed_x0(&far, &m), 260.0f), "something far from it on the line still moves");
         memcpy(&H, &r2, sizeof r2);
     }
-    CHECK(near(placed_x0(&k1, &m), 704.7f) && m == 1, "P1's marks mirrored to the right");
-    CHECK(near(placed_x0(&k2, &m), 394.7f) && m == 1, "P2's marks mirrored to the left");
+    CHECK(near(placed_x0(&k1, &m), 1036.7f) && !m, "P1's marks to the right");
+    CHECK(near(placed_x0(&k2, &m), 66.7f) && !m, "P2's marks to the left");
     /* the same picture on both sides: moved, not mirrored (writing on it stays readable) */
-    CHECK(near(placed_x0(&p2, &m), 52.0f) && !m, "P2's plate moved, not mirrored: %f", placed_x0(&p2, &m));
-    CHECK(near(placed_x0(&p1, &m), 802.7f) && !m, "P1's plate moved, not mirrored");
+    CHECK(near(placed_x0(&p2, &m), 164.0f) && !m, "P2's plate moved, not mirrored: %f", placed_x0(&p2, &m));
+    CHECK(near(placed_x0(&p1, &m), 693.3f) && !m, "P1's plate moved, not mirrored");
+}
+
+/* Synthetic diagnostic fixtures, not a reproduction of a captured game draw. Detect a raw centred quad
+ * whose visible scissor intersection belongs to one side. These tests establish what a dump can detect;
+ * they do not establish which game pass causes issue 31 or assert that the display has been corrected. */
+static void scissored_bar_diagnostic(uint64_t tex, float left, float right, int uflip, const char* label)
+{
+    const al_quad raw = Q(tex, 0, 1280, 40, 90, uflip);
+    al_quad visible = raw;
+    const int nonempty = al_hud_clip(&H, &visible, left, 58, right, 68);
+    CHECK(nonempty, "%s: nonempty bar scissor", label);
+    if (!nonempty) return;
+    CHECK(near((visible.x0 + 1) * 640, left) && near((visible.x1 + 1) * 640, right),
+          "%s: visible x box", label);
+    CHECK(near((1 - visible.y1) * 360, 58) && near((1 - visible.y0) * 360, 68),
+          "%s: visible y box", label);
+    CHECK(visible.tex == raw.tex && visible.uflip == raw.uflip && visible.u0 == raw.u0 && visible.u1 == raw.u1,
+          "%s: clipping does not alter texture identity/direction", label);
+
+    int raw_mirror;
+    const float raw_dx_px = al_hud_place(&H, &raw, &raw_mirror) * 640;
+    CHECK(!raw_mirror && near(raw_dx_px, 0), "%s: current raw placement stays centred", label);
+    CHECK(al_hud_side_clipped_center(&raw, &visible), "%s: side-clipped centre marker", label);
+    al_hud_note(&H, &raw);
+}
+
+static void test_hud_scissor_diagnostics(void)
+{
+    memset(&H, 0, sizeof H);
+    H.px_w = 640; H.px_h = 360;
+
+    /* Both full bars, first without a previous layout and then with remembered raw centred elements. */
+    for (int frame = 0; frame < 2; frame++) {
+        scissored_bar_diagnostic(FILL, 100, 560, 0, "P1 full");
+        scissored_bar_diagnostic(FILL, 720, 1180, 1, "P2 full");
+        al_hud_frame_end(&H);
+    }
+    /* Unequal damage and a separate shrinking orange drain, several consecutive frames. The underlying
+     * quad remains screen-wide; only the scissor changes. The marker is independent of the remembered raw
+     * layout, which would otherwise keep a clipped side in place through the element's across flag. */
+    for (int step = 0; step < 5; step++) {
+        scissored_bar_diagnostic(FILL, 100, 400, 0, "P1 damaged life");
+        scissored_bar_diagnostic(FILL, 950, 1180, 1, "P2 damaged life");
+        scissored_bar_diagnostic(ICON, 400, 460 - 10.0f * step, 0, "P1 drain");
+        scissored_bar_diagnostic(ICON, 890 + 10.0f * step, 950, 1, "P2 drain");
+        al_hud_frame_end(&H);
+    }
+
+    /* A full-screen scissor leaves an ordinary bar's box alone. A wider scissor must intersect rather
+     * than replace the geometry bounds. Texture coordinates continue to describe the original draw. */
+    al_quad bar = Q(FILL, 100, 400, 58, 68, 0), clipped = bar;
+    CHECK(al_hud_clip(&H, &clipped, 0, 0, 1280, 720), "full scissor: nonempty");
+    CHECK(near(clipped.x0, bar.x0) && near(clipped.x1, bar.x1) && near(clipped.y0, bar.y0) &&
+          near(clipped.y1, bar.y1), "full scissor: original bounds");
+    int bar_mirror, clip_mirror;
+    CHECK(near(al_hud_place(&H, &bar, &bar_mirror), al_hud_place(&H, &clipped, &clip_mirror)) &&
+          bar_mirror == clip_mirror, "full scissor: original placement");
+    CHECK(!al_hud_side_clipped_center(&bar, &clipped), "ordinary side bar is not a centred raw quad");
+    clipped = bar;
+    CHECK(al_hud_clip(&H, &clipped, 0, 60, 200, 80), "partial geometry intersection: nonempty");
+    CHECK(near((clipped.x0 + 1) * 640, 100) && near((clipped.x1 + 1) * 640, 200) &&
+          near((1 - clipped.y1) * 360, 60) && near((1 - clipped.y0) * 360, 68),
+          "partial geometry intersection bounds");
+    clipped = bar;
+    CHECK(!al_hud_clip(&H, &clipped, 200, 58, 200, 68), "zero-width scissor: empty");
+    clipped = bar;
+    CHECK(!al_hud_clip(&H, &clipped, 100, 60, 400, 60), "zero-height scissor: empty");
+    clipped = bar;
+    CHECK(!al_hud_clip(&H, &clipped, 700, 58, 900, 68), "disjoint scissor: empty");
+    clipped = bar;
+    CHECK(!al_hud_clip(&H, &clipped, 1400, 58, 1500, 68), "off-screen scissor: empty");
+    const al_quad raw = Q(FILL, 0, 1280, 40, 90, 0);
+    al_quad empty = raw;
+    empty.x1 = empty.x0;
+    CHECK(!al_hud_side_clipped_center(&raw, &empty), "empty visible box has no marker");
+    clipped = raw;
+    CHECK(al_hud_clip(&H, &clipped, 0, 0, 1280, 720) && !al_hud_side_clipped_center(&raw, &clipped),
+          "full-screen scissor on centred raw quad has no marker");
+
+    /* A genuine centre-spanning timer still stays centred after clipping. */
+    al_quad timer = Q(DIGIT5, 600, 680, 30, 70, 0), raw_timer = timer;
+    CHECK(al_hud_clip(&H, &timer, 0, 0, 1280, 720), "timer scissor: nonempty");
+    CHECK(!al_hud_side_clipped_center(&raw_timer, &timer), "centred visible timer has no marker");
+    int mirror;
+    CHECK(near(placed_x0(&timer, &mirror), 600) && !mirror, "centred timer stays readable and in place");
+}
+
+static void test_hud_first_frame_and_changed_text(void)
+{
+    const char* name = "SuperStarSag";
+    memset(&H, 0, sizeof H);
+    H.px_w = 640.0f; H.px_h = 360.0f;
+    for (int frame = 0; frame < 3; frame++) {
+        const float x = frame == 2 ? 960.0f : 1000.0f;  /* a changed plate/name origin */
+        for (int i = 0; name[i]; i++) {
+            int m;
+            al_quad glyph = Q(FONT, x + i * 18.0f, x + i * 18.0f + 16.0f, 40, 60, 0);
+            CHECK(near(placed_x0(&glyph, &m), x - 640.0f + i * 18.0f) && !m,
+                  "frame %d glyph %c: order/spacing stays at the half shift", frame, name[i]);
+            al_hud_note(&H, &glyph);
+        }
+        al_hud_frame_end(&H);
+    }
+    /* The partial fix deliberately leaves one draw spanning the centre untouched; it cannot
+     * split an arbitrary batched name/timer/name draw without verified per-primitive routing. */
+    al_quad batch = Q(FONT, 100, 1180, 40, 60, 0);
+    int m;
+    CHECK(near(placed_x0(&batch, &m), 100.0f) && !m, "centre-spanning batch is left intact");
+}
+
+static void test_picture_quad_and_scissor(void)
+{
+    const float quad[4][2] = { { -1, -1 }, { 1, -1 }, { 1, 1 }, { -1, 1 } };
+    const float triangles[6][2] = { { -1, -1 }, { 1, -1 }, { 1, 1 }, { -1, -1 }, { 1, 1 }, { -1, 1 } };
+    const float glyph[4][2] = { { 0.5f, 0.7f }, { 0.6f, 0.7f }, { 0.6f, 0.8f }, { 0.5f, 0.8f } };
+    const float repeated[4][2] = { { -1, -1 }, { 1, -1 }, { 1, 1 }, { 1, 1 } };
+    float camera_moved[4][2];
+    CHECK(al_picture_quad(quad, 4, 640, 360), "four-corner scene copy recognized");
+    CHECK(al_picture_quad(triangles, 6, 640, 360), "two-triangle scene copy recognized");
+    CHECK(!al_picture_quad(glyph, 4, 640, 360), "HUD glyph cannot become a scene copy from stale bindings");
+    CHECK(!al_picture_quad(repeated, 4, 640, 360), "all four different corners required");
+    CHECK(!al_picture_quad(quad, 3, 640, 360), "partial copy rejected");
+    CHECK(!al_picture_quad(quad, 4, 0, 360), "invalid target rejected");
+    for (int i = 0; i < 4; i++) { camera_moved[i][0] = quad[i][0] + 0.02f; camera_moved[i][1] = quad[i][1]; }
+    CHECK(!al_picture_quad((const float (*)[2])camera_moved, 4, 640, 360), "camera-dependent bounds are not a fullscreen copy");
+    camera_moved[0][0] = NAN;
+    CHECK(!al_picture_quad((const float (*)[2])camera_moved, 4, 640, 360), "non-finite evaluated coordinates rejected");
+    {
+        int l = 900, r = 1180;
+        al_clip_scissor(1280, -640, 0, &l, &r);
+        CHECK(l == 260 && r == 540, "bar clipping follows the same half shift");
+        l = 100; r = 560;
+        al_clip_scissor(1280, 640, 0, &l, &r);
+        CHECK(l == 740 && r == 1200, "other half clipping follows its bar");
+        l = 10; r = 100;
+        al_clip_scissor(1280, -640, 0, &l, &r);
+        CHECK(l == 0 && r == 0, "fully offscreen left becomes empty before unsigned conversion");
+        l = 1200; r = 1270;
+        al_clip_scissor(1280, 640, 0, &l, &r);
+        CHECK(l == 1280 && r == 1280, "fully offscreen right becomes empty");
+        l = 100; r = 560;
+        al_clip_scissor(1280, 0, 1, &l, &r);
+        CHECK(l == 720 && r == 1180, "scene-copy scissor reflects with the picture");
+    }
 }
 
 int main(void)
@@ -428,6 +574,9 @@ int main(void)
     test_vp();
     test_hud();
     test_hud_game_shapes();
+    test_hud_scissor_diagnostics();
+    test_hud_first_frame_and_changed_text();
+    test_picture_quad_and_scissor();
     if (g_fails) { printf("FAILED %d of %d checks\n", g_fails, g_checks); return 1; }
     printf("PASS %d checks\n", g_checks);
     return 0;

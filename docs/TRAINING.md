@@ -61,6 +61,24 @@ n fight frames, see "Cost"), `T5_TRAINING_TRACE=<file>` (research: the fight
 block of every live frame, see below; `T5_TRAINING_TRACE_RANGES=addr:len[:every],...`
 adds more guest ranges, hex, every n frames).
 
+For advantage diagnostics, set `T5_TRAINING_DIAG=<file>` before starting the
+game (PowerShell: `$env:T5_TRAINING_DIAG = 'training-diag.txt'`). It is off by
+default; the text file is overwritten at startup. During tracked moves in
+offline live frames it logs both full move IDs, raw flags, `can_act` /
+`end_window` / effective `acts`, detected contacts, recovery frames and results.
+It only reads game memory, never runs in rollback re-simulation and changes
+no tracking rules or overlay numbers. Leave `T5_TRAINING_AB` unset for a
+continuous trace; remove the diagnostic variable afterwards to disable it.
+
+Compare Armor King's **f,n,d,df+1**, **b+4 alone**, and **b+4,3**, each against
+a blocking dummy, recovering between attempts. Look for a `contact` per hit,
+especially the later hit of b+4,3: compare move IDs, `new` and `active` with
+b+4 alone. A new contact resets `att_act` / `def_act`; timestamps use `tick`
+(0 = not recorded), and `adv_valid=1` means advantage is `def_act - att_act`.
+For Bryan d+4 on hit, check whether `can_act` precedes `end_window` while
+effective `acts` remains 0. Not compiled or run: a real build, these game
+comparisons and a real online pair with 0 mismatches must verify the result.
+
 Button numbers are the game's default button setting (1 = Square, 2 =
 Triangle, 3 = Cross, 4 = Circle; keyboard A S Z X). The display shows the
 pad buttons that were pressed: if the button layout was changed in the game's
@@ -87,9 +105,18 @@ combo never makes P1 attack, walk or open the menu.
 | SELECT, tap forward / back | what the dummy does: as set in the game's Practice menu, blocks after the first hit, crouches, walks forward and back, sidesteps |
 
 f and b are as you see them (f = toward the dummy): standing on the left,
-f+3 puts the dummy against the right wall. A recording is kept as the dummy
-saw it (forward = toward you), so it plays the same from either side. The
-slots live as long as the game runs.
+f+3 puts the dummy against the right wall. While recording, your pad controls
+the dummy in its screen directions: if the dummy stands on the right,
+LEFT is its forward (toward you), and RIGHT is its back. After crossing sides,
+use the dummy's new side. P1 stands still. Each frame is stored relative to
+the dummy's facing, so playback keeps forward/back on either side, including
+after a side switch during playback. SELECT shortcuts still use P1's side.
+
+The slots live only in memory while the game runs; they are not saved to a
+file. Issue #30 corrected recording directions that had used P1's side
+instead of the dummy's. Existing slots already described the dummy's executed
+forward/back motion and need no automatic flip. Restarting for an update
+clears them, so re-record afterwards; there is no saved format to migrate.
 
 The overlay shows what changed for two seconds under the frame data (`SLOT 2
 (3.4s)  DUMMY: CROUCH`), and `REC 1  2.5s` / `PLAY 1  1.2/3.4s` /
@@ -186,15 +213,22 @@ run the code they ran before: CODE_VERSION is unchanged.
   forward and back and sidestepped both ways; a recording (forward, two jabs,
   back) played once and in a loop.
 
+These slots use the game's CONTROLLER mode. This repository does not document
+the game's own recording behaviour, so no native recording comparison is
+verified for issue #30. The screen-side mirror is also separate: offline
+mirroring applies only to Versus, never Practice, and recording adds no mirror
+correction.
+
 ## The overlay never changes the game
 
 (The practice tools above do, in offline Practice only; everything below is
 about the overlay.)
 
-- `src/training/training.cpp` only **reads** guest memory, through three read
-  helpers (`rd8/rd16/rd32`); it never stores into it, never calls into the game
-  and never touches its input. `tests/test_training.py` checks the source for
-  that (every statement naming guest memory must be one of the read helpers).
+- `src/training/training.cpp` only **reads** guest memory, through the read
+  helpers (`rd8/rd16/rd32`) and the bounded experimental comparison reader;
+  it never stores into it, never calls into the game and never touches its
+  input. Source checks cover the ordinary read helpers and the comparison's
+  bounded copy path.
 - It runs at the netplay hooks' frame boundary on the main thread
   (`src/netplay/t5_hooks.cpp` `on_frame_start`, one line), and only for live
   frames: never in a frame a rollback re-simulates (`rb::net::bypass()`), so it
@@ -423,6 +457,21 @@ In the game:
 - The smoke suite (quick) runs without the overlay, as players with the
   setting Off and every existing test do.
 
+Issue #30 Practice regression (requires a real build and game; not yet run):
+
+1. With the dummy on the right, record LEFT (forward), RIGHT (back),
+   down-left/down-right and a jab. The dummy must follow these screen
+   directions while P1 stands still. Stop, then play once and loop: the same
+   forward/back sequence must come out. Repeat with the dummy on the left,
+   using RIGHT for forward and LEFT for back.
+2. Play each slot after switching sides, and cross sides during playback and
+   a loop: forward/back must follow the dummy's current side on every frame.
+   Cross during a new recording too, changing the held direction for the
+   dummy's new forward; replay it from either side. Check that SELECT combos
+   and their held-button release frames still inject no recorded attack.
+3. Repeat with Screen side set to "Always see me on the left". Practice must
+   remain unmirrored with the same controls and playback.
+
 ### What 1.1.9 changed (found by players)
 
 - **Strings and juggles** were one line with the first or even no startup
@@ -450,3 +499,214 @@ In the game:
   up on the ground the result is `KNOCKDOWN` without a number. Juggles are one
   exchange (the last hit counts); a juggle that ends without a knockdown shows
   the advantage after the last hit.
+
+## Experimental animation-frame advantage comparison (default off)
+
+This is a second, diagnostic calculation under `src/training`, alongside the
+existing tracker. The overlay continues to display the existing result. The
+comparison reads guest memory, keeps its own host-side state and writes
+diagnostic text; it never changes guest memory, inputs or game state. It is
+limited to offline Practice and the existing live-frame hook, with no reads
+from rollback re-simulation. Enabling the normal overlay outside Practice or
+online does not widen this experimental gate.
+
+**The supplied mapping currently fails a source-evidence check.** Its alleged
+move pointer aliases the x-coordinate already used by this project. Runtime
+comparison therefore fails closed: for every existing per-move result it logs
+the old result together with
+`new=unavailable new_status=mapping_conflict_position_x`, rather than following an
+x-coordinate as a pointer or inventing a replacement address. Safely bounded
+scalar diagnostics help investigate the claim. The independent new algorithm
+and fake-frame tests can exercise hypothetical valid samples, but this
+mapping cannot yet produce a justified second numeric result in the game.
+
+The initial idea, address table and name groups came from an RPCS3 overlay
+developer, **[contributor name, pending owner approval]**. These are one
+person's partial notes, not verified memory documentation for this port. The
+remainder of that developer's algorithm has not arrived. Places where the
+implementation supplies a policy are marked as missing-algorithm assumptions
+in the experimental headers; future notes may change those policies.
+
+Enable deliberately for a maintainer's separately built US game, with a
+diagnostic output path outside this source mirror:
+
+```powershell
+$env:T5_TRAINING = 'frames'
+$env:T5_TRAINING_ADV_COMPARE = '1'
+$env:T5_TRAINING_LOG = '<absolute path outside this source mirror>'
+```
+
+The new switch is unset/off by default. It has no launcher or lobby setting,
+so it adds no launcher/lobby catalog strings. These lines only set variables;
+they are not a build or a game launch. Do not collect traces, player logs,
+screenshots, game files or saves in this mirror.
+
+Sampling additionally requires a working log file, frame-data mode, a running
+Practice fight, no netplay/replay/spectator launch, no local-net test mode and
+`t5_netplay_enabled() == 0`. The comparison stays inactive when these conditions
+are absent. Its unavailable field belongs to the old result being logged;
+there is no pairing with an unrelated latest result from another tracker.
+The launch gate rejects nonempty `T5_NET_MODE`, `T5_CTL_DIR` or
+`T5_REPLAY_FILE`. Mapping lines include the candidate raw scalar words;
+`adv_compare move` lines include `P1`/`P2`, `active_poll`, the old-active-window
+anchor or `unknown`, `old`, `old_status`, `new`, and `new_status`. Old statuses
+retain `available`, `no-advantage`, `whiff` or `down`, so a stored old number
+must only be interpreted when its status permits it. Gate/fight/measurement
+resets have separate reason lines.
+
+### Address evidence and contradictions
+
+All addresses below are 32-bit guest addresses, with big-endian values. The
+contributor's `0x300000000` is an RPCS3 host mapping claim, not an offset to
+add to this port's `vm_base + guest_address` reads. This source establishes
+NPUB30009 v01.00 training blocks at P1 `0x10090030`, P2 `0x10090900`, a
+`0x8D0` stride. Arithmetic agreement with that stride does not establish a
+field's meaning or which player the contributor intended.
+
+The table treats the supplied main-region addresses as candidate **P2**
+addresses because of their proximity to our P2 block. That player assignment
+is itself unproven:
+
+| Contributor's claim | Candidate offset from our P2 block | Evidence in this mirror |
+|---|---|---|
+| `0x10090910 u32 MovePtr` | `+0x10`; candidate P1 `0x10090040` | **Conflicts with the existing position interpretation:** `practice.cpp` reads block `+0x10` as floating-point x. `t5_hooks.cpp` also uses these two addresses as block bases for side flags, not as proof of a move pointer. |
+| `0x100908E4 u32 AnimFrame` | `-0x1C`; candidate P1 `0x10090014` | Before our documented block; no source proof that it is an animation frame. |
+| `0x100909C0 u16 AnimLength` | `+0xC0`; candidate P1 `0x100900F0` | Neither the field nor its alleged copy from move `+0x26` is established here. |
+| `0x10090A44 u8 HitboxActive` | `+0x144`; candidate P1 `0x10090174` | Different from the existing active word at block `+0x214` (bits 16-17); the proposed byte and rising-edge meaning are unproven. |
+| `0x1009090C u32 MoveBaseIndirect` | `+0x0C`; candidate P1 `0x1009003C` | No source proof of this pointer or its `+0x1E0` move-array offset. |
+| `0x100947B3` / `0x1009482B u8 CharId` | Separate addresses, `0x78` apart | Unverified. Existing direct-fight code instead reads a fighter identifier from the low byte of block `+0x4C`, with character-specific caveats. Do not substitute one for the other. |
+| Move size `0x4C`; name pointer `+0x00`, HitRank `+0x10`, recovery pointer `+0x14`, Move_Id `+0x1C`, techId `+0x1E`, StartupFrom/To `+0x44/+0x46` | Pointer-relative claims | No prior source evidence for these meanings or the move-array indexing rule. |
+| Up to 16 recovery entries, size `0x18`, nextMoveId `+0x08`, frames `+0x10`, type `+0x16` (`0x50` hit / `0x41` block) | Pointer-relative claims | Unverified, including terminators, marker handling and how move IDs resolve to records. |
+
+What **does** fit our build by existing source evidence is the block pair,
+stride and byte order, plus the fields already used by `read_fighter`:
+`+0x15C` attack/reaction class, `+0x1D2` facing side, `+0x20C` new-move bit,
+`+0x214` active bits, `+0x21C/+0x220` action windows, `+0x6BC` health and
+`+0x6D6` input. Those existing fields do not validate the new table. In
+particular, neither byte order nor readable memory makes a candidate pointer
+semantically valid.
+
+The claimed EU-to-US rule `A(x) = x + 0x10B00` is **not established** here.
+The supplied main-region numbers are already close to our documented US
+fighter blocks, while the contributor's table version is unknown. `EU.md`
+documents region shifts that differ by subsystem, a changed phase/config
+layout and fighter fields requiring individual checks; ordinary NPEA00019
+v01.00 has no Practice mode. Its later EU Online release is a separate case.
+No blanket `+0x10B00` or inverse shift is applied by this experiment. The
+correct addresses and field meanings for the contributor's exact release
+remain missing evidence.
+
+### Provisional logic policies pending the missing notes
+
+`advantage_shadow_logic.h` has no guest-memory access. It consumes synthetic
+or validated samples and starts only on an observed low-to-high hitbox edge;
+an already-high first sample does not invent a move start. These policies
+complete the partial idea for testing and are explicitly **inferred**, not
+claims from the collaborator:
+
+- A shared measurement coordinate accumulates **the attacker's** animation
+  deltas. A repeated frame contributes zero; a forward jump contributes its
+  full delta. A pointer change or backward frame/reset stitches the old
+  phase's remaining `AnimLength - AnimFrame` to the new phase's `AnimFrame`,
+  without an invented extra tick, and marks the result phase-estimated.
+  Whether this is right at cancellations and phase transitions is one of the
+  missing decisions. No wall-clock duration supplies advantage.
+- Neutral substring groups are checked first: `sKAM`, `cKAM`, `sWALK`,
+  `cWALK`, `sDASH`, `sSTEP`, `sJUMP_00`, `sRUN`, `cr2st`, `st2cr`.
+  Stun prefixes are `sGrd`, `cGrd`, `sHit`, `cHit`, `sDm`, `cDm`, `Male_`,
+  `sDw`, `wDm`, `Ni_crst`. The groups themselves came from the notes;
+  deciding action boundaries from names is provisional. Neutral wins even
+  when a name also resembles stun or appears in a recovery graph.
+- The root name captured at the rising edge and bounded recursively reached
+  recovery names form continuation names, excluding neutral. A continuation
+  hitbox edge merges into the pending move; an unrelated new edge supersedes
+  it. A merged edge retains the move's identity and clock but clears earlier
+  defender-contact/release evidence, so the final candidate refers to the
+  latest reaction; renewed stun also clears an earlier release. How strings
+  should split per hit awaits the remaining algorithm.
+- First neutral/non-continuation is the attacker's endpoint, but an
+  incomplete recovery graph permits only neutral to establish it. First
+  non-stun after observed defender stun is the defender's endpoint. Stun
+  already visible at the initial edge is provisionally attributed to that
+  move and flagged. Stun on the attacker interrupts it. This can include
+  zero-damage taunts without relying on health changes; it cannot prove
+  cancellability such as Bryan's taunt.
+- Candidate advantage is defender endpoint coordinate minus attacker
+  endpoint coordinate, positive when the attacker acts earlier. Recovery
+  without observed stun is `no-contact`, not a numeric advantage. Invalid
+  samples/clocks, supersession, interruption and a 600-poll abandonment limit
+  produce explicit unavailable statuses. The poll limit bounds diagnostic
+  state; it is never used as animation time. Reset/gate gaps discard pending
+  state rather than bridging sessions. Missing, repeated, backward or
+  nonconsecutive poll identifiers abort with `discontinuity`; a character-ID
+  change aborts with `identity-change`. Both establish a fresh edge baseline.
+  A hitbox edge on a neutral name is ignored.
+
+`advantage_shadow_reader.h` keeps the production mapping disabled at the
+known pointer/position conflict. Its synthetic-memory path can check the
+proposed big-endian schema, printable terminated names (64-byte bound),
+16-entry recovery lists and a graph bounded to 32 move records including
+the root. It skips marker IDs, bounds cycles and marks unreadable/unknown
+descendants incomplete. These limits are host safety policies, not verified
+game format limits. In particular, the notes do not give a proven move-array
+extent or ID lookup rule; the `+0x1E0` claim cannot authorize guessed
+production move lookups.
+
+### Required maintainer validation
+
+No build, game, test executable or script was run while preparing this
+change. Synthetic logic and memory-reader tests are supplied for later
+execution without game data. A real build must still establish compilation
+on supported targets; fake sequences cannot prove any guest address, name
+group, cancellation rule or actual frame advantage.
+
+For a real game comparison, use the maintainer's game installation outside
+this mirror. Confirm the title/version first and validate the candidate
+fields against observed motion before interpreting any experimental number.
+The `MovePtr`/position contradiction above must be resolved, not worked
+around by inventing another address. Until it is resolved, an unavailable
+experimental result is expected and must not be reported as a correction to
+the existing overlay.
+
+1. Start offline Practice on the supported US version, with the environment
+   above and practice helpers disabled (`T5_PRACTICE=0`) for manual endpoint
+   checking. Use an open stage, away from a wall, and record the character,
+   player slot, facing direction and dummy setting separately outside this
+   mirror. Confirm that leaving Practice and enabling an online session
+   stops experimental sampling; F2 Off/Inputs and any measurement gap must
+   discard pending comparisons rather than span unrelated frames.
+2. For Armor King, test `f,n,d,df+1`, `b+4`, then `b+4,3`, including delayed
+   second hits and `b+4` by itself. For Bryan, test `d+4` and taunt `1+3+4`;
+   the taunt's zero-damage stun must still count as contact. For Nina, test
+   `f,f+4`. Repeat each as attacker in P1 and P2, and after switching facing
+   sides. Let each move finish before the next baseline trial.
+3. For each applicable move, compare standing guard, crouching guard,
+   standing hit, crouching hit and a clean whiff. Mark impossible conditions
+   as such rather than assuming a block or hit. Add counter-hit and knockdown
+   cases where applicable. Check string continuation, new attacks after
+   recovery, interrupted attacks and phase transitions; an unavailable value
+   must retain its reason and must never inherit a previous move's number.
+4. Check each fighter's actual earliest action after contact by attempting
+   a jab at the earliest legal frame in repeated trials, with both input
+   phases. Compare the difference between jab starts with the old result
+   and the new animation-frame result for the same move identity. Do not
+   treat a stored recovery duration or a displayed number as proof of the
+   game's action boundary. In particular recheck Bryan's early idle flag
+   and the taunt's cancellability described above.
+5. Repeat representative positive, negative and string cases while paused,
+   during slow motion and across any animation-frame skip/reset that the
+   supported setup can produce. Repeated samples must not add animation
+   time; a skipped or ambiguous action boundary must be reported as such.
+   Check the logged pair's player, move/phase identity, contact and endpoint
+   frames before comparing numbers.
+6. Finally run real rollback and lockstep pairs with the experimental switch
+   set on one PC and unset on the other. The experimental Practice-only gate
+   must remain inactive online. Require **0 mismatching frames**, equal
+   result hashes/winner/score, and no experimental guest sampling in replay,
+   spectator or re-simulated frames. This new change needs that pair test;
+   the historical pair results above do not validate it.
+
+Keep the resulting evidence with the maintainer's private build/test work,
+outside this mirror. Obtain the remaining collaborator notes and owner credit
+decision before presenting the experimental calculation as verified frame
+data.

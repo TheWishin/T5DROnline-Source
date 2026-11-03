@@ -6,17 +6,18 @@ and go to the server after every login and when the player changes them (client.
 or a friend's wishes come with their question; the match card says which side and stage this player got; a casual
 rematch offers Rematch: swap sides (Triangle / Y on a pad). The row is hidden on a server without casual choices.
 
-1.1.9: under the row's choices, "Always see me on the left" (docs/NETPLAY.md "Always left"): the launcher's setting
-always_left -- the same one as Settings -> Screen side, one variable for both checkboxes -- which counts in these
-casual matches only (T5_NET_CASUAL; never ranked, Quick or a tournament set). MatchDriver passes it to every match.
+1.2.0: under the row's choices, Screen side shares the launcher's dealt/left/right setting with Settings. It counts
+in these casual matches only (T5_NET_CASUAL; never ranked, Quick or a tournament set). MatchDriver passes it to
+every match. The legacy always_left bool remains synchronized for older callers.
 """
 import tkinter as tk
 from tkinter import ttk
 
-from . import fighters
+from . import fighters, proto
 from .i18n import N_, t
 
 SIDES = ((None, N_("Any side")), (0, N_("P1 (left)")), (1, N_("P2 (right)")))
+SCREEN_SIDES = {"dealt": N_("As dealt"), "left": N_("Always left"), "right": N_("Always right")}
 
 
 class CasualUI:
@@ -25,11 +26,17 @@ class CasualUI:
         side = tab.cfg.get("casual_side")
         self.side = side if side in (0, 1) else None
         self.stage = str(tab.cfg.get("casual_stage") or fighters.RANDOM)
+        target = tab.cfg.get("casual_first_to", 1)
+        self.first_to = target if type(target) is int and target in proto.CASUAL_FIRST_TO else 1
         self.side_var = tk.StringVar(value="")
         self.stage_var = tk.StringVar(value="")
+        self.set_var = tk.StringVar(value="")
+        self.set_row = self.set_cb = None
         self.row = None              # the choices in the play card (tk_views), shown while the server has them
         self.side_cb = self.stage_cb = None
-        self.left_check = None       # "Always see me on the left" (the launcher's always_left setting)
+        self.left_check = None       # legacy alias for the left screen-side radio
+        self.skip_check = None
+        self.skip_var = tk.BooleanVar(value=bool(tab.cfg.get("auto_skip_after_round", False)))
         self.left_var = None
         self.stages = []             # the stage keys the combobox lists after Random
         self._shown = None           # (shown, stages) the row was last set up for
@@ -61,15 +68,36 @@ class CasualUI:
                                      style="Card.TCombobox")
         self.stage_cb.pack(side="left", padx=(px(6), 0))
         self.stage_cb.bind("<<ComboboxSelected>>", lambda _e: self.on_change())
-        # "Always see me on the left" (casual matches only): the Settings tab's variable when the launcher has one,
-        # so both checkboxes show the same and save the same setting
+        self.set_row = ttk.Frame(row, style="CardBody.TFrame")
+        self.set_row.pack(side="top", anchor="w", pady=(px(4), 0))
+        ttk.Label(self.set_row, text=t("Casual sets:"), style="Card.Small.TLabel").pack(side="left", padx=(0, px(6)))
+        self.set_cb = ttk.Combobox(self.set_row, textvariable=self.set_var, state="readonly", width=7,
+                                  values=[t("FT{wins}", wins=n) for n in proto.CASUAL_FIRST_TO],
+                                  style="Card.TCombobox")
+        self.set_cb.pack(side="left")
+        self.set_cb.bind("<<ComboboxSelected>>", lambda _e: self.on_set_change())
+        ttk.Label(self.set_row, text=t("Older launchers play single games."), style="Card.Small.TLabel").pack(
+            side="left", padx=(px(6), 0))
+        # Share the Settings tab's language-independent token.
         app = getattr(self.tab, "app", None)
-        self.left_var = getattr(app, "always_left_var", None)
-        if not isinstance(self.left_var, tk.BooleanVar):
-            self.left_var = tk.BooleanVar(value=bool((getattr(app, "settings", None) or {}).get("always_left")))
-        self.left_check = ttk.Checkbutton(row, text=t("Always see me on the left"), variable=self.left_var,
-                                          command=self.on_left, style="Card.TCheckbutton")
-        self.left_check.pack(side="top", anchor="w", pady=(px(4), 0))   # (in the row: German did not fit beside)
+        self.left_var = getattr(app, "screen_side_var", None)
+        if not isinstance(self.left_var, tk.StringVar):
+            settings = getattr(app, "settings", None) or {}
+            side = settings.get("screen_side", "left" if settings.get("always_left") else "dealt")
+            self.left_var = tk.StringVar(value=side if side in SCREEN_SIDES else "dealt")
+        screen_row = ttk.Frame(row, style="CardBody.TFrame")
+        screen_row.pack(side="top", anchor="w", pady=(px(4), 0))
+        ttk.Label(screen_row, text=t("Screen side"), style="Card.Small.TLabel").pack(side="left", padx=(0, px(6)))
+        self.screen_checks = []
+        for side, label in SCREEN_SIDES.items():
+            check = ttk.Radiobutton(screen_row, text=t(label), variable=self.left_var, value=side,
+                                    command=self.on_left, style="Card.TRadiobutton")
+            check.pack(side="left", padx=(0, px(6)))
+            self.screen_checks.append(check)
+        self.left_check = self.screen_checks[1]  # legacy tests/callers: the left choice
+        self.skip_check = ttk.Checkbutton(row, text=t("Auto-skip replays and round endings (both players agree)"),
+                                          variable=self.skip_var, command=self.on_skip,
+                                          style="Card.TCheckbutton")
         self.row = row
         self._fill()
         return row
@@ -82,16 +110,29 @@ class CasualUI:
         self.stage_cb.configure(values=names)
         self.side_var.set(t(dict(SIDES)[self.side]))
         self.stage_var.set(names[1 + self.stages.index(self.stage)] if self.stage in self.stages else names[0])
+        self.set_var.set(t("FT{wins}", wins=self.first_to))
 
     def refresh(self):
         """After a login or a logout: the server's stages, and the row shown only where the choices count."""
         on = self.ok()
+        skip_ok = on and bool(getattr(self.client, "auto_skip_ok", lambda: False)())
+        if self.skip_check is not None:
+            if skip_ok:
+                self.skip_check.pack(side="top", anchor="w")
+            else:
+                self.skip_check.pack_forget()
+        sets_on = bool(on and hasattr(self.client, "casual_sets_ok") and self.client.casual_sets_ok())
         stages = self.client.casual_stages() if on else self.stages
-        if (on, tuple(stages)) == self._shown:
+        if (on, tuple(stages), sets_on) == self._shown:
             return                   # (called with every change of the tab's buttons)
-        self._shown = (on, tuple(stages))
+        self._shown = (on, tuple(stages), sets_on)
         self.stages = list(stages)
         self._fill()
+        if self.set_row is not None:
+            if sets_on:
+                self.set_row.pack(side="top", anchor="w")
+            else:
+                self.set_row.pack_forget()
         if self.row is not None:
             if on:
                 self.row.grid()
@@ -113,22 +154,43 @@ class CasualUI:
             self.tab.call(self.client.set_casual_prefs, side, stage)
 
     def on_left(self):
-        """The checkbox: the launcher's setting always_left, saved at once (the next casual match uses it)."""
+        """Save screen side at once; the next casual match reads it, including an explicit reset to dealt."""
         app = getattr(self.tab, "app", None)
         settings = getattr(app, "settings", None)
         if settings is None:
             return
-        if getattr(app, "always_left_var", None) is self.left_var and hasattr(app, "save_settings"):
-            app.save_settings()              # (reads the shared variable, like the Settings tab's checkbox)
+        if getattr(app, "screen_side_var", None) is self.left_var and hasattr(app, "save_settings"):
+            app.save_settings()
             return
-        settings["always_left"] = bool(self.left_var.get())
+        side = self.left_var.get() if self.left_var.get() in SCREEN_SIDES else "dealt"
+        settings["screen_side"] = side
+        settings["always_left"] = side == "left"  # legacy readers
         if hasattr(settings, "save"):
             settings.save()
+
+    def on_set_change(self):
+        labels = [t("FT{wins}", wins=n) for n in proto.CASUAL_FIRST_TO]
+        shown = self.set_var.get()
+        self.first_to = proto.CASUAL_FIRST_TO[labels.index(shown)] if shown in labels else 1
+        self.tab.cfg["casual_first_to"] = self.first_to
+        self.tab._save_cfg()
+        if self.client is not None:
+            self.client.casual_first_to = self.first_to
+
+    def on_skip(self):
+        self.tab.cfg["auto_skip_after_round"] = bool(self.skip_var.get())
+        self.tab._save_cfg()
+        c = self.client
+        if c is not None and hasattr(c, "set_auto_skip_after_round"):
+            c.set_auto_skip_after_round(self.skip_var.get())
 
     def new_client(self, c):
         """A new LobbyClient (before it connects): the wishes go with every login."""
         if hasattr(c, "set_casual_prefs"):
             c.set_casual_prefs(self.side, self.stage)
+        c.casual_first_to = self.first_to
+        if hasattr(c, "set_auto_skip_after_round"):
+            c.set_auto_skip_after_round(self.skip_var.get())
 
     # ------------------------------------------------------------------ texts
     def wish_text(self, wish):

@@ -141,10 +141,23 @@ struct Result {
     int      adv = 0;        /* attacker's frame advantage (Block/Hit/Counter, not no_adv) */
     int      total = 0;      /* Whiff: frames until the attacker could act again */
     uint64_t frame = 0;      /* the frame it was settled in */
+    uint64_t active_frame = 0; /* comparison-only identity: first frame of this active window,
+                               * in Tracker's frame domain; 0 when that window was not observed */
 };
 
 /* able to act: in a hit reaction only at its cancellable end (see Sample) */
 inline bool acts(const Sample& x) { return x.can_act && (x.cls < 0x10000 || x.end_window); }
+
+/* Optional observation only: contacts are recorded at the existing detection branch,
+ * all other fields are the tracker's state after this frame. No detection rules change. */
+struct Diagnostic {
+    uint64_t frame = 0;
+    bool tracked = false, live[2] = {}, open = false, settled = false;
+    uint64_t move[2] = {}, win_start[2] = {}, win_end[2] = {};
+    bool reaction[2] = {}, damage[2] = {};  /* contact detected, indexed by attacker */
+    int attacker = 0;
+    uint64_t contact = 0, att_act = 0, def_act = 0, def_flag = 0;
+};
 
 class Tracker {
 public:
@@ -160,11 +173,17 @@ public:
     static constexpr int kQueue = 4;
 
     /* One live frame, both fighters (index 0 = P1). Returns the number of new
-     * Results (0 = none): result(0) .. result(n - 1), oldest first; last() is the newest. */
-    int frame(const Sample s[2])
+     * Results (0 = none): result(0) .. result(n - 1), oldest first; last() is the newest.
+     * diagnostic, when supplied, observes detection and recovery without changing them. */
+    int frame(const Sample s[2], Diagnostic* diagnostic = nullptr)
     {
         nnew_ = 0;
         const uint64_t t = t_++;
+        if (diagnostic) {
+            *diagnostic = Diagnostic{};
+            diagnostic->frame = t;
+            diagnostic->tracked = mv_[0].live || mv_[1].live || (ex_.open && !ex_.settled);
+        }
         for (int p = 0; p < 2; p++)
             if (s[p].stand && s[p].y > 0 && acts(s[p])) stand_y_[p] = s[p].y;
         if (!have_prev_) {
@@ -205,6 +224,10 @@ public:
             const bool reacts = prev_[p].active && s[o].new_move && !acts(s[o]) && is_reaction_cls(s[o].cls);
             const bool damaged = s[o].hp < prev_[o].hp && (prev_[p].active || s[p].active);
             if (!reacts && !damaged) continue;
+            if (diagnostic) {
+                diagnostic->reaction[p] = reacts;
+                diagnostic->damage[p] = damaged;
+            }
             hit_now[o] = true;
             const Move& m = mv_[p];
             const bool known = m.live && m.win_start && m.start;
@@ -326,12 +349,30 @@ public:
                     r.kind = Kind::Whiff;
                     r.total = (int)(t - m.start);
                     r.frame = t;
+                    r.active_frame = m.win_start;
                     push(r);
                 }
                 m.live = false;
             }
         }
         prev_[0] = s[0]; prev_[1] = s[1];
+        if (diagnostic) {
+            diagnostic->tracked = diagnostic->tracked || mv_[0].live || mv_[1].live ||
+                                  (ex_.open && !ex_.settled) || nnew_ != 0;
+            for (int p = 0; p < 2; p++) {
+                diagnostic->live[p] = mv_[p].live;
+                diagnostic->move[p] = mv_[p].start;
+                diagnostic->win_start[p] = mv_[p].win_start;
+                diagnostic->win_end[p] = mv_[p].win_end;
+            }
+            diagnostic->open = ex_.open;
+            diagnostic->settled = ex_.settled;
+            diagnostic->attacker = ex_.att;
+            diagnostic->contact = ex_.contact;
+            diagnostic->att_act = ex_.att_act;
+            diagnostic->def_act = ex_.def_act;
+            diagnostic->def_flag = ex_.def_flag;
+        }
         return nnew_;
     }
 
@@ -373,6 +414,7 @@ private:
         r.active_end = ex_.active_end;
         r.kind = ex_.hit ? (ex_.first && ex_.counter ? Kind::Counter : Kind::Hit) : Kind::Block;
         r.frame = t;
+        r.active_frame = ex_.win;
         return r;
     }
     void emit_part(uint64_t t)
@@ -392,6 +434,7 @@ private:
         r.kind = Kind::Whiff;
         r.no_adv = true;
         r.frame = t;
+        r.active_frame = m.win_start;
         push(r);
     }
     void push(const Result& r)

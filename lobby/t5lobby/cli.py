@@ -76,8 +76,9 @@ def main(argv=None):
         snap = c.next_event(5, ("lobby_state",)) or {}
         if a.list:
             for p in snap.get("players", []):
-                same = "" if p["build"] == build.build_id else "  [other build]"
-                print(f"  {p['name']:<16} {p['status']:<8} {p['rating']:>5}  {p['rtt'] or '-':>6} ms{same}")
+                same = "" if c.compatible(p) else "  [other build]"
+                region = p.get("region", "?")
+                print(f"  {p['name']:<16} [{region}] {p['status']:<8} {p['rating']:>5}  {p['rtt'] or '-':>6} ms{same}")
             for r in snap.get("rooms", []):
                 print(f"  room {r['id']}  {r['name']!r} by {r['owner']['name']}  {r['status']}")
             return 0

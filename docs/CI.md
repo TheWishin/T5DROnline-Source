@@ -225,6 +225,46 @@ in the script, with the reason next to it.
 
 ## Run it locally
 
+### PowerShell: distinguish test failures from stderr
+
+`unittest` writes its progress and even `OK` to stderr. Windows PowerShell can
+display that output as `python.exe : ...` / `NativeCommandError` when a native
+command is piped through `2>&1`. That wrapper alone does not mean a test failed:
+check the suite's summary and its exit code. Tests of rejected certificates,
+conflicting match results and unavailable relays also deliberately log warnings.
+
+For the lobby suite, run the following from the repository root. As described
+above, this suite starts local test servers; run it only where that is allowed.
+The `cmd.exe` redirection merges the child's output before PowerShell receives
+it. Each module gets its own process, all output stays visible, and any nonzero
+exit code makes the loop fail after the remaining modules have run:
+
+```powershell
+$failedModules = @()
+Push-Location lobby/tests
+try {
+    foreach ($module in (Get-ChildItem -File -Filter test_*.py | Sort-Object Name)) {
+        Write-Output "=== $($module.Name)"
+        & cmd.exe /d /c "python ../../tests/ci_unittest.py -v $($module.BaseName) 2>&1"
+        $suiteExitCode = $LASTEXITCODE
+        if ($suiteExitCode -ne 0) {
+            $failedModules += "$($module.Name) (exit $suiteExitCode)"
+        }
+    }
+} finally {
+    Pop-Location
+}
+if ($failedModules.Count -gt 0) {
+    throw "Failed test modules: $($failedModules -join ', ')"
+}
+```
+
+`OK (skipped=N)` still means the executed tests passed. The wrapper lists the
+skip reasons so that missing coverage remains visible. Keep the full traceback
+for a `FAIL` or `ERROR`; truncating output can hide the cause.
+
+### Command Prompt and native checks
+
 From a shell with the MSVC environment (`vcvars64.bat`) and LLVM on `PATH`:
 
     python tools/check_no_game_data.py --keys keys/ps3.keys

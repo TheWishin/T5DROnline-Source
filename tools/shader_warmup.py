@@ -4,6 +4,12 @@
 
     python tools/shader_warmup.py [--out DIR] [--fights N] [--fight-seconds S] [--minutes M] [--force]
 
+1.2.0: the launcher schedules this separately with --background (six short fights),
+so BUILD GAME completes when compilation completes. launcher/warmup.py stops the
+hidden game before a real game starts and restarts at the next unfinished fight
+afterwards. The explicit developer command below retains its longer foreground
+plan. No shader binaries or caches are shipped.
+
 A fresh build meets every pipeline once: the renderer decompiles the game's RSX programs into HLSL, compiles
 them (D3DCompile) and the driver builds the pipeline -- on the render translation's thread, during the first
 fights on every stage (a player's i5-2500 log: 300+ frames slowed by the translation in its first 30 s). The
@@ -19,8 +25,8 @@ The fights cover every stage of the stage select (ids 17-34) with the 35 fighter
 fight; Jinpachi needs an unlock offline), then the Tekken 5 stages (ids 0-13, 15) as far as --fights allows.
 
 Never fails a build: a game that does not start, stops or gets stuck ends the warm-up with a note and exit
-code 0; the first fights then build their pipelines as before. warmup.json in the cache folder (the game's
-size and time stamp) makes it run once per build; --force runs it again.
+code 0; the first fights then build their pipelines as before. warmup.json in the cache folder (the host
+and optional game DLL's sizes and nanosecond time stamps) makes it run once per build; --force runs it again.
 
 Lines it prints: "[warmup] fight 3 of 18: stage 19, lei vs king" (the launcher's Build tab shows them).
 
@@ -33,6 +39,7 @@ the first fights build the shaders that were not warmed.
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -52,12 +59,23 @@ PAD = ["RIGHT", "SQUARE", "", "TRIANGLE", "", "CROSS", "", "RIGHT", "CIRCLE", ""
        "SQUARE TRIANGLE", ""]
 CACHE = os.path.join("scratch", "rsx_shader_cache_v2")
 MARKER = "warmup.json"
+BACKGROUND_MARKER = "background_warmup.json"
+PAUSE_FILE = os.path.join("logs", "warmup.pause")
+CHILD_FILE = os.path.join("logs", "warmup.child")
 SKIP_FILE = os.path.join("logs", "warmup.skip")     # (launcher/core.py BuildRun.skip_warmup writes the same path)
 STALE_SKIP = 60.0                                   # an older skip file is left over from another run
 
 
 class Skipped(Exception):
     """The player pressed Skip warm-up."""
+
+
+class Paused(Exception):
+    """The launcher is starting a real game; leave the last checkpoint intact."""
+
+
+class BudgetExpired(Exception):
+    """The bounded warm-up must stop even while a fight or neutral wait is active."""
 
 
 def skip_requested(path):
@@ -75,7 +93,16 @@ def fight_lines(n):
 
 def exe_stamp(exe):
     st = os.stat(exe)
-    return {"size": st.st_size, "mtime": int(st.st_mtime)}
+    # Player releases reuse the host while build_game.py rebuilds its sibling
+    # t5dr_game.dll. Either component changing invalidates all warm-up progress.
+    stamp = {"size": st.st_size, "mtime_ns": st.st_mtime_ns, "game_dll": None}
+    try:
+        dll = os.stat(os.path.join(os.path.dirname(exe), "t5dr_game.dll"))
+    except FileNotFoundError:
+        pass  # Monolithic builds have no separate game DLL.
+    else:
+        stamp["game_dll"] = {"size": dll.st_size, "mtime_ns": dll.st_mtime_ns}
+    return stamp
 
 
 def read_json(path):
@@ -98,6 +125,7 @@ def main():
     ap.add_argument("--fight-seconds", type=float, default=6.0, help="seconds of each fight after FIGHT START")
     ap.add_argument("--minutes", type=float, default=12.0, help="give up after this long")
     ap.add_argument("--force", action="store_true", help="run again although warmup.json says it ran for this build")
+    ap.add_argument("--background", action="store_true", help="launcher-owned short resumable warm-up")
     ap.add_argument("env", nargs="*", help="extra NAME=VALUE for the game (tests)")
     a = ap.parse_args()
     out = os.path.abspath(a.out)
@@ -115,9 +143,13 @@ def warmup(a, out):
         note("no built game here -- nothing to warm up")
         return 0
     cache = os.path.join(cwd, CACHE)
-    marker = os.path.join(cache, MARKER)
+    background = bool(getattr(a, "background", False))
+    marker = os.path.join(cache, BACKGROUND_MARKER if background else MARKER)
     stamp = exe_stamp(cmd[0])
-    if not a.force and read_json(marker).get("exe") == stamp:
+    previous = read_json(marker)
+    plan = {"fights": a.fights, "seconds": a.fight_seconds}
+    matching = previous.get("exe") == stamp and (not background or previous.get("plan") == plan)
+    if not a.force and matching and (not background or previous.get("complete") is True):
         note("already done for this build")
         return 0
     if sys.platform != "win32":
@@ -129,6 +161,26 @@ def warmup(a, out):
         note("not for this version of the game (the European one) -- the first fights build their shaders instead")
         return 0
     lines = fight_lines(a.fights)
+    total = len(lines)
+    completed = previous.get("completed", 0) if background and matching and not a.force else 0
+    if not isinstance(completed, int) or not 0 <= completed <= total:
+        completed = 0
+    if background:
+        lines = lines[completed:]
+    pause = os.path.join(out, PAUSE_FILE) if background else None
+    if skip_requested(pause):
+        return 0
+
+    def checkpoint(done):
+        os.makedirs(cache, exist_ok=True)
+        tmp = marker + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"exe": stamp, "plan": plan, "completed": completed + done,
+                       "complete": completed + done == total}, f)
+        os.replace(tmp, marker)
+
+    if background:
+        checkpoint(0)
     skip = os.path.join(out, SKIP_FILE)
     try:
         if time.time() - os.path.getmtime(skip) > STALE_SKIP:
@@ -150,6 +202,8 @@ def warmup(a, out):
         "PS3_WINDOW_BACKGROUND": "1", "PS3_AUDIO_MUTE": "1", "PAD_NO_KEYBOARD": "1", "PS3_PAD_FILE": pad,
         "T5_UNLOCK_STAGES": "1",                    # the Tekken 5 stages offline (docs/DIRECTFIGHT.md "Unlocks")
     })
+    if background:
+        env.update({"PS3_WINDOW_HIDDEN": "1", "RSX_LIVE_DRAW": "1"})
     for k, v in extra.items():
         env[k] = v
     log_path = os.path.join(out, "logs", "warmup.log")
@@ -159,24 +213,53 @@ def warmup(a, out):
     t_end = time.time() + 60 * a.minutes
     done = 0
     skipped = False
+    paused = False
     with open(log_path, "w", encoding="utf-8", errors="replace") as log:
-        p = subprocess.Popen(cmd, env=env, cwd=cwd, stdout=log, stderr=subprocess.STDOUT,
-                             creationflags=subprocess.BELOW_NORMAL_PRIORITY_CLASS)
+        child_file = os.path.join(out, CHILD_FILE) if background else None
+        if child_file:
+            with open(child_file, "w", encoding="ascii") as f:
+                json.dump({"state": "starting"}, f)
         try:
+            p = subprocess.Popen(cmd, env=env, cwd=cwd, stdout=log, stderr=subprocess.STDOUT,
+                                 creationflags=subprocess.BELOW_NORMAL_PRIORITY_CLASS)
+        except OSError:
+            if child_file:
+                os.remove(child_file)  # No child was created.
+            raise
+        try:
+            if child_file:
+                tmp = child_file + ".tmp"
+                with open(tmp, "w", encoding="ascii") as f:
+                    json.dump({"pid": p.pid}, f)
+                os.replace(tmp, child_file)
             try:
-                done = play(ctl, status, p, lines, a.fight_seconds, t_end, pad, skip)
+                if background:
+                    done = play(ctl, status, p, lines, a.fight_seconds, t_end, pad, skip,
+                                pause=pause, progress=checkpoint)
+                else:
+                    done = play(ctl, status, p, lines, a.fight_seconds, t_end, pad, skip)
             except Skipped as e:
                 done, skipped = e.args[0], True
+            except Paused:
+                paused = True
+            except BudgetExpired:
+                note("out of time")
             if p.poll() is None:
                 ctl.send("quit")
                 try:
-                    p.wait(timeout=20)
+                    p.wait(timeout=0.25 if background else 20)
                 except subprocess.TimeoutExpired:
                     pass
         finally:
             if p.poll() is None:
                 p.kill()
                 p.wait()
+            if child_file:
+                os.remove(child_file)  # Only cleared after the hidden child's confirmed exit.
+    shutil.rmtree(work, ignore_errors=True)
+    if background:
+        note("paused" if paused else f"done: {completed + done} of {total} fights")
+        return 0
     if done or skipped:
         os.makedirs(cache, exist_ok=True)
         with open(marker, "w", encoding="utf-8") as f:
@@ -206,17 +289,24 @@ def set_pad(path, buttons):
             time.sleep(0.005)
 
 
-def play(ctl, status, p, lines, fight_seconds, t_end, pad, skip=None):
+def play(ctl, status, p, lines, fight_seconds, t_end, pad, skip=None, pause=None, progress=None):
     """Drive the persistent game through `lines`; returns how many fights reached FIGHT START. Raises
     Skipped(done) as soon as the skip file is there (checked every quarter of a second)."""
     done = 0
     last_match = 0
 
     def nap(seconds):
+        if skip_requested(pause):
+            raise Paused()
         if skip_requested(skip):
             raise Skipped(done)
-        time.sleep(seconds)
+        remaining = t_end - time.time()
+        if remaining <= 0:
+            raise BudgetExpired()
+        time.sleep(min(seconds, remaining))
     for i, (stage, p1, p2, line) in enumerate(lines):
+        if skip_requested(pause):
+            raise Paused()
         if time.time() > t_end:
             note("out of time")
             break
@@ -241,6 +331,8 @@ def play(ctl, status, p, lines, fight_seconds, t_end, pad, skip=None):
         t0 = time.time()
         k = 0
         while time.time() - t0 < fight_seconds:
+            if time.time() >= t_end:
+                raise BudgetExpired()
             set_pad(pad, PAD[k % len(PAD)])
             k += 1
             nap(0.25)
@@ -248,6 +340,8 @@ def play(ctl, status, p, lines, fight_seconds, t_end, pad, skip=None):
         ctl.send("idle")
         t0 = time.time()
         while time.time() - t0 < 90:
+            if time.time() >= t_end:
+                raise BudgetExpired()
             if p.poll() is not None:
                 note(f"the game stopped (exit code {p.returncode})")
                 return done
@@ -258,6 +352,8 @@ def play(ctl, status, p, lines, fight_seconds, t_end, pad, skip=None):
         else:
             note("the game did not come back to the select screen -- stopping")
             return done
+        if progress is not None:
+            progress(done)
     return done
 
 

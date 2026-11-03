@@ -131,19 +131,32 @@ class Host:
         cert = key = ""
         if not self.a.no_tls:
             cert, key = self.certificate()
-        cfg = Config.from_env(
-            host="0.0.0.0", port=self.a.port, udp_port=self.a.port,
-            udp_port2=self.a.udp_port2 if self.a.udp_port2 is not None else (self.a.port + 1 if self.a.port else 0),
-            db=os.path.join(self.data, "t5lobby.db"), tls_cert=cert, tls_key=key,
-            log_file=os.path.join(self.data, "logs", "t5lobby.log"),
-            backup_dir=os.path.join(self.data, "backups"), backup_keep=7,
-            status_port=self.a.status_port, motd=self.a.motd or "",
-            guests=True, accounts=not self.a.guests_only)
+        try:
+            cfg = Config.from_env(
+                host="0.0.0.0", port=self.a.port, udp_port=self.a.port,
+                udp_port2=self.a.udp_port2 if self.a.udp_port2 is not None else (self.a.port + 1 if self.a.port else 0),
+                db=os.path.join(self.data, "t5lobby.db"), tls_cert=cert, tls_key=key,
+                log_file=os.path.join(self.data, "logs", "t5lobby.log"),
+                backup_dir=os.path.join(self.data, "backups"), backup_keep=7,
+                status_port=self.a.status_port, motd=self.a.motd or "",
+                guests=True, accounts=not self.a.guests_only)
+        except ValueError as e:
+            self.say(str(e))
+            self.event("error", message=str(e))
+            return 2
         from .__main__ import setup_logging
         setup_logging(cfg)
         loop = proto.new_event_loop()
         asyncio.set_event_loop(loop)
-        srv = LobbyServer(cfg)
+        try:
+            srv = LobbyServer(cfg)
+        except (OSError, ValueError) as e:
+            # A missing/invalid server policy must fail closed, including when hosting
+            # from a player archive that deliberately does not ship the term list.
+            self.say(str(e))
+            self.event("error", message=str(e))
+            loop.close()
+            return 2
         stop = asyncio.Event()
         try:
             loop.run_until_complete(srv.start())

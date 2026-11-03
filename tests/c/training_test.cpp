@@ -600,6 +600,46 @@ static void test_active_window()
     CHECK(!strcmp(lead, "P2  WHIFF"));
 }
 
+/* Synthetic coverage for the 1.2.0 request, not new measured fighter data:
+ * different startups in the same string must stay different, for either
+ * attacker. Contact on the last active frame must retain the whole window. */
+static void test_string_unequal_startups()
+{
+    for (int attacker = 0; attacker < 2; attacker++) {
+        Timeline a(110), d(110);
+        a.move(10, 7, 70); a.active(19, 20);       /* i10~11 */
+        a.input(25, 25, kTriangle);
+        a.f[30].new_move = true; a.active(42, 43); /* i13~14, not i10 or i33 */
+        d.move(21, 0, 78);                       /* contact at the first window's end */
+        d.f[44].new_move = true;
+        const Run r = attacker ? run(d, a) : run(a, d);
+        CHECK_EQ(r.results.size(), 2);
+        if (r.results.size() == 2) {
+            const Result& first = r.results[0];
+            const Result& last = r.results[1];
+            CHECK_EQ(first.attacker, attacker); CHECK_EQ(last.attacker, attacker);
+            CHECK_EQ(first.startup, 10); CHECK_EQ(first.active_end, 11); CHECK(first.no_adv);
+            CHECK_EQ(last.startup, 13); CHECK_EQ(last.active_end, 14); CHECK(!last.no_adv);
+            CHECK_EQ(last.adv, 8);
+            char lead[64], tail[16]; Tone tone;
+            format_result(last, false, lead, sizeof lead, tail, sizeof tail, &tone);
+            CHECK(strstr(lead, "i13~14  BLOCK") != nullptr);
+        }
+        /* The first part whiffs instead: it keeps its own active window,
+         * while the second part still starts counting at its own animation. */
+        Timeline guard(110);
+        guard.move(44, 0, 78);
+        const Run w = attacker ? run(guard, a) : run(a, guard);
+        CHECK_EQ(w.results.size(), 2);
+        if (w.results.size() == 2) {
+            CHECK(w.results[0].kind == Kind::Whiff); CHECK(w.results[0].no_adv);
+            CHECK_EQ(w.results[0].startup, 10); CHECK_EQ(w.results[0].active_end, 11);
+            CHECK(w.results[1].kind == Kind::Block);
+            CHECK_EQ(w.results[1].startup, 13); CHECK_EQ(w.results[1].active_end, 14);
+        }
+    }
+}
+
 /* T5_TRAINING_POS: top as before; bottom inside the 720-unit canvas, nothing overlapping */
 static void test_overlay_layout()
 {
@@ -817,6 +857,67 @@ static void test_recorder()
     CHECK(r.state() == Recorder::State::Idle);
 }
 
+/* Issue #30: the live pad is for the dummy, not the stationary P1 fighter.
+ * PracticeGateTest checks that practice.cpp uses this same dummy-side conversion;
+ * these checks cover the slot contents and per-frame playback without the game. */
+static void test_recording_directions()
+{
+    static Recorder r;
+    const struct { bool right; uint16_t raw, rel; } frames[] = {
+        { true,  kLeft,                         kRight },                  /* forward on the right */
+        { true,  kDown | kLeft | kSquare,        kDown | kRight | kSquare }, /* d/f+1 */
+        { false, kRight | kTriangle,             kRight | kTriangle },      /* cross-up: f+2 */
+        { false, kLeft,                         kLeft },                   /* back on the left */
+        { true,  kRight,                        kLeft },                   /* cross back: back */
+        { true,  kUp | kRight | kCircle,         kUp | kLeft | kCircle },    /* u/b+4 */
+        { false, kLeft | kRight | kDown | kCross, kLeft | kRight | kDown | kCross },
+        { false, 0,                             0 },
+    };
+    for (bool other_start_side : { false, true }) {
+        r.clear_all();
+        r.toggle_record();
+        for (const auto& f : frames) {
+            const bool dummy_right = f.right != other_start_side;
+            const uint16_t raw = other_start_side ? flip_lr(f.raw) : f.raw;
+            const uint16_t rel = to_rel(raw, dummy_right);
+            CHECK_EQ(rel, f.rel);
+            CHECK_EQ(from_rel(rel, dummy_right), raw);  /* live input must never be reversed */
+            r.record(rel);
+        }
+        r.toggle_record();
+        CHECK_EQ(r.length(0), sizeof frames / sizeof frames[0]);
+        /* Start playback on either side, then cross up during the same playback. */
+        for (bool start_right : { false, true }) {
+            r.toggle_play(true);
+            for (int lap = 0; lap < 2; lap++) {
+                int i = 0;
+                for (const auto& f : frames) {
+                    const bool dummy_right = (i++ % 2) ? !start_right : start_right;
+                    uint16_t rel = 0;
+                    CHECK(r.next(&rel));
+                    CHECK_EQ(rel, f.rel);
+                    const uint16_t raw = from_rel(rel, dummy_right);
+                    const uint16_t expected = dummy_right ? flip_lr(f.rel) : f.rel;
+                    CHECK_EQ(raw, expected);
+                    CHECK_EQ(notation(raw, dummy_right).dir, notation(f.rel, false).dir);
+                    CHECK_EQ(notation(raw, dummy_right).buttons, notation(f.rel, false).buttons);
+                }
+            }
+            r.stop();
+        }
+    }
+    /* Every directional/button combination round-trips on either side, including
+     * left+right, up+down, diagonals and all four attack buttons together. */
+    for (bool dummy_right : { false, true }) {
+        for (unsigned directions = 0; directions < 16; directions++) {
+            for (unsigned buttons = 0; buttons < 16; buttons++) {
+                const uint16_t raw = (uint16_t)((directions << 12) | (buttons << 4));
+                CHECK_EQ(from_rel(to_rel(raw, dummy_right), dummy_right), raw);
+            }
+        }
+    }
+}
+
 static bool near(float a, float b, float eps = 0.01f) { return fabsf(a - b) < eps; }
 
 /* A stand-in for the game's walls: a square stage |x|, |z| <= w. A place
@@ -1021,7 +1122,7 @@ static void test_layout()
     rsx_overlay_text(1000, 10, 2, white, RSX_OVL_RIGHT, "+3");
     rsx_overlay_text(640, 40, 1, white, RSX_OVL_CENTER | RSX_OVL_SHADOW, "a b");
     rsx_overlay_rect(10.4f, 20.6f, 100.0f, 30.0f, RSX_OVL_RGBA(0, 0, 0, 150));
-    rsx_overlay_text(0, 100, 1, white, 0, "\xC3\x84\xC3\x96\xC3\x9C\xC3\xA4\xC3\xB6\xC3\xBC\xC3\x9F\xE2\x82\xAC\x01\x09");
+    rsx_overlay_text(0, 100, 1, white, 0, "\xC3\x84\xC3\x96\xC3\x9C\xC3\xA4\xC3\xB6\xC3\xBC\xC3\x9F?\x01\x09");
     rsx_overlay_end();
     n = rsx_overlay_layout(1280, 720, 1280, 720, q, 256);
     CHECK_EQ(n, 2 + 4 + 1 + 10);
@@ -1049,6 +1150,15 @@ static void test_layout()
     CHECK_EQ(rsx_overlay_layout(1280, 720, 1280, 720, q, 256), 11);
     rsx_overlay_clear();
     CHECK_EQ(rsx_overlay_layout(1280, 720, 1280, 720, q, 256), 0);
+    /* A string needing an unprepared native glyph is omitted in full. Live
+     * draw/width calls must not allocate a font or substitute question marks. */
+    const char* unprepared = "a\xE2\x82\xAC";
+    CHECK(!rsx_overlay_text_supported(unprepared));
+    CHECK_EQ(rsx_overlay_text_width(unprepared, 1), 0);
+    rsx_overlay_begin();
+    rsx_overlay_text(0, 0, 1, white, 0, unprepared);
+    rsx_overlay_end();
+    CHECK_EQ(rsx_overlay_layout(1280, 720, 1280, 720, q, 256), 0);
     /* the quad budget is respected */
     CHECK_EQ(rsx_overlay_layout(1280, 720, 1280, 720, q, 0), 0);
 }
@@ -1069,10 +1179,12 @@ int main()
     test_crouch_block();
     test_dj_string();
     test_active_window();
+    test_string_unequal_startups();
     test_overlay_layout();
     test_combos();
     test_dummy();
     test_recorder();
+    test_recording_directions();
     test_placer();
     test_font();
     test_layout();

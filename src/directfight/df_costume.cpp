@@ -7,7 +7,7 @@
  *
  *   1. At the start of a netplay session this PC reads its player's own save
  *      (T5_COSTUME_SAVE = the SYS-DATA of the offline save, the launcher names
- *      it; unset or "0" = nothing is shown) and keeps the blocks with something
+ *      it; unset or "0" = no customization) and keeps the blocks with something
  *      worn as a wire table (costume_logic.h), which netplay sends to the
  *      opponent (PKT_COSTUME, at most 9,283 bytes, chunked, acknowledged, the
  *      whole table checked against its hash) -- the opponent's arrives the same
@@ -25,8 +25,10 @@
  *      (costume::block_valid: the character's items, and -- hardening 1.1.4 --
  *      each part in its own place and only the colours the costume has, from
  *      the game's item shop tables, which this PC reads from the game's own
- *      T55DATA1.BIN once: load_rules); otherwise the zero block the game has
- *      there online today (the default costumes). Both PCs write the same bytes for
+ *      T55DATA1.BIN once: load_rules); otherwise a canonical unequipped block
+ *      (0xFFFF worn parts, 0xFF worn colours, all other bytes zero in each
+ *      costume). Zero colours mean colour index 0, not nothing worn.
+ *      Both PCs write the same bytes for
  *      both sides; the bytes' hash is logged, read back once the loading is
  *      over, and the blocks go into the replay (a replay writes them again).
  *
@@ -158,9 +160,6 @@ uint64_t g_written_hash = 0;         /* both sides' blocks as written at FIGHT S
 bool g_written = false, g_checked = false;
 uint8_t g_written_blocks[2 * costume::kBlock];   /* ... the bytes (for the replay) */
 
-/* a block with any byte set (a replay's zero block: nothing was written for that side) */
-bool block_any(const uint8_t* b) { for (uint32_t i = 0; i < costume::kBlock; i++) if (b[i]) return true; return false; }
-
 /* The player's own table from T5_COSTUME_SAVE (or `var`). */
 std::vector<uint8_t> load_wire(const char* var, std::string& why)
 {
@@ -203,7 +202,7 @@ int item_char_of(int side, uint32_t* objp)
 extern int g_models[2];   /* df_fight.cpp: the model each side fights with (set at FIGHT START, before costume_apply) */
 
 namespace {
-/* 1.1.4's open question (docs/DIRECTFIGHT.md "Custom costumes online", Open): a side that fights with the same
+/* 1.1.4's historical model-reuse investigation (docs/DIRECTFIGHT.md "Custom costumes online"): a side that fights with the same
  * model as in this game's previous fight keeps the fighter the game has loaded unless the game went through the
  * title in between, so a new block on that side does not show. Logged only, so a player's log says it at once. */
 int g_last_model[2] = { -1, -1 };
@@ -341,28 +340,17 @@ void costume_apply(uint32_t f, CostumeMode m, uint32_t match)
         wires[0] = g_local_wire;
         wires[1] = load_wire("T5_COSTUME_SAVE2", why2);
     }
-    static const uint8_t kZero[costume::kBlock] = {};
     uint64_t h = costume::fnv64(nullptr, 0);
     std::string line, worn;
     for (int s = 0; s < 2; s++) {
         uint32_t obj = 0;
         const int c = item_char_of(s, &obj);
-        const uint8_t* src = kZero;
-        const char* why = "nothing customized";
-        costume::Table t;
-        if (m == CostumeMode::Replay) {
-            /* the blocks the live match fought in, checked again (a file can be edited) */
-            if (!replay) why = "not in the replay";
-            else if (block_any(recorded + s * costume::kBlock) && c >= 0) {
-                if (check(recorded + s * costume::kBlock, c, &why)) { src = recorded + s * costume::kBlock; why = "custom (replay)"; }
-            }
-        } else if (!costume::from_wire(wires[s].data(), wires[s].size(), t)) why = "no table (not a valid one)";
-        else if (c < 0) why = "item character unknown";
-        else if (t.have[c]) {
-            if (check(t.blk[c], c, &why)) { src = t.blk[c]; why = "custom"; }
-        }
+        uint8_t src[costume::kBlock];
+        const char* why = nullptr;
+        const bool custom = costume::select_block(src, c, wires[s].data(), wires[s].size(),
+            m == CostumeMode::Replay, replay ? recorded + s * costume::kBlock : nullptr, check, &why);
         const uint32_t dst = base + (uint32_t)s * kCustomStride;
-        memcpy(vm_base + dst, src, costume::kBlock);     /* big-endian bytes, as in the save */
+        memcpy(vm_base + dst, src, costume::kBlock);     /* selected live or historical replay bytes, unchanged */
         memcpy(g_written_blocks + s * costume::kBlock, src, costume::kBlock);
         h = costume::fnv64(src, costume::kBlock, h);
         reuse_note(f, s, match, costume::fnv64(src, costume::kBlock));
@@ -370,7 +358,7 @@ void costume_apply(uint32_t f, CostumeMode m, uint32_t match)
         snprintf(b, sizeof b, "%sP%d item char %d (fighter 0x%08X): %s", s ? ", " : "", s + 1, c, obj, why);
         line += b;
         snprintf(b, sizeof b, "%sP%d ", s ? "; " : "", s + 1);
-        worn += b + (src == kZero ? std::string("default") : worn_text(src, c, g_models[s]));
+        worn += b + (custom ? worn_text(src, c, g_models[s]) : std::string("default"));
     }
     g_written_hash = h;
     g_written = true;

@@ -3828,3 +3828,11 @@ driver). Not changed; his game log's `[slow-frames]` verdict and `[gpu-pass]` li
   DSP code (FFT butterflies) already on patch 0064's fast float path; making it cheaper is lifter/runtime work for a
   feature release, not a minor update. Next on the main thread: `vmx_vmaddfp`'s four scalar lanes (4.4 %), which a
   vectorised single-precision software FMA would cut -- not done (needs the same bit-exact proof as 0084's double path).
+
+## 1.2.0 VRR pacing candidate
+
+Patch 0103 adds an opt-in presentation pacing experiment; its default is off. See
+[VRR_PACING_1.2.0.md](VRR_PACING_1.2.0.md) for the comparison and release gates, and
+[VRR_STALL_PROFILE_1.2.0.md](VRR_STALL_PROFILE_1.2.0.md) for the source-only profile of the supplied
+rare game-thread stalls. The target remains 60000/1001 Hz. Neither flat displayed intervals, unchanged input
+latency, compilation nor pair determinism has been demonstrated by this source-only work.

@@ -26,7 +26,8 @@ import tkinter as tk
 import tkinter.font as tkfont
 from tkinter import ttk
 
-from . import fighter_art, fighters, i18n, proto, ranks, theme, tk_charsel, tk_history, tk_rules, tk_stats, tk_tour
+from . import (chat, fighter_art, fighters, i18n, proto, ranks, theme, tk_charsel, tk_history, tk_ranked_chars,
+               tk_rules, tk_stats, tk_tour)
 from .i18n import N_, t
 from .lag import describe_event as describe_lag, lagged
 from .rank_art import ART
@@ -39,12 +40,13 @@ HEADINGS = {"player": N_("Player"), "rank": N_("Rank"), "rating": N_("Rating"), 
             "main": N_("Main"), "status": N_("Status"), "ping": N_("Ping"), "room": N_("Room"),
             "owner": N_("Owner"), "state": N_("State"), "place": N_("Place"), "when": N_("When"),
             "result": N_("Result"), "opponent": N_("Opponent"), "chars": N_("Characters"), "score": N_("Score"),
-            "request": N_("Request")}
+            "request": N_("Request"), "mute": N_("Mute")}
 # the Stats page (tk_stats.py)
 HEADINGS.update(fighter=N_("Fighter"), matches=N_("Matches"), wins=N_("Wins"), winrate=N_("Win rate"),
                 share=N_("Picked"))
 # the leaderboard's split record (1.1.9, tk_challenges.py)
 HEADINGS.update(rw=N_("Ranked W"), rl=N_("Ranked L"), cw=N_("Casual W"), cl=N_("Casual L"))
+HEADINGS.update(games=N_("Games"), losses=N_("Losses"), draws=N_("Draws"))
 
 # The path two players will most likely get (the server's `ping.path`, 1.1.5): shown before a match is accepted
 PING_PATH_TEXT = {"direct": N_("probably a direct connection"), "lan": N_("probably over the local network"),
@@ -190,6 +192,8 @@ class OnlineView:
         self._empty = {}                   # list -> its empty-state label (tree(empty=...))
         self._wrap_bound = set()
         self._wrap_after = None
+        self._status_after = None
+        self._closed = False
         self.revealed = None               # the opponent once both accepted (match_reveal)
         self.match_ev = None               # match_start of the match being played
         self.game_phase = None
@@ -265,7 +269,7 @@ class OnlineView:
         return label
 
     def _on_resize(self, _e=None):
-        if self._wrap_after is None:
+        if not self._closed and self._wrap_after is None:
             try:
                 self._wrap_after = self.box.after(60, self._apply_wraps)
             except tk.TclError:
@@ -346,6 +350,7 @@ class OnlineView:
     def _build(self):
         tab, px = self.tab, self.px
         self.box = ttk.Frame(tab.parent, padding=(px(14), px(14), px(14), px(8)))   # (launcher/tab_look.MARGIN)
+        self.box.bind("<Destroy>", self._on_destroy, add="+")
         self.box.pack(fill="both", expand=True)
         self.box.columnconfigure(0, weight=1)
         self.box.rowconfigure(0, weight=1)
@@ -651,6 +656,8 @@ class OnlineView:
         tab.b_myprofile.pack(side="left")
         tab.b_logout = ttk.Button(row, text=t("Log out"), style="Card.Small.TButton", command=tab.do_logout)
         tab.b_logout.pack(side="left", padx=(px(6), 0))
+        tab.private_chat.inbox = tab.private_chat.button(card, tab.private_chat.show, "Private messages")
+        tab.private_chat.inbox.grid(row=7, column=0, columnspan=2, sticky="w", pady=(px(6), 0))
         tab.me_row = card
 
     def _build_stage(self, scr):
@@ -861,11 +868,13 @@ class OnlineView:
         tab.actions["challenge"], tab.action_text["challenge"] = b, t("Challenge")
         ttk.Button(tools, text=t("Profile"), style="Card.Small.TButton", command=tab._profile_of_selected).pack(
             side="left", padx=(px(6), 0))
-        fr, tab.tv_players = self.tree(pc, ("player", "rank", "rating", "record", "main", "status", "ping"),
-                                       (130, 168, 70, 80, 80, 110, 62), height=6,   # rank: "Beginner (placement 4/5)"
+        tab.private_chat.button(tools, tab.private_chat.selected_player).pack(side="left", padx=(px(6), 0))
+        fr, tab.tv_players = self.tree(pc, ("player", "rank", "rating", "record", "main", "status", "ping", "mute"),
+                                       (130, 168, 70, 80, 80, 110, 62, 70), height=6,   # rank: "Beginner (placement 4/5)"
                                        empty=t("Nobody else is online right now. Ranked match and Quick match "
                                                "keep looking until someone comes."))
         fr.grid(row=1, column=0, sticky="nsew")
+        tab.tv_players.bind("<Button-1>", tab.on_player_mute_click, add="+")
         tab.tv_players.bind("<Double-1>", lambda _e: tab._profile_of_selected())
         tab.tv_players.bind("<Return>", lambda _e: tab._profile_of_selected())
         tab.tv_players.bind("<<TreeviewSelect>>", lambda _e: tab.chal.selection_changed(), add="+")
@@ -910,6 +919,8 @@ class OnlineView:
         log.tag_configure("chat_head", font=fonts["bold"], spacing1=px(9), spacing3=px(1))
         log.tag_configure("chat_msg", foreground=C["text"], lmargin1=px(8), lmargin2=px(8), spacing1=px(1))
         log.tag_configure("chat_sys", foreground=C["muted"], font=fonts["small"], spacing1=px(9), spacing3=px(1))
+        log.tag_configure("chat_dev", foreground=C["gold"], background=C["note_bg"], font=fonts["bold"])
+        log.tag_configure("chat_mention", background=C["note_bg"], foreground=C["gold"])
 
         row = self.body(cc)
         row.grid(row=2, column=0, sticky="we", pady=(px(8), 0))
@@ -917,8 +928,11 @@ class OnlineView:
         ce = ttk.Entry(row, textvariable=tab.chat_var, style="Card.TEntry", width=8)    # (it grows with the card)
         ce.grid(row=0, column=0, sticky="we")
         ce.bind("<Return>", lambda _e: tab.do_chat())
+        ce.bind("<Tab>", tab.complete_mention)
         ttk.Button(row, text=t("Send"), style="Card.TButton", command=tab.do_chat).grid(row=0, column=1,
                                                                                         padx=(px(6), 0))
+        self.mention_hint = ttk.Label(cc, text="", style="Card.Muted.TLabel", wraplength=px(240))
+        self.mention_hint.grid(row=3, column=0, sticky="w", pady=(px(4), 0))
 
     def chat_name_tag(self, name, mine=False):
         """The chat log's tag for a sender's name: bold (chat_head) in theme.name_color(name), the accent for you."""
@@ -955,7 +969,7 @@ class OnlineView:
     def _build_profile_page(self, page):
         tab, px = self.tab, self.px
         page.columnconfigure(0, weight=1)
-        page.rowconfigure(1, weight=1)
+        page.rowconfigure(2, weight=1)
         acc = ttk.Frame(page)
         acc.grid(row=0, column=0, sticky="we", pady=(0, px(6)))
         ttk.Label(acc, text=t("Your account").upper(), style="Caps.TLabel").pack(side="left", padx=(0, px(10)))
@@ -965,8 +979,16 @@ class OnlineView:
                                  command=tab.do_new_codes)
         for b in (tab.b_blocked, tab.b_passwd, tab.b_codes):
             b.pack(side="left", padx=(0, px(6)))
+        peer_tools = ttk.Frame(page)
+        peer_tools.grid(row=1, column=0, sticky="we", pady=(0, px(6)))
+        tab.private_chat.button(peer_tools, tab.private_chat.profile).pack(side="left", padx=(0, px(6)))
+        self.profile_mute = ttk.Button(peer_tools, text=t("Mute"), style="Small.TButton", state="disabled",
+                                       command=lambda: tab.toggle_mute(tab.profile_name))
+        self.profile_mute.pack(side="left", padx=(0, px(6)))
+        ttk.Button(peer_tools, text=t("Muted players..."), style="Small.TButton", command=tab.do_muted).pack(
+            side="left", padx=(0, px(6)))
         card = self.card(page, pad=14)
-        card.grid(row=1, column=0, sticky="nsew")
+        card.grid(row=2, column=0, sticky="nsew")
         card.columnconfigure(1, weight=1)
         card.rowconfigure(2, weight=1)
         self.prof_badge = theme.Badge(card, size=40)
@@ -991,6 +1013,7 @@ class OnlineView:
         fr.grid(row=2, column=0, columnspan=2, sticky="nsew")
         tab.tv_hist.tag_configure("won", foreground=C["ok"])
         tab.tv_hist.tag_configure("lost", foreground=C["bad"])
+        self.ranked_chars = tk_ranked_chars.RankedCharacters(self, card)
 
     def _build_friends_page(self, page):
         """Friends (accounts): the list with who is online, invites, requests both ways, add by name."""
@@ -1111,7 +1134,7 @@ class OnlineView:
         self.status_label = self.wrap(ttk.Label(st, textvariable=tab.status_var, style="Muted.TLabel",
                                                 justify="left"), box, 340)
         self.status_label.grid(row=0, column=0, sticky="w")
-        self.box.after_idle(self._place_status)
+        self._status_after = self.box.after_idle(self._place_status)
         rep = ttk.Frame(st)
         rep.grid(row=0, column=1, sticky="e", padx=(px(10), px(10)))
         # after a match: the launcher's "Report a problem" window (tk_tab packs it into this frame)
@@ -1148,6 +1171,9 @@ class OnlineView:
 
     def _place_status(self):
         """The tab's own status line, unless the launcher shows the same line in its status bar."""
+        self._status_after = None
+        if self._closed:
+            return
         try:
             if isinstance(getattr(self.tab.app, "status", None), tk.StringVar):
                 self.status_label.grid_remove()
@@ -1351,6 +1377,17 @@ class OnlineView:
 
     def profile_shown(self, p):
         self.prof_badge.set(_tier_of(p) if p.get("account", True) else None, p.get("provisional"))
+        self.ranked_chars.shown(p)
+        self._update_profile_mute()
+
+    def _update_profile_mute(self):
+        if not hasattr(self, "profile_mute"):
+            return
+        tab, c = self.tab, self.tab.client
+        name = tab.profile_name
+        available = bool(c and c.me and name and name.lower() != c.me["name"].lower())
+        self.profile_mute.configure(state="normal" if available else "disabled",
+                                    text=t("Unmute") if available and tab._is_muted(name) else t("Mute"))
 
     def hosting(self, info):
         if not info:
@@ -1407,6 +1444,7 @@ class OnlineView:
         except tk.TclError:
             return
         self._update_profile()
+        self._update_profile_mute()
         self._update_play()
         stage = self._pick_stage()
         if stage == "search" and self.search_t0 is None:
@@ -1449,7 +1487,7 @@ class OnlineView:
         me = c.me if c is not None else None
         if not me:
             return
-        sig = (me.get("name"), me.get("tier"), me.get("rank"), me.get("provisional"), me.get("rating"),
+        sig = (me.get("name"), me.get("badge"), me.get("tier"), me.get("rank"), me.get("provisional"), me.get("rating"),
                tuple(me.get("record") or ()), me.get("main"), me.get("guest"), round(c.server_rtt or 0), c.tls,
                str(me.get("placement")))
         if sig == self._prof_sig:
@@ -1458,7 +1496,7 @@ class OnlineView:
         guest = me.get("guest")
         tier = None if guest else _tier_of(me)
         self.me_badge.set(tier, bool(me.get("provisional")) and not guest)
-        self.me_name.configure(text=me.get("name", ""))
+        self.me_name.configure(text=chat.display_name(dict(me, badge=tab._player_badge(me))))
         rec = me.get("record") or [0, 0, 0]
         if guest:
             self.me_rank.configure(text=t("Guest · casual matches"), foreground=C["muted"])
@@ -1854,6 +1892,9 @@ class OnlineView:
                                                               pady=(px(10), 0))
         if inv.get("kind") == "casual":
             self._wish_row(left, inv.get("wish"), 4)
+            if inv.get("first_to"):
+                ttk.Label(left, text=t("FT{wins}", wins=inv["first_to"]), style="Card.Bold.TLabel").grid(
+                    row=6, column=0, columnspan=2, sticky="w", pady=(px(4), 0))
         if inv and (inv.get("room") or {}).get("size", 2) <= 2:    # (1.1.5; a bigger room: others play there too)
             self._ping_row(left, self._card_ping(inv, "from"), 5)
 
@@ -1899,6 +1940,9 @@ class OnlineView:
         se = info.get("set_end")
         if se and se.get("tournament"):
             sub = t("Tournament set vs {name}", name=info["opp"]) if info.get("opp") else t("Tournament set")
+        elif se and se.get("casual"):
+            sub = t("Casual set vs {name}", name=info["opp"]) if info.get("opp") else t("Casual set")
+            sub += " -- " + t("FT{wins}", wins=se.get("first_to") or se.get("wins_needed") or 1)
         elif se:
             sub = t("Ranked set vs {name}", name=info["opp"]) if info.get("opp") else t("Ranked set")
         elif info.get("opp"):
@@ -2014,8 +2058,10 @@ class OnlineView:
         strip = self.card(v, "Tile.TFrame", 10)
         strip.grid(row=row, column=0, sticky="we", pady=(px(10), 0))
         strip.columnconfigure(2, weight=1)
-        ttk.Label(strip, text=t("TOURNAMENT SET · BEST OF {best}", best=best) if info.get("tournament") else
-                  t("RANKED SET · BEST OF {best}", best=best), style="Tile.Caps.TLabel").grid(
+        title = (t("CASUAL SET · FT{wins}", wins=info.get("first_to") or info.get("wins_needed") or 1)
+                 if info.get("casual") else t("TOURNAMENT SET · BEST OF {best}", best=best)
+                 if info.get("tournament") else t("RANKED SET · BEST OF {best}", best=best))
+        ttk.Label(strip, text=title, style="Tile.Caps.TLabel").grid(
             row=0, column=0, columnspan=2, sticky="w")
         d, gap = px(12), px(6)
         dots = tk.Canvas(strip, width=best * (d + gap), height=d + 2, bg=C["raised"], highlightthickness=0,
@@ -2024,9 +2070,11 @@ class OnlineView:
             x = i * (d + gap) + 1
             col = C["ok"] if i < mine else C["bad"] if i < mine + theirs else None
             dots.create_oval(x, 1, x + d, d + 1, fill=col or C["raised"], outline=col or C["line_hi"], width=2)
-        dots.grid(row=1, column=0, sticky="w", pady=(px(6), 0))
+        if not info.get("casual"):
+            dots.grid(row=1, column=0, sticky="w", pady=(px(6), 0))
         ttk.Label(strip, text=t("Set {mine}-{theirs}", mine=mine, theirs=theirs), style="Tile.Num.TLabel").grid(
-            row=1, column=1, sticky="w", padx=(px(12), 0), pady=(px(4), 0))
+            row=1, column=0 if info.get("casual") else 1, sticky="w",
+            padx=(0 if info.get("casual") else px(12), 0), pady=(px(4), 0))
         when = (t("Game {number} of {best} again (no winner), starts in", number=number, best=best)
                 if nxt.get("replay") else t("Game {number} of {best} starts in", number=number, best=best))
         ttk.Label(strip, text=when, style="Tile.Bold.TLabel").grid(row=0, column=2, rowspan=2, sticky="e",
@@ -2112,7 +2160,7 @@ class OnlineView:
                                          or self.set_ring is not None)
 
     def _ensure_anim(self):
-        if self._anim_id is None and self._anim_needed():
+        if not self._closed and self._anim_id is None and self._anim_needed():
             self._anim_t = time.monotonic()
             try:
                 self._anim_id = self.box.after(33, self._anim)
@@ -2121,6 +2169,8 @@ class OnlineView:
 
     def _anim(self):
         self._anim_id = None
+        if self._closed:
+            return
         try:
             shown = bool(self.box.winfo_viewable())
         except tk.TclError:
@@ -2149,9 +2199,15 @@ class OnlineView:
             except tk.TclError:
                 self._anim_id = None
 
+    def _on_destroy(self, event):
+        # Destroying a widget removes its Tcl commands but leaves its after scripts queued.
+        if event.widget is self.box:
+            self.close()
+
     def close(self):
-        for attr in ("_anim_id", "_wrap_after"):
-            aid = getattr(self, attr)
+        self._closed = True
+        for attr in ("_anim_id", "_wrap_after", "_status_after"):
+            aid = getattr(self, attr, None)
             if aid is not None:
                 try:
                     self.box.after_cancel(aid)

@@ -8,7 +8,7 @@
  *            game needs to play the session back; the JSON is only a view of it
  *
  * Binary, little-endian:
- *   "T5RP" u32 version (4)
+ *   "T5RP" u32 version (7; formats 1..6 keep their original START/SELECT semantics)
  *   u32 flags (bit 0: rollback; format 4: bit 1 the select screen's random generator is pinned
  *       to the session's seed mixed with the match number -- older files: one seed per session --
  *       bit 2 Jinpachi and the random cell were offered, T5_NET_UNLOCKS=open),
@@ -47,6 +47,8 @@
 #include <vector>
 
 #include "replay.h"
+#include "replay_paths.h"
+#include "replay_publish.h"
 #include "match_rules.h"   /* format 5: a match's rules word */
 
 extern "C" int t5_unlock_online_open(void);   /* src/directfight/df_unlock.cpp: T5_NET_UNLOCKS=open of this session */
@@ -56,10 +58,12 @@ unsigned char* rp_zlib_decompress(const unsigned char* data, int len, int* out_l
 namespace rp {
 namespace {
 
-constexpr uint32_t kVersion = 5;   /* 2: the last frame the recording game ran (after the hash interval);
+constexpr uint32_t kVersion = 7;   /* 2: the last frame the recording game ran (after the hash interval);
                                     3: each match's custom costume blocks;
                                     4: header flags bit 1 (select seed per match) and bit 2 (unlocks open);
-                                    5: each match's rules word (online training, the health handicap) */
+                                    5: each match's rules word (online training, the health handicap);
+                                    6: rules bit 1 automatic after-round skips;
+                                    7: filter cross-pad START/SELECT soft reset; old readers must reject */
 constexpr uint32_t kFlagRollback = 1, kFlagSelectMix = 2, kFlagUnlocksOpen = 4;
 constexpr uint32_t kCostumeBlock = 0x108;
 constexpr int kMaxDelay = 30;      /* netplay_core.cpp kMaxDelay: the input delay a session can have */
@@ -68,6 +72,7 @@ constexpr char kMagic[] = "T5REPLAY 1\n";
 struct Match {
     uint32_t start = 0, end = 0, frames = 0, hash_frame = 0, desync = 0;
     Fight ft;
+    bool soft_reset_guard = false;  /* playback policy captured when this match was decoded */
     bool have_result = false, have_hash = false, complete = false;
     int winner = -1, score[2] = { 0, 0 };
     uint64_t hash = 0;
@@ -79,6 +84,7 @@ struct Data {
     bool rollback = false;
     bool select_mix = true;       /* format 4: the select seed mixes the match number (older: false) */
     bool unlocks_open = false;    /* format 4: T5_NET_UNLOCKS=open (Jinpachi and the random cell offered) */
+    uint32_t version = 5;          /* decoded format; new recordings always publish kVersion */
     uint32_t session_seed = 0, match_seed = 0, hash_every = 60;
     uint32_t last = 0;            /* the last frame the recording game ran (its inputs go `delay` frames further) */
     std::string build, created;
@@ -175,11 +181,17 @@ uint32_t header_flags(const Data& d)
     return (d.rollback ? kFlagRollback : 0u) | (d.select_mix ? kFlagSelectMix : 0u) | (d.unlocks_open ? kFlagUnlocksOpen : 0u);
 }
 
+uint32_t rules_version(const Data& d)
+{
+    (void)d;
+    return kVersion;  /* the input filter changed even when automatic round skipping is off */
+}
+
 std::vector<uint8_t> to_binary(const Data& d, const InputSource& src)
 {
     std::vector<uint8_t> b;
     b.insert(b.end(), { 'T', '5', 'R', 'P' });
-    put32(b, kVersion);
+    put32(b, rules_version(d));
     put32(b, header_flags(d));
     put32(b, (uint32_t)d.slot); put32(b, (uint32_t)d.delay); put32(b, (uint32_t)d.rb_delay);
     put32(b, d.session_seed); put32(b, d.match_seed);
@@ -238,6 +250,7 @@ bool session_ok(int slot, int delay, int rb_delay)
 Match get_match(Reader& r, uint32_t ver)
 {
     Match m;
+    m.soft_reset_guard = ver >= 7;
     m.start = r.u32(); m.end = r.u32(); m.frames = r.u32(); m.hash_frame = r.u32(); m.desync = r.u32();
     const uint32_t fl = r.u32();
     m.have_result = fl & 1; m.have_hash = (fl & 2) != 0; m.complete = (fl & 4) != 0;
@@ -249,6 +262,7 @@ Match get_match(Reader& r, uint32_t ver)
     if (ver >= 3 && (r.u32() & 1))         /* format 3: the custom costume blocks the match was fought in */
         m.ft.costumes = r.bytes(m.ft.cos[0], kCostumeBlock) && r.bytes(m.ft.cos[1], kCostumeBlock);
     if (ver >= 5) m.ft.rules = r.u32();    /* format 5: training, health handicap (older files: none) */
+    if (ver < 6) m.ft.rules &= ~2u;       /* no automatic skip in older replay formats */
     return m;
 }
 
@@ -267,6 +281,7 @@ bool from_binary(const uint8_t* p, size_t n, Data& d, std::string* why)
     r.i = 4;
     const uint32_t ver = r.u32();
     if (ver < 1 || ver > kVersion) { *why = "replay format " + std::to_string(ver) + " (this game reads 1 to " + std::to_string(kVersion) + ")"; return false; }
+    d.version = ver;
     const uint32_t hf = r.u32();
     d.rollback = (hf & kFlagRollback) != 0;
     d.select_mix = ver >= 4 && (hf & kFlagSelectMix);       /* format 3 and older: one select seed per session */
@@ -336,7 +351,7 @@ std::string to_json(const Data& d, bool names, uint32_t frames)
     snprintf(b, sizeof b, "\"format\": %u, \"build\": %s, \"created\": %s, \"mode\": \"%s\", \"slot\": %d, \"delay\": %d, "
                           "\"rb_delay\": %d, \"seed\": %u, \"match_seed\": %u, \"frames\": %zu, \"last_frame\": %u, \"hash_every\": %u, "
                           "\"sync_points\": %zu, \"hashes\": %zu, \"unlocks\": \"%s\", \"matches\": [",
-             kVersion, jstr(d.build).c_str(), jstr(d.created).c_str(), d.rollback ? "rollback" : "lockstep", d.slot, d.delay,
+             rules_version(d), jstr(d.build).c_str(), jstr(d.created).c_str(), d.rollback ? "rollback" : "lockstep", d.slot, d.delay,
              d.rb_delay, d.session_seed, d.match_seed, (size_t)frames, d.last, d.hash_every,
              d.bars.size(), d.hashes.size(), d.unlocks_open ? "open" : "closed");
     j += b;
@@ -355,6 +370,7 @@ std::string to_json(const Data& d, bool names, uint32_t frames)
             snprintf(b, sizeof b, ", \"training\": %s, \"life\": [%d, %d]", ru.training ? "true" : "false", ru.life[0],
                      ru.life[1]);
             j += b;
+            j += std::string(", \"auto_skip_after_round\": ") + (ru.auto_skip_after_round ? "true" : "false");
         }
         if (m.have_hash) { snprintf(b, sizeof b, ", \"hash\": \"%016llx\"", (unsigned long long)m.hash); j += b; }
         if (!m.reason.empty()) j += ", \"reason\": " + jstr(m.reason);
@@ -389,6 +405,7 @@ struct Store : InputSource {
     np::PadInput live_prev[2] = { np::kNeutral, np::kNeutral };
     uint64_t live_bytes = 0;
     bool live_started = false;                     /* mu: the SESSION record is out (the handshake, or rec_start) */
+    uint32_t live_rules_version = 5;                 /* version guard precedes the first SESSION */
     std::vector<uint8_t> live_pend;                /* mu: records waiting for the writer */
     Store() { chunks.reserve(kMaxChunks); }
     np::PadInput get(int p, uint32_t f) const override { return chunks[f / kChunk]->in[p][f % kChunk]; }
@@ -469,13 +486,15 @@ void write_store(const std::shared_ptr<Store>& st, uint32_t seq)
     const std::string json = to_json(d, st->names, n) + "\n";
     const std::string tmp = st->path + ".tmp";
     bool ok = false;
-    if (FILE* fp = fopen(tmp.c_str(), "wb")) {
+    if (FILE* fp = replay_paths::open(tmp.c_str(), "wb")) {
         ok = fwrite(kMagic, 1, sizeof kMagic - 1, fp) == sizeof kMagic - 1 && fwrite(json.data(), 1, json.size(), fp) == json.size() &&
              fwrite(z, 1, (size_t)zlen, fp) == (size_t)zlen;
         ok = (fclose(fp) == 0) && ok;
     }
     free(z);
-    if (ok) for (int i = 0; i < 50 && !t5p_replace_file(tmp.c_str(), st->path.c_str()); i++) Sleep(2);
+    if (ok) ok = detail::publish_retry(
+        [&] { return replay_paths::replace(tmp.c_str(), st->path.c_str()) != 0; },
+        [] { Sleep(2); });
     QueryPerformanceCounter(&q1); QueryPerformanceFrequency(&qf);
     note("%s %s: %zu matches, %u frames, %zu bytes (inputs and hashes %zu -> %d compressed), %.1f ms", ok ? "written" : "COULD NOT WRITE",
          st->path.c_str(), d.matches.size(), n, (size_t)(sizeof kMagic - 1) + json.size() + (size_t)zlen, bin.size(), zlen,
@@ -485,7 +504,8 @@ void write_store(const std::shared_ptr<Store>& st, uint32_t seq)
 /* ---- the live stream ---------------------------------------------------------
  * <T5_REPLAY_LIVE> (a spectator's game reads it while it grows, docs/SPECTATE.md):
  *   "T5LIVE 1", newline, then records: u8 type, u32 payload length, payload (little-endian)
- *   SESSION  u32 version 1, flags (bit 0 rollback, bits 1 and 2 as in the replay's header),
+ *   SESSION  u32 version 1 (format 5), 2 (format 6), or 3 (format 7), flags (bit 0 rollback,
+ *            bits 1 and 2 as in the replay's header); a version guard precedes each strict upgrade,
  *            slot, delay, rollback delay, session seed,
  *            match seed, hash interval; str build, created (again when the rollback delay is
  *            known: the latest counts)
@@ -504,6 +524,10 @@ void write_store(const std::shared_ptr<Store>& st, uint32_t seq)
 constexpr char kLiveMagic[] = "T5LIVE 1\n";
 enum LiveRec : uint8_t { L_SESSION = 1, L_INPUTS = 2, L_HASH = 3, L_BARRIER = 4, L_MATCH = 5, L_LAST = 6, L_END = 7 };
 constexpr uint32_t kLiveMaxRecord = 1u << 24;
+/* A five-byte version barrier with no payload. Old native readers stop at their length limit
+ * before seeing any unsupported MATCH. New readers recognize only this exact header. */
+constexpr uint8_t kLiveRulesGuard = 0xFE;
+constexpr uint32_t kLiveRulesGuardLength = kLiveMaxRecord + 1;
 std::mutex g_live_mu;
 
 void live_rec(std::vector<uint8_t>& out, uint8_t type, const std::vector<uint8_t>& payload)
@@ -516,7 +540,7 @@ void live_rec(std::vector<uint8_t>& out, uint8_t type, const std::vector<uint8_t
 std::vector<uint8_t> session_payload(const Data& d)
 {
     std::vector<uint8_t> b;
-    put32(b, 1); put32(b, header_flags(d));
+    put32(b, rules_version(d) >= 7 ? 3u : rules_version(d) >= 6 ? 2u : 1u); put32(b, header_flags(d));
     put32(b, (uint32_t)d.slot); put32(b, (uint32_t)d.delay); put32(b, (uint32_t)d.rb_delay);
     put32(b, d.session_seed); put32(b, d.match_seed); put32(b, d.hash_every);
     putstr(b, d.build); putstr(b, d.created);
@@ -527,6 +551,11 @@ std::vector<uint8_t> session_payload(const Data& d)
 void live_queue_locked(Store& st, uint8_t type, const std::vector<uint8_t>& payload)
 {
     if (st.live_path.empty() || !st.live_started) return;
+    if (type == L_SESSION && rules_version(st.d) > st.live_rules_version) {
+        st.live_pend.push_back(kLiveRulesGuard);
+        put32(st.live_pend, kLiveRulesGuardLength);
+        st.live_rules_version = rules_version(st.d);
+    }
     live_rec(st.live_pend, type, payload);
 }
 
@@ -688,7 +717,11 @@ struct Play {
     uint32_t model_bad = 0;
     /* a live stream (spectating): the file grows while it plays */
     bool live = false, live_end = false, have_session = false, buffering = true;
+    uint32_t waiting_fight = 0;                /* missing first/next fight requested by the driver (1-based) */
+    bool (*quit_poll)() = nullptr;              /* local controls, including inside input / barrier waits */
     bool session_new = false;                  /* the SESSION came after the netplay core was set up: tell it */
+    uint32_t live_match_version = 5;             /* SESSION v1/v2/v3 carry format 5/6/7 policy */
+    bool live_rules_guard = false;
     intptr_t lh = -1;                          /* t5p_* file handle */
     std::vector<uint8_t> lbuf;                 /* bytes read, not yet a whole record */
     np::PadInput lprev[2] = { np::kNeutral, np::kNeutral };
@@ -747,7 +780,15 @@ bool live_record(Play& p, uint8_t type, const uint8_t* b, uint32_t n)
     Data& d = p.d;
     switch (type) {
     case L_SESSION: {
-        if (r.u32() != 1) return false;
+        const uint32_t version = r.u32();
+        if (version < 1 || version > 3) return false;
+        const uint32_t match_version = version + 4;
+        if (match_version > p.live_match_version && !p.live_rules_guard) return false;
+        if (p.live_rules_guard && match_version <= p.live_match_version) return false;
+        if (match_version < p.live_match_version) return false;
+        p.live_match_version = match_version;
+        d.version = match_version;
+        p.live_rules_guard = false;
         const uint32_t lf = r.u32();
         const bool rb = (lf & kFlagRollback) != 0;
         d.select_mix = (lf & kFlagSelectMix) != 0;
@@ -807,14 +848,21 @@ bool live_record(Play& p, uint8_t type, const uint8_t* b, uint32_t n)
     case L_BARRIER: d.bars.push_back(get_barrier(r)); break;
     case L_MATCH: {
         const uint32_t k = r.u32();
-        Match m = get_match(r, kVersion);   /* (with the costume blocks: the spectator's game writes them too) */
+        Match m = get_match(r, p.live_match_version);   /* old streams never enable automatic skipping */
         if (r.bad || k > d.matches.size()) return false;
         if (!match_ok(m)) {
             p.live_end = true;
             p.live_why = "the live data is damaged (match table)";
             return false;
         }
-        if (k == d.matches.size()) d.matches.push_back(m); else d.matches[k] = m;
+        if (k == d.matches.size()) d.matches.push_back(m);
+        else {
+            /* A result for an older match can follow a SESSION upgrade. Keep that
+             * fight's original input policy rather than changing it retroactively. */
+            m.soft_reset_guard = d.matches[k].soft_reset_guard;
+            m.ft.rules = d.matches[k].ft.rules;
+            d.matches[k] = m;
+        }
         if (p.mc.size() < d.matches.size()) p.mc.resize(d.matches.size());
         settle_match(p, k);
         break;
@@ -858,8 +906,21 @@ bool live_poll(Play& p)
         const uint8_t type = p.lbuf[i];
         uint32_t len = 0;
         for (int k = 0; k < 4; k++) len |= (uint32_t)p.lbuf[i + 1 + k] << (8 * k);
+        if (type == kLiveRulesGuard && len == kLiveRulesGuardLength) {
+            if (p.live_rules_guard || p.live_match_version >= 7) {
+                p.live_bad++; p.live_end = true; p.live_why = "invalid live rules guard"; break;
+            }
+            p.live_rules_guard = true;
+            i += 5;  /* reserved header, deliberately no payload */
+            continue;
+        }
         if (len > kLiveMaxRecord) { p.live_bad++; p.live_end = true; p.live_why = "damaged live data"; break; }
         if (p.lbuf.size() - i - 5 < len) break;
+        if ((p.live_rules_guard && type != L_SESSION) ||
+            (type == L_SESSION && !live_record(p, type, p.lbuf.data() + i + 5, len))) {
+            p.live_bad++; p.live_end = true; p.live_why = "unsupported live rules version"; break;
+        }
+        if (type == L_SESSION) { i += 5 + (size_t)len; continue; }
         if (!live_record(p, type, p.lbuf.data() + i + 5, len) && p.live_bad++ < 5)
             note("live stream: record type %u (%u bytes) does not fit -- skipped", type, len);
         i += 5 + (size_t)len;
@@ -901,10 +962,22 @@ void write_status(Play& p, uint32_t pf, bool force)
              pf, p.d.in[0].size(), p.begun, p.d.matches.size(), p.delay_now, p.buffering ? "true" : "false",
              p.live_end ? "true" : "false", p.compared, p.mismatched);
     const std::string tmp = p.status_path + ".tmp";
-    if (FILE* fp = fopen(tmp.c_str(), "wb")) {
+    if (FILE* fp = replay_paths::open(tmp.c_str(), "wb")) {
         fputs(b, fp);
         fclose(fp);
-        t5p_replace_file(tmp.c_str(), p.status_path.c_str());
+        replay_paths::replace(tmp.c_str(), p.status_path.c_str());
+    }
+}
+
+/* Expire an idle stream even at the select screen, where replay frames do not
+ * advance and play_live_wait() is not reached. */
+void live_timeout(Play& p)
+{
+    if (!p.grew_ms) p.grew_ms = GetTickCount64();
+    if (!p.live_end && GetTickCount64() - p.grew_ms > (ULONGLONG)p.timeout_s * 1000) {
+        p.live_end = true;
+        p.live_why = "the live data stopped coming";
+        note("live stream: nothing new for %u s -- the end", p.timeout_s);
     }
 }
 
@@ -912,21 +985,19 @@ void write_status(Play& p, uint32_t pf, bool force)
 template <class Ok, class Quit>
 bool live_block(Play& p, Ok ok, Quit quit, const char* what)
 {
+    if (!quit) quit = p.quit_poll;
+    if (quit && quit()) return false;
     if (ok() || p.live_end) return true;
     LARGE_INTEGER t0, t1, qf; QueryPerformanceCounter(&t0); QueryPerformanceFrequency(&qf);
     if (!p.grew_ms) p.grew_ms = GetTickCount64();
     p.stalls++;
     bool told = false;
     for (;;) {
+        if (quit && quit()) return false;
         live_poll(p);
         if (ok() || p.live_end) break;
-        if (quit && quit()) return false;
-        if (GetTickCount64() - p.grew_ms > (ULONGLONG)p.timeout_s * 1000) {
-            p.live_end = true;
-            p.live_why = "the live data stopped coming";
-            note("live stream: nothing new for %u s -- the end", p.timeout_s);
-            break;
-        }
+        live_timeout(p);
+        if (p.live_end) break;
         if (!told && p.stalls <= 20) { note("live stream: waiting for %s", what); told = true; }
         Sleep(10);
     }
@@ -948,6 +1019,11 @@ void live_match_locked(Rec& r)
 {
     Store& st = *r.cur;
     if (st.live_path.empty() || st.d.matches.empty()) return;
+    if (st.live_rules_version < rules_version(st.d)) {
+        /* The version guard stops old spectators before input rules they do not implement.
+         * The same queued write orders guard + SESSION v3 before MATCH, including reused sessions. */
+        live_queue_locked(st, L_SESSION, session_payload(st.d));
+    }
     std::vector<uint8_t> b;
     put32(b, (uint32_t)(st.d.matches.size() - 1));
     Match m = st.d.matches.back();
@@ -988,12 +1064,20 @@ void rec_session_begin(int slot, const char* build, uint32_t session_seed)
     r.cur.reset();
     r.have_fight = false;
     r.flush_at = UINT32_MAX;
-    const char* dir = env("T5_REPLAY_DIR");
-    const char* live = t5_env("T5_REPLAY_LIVE");   /* (a persistent game: this session's overlay) */
+    const std::string replay_dir = np::path_environment("T5_REPLAY_DIR");
+    const char* dir = replay_dir.empty() ? nullptr : replay_dir.c_str();
+    const std::string live_path = np::path_environment("T5_REPLAY_LIVE");
+    const char* live = live_path.empty() ? nullptr : live_path.c_str();
     if (live && !*live) live = nullptr;
     if (!dir && !live) return;
     auto st = std::make_shared<Store>();
-    if (dir) CreateDirectoryA(dir, nullptr);
+    /* Format 7 publishes the soft-reset input policy even when automatic skips
+     * are off. Only peer-verified Fight.rules can enable automatic round skips.
+     * Keep the referenced environment literal for the launcher's capability probe. */
+    const char* skip_format = t5_env("T5_AUTO_SKIP_AFTER_ROUND");
+    if (skip_format && !strcmp(skip_format, "1"))
+        note("automatic round skips: recording verified match rules in format %u", kVersion);
+    if (dir) replay_paths::make_directory(dir);
     { const char* n = env("T5_REPLAY_NAMES"); st->names = !(n && *n == '0'); }
     if (const char* h = env("T5_REPLAY_HASH_EVERY")) { const int v = atoi(h); if (v >= 1 && v <= 600) st->d.hash_every = (uint32_t)v; }
     st->d.slot = slot;
@@ -1024,7 +1108,7 @@ void rec_session_begin(int slot, const char* build, uint32_t session_seed)
          * still letting go of this file for a moment: a sharing violation is tried again, 2 s at most) */
         for (int k = 0;; k++) {
             int busy = 0;
-            st->live_h = t5p_create_write_shared(live, &busy);
+            st->live_h = replay_paths::create_write_shared(live, &busy);
             if (st->live_h != -1 || !busy || k >= 40) break;
             Sleep(50);
         }
@@ -1235,7 +1319,7 @@ const char* play_error() { return P().error.c_str(); }
 bool peek_rollback(const char* path)
 {
     if (!path || !*path) return false;
-    FILE* fp = fopen(path, "rb");
+    FILE* fp = replay_paths::open(path, "rb");
     if (!fp) return false;
     char buf[4096] = {};
     const size_t n = fread(buf, 1, sizeof buf - 1, fp);
@@ -1247,7 +1331,12 @@ bool peek_rollback(const char* path)
          * only turns the write watch on during static initialisation; a lockstep session plays fine
          * with it (rb_net.cpp asks the file again once it is loaded) */
         const unsigned char* q = (const unsigned char*)buf + sizeof kLiveMagic - 1;
-        if (n < sizeof kLiveMagic - 1 + 13) return true;
+        size_t prefix = sizeof kLiveMagic - 1;
+        if (n >= prefix + 5 && q[0] == kLiveRulesGuard) {
+            const uint32_t len = (uint32_t)q[1] | (uint32_t)q[2] << 8 | (uint32_t)q[3] << 16 | (uint32_t)q[4] << 24;
+            if (len == kLiveRulesGuardLength) { q += 5; prefix += 5; }
+        }
+        if (n < prefix + 13) return true;
         return q[0] == L_SESSION && (q[9] & 1) != 0;
     }
     if (strncmp(buf, kMagic, sizeof kMagic - 1)) return false;
@@ -1256,17 +1345,18 @@ bool peek_rollback(const char* path)
     return strstr(buf, "\"mode\": \"rollback\"") != nullptr;
 }
 
-/* A live stream (spectating): its session and first match must be there (the launcher
- * starts the game once they are; up to T5_REPLAY_LIVE_WAIT seconds, default 60). */
+/* A live stream may contain only its magic at launch. Load what is available
+ * without blocking; the driver awaits SESSION / the first fight at select. */
 bool live_load(const char* path)
 {
     Play& p = P();
     p.live = true;
-    p.lh = t5p_open_read_shared(path);
+    p.waiting_fight = 1;
+    p.lh = replay_paths::open_read_shared(path);
     if (p.lh == -1) { p.error = "the live data cannot be opened"; return false; }
     if (const char* b = env("T5_REPLAY_LIVE_BUFFER")) { const int v = atoi(b); if (v >= 0 && v <= 3600) p.buffer = (uint32_t)v; }
     if (const char* t = env("T5_REPLAY_LIVE_TIMEOUT")) { const int v = atoi(t); if (v >= 5 && v <= 3600) p.timeout_s = (uint32_t)v; }
-    if (const char* st = env("T5_REPLAY_STATUS")) p.status_path = st;
+    p.status_path = np::path_environment("T5_REPLAY_STATUS");
     /* The game starts at Watch, usually before the players' games have shaken hands: it boots to the
      * select screen meanwhile (like theirs) and waits there for the first fight's line. The session's
      * parameters come before that line (the handshake): netplay_core takes them then
@@ -1276,7 +1366,7 @@ bool live_load(const char* path)
     if (p.mc.size() < p.d.matches.size()) p.mc.resize(p.d.matches.size());
     p.target = UINT32_MAX;     /* every match the stream brings */
     p.tail = 0;
-    if (const char* rf = env("T5_REPLAY_RESULT")) p.result_path = rf;
+    p.result_path = np::path_environment("T5_REPLAY_RESULT");
     p.on = true;
     note("watching the live stream %s: %s, recorded on P%d's PC, %zu match(es) and %zu frames so far, a buffer of %u frames",
          path, p.d.rollback ? "rollback" : "lockstep", p.d.slot + 1, p.d.matches.size(), p.d.in[0].size(), p.buffer);
@@ -1284,6 +1374,29 @@ bool live_load(const char* path)
 }
 
 bool play_live() { return P().live; }
+
+bool play_soft_reset_guard()
+{
+    const Play& p = P();
+    if (!p.on) return true;  /* live play uses the current input policy */
+    const size_t index = p.begun ? (size_t)p.begun - 1 : 0;
+    if (index < p.d.matches.size()) return p.d.matches[index].soft_reset_guard;
+    return p.d.version >= 7;
+}
+
+void play_set_quit_poll(bool (*quit)()) { P().quit_poll = quit; }
+
+const char* play_poll_end()
+{
+    Play& p = P();
+    if (!p.on || !p.live || p.finished || !p.waiting_fight) return nullptr;
+    live_poll(p);
+    live_timeout(p);
+    /* An END may arrive with a complete unplayed fight. Let the driver take
+     * that fight and drain the buffered recording before closing. */
+    if (!p.live_end || p.waiting_fight <= p.d.matches.size()) return nullptr;
+    return p.live_why.empty() ? "the live match is over" : p.live_why.c_str();
+}
 
 int play_live_wait(uint32_t pf, bool (*quit)())
 {
@@ -1315,7 +1428,7 @@ bool play_load(const char* path)
 {
     Play& p = P();
     p.path = path ? path : "";
-    FILE* fp = path ? fopen(path, "rb") : nullptr;
+    FILE* fp = replay_paths::open(path, "rb");
     if (!fp) { p.error = "the file cannot be opened"; return false; }
     {
         char head[sizeof kLiveMagic] = {};
@@ -1346,7 +1459,7 @@ bool play_load(const char* path)
     p.target = tm ? (uint32_t)atoi(tm) : 0;
     if (p.target == 0 || p.target > nm) p.target = nm;     /* 0 / unset: every match of the session */
     if (const char* t = env("T5_REPLAY_TAIL")) p.tail = (uint32_t)atoi(t);
-    if (const char* rf = env("T5_REPLAY_RESULT")) p.result_path = rf;
+    p.result_path = np::path_environment("T5_REPLAY_RESULT");
     p.mc.assign(nm, MatchCheck());
     p.on = true;
     note("playing %s: %s, %u match(es), %zu frames, %zu sync points, %zu hashes (every %u frames), recorded on P%d's PC, "
@@ -1463,8 +1576,9 @@ void play_fight(const Fight& ft, uint32_t match)
         note("match %u: FIGHT START with models 0x%X / 0x%X on stage %d, the recording had 0x%X / 0x%X on stage %d", match,
              ft.model[0], ft.model[1], ft.stage, rec.model[0], rec.model[1], rec.stage);
     }
-    /* the custom costumes (format 3): what this playback wrote for both sides must be what the live match fought
-     * in -- a spectator (or a replay) shows both players' customizations; none recorded = the default (zero) blocks */
+    /* The custom costumes (since format 3): compare exact recorded bytes. Playback
+     * preserves the historical all-zero representation for absent/zero blocks.
+     * Invalid nonzero blocks still use the safe canonical fallback. */
     static const uint8_t kZero[kCostumeBlock] = {};
     for (int s = 0; s < 2; s++) {
         const uint8_t* want = rec.costumes ? rec.cos[s] : kZero;
@@ -1479,6 +1593,7 @@ void play_fight(const Fight& ft, uint32_t match)
 bool play_fight_line(uint32_t match, std::string* line)
 {
     Play& p = P();
+    if (p.live) p.waiting_fight = match > p.d.matches.size() ? match : 0;
     /* live: the direct fight asks at the select screen (every 15 frames) until the players' games got to
      * that fight -- nothing else reads the file there */
     if (p.on && p.live && match > p.d.matches.size()) live_poll(p);
@@ -1486,7 +1601,8 @@ bool play_fight_line(uint32_t match, std::string* line)
         p.session_new = false;
         np::replay_session_known();
     }
-    if (!p.on || match < 1 || match > p.d.matches.size()) return false;
+    if (!p.on || p.finished || match < 1 || match > p.d.matches.size()) return false;
+    p.waiting_fight = 0;
     const Fight& f = p.d.matches[match - 1].ft;
     char b[256];
     snprintf(b, sizeof b, "%d,%d,%d,%d buttons=%d|%d", f.chr[0], f.chr[1], f.stage, f.rounds, f.btn[0], f.btn[1]);
@@ -1495,6 +1611,7 @@ bool play_fight_line(uint32_t match, std::string* line)
     if (f.rules) {   /* format 5: the match's rules, as the lobby's line had them (match_rules.h) */
         const np::MatchRules ru = np::MatchRules::unpack(f.rules);
         if (ru.training) *line += " train=1";
+        if (ru.auto_skip_after_round) *line += " auto_skip_after_round=1";
         if (ru.life[0] != 100 || ru.life[1] != 100)
             *line += " life=" + std::to_string(ru.life[0]) + "|" + std::to_string(ru.life[1]);
     }
@@ -1561,6 +1678,7 @@ void play_finish(const char* why)
         for (uint32_t k = 0; k < p.mc.size(); k++) settle_match(p, k);
         p.target = (uint32_t)std::min<size_t>(p.d.matches.size(), std::max<uint32_t>(p.begun, 1));
         write_status(p, p.last_p, true);
+        if (p.lh != -1) { t5p_close(p.lh); p.lh = -1; }
     }
     bool results_same = true, all_seen = true;
     std::string ms;
@@ -1603,10 +1721,10 @@ void play_finish(const char* why)
     note("verdict: %s", out.c_str());
     if (!p.result_path.empty()) {
         const std::string tmp = p.result_path + ".tmp";
-        if (FILE* fp = fopen(tmp.c_str(), "wb")) {
+        if (FILE* fp = replay_paths::open(tmp.c_str(), "wb")) {
             fputs(out.c_str(), fp);
             fclose(fp);
-            for (int i = 0; i < 50 && !t5p_replace_file(tmp.c_str(), p.result_path.c_str()); i++) Sleep(2);
+            for (int i = 0; i < 50 && !replay_paths::replace(tmp.c_str(), p.result_path.c_str()); i++) Sleep(2);
         }
     }
 }
@@ -1648,14 +1766,15 @@ extern "C" int t5_replay_fight_line(unsigned match, char* buf, int size)
 void play_fail(const char* path, const char* why)
 {
     note("cannot play %s: %s", path ? path : "(no file)", why);
-    const char* rf = env("T5_REPLAY_RESULT");
-    if (!rf) return;
+    const std::string result_path = np::path_environment("T5_REPLAY_RESULT");
+    if (result_path.empty()) return;
+    const char* rf = result_path.c_str();
     const std::string out = "{\"file\": " + jstr(path ? path : "") + ", \"error\": " + jstr(why) + ", \"identical\": false}";
     const std::string tmp = std::string(rf) + ".tmp";
-    if (FILE* fp = fopen(tmp.c_str(), "wb")) {
+    if (FILE* fp = replay_paths::open(tmp.c_str(), "wb")) {
         fputs(out.c_str(), fp);
         fclose(fp);
-        t5p_replace_file(tmp.c_str(), rf);
+        replay_paths::replace(tmp.c_str(), rf);
     }
 }
 

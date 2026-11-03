@@ -1,11 +1,13 @@
 """The game's rank plates in the launcher (t5lobby/rank_art.py) with made-up data -- no game file is needed or
 used: a fake program with the data table entry, a fake T55DATA1.BIN holding a made-up lobby layout whose plates are
 plain colours. Also the official rank names (ranks.py) and the in-place list updates (tklist.py)."""
+import io
 import os
 import shutil
 import struct
 import tempfile
 import unittest
+from unittest import mock
 import zlib
 
 import util  # noqa: F401  (sets sys.path)
@@ -114,14 +116,16 @@ class RankArtTest(unittest.TestCase):
         fake_install(self.d)
         self.assertEqual(RA.extract(self.d), self.folder)
         self.assertTrue(RA.is_ready(self.folder))
-        w, h, rgba = RA.png_rgba(open(RA.plate_path(self.folder, 5), "rb").read())
+        with open(RA.plate_path(self.folder, 5), "rb") as plate:
+            w, h, rgba = RA.png_rgba(plate.read())
         self.assertEqual((w, h), (RA.TEX_W, RA.TEX_H))
         c = colour(5)
         want = ((c >> 11) * 255 // 31, (c >> 5 & 63) * 255 // 63, (c & 31) * 255 // 31, 200)
         self.assertEqual(tuple(rgba[:4]), want)
         self.assertEqual(tuple(rgba[-4:]), want)
         RA.ensure_height(self.folder, 22)
-        w, h, rgba = RA.png_rgba(open(RA.plate_path(self.folder, 36, 22), "rb").read())
+        with open(RA.plate_path(self.folder, 36, 22), "rb") as plate:
+            w, h, rgba = RA.png_rgba(plate.read())
         self.assertEqual((w, h), (44, 22))                    # twice as wide as high, like the plates
         c = colour(36)
         mid = (11 * w + 22) * 4
@@ -167,6 +171,37 @@ class RankArtTest(unittest.TestCase):
         self.assertEqual(RA.main(["--out", self.d, "--heights", "30"]), 0)
         self.assertTrue(os.path.isfile(RA.plate_path(self.folder, 0, 30)))
         self.assertEqual(RA.main(["--out", os.path.join(self.d, "nothing")]), 1)
+
+
+class RankArtReaderLifetimeTest(unittest.TestCase):
+    def test_extract_and_scale_closes_its_readers(self):
+        # Exercise the extraction test's own readers entirely in memory. Keeping references
+        # makes an unclosed file observable even on Python implementations without refcounting.
+        readers = []
+        images = []
+        for tier, width, height in ((5, RA.TEX_W, RA.TEX_H), (36, 44, 22)):
+            c = colour(tier)
+            pixel = bytes(((c >> 11) * 255 // 31, (c >> 5 & 63) * 255 // 63,
+                           (c & 31) * 255 // 31, 200))
+            images.append(RA.png_bytes(pixel * (width * height), width, height))
+
+        def read_plate(path, mode):
+            self.assertEqual(mode, "rb")
+            reader = io.BytesIO(images[len(readers)])
+            readers.append(reader)
+            return reader
+
+        case = RankArtTest("test_extract_and_scale")
+        case.d = "unused-source"
+        case.folder = "unused-cache"
+        with mock.patch(__name__ + ".fake_install"), \
+                mock.patch.object(RA, "extract", return_value=case.folder), \
+                mock.patch.object(RA, "is_ready", return_value=True), \
+                mock.patch.object(RA, "ensure_height"), \
+                mock.patch(__name__ + ".open", side_effect=read_plate, create=True):
+            case.test_extract_and_scale()
+        self.assertEqual(len(readers), 2)
+        self.assertTrue(all(reader.closed for reader in readers))
 
 
 class RankNamesTest(unittest.TestCase):

@@ -476,9 +476,11 @@ with **Host for friends** in the launcher. See [docs/HOSTING.md](docs/HOSTING.md
 
 The launcher offers new versions; click **Update**.
 
-- At start (at most once an hour) and with **Check for updates** at the top,
-  the launcher asks GitHub for the newest published release. It shows the
-  version, what is new and the download size.
+- At start and with **Check for updates** at the top, the launcher asks the
+  public lobby for the newest published release. If the lobby is unavailable
+  or has no release information (including older servers), it asks GitHub.
+  It shows the version, what is new and the download size. Downloads still
+  come from the project's GitHub releases and pass the same checks.
 - **Update now** downloads the zip (about 90 MB), checks it against the
   published SHA-256 checksum and (from 1.1.5) the release's signature by the
   project's release key, replaces the program files and starts the

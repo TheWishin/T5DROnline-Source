@@ -12,6 +12,7 @@
  */
 #pragma once
 #include <stdint.h>
+#include <string>
 
 /* libs/input/cellPad.c (patch 0009): one PS3 port's local input as cellPad_sample_local fills it, host-endian:
  * len (0 = nothing on the port), then button[] as cellPadGetData lays it out ([2] DIGITAL1, [3] DIGITAL2,
@@ -23,6 +24,10 @@ struct HostPadData { int32_t len; uint16_t button[64]; };
 extern "C" const char* t5_env(const char* key);
 
 namespace np {
+
+/* Replay filesystem paths: UTF-8 session overlay, including explicit unset;
+ * otherwise the Unicode process environment. Does not initialize netplay. */
+std::string path_environment(const char* key);
 
 /* One player's input for one frame: CELL_PAD_CTRL_* bits (DIGITAL1 in the
  * low byte, DIGITAL2 in the high byte, as ps3recomp's cellPad packs them)
@@ -128,6 +133,11 @@ void     give_up(const char* reason, const char* fmt, ...);
 /* Per match: mismatching frames counted from frame f on (the match's sync
  * point), the frames whose hashes were compared, this PC's own speed. */
 void     match_begin(uint32_t f);
+/* Before FIGHT START, once per match ordinal in this session (1-based). Nonblocking:
+ * false holds the driver until both new peers have exchanged and acknowledged the same rules.
+ * Old peers remain usable when automatic skipping is off; enabling it with an old peer fails.
+ * Retries must pass the same ordinal and rules; session_end resets the agreement. */
+bool     verify_match_rules(uint32_t match_ordinal, uint32_t rules);
 uint32_t match_mismatches();
 uint32_t checked_through();          /* hashes compared for every frame < this */
 double   local_fps();                /* frames per second since match_begin(), time waiting for the peer left out */

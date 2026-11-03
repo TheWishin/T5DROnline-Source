@@ -12,6 +12,30 @@ The lobby (server, NAT traversal, relay, Glicko-2) is described in
 covers what sits on top: accounts, ranks, the rules that keep results honest,
 and the glue between the lobby and the game.
 
+## 1.1.9: owner confirmation of the current rules
+
+Read from this working copy; this is the behavior to confirm, not a proposed rule change.
+Here **0-0 means games won in the set**, not rounds in the current game. Defaults below can be changed by the host.
+
+| Case | What the code does today | Owner confirms / code |
+|---|---|---|
+| **Leave set while opponent is away** | Between games, pressing Leave set immediately loses the set **to the absent opponent**, including rating points, once either player has a game win. At 0-0: void. Waiting for their return timer instead can award me the win. | Points to an absent opponent? [`h_leave_set`, `_set_abort`](../lobby/t5lobby/server/lobby.py). |
+| **Close launcher during a fight** | Normal close sends `logout`, treated as quitting: normally the whole set is lost, **no 90 s grace**. Before 30 s: blamed void/strike, but a prior game win makes it a set loss. Launcher crash/lost lobby connection: 90 s grace. Game-process crash: normally blamed void/strike. | Different close/loss rules? [`h_logout`, `h_leave_match`, `_settle_quit`, `_reconcile`, `_grace_expired`](../lobby/t5lobby/server/lobby.py). |
+| **Leave a set at 0-0** | Between games, no win counted: void, no rating change. During a running game, its quit/result rules apply; **0-0 does not prevent a forfeit**. Tournament sets forfeit even at 0-0. | Free exit only between games? [`_set_abort`, `_set_game_over`](../lobby/t5lobby/server/lobby.py), [`TourSet.forfeit_at_zero`](../lobby/t5lobby/server/tournaments.py). |
+| **Leaderboard** | Place, player, rank, rating, **Ranked W/L, Casual W/L**, main character. Split W/L counts individual games, including set games; account record/rating counts each decided ranked set once. Order: `rating - 2*rd`, then rating, descending. Old-server fallback: combined Record. | Game counts beside set progression? [`Store.leaderboard`, `Store.match_stats_of`](../lobby/t5lobby/server/store.py), [`BOARD_NEW_COLS`, `ChallengesUI.board_rows`](../lobby/t5lobby/tk_challenges.py). |
+
+Exceptions and display details: a submitted game/manual result stands; an opponent reporting that the quitter won
+can award that win. Repeated blamed voids can become forfeits. Later-game prefight exits can restart that game
+three times per player (`_set_prefight`, `_set_restart`); both players staying offline until a return timer expires
+voids the set (`both_left`). A qualifying lag check allows a free leave. Leaderboard counts include `confirmed`,
+`onesided`, `forfeit`, `resolved` games, exclude voids, and require `ranked_games > 0` for inclusion. Heading clicks
+sort the loaded page (50 rows), not global places. The detailed rules below describe these exceptions.
+
+This table was checked by reading source only. No build, test, launcher or game was run for this review.
+The owner still needs to confirm the marked policy choices; the maintainer needs a real launcher/game check
+to prove the close/reconnect flow and displayed columns. Existing automated coverage is in
+[`test_set_away.py`](../lobby/tests/test_set_away.py) and [`test_sets.py`](../lobby/tests/test_sets.py).
+
 ## Contents
 
 - [Accounts](#accounts)
@@ -172,6 +196,34 @@ record, highest rank, leaderboard place, characters (games and wins each, the
 most played is the "main"), matches without result caused in the last 24 h,
 and the match history (when, result, opponent, both characters, score, rating
 change, status and reason).
+
+**Ranked statistics per character (1.2.0).** The profile also lists every fighter
+the account has played in counted ranked games, with games, wins, losses, draws
+and win rate. Casual games stay separate. There is no five-fighter limit;
+the list is ordered by games, then wins (both descending), then fighter key.
+Win rate is `100 * wins / games`, including draws in the denominator, rounded
+to two decimal places. Rating, rank and placement remain per account.
+
+These totals use the same counted match statuses as the profile's `stats` and
+the leaderboard: `confirmed`, `onesided`, `forfeit`, `resolved`. Each game of a
+ranked set counts on its own; the set's rating update adds no extra game. A
+mirror match counts once for each account, using that account's side and
+result: the winner gets one game and one win with that fighter, the loser one
+game and one loss (a draw gives each one game and one draw).
+
+No schema change or numbered migration is needed. The server queries all
+stored `matches` rows for the account, using `ranked`, `p1_account` /
+`p2_account`, `p1_char` / `p2_char`, `status` and `winner`; old matches count
+immediately, independently of the profile's history page size. A missing or
+empty stored fighter cannot be attributed to a character and is left out of
+this list. No fighter is guessed from the account's current selection.
+
+Deploy the updated lobby server to provide these totals to launchers. The
+1.2.0 launcher announces the `ranked_chars` capability and displays the server's
+list in its profile view. Older clients receive their existing profile fields
+unchanged; a new launcher on an older server hides the unavailable section.
+The existing `chars` (top five, ranked and casual together) and `main` keep
+their previous meaning.
 
 ## Matchmaking
 
@@ -448,6 +500,12 @@ the inputs, which is out of reach for now.
 
 Owner's decision (2026-10-19): a ranked set lasts until one player has won 2 games (best of 3), and the
 set counts once for the ranking. Each game is still first to 3 rounds (`T5L_ROUNDS`).
+
+**Casual first-to sets (1.2.0)** reuse the server's `GameSet` lifecycle, like tournaments' `TourSet`, but have
+their own negotiated `casual_sets` capability and an FT1/FT2/FT3/FT5/FT10 target. They keep casual character
+choice and per-game result recording, with no rating change or extra W/L result at set end. They do not change
+ranked's best-of, character lock, rating, or leave/away rules described here. See
+[ONLINE.md "Casual first-to sets"](ONLINE.md#casual-first-to-sets-120) for rooms, compatibility and leaving.
 
 **What the players see.** The queue (or a ranked room) finds an opponent as before. Game 1 starts. When it
 ends, the tab shows "Set 1-0 -- game 2 of 3 starts in 6 s" and the next game starts by itself: no rematch
@@ -1006,6 +1064,7 @@ in `hello.caps`, and an older client gets the old messages.
 | `recovery_codes` `password` | `recovery_codes {codes}` |
 | `set_char` `char`; `queue` + `char` | |
 | `profile` `name`, `history`; `history` `name`, `limit`, `offset`; `leaderboard` `limit`, `offset` | `profile {profile}`, `history {rows}`, `leaderboard {rows}` (+ rank, provisional, main, online; 1.1.9: + `ranked_wins`, `ranked_losses`, `casual_wins`, `casual_losses` -- counted matches split as the profile's `stats` counts them, every game of a set a ranked match) |
+| `hello` `caps`: `ranked_chars` (1.2.0); `profile` as above | `welcome.caps` accepts `ranked_chars`; `profile.profile.ranked_chars: [{char, games, wins, losses, draws, win_rate}]` (numeric win-rate percent rounded to two decimal places). Only sent to clients with this cap; `[]` for guests and accounts without attributed ranked games. |
 | `result` + `source`, `desync`, `hash`, `frames`, `reason`, `chars` ([P1, P2] fighter keys or game ids: what the game fought with), `costumes` ([P1, P2] confirm buttons 0-4) | `result_ack` |
 | `perf` `fps` (this PC's speed in its last match; re-sent after every login) | -- |
 | `rematch` `match`, `accept`, `keep` | `rematch {state: waiting\|accepted, next}` |
@@ -1057,6 +1116,7 @@ creating or joining a room, or a challenge in the middle of a ranked set: `error
 ```sh
 cd lobby/tests
 python -m unittest test_ranked      # ranks, accounts, integrity rules, rematch, driver + stub game
+python -m unittest test_ranked_chars test_tk_ranked_chars  # per-character ranked history, cap gating and thin profile view (no server or game)
 python -m unittest test_tk_tab      # the Online tab: register, saved login, TLS refusal, leaderboard/profile,
                                     # blind accept, strict, block list, lag check, server notice
 python -m unittest test_t6          # Tekken 6 style options: blind ready, blocks, strict, cooldown, character

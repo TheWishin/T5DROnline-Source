@@ -104,9 +104,10 @@ unload
 # ---------------------------------------------------------------------------- code
 step "copying the lobby code"
 run rm -rf "$APP/t5lobby"
-run mkdir -p "$APP/t5lobby/server" "$APP/t5lobby/data"
+run mkdir -p "$APP/t5lobby/server/data" "$APP/t5lobby/data"
 for f in "$SRC"/t5lobby/*.py; do run cp "$f" "$APP/t5lobby/"; done
 for f in "$SRC"/t5lobby/server/*.py; do run cp "$f" "$APP/t5lobby/server/"; done
+for f in "$SRC"/t5lobby/server/data/*.json; do run cp "$f" "$APP/t5lobby/server/data/"; done
 for f in "$SRC"/t5lobby/data/*.json; do run cp "$f" "$APP/t5lobby/data/"; done
 run cp "$SRC/run.py" "$SRC/servers.json" "$APP/"
 if [ "$DRY" = 0 ]; then

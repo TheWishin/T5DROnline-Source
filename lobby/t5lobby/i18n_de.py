@@ -11,6 +11,87 @@ texts to paste into the right group.
 """
 
 MESSAGES = {
+    "Intel HD Graphics 4400: graphics device lost": "Intel HD Graphics 4400: Grafikgerät verloren",
+    "Game log: Intel HD Graphics 4400 was selected and the graphics device was lost.":
+        "Spielprotokoll: Intel HD Graphics 4400 war ausgewählt und das Grafikgerät ging verloren.",
+    "private messages are unavailable": "Private Nachrichten sind nicht verfügbar",
+    "private messages: slow down": "Private Nachrichten: bitte langsamer",
+    "write a private message first": "Schreibe zuerst eine private Nachricht",
+    "muted is a boolean": "muted muss ein Wahrheitswert sein",
+    "the private mute list is full": "Die Stummschaltliste für private Nachrichten ist voll",
+    "private reports: slow down": "Private Berichte: bitte langsamer",
+    "choose between 1 and 5 private message lines": "Wähle zwischen 1 und 5 private Nachrichtenzeilen",
+    "these private message lines cannot be verified; reconnect and try new lines":
+        "Diese privaten Nachrichtenzeilen lassen sich nicht prüfen; verbinde dich neu und versuche es mit neuen Zeilen",
+    "Intel HD Graphics 4400 lost the graphics device (exit code 12). Try the latest graphics driver offered by your PC maker, close GPU-heavy programs and overlays, and choose Lowest (0.5x) Internal resolution. If this PC has another GPU, select it for t5dr.exe in Windows Graphics settings. These steps may not fix it. If it still fails, click Report a problem and send the report to the maintainer.":
+        "Intel HD Graphics 4400 hat das Grafikgerät verloren (Exit-Code 12). Versuche den neuesten Grafiktreiber deines PC-Herstellers, schließe grafikintensive Programme und Overlays und wähle bei Interne Auflösung die niedrigste Stufe (0,5x). Hat dein PC eine weitere GPU, wähle sie für t5dr.exe in den Windows-Grafikeinstellungen. Diese Schritte beheben das Problem möglicherweise nicht. Falls es weiter auftritt, klicke auf Problem melden und sende den Bericht an den Maintainer.",
+    # Private chat: relayed live; only explicitly selected report lines leave the conversation.
+    "Private messages": "Private Nachrichten",
+    "Private messages ({count})": "Private Nachrichten ({count})",
+    "Message player": "Nachricht senden",
+    "Private messages are relayed, not saved by the server. Only lines you select are sent with a report.":
+        "Der Server leitet private Nachrichten weiter und speichert sie nicht. Ein Bericht enthält nur die von dir ausgewählten Zeilen.",
+    "Message {name}": "Nachricht an {name}",
+    "Report selected lines": "Ausgewählte Zeilen melden",
+    "Select up to {count} lines to report.": "Wähle bis zu {count} Zeilen für den Bericht aus.",
+    "Send selected lines to moderators?": "Ausgewählte Zeilen an die Moderatoren senden?",
+    "Report sent to moderators.": "Bericht an die Moderatoren gesendet.",
+    "Private chat is unavailable on this server.": "Private Nachrichten sind auf diesem Server nicht verfügbar.",
+    "Private messages are kept only until you log out or close the launcher.":
+        "Private Nachrichten bleiben nur bis zum Abmelden oder Schließen des Launchers erhalten.",
+    "Block {name}? This also leaves any running match against them.":
+        "{name} blockieren? Damit verlässt du auch einen laufenden Kampf gegen diese Person.",
+    "DEV": "DEV",
+    "Mention a player with @name; press Tab to complete.": "Erwähne einen Spieler mit @name; ergänze den Namen mit Tab.",
+    # ---- lobby/t5lobby/tk_ranked_chars.py and its profile column headings (1.2.0)
+    "Ranked by character": "Ranked nach Charakter",
+    "No ranked games played.": "Noch keine Ranked-Spiele gespielt.",
+    "Games": "Spiele",
+    "Losses": "Niederlagen",
+    "Draws": "Unentschieden",
+    # Simultaneous room tables (1.2.0)
+    "mode is line or tables": "Der Modus ist line oder tables",
+    "table is 1 to {count}": "Der Tisch ist 1 bis {count}",
+    "simultaneous room tables need a newer launcher; update it": "Gleichzeitige Raumtische brauchen einen neueren Launcher; aktualisiere ihn",
+    "simultaneous room tables are casual and cannot be training rooms": "Gleichzeitige Raumtische sind Casual und können keine Trainingsräume sein",
+    "this room does not have simultaneous tables": "Dieser Raum hat keine gleichzeitigen Tische",
+    "choose two different players for the table": "Wähle zwei verschiedene Spieler für den Tisch",
+    "choose available players and an idle table": "Wähle verfügbare Spieler und einen freien Tisch",
+    "you cannot pair these players": "Du kannst diese Spieler nicht einander zuweisen",
+    "One match, taking turns": "Ein Match, abwechselnd",
+    "Several matches at once": "Mehrere Matches gleichzeitig",
+    "Room format:": "Raumformat:",
+    "Tables...": "Tische...",
+    "Room tables": "Tische im Raum",
+    "Table {table}: {players}": "Tisch {table}: {players}",
+    "Empty table": "Freier Tisch",
+    "Available: {names}": "Verfügbar: {names}",
+    "Away: {names}": "Abwesend: {names}",
+    "Table:": "Tisch:",
+    "Player 1:": "Spieler 1:",
+    "Player 2:": "Spieler 2:",
+    "Set pair": "Paarung festlegen",
+    "Watch table": "Am Tisch zuschauen",
+    "Select two different available players.": "Wähle zwei verschiedene verfügbare Spieler.",
+    "Select a table.": "Wähle einen Tisch.",
+    "Available to play": "Bereit zum Spielen",
+    "You are away until you press Available to play.": "Du setzt aus, bis du Bereit zum Spielen drückst.",
+    "You are available for a free table.": "Du bist für einen freien Tisch verfügbar.",
+    "this server has no simultaneous room tables": "Dieser Server unterstützt keine gleichzeitigen Raumtische",
+    # Casual first-to sets (1.2.0)
+    "the casual set goes on by itself": "Das Casual-Set geht von selbst weiter",
+    "FT{wins}": "FT{wins}",
+    "Casual sets:": "Casual-Sets:",
+    "First to:": "Siege zum Setgewinn:",
+    "Older launchers play single games.": "Ältere Launcher spielen einzelne Matches.",
+    "Casual set": "Casual-Set",
+    "Casual set vs {name}": "Casual-Set gegen {name}",
+    "CASUAL SET · FT{wins}": "CASUAL-SET · FT{wins}",
+    "Leave set": "Set verlassen",
+    "Leave the casual set": "Das Casual-Set verlassen",
+    "Leave this casual set?\n\nCompleted games keep their results. No set penalty or rating change.": "Dieses Casual-Set verlassen?\n\nDie Ergebnisse abgeschlossener Matches bleiben. Keine Set-Strafe oder Rating-Änderung.",
+    "The casual set ended {mine}-{theirs}. Completed games keep their results; no rating change.": "Das Casual-Set endete {mine}-{theirs}. Die Ergebnisse abgeschlossener Matches bleiben; keine Rating-Änderung.",
+    "first_to: 1, 2, 3, 5 or 10": "first_to: 1, 2, 3, 5 oder 10",
     # ---- launcher/controls_edit.py
     "Removed {sources} from your buttons: that is L2 / R2 at rest on a PlayStation pad, so the game held them all the time. Save to keep this.":
         "{sources} aus deinen Tasten entfernt: Das ist L2 / R2 in Ruhe auf einem PlayStation-Pad, deshalb hat das Spiel sie die ganze Zeit gedrückt gehalten. Speichere, um das zu behalten.",
@@ -604,7 +685,7 @@ MESSAGES = {
         "Räumen, nicht in Ranked.",
     "Sound and start": "Ton und Start",
     "Mute sound": "Ton aus",
-    "Sound and taskbar flash when a match is found, I am challenged or invited, or someone joins my room": "Ton und Taskleistenblinken, wenn ein Match gefunden wird, mich jemand herausfordert oder einlädt oder jemand meinem Raum beitritt",
+    "Sound and taskbar flash for lobby notifications": "Ton und Taskleistenblinken für Lobby-Benachrichtigungen",
     "Start minimized, without taking focus (for testing)": "Minimiert starten, ohne den Fokus zu nehmen (zum Testen)",
     "Advanced: extra settings, one NAME=VALUE per line":
         "Erweitert: zusätzliche Einstellungen, eine pro Zeile als NAME=WERT",
@@ -2360,6 +2441,8 @@ MESSAGES = {
         "Zuschauer",
     "Friends and room visitors may watch my online matches":
         "Freunde und Raumbesucher dürfen meine Online-Matches ansehen",
+    "Automatically watch matches while idle":
+        "Während Wartezeiten automatisch Matches ansehen",
     "Also my ranked matches":
         "Auch meine Ranked-Matches",
     "They see the match a few seconds late, in their own game. Only when both players allow it; a "
@@ -2615,6 +2698,7 @@ MESSAGES = {
     "Casual L": "Casual N",
     "Casual W": "Casual S",
     "Challenge withdrawn: a match started.": "Herausforderung hinfällig: Ein Match hat begonnen.",
+    "input delays above 2 frames need a newer launcher and server": "Input-Delays über 2 Frames brauchen einen neueren Launcher und Server",
     "Delay: auto": "Delay: auto",
     "Delay: {frames}": "Delay: {frames}",
     "Input delay {frames} (auto, from the ping)": "Input-Delay {frames} (auto, nach dem Ping)",
@@ -2643,7 +2727,79 @@ MESSAGES = {
     # launcher Settings "Screen side" and the Online tab's casual row ("Always left", 1.1.9, casual matches only;
     # docs/NETPLAY.md)
     "Screen side": 'Bildschirmseite',
-    "Always see me on the left": 'Mich immer links sehen',
+    "As dealt": "Wie zugeteilt",
+    "Always left": "Immer links",
+    "Always right": "Immer rechts",
+    "Casual matches only: show your fighter on the chosen side and swap left/right controls when mirrored. Ranked and Quick matches keep the dealt side. Offline: Versus previews the chosen side.":
+        "Nur Casual-Matches: Zeige deinen Kämpfer auf der gewählten Seite und vertausche bei gespiegeltem Bild die Links-/Rechts-Eingaben. Ranked und Quick Match behalten die zugeteilte Seite. Offline: Versus zeigt die gewählte Seite als Vorschau.",
+    "Graphics compatibility warning": "Warnung zur Grafikkompatibilität",
+    "Could not stop the shader warm-up": "Das Shader-Aufwärmen konnte nicht gestoppt werden",
+    "This PC lists older Intel graphics ({gpus}). Intel HD 4400-class graphics may lack a working Direct3D 12 driver and may not run the game. Building the game does not add graphics support. If this PC has another graphics card, select it in Windows Graphics settings. Continue building?":
+        "Dieser PC meldet ältere Intel-Grafik ({gpus}). Bei Grafikchips der Klasse Intel HD 4400 fehlt möglicherweise ein funktionierender Direct3D-12-Treiber, sodass das Spiel nicht läuft. Das Bauen des Spiels ergänzt keine Grafikunterstützung. Falls der PC eine weitere Grafikkarte hat, wähle sie in den Windows-Grafikeinstellungen aus. Mit dem Bauen fortfahren?",
+    "Launcher button bindings and macros take priority over the game's Controller Setup. Set them in Settings > Set up controllers… in the launcher.":
+        "Tastenbelegungen und Makros des Launchers haben Vorrang vor Controller Setup im Spiel. Stelle sie im Launcher unter Einstellungen > Controller einrichten… ein.",
     "Casual matches only (challenges, friends' invites, rooms): when you are P2, your screen shows the fight mirrored with you on the left, and your left and right are swapped. Your opponent sees the normal picture. Ranked and Quick matches stay as they are. Offline: Versus fights show the P2 side.":
         'Nur Casual-Matches (Herausforderungen, Einladungen von Freunden, Räume): Wenn du P2 bist, zeigt dein Bildschirm den Kampf gespiegelt mit dir links, und links und rechts sind für dich getauscht. Dein Gegner sieht das normale Bild. Ranked- und Quick-Matches bleiben, wie sie sind. Offline: Versus-Kämpfe zeigen die P2-Seite.',
+    # Replay folder in Settings (docs/REPLAYS.md)
+    "Replay folder":
+        "Replay-Ordner",
+    "Choose an existing folder for new replays. Leave this empty to use the default. Old replays stay where they are unless you choose to move them.":
+        "Wähle einen vorhandenen Ordner für neue Replays. Lass das Feld leer, um den Standardordner zu verwenden. Alte Replays bleiben an ihrem bisherigen Ort, bis du sie verschiebst.",
+    "Browse...":
+        "Durchsuchen...",
+    "Use default folder":
+        "Standardordner verwenden",
+    "Apply folder":
+        "Ordner übernehmen",
+    "Using replay folder: {folder}":
+        "Verwendeter Replay-Ordner: {folder}",
+    "Move existing replays from {source} to {destination}? Choose No to leave them where they are.":
+        "Vorhandene Replays von {source} nach {destination} verschieben? Wähle Nein, um sie am bisherigen Ort zu lassen.",
+    "Moved {moved} replay file(s). {retained} file(s) remain in {source}; existing files were not replaced.":
+        "{moved} Replay-Datei(en) verschoben. {retained} Datei(en) bleiben in {source}; vorhandene Dateien wurden nicht ersetzt.",
+    "Could not move replays: {error}. The original files have been kept.":
+        "Replays konnten nicht verschoben werden: {error}. Die Originaldateien wurden behalten.",
+    "Close the running game before changing the replay folder.":
+        "Schließe das laufende Spiel, bevor du den Replay-Ordner änderst.",
+    "Replay folder {folder} is missing or is not writable. Using the default folder: {default}.":
+        "Der Replay-Ordner {folder} fehlt oder ist nicht beschreibbar. Der Standardordner wird verwendet: {default}.",
+    "The default replay folder {folder} is not writable. Replays cannot be saved there.":
+        "Der Standardordner für Replays {folder} ist nicht beschreibbar. Dort können keine Replays gespeichert werden.",
+    "Community room": "Community-Raum",
+    "Next turn in {seconds} s.": "Nächster Einsatz in {seconds} s.",
+    "Waiting for your turn. Room rotation continues.": "Warte auf deinen Einsatz. Die Raumrotation läuft weiter.",
+    "Sitting out. Choose Back in line to take a turn.": "Du setzt aus. Wähle Wieder anstellen, um wieder mitzuspielen.",
+    "Rematch starts in {seconds} s unless you decline.": "Rematch startet in {seconds} s, wenn du nicht ablehnst.",
+    "invalid rematch policy": "Ungültige Rematch-Regel",
+    "auto_skip_after_round must be boolean": "Die Option zum Überspringen muss an oder aus sein",
+    "rematch rules require an updated launcher": "Rematch-Regeln erfordern einen aktuellen Launcher",
+    "rematch rules require a classic casual room": "Rematch-Regeln erfordern einen klassischen Casual-Raum",
+    "round skips require an updated launcher": "Das Überspringen erfordert einen aktuellen Launcher",
+    "Rematch starts automatically unless you decline.": "Rematch startet automatisch, wenn du nicht ablehnst.",
+    "Both players must confirm the rematch.": "Beide Spieler müssen das Rematch bestätigen.",
+    "The rematch offer expired. Return to the lobby.": "Das Rematch-Angebot ist abgelaufen. Zurück zur Lobby.",
+    "Auto-skip replays and round endings (both players agree)": "Replays und Rundenende automatisch überspringen (beide stimmen zu)",
+    "Rematch rule:": "Rematch-Regel:",
+    "Both players confirm": "Beide Spieler bestätigen",
+    "Start automatically unless declined": "Automatisch starten, sofern nicht abgelehnt",
+    "Skip replays after rounds (both players must agree)": "Replays nach Runden überspringen (beide müssen zustimmen)",
+    "this server has no in-game rematch": "Dieser Server bietet kein Rematch im Spiel an",
+    # Server chat-filter notices (1.2.0).
+    "Message blocked: hate terms are not allowed.": "Nachricht blockiert: Menschenfeindliche Begriffe sind nicht erlaubt.",
+    "This name is not allowed.": "Dieser Name ist nicht erlaubt.",
+    "This room name is not allowed.": "Dieser Raumname ist nicht erlaubt.",
+    "Chat is muted for this account.": "Der Chat ist für dieses Konto stummgeschaltet.",
+    "Cannot load the chat filter. Check T5L_CHAT_FILTER_PATH.": "Der Chatfilter kann nicht geladen werden. Prüfe T5L_CHAT_FILTER_PATH.",
+    # Personal player mutes (1.2.0).
+    "Muted players...": "Stummgeschaltete Spieler...",
+    "Muted players": "Stummgeschaltete Spieler",
+    "Mute": "Stummschalten",
+    "Unmute": "Stummschaltung aufheben",
+    "Muted {name}.": "{name} stummgeschaltet.",
+    "Unmuted {name}.": "Stummschaltung von {name} aufgehoben.",
+    "Mute hides their lobby, room and private chat, mentions and invites for you. You can still play together. Block also prevents matches and ends friendship. Accounts remember mutes on this server; guests remember them on this device.": "Stummschalten blendet die Lobby-, Raum- und privaten Nachrichten, Erwähnungen und Einladungen dieses Spielers für dich aus. Ihr könnt weiterhin zusammen spielen. Blockieren verhindert außerdem Matches und beendet die Freundschaft. Bei Konten bleiben Stummschaltungen auf diesem Server gespeichert, bei Gästen auf diesem Gerät.",
+    "Mute hides this player's chat, mentions and invites for you. Block also prevents matches and private messages.": "Stummschalten blendet die Nachrichten, Erwähnungen und Einladungen dieses Spielers für dich aus. Blockieren verhindert außerdem Matches und private Nachrichten.",
+
+    "Personal mute is unavailable on this server.": "Persönliches Stummschalten ist auf diesem Server nicht verfügbar.",
+    "Chat is muted until {until}.": "Der Chat ist bis {until} stummgeschaltet.",
 }

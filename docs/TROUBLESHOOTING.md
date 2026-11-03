@@ -415,6 +415,35 @@ driver, close other programs that use the graphics card (browsers with videos,
 recorders, overlays), and check that the PC does not overheat. Tested with a
 simulated driver reset (`RSX_TEST_DEVICE_REMOVED`), not with a real one.
 
+### Intel HD 4400: exit code 12 at start
+
+Exit code **12** comes from the renderer's `ld_device_lost` path (patch
+`0031-pc-compat.patch`); it means the Direct3D device was lost. It does not
+identify the underlying cause, and does not by itself prove that a card is
+unsupported. This is different from exit **13**, where Direct3D 12 could not
+be initialized. The log records the selected adapter, failing operation,
+HRESULT and `GetDeviceRemovedReason`; later patch `0076` adds DRED diagnostics.
+
+The launcher now names the HD 4400 case when that adapter was selected in this
+run and exit 12 or a runtime device-loss diagnostic was seen. It retains the
+adapter name even after startup lines leave the last 200 log lines. **Check my
+problem** also recognizes the adapter and device-loss diagnostics together in
+the newest game log. A mention of the card alone does not trigger this advice.
+
+Things for the affected player to try (**untested on HD 4400**):
+
+- Install the latest graphics driver offered for this PC by its maker.
+- Close programs and overlays that use the GPU.
+- In launcher Settings, set **Internal resolution** to **Lowest (0.5x)**.
+- If the PC has another GPU, select it for `t5dr.exe` in Windows Graphics settings.
+
+These steps may not resolve the failure. No renderer fix is claimed. The player
+and maintainer still need a real build and an HD 4400 startup run to verify the
+message and determine the cause. If it repeats, use **Report a problem** and
+send the report privately to the maintainer, with the driver version and whether
+the failure happens before any picture. Do not add the report or player logs to
+this source mirror. No simulation or online rules were changed.
+
 ### "Direct3D 12 not available"
 
 Windows found no graphics card that can run Direct3D 12 at feature level 11_0.

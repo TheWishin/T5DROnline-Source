@@ -1,0 +1,79 @@
+diff --git a/runtime/ppu/ppu_fp_det.h b/runtime/ppu/ppu_fp_det.h
+--- a/runtime/ppu/ppu_fp_det.h
++++ b/runtime/ppu/ppu_fp_det.h
+@@ -360,6 +360,45 @@
+     return (float)s;
+ }
+ 
++/* Patch 0104: experimental SSE2 software single FMA, two lanes at a time.
++ * Opt-in only: build lifted PPU code with -DPPU_VMX_SOFT2=1. The caller must
++ * supply finite floats and canonical MXCSR. Their products are exact normal
++ * doubles (even minimum subnormal floats multiply to 2^-298); the sum cannot
++ * overflow double. Preserve ppu_fmaf_soft's exact operation order, TwoSum and
++ * round-to-odd correction before the one conversion to float. No fast-math,
++ * contraction, estimates, FTZ or DAZ. Sound/SPU helpers are not changed.
++ * Keep disabled until bit tests, performance and a real mixed pair pass. */
++#ifndef PPU_VMX_SOFT2
++#define PPU_VMX_SOFT2 0
++#endif
++#define PPU_VMX_SOFT2_IMPLEMENTED 1
++#if PPU_VMX_SOFT2 && defined(PPU_FP_X64) && !defined(__FMA__)
++PPU_FP_INL void ppu_fmaf_soft2_finite(float out[2], const float x[2],
++                                    const float y[2], const float z[2])
++{
++    PPU_FP_NOCONTRACT
++    const __m128d dx = _mm_set_pd((double)x[1], (double)x[0]);
++    const __m128d dy = _mm_set_pd((double)y[1], (double)y[0]);
++    const __m128d dz = _mm_set_pd((double)z[1], (double)z[0]);
++    const __m128d p = _mm_mul_pd(dx, dy);
++    const __m128d s = _mm_add_pd(p, dz);
++    const __m128d bb = _mm_sub_pd(s, p);
++    const __m128d err = _mm_add_pd(_mm_sub_pd(p, _mm_sub_pd(s, bb)), _mm_sub_pd(dz, bb));
++    double sums[2], errors[2];
++    _mm_storeu_pd(sums, s);
++    _mm_storeu_pd(errors, err);
++    for (int k = 0; k < 2; k++) {
++        if (errors[k] != 0.0) {
++            uint64_t u = ppu_fp_u64(sums[k]);
++            if (!(u & 1))
++                u = ((errors[k] > 0.0) == (sums[k] > 0.0)) ? u + 1 : u - 1;
++            sums[k] = ppu_fp_f64(u);
++        }
++        out[k] = (float)sums[k];
++    }
++}
++#endif
++
+ PPU_FP_INL float ppu_fmaf_det(float x, float y, float z)
+ {
+ #if defined(__FMA__) && defined(PPU_FP_X64)
+diff --git a/runtime/ppu/ppu_vmx.h b/runtime/ppu/ppu_vmx.h
+--- a/runtime/ppu/ppu_vmx.h
++++ b/runtime/ppu/ppu_vmx.h
+@@ -280,5 +280,26 @@
++#if PPU_VMX_SOFT2 && defined(PPU_FP_X64) && !defined(__FMA__)
++    /* Only this host arithmetic changes; guest order, NJ input/output flush,
++     * NaN canonicalisation and aliased destination semantics stay the same. */
++    float x4[4], y4[4], z4[4], out4[4];
++    int finite = 1;
++    for (int i = 0; i < 4; i++) {
++        const uint32_t ux = vmx_flush(vmx_w(a, i), vscr);
++        const uint32_t uy = vmx_flush(vmx_w(b, i), vscr);
++        const uint32_t uz = vmx_flush(vmx_w(c, i), vscr);
++        finite &= (ux & 0x7F800000u) != 0x7F800000u &&
++                  (uy & 0x7F800000u) != 0x7F800000u && (uz & 0x7F800000u) != 0x7F800000u;
++        x4[i] = vmx_f(ux); y4[i] = vmx_f(uy); z4[i] = vmx_f(uz);
++    }
++    if (finite && (_mm_getcsr() & PPU_MXCSR_CTRL) == PPU_MXCSR_CANON) {
++        ppu_fmaf_soft2_finite(out4, x4, z4, y4);
++        ppu_fmaf_soft2_finite(out4 + 2, x4 + 2, z4 + 2, y4 + 2);
++        for (int i = 0; i < 4; i++)
++            vmx_sw(r, i, vmx_flush(vmx_fix(vmx_u(out4[i])), vscr));
++        VMX_OUT; return;
++    }
++#endif
+     for (int i = 0; i < 4; i++) {
+         float x = vmx_f(vmx_flush(vmx_w(a, i), vscr)), y = vmx_f(vmx_flush(vmx_w(b, i), vscr)),
+               z = vmx_f(vmx_flush(vmx_w(c, i), vscr));
+         vmx_sw(r, i, vmx_flush(vmx_fix(vmx_u(ppu_fmaf_det(x, z, y))), vscr)); } VMX_OUT; }
+ VMX_INL void vmx_vnmsubfp(VMX_D, VMX_A, VMX_B, VMX_C, uint32_t vscr) { VMX_ARGS_PREP; const uint8_t* c = (const uint8_t*)c_;

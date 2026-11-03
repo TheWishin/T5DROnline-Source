@@ -8,7 +8,7 @@ import unittest
 from test_tk_tab import TkBase, tk
 from util import client
 
-from t5lobby import theme
+from t5lobby import i18n, theme
 
 
 @unittest.skipIf(tk is None, "no tkinter")
@@ -50,7 +50,7 @@ class ChatLook(TkBase):
         self.assertEqual(lines, ["Hosting. Friends paste this as their Server (copied to the clipboard):",
                                  "  203.0.113.7:7781",
                                  me, "anyone up for ranked?", "I main Hwoarang",
-                                 "Rival", "me! give me a sec", "loading the game",
+                                 "Rival  [" + i18n.t("Mute") + "]", "me! give me a sec", "loading the game",
                                  me, "gg, again?", ""])
         log = tab.chat_log
 
@@ -67,6 +67,10 @@ class ChatLook(TkBase):
         self.assertEqual(log.tag_cget(mine[0], "foreground"), theme.C["accent_hi"])         # you: the accent
         self.assertEqual(log.tag_cget(rival[0], "foreground"), theme.name_color("Rival"))    # them: their colour
         self.assertEqual(tags(9), tags(3))                                                   # the same for you again
+        # The action belongs to the other sender's header, without changing their name colour or message tags.
+        action = "mute_action_" + "Rival".lower().encode("utf-8").hex()
+        header_end = len("Rival  [" + i18n.t("Mute") + "]")
+        self.assertEqual(tuple(map(str, log.tag_ranges(action))), ("6.5", f"6.{header_end}"))
         # bold names, muted system lines, space before another sender
         self.assertEqual(str(log.tag_cget("chat_head", "font")), str(tab.view.th.fonts["bold"]))
         self.assertEqual(log.tag_cget("chat_sys", "foreground"), theme.C["muted"])
@@ -82,6 +86,23 @@ class ChatLook(TkBase):
             self.assertNotEqual(c, theme.C["accent_hi"])
         many = {theme.name_color(f"player{i}") for i in range(40)}
         self.assertGreater(len(many), 25)                                            # players look different
+
+
+class ChatHeadersWithoutServer(unittest.TestCase):
+    def test_other_sender_has_one_mute_action_per_group_and_self_has_none(self):
+        from unittest.mock import Mock, patch
+        from test_mute_lobby_ui import controller
+
+        tab, _ = controller()
+        tab.chat_line("first", sender="Rival")
+        tab.chat_line("second", sender="Rival")
+        tab.chat_line("reply", sender="Tester")
+        rendered = "".join(call.args[1] for call in tab.chat_log.insert.call_args_list)
+        self.assertEqual(rendered, "Rival  [Mute]\nfirst\nsecond\nTester\nreply\n")
+        tab.chat_log.tag_bind.assert_called_once()
+        with patch.object(tab, "toggle_mute") as toggle:
+            tab.chat_log.tag_bind.call_args.args[2](Mock())
+            toggle.assert_called_once_with("Rival")
 
 
 if __name__ == "__main__":

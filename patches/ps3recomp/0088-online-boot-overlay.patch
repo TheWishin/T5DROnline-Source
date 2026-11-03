@@ -1,0 +1,16 @@
+diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
+--- a/libs/video/rsx_live_draw.c
++++ b/libs/video/rsx_live_draw.c
+@@ -12789,6 +12789,12 @@ void rsx_live_draw_present_rgba(const uint8_t* rgba, u32 w, u32 h)
+     src.PlacedFootprint.Footprint.RowPitch = pitch;
+     LDL->lpVtbl->CopyTextureRegion(LDL, &dst, 0, 0, 0, &src, NULL);
+ 
++    /* Patch 0088: host-decoded movies use this present path, too. Draw the
++     * published online loading screen after the movie copy, before PRESENT.
++     * LDL retains the copy/overlay order with patch 0067's recorder enabled. */
++    extern void rsx_overlay_present(void*, void*, void*, uint32_t, uint32_t);
++    rsx_overlay_present(g.dev, LDL, bb, w, h);
++    ld_bound_invalidate();
+     b.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+     b.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
+     LDL->lpVtbl->ResourceBarrier(LDL, 1, &b);

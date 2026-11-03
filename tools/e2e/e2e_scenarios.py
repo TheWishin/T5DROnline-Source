@@ -2934,11 +2934,14 @@ def update_check(ctx):
     # of this scenario, trusted for the scenario's run only (the shipped key list is put back afterwards).
     seed = hashlib.sha256(b"t5dr e2e update_check stand-in release key").digest()
     shipped = up.RELEASE_PUBLIC_KEYS
+    lobby_fetcher = up.fetch_lobby_release
     up.RELEASE_PUBLIC_KEYS = (release_sig.public_key(seed).hex(),)
+    up.fetch_lobby_release = lambda: None       # exercise GitHub fallback without a real lobby connection
     try:
         _update_check(ctx, up, release_sig, seed)
     finally:
         up.RELEASE_PUBLIC_KEYS = shipped
+        up.fetch_lobby_release = lobby_fetcher
 
 
 def _update_check(ctx, up, release_sig, seed):

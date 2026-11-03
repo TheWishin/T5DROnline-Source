@@ -47,7 +47,7 @@ class PatchAudit(unittest.TestCase):
         names = (
             "0088-online-boot-overlay.patch", "0089-ingame-rematch-overlay.patch",
             "0103-vrr-pacing.patch", "0104-low-end.patch", "0105-warmup-hidden.patch",
-            "0106-kernel-edge.patch", "0107-picture-format.patch",
+            "0106-kernel-edge.patch", "0107-picture-format.patch", "0109-picture-copy-scissor.patch",
         )
         header = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
         for name in names:

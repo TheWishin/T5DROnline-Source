@@ -1,10 +1,136 @@
-# Deploying 1.2.0 drafts (unreleased)
+# Deploying the 1.2.0 lobby (central server, with the T4 lobby beside it)
 
-This combines the badge/mention, TCP 443 fallback and casual-room deployment drafts. It is a maintainer
-checklist, not a deployment record. Nothing has been built, deployed or released by this integration;
-no server has been started or contacted and no firewall has been changed. `codex/accounts` remains separate.
-Use the feature-specific checks and rollback steps below together when deploying the combined lobby.
-Runtime changes elsewhere in 1.2.0 also require the build and real-pair checks in their own feature documents.
+The update of the central server (Nuremberg, 46.224.146.6) from lobby 1.1.9 to 1.2.0, as one scripted sequence,
+with the T4 lobby (`t4lobby.service`, which logs players in against T5DR's account database) kept working. **Not run
+against the real server**: everything below was rehearsed on this PC on 127.0.0.1 (section "Rehearsal"). The
+coordinator runs it after the owner's yes. The relay node `usw` is not touched (no relay code changed for 1.2.0).
+The feature sections after "Central server: the update" are the feature lanes' own notes (what each feature
+changes and how to check it with launchers).
+
+## Central server: the update
+
+### In short
+
+On the PC (Git Bash, `C:\T5DROnline`, the merged 1.2.0 commit tagged `v1.2.0` or given as REF):
+
+```sh
+bash tools/deploy_lobby.sh 1.2.0 upload [REF]       # archive (autocrlf off) -> /opt/src/t5dr-lobby-1.2.0, sha256 checked
+bash tools/deploy_lobby.sh 1.2.0 check              # read only (any time)
+bash tools/deploy_lobby.sh 1.2.0 precheck           # backup + migration on a COPY, data compared, T4 + rollback checked
+bash tools/deploy_lobby.sh 1.2.0 notice 15 "Server update at 21:00 UTC: about 5 minutes. Running matches finish first."
+#   ... 10-15 minutes later:
+bash tools/deploy_lobby.sh 1.2.0 deploy             # drain both lobbies (<= 900 s), backup, T4 stop, install, migrate,
+                                                    # checks, T4 start, checks; a T5DR that does not come up healthy
+                                                    # gets its old code back by itself
+bash tools/deploy_lobby.sh 1.2.0 verify             # the checks again, any time later
+#   only after the owner has PUBLISHED 1.2.0 (never for a draft):
+ssh -i keys/vps_t5lobby -o UserKnownHostsFile=keys/vps_known_hosts root@46.224.146.6 t5lobby-admin release 1.2.0
+```
+
+`tools/deploy_lobby.sh` (defaults `--host 46.224.146.6 --key keys/vps_t5lobby --known-hosts keys/vps_known_hosts`,
+`--dry-run` prints the commands) only copies the archive and runs `lobby/deploy/linux/t5dr_deploy_remote.sh STEP`
+from the unpacked folder as root on the server. Directly on the server the same is
+`sudo bash /opt/src/t5dr-lobby-1.2.0/lobby/deploy/linux/t5dr_deploy_remote.sh STEP`. Every step stops at the first
+problem with one line saying what it was. Backups and logs of each run: `/root/t5dr-deploy-t5dr-lobby-1.2.0-<time>/`.
+
+### What 1.2.0 changes on the server
+
+- **Database: schema 1 -> 2.** Migration 2 adds `accounts.badge` (`''` or `'dev'`). Every start of the 1.2.0 code
+  also adds, when missing, `accounts.blocked_count` (chat-filter refusals, a number only) and `accounts.muted_until`
+  (admin mute), and the tables `personal_mutes` and `private_reports`. Nothing is removed or renamed; the tournament
+  schema (`kv schema.tournaments` 2) is unchanged. No branch still waiting for 1.2.0 changes `store.py`.
+- **Code:** `install.sh` now also installs `t5lobby/server/data/*.json` = the **chat filter term list**
+  (`chat_filter_terms.json`, 19 terms; docs/CHAT_FILTER.md). The filter is on by default and the server **refuses to
+  start without a readable list** -- `check` loads it with the new code first. To keep a reviewed list across later
+  updates, copy it to `/etc/t5lobby/chat-filter/chat_filter_terms.json` (root:t5lobby 0640) and set
+  `T5L_CHAT_FILTER_PATH` to it; edits there are picked up without a restart. The unit file is unchanged.
+- **Settings:** nothing must be added to `/etc/t5lobby/t5lobby.env` (install.sh keeps it, the certificate and the
+  relay secrets). New settings and their defaults: `T5L_PRIVATE_CHAT` 1 (private chat between accounts, reports
+  kept 30 days), `T5L_CHAT_FILTER` 1, `T5L_CHAT_FILTER_PATH` (the list beside the code), `T5L_TCP_FALLBACK_PORT` 0
+  (the TCP 443 listener stays off: a separate, later step below), `T5L_COMPAT_GROUPS` empty (exact builds only),
+  `T5L_INGAME_REMATCH` (the rematch lane switches its default on when merged), `T5L_CASUAL_REMATCH_POLICY`
+  both_confirm, `T5L_PRIVATE_REPORT_DAYS` 30, `T5L_MAX_PRIVATE_REPORTS` 1000.
+- **Outbound HTTPS:** while `admin release` names a version (central: `1.1.9` now), the 1.2.0 server asks
+  `api.github.com/repos/TheWishin/T5DROnline/releases/latest` every 300 s (one request for all players; it gives
+  1.2.0 launchers the release metadata before login). Blocked or failing = one warning line, launchers fall back to
+  GitHub themselves; nothing breaks.
+- **Old launchers (1.1.x):** keep working against the 1.2.0 server (same lobby protocol 1). After
+  `t5lobby-admin release 1.2.0` each one gets "T5DR Online 1.2.0 is out. Update the launcher ..." in its status bar
+  (at login and within seconds when online). 1.1.9 and 1.2.0 games are never paired (different code IDs).
+
+### Decisions for the owner before the deploy
+
+1. **Private chat on at once?** Default yes (`T5L_PRIVATE_CHAT=1`). To deploy 1.2.0 without it for now, add
+   `T5L_PRIVATE_CHAT=0` to the env file before `deploy` (moderators read reports with `t5lobby-admin private-reports`).
+2. **The chat filter's 19 terms** were not reviewed by native speakers yet (CHAT_FILTER.md asks for it). Deploy as is,
+   or `T5L_CHAT_FILTER=0` until reviewed.
+3. TCP 443 fallback: stays off in this deploy (owner opt-in, section "TCP 443 fallback").
+
+### What each step does
+
+- **check** (read only): `t5lobby` running and healthy; the live database's schema and counts (read as the service
+  user); which `/opt/src/<folder>` the running code came from (the rollback folder); T4 running, healthy, sharing
+  T5DR's accounts; the chat filter list loads with the new code; the TCP fallback setting.
+- **precheck** (players notice nothing): `t5lobby-admin backup` (the server's own online backup), then on a copy in
+  `/root/...`: the new code opens it like a start (schema 2, integrity, start time), `lobby/tools/lobby_test_db.py
+  compare` proves every earlier row of every table is still there unchanged (added tables/columns listed), the
+  **installed T4 code** accepts the migrated copy (`SharedAccounts`), and the **running old code** still opens it
+  (so a code rollback keeps the database). The copies are deleted.
+- **notice MINUTES TEXT**: the same notice in both lobbies.
+- **deploy [--drain-wait S] [--no-t4-stop]**: check + precheck again; backup (database copy, `/etc/t5lobby`,
+  `/etc/t4lobby`, units and drop-ins, the running code `/opt/t5lobby`, the admin wrapper, T4's own database backup);
+  `drain --wait` in BOTH lobbies at once (if either does not get quiet in time, both drains are taken back and
+  nothing changed); a last backup; **`systemctl stop t4lobby`** (one process opens T5DR's file during the migration;
+  T4 players are disconnected for a few seconds); `install.sh --self-signed --firewall none` (restarts t5lobby; the
+  server migrates on its start); T5DR checks: health, schema 2, accounts/matches/sets/friends not fewer, the log's
+  `database upgraded to schema 2`, no Traceback. **If T5DR is not healthy**: the saved code, unit and admin wrapper
+  go back, t5lobby restarts on the old code (the database stays at schema 2, which the old code uses as it is), T4
+  starts again, the step fails. Then `systemctl start t4lobby` and T4 checks: health and its log line
+  `accounts shared with T5DR: /var/lib/t5lobby/t5lobby.db (schema 2)`.
+- **verify**: the T5DR and T4 checks again (log lines of the last 30 minutes).
+- **rollback [DIR]**: backup, drain both, T4 stopped, the earlier code back -- `DIR` = an `/opt/src/<folder>/lobby`
+  to run its install.sh (e.g. `/opt/src/t5dr-lobby-1.1.9/lobby`, the folder `check` named), or without DIR the code
+  the newest deploy saved -- T4 started, checks. **The database is never restored**: the old code runs on schema 2
+  (tested), and a restore would throw away everything since the backup. Only to undo the migration itself (never
+  needed so far): `systemctl stop t4lobby t5lobby`, `t5lobby-admin restore <backup> --yes`, start both.
+
+### The T4 lobby during the update
+
+T4 reads/writes only the identity columns of T5DR's `accounts`, `sessions`, `recovery` and `kv` (its
+`shared_accounts.REQUIRED`) and checks them at its start; it does not check the schema number. 1.2.0 only adds, so
+T4 starts on schema 2 (`T4 runs on T5DR's schema 2`). Proven with the T4 repository's
+`lobby/tools/shared_accounts_proof.py --upgrade-from <1.1.9 lobby> --t5dr-db <1.1.9-made database>` (38/38: old T5DR,
+T4 started, new T5DR migrates while T4 runs, T4 restarted, logins with passwords and remembered logins in both games
+before/after, accounts made in either game used in the other, bans shared, ratings separate) and its test
+`test_shared_accounts.T5drUpgrade` (T4 commit 330037a on `t4-server-beta`; no T4 code change was needed). The deploy
+stops T4 anyway during the migration (single opener, gate 4); `--no-t4-stop` leaves it running, which the proof shows
+is safe too. T4 needs no update for 1.2.0.
+
+### Rehearsal (this PC, 127.0.0.1 only)
+
+`python lobby/tools/deploy_rehearsal.py --work D:/t5dr-reh --t4-repo <T4 lobby repository>` builds the central machine
+in a staging folder with the real install scripts (`install.sh --root` of T5DR v1.1.9 and of T4 `t4-server-beta`
+with `--shared-accounts`), the real admin wrappers, a database made by the 1.1.9 code (`lobby_test_db.py make`:
+1,299 made-up players, 3,450 matches, 150 ranked sets, friends, blocks, sessions, recovery codes, bans, the release
+flag 1.1.9 -- never real player data) and stand-ins for systemctl/journalctl/ssh/scp that run the servers as local
+processes. Then it runs `tools/deploy_lobby.sh` exactly as above. Result on deploy-120 (2026-11-03): **59/59**:
+
+- upload (checksum, unpack; a second upload into the same folder refused), check, precheck (schema 1 -> 2, 15 tables /
+  5,445 rows unchanged, `personal_mutes`/`private_reports` and three columns added, T4 accepts the copy, 1.1.9 code
+  opens it, copies removed, live database still schema 1), notice in both lobbies;
+- a **broken 1.2.0** (server fails at start): the deploy failed, put 1.1.9 back by itself, T4 running, logins fine;
+- the deploy (20 s here; T4 down 7 s) with a **1.1.9 launcher and a T4 client connected**: both saw the maintenance
+  notice, lost the connection at the restart and were back on the new servers by themselves; schema 2;
+  1.1.9 and 1.2.0 launchers log in with passwords and remembered logins; T4 with T5DR passwords and remembered logins;
+  accounts registered in T4 after the update work in T5DR and the other way round; 1.2.0 chat delivered, a listed
+  term refused; 1.1.9 chat works, no error in the old client; `admin badge` works; after `admin release 1.2.0` a
+  1.1.9 launcher is told to update (notice), the connected one too, a 1.2.0 launcher not;
+- rollback (no DIR) -> 1.1.9 code on schema 2, every login works, the account made under 1.2.0 too;
+  deploy again (no migration), verify, integrity ok, every account there, a backup folder per run.
+
+The stand-ins differ from the server in: no systemd sandbox/users (`runuser` is skipped in staging), processes are
+stopped hard (not SIGTERM), Windows' Python. The launchers are the clients' code (`t5lobby.client` of each
+version), not the Tk window. `lobby/tests/test_deploy_tools.py` checks the tools without servers.
 
 ## Package 5 readiness gates (pending owner checks)
 
@@ -44,6 +170,11 @@ accept package 5 from green source-only tests or a schema-version number alone.
    Use the existing administrator tool for the pre-upgrade drain and backup, before new code opens
    production storage. Preserve the upgraded database on code rollback as described below; do not
    replace newer records with an old backup merely to remove additive schema changes.
+   **Done by `t5dr_deploy_remote.sh`** ("Central server: the update"): the migration is rehearsed on a backup copy
+   (`precheck`: every row of every table compared, T4 and the old code open the result), backups come from the
+   server's own online backup before the install, the T4 lobby (the only other opener) is drained and stopped while
+   the new server migrates, the admin tool is not used between the drain and the start, the server's automatic
+   backups run inside the server process (stopped with it), and a code rollback keeps the database.
 5. Complete the feature checks in [INTEGRATION_1.2.0.md](INTEGRATION_1.2.0.md),
    [COMPATIBILITY_GROUPS.md](COMPATIBILITY_GROUPS.md), [CHAT_FILTER.md](CHAT_FILTER.md),
    [NETPLAY.md](NETPLAY.md) and [RANKED.md](RANKED.md):
@@ -56,17 +187,13 @@ accept package 5 from green source-only tests or a schema-version number alone.
    - Keep `T5L_COMPAT_GROUPS` empty until the owner approves complete build IDs after real cross-build
      pair tests with **0 mismatches**. Check excluded builds and peers fail closed; retain documented
      exact-build restrictions for tournaments and spectators. Test direct and relay game paths too.
-6. Keep shared T4 accounts and concurrent per-game sessions behind the separate post-T4-release review.
-   The account draft is absent from the working tree but readable without checkout using
-   `git show origin/codex/accounts:docs/PLAN_ACCOUNTS.md`. It describes an unrun opt-in split-store
-   implementation, with T4 authentication/social features only and gameplay blocked pending a verified
-   adapter. Its numeric T4 rating fallback leaves authoritative text rank names and owner-approved
-   thresholds pending. Review it after the agreed reset and T4-release gates; do not import or deploy
-   `codex/accounts` as part of this deployment. Current T5DR login behavior is account-global:
-   one connection per account; a second login takes over and
-   kicks the first. The future shared-account policy must allow T5DR and T4 online simultaneously with
-   separate sessions, matches and ranks per game, carrying over existing T5DR accounts. It must not
-   give other game developers access to these accounts. Do not claim T4 ready or deploy that draft.
+6. Shared T4 accounts are **live since 2026-11-03 12:23Z**, not through `codex/accounts` (that draft stays
+   unused) but through the T4 lobby's own server (T4 repository, branch `t4-server-beta`,
+   docs/DEPLOY_T4_BETA.md "Shared accounts"): a separate `t4lobby.service` on the same machine reads and writes
+   the identity rows of T5DR's database (names, password hashes, remembered logins, recovery codes, bans);
+   ratings, ranks, history, friends and badges stay per game in T4's own database. T5DR and T4 are separate
+   servers, so one account can be online in both games at once (one connection per account and game). The 1.2.0
+   T5DR deploy keeps it working ("The T4 lobby during the update"). No T5DR code change is needed for it.
 
 After these gates pass, follow the drain, backup, installation, optional TCP 443 and rollback procedures
 below. Publication and deployment remain owner actions; this checklist authorizes no deployment.
@@ -114,7 +241,8 @@ Use the established process in [DEPLOY_1.1.9.md](DEPLOY_1.1.9.md), with a backup
 2. Exercise schema 1 to schema 2 on a copy of a backup. Confirm existing accounts receive an empty badge, changing
    and clearing a badge persists, and reopening the database leaves it at version 2.
 3. Announce maintenance, drain matches and ranked sets, and back up the production database with the existing
-   administrator tool. Deploy the reviewed 1.2.0 lobby code and administrator wrapper, then restart the lobby.
+   administrator tool (all of this step and step 4: `tools/deploy_lobby.sh 1.2.0 notice` / `deploy`, section
+   "Central server: the update"). Deploy the reviewed 1.2.0 lobby code and administrator wrapper, then restart the lobby.
 4. Confirm schema version 2 and normal server health. No new environment variables are required for badges and mentions; the optional TCP fallback setting is described below.
 5. Use the administrator command on the intended account. With two 1.2.0 launchers, verify the DEV marker in the
    player list and chat, then clear it and verify its removal after the polling interval. Guests and ordinary

@@ -775,6 +775,18 @@ class App(tk.Tk):
         ttk.Label(pr, style="Muted.TLabel", wraplength=300, justify="left", text=t(core.PRACTICE_HELP)).pack(
             anchor="w", pady=(4, 0))
 
+        # (1.2.0) offline: START pressed by the game itself in the after-round parts (T5_AUTO_SKIP_OFFLINE,
+        # src/netplay/no_pause.h OfflineSkip); online both players agree in the Online tab's casual row
+        sk = ttk.LabelFrame(left, text="  " + t("Round endings") + "  ", padding=(12, 6))
+        sk.pack(fill="x", pady=(6, 0))
+        self.auto_skip_var = tk.BooleanVar(value=bool(self.settings.get("auto_skip_offline", False)))
+        ttk.Checkbutton(sk, text=t("Skip replays and round endings automatically (offline)"),
+                        variable=self.auto_skip_var, style=self.wrap_style("TCheckbutton", 300),
+                        command=self.save_settings).pack(anchor="w")
+        ttk.Label(sk, style="Muted.TLabel", wraplength=300, justify="left", text=t(
+            "Online the skip counts only when both players tick \"Auto-skip replays and round endings\" in the "
+            "Online tab (casual matches; never ranked).")).pack(anchor="w", pady=(4, 0))
+
         # Settings and the Online casual row share the three-way screen-side choice.
         sd = ttk.LabelFrame(left, text="  " + t("Screen side") + "  ", padding=(12, 6))
         sd.pack(fill="x", pady=(6, 0))
@@ -799,6 +811,13 @@ class App(tk.Tk):
             "Sound and taskbar flash for lobby notifications"),
                         variable=self.notify_var, style=self.wrap_style("TCheckbutton", 440),
                         command=self.save_settings).pack(anchor="w", pady=(4, 0))
+        # (1.2.0) a match, a challenge or a tournament set: the game's own "Get ready for the next battle!", read from
+        # the unpacked game (lobby/t5lobby/announcer.py); the chime without it
+        self.notify_voice_var = tk.BooleanVar(value=bool(self.settings.get("notify_voice", True)))
+        ttk.Checkbutton(other, text=t(
+            "Use the game's announcer for matches and challenges (\"Get ready for the next battle\")"),
+                        variable=self.notify_voice_var, style=self.wrap_style("TCheckbutton", 440),
+                        command=self.save_settings).pack(anchor="w", pady=(2, 0), padx=(18, 0))
         ttk.Checkbutton(other, text=t("Start minimized, without taking focus (for testing)"), variable=self.bg_var,
                         style=self.wrap_style("TCheckbutton", 440), command=self.save_settings).pack(anchor="w",
                                                                                                     pady=(4, 0))
@@ -1551,6 +1570,8 @@ class App(tk.Tk):
             label = self.practice_dummy_var.get()
             self.settings["practice_dummy"] = next(
                 (k for k, v in self._practice_dummy_labels.items() if v == label), "game")
+        if hasattr(self, "auto_skip_var"):
+            self.settings["auto_skip_offline"] = bool(self.auto_skip_var.get())
         if hasattr(self, "router_ports_var"):
             self.settings["router_ports"] = bool(self.router_ports_var.get())
         if hasattr(self, "screen_side_var"):
@@ -1568,6 +1589,8 @@ class App(tk.Tk):
         self.settings["mute"] = bool(self.mute_var.get())
         if hasattr(self, "notify_var"):
             self.settings["notify"] = bool(self.notify_var.get())
+        if hasattr(self, "notify_voice_var"):
+            self.settings["notify_voice"] = bool(self.notify_voice_var.get())
         self.settings["background"] = bool(self.bg_var.get())
         self.settings["extra_env"] = self.env_text.get("1.0", "end").strip()
         self.settings["nickname"] = self.nick_var.get().strip()

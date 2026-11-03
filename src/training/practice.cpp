@@ -52,6 +52,7 @@ constexpr uint32_t kDummySetting = 0x1008EFF0;   /* low byte (0x1008EFF3): the P
  * CONTROLLER, then the dummy plays P2's pad): the dummy acts on these, the menu shows the one above */
 constexpr uint32_t kDummyApplied[2] = { 0x1008EC60, 0x1008EC64 };   /* low bytes 0x1008EC63, 0x1008EC67 */
 constexpr uint32_t kFighter[2] = { 0x10090030, 0x10090900 };
+constexpr uint32_t kRoundState = 0x1009322C;   /* the round's state machine (read for the log: 17 in Practice, rewritten every frame) */
 
 inline uint32_t rd32(uint32_t a) { uint32_t v; memcpy(&v, vm_base + a, 4); return _byteswap_ulong(v); }
 inline uint16_t rd16(uint32_t a) { uint16_t v; memcpy(&v, vm_base + a, 2); return _byteswap_ushort(v); }
@@ -134,6 +135,7 @@ Sample read_fighter(uint32_t b)
     s.hp       = (int16_t)rd16(b + 0x6BC);
     const uint32_t mv = rd32(b + 0x168) >> 16;
     s.down     = (mv & 0xFF00) == 0x8000 && mv != 0x8001 && mv != 0x8000;
+    s.stand    = mv == 0x8001;
     return s;
 }
 
@@ -150,6 +152,8 @@ Combo g_combo;
 Dummy g_dummy;
 Recorder g_rec;
 Placer g_placer;
+ResetGate g_gate;             /* a reset waits until both fighters stand (training_logic.h ResetGate) */
+constexpr int kSetQuickRecovery = 8;   /* the Practice menu's TRAINING DUMMY "quick recovery": while a reset waits */
 Place g_start[2];             /* both places at the first frame of the fight: SELECT+3 goes back there */
 DummyMode g_mode = DummyMode::Game;
 bool g_in_practice = false;
@@ -215,6 +219,23 @@ void note_place(const char* what)
     fflush(g_cfg.log);
 }
 
+/* T5_PRACTICE_LOG only: what each fighter does around a reset (height of the base +0x14, the move +0x168, its
+ * class +0x15C, can act) -- the evidence for "keeps flying / turned around after a reset" */
+uint64_t g_trace_from = 0;
+void note_state(const char* what)
+{
+    if (!g_cfg.log) return;
+    fprintf(g_cfg.log, "%llu %s round %u phase %u", (unsigned long long)g_frame, what, rd32(kRoundState), rd32(kPhase));
+    for (int p = 0; p < 2; p++) {
+        const uint32_t b = kFighter[p];
+        const Sample s = read_fighter(b);
+        fprintf(g_cfg.log, " %s y %.1f hips %.1f move %08X class %08X act %d right %d", p ? "dummy" : "P1", rdf(b + 0x14),
+                rdf(b + 0x734), rd32(b + 0x168), s.cls, s.can_act ? 1 : 0, s.right ? 1 : 0);
+    }
+    fputc('\n', g_cfg.log);
+    fflush(g_cfg.log);
+}
+
 /* The Practice menu's TRAINING DUMMY: a behaviour sets it (want >= 0) and keeps the
  * player's own choice, which comes back with want -1 (and while the menu is open) */
 int g_saved_setting = -1;
@@ -251,6 +272,8 @@ void act(PAction a)
     switch (a) {
     case PAction::ResetRound:
         g_placer.cancel();
+        note_state("before reset:");
+        g_trace_from = g_frame;
         put_place(0, g_start[0]);
         put_place(1, g_start[1]);
         g_target[0] = g_start[0];
@@ -300,7 +323,7 @@ extern "C" void t5_practice_pads(uint16_t* p1, uint16_t* p2)
             /* the player's own TRAINING DUMMY back -- only while this is still offline Practice */
             if (g_cfg.offline && t5_netplay_enabled() == 0 && rd32(kGameType) == kGtPractice) apply_setting(-1);
             g_saved_setting = -1;
-            g_combo.reset(); g_dummy.reset(); g_rec.stop(); g_in_practice = false;
+            g_combo.reset(); g_dummy.reset(); g_rec.stop(); g_gate.cancel(); g_in_practice = false;
         }
         return;
     }
@@ -313,10 +336,12 @@ extern "C" void t5_practice_pads(uint16_t* p1, uint16_t* p2)
         g_mode = g_cfg.dummy0;
         g_prev_hp = 0;
         g_placer.cancel();
+        g_gate.cancel();
         g_start[0] = read_place(0);
         g_start[1] = read_place(1);
         note("practice, dummy %s", kModeKey[(int)g_mode]);
         note_place("round start:");
+        note_state("practice start:");
     }
     g_frame++;
     if (g_placer.pending()) {       /* a wall reset: the game has run a frame from the mover's last place */
@@ -336,6 +361,11 @@ extern "C" void t5_practice_pads(uint16_t* p1, uint16_t* p2)
         }
     }
     if (g_check_at && g_frame == g_check_at) { g_check_at = 0; note_place("30 frames later:"); }
+    if (g_trace_from) {
+        const uint64_t k = g_frame - g_trace_from;
+        if (k == 1 || k == 3 || k == 8 || k == 15 || k == 30 || k == 60 || k == 120 || k == 240) note_state("after reset:");
+        if (k >= 240) g_trace_from = 0;
+    }
     if (g_face_at && g_frame == g_face_at) {
         g_face_at = 0;
         const Place pl[2] = { read_place(0), read_place(1) };
@@ -364,12 +394,35 @@ extern "C" void t5_practice_pads(uint16_t* p1, uint16_t* p2)
     const uint16_t raw = *p1;
     bool hide = false;
     const PAction a = g_combo.frame(raw, me.right, &hide);
-    if (a != PAction::None) act(a);
-    if (hide) *p1 = 0;
+    const bool is_reset = a == PAction::ResetRound || a == PAction::DummyWallFront || a == PAction::DummyWallBack ||
+                          a == PAction::PlayerWallFront || a == PAction::PlayerWallBack;
+    if (is_reset) {
+        /* the reset waits until both fighters stand (after a launcher the dummy would keep flying / lie at its new
+         * place, a fighter in a move would leave it, and the facing tap needs fighters that can act) */
+        const PAction now = g_gate.request(a, me, dm);
+        if (now != PAction::None) act(now);
+        else {
+            note_state("reset waits until both stand:");
+            g_msg_until = g_frame + 120;
+            g_no_wall = false;
+        }
+    } else if (a != PAction::None) act(a);
+    bool late = false;
+    if (!is_reset) {
+        const PAction d = g_gate.frame(me, dm, &late);
+        if (d != PAction::None) {
+            note("reset after waiting %u frames%s", g_gate.waited(), late ? " (they did not stand: anyway)" : "");
+            act(d);
+        }
+    }
+    const bool waiting = g_gate.waiting();
+    if (hide || waiting) *p1 = 0;      /* while a reset waits: P1's pad neutral (no juggle goes on) */
     if (g_nudge[0] > 0) { g_nudge[0]--; *p1 = me.right ? kLeft : kRight; }   /* toward the dummy on the screen */
 
     /* the dummy: recording (your pad plays it), a recording, its behaviour, or the game's own */
-    if (g_rec.state() == Recorder::State::Recording) {
+    if (waiting) {
+        *p2 = 0;                        /* the dummy neutral, a recording paused; the game's quick recovery below */
+    } else if (g_rec.state() == Recorder::State::Recording) {
         /* Your pad controls the dummy directly: store forward/back using its current
          * side, not P1's. Decoding with that same side preserves the live pad direction. */
         const uint16_t rel = hide ? 0 : to_rel((uint16_t)(raw & ~(kSelect | kStart)), dm.right);
@@ -385,7 +438,8 @@ extern "C" void t5_practice_pads(uint16_t* p1, uint16_t* p2)
     if (tap2) { if (g_nudge[1] <= 3) *p2 = dm.right ? kLeft : kRight; g_nudge[1]--; }   /* toward P1 on the screen */
     /* the game's own TRAINING DUMMY for the behaviour: CONTROLLER (P2's pad) for a recording, the pad
      * behaviours and a tap */
-    apply_setting(g_rec.state() != Recorder::State::Idle || tap2 ? (int)Dummy::kSetController : g_dummy.setting(g_mode));
+    apply_setting(waiting ? kSetQuickRecovery
+                  : g_rec.state() != Recorder::State::Idle || tap2 ? (int)Dummy::kSetController : g_dummy.setting(g_mode));
     g_prev_hp = dm.hp;
 }
 
@@ -408,6 +462,10 @@ extern "C" int t5_practice_status(char* out, unsigned n, int de)
                  g_rec.pos() / 60.0, g_rec.length(g_rec.slot()) / 60.0);
         return 1;
     default: break;
+    }
+    if (g_gate.waiting()) {
+        snprintf(out, n, "%s", de ? "RESET, SOBALD BEIDE STEHEN" : "RESET WHEN BOTH STAND");
+        return 1;
     }
     if (g_frame < g_msg_until && g_no_wall) {
         snprintf(out, n, "%s", de ? "KEINE WAND IN DIESER RICHTUNG" : "NO WALL THAT WAY");

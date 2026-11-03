@@ -767,6 +767,61 @@ void training_rule(uint32_t f, const np::PadInput in[2], bool live)
     }
 }
 
+/* ---- Offline auto-skip (1.2.0; no_pause.h OfflineSkip, launcher Settings, T5_AUTO_SKIP_OFFLINE=1) ----
+ * Offline only (keyread_tick's offline branch: never a netplay session, a replay or a spectator's game). */
+np::OfflineSkip g_off_skip;
+int g_off_skip_on = -1;         /* -1 = T5_AUTO_SKIP_OFFLINE not read yet */
+bool g_off_skip_trace = false;  /* T5_AUTO_SKIP_TRACE=1: every change of round state / phase / mode (tests) */
+uint32_t g_off_skip_noted = 0;
+bool g_off_used[2] = { false, false };   /* the port sent input in this fight (the one-player modes' human) */
+
+void offline_auto_skip(uint16_t& m0, uint16_t& m1)
+{
+    if (g_off_skip_on < 0) {
+        const char* e = getenv("T5_AUTO_SKIP_OFFLINE");
+        g_off_skip_on = e && *e == '1';
+        const char* t = getenv("T5_AUTO_SKIP_TRACE");
+        g_off_skip_trace = t && *t == '1';
+        if (g_off_skip_on) np::note("offline: replays and round endings are skipped (T5_AUTO_SKIP_OFFLINE=1)");
+    }
+    if (!g_off_skip_on) return;
+    /* offline nothing else looks for the mode manager (direct fight's frame hook does online): find it as the
+     * driver does, else game_mode reads 0 and no part ever counts (seen in the game: no skip at all) */
+    static uint32_t s_find = 0;
+    (void)t5_df_find_mode(s_find++);
+    const np::NoPauseRule::State st = np_state_now();
+    const uint32_t gt = rd32(kConfig);
+    if (g_off_skip_trace) {
+        static uint64_t last = ~0ull;
+        const uint64_t k = (uint64_t)st.round | (uint64_t)(st.phase & 0xFF) << 8 | (uint64_t)st.game_mode << 16 |
+                           (uint64_t)(st.mode_next & 0xFF) << 24 | (uint64_t)(gt & 0xFF) << 32;
+        if (k != last) {
+            last = k;
+            np::note("offline auto-skip trace: round state %u phase %u game mode %d next %u game type %u", st.round,
+                     st.phase, (int)st.game_mode, st.mode_next, gt);
+        }
+    }
+    /* who plays: any input on a port while the fight runs (phase 17) -- forgotten outside a fight */
+    if (st.phase != 17) g_off_used[0] = g_off_used[1] = false;
+    else if (st.round == 5) { g_off_used[0] |= m0 != 0; g_off_used[1] |= m1 != 0; }
+    const uint32_t before = g_off_skip.in_part;
+    const bool press = g_off_skip.press(st);
+    if (before && !g_off_skip.in_part)
+        np::note("offline auto-skip: the part after round %u lasted %u frames (round state now %u)", g_off_skip.parts,
+                 before, st.round);
+    if (!press) return;
+    const unsigned ports = np::OfflineSkip::ports(gt, g_off_used[0], g_off_used[1]);
+    constexpr uint16_t kMaskStart = 0x0800;   /* START in the game's port mask (training_logic.h) */
+    if (ports & 1) m0 = (uint16_t)(m0 | kMaskStart);
+    if (ports & 2) m1 = (uint16_t)(m1 | kMaskStart);
+    if (g_off_skip.parts != g_off_skip_noted) {
+        g_off_skip_noted = g_off_skip.parts;
+        np::note("offline auto-skip: START %s after a round (round state %u, part %u, game type %u)",
+                 ports == 3 ? "pressed on both ports" : ports == 1 ? "pressed on port 1" : ports == 2 ? "pressed on port 2"
+                 : "not pressed (one-player mode, the playing port is not known)", st.round, g_off_skip.parts, gt);
+    }
+}
+
 uint64_t gcall(uint32_t code, uint64_t a0 = 0)
 {
     return ppu_guest_call_ct(code, kTOC, a0, 0, 0, 0, 0, 0, 0, 0);
@@ -796,6 +851,7 @@ void keyread_tick()
     uint16_t m1 = (uint16_t)gcall(kFnPortMask, 1);
     if (g_offline) {   /* offline only (never netplay, a replay or spectating): the practice tools, in Practice */
         t5_practice_pads(&m0, &m1);
+        offline_auto_skip(m0, m1);   /* T5_AUTO_SKIP_OFFLINE: START in the after-round parts */
         wr16(kRing + slot, m0);
     }
     wr16(kRing + 0x20 + slot, m1);

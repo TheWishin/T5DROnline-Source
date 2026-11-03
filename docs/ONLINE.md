@@ -950,6 +950,18 @@ no game audio, no file. winsound cannot play a memory image asynchronously, so a
 thread never waits; if Windows refuses it (no sound card), the system's "SystemAsterisk" plays instead. `T5_NOTIFY=0`
 turns the real sound and flash off (every test sets it; the tests give the tab a fake player and a fake flash).
 
+**The announcer (1.2.0).** For a match found, a challenge and a tournament set (`notify.VOICE_KINDS`) the game's own
+announcer says "Get ready for the next battle!" instead of the chime (Settings -> "Use the game's announcer for
+matches and challenges", launcher.json `"notify_voice"`, on by default; it follows the notification checkbox above).
+`announcer.py` reads the line when it is needed from the player's own unpacked game -- entry 11 of the data table in
+`T55DATA1.BIN` (the TOC/XOR/zlib coding of rank_art.py) is the announcer's sound bank, sample 1 is the line,
+PlayStation ADPCM at 18 kHz, decoded in memory and brought to 45 % of full scale. Nothing of it is shipped or written
+to disk; the sample's size and SHA-256 make sure no other sound plays. Before BUILD GAME, with a European program or
+other/damaged data the chime rings. `python -m t5lobby.announcer --out <output folder> --play` plays it (a check).
+How the sample was found: the bank's 21 samples compared with spoken phrases (MFCC + DTW against a TTS voice) --
+samples 1 and 9 are two takes of the line, 8 is likely "... the final battle", 0 "Welcome to the King of Iron Fist
+Tournament". Tests: `lobby/tests/test_announcer.py` (a made-up bank and an independent ADPCM encoder).
+
 ## Developer badges and chat mentions
 
 Since 1.2.0, an administrator can assign a developer badge to an account with

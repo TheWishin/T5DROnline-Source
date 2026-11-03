@@ -519,6 +519,73 @@ static void test_auto_skip()
     printf("automatic skips ok\n");
 }
 
+/* Offline auto-skip (no_pause.h OfflineSkip): one PC, the rule's START on both ports into the model game. Every
+ * round's replay and way to the next round are skipped, the deciding round's ending too (offline nothing else does),
+ * the intros never, the fight never pauses -- also while a player mashes START or holds it; without the rule the same
+ * player inputs skip nothing (the model has teeth). */
+static void test_offline_skip()
+{
+    for (int variant = 0; variant < 3; variant++) {   /* 0: no START by the player, 1: mashed, 2: held from frame 0 */
+        for (int on = 0; on < 2; on++) {
+            Game g;
+            np::OfflineSkip skip;
+            uint32_t pressed = 0, pressed_bad = 0;
+            for (uint32_t f = 0; f < 60000 && g.matches < 4; f++) {
+                PadInput in[2] = { player_input(11, f, 0), player_input(23, f, 0) };
+                if (variant == 1 && rnd() % 7 == 0) in[rnd() & 1].buttons |= NoPauseRule::kStart;
+                if (variant == 2) in[0].buttons |= NoPauseRule::kStart;
+                /* offline the player's own START reaches the game: it may pause the fight (that is the game) --
+                 * the rule must only never add a press where START pauses */
+                const NoPauseRule::State st = g.facts();
+                if (on && skip.press(st)) {
+                    pressed++;
+                    if (st.round == 4 || st.round == 5 || st.round == 1 || st.round == 2 || !st.game_mode || st.phase != 17)
+                        pressed_bad++;
+                    for (int p = 0; p < 2; p++) in[p].buttons |= NoPauseRule::kStart;
+                }
+                g.step(in);
+            }
+            check(g.matches >= 4, "offline: the matches end", g.matches);
+            check(pressed_bad == 0, "offline: never a press outside the after-round parts", pressed_bad);
+            if (variant == 2) continue;   /* START held: no edges at all, nothing to skip either way */
+            if (on) {
+                check(g.replays > 0 && g.replay_skips == g.replays, "offline: every round's replay skipped", g.replay_skips, g.replays);
+                check(g.next_skips > 0, "offline: the way to the next round skipped", g.next_skips);
+                check(g.skips + 1 == g.matches, "offline: the deciding round's ending skipped (the last match stops the run at its KO)",
+                      g.skips, g.matches);
+                if (variant == 0) {
+                    check(g.intro_skips == 0, "offline: the intros are never skipped by the rule", g.intro_skips);
+                    check(g.pauses == 0, "offline: the rule never pauses", g.pauses);
+                }
+            } else if (variant == 0) {
+                check(g.replay_skips == 0 && g.next_skips == 0 && g.skips == 0, "offline off: nothing skipped",
+                      g.replay_skips + g.next_skips, g.skips);
+            }
+        }
+    }
+    np::OfflineSkip s;
+    NoPauseRule::State st = { true, 17, false, 14, 9 };
+    for (uint32_t k = 0; k < 45; k++)
+        check(s.press(st) == (k % 20 < 3), "offline: 3 frames every 20", k);
+    st.mode_next = 6;
+    check(!s.press(st), "offline: the select screen asked for: no press");
+    st.mode_next = 14; st.round = 5;
+    check(!s.press(st) && s.in_part == 0, "offline: the fight ends the part");
+    st.round = 0xC;
+    check(s.press(st), "offline: a new part starts with a press");
+    /* which ports: VS both; the one-player modes only the port that played (START on the other one is a new
+     * challenger); nobody / both played, demo, practice: none */
+    check(np::OfflineSkip::ports(4, false, false) == 3 && np::OfflineSkip::ports(4, true, true) == 3, "offline: VS both ports");
+    check(np::OfflineSkip::ports(0, true, false) == 1 && np::OfflineSkip::ports(0, false, true) == 2,
+          "offline: arcade only the port that played");
+    check(np::OfflineSkip::ports(1, true, false) == 1 && np::OfflineSkip::ports(9, false, true) == 2, "offline: ghost / survival");
+    check(np::OfflineSkip::ports(0, true, true) == 0 && np::OfflineSkip::ports(0, false, false) == 0,
+          "offline: arcade with both or no port playing: nothing (no challenger)");
+    check(np::OfflineSkip::ports(2, true, false) == 0 && np::OfflineSkip::ports(10, true, false) == 0,
+          "offline: demo and practice: nothing");
+    printf("offline skips ok\n");
+}
+
 int main()
 {
     test_window();
@@ -527,6 +594,7 @@ int main()
     test_soft_reset();
     test_netplay();
     test_auto_skip();
+    test_offline_skip();
     printf("PASS %d checks\n", g_checks);
     return 0;
 }

@@ -79,11 +79,14 @@ db.close()" "$(pp "$1")"
 }
 fact() { echo "$1" | awk -v k="$2" '{for (i = 1; i < NF; i++) if ($i == k) print $(i + 1)}'; }
 running_src() {  # the /opt/src/*/lobby folder whose server code is the installed one
-    local d
+    local d f same
     for d in "$R"/opt/src/*/lobby; do
         [ -f "$d/t5lobby/server/lobby.py" ] || continue
-        cmp -s "$d/t5lobby/server/lobby.py" "$T5CODE/t5lobby/server/lobby.py" \
-            && cmp -s "$d/t5lobby/server/store.py" "$T5CODE/t5lobby/server/store.py" && { echo "$d"; return 0; }
+        same=1
+        for f in "$T5CODE"/t5lobby/*.py "$T5CODE"/t5lobby/server/*.py; do
+            cmp -s "$f" "$d/t5lobby/${f#"$T5CODE"/t5lobby/}" || { same=0; break; }
+        done
+        [ "$same" = 1 ] && { echo "$d"; return 0; }
     done
     return 0
 }

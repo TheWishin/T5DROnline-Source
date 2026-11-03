@@ -399,7 +399,12 @@ class Rehearsal:
             raise SystemExit(out)
 
     def client(self, version, ops, kind="t5", out=None, background=False):
-        lobby = self.r("opt", "src", "t4lobby", "lobby") if kind == "t4" else self.src(version)
+        if kind == "t4":
+            lobby = self.r("opt", "src", "t4lobby", "lobby")
+        elif version == self.a.new_version:
+            lobby = LOBBY                      # (the new launcher: this checkout's client code)
+        else:
+            lobby = self.src(version)
         port, fp = (self.p4, self.fp4) if kind == "t4" else (self.p5, self.fp5)
         cmd = [sys.executable, os.path.abspath(__file__), "client", "--lobby", lobby, "--kind", kind,
                "--port", str(port), "--fp", fp, "--release", version, "--ops", json.dumps(ops)]
@@ -446,6 +451,9 @@ class Rehearsal:
         stub = posix(os.path.abspath(__file__))
         py = posix(sys.executable)
         rr = self.R.replace("\\", "/")
+        # the admin wrappers want root (`id -u` = 0): here everything runs as this user
+        with open(self.r("stub", "bin", "id"), "w", newline="\n") as f:
+            f.write('#!/bin/sh\n[ "$1" = -u ] && [ $# = 1 ] && { echo 0; exit 0; }\nexec /usr/bin/id "$@"\n')
         for tool in ("systemctl", "journalctl"):
             with open(self.r("stub", "bin", tool), "w", newline="\n") as f:
                 f.write(f'#!/bin/sh\nexec "{py}" "{stub}" stub "{rr}" {tool} "$@"\n')
@@ -587,14 +595,18 @@ class Rehearsal:
               code == 0 and "data unchanged" in out and "T4 lobby accepts the migrated database" in out
               and "running (old) code opens the migrated copy" in out)
         check("precheck left the live database at its schema", self.schema() == 1)
-        check("precheck removed its copies", not [f for f in os.listdir(self.r("root")) if any(
-            x.endswith((".db", ".db-wal")) and x.startswith("precheck") for x in os.listdir(self.r("root", f)))])
+        left = [os.path.join(d, x) for d in (os.listdir(self.r("root")) if os.path.isdir(self.r("root")) else [])
+                for x in os.listdir(self.r("root", d)) if x.startswith("precheck.db")]
+        check("precheck removed its copies", not left, ", ".join(left))
 
         print("\n== a broken new code (the server cannot start): the deploy must put the old code back itself")
         broken = os.path.join(self.r("opt", "src"), f"t5dr-lobby-{new}-broken")
         shutil.copytree(os.path.dirname(self.src(new)), broken)
-        with open(os.path.join(broken, "lobby", "t5lobby", "server", "__main__.py"), "a", encoding="utf-8") as f:
-            f.write("\nraise SystemExit('rehearsal: a server that cannot start')\n")
+        main_py = os.path.join(broken, "lobby", "t5lobby", "server", "__main__.py")
+        with open(main_py, encoding="utf-8") as f:
+            body = f.read()
+        with open(main_py, "w", encoding="utf-8", newline="\n") as f:
+            f.write("raise SystemExit('rehearsal: a server that cannot start')\n" + body)
         code, out = self.sh(f'bash "{posix(broken)}/lobby/deploy/linux/t5dr_deploy_remote.sh" deploy --drain-wait 60',
                             env={"T5D_ROOT": posix(self.R)})
         check("broken deploy: failed and rolled back by itself", code != 0 and "rolled back" in out

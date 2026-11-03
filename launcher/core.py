@@ -109,6 +109,7 @@ DEFAULTS = {
     "training_online": False,  # ... also online, this PC's own inputs only (T5_TRAINING_ONLINE=1)
     "training_pos": "top",     # where the training display sits: top | bottom (T5_TRAINING_POS)
     "practice": True,          # practice tools in Practice (offline): SELECT combos, dummy, recordings, T5_PRACTICE
+    "auto_skip_offline": False, # offline: the game skips replays and round endings itself (T5_AUTO_SKIP_OFFLINE)
     "practice_dummy": "game",  # the dummy's behaviour at the start: game | block | crouch | walk | step, T5_PRACTICE_DUMMY
     "always_left": False,      # as P2 in a casual match this PC shows the fight mirrored, you on the left (T5_ALWAYS_LEFT=1)
     "screen_side": "dealt",    # dealt | left | right; old always_left settings migrate on load
@@ -354,6 +355,10 @@ class Settings(dict):
         # Unlocks count offline only: a game started for online play answers as a fresh save does,
         # whatever it is given (both PCs must build the same select screens and stage lists); online, Jinpachi
         # and the random cell come with the match kind instead (T5_NET_UNLOCKS from the lobby's match event).
+        # Offline only (the game reads it only without netplay; start() drops it for online games): START in the
+        # after-round parts (src/netplay/no_pause.h OfflineSkip). Online the agreed match rule does it.
+        if self["auto_skip_offline"]:
+            env["T5_AUTO_SKIP_OFFLINE"] = "1"
         if self["unlock_stages"]:
             env["T5_UNLOCK_STAGES"] = "1"
         if self["unlock_jinpachi"]:
@@ -1062,6 +1067,7 @@ def dialog_message(text):
 
 
 UNLOCK_ENV = ("T5_UNLOCK_STAGES", "T5_UNLOCK_ITEMS", "T5_UNLOCK_JINPACHI")
+OFFLINE_ONLY_ENV = ("T5_AUTO_SKIP_OFFLINE",)   # offline settings the game ignores online (dropped there too)
 ONLINE_ENV = ("T5_CTL_DIR", "T5_NET_MODE", "T5_FIGHT", "T5_FIGHT_FILE")
 
 
@@ -1158,7 +1164,7 @@ class GameRun:
         # T5_REPLAY_DIR would keep recording even when the launcher checkbox is Off.
         env_over["T5_REPLAY_DIR"] = self.settings.replay_dir if self.settings["replays"] else None
         if is_online_env(env_over):
-            for k in UNLOCK_ENV:            # the game ignores them online anyway; keep its log and reports plain
+            for k in UNLOCK_ENV + OFFLINE_ONLY_ENV:   # the game ignores them online anyway; keep its log and reports plain
                 env_over.pop(k, None)
             # An online game keeps a save of its own (patches/ps3recomp/0044): both PCs start from the same
             # fresh save -- the game copies its own OPTIONS (round time, difficulty, ...) and unlocks into the

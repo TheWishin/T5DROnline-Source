@@ -4689,6 +4689,206 @@ def spectate_stream(ctx):
     _spectate_case(ctx, True, games=False)
 
 
+# ---------------------------------------------------------------------------- 1.2.0: watch your room's table
+def _keep_verdicts(p):
+    """Each spectator game's verdict file, kept before the next spectator game of p removes it (tk_spectate.py starts
+    every game with a fresh watch-verdict.json)."""
+    from e2e_harness import read_json
+    kept = []
+    spec = p.tab.spec
+    start = spec._start_game
+
+    def start_game(path):
+        v = read_json(os.path.join(p.out, "logs", "online", "watch-verdict.json"))
+        if v is not None:
+            kept.append(v)
+        return start(path)
+    spec._start_game = start_game
+    p.verdicts = kept
+    return kept
+
+
+def _auto_w(p):
+    w = p.tab.spec.w
+    return w if w is not None and w.get("automatic") == "table" else None
+
+
+AUTOWATCH_TIMES = {}      # the scenarios' measurements, also written to <run>/autowatch_times.json
+
+
+def _room_autowatch(ctx, real, auto=True):
+    """A community room for 4 (one match at a time, winner stays). Ana and Ben play; Cy and Dee wait and -- with
+    "Automatically watch" (on by default) -- watch the table's match in their own spectator games without pressing
+    anything. The next pair's countdown closes the spectator game of whoever it names, and that match must start as
+    fast as without auto-watch (auto=False: the same room with the box unticked, the times to compare). The other
+    waiting member keeps watching: the next pair's match is picked up by itself. A waiting member whose own game
+    stays open (a persistent game kept for the next match) is not made to close it; the room row says why."""
+    if "spectate" not in features():
+        raise Skip("this tree has no spectating")
+    if real:
+        game_server(ctx, T5L_ROOM_NEXT_SECONDS=4)
+    else:
+        stub_server(ctx, T5L_ROOM_NEXT_SECONDS=2)
+    kind = "real" if real else "stub"
+    chars = ("jin", "paul", "steve", "law")
+    ps = [ctx.player(n, kind=kind, char=ch) for n, ch in zip(("E2E Ana", "E2E Ben", "E2E Cy", "E2E Dee"), chars)]
+    a, b, c, d = ps
+    for p, ch in zip(ps, chars):
+        p.app.settings["auto_watch_table"] = auto
+        login(ctx, p)
+        p.set_char(ch)
+    for p in (c, d):
+        _keep_verdicts(p)
+    _create_room_window(a, size=4)
+    ctx.wait(lambda: (a.client.my_room or {}).get("size") == 4, 10, "Ana's room for 4")
+    rid = a.client.my_room["id"]
+    for p in (b, c, d):                                  # in this order: the line is Ana, Ben, Cy, Dee
+        ctx.wait(lambda p=p: p.tab.tv_rooms.exists(rid), 10, f"{p.name}: the room is listed")
+        p.tab.tv_rooms.selection_set(rid)
+        p.press("join")
+        ctx.wait(lambda p=p: (p.client.my_room or {}).get("id") == rid, 10, f"{p.name} joins")
+    ctx.wait(lambda: all(p.action_on("room_autowatch") for p in ps), 10, "the room row offers 'Automatically watch'")
+    ctx.check("... ticked as set", all(bool(p.tab.rooms_ui.autowatch_var.get()) == auto for p in ps))
+    t1 = time.time() - 5.0
+    mid1 = found_both(ctx, a, b, t1, timeout=30)
+    ctx.check("match 1: Ana vs Ben (the first two of the line)", not latest(c, "match_found", t1) and
+              not latest(d, "match_found", t1))
+    accept(ctx, a, mid1)
+    accept(ctx, b, mid1)
+    started_both(ctx, a, b, mid1, timeout=60)
+    if auto:
+        for p in (c, d):
+            ctx.wait(lambda p=p: _auto_w(p) is not None, 30, f"{p.name} watches the table by itself")
+            ctx.check(f"{p.name}: it is Ana vs Ben's match", (_auto_w(p) or {}).get("match") == mid1,
+                      (_auto_w(p) or {}).get("match"))
+            if real:
+                ctx.wait(lambda p=p: (_auto_w(p) or {}).get("game") is not None, 60,
+                         f"{p.name}'s spectator game starts")
+    else:
+        ctx.sleep(5.0)
+        ctx.check("unticked: nobody watches", c.tab.spec.w is None and d.tab.spec.w is None)
+    if real:
+        wait_fight(ctx, mid1, (a, b), timeout=180)
+        if auto:
+            for p in (c, d):
+                ctx.wait(lambda p=p: (_auto_w(p) or {}).get("state") == "playing", 120, f"{p.name}'s game plays it")
+    wait_results(ctx, mid1, (a, b), timeout=400 if real else 90)
+    rows = [match_row(ctx, mid1, (a, b), "confirmed", "match 1")] if real else []
+    # the countdown names the next pair: when does each of them have no spectator game any more
+    t_next = {}
+
+    def next_pair():
+        r = c.client.my_room or {}
+        pair = (r.get("next") or {}).get("players") or []
+        if len(pair) == 2 and "pair" not in t_next:
+            t_next["pair"], t_next["at"] = list(pair), time.time()
+        if "pair" in t_next:
+            for p in ps:
+                if p.me["id"] in t_next["pair"] and p.name not in t_next and _auto_w(p) is None and not (
+                        p in (c, d) and p.game_running()):
+                    t_next[p.name] = time.time()
+        return "pair" in t_next and all(p.name in t_next for p in ps if p.me["id"] in t_next["pair"])
+    ctx.wait(next_pair, 60, "the countdown names the next pair; their spectator games are closed")
+    by_id = {p.me["id"]: p for p in ps}
+    pair2 = [by_id[i] for i in t_next["pair"]]
+    ctx.note(f"match 2: {pair2[0].name} vs {pair2[1].name}")
+    mid2 = found_both(ctx, pair2[0], pair2[1], t_next["at"] - 0.5, timeout=30)
+    for p in pair2:
+        ctx.check(f"{p.name}: its spectator game was closed before its ready check",
+                  p.name in t_next and t_next[p.name] <= (p.matches.get(mid2) or {}).get("found", 0) + 0.2,
+                  f"closed {t_next.get(p.name, 0) - t_next['at']:+.2f} s after the countdown started")
+    accept(ctx, pair2[0], mid2)
+    accept(ctx, pair2[1], mid2)
+    started_both(ctx, pair2[0], pair2[1], mid2, timeout=60)
+    waiting2 = [p for p in ps if p not in pair2]
+    fresh = [p for p in waiting2 if p in (c, d)]
+    kept = [p for p in waiting2 if p not in (c, d)]
+    if auto:
+        for p in fresh:
+            ctx.wait(lambda p=p: (_auto_w(p) or {}).get("match") == mid2, 60,
+                     f"{p.name} watches the next pair's match by itself")
+        for p in kept:
+            ctx.wait(lambda p=p: bool(p.tab.rooms_ui.autowatch_text.get()), 15,
+                     f"{p.name}: its own game stays open -- the room row says why it does not watch")
+            ctx.check(f"{p.name}: its own game was not closed for watching", p.tab.spec.w is None and p.game_running())
+    if real:
+        wait_fight(ctx, mid2, pair2, timeout=180)
+    wait_results(ctx, mid2, pair2, timeout=400 if real else 90)
+    if real:
+        rows.append(match_row(ctx, mid2, pair2, "confirmed", "match 2"))
+    times = {}
+    for label, mid, pair in (("match 1", mid1, (a, b)), ("match 2", mid2, pair2)):
+        for p in pair:
+            m = p.matches.get(mid) or {}
+            if m.get("found") and m.get("started"):
+                times[f"{label}|{p.name}"] = [round(m["started"] - m["found"], 2),
+                                              round(m["fight_at"] - m["found"], 2) if m.get("fight_at") else None]
+    for key, (start, fight) in times.items():
+        ctx.note(f"{key}: ready check -> match start {start:.1f} s" +
+                 (f", -> FIGHT START {fight:.1f} s" if fight is not None else ""))
+    closed = {n: round(t - t_next["at"], 2) for n, t in t_next.items() if n not in ("pair", "at")}
+    ctx.note(f"spectator game gone after the countdown started (s): {closed}")
+    AUTOWATCH_TIMES[f"{'on' if auto else 'off'}_{kind}_{int(time.time())}"] = {"times": times, "closed": closed}
+    try:
+        with open(os.path.join(ctx.run.out, "autowatch_times.json"), "w", encoding="utf-8") as f:
+            json.dump(AUTOWATCH_TIMES, f, indent=1)
+    except OSError:
+        pass
+    if auto and real:
+        from e2e_harness import read_json
+        for p in fresh:
+            ctx.wait(lambda p=p: _auto_w(p) is None or (_auto_w(p) or {}).get("state") == "over", 600,
+                     f"{p.name}'s spectator game ends with match 2's stream")
+        for p in (c, d):
+            last = read_json(os.path.join(p.out, "logs", "online", "watch-verdict.json"))
+            verdicts = list(p.verdicts) + ([last] if last is not None and last not in p.verdicts else [])
+            for k, vd in enumerate(verdicts):
+                ms = vd.get("matches") or []
+                ctx.note(f"{p.name} watch {k + 1}: identical {vd.get('identical')}, {vd.get('hashes_compared')} "
+                         f"hashes, {vd.get('hash_mismatches')} different, results "
+                         f"{[(m.get('winner'), m.get('hash'), m.get('same')) for m in ms]}, end {vd.get('end')!r}")
+            done = [vd for vd in verdicts if vd.get("matches")]
+            # (a spectator game closed for its own turn wrote no verdict: only what it saw to the end counts)
+            ctx.check(f"{p.name}: what it watched is identical to the live game (no hash differs)",
+                      (bool(done) or p not in fresh) and all(not vd.get("hash_mismatches") and
+                                                             vd.get("identical") is not False for vd in done),
+                      f"{len(done)} verdict(s)")
+        for p in fresh:
+            last = read_json(os.path.join(p.out, "logs", "online", "watch-verdict.json")) or {}
+            ctx.check(f"{p.name}: the next pair's match watched to its end, identical",
+                      last.get("identical") is True and len(last.get("matches") or []) >= 1,
+                      f"{last.get('hashes_compared')} hashes")
+    for r in rows:
+        ctx.note(f"{r['label']}: " + ", ".join(f"{n}: fps {r[n]['result_file'].get('fps')}, desync "
+                                                f"{r[n]['result_file'].get('desync')}" for n in r
+                                                if isinstance(r[n], dict) and "result_file" in r[n]))
+    for p in ps:
+        if p.action_on("leave"):
+            p.press("leave")
+
+
+@scenario("room_autowatch_stub", "12 spectating", suites=("quick", "lobby"),
+          desc="a room for 4 (stub games): the two waiting members watch the table by themselves, the watch of the "
+               "one the countdown names ends at once, the other picks up the next pair's match")
+def room_autowatch_stub(ctx):
+    _room_autowatch(ctx, False)
+
+
+@scenario("room_autowatch", "12 spectating", game=True, suites=("game",),
+          desc="a room for 4 with real games: two play, two watch the table in their own spectator games by "
+               "themselves (identical hashes); the next player's spectator game closes at the countdown and its "
+               "match starts as fast as without; the other waiting member watches the next pair's match too")
+def room_autowatch(ctx):
+    _room_autowatch(ctx, True)
+
+
+@scenario("room_autowatch_off", "12 spectating", game=True, suites=("game",),
+          desc="room_autowatch with 'Automatically watch' unticked: nobody watches; the ready check -> FIGHT START "
+               "times to compare")
+def room_autowatch_off(ctx):
+    _room_autowatch(ctx, True, auto=False)
+
+
 # ============================================================================== 13. 1.1.3 together
 # Tournaments + custom costumes + spectating + the relay fallback in one run (the 1.1.3 integration): a tournament
 # set with both players in their custom costumes and a spectator watching it from the bracket, in rollback and in

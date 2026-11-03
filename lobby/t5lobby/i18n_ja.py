@@ -2330,6 +2330,18 @@ MESSAGES = {
         "観戦",
     "Friends and room visitors may watch my online matches":
         "フレンドとルームの訪問者が自分のオンライン対戦を観戦できる",
+    "Automatically watch":
+        "自動で観戦",
+    "Automatically watch the match at my room's table while I wait for my turn":
+        "自分の順番を待つ間、ルームの自分の卓の対戦を自動で観戦する",
+    "Not while the game is being built.":
+        "ゲームのビルド中は観戦しません。",
+    "Not while your own game is open: it stays ready so your next match starts quickly.":
+        "自分のゲームが開いている間は観戦しません（次の対戦をすぐ始められるよう待機中です）。",
+    "Your room's matches are shown automatically while you wait.":
+        "待っている間、ルームの対戦が自動で表示されます。",
+    "Your room's matches are no longer shown automatically.":
+        "ルームの対戦は自動で表示されなくなりました。",
     "Automatically watch matches while idle":
         "待機中は自動で対戦を観戦する",
     "Also my ranked matches":

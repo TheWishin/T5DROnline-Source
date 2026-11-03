@@ -98,6 +98,10 @@ class RoomsUI:
         self._shown = None        # (room id, code) the code field shows
         self.members_frame = None
         self._members_shown = None
+        self.autowatch_var = None  # "Automatically watch" (launcher setting auto_watch_table, docs/SPECTATE.md)
+        self.autowatch_row = None
+        self.autowatch_box = None
+        self.autowatch_text = None
 
     # ------------------------------------------------------------------ helpers
     @property
@@ -134,8 +138,22 @@ class RoomsUI:
             b = ttk.Button(row, text=label, style="Card.Small.TButton", state="disabled", command=cmd)
             b.pack(side="left", padx=(0, px(6)))
             tab.actions[key], tab.action_text[key] = b, label
+        # Automatically watch the match at this room's table while waiting for a turn (tk_spectate.py, on by
+        # default); the same setting as in the launcher's Settings. Triangle (Y) on a pad toggles it.
+        aw = view.body(f)
+        aw.grid(row=2, column=0, sticky="w", pady=(px(6), 0))
+        self.autowatch_var = tk.BooleanVar(rc, value=self._autowatch_setting())
+        box = ttk.Checkbutton(aw, text=t("Automatically watch"), variable=self.autowatch_var,
+                              style="Card.TCheckbutton", state="disabled", command=self.toggle_autowatch)
+        box.pack(side="left")
+        tab.actions["room_autowatch"], tab.action_text["room_autowatch"] = box, t("Automatically watch")
+        self.autowatch_text = tk.StringVar(rc, value="")
+        view.wrap(ttk.Label(aw, textvariable=self.autowatch_text, style="Card.Muted.TLabel", justify="left"),
+                  rc, 30).pack(side="left", padx=(px(8), 0))
+        self.autowatch_row, self.autowatch_box = aw, box
+        aw.grid_remove()                     # (shown in a community room: _sync_autowatch)
         code = view.body(f)
-        code.grid(row=2, column=0, sticky="w", pady=(px(6), 0))
+        code.grid(row=3, column=0, sticky="w", pady=(px(6), 0))
         b = ttk.Button(code, text=t("Copy invite code"), style="Card.Small.TButton", state="disabled",
                        command=self.copy_code)
         b.pack(side="left", padx=(0, px(6)))
@@ -146,7 +164,7 @@ class RoomsUI:
                                     exportselection=False, font=view.th.fonts.get("code"))
         self.code_entry.pack(side="left")
         self.members_frame = view.body(f)
-        self.members_frame.grid(row=3, column=0, sticky="we", pady=(px(6), 0))
+        self.members_frame.grid(row=4, column=0, sticky="we", pady=(px(6), 0))
         self.members_frame.columnconfigure(0, weight=1)
         self.frame = f
         self.rc = rc
@@ -175,7 +193,8 @@ class RoomsUI:
                                and st == "room" and not busy),
               "room_tables": bool(me and r and r.get("mode") == "tables"),
               "room_settings": bool(me and r and self._host(r) and self.ok()),
-              "room_code": bool(me and r and r.get("lock") == "code" and self.client.room_code)}
+              "room_code": bool(me and r and r.get("lock") == "code" and self.client.room_code),
+              "room_autowatch": bool(me and r and self._community(r))}
         if r is not None:
             away = me is not None and me.get("id") not in (r.get("line") or ())
             label = t("Available to play") if away and r.get("mode") == "tables" else (
@@ -184,6 +203,56 @@ class RoomsUI:
         if r is not None and r.get("training") and me is not None and st in ("match", "playing"):
             on["leave"] = True        # a training room: leave any time, its fight too (nothing is counted either way)
         return on if acts else {}
+
+    # ------------------------------------------------------------------ automatically watch the room's table
+    @staticmethod
+    def _community(r):
+        return bool(r) and (r.get("size", 2) > 2 or r.get("mode") == "tables")
+
+    def _autowatch_setting(self):
+        settings = getattr(self.tab.app, "settings", None) or {}
+        return settings.get("auto_watch_table", True) is not False
+
+    def toggle_autowatch(self):
+        """The room row's "Automatically watch": saved at once (launcher.json), the Settings tab's box follows;
+        unticked, a running automatic watch stops at the tab's next poll (tk_spectate.py)."""
+        on = bool(self.autowatch_var.get())
+        app = self.tab.app
+        app.settings["auto_watch_table"] = on
+        var = getattr(app, "auto_watch_table_var", None)
+        if var is not None:
+            try:
+                var.set(on)
+            except tk.TclError:
+                pass
+        save = getattr(app.settings, "save", None)
+        if callable(save):
+            try:
+                save()
+            except OSError:
+                pass
+        self.tab.status(t("Your room's matches are shown automatically while you wait.") if on else
+                        t("Your room's matches are no longer shown automatically."))
+        self.tab.spec.poll()
+
+    def autowatch_hint(self, text):
+        if self.autowatch_text is not None and self.autowatch_text.get() != text:
+            self.autowatch_text.set(text)
+
+    def _sync_autowatch(self, r):
+        if self.autowatch_var is None:
+            return
+        on = self._autowatch_setting()
+        if bool(self.autowatch_var.get()) != on:
+            self.autowatch_var.set(on)     # (changed in Settings)
+        try:
+            if self._community(r):
+                if not self.autowatch_row.winfo_manager():
+                    self.autowatch_row.grid()
+            elif self.autowatch_row.winfo_manager():
+                self.autowatch_row.grid_remove()
+        except tk.TclError:
+            pass
 
     # ------------------------------------------------------------------ this player's room
     def refresh(self):
@@ -208,6 +277,7 @@ class RoomsUI:
             self.code_var.set("")                     # (another room, or a new code: shown again on the next press)
             self._shown = None
         self.text.set(self.summary(r))
+        self._sync_autowatch(r)
         self._refresh_members(r)
 
     def _member_rows(self, room):
@@ -354,6 +424,8 @@ class RoomsUI:
     def tick(self):
         """The tab's poll: the countdown to the room's next match."""
         r = self.mine()
+        if r is not None:
+            self._sync_autowatch(r)
         if r is not None and ((r.get("next") or {}).get("players") or r.get("mode") == "tables"):
             self.refresh()
         if self.window is not None and hasattr(self.window, "refresh_tables"):

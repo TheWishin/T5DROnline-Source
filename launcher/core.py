@@ -127,6 +127,7 @@ DEFAULTS = {
     "spectators": True,        # online: friends and room visitors may watch this player's matches (docs/SPECTATE.md)
     "spectators_ranked": False,  # ... the ranked ones too (both players must allow it)
     "auto_spectate": False,    # watch an available match while idle; always yield to this player's match
+    "auto_watch_table": True,  # in a community room: watch the match at my table while I wait (docs/SPECTATE.md)
     "power_saving": "auto",    # auto | on | off: PS3_LAPTOP (POWER_SAVING)
     "unlock_stages": False,    # offline: the Tekken 5 stages without clearing Arcade (T5_UNLOCK_STAGES, docs/DIRECTFIGHT.md "Unlocks")
     "unlock_items": False,     # offline: every customization item free in the item shop (T5_UNLOCK_ITEMS)
@@ -199,6 +200,8 @@ class Settings(dict):
         self["always_left"] = self["screen_side"] == "left"
         if not isinstance(self["auto_spectate"], bool):
             self["auto_spectate"] = False
+        if not isinstance(self["auto_watch_table"], bool):
+            self["auto_watch_table"] = True
         if not isinstance(self["vsync"], str) or self["vsync"] not in VSYNC_MODES:
             self["vsync"] = "on"
         if not isinstance(self["power_saving"], str) or self["power_saving"] not in POWER_SAVING:

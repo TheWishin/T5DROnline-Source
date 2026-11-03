@@ -529,6 +529,19 @@ identifies it explicitly; the server does not guess a table from a room with sev
 spectator preferences, blocks, stream limits and private-room membership checks apply to each selected match.
 An available member can still be paired while watching; their normal match start stops their watch. Choose
 **Sit out** to keep watching without being paired.
+
+### Automatically watch your room's table (1.2.0)
+
+In a community room (3 or more players, one match taking turns or several at once) a member who waits for a
+turn sees the table's match without pressing anything, like the lobby in Tekken 8: the room row's
+**Automatically watch** box (on by default; Triangle / Y on a pad; the same setting as Settings -> Spectators)
+starts the ordinary spectator game as soon as the match can be watched, and closes it the moment the countdown
+names you, a ready check or match of yours comes. When the table's match ends and the next pair sits down, you
+watch theirs. With several tables your table is the one you last played at or picked in **Tables...** -> Watch
+table, else the first with a match on. Nothing new on the server: every watch is an ordinary `watch`, with the
+players' spectator settings and private rooms (members only) as for a click. Your own open game is never
+closed for it (after your first match your game stays open for the next one; the room row says so). Details:
+SPECTATE.md "Automatically watch your room's table".
 Locking or hiding a room removes nonmembers from every table's spectators. Passwords, invite codes, host
 transfer, kick exclusions and turning away password guessers remain room-wide rules.
 Tables are in-memory room state and disappear with the room or a server restart; they add no database schema.

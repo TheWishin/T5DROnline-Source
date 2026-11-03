@@ -75,9 +75,11 @@ class Lock:
     """The shared heavy lock, taken per game run. `path` may name several lock files, comma-separated (the PC's
     heavy slots, e.g. HEAVY.lock,HEAVY2.lock): a timing measurement then holds all of them at once. Each file is
     created atomically (O_EXCL); all or none: when one is someone else's, the ones just taken are given back at once
-    and the whole set is tried again a few seconds later (a slot is never held while waiting for another)."""
-    def __init__(self, path, name):
+    and the whole set is tried again a few seconds later (a slot is never held while waiting for another).
+    `need` < the number of files: any `need` of them (three slots on the PC, a measurement wants two)."""
+    def __init__(self, path, name, need=0):
         self.paths = [p.strip() for p in (path or "").split(",") if p.strip()]
+        self.need = need if 0 < need <= len(self.paths) else len(self.paths)
         self.path, self.name = path, name
         self.given = 0.0
         self.held = []
@@ -115,12 +117,13 @@ class Lock:
         while True:
             got, busy = [], None
             for p in self.paths:
+                if len(got) == self.need:
+                    break
                 if self._try(p, what):
                     got.append(p)
                 else:
                     busy = p
-                    break
-            if busy is None:
+            if len(got) == self.need:
                 self.held = got
                 return
             for p in got:                                   # all or none: never sit on a slot while waiting
@@ -845,6 +848,7 @@ def main():
     r.add_argument("--rb-cpus2", default="0xFF000000")
     r.add_argument("--lock", default="", help="the shared lock file(s), comma-separated (all taken per game run)")
     r.add_argument("--lock-name", default="perf")
+    r.add_argument("--lock-need", type=int, default=0, help="take any N of the --lock files (default: all of them)")
     r.add_argument("--lock-gap", type=float, default=35.0, help="seconds between giving the lock back and taking it again")
     r.add_argument("--redo", action="store_true", help="measure again what results.json already has")
     r.add_argument("--env", action="append", default=[], help="extra NAME=VALUE for every game")
@@ -871,7 +875,7 @@ def main():
     os.makedirs(a.out, exist_ok=True)
     path = os.path.join(a.out, "results.json")
     results = json.load(open(path)) if os.path.exists(path) else {}
-    lock = Lock(a.lock, a.lock_name)
+    lock = Lock(a.lock, a.lock_name, a.lock_need)
     lock.GAP = a.lock_gap
     parts = a.parts.split(",")
     with lock:

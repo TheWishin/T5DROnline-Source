@@ -64,6 +64,18 @@ class MultiSlotLockTest(unittest.TestCase):
             perf.time.sleep = perf_sleep
         lk.give()
 
+    def test_any_two_of_three(self):
+        c = os.path.join(self.tmp.name, "HEAVY3.lock")
+        with open(self.a, "w", encoding="utf-8") as f:
+            f.write("other 12:00 e2e\n")
+        lk = perf.Lock(",".join([self.a, self.b, c]), "perfgate", 2)
+        lk.GAP = 0
+        lk.take("x")
+        self.assertEqual((owner(self.a), owner(self.b), owner(c)), ("other", "perfgate", "perfgate"))
+        lk.give()
+        self.assertFalse(os.path.exists(self.b) or os.path.exists(c))
+        self.assertEqual(owner(self.a), "other")
+
     def test_never_removes_a_foreign_lock(self):
         with open(self.a, "w", encoding="utf-8") as f:
             f.write("other 12:00 x\n")

@@ -45,6 +45,8 @@ class Spectating:
         self._pending = None     # one worker request; a late answer never owns a game
         self._pending_end = None
         self._auto = auto_spectate.Policy()
+        self._table = auto_spectate.TablePolicy()    # the room's table: watched while waiting (on by default)
+        self.hint = ""           # why the room's table is not watched now (the room row shows it)
         self._before_ev = None
 
     # ------------------------------------------------------------------ settings
@@ -255,8 +257,17 @@ class Spectating:
         if g is not None and (drv is None or g is not getattr(drv, "game", None)) and g.running():
             g.stop()
 
-    def _watch(self, name=None, room=None, tournament=None, set_id=None, table=None, automatic=False):
+    def _auto_still_ok(self, automatic):
+        """An automatic watch may still go on: "table" = the room's table, True = the lobby-wide idle watching."""
         tab = self.tab
+        if automatic == "table":
+            return auto_spectate.table_blocker(tab) is None
+        return bool(tab.app.settings.get("auto_spectate", False)) and auto_spectate.idle(tab)
+
+    def _watch(self, name=None, room=None, tournament=None, set_id=None, table=None, automatic=False, seat=None):
+        tab = self.tab
+        if not automatic and room is not None and table is not None:
+            self._table.picked(room, table)        # a table watched by hand is this player's table from now on
         if self.w is not None or self._pending is not None or not self.ok() or self._busy():
             return
         g = getattr(tab.app, "game", None)
@@ -278,15 +289,15 @@ class Spectating:
             if c is not tab.client:
                 self._cancel_client(c)
                 return
-            if not r or self._busy() or not self.ok() or (automatic and
-                    (not tab.app.settings.get("auto_spectate", False) or not auto_spectate.idle(tab))):
+            if not r or self._busy() or not self.ok() or (automatic and not self._auto_still_ok(automatic)):
                 self._cancel_client(c)
                 return
             self.w = {"stream": r["stream"], "match": r.get("match"), "players": r.get("players"),
                       "ranked": r.get("ranked"), "room": r.get("room"), "began": r.get("began"),
                       "tournament": r.get("tournament"),
                       "spectators": r.get("spectators"), "state": "waiting", "game": None, "t0": time.monotonic(),
-                      "end": None, "delay": None, "client": c, "automatic": automatic}
+                      "end": None, "delay": None, "client": c, "automatic": automatic, "seat": seat,
+                      "table": r.get("table")}
             current = getattr(c, "spec_watch", None) or {}
             if current.get("stream") != r["stream"]:
                 ended = self._pending_end
@@ -345,8 +356,20 @@ class Spectating:
         w["state"] = "starting"
 
     def stop(self):
+        """Stop watching (the card's button): an automatic watch of the room's table skips this table turn."""
+        w = self.w
+        if w is not None and w.get("automatic") == "table":
+            self._table.stopped(w.get("seat"))
         self._auto.pause()
         self._preempt("left")
+        self.w = None
+        self._sig = None
+        self.tab._set_actions()
+
+    def _drop(self, reason):
+        """End this watch (its game closes) without the Stop button's pauses: the setting was turned off, the
+        player left the room, or the table's next match takes its place."""
+        self._preempt(reason)
         self.w = None
         self._sig = None
         self.tab._set_actions()
@@ -374,6 +397,21 @@ class Spectating:
                 self._preempt("stopped" if kind in ("disconnected", "reconnecting", "kicked") else "your_match")
 
     # ------------------------------------------------------------------ the tab's poll and events
+    def _set_hint(self):
+        """The room row's line under "Automatically watch": why the table's match is not shown right now."""
+        text = ""
+        if self.w is None and self._pending is None:
+            why = auto_spectate.table_blocker(self.tab)
+            room = auto_spectate.table_room(self.tab.client) if self.tab.client is not None else None
+            if why in ("game", "build") and room is not None and auto_spectate.table_targets(room, self._table.prefer):
+                text = (t("Not while the game is being built.") if why == "build" else
+                        t("Not while your own game is open: it stays ready so your next match starts quickly."))
+        if text != self.hint:
+            self.hint = text
+            rooms = getattr(self.tab, "rooms_ui", None)
+            if rooms is not None and hasattr(rooms, "autowatch_hint"):
+                rooms.autowatch_hint(text)
+
     def on_event(self, ev):
         self.before_event(ev)
         kind = ev.get("t")
@@ -396,6 +434,7 @@ class Spectating:
             if w is not None and ev.get("stream") == w["stream"]:
                 self._auto.pause()
                 w["end"] = ev.get("reason") or "over"
+                w["end_at"] = time.monotonic()
                 if w["game"] is None:
                     w["state"] = "over"           # (the game never started: nothing to watch)
                 elif w["end"] in ("your_match", "not_allowed", "bumped") or \
@@ -411,32 +450,61 @@ class Spectating:
 
     def poll(self):
         self._check_prefs()
+        tab = self.tab
         w = self.w
-        enabled = bool(self.tab.app.settings.get("auto_spectate", False))
-        queued = (getattr(self.tab.client, "me", None) or {}).get("status") == "queue"
-        if self._pending is not None and self._pending[2] and (not enabled or queued):
+        enabled = bool(tab.app.settings.get("auto_spectate", False))
+        table_on = auto_spectate.table_setting(tab)
+        queued = (getattr(tab.client, "me", None) or {}).get("status") == "queue"
+        at_table = tab.client is not None and auto_spectate.table_room(tab.client) is not None
+        pending = self._pending[2] if self._pending is not None else None
+        if pending == "table" and (not table_on or queued or not at_table):
+            self._preempt("left")                # unticked / left the room: the answer must not start a game
+        elif pending and pending != "table" and (not enabled or queued):
             self._auto.pause()
             self._preempt("left")
         if self._busy() and (self._pending is not None or (w is not None and w["state"] != "over")):
-            self._preempt("your_match")
+            self._preempt("your_match")          # this player's turn: the spectator game closes now
             w = self.w
-        if w is not None and w.get("automatic") and (not enabled or queued):
+        if w is not None and w.get("automatic") == "table" and (not table_on or queued or not at_table):
+            self._drop("left")                   # "Automatically watch" unticked: at once
+            w = None
+        elif w is not None and w.get("automatic") is True and (not enabled or queued):
             self.stop()
             w = None
         if w is not None and w.get("automatic") and w["state"] == "over":
             self.w = w = None
-            self.tab._set_actions()
+            tab._set_actions()
+        # The room's table: watch it as soon as it can be watched; an automatic watch whose stream ended (the
+        # table's set is over) or a lobby-wide one gives way to the table's (next) match.
+        if self._pending is None and (w is None or (w.get("automatic") and (w.get("automatic") != "table" or (
+                w.get("end") and time.monotonic() - w.get("end_at", 0.0) > auto_spectate.TABLE_END_GRACE)))):
+            target = self._table.due(tab, spectator_running=w is not None, current=w.get("seat") if w else None)
+            if target is not None:
+                if w is not None:
+                    self._drop("switched")
+                    w = None
+                self._watch(**target[0], automatic="table", seat=target[1])
+                if self._pending is not None:
+                    self._table.attempted(target)
+                self._set_hint()
+                return
         if w is None:
             if self._pending is None:
-                target = self._auto.due(self.tab)
+                target = self._auto.due(tab)
                 if target:
                     self._auto.attempted()
                     self._watch(**target, automatic=True)
+            self._set_hint()
             return
+        self._set_hint()
         g = w.get("game")
         if g is not None and w["state"] in ("starting", "playing"):
             if not g.running():
                 w["state"] = "over"
+                if not w.get("end") and w.get("automatic") == "table":
+                    # the spectator game closed while its stream still came (the window closed, SELECT, a crash):
+                    # not this table turn again -- a person who closed it does not want it back
+                    self._table.stopped(w.get("seat"))
                 if not w.get("end"):
                     try:
                         with open(w["result"], encoding="utf-8") as f:

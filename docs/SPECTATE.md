@@ -34,6 +34,55 @@ the same netcode playback path while it grows.
 - A launcher without spectating (before 1.1.3) is never watched (it cannot say yes) and never sees
   any of it; its player's matches just have no Watch.
 
+### Automatically watch your room's table (1.2.0)
+
+In a community room (3 or more players: one match taking turns, or several matches at once) the members who
+wait for their turn watch the table's match by themselves, like the lobby in Tekken 8. **On by default**: the room
+row on the Online tab has **Automatically watch** (a pad's Triangle / Y presses it), Settings -> Spectators has
+the same setting ("Automatically watch the match at my room's table while I wait for my turn", launcher.json
+`auto_watch_table`); both boxes follow each other and the choice is kept between launches.
+
+- **Which match.** One match taking turns: the room's match. Several matches at once: *your* table -- the one you
+  last played at or watched by hand (Tables... -> Watch table) -- else the lowest-numbered table with a match on;
+  while your table counts down to its next pair the launcher waits for that match instead of booting a game for
+  another table.
+- **At once.** No idle wait: the watch is asked for as soon as the room's view says the match can be watched (the
+  spectator game boots while the players' games still load). At most one request a second, the same table again
+  only 5 s after a refusal.
+- **Your turn first.** The spectator game closes in the same 100 ms poll in which the countdown names you, or a
+  ready check, challenge, invite, tournament call or match of yours comes (`match_found` closes it before the
+  match driver sees the event; the server also ends your watch, `your_match`). The room's countdown
+  (`T5L_ROOM_NEXT_SECONDS`, 8 s) runs before the ready check, so the spectator process is long gone when your
+  match's game starts: measured below.
+- **The next pair.** When the table's set is over its stream ends; the spectator game plays the rest (KO, result)
+  and closes by itself at the stream's end, then the table's next match is watched. A game still running 20 s after
+  the stream ended is closed for the next match.
+- **Unticking** stops a running automatic watch at once. **Stop watching** (or closing the spectator game's
+  window) ends it for this table turn only: the table's next pair is watched again.
+- **Not while** your own game is open -- a persistent online game is kept open after your match so your next one
+  starts in a few seconds instead of a fresh boot (~20 s), and it is never closed for watching (the room row says
+  "Not while your own game is open ..."); an offline game; BUILD GAME. So in practice the members who have not
+  played yet watch, and anybody who closed their game.
+- **Same rules as a click.** Nothing new on the server: an ordinary `watch {room}` / `watch {room, table}`. Both
+  players' spectator settings, ranked permission, blocks, build, the limits and private rooms (members only) are
+  checked by the server for every watch; the room's view only says `watch` when this member may watch.
+- **Your turn closes it even before the KO.** In a winner-stays room the waiting member named by the next countdown
+  loses the rest of the match being watched (the spectator game runs a few seconds behind the live game); its
+  last status file still says what it compared up to then.
+
+**Measured** (2026-11-03, e2e `room_autowatch` vs `room_autowatch_off`, real games, all four launchers and up to four
+games on one shared PC, interleaved A/B): the spectator game of each player the countdown named was gone +0.00 s
+after the countdown started, every run. Ready check -> FIGHT START of that next match (persistent + fresh game):
+median 22.8 s with auto-watch (10 values, 22.4-23.0) vs 22.75 s without (6 values, 22.5-23.0) -- no extra delay. Both
+of those include a 15 s direct -> relay fallback that the local harness hits for a persistent game meeting a new
+opponent, with and without auto-watch (not caused by it). What the spectators showed: identical to the live games
+(every compared hash equal; 10-42 hashes per watch), in rollback and in a lockstep run (`--netcode lockstep`); the
+matches themselves 0 mismatching frames.
+
+`lobby/t5lobby/auto_spectate.py` (TablePolicy, table_blocker, table_targets), `tk_spectate.py` (poll),
+`tk_rooms.py` (the box). Tests: `lobby/tests/test_auto_watch_table.py`, `test_tk_rooms.py`; e2e
+`room_autowatch_stub` (stub games), `room_autowatch` / `room_autowatch_off` (real games).
+
 ### Automatically watch while idle (1.2.0)
 
 Settings -> Spectators -> **Automatically watch matches while idle** is off by default. When enabled,
@@ -41,7 +90,9 @@ the launcher can use the ordinary Watch action after 15 seconds of being idle in
 in a room. It does not start a spectator game while a game is already running, including an idle
 persistent online game: keeping that process for the player's own match saves its boot time.
 
-The order is the player's own room, a watchable friend, then a watchable public room. Friends and
+The order is the player's own room (only when "Automatically watch" for the room's table is off: that setting
+looks after the own room, at once), a watchable friend, then a watchable public room; the room's table takes
+precedence over a match this setting picked. Friends and
 public rooms are ordered using the advertised rank, then rating, with a stable name or room-id tie
 break. A public room's available rank can describe its strongest advertised member or owner rather
 than the pair currently fighting; the lobby does not advertise an unrestricted global match list.

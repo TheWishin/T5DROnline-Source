@@ -2298,6 +2298,18 @@ MESSAGES = {
         "관전",
     "Friends and room visitors may watch my online matches":
         "친구와 내 방 방문자가 내 온라인 매치를 관전할 수 있음",
+    "Automatically watch":
+        "자동 관전",
+    "Automatically watch the match at my room's table while I wait for my turn":
+        "내 차례를 기다리는 동안 방의 내 테이블 매치를 자동으로 관전",
+    "Not while the game is being built.":
+        "게임을 빌드하는 동안에는 관전하지 않습니다.",
+    "Not while your own game is open: it stays ready so your next match starts quickly.":
+        "내 게임이 열려 있는 동안에는 관전하지 않습니다. 다음 매치가 빨리 시작되도록 대기 중입니다.",
+    "Your room's matches are shown automatically while you wait.":
+        "기다리는 동안 방의 매치가 자동으로 표시됩니다.",
+    "Your room's matches are no longer shown automatically.":
+        "방의 매치가 더 이상 자동으로 표시되지 않습니다.",
     "Automatically watch matches while idle":
         "대기 중 자동으로 매치 관전",
     "Also my ranked matches":

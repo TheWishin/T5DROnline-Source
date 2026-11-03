@@ -2335,6 +2335,18 @@ MESSAGES = {
         "Espectadores",
     "Friends and room visitors may watch my online matches":
         "Amigos e visitantes da minha sala podem assistir às minhas partidas online",
+    "Automatically watch":
+        "Assistir automaticamente",
+    "Automatically watch the match at my room's table while I wait for my turn":
+        "Assistir automaticamente à partida da minha mesa na sala enquanto espero minha vez",
+    "Not while the game is being built.":
+        "Não enquanto o jogo está sendo compilado.",
+    "Not while your own game is open: it stays ready so your next match starts quickly.":
+        "Não enquanto o seu próprio jogo estiver aberto: ele fica pronto para a sua próxima partida começar rápido.",
+    "Your room's matches are shown automatically while you wait.":
+        "As partidas da sua sala aparecem automaticamente enquanto você espera.",
+    "Your room's matches are no longer shown automatically.":
+        "As partidas da sua sala não aparecem mais automaticamente.",
     "Automatically watch matches while idle":
         "Assistir a partidas automaticamente enquanto espero",
     "Also my ranked matches":

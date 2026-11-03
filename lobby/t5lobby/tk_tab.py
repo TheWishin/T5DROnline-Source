@@ -2641,6 +2641,9 @@ class OnlineTab:
         mode = self._pad_search_mode()
         if mode:
             plan["cross"] = (mode, self.actions[mode].invoke)
+        aw = self.actions.get("room_autowatch")      # in a room: Triangle (Y) = "Automatically watch" on / off
+        if aw is not None and str(aw.cget("state")) == "normal":
+            plan["triangle"] = ("room_autowatch", aw.invoke)
         return plan
 
     def _pad_relabel(self):

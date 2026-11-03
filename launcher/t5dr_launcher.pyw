@@ -890,6 +890,7 @@ class App(tk.Tk):
         self.spectators_var = tk.BooleanVar(value=bool(self.settings.get("spectators", True)))
         self.spectators_ranked_var = tk.BooleanVar(value=bool(self.settings.get("spectators_ranked", False)))
         self.auto_spectate_var = tk.BooleanVar(value=self.settings.get("auto_spectate", False) is True)
+        self.auto_watch_table_var = tk.BooleanVar(value=self.settings.get("auto_watch_table", True) is not False)
         ttk.Checkbutton(spc, text=t("Friends and room visitors may watch my online matches"),
                         variable=self.spectators_var, style=self.wrap_style("TCheckbutton", 440),
                         command=self.save_settings).pack(anchor="w")
@@ -899,6 +900,11 @@ class App(tk.Tk):
         ttk.Label(spc, style="Muted.TLabel", wraplength=300, justify="left", text=t(
             "They see the match a few seconds late, in their own game. Only when both players allow it; a ranked "
             "match only when both allow ranked too.")).pack(anchor="w", pady=(4, 0))
+        # the room's table (docs/SPECTATE.md "Automatically watch your room's table"; on by default; the Online
+        # tab's room row has the same box)
+        ttk.Checkbutton(spc, text=t("Automatically watch the match at my room's table while I wait for my turn"),
+                        variable=self.auto_watch_table_var, style=self.wrap_style("TCheckbutton", 440),
+                        command=self.save_settings).pack(anchor="w", pady=(4, 0))
         ttk.Checkbutton(spc, text=t("Automatically watch matches while idle"), variable=self.auto_spectate_var,
                         style=self.wrap_style("TCheckbutton", 440), command=self.save_settings).pack(anchor="w",
                                                                                                     pady=(4, 0))
@@ -1557,6 +1563,8 @@ class App(tk.Tk):
             self.settings["spectators_ranked"] = bool(self.spectators_ranked_var.get())
         if hasattr(self, "auto_spectate_var"):
             self.settings["auto_spectate"] = bool(self.auto_spectate_var.get())
+        if hasattr(self, "auto_watch_table_var"):
+            self.settings["auto_watch_table"] = bool(self.auto_watch_table_var.get())
         self.settings["mute"] = bool(self.mute_var.get())
         if hasattr(self, "notify_var"):
             self.settings["notify"] = bool(self.notify_var.get())

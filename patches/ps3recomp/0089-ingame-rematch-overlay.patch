@@ -65,7 +65,7 @@ diff --git a/libs/video/rsx_overlay.c b/libs/video/rsx_overlay.c
 +            L"Microsoft YaHei UI", L"Noto Sans CJK JP", L"Noto Sans CJK KR", L"Arial Unicode MS" };
 +        const wchar_t ch = (wchar_t)cp;
 +        for (unsigned f = 0; f < sizeof faces / sizeof faces[0]; f++) {
-+            HFONT font = CreateFontW(-14, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
++            HFONT font = CreateFontW(-12, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
 +                DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, NONANTIALIASED_QUALITY,
 +                DEFAULT_PITCH, faces[f]);
 +            if (!font) continue;

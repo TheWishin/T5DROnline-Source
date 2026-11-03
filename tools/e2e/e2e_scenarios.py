@@ -6171,3 +6171,25 @@ def _net_vrr_120(ctx, mode):
     ctx.note(f"perf_compare pacing (A, mode 2): {(r.stdout or r.stderr)[:1500]}")
     with open(os.path.join(ctx.dir, f"pacing_A_mode2_{mode}.json"), "w", encoding="utf-8") as f:
         f.write(r.stdout or r.stderr)
+
+
+# ============================================================================== 5b. the rematch question in the game
+import e2e_ingame  # noqa: E402
+
+for _name, _desc in (
+        ("ingame_rematch_flow", "1.2.0: after a quick match both games ask 'Rematch?' (10 s countdown, the opponent's "
+                                "choice); both press Cross in the game -> the rematch in the running session; then Cross "
+                                "/ Circle -> no rematch, back to the lobby; the launcher stays behind while asked"),
+        ("ingame_rematch_timing", "1.2.0: a yes pressed at 9.2 s still starts the rematch; then nobody answers: the "
+                                  "countdown runs out, both back to the lobby"),
+        ("ingame_rematch_mash", "1.2.0: both players mash buttons from the KO through the question (3 matches): both "
+                                "PCs agree on the rematch, one vote each at most, in sync"),
+        ("ingame_rematch_room", "1.2.0: a classic room's match: the in-game rematch stays in the room; a Circle keeps "
+                                "both in the room"),
+        ("ingame_rematch_relay", "1.2.0: a relayed match's in-game rematch: a new connection, relay again"),
+        ("ingame_rematch_off", "1.2.0: one launcher with T5_INGAME_REMATCH=0: no question in the games, the launcher's "
+                               "Rematch buttons as before")):
+    scenario(_name, "5 rematch", game=True, suites=("game", "ingame"), desc=_desc)(getattr(e2e_ingame, _name))
+scenario("ingame_rematch_pictures", "5 rematch", game=True, suites=("ingame_pics",),
+         desc="1.2.0: pictures of the in-game question (Lowest in 1280x720, 4K in 1920x1080; every language)")(
+    e2e_ingame.ingame_rematch_pictures)

@@ -74,7 +74,7 @@ from .buildid import BuildInfo
 from .client import LobbyClient
 from .i18n import N_, stamp, t, translate_message
 from .match_driver import MatchDriver, fps_from_logs, game_files, game_supports_pick, game_supports_rules, \
-    game_supports_life150, game_supports_ingame_ui, game_supports_auto_skip
+    game_supports_life150, game_supports_ingame_ui, game_supports_auto_skip, ingame_rematch_wanted
 from .proto import DEFAULT_PORT, LobbyError
 from . import theme, tk_casual, tk_challenges, tk_rooms, tk_rules, tk_spectate, tk_tour, tk_views, tklist, winfront
 from .tk_private_chat import PrivateChat
@@ -824,12 +824,15 @@ class OnlineTab:
                                       os.path.join(out, "build", "cmake", "t5dr_game.dll")])
 
     def _game_has_ingame_ui(self):
+        """The rematch question in the game (1.2.0; on unless T5_INGAME_REMATCH=0): this PC's game can show it."""
         out = getattr(self.app.settings, "out_dir", os.getcwd())
-        return os.environ.get("T5_INGAME_REMATCH") == "1" and game_supports_ingame_ui(game_files(out))
+        return ingame_rematch_wanted() and game_supports_ingame_ui(game_files(out))
 
     def _game_has_auto_skip(self):
+        """The agreed after-round skip rule: an opt-in draft (T5_AUTO_SKIP=1), unproved in the games."""
         out = getattr(self.app.settings, "out_dir", os.getcwd())
-        return self._game_has_ingame_ui() and game_supports_auto_skip(game_files(out))
+        return (os.environ.get("T5_AUTO_SKIP") == "1" and self._game_has_ingame_ui()
+                and game_supports_auto_skip(game_files(out)))
 
     def do_login(self, mode, session=None):
         if self._login_busy or self.client is not None:
@@ -1023,7 +1026,9 @@ class OnlineTab:
                                   async_calls=True,
                                   input_delay=(getattr(self.app, "settings", None) or {}).get("input_delay"),
                                   always_left=lambda: bool((getattr(self.app, "settings", None) or {}).get("always_left")),
-                                  screen_side=lambda: (getattr(self.app, "settings", None) or {}).get("screen_side", "dealt"))
+                                  screen_side=lambda: (getattr(self.app, "settings", None) or {}).get("screen_side", "dealt"),
+                                  ingame_rematch=self._game_has_ingame_ui())
+        self.driver.ingame_labels(self._ingame_labels())
 
     def _launch(self, env):
         g = getattr(self.app, "game", None)
@@ -2136,6 +2141,12 @@ class OnlineTab:
                            (t("No thanks"), lambda: self._rematch(False), "circle")] + more)
         elif k == "ingame_ui_fallback":
             self._come_forward(("ingame_fallback", n.get("match")))
+        elif k == "ingame_vote":
+            # answered in the game: the launcher's own question is answered too
+            self.view.rematch_sent(bool(n.get("accept")))
+            self.hide_bar()
+            if n.get("accept"):
+                self.status(t("Rematch offered; waiting for your opponent..."))
         self.view.after_driver(n)
         if k == "rematch_offer":
             self._come_forward(("rematch", n.get("match")))     # a decision for the player
@@ -2238,45 +2249,40 @@ class OnlineTab:
             pass
 
     def _offer_ingame_ui(self, ev):
-        """Publish translated display text; the driver's protocol validates server-permitted actions."""
+        """The rematch question in the game (docs/REMATCH_1.2.0.md): the driver hands the server-permitted question to
+        the game itself; here only the language may have changed since the driver got its texts."""
         drv = self.driver
-        offer = getattr(drv, "offer_ingame_ui", None)
-        if offer is None or ev.get("t") not in (
-                "match_result", "rematch", "match_found", "opponent_ready", "room", "set_end",
-                "match_start", "match_cancel", "disconnected"):
+        if drv is None or ev.get("t") != "match_result" or not hasattr(drv, "ingame_labels"):
             return False
-        if ev.get("t") not in ("match_result", "match_found"):
-            return offer(ev)                         # preserve the current result/policy while votes arrive
-        rule = ev.get("rematch_ui") or {}
-        community = rule.get("kind") == "community" and rule.get("room_mode") == "community"
-        community_waiting = t("Waiting for your turn. Room rotation continues.")
-        community_sitting_out = t("Sitting out. Choose Back in line to take a turn.")
-        rotation = t("Winner stays") if rule.get("rotation") == "winner" else t("Everyone in turn")
-        body = (t("Rematch starts automatically unless you decline.")
-                if rule.get("policy") == "auto_unless_declined"
-                else t("Both players must confirm the rematch."))
-        if community:
-            body = (community_sitting_out if "back_to_line" in rule.get("actions", ())
-                    else community_waiting) + " " + rotation
-        if ev.get("t") == "match_result":
-            result = _word(RESULT_TEXT, ev.get("status", ""))
-            body = result + ". " + body
-        else:
-            body = t("Opponent found")
-        title = (t("Opponent found") if ev.get("t") == "match_found" else
-                 t("Community room") if community else t("Rematch?"))
-        return offer(ev, {"title": title,
-                          "body": body,
-                          "community_title": t("Community room"), "community_waiting": community_waiting,
-                          "community_sitting_out": community_sitting_out, "rotation": rotation,
-                          "community_next": t("Next turn in {seconds} s.", seconds="{seconds}"),
-                          "back_to_line": t("Back in line"), "sit_out": t("Sit out"),
-                          "auto": t("Rematch starts in {seconds} s unless you decline.", seconds="{seconds}"),
-                          "confirm": (t("Accept") if ev.get("t") == "match_found" else
-                                      t("Back in line") if community else t("Rematch")),
-                          "cancel": t("Sit out") if community else t("No thanks"),
-                          "next": "" if community else t("Next game"), "waiting": t("waiting for the opponent..."),
-                          "expired": t("The rematch offer expired. Return to the lobby.")})
+        drv.ingame_labels(self._ingame_labels())
+        return bool(getattr(drv, "ingame_ui_active", False))
+
+    def _ingame_labels(self):
+        """Every text of the in-game rematch question, translated ({name} = the opponent, {seconds} the countdown),
+        and the keyboard keys bound to Cross and Circle for its hints (the game draws the pad buttons itself)."""
+        labels = {"title": t("Rematch?"),
+                  "won": t("You won."), "lost": t("You lost."), "draw": t("Draw."),
+                  "opp_deciding": t("{name} is deciding...", name="{name}"),
+                  "opp_accept": t("{name} wants a rematch!", name="{name}"),
+                  "opp_decline": t("{name} does not want a rematch.", name="{name}"),
+                  "me_accept": t("You want a rematch. Waiting for {name}...", name="{name}"),
+                  "starting": t("Rematch! Starting..."),
+                  "me_declined": t("No rematch. Back to the lobby."),
+                  "back_to_lobby": t("No rematch. Back to the lobby."),
+                  "expired": t("Time is up. Back to the lobby."),
+                  "auto": t("Rematch starts in {seconds} s unless you decline.", seconds="{seconds}"),
+                  "confirm": t("Rematch"), "cancel": t("No thanks"), "take_back": t("Take it back")}
+        for status, text in RESULT_TEXT.items():
+            labels["result_" + status] = t(text)
+        try:
+            files = padmap.Controls.load(_controls_path_for(self.app.settings) or "")
+            face = files.face_sources(padmap.KEYS1)
+            if files.keyboard_port(padmap.KEYS1) >= 0:
+                labels["key_confirm"] = (face.get("cross") or [""])[0][:16]
+                labels["key_cancel"] = (face.get("circle") or [""])[0][:16]
+        except Exception:                               # noqa: BLE001 -- no key hint is no error
+            pass
+        return labels
 
     def _game_forward(self, key):
         """A match starts in the game (its in-game select, else its loading): if the launcher's window is the

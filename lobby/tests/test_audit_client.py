@@ -13,53 +13,66 @@ from t5lobby.match_driver import MatchDriver, _Continued
 
 
 class StaleUIExpiryTest(unittest.TestCase):
+    """The channel's own expiry (worker) never decides anything: the driver's question ends by its countdown and the
+    lobby's verdict, once (docs/REMATCH_1.2.0.md)."""
+
     def setUp(self):
         self.now = 100.0
-        self.driver = MatchDriver.__new__(MatchDriver)
-        self.driver.ui = IngameUI(os.path.dirname(__file__), "session", clock=lambda: self.now, worker=False)
-        self.driver.game = SimpleNamespace(running=lambda: True)
-        self.driver.notes = queue.Queue()
-        self.driver._ui_completions = queue.Queue()
-        self.driver._ui_auto_at = None
-        self.driver._ui_auto_delay = None
-        self.driver._ui_room_next_at = None
-        self.driver._ui_was_active = False
-        self.driver._ui_offered_at = self.now
-        self.driver._set_over = mock.Mock()
         self.clock_patch = mock.patch("t5lobby.match_driver.time.monotonic", side_effect=lambda: self.now)
         self.clock_patch.start()
         self.addCleanup(self.clock_patch.stop)
+        self.driver = MatchDriver.__new__(MatchDriver)
+        self.driver.ui = IngameUI(os.path.dirname(__file__), "session", clock=lambda: self.now, worker=False)
+        self.driver.game = SimpleNamespace(running=lambda: True)
+        self.driver.glog = None
+        self.driver.notes = queue.Queue()
+        self.driver._ui_completions = queue.Queue()
+        self.driver._ui_labels = {}
+        self.driver._ui_was_active = False
+        self.driver._rq = None
+        self.driver.match_ev = {"opponent": {"name": "Bob"}}
+        self.driver.session_ticket = None
+        self.driver.rematch_sent, self.driver.rematch_declined = set(), set()
+        self.driver.mode = "persistent"
+        self.driver._set_over = mock.Mock()
 
-    def expire(self):
-        self.driver.ui.offer("old", "rematch", ["accept"], 20)
-        self.driver.ui.hide()
-        # Model the worker's notification before the UI thread drains it.
+    def offer(self, mid):
+        ev = {"t": "match_result", "match": mid, "status": "confirmed", "rematch_window": 10,
+              "rematch_ui": {"v": 1, "kind": "rematch", "policy": "both_confirm", "timeout": 10,
+                             "actions": ["accept", "decline"]}}
+        self.assertFalse(self.driver.offer_ingame_ui(ev))      # (not shown yet: the game acknowledges it first)
+        self.driver.ui.ready_at = self.now
+        self.driver.ui.ready_revision = self.driver.ui.document["rev"]
+
+    def stale_expiry(self):
         self.driver.ui.events.put(("expired", None))
 
-    def test_old_expiry_cannot_cancel_replacement_ready_prompt(self):
-        self.expire()
-        channel = self.driver.ui
-        channel.offer("new", "ready", ["ready", "decline"], 15)
-        channel.ready_at = self.now
-        channel.ready_revision = channel.document["rev"]
+    def test_old_expiry_cannot_cancel_a_newer_question(self):
+        self.offer("new")
+        self.stale_expiry()
         self.driver._watch_ingame_ui()
         self.driver._set_over.assert_not_called()
-        self.assertEqual(channel.document["kind"], "ready")
-        notes = list(self.driver.notes.queue)
-        self.assertNotIn("ingame_ui_fallback", [note["kind"] for note in notes])
+        self.assertEqual(self.driver.ui.document["kind"], "rematch")
+        self.assertNotIn("ingame_ui_fallback", [n["kind"] for n in self.driver.notes.queue])
 
-    def test_old_expiry_after_match_start_does_not_emit_fallback(self):
-        self.expire()
-        self.driver._ui_offered_at = None  # match_start has hidden and released the menu
+    def test_old_expiry_without_a_question_does_nothing(self):
+        self.stale_expiry()
         self.driver._watch_ingame_ui()
         self.driver._set_over.assert_not_called()
         self.assertTrue(self.driver.notes.empty())
 
-    def test_current_expiry_still_releases_session_and_falls_back(self):
-        self.expire()
+    def test_current_question_running_out_releases_session_and_falls_back(self):
+        self.offer("m1")
+        self.driver._watch_ingame_ui()
+        self.now += 10.1
+        self.driver.ui.ready_at = self.now
+        self.driver._watch_ingame_ui()                     # "time is up" for a moment
+        self.driver._set_over.assert_not_called()
+        self.now += 3.1
+        self.driver.ui.ready_at = self.now
         self.driver._watch_ingame_ui()
         self.driver._set_over.assert_called_once_with()
-        self.assertIn("ingame_ui_fallback", [note["kind"] for note in self.driver.notes.queue])
+        self.assertIn("ingame_ui_fallback", [n["kind"] for n in self.driver.notes.queue])
 
 
 class ContinuedDelayTest(unittest.TestCase):

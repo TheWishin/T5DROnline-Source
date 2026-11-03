@@ -61,7 +61,7 @@ class IntegratedCapabilities(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(caps), len(set(caps)))
         self.assertLessEqual(len(caps), 32)
         # Exercise the actual hello handler without constructing network services.
-        server = SimpleNamespace(cfg=Config(ingame_rematch=True), latest_release="",
+        server = SimpleNamespace(cfg=Config(ingame_rematch=True, auto_skip=True), latest_release="",
                                  build_groups=BuildGroups(),
                                  release_cache=SimpleNamespace(public=lambda _: None),
                                  udp=SimpleNamespace(port=7781, port2=7782),
@@ -73,6 +73,12 @@ class IntegratedCapabilities(unittest.IsolatedAsyncioTestCase):
         welcome = await LobbyServer.h_hello(server, conn, hello)
         self.assertEqual(set(welcome["caps"]), set(caps))
         self.assertEqual(welcome["ingame_rematch"]["v"], 1)
+        # The agreed after-round skip is an opt-in draft (T5L_AUTO_SKIP): a default server never takes its cap.
+        server.cfg = Config()
+        welcome = await LobbyServer.h_hello(server, SimpleNamespace(player=None, ip="127.0.0.1", writer=conn.writer),
+                                            hello)
+        self.assertEqual(set(welcome["caps"]), set(caps) - {"auto_skip_after_round_v1"})
+        self.assertEqual(welcome["ingame_rematch"]["v"], 1)            # the in-game rematch question is on
 
     async def test_optional_caps_can_be_disabled_without_reordering_other_caps(self):
         enabled = (await self.hello(client()))["caps"]

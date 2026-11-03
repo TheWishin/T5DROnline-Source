@@ -12,7 +12,7 @@ from t5lobby.proto import LobbyError
 from t5lobby.server.config import Config
 from t5lobby.server.lobby import LobbyServer
 from t5lobby.server.matchrules import MatchRulesMixin
-from t5lobby.server.rematch import CAP, SKIP_CAP, RematchMixin
+from t5lobby.server.rematch import CAP, SKIP_CAP, VOTE_GRACE, RematchMixin
 
 
 class Player:
@@ -44,6 +44,7 @@ class Server(RematchMixin):
                 "auto_skip_after_round": room.auto_skip_after_round}
 
     def __init__(self, **settings):
+        settings.setdefault("auto_skip", True)       # (the skip rule's own opt-in; off by default, tested below)
         self.cfg = Config(ingame_rematch=True, **settings)
         self.rooms = {}
         self.recent = {}
@@ -86,14 +87,61 @@ def match(server):
 
 
 class RematchRuleTest(unittest.IsolatedAsyncioTestCase):
-    async def test_configuration_is_off_and_both_confirm_by_default(self):
+    async def test_configuration_is_on_with_10_seconds_and_both_confirm_by_default(self):
         cfg = Config()
-        self.assertFalse(cfg.ingame_rematch)
+        self.assertTrue(cfg.ingame_rematch)
+        self.assertEqual(cfg.ingame_rematch_seconds, 10.0)
+        self.assertFalse(cfg.auto_skip)                  # the simulation-changing skip rule stays opt-in
         self.assertEqual(cfg.casual_rematch_policy, "both_confirm")
-        configured = Config.from_env({"T5L_INGAME_REMATCH": "1",
+        self.assertEqual(cfg.rematch_window, 20.0)       # (older launchers keep their 20 s)
+        configured = Config.from_env({"T5L_INGAME_REMATCH": "0", "T5L_INGAME_REMATCH_SECONDS": "15",
                                       "T5L_CASUAL_REMATCH_POLICY": "auto_unless_declined"})
-        self.assertTrue(configured.ingame_rematch)
+        self.assertFalse(configured.ingame_rematch)
+        self.assertEqual(configured.ingame_rematch_seconds, 15.0)
         self.assertEqual(configured.casual_rematch_policy, "auto_unless_declined")
+
+    async def test_in_game_window_is_the_countdown_plus_a_grace_for_late_votes(self):
+        s = Server()
+        m, a, b = match(s)
+        with patch("t5lobby.server.rematch.time.monotonic", return_value=1000.0):
+            s._rematch_ui_open(m)
+            self.assertEqual(s._rematch_window(m), 10.0)
+            self.assertEqual(s._rematch_ui_result(m)["rematch_ui"]["timeout"], 10.0)
+        self.assertEqual(m.ui_deadline, 1000.0 + 10.0 + VOTE_GRACE)
+        old = NS(id="o")
+        self.assertEqual(s._rematch_window(old), 20.0)  # no question in the game: the launcher's window
+        # a yes pressed at 9.9 s arrives after the countdown, inside the grace: it counts
+        with patch("t5lobby.server.rematch.time.monotonic", return_value=1000.0 + 10.4):
+            await s.h_rematch(a.conn, {"match": m.id, "keep": True})
+            self.assertEqual(b.sent[-1]["state"], "offered")
+            reply = await s.h_rematch(b.conn, {"match": m.id, "keep": True})
+        self.assertEqual(reply["state"], "accepted")
+        self.assertEqual(len(s.created), 1)
+
+    async def test_offer_tells_the_opponent_the_in_game_window(self):
+        s = Server()
+        m, a, b = match(s)
+        s._rematch_ui_open(m)
+        await s.h_rematch(a.conn, {"match": m.id})
+        self.assertEqual((b.sent[-1]["state"], b.sent[-1]["timeout"]), ("offered", 10.0))
+
+    async def test_training_room_matches_never_get_the_question(self):
+        s = Server()
+        m, _a, _b = match(s)
+        m.training = True
+        s._rematch_ui_open(m)
+        self.assertEqual(s._rematch_ui_result(m), {})
+
+    async def test_skip_rule_is_off_without_its_own_switch(self):
+        s = Server(auto_skip=False)
+        m, a, b = match(s)
+        a.auto_skip_after_round = b.auto_skip_after_round = True
+        self.assertFalse(s._rematch_skip_rule(m, a, b, False, "queue"))
+        a.conn.state = NS(take=lambda: True)
+        with self.assertRaises(LobbyError):
+            await s.h_casual_prefs(a.conn, {"auto_skip_after_round": True})
+        with self.assertRaises(LobbyError):
+            s._rematch_room_options(a.conn, {"auto_skip_after_round": True})
 
     async def test_default_requires_two_explicit_votes_and_keeps_old_button(self):
         s = Server()
@@ -200,7 +248,7 @@ class RematchRuleTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(s._rematch_ui_result(m)["rematch_ui"]["policy"], "both_confirm")
         self.assertEqual(s.created, [])
 
-    async def test_community_result_offers_only_authoritative_line_actions(self):
+    async def test_community_result_offers_no_in_game_question(self):
         s = Server(casual_rematch_policy="auto_unless_declined")
         m, a, b = match(s)
         room = NS(id="community", community=True, ranked=False, members=[a, b], line=[a, b], rotation="queue")
@@ -208,12 +256,7 @@ class RematchRuleTest(unittest.IsolatedAsyncioTestCase):
         m.room = a.room = b.room = room
         s._rematch_ui_open(m)
         self.assertFalse(hasattr(m, "ui_deadline"))
-        shown = s._rematch_ui_result(m, a)["rematch_ui"]
-        self.assertEqual(shown["kind"], "community")
-        self.assertEqual(shown["policy"], "both_confirm")
-        self.assertEqual(shown["actions"], ["sit_out"])
-        room.line.remove(a)
-        self.assertEqual(s._rematch_ui_result(m, a)["rematch_ui"]["actions"], ["back_to_line"])
+        self.assertEqual(s._rematch_ui_result(m, a), {})     # the room picks the next match itself
         with self.assertRaises(LobbyError):
             await s.h_rematch(a.conn, {"match": m.id})
 

@@ -165,6 +165,66 @@ class SettingsAndEnv(unittest.TestCase):
         core.online_picture_env(env)
         self.assertNotIn("PS3_PICTURE", env)
 
+    def child_env(self, saved, extra_env, inherited=None):
+        """The environment GameRun.start really hands the game (Popen mocked; nothing starts)."""
+        from unittest import mock
+        out = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, out, True)
+        os.makedirs(os.path.join(out, "build", "cmake"))
+        exe = os.path.join(out, "build", "cmake", "t5dr.exe" if os.name == "nt" else "t5dr")
+        open(exe, "wb").close()
+        seen = {}
+
+        class Proc:
+            pid = 1
+
+            def poll(self):
+                return 0
+
+        def popen(cmd, env=None, **kw):
+            seen.update(env)
+            return Proc()
+        with mock.patch.object(core.subprocess, "Popen", popen),                 mock.patch.object(core.warmup, "pause_all", return_value=None),                 mock.patch.object(core.warmup, "resume_all"),                 mock.patch.dict(os.environ, inherited or {}):
+            core.GameRun(out, self.settings(saved)).start(extra_env=extra_env)
+        return seen
+
+    @unittest.skipUnless(os.name == "nt", "Windows' environment ignores the case of names")
+    def test_online_filter_takes_every_spelling(self):
+        # review picture-120 P1: an Extra settings line "ps3_video_aspect=4:3" reached an online game as
+        # PS3_VIDEO_ASPECT=4:3 (getenv on Windows ignores case) -> a 4:3 camera on one PC only = desync
+        online = {"T5_CTL_DIR": "ctl"}
+        for line in ("ps3_video_aspect=4:3", "Ps3_Video_Aspect=4:3\nps3_video_resolution=480",
+                     "PS3_VIDEO_ASPECT=4:3"):
+            for picture in ("fit", core.TRUE_43):
+                with self.subTest(line=line, picture=picture):
+                    env = self.child_env({"picture": picture, "extra_env": line}, online)
+                    bad = sorted(k for k in env if k.upper() in ("PS3_VIDEO_ASPECT", "PS3_VIDEO_RESOLUTION"))
+                    self.assertEqual(bad, [], env)
+                    self.assertEqual(env.get("PS3_PICTURE"), core.TRUE_43_ONLINE)
+        # inherited from Windows' own environment: taken out as well
+        env = self.child_env({}, online, inherited={"PS3_VIDEO_ASPECT": "4:3"})
+        self.assertFalse([k for k in env if k.upper() == "PS3_VIDEO_ASPECT"], env)
+        # the same lines offline still reach the game (one spelling)
+        env = self.child_env({"extra_env": "ps3_video_aspect=4:3"}, None)
+        self.assertEqual([(k, v) for k, v in env.items() if k.upper() == "PS3_VIDEO_ASPECT"],
+                         [("PS3_VIDEO_ASPECT", "4:3")])
+        # the other online-only filters see every spelling too
+        env = self.child_env({"extra_env": "t5_unlock_stages=1\nt5_auto_skip_offline=1"}, online)
+        self.assertFalse([k for k in env if k.upper() in ("T5_UNLOCK_STAGES", "T5_AUTO_SKIP_OFFLINE")], env)
+
+    def test_extra_line_later_spelling_wins(self):
+        s = self.settings({"picture": "fill", "extra_env": "PS3_PICTURE=stretch\nps3_picture=4:3"})
+        env = s.env_overrides()
+        if os.name == "nt":
+            self.assertEqual([(k, v) for k, v in env.items() if k.upper() == "PS3_PICTURE"], [("PS3_PICTURE", "4:3")])
+            self.assertEqual(core.extra_env_override(s, "picture"), "PS3_PICTURE=stretch")
+        env = {"ps3_video_aspect": "a", "PS3_VIDEO_ASPECT": "b", "x_y": "c"}
+        core.canon_env(env)
+        if os.name == "nt":
+            self.assertEqual(env, {"PS3_VIDEO_ASPECT": "b", "X_Y": "c"})
+        else:
+            self.assertEqual(len(env), 3)
+
     def test_gamerun_applies_it_online(self):
         src = text("launcher", "core.py")
         i = src.index("if is_online_env(env_over):")

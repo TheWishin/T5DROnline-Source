@@ -387,7 +387,7 @@ class Settings(dict):
             line = line.strip()
             if line and not line.startswith("#") and "=" in line:
                 k, v = line.split("=", 1)
-                env[k.strip()] = v.strip()
+                env_set(env, k.strip(), v.strip())
         # One folder for recording, the Replays tab and problem reports. Extra settings cannot send
         # recordings somewhere the launcher cannot find; recording Off also removes an old override.
         if self["replays"]:
@@ -1084,6 +1084,39 @@ def dialog_message(text):
     return t("The game shows: \"{text}\" {advice}", text=" ".join((text or "").split()), advice=dialog_info(text)[1])
 
 
+def env_key(name):
+    """The one spelling of an environment variable's name in our dicts. Windows' environment ignores the case of
+    names (the game's getenv("PS3_VIDEO_ASPECT") also finds "ps3_video_aspect"), so there the name is upper case
+    -- what os.environ gives too; elsewhere the case counts and the name stays as it is."""
+    return name.upper() if IS_WIN else name
+
+
+def env_set(env, name, value):
+    """env[name] = value with every other spelling of `name` (env_key) taken out first: an Extra settings line
+    "ps3_video_aspect=4:3" must be the same variable as PS3_VIDEO_ASPECT for every filter after it
+    (review picture-120 P1: the online filter set PS3_VIDEO_ASPECT=None and the lower-case line reached the
+    online game)."""
+    key = env_key(name)
+    if IS_WIN:
+        for k in [k for k in env if k != key and k.upper() == key]:
+            del env[k]
+    env[key] = value
+    return env
+
+
+def canon_env(env):
+    """`env` with every name in its env_key spelling; of two spellings of one name the later one wins (dict
+    order: a later update() overrides). Changes env in place."""
+    if IS_WIN:
+        out = {}
+        for k, v in env.items():
+            out.pop(env_key(k), None)
+            out[env_key(k)] = v
+        env.clear()
+        env.update(out)
+    return env
+
+
 UNLOCK_ENV = ("T5_UNLOCK_STAGES", "T5_UNLOCK_ITEMS", "T5_UNLOCK_JINPACHI")
 OFFLINE_ONLY_ENV = ("T5_AUTO_SKIP_OFFLINE",)   # offline settings the game ignores online (dropped there too)
 ONLINE_ENV = ("T5_CTL_DIR", "T5_NET_MODE", "T5_FIGHT", "T5_FIGHT_FILE")
@@ -1190,6 +1223,7 @@ class GameRun:
         if monitor_point and "PS3_WINDOW_MONITOR" not in env_over:
             env_over["PS3_WINDOW_MONITOR"] = "%d,%d" % monitor_point   # open on the launcher's monitor
         env_over.update(extra_env or {})
+        canon_env(env_over)    # one spelling per name before the online filters below look for them
         # run_game removes None values from the inherited environment. Otherwise an old Windows
         # T5_REPLAY_DIR would keep recording even when the launcher checkbox is Off.
         env_over["T5_REPLAY_DIR"] = self.settings.replay_dir if self.settings["replays"] else None
@@ -1720,7 +1754,7 @@ def extra_env_override(settings, key):
         line = line.strip()
         if name and line and not line.startswith("#") and "=" in line:
             k, v = line.split("=", 1)
-            if k.strip() == name:
+            if env_key(k.strip()) == env_key(name):
                 return f"{name}={v.strip()}"
     return None
 

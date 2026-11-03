@@ -6088,6 +6088,7 @@ def casual_120_pair(ctx):
         ui.set_var.set(_t("FT{wins}", wins=2))
         ui.on_set_change()
         # the input delay box left of Challenge (tk_challenges): 5 frames, as a player picks it with B selected
+        ctx.wait(lambda: a.tab.tv_players.exists(b.client.me["id"]), 15, "B in A's player list")
         a.tab.tv_players.selection_set(b.client.me["id"])
         ctx.pump(0.3)
         ch = a.tab.chal

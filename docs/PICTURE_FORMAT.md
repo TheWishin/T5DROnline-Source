@@ -77,12 +77,41 @@ Lowest keeps 480-line display buffers with a smaller 3D pass; the log and the wi
 (`rsx_internal_res_label`). Checked: boot (rating screen, intro movie, attract), fights at Lowest / Native /
 1080p in 1024 x 768, 1440 x 1080 and 1920 x 1080 windows.
 
-**Offline only.** The 4:3 TV changes what the game sets up -- its display buffers, camera and HUD objects --
-and that reaches the state both PCs compare: a lockstep pair with one side on True 4:3 desynced from frame 1,484
-of 1,707 (`runs/pair_ar`). The launcher therefore sends `PS3_VIDEO_ASPECT` only to offline games; a game started
-for online play, a replay or a spectator's game gets the picture-only `4:3` choice instead and loses any
-`PS3_VIDEO_ASPECT` / `PS3_VIDEO_RESOLUTION` (`core.online_picture_env`, also out of an inherited Windows
-environment).
+**Offline only.** The 4:3 TV changes what the game simulates, so a 4:3 PC and a 16:9 PC cannot play each other
+with it. The launcher therefore sends `PS3_VIDEO_ASPECT` only to offline games; a game started for online play,
+a replay or a spectator's game gets the picture-only `4:3` choice instead and loses any `PS3_VIDEO_ASPECT` /
+`PS3_VIDEO_RESOLUTION` (`core.online_picture_env`, also out of an inherited Windows environment). Every other
+picture format (Whole picture, Fill, Stretch, 4:3, own window size, 3:2 and 16:10 screens) is host pixels only
+and plays online with any mix of settings (pairs above).
+
+### True 4:3 online: what is in the way
+
+Measured with lockstep pairs, one PC 16:9 and one True 4:3, every mismatching frame's compared state dumped on
+both PCs (`T5_NET_DESYNC_DUMP`; `build/w120/picout/scripts/dsall.py` lists the words):
+
+1. **The camera.** From the fight's first frame only camera words differ: eye and target (0x10099B10..), the
+   camera matrix and its copies (0x100996E0.., 0x100A0990.., 0x100A3B10.., 0x100A3BB4.., 0x100A3CC4..), a
+   camera-relative direction in each fighter block (+0x670/+0x678) and the fighters' screen x (+0x6C8). The
+   camera set-up 0x816D4 gives the camera object *(0x46984C) the aspect 4/3 instead of 16/9 (+0x1E4) and the
+   camera frames the fight for the narrower view -- further back, turned slightly.
+2. **The side flags follow the camera.** +0x1C2/+0x1C3 of each fighter block (which fighter is on the left, so
+   which way up/down sidesteps; written by 0x808D8 from the screen x) are game state and stay in the compared
+   hash. In a 4-match run (stages 20, 27, 30, 34, mashing with motion inputs) they went apart at frame 1,783;
+   from there the input history recorded the opposite up/down and the fighters moved differently. Leaving the
+   camera words out of the hash would only hide this: the fights really are different.
+3. **Keeping the camera at 16:9** (research switch `T5_ASPECT_CAMERA=16:9`, `src/directfight/df_aspect.cpp`,
+   off by default): the camera aspect is put back to 16/9 right after 0x816D4 and the renderer shows the middle
+   4:3 of the 16:9 3D picture under the game's 4:3 HUD (`rsx_live_draw_set_3d_crop`; the picture is right:
+   round moon, centred HUD). The two PCs then stay identical for the first ~1,500 frames (first difference 224
+   -> 1,762), but then the camera drifts apart again by a few millionths (another reader of the 4:3 mode, not
+   found: the set-mode 0x80F10 is not it; candidates are the other readers of the display object's wide flag,
+   0x56B30, 0x56CCC, 0x9C09C, 0x10941C, 0x13265C, 0x24FBF4, 0x24FCA8) and the side flags follow at ~3,100.
+   Not shippable.
+
+So for 1.2.0: True 4:3 offline; online the 4:3 choice (the middle of the 16:9 picture, bars left and right, the
+outer ends of the life bars and names cut) is the safe option and works against every other setting. Two PCs
+that are both on True 4:3 should simulate the same thing (not tested), but the setting is fixed when the game starts and the
+persistent online game starts before an opponent is known, so it cannot be switched per match.
 
 ## Tests
 

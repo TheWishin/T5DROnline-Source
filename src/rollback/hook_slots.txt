@@ -18,6 +18,8 @@
 00019944  # rollback/rb_rand.cpp
 00039964  # rollback/rb_rand.cpp
 000671E4  # rollback/rb_ktrace.cpp
+00080F10  # directfight/df_aspect.cpp
+000816D4  # directfight/df_aspect.cpp
 000A25A8  # rollback/rb_icall.cpp
 000A9140  # rollback/rb_rand.cpp
 000AC594  # rollback/rb_sound.cpp

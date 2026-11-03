@@ -4,6 +4,7 @@ from pathlib import Path
 import queue
 from types import SimpleNamespace
 import unittest
+from unittest.mock import Mock
 
 
 SOURCE = Path(__file__).resolve().parents[1] / "t5lobby" / "tk_tab.py"
@@ -19,13 +20,82 @@ def method(name, **globals_):
 
 
 class DispatchTests(unittest.TestCase):
-    def test_teardown_cancels_spectating_before_driver_or_client_close(self):
-        source = SOURCE.read_text(encoding="utf-8-sig")
-        close = source.split("def on_close(self):", 1)[1].split("\n    def ", 1)[0]
-        self.assertLess(close.index("self.spec.stop()"), close.index("self.driver.close()"))
-        self.assertLess(close.index("self.spec.stop()"), close.index("self.client.close()"))
-        logout = source.split("def do_logout(self):", 1)[1].split("\n    def ", 1)[0]
-        self.assertLess(logout.index("self.spec.stop()"), logout.index("c, self.client = self.client, None"))
+    def test_logout_stops_spectating_before_detaching_or_closing_its_client(self):
+        for session, forget in ((None, False), ("saved", False), ("saved", True)):
+            with self.subTest(session=session, forget=forget):
+                seen = []
+
+                def stop():
+                    self.assertIs(tab.client, client)
+                    self.assertIs(tab.driver, driver)
+                    seen.append("spectator")
+
+                def close_driver():
+                    self.assertEqual(seen, ["spectator"])
+                    self.assertIsNone(tab.client)
+                    seen.append("driver")
+
+                def logout(**kwargs):
+                    self.assertEqual(seen, ["spectator", "driver"])
+                    self.assertEqual(kwargs, {"forget": forget})
+                    seen.append("client")
+
+                client = SimpleNamespace(session=session, logout=logout)
+                driver = SimpleNamespace(close=close_driver)
+                tab = SimpleNamespace(
+                    client=client, driver=driver, spec=SimpleNamespace(stop=stop),
+                    _server_key=lambda: "original-server", parent=object(),
+                    ask_yes_no=Mock(return_value=forget), _remember_session=Mock(),
+                    _reset_lobby_view=Mock(), me_var=SimpleNamespace(set=Mock()),
+                    _set_account_view=Mock(), _set_actions=Mock(), _relogin_at=123, _login_busy=False,
+                )
+                # Run the worker synchronously: no thread, socket or client is opened.
+                thread = Mock(side_effect=lambda target, daemon: SimpleNamespace(start=target))
+                method("do_logout", threading=SimpleNamespace(Thread=thread), t=lambda s: s)(tab)
+                self.assertEqual(seen, ["spectator", "driver", "client"])
+                self.assertIsNone(tab.client)
+                self.assertIsNone(tab.driver)
+                self.assertIsNone(tab._relogin_at)
+                if forget:
+                    tab._remember_session.assert_called_once_with(None, None, server_key="original-server")
+                else:
+                    tab._remember_session.assert_not_called()
+                if session is None:
+                    tab.ask_yes_no.assert_not_called()
+                else:
+                    tab.ask_yes_no.assert_called_once()
+
+    def test_close_stops_spectating_before_driver_or_client_close(self):
+        seen = []
+
+        def stop():
+            self.assertIs(tab.client, client)
+            self.assertIs(tab.driver, driver)
+            seen.append("spectator")
+
+        def close_driver():
+            self.assertEqual(seen, ["spectator"])
+            seen.append("driver")
+
+        def close_client():
+            self.assertEqual(seen, ["spectator", "driver"])
+            seen.append("client")
+
+        client = SimpleNamespace(close=close_client)
+        driver = SimpleNamespace(close=close_driver)
+        tab = SimpleNamespace(
+            _closed=False, _after="poll", parent=SimpleNamespace(after_cancel=Mock()),
+            private_chat=SimpleNamespace(reset=Mock()), spec=SimpleNamespace(stop=stop),
+            _stop_presence=Mock(), view=SimpleNamespace(close=Mock()), pad=None,
+            client=client, driver=driver, stop_hosting=Mock(),
+        )
+        method("on_close")(tab)
+        self.assertEqual(seen, ["spectator", "driver", "client"])
+        self.assertTrue(tab._closed)
+        self.assertIsNone(tab.client)
+        self.assertIsNone(tab.driver)
+        self.assertIsNone(tab._after)
+        tab.parent.after_cancel.assert_called_once_with("poll")
 
     def test_completed_ready_check_does_not_keep_lobby_busy(self):
         source = SOURCE.read_text(encoding="utf-8-sig")

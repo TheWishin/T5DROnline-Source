@@ -10,6 +10,8 @@ Same keys and groups as i18n_de.py; tests/test_i18n.py and tools/i18n_extract.py
 """
 
 MESSAGES = {
+    'T5DR Online {latest} is out. Update the launcher (it offers the update when it starts, or press "Check for updates").':
+        'T5DR Online {latest} ya está disponible. Actualiza el launcher (ofrece la actualización al iniciarse, o pulsa «Buscar actualizaciones»).',
     "Intel HD Graphics 4400: graphics device lost": "Intel HD Graphics 4400: dispositivo gráfico perdido",
     "Game log: Intel HD Graphics 4400 was selected and the graphics device was lost.":
         "Registro del juego: se seleccionó Intel HD Graphics 4400 y se perdió el dispositivo gráfico.",

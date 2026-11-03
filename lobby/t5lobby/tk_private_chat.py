@@ -44,19 +44,31 @@ class PrivateChat:
 
     def sync_mutes(self):
         c = self.tab.client
-        is_muted = getattr(c, "is_muted", None)
+        is_muted = None if self._legacy_mutes() else getattr(c, "is_muted", None)
         changed = False
         if callable(is_muted):
             for row in self.model.rows.values():
                 muted = bool(is_muted(row["name"]))
                 changed |= row["muted"] != muted
                 self.model.set_muted(row["name"], muted)
+            # Evicted transcripts still have mute entries. Clear shared unmutes
+            # before receive() reopens a row with its stale muted flag.
+            for name in tuple(self.model.muted):
+                if name not in self.model.rows and not is_muted(name):
+                    self.model.set_muted(name, False)
         if self.window is not None and self.name and hasattr(self, "mute_button"):
             self.mute_button.configure(text=t("Unmute") if self.is_muted(self.name) else t("Mute"))
         return changed
 
+    def _legacy_mutes(self):
+        c = self.tab.client
+        supported = getattr(c, "mutes_ok", None)
+        # Old servers still support session-only private mutes for accounts.
+        # Guests retain their shared local mute list even on those servers.
+        return bool(c and callable(supported) and not supported() and not (c.me or {}).get("guest"))
+
     def is_muted(self, name):
-        check = getattr(self.tab.client, "is_muted", None)
+        check = None if self._legacy_mutes() else getattr(self.tab.client, "is_muted", None)
         return bool(check(name)) if callable(check) else name.lower() in self.model.muted
 
     def reset(self):
@@ -254,13 +266,15 @@ class PrivateChat:
         text = self.text.get().strip()
         if not self.available() or not self.name or not text:
             return
-        name, c = self.name, self.tab.client
+        name, c, draft = self.name, self.tab.client, self.text
 
         def done(reply):
             if self.tab.client is not c:
                 return
-            if self.text.get().strip() == text:
-                self.text.set("")
+            # A reply may arrive after switching peers or reopening the window.
+            # Only clear the draft that belonged to this send.
+            if self.name == name and self.text is draft and draft.get().strip() == text:
+                draft.set("")
             self.model.receive(reply.get("message"), c.me["name"], True)
             self.draw()
         self.tab.call(c.private_message, name, text, then=done)
@@ -275,17 +289,23 @@ class PrivateChat:
             if self.tab.client is c:
                 self.model.set_muted(name, bool(reply.get("muted")))
                 self.draw()
-        self.tab.call(c.mute, name, muted, then=done)
+        action = c.private_mute if self._legacy_mutes() else c.mute
+        self.tab.call(action, name, muted, then=done)
 
     def block(self):
-        if self.available() and self.name and self.tab.ask_yes_no(
-                t("Block player"), t("Block {name}? This also leaves any running match against them.", name=self.name),
+        if not self.available() or not self.name:
+            return
+        name, client, model = self.name, self.tab.client, self.model
+        if self.tab.ask_yes_no(
+                t("Block player"), t("Block {name}? This also leaves any running match against them.", name=name),
                 parent=self.window):
-            self.tab.call(self.tab.client.block, self.name)
+            if self.tab.client is client and self.model is model:
+                self.tab.call(client.block, name)
 
     def report(self):
         if not self.available() or not self.name:
             return
+        name, client, model = self.name, self.tab.client, self.model
         # Listbox indices can differ from the transcript when muted incoming lines
         # are hidden. Resolve the visible selection back to its original receipts.
         indices = self.lines.curselection()
@@ -293,11 +313,18 @@ class PrivateChat:
             selected = []
         else:
             ids = {self._drawn_line_ids[i] for i in indices if 0 <= i < len(self._drawn_line_ids)}
-            row = self.model.rows.get(self.name.lower()) or {"lines": []}
+            row = model.rows.get(name.lower()) or {"lines": []}
             selected = [dict(line) for line in row["lines"] if line.get("id") in ids]
         if not selected:
             self.tab.status(t("Select up to {count} lines to report.", count=MAX_REPORT_LINES), error=True)
             return
         if self.tab.ask_yes_no(t("Report selected lines"), t("Send selected lines to moderators?"), parent=self.window):
-            self.tab.call(self.tab.client.private_report, self.name, selected,
-                          then=lambda _r: self.tab.status(t("Report sent to moderators.")))
+            # A modal confirmation still processes disconnect/reset events. Never
+            # send a previous session's selected transcript through a new client.
+            if self.tab.client is not client or self.model is not model:
+                return
+
+            def done(_reply):
+                if self.tab.client is client and self.model is model:
+                    self.tab.status(t("Report sent to moderators."))
+            self.tab.call(client.private_report, name, selected, then=done)

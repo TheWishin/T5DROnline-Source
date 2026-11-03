@@ -11,6 +11,8 @@ texts to paste into the right group.
 """
 
 MESSAGES = {
+    'T5DR Online {latest} is out. Update the launcher (it offers the update when it starts, or press "Check for updates").':
+        'T5DR Online {latest} ist da. Aktualisiere den Launcher (er bietet das Update beim Start an, oder klicke auf „Nach Updates suchen“).',
     "Intel HD Graphics 4400: graphics device lost": "Intel HD Graphics 4400: Grafikgerät verloren",
     "Game log: Intel HD Graphics 4400 was selected and the graphics device was lost.":
         "Spielprotokoll: Intel HD Graphics 4400 war ausgewählt und das Grafikgerät ging verloren.",

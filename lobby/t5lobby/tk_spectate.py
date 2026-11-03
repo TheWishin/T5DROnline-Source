@@ -413,17 +413,19 @@ class Spectating:
         self._check_prefs()
         w = self.w
         enabled = bool(self.tab.app.settings.get("auto_spectate", False))
-        if self._pending is not None and self._pending[2] and not enabled:
+        queued = (getattr(self.tab.client, "me", None) or {}).get("status") == "queue"
+        if self._pending is not None and self._pending[2] and (not enabled or queued):
             self._auto.pause()
             self._preempt("left")
         if self._busy() and (self._pending is not None or (w is not None and w["state"] != "over")):
             self._preempt("your_match")
             w = self.w
-        if w is not None and w.get("automatic") and not enabled:
+        if w is not None and w.get("automatic") and (not enabled or queued):
             self.stop()
             w = None
         if w is not None and w.get("automatic") and w["state"] == "over":
             self.w = w = None
+            self.tab._set_actions()
         if w is None:
             if self._pending is None:
                 target = self._auto.due(self.tab)

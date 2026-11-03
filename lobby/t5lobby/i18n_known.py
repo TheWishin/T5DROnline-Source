@@ -15,6 +15,7 @@ from .i18n import N_
 
 # lobby/t5lobby/server/lobby.py: errors answering a request ({"t": "error", "msg": ...}), notices, kick reasons
 SERVER = (
+    N_('T5DR Online {latest} is out. Update the launcher (it offers the update when it starts, or press "Check for updates").'),
     # relay-only private chat (server/private_chat.py)
     N_("private messages are unavailable"),
     N_("private messages: slow down"),

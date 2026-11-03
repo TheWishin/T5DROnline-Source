@@ -28,9 +28,11 @@ session lifetime. A block in either direction prevents private delivery.
 
 Personal mutes are separate from blocks. For accounts, the server stores the mute
 list and restores it on login/resume. For guests, the launcher keeps its list locally
-and reapplies it on login; it is not a durable server account preference. Both use
-`T5L_MAX_BLOCKS` (default 200), independently of the block-list limit. Muting an
-online target can use its player id; the named form and muted-player list also
+and reapplies it on login; it is not a durable server account preference. Server
+mute lists use `T5L_MAX_BLOCKS` (default 200), independently of the block-list limit.
+The bundled launcher keeps at most 200 local guest names, even if the server sets
+a different limit. Muting an online target can use its player id; the named form
+and muted-player list also
 allow preferences to be managed after a target goes offline.
 Account targets use their stable server account identity. Guests have only their
 case-insensitive name: muting a guest name also mutes a later guest using that name,

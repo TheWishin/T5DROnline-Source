@@ -2202,12 +2202,10 @@ reasons, give_up() and the stall clock (a mutation of the clock's restart fails 
   agree on the frame), or to copy the host's setup block to the joiner at the
   sync point.
 
-- Delay-based: the input delay is felt (3 frames = 50 ms on LAN). Next step is
-  **rollback**: keep the lockstep transport, predict the remote input, and
-  re-simulate on misprediction. That needs a fast save/load of the match
-  state; the regions above are where to start, but a full snapshot also needs
-  the heap objects the fighters point to (animation state) and the sound/
-  effect side effects of re-simulated frames must be suppressed.
+- The delay-based lockstep fallback's input delay is felt (3 frames = 50 ms
+  on LAN). Rollback is already the direct-fight online default when both peers
+  offer it; its implemented state capture, prediction and re-simulation are
+  described in [Rollback](ROLLBACK.md).
 - `T5_NET_ROUNDS` is written to the battle config's rounds-to-win byte
   (0x1008EBD4, found by the direct-fight work) at every sync point of a VS
   game, so two saves with different options play the same match length.
@@ -2221,5 +2219,6 @@ reasons, give_up() and the stall clock (a mutation of the clock's restart fails 
 - Rematch flows back to character select and stays in sync. From the deciding
   KO to the next select the direct-fight driver holds the pads and skips the
   win pose itself (docs/DIRECTFIGHT.md "After the match"); mashing there used
-  to start the game's own next battle. Pausing (START) in an online fight is
-  not blocked.
+  to start the game's own next battle. START cannot pause a direct-fight online
+  match; see [No pause online](#no-pause-online-branch-online-no-pause-112)
+  for the synchronized skip exceptions.

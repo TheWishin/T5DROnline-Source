@@ -373,6 +373,9 @@ class RoomsUI:
         """Join room: the selected room (asking for its password or invite code when it is locked); with nothing
         selected, a room's invite code."""
         tab = self.tab
+        client = tab.client
+        if client is None:
+            return
         sel = tab.tv_rooms.selection()
         if not sel:
             if not self.ok():
@@ -380,26 +383,26 @@ class RoomsUI:
                 return
             code = tab.ask_string(t("Invite code"), t("No room selected. Join a room with its invite code "
                                                       "(XXXX-XXXX-XXXX):"), parent=tab.parent)
-            if code and code.strip():
-                tab.call(tab.client.join_room, None, None, code.strip())
+            if tab.client is client and code and code.strip():
+                tab.call(client.join_room, None, None, code.strip())
             return
-        r = next((x for x in tab.client.rooms if x.get("id") == sel[0]), {})
+        r = next((x for x in client.rooms if x.get("id") == sel[0]), {})
         lock = r.get("lock") if r.get("private") else None
         if lock == "password":
             pw = tab.ask_string(t("Room password"), t("“{room}” is private. Its password:", room=r.get("name", "?")),
                                 show="*", parent=tab.parent)
-            if not pw:
+            if tab.client is not client or not pw:
                 return
             if proto.clean_room_password(pw) is None:
                 tab.status(t(PW_RULE), error=True)
                 return
-            tab.call(tab.client.join_room, sel[0], pw)
+            tab.call(client.join_room, sel[0], pw)
         elif lock == "code":
             code = tab.ask_string(t("Invite code"), t("The room's invite code (XXXX-XXXX-XXXX):"), parent=tab.parent)
-            if code and code.strip():
-                tab.call(tab.client.join_room, sel[0], None, code.strip())
+            if tab.client is client and code and code.strip():
+                tab.call(client.join_room, sel[0], None, code.strip())
         else:
-            tab.call(tab.client.join_room, sel[0])
+            tab.call(client.join_room, sel[0])
 
     def toggle_line(self):
         r = self.mine()
@@ -455,8 +458,12 @@ class RoomsUI:
 
     def kick(self, pid, name):
         tab = self.tab
+        client = tab.client
+        room_id = (getattr(client, "my_room", None) or {}).get("id")
         if not tab.ask_yes_no(t("Remove player"), t("Remove {name} from the room? They cannot come back into it.",
                                                      name=name), parent=tab.parent):
+            return
+        if tab.client is not client or (getattr(client, "my_room", None) or {}).get("id") != room_id:
             return
         tab.call(tab.client.room_kick, pid, then=lambda _r: tab.status(t("Removed {name} from the room.", name=name)))
 
@@ -574,6 +581,7 @@ def create_window(ui):
     sync()
 
     def create():
+        client = tab.client
         lock = _pick(ACCESS_CHOICES, v["access"].get())
         pw = v["password"].get() if lock == "password" else None
         if lock == "password" and proto.clean_room_password(pw) is None:
@@ -586,20 +594,23 @@ def create_window(ui):
         rotation = _pick(ROTATION_CHOICES, v["rotation"].get())
         name = v["name"].get().strip() or None
         hidden = bool(v["hidden"].get())
-        training = bool(v["training"].get()) and tab.client.training_ok()
+        training = bool(v["training"].get()) and client.training_ok()
         labels = [t("FT{wins}", wins=n) for n in proto.CASUAL_FIRST_TO]
         chosen = v["first_to"].get()
         first_to = proto.CASUAL_FIRST_TO[labels.index(chosen)] if chosen in labels and not training else 1
         v["password"].set("")                          # (not kept in the window either)
 
         def done(_room):
-            ui.close_window()
+            if tab.client is not client:
+                return
+            if ui.window is w:
+                ui.close_window()
             tab.status(t("Room created. Press Copy invite code to see the code you can share.") if lock == "code"
                        else t("Room created."))
         mode = _pick(MODE_CHOICES, v["mode"].get())
-        rules = _room_rule_values(tab.client, size, False, _pick(REMATCH_CHOICES, v["rematch_policy"].get()),
+        rules = _room_rule_values(client, size, False, _pick(REMATCH_CHOICES, v["rematch_policy"].get()),
                                   v["auto_skip_after_round"].get(), mode=mode)
-        create_room = partial(tab.client.create_room, first_to=first_to, mode=mode, **rules)
+        create_room = partial(client.create_room, first_to=first_to, mode=mode, **rules)
         tab.call(create_room, name, False, size, rotation, lock, pw, hidden, training, then=done)
 
     bar = tab.view.body(card)
@@ -615,6 +626,7 @@ def create_window(ui):
 def tables_window(ui, room):
     """Server-owned table state, with selectors for watching and the host's idle pairs."""
     tab = ui.tab
+    client, room_id = tab.client, room.get("id")
     px = tab.view.px
     w, card = _window(ui, t("Room tables"))
     table_var, p1, p2 = (tk.StringVar(w, value="") for _ in range(3))
@@ -637,6 +649,8 @@ def tables_window(ui, room):
         return next((s for s in latest[0].get("tables") or () if str(s.get("id")) == table_var.get()), None)
 
     def pair():
+        if tab.client is not client or (getattr(client, "my_room", None) or {}).get("id") != room_id:
+            return
         table = selected()
         if table is None:
             err.configure(text=t("Select a table."))
@@ -645,7 +659,10 @@ def tables_window(ui, room):
         if None in ids or ids[0] == ids[1]:
             err.configure(text=t("Select two different available players."))
             return
-        tab.call(ui.client.room_pair, table["id"], ids, then=lambda _r: ui.close_window())
+        def done(_r):
+            if ui.window is w:
+                ui.close_window()
+        tab.call(client.room_pair, table["id"], ids, then=done)
 
     def watch():
         table = selected()
@@ -703,6 +720,7 @@ def tables_window(ui, room):
 def settings_window(ui, r):
     """The host's window: who can join (a new password, a new invite code, open), hidden, remove a player."""
     tab = ui.tab
+    client, room_id = tab.client, r.get("id")
     px = tab.view.px
     w, card = _window(ui, t("Room settings"))
     shown = {None: ACCESS_CHOICES[0][0], "password": ACCESS_CHOICES[1][0], "code": ACCESS_CHOICES[2][0]}
@@ -748,6 +766,9 @@ def settings_window(ui, r):
     sync()
 
     def save(new_code=False):
+        # The open controls still belong to their original room and session.
+        if tab.client is not client or (getattr(client, "my_room", None) or {}).get("id") != room_id:
+            return
         want = _pick(ACCESS_CHOICES, v["access"].get())
         hidden = bool(v["hidden"].get())
         cur = (tab.client.my_room or {}).get("lock")
@@ -799,6 +820,8 @@ def settings_window(ui, r):
     lb.grid(row=9, column=0, columnspan=2, sticky="we")
 
     def kick():
+        if tab.client is not client or (getattr(client, "my_room", None) or {}).get("id") != room_id:
+            return
         sel = lb.curselection()
         if sel:
             p = others[sel[0]]
@@ -810,11 +833,16 @@ def settings_window(ui, r):
     g = r.get("guesses")
     b_bar = None
     if isinstance(g, dict):                       # (a password room on a server that counts wrong guesses)
+        def bar_guessers():
+            if tab.client is not client or (getattr(client, "my_room", None) or {}).get("id") != room_id:
+                return
+            ui.bar_guessers()
+
         ttk.Label(card, text=t("Wrong passwords in the last 10 minutes: {count} (networks: {networks})",
                                count=int(g.get("wrong") or 0), networks=int(g.get("networks") or 0)),
                   style="Card.Muted.TLabel", wraplength=px(360), justify="left").grid(
             row=11, column=0, columnspan=2, sticky="w", pady=(px(14), px(4)))
-        b_bar = ttk.Button(card, text=t("Turn away the guessers"), style="Card.TButton", command=ui.bar_guessers,
+        b_bar = ttk.Button(card, text=t("Turn away the guessers"), style="Card.TButton", command=bar_guessers,
                            state="normal" if g.get("wrong") else "disabled")
         b_bar.grid(row=12, column=0, sticky="w")
     w.vars, w.err, w.players, w.save_button, w.code_button, w.kick_button = v, err, lb, b_save, b_code, b_kick

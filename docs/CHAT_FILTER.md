@@ -1,7 +1,8 @@
 # Server chat filter (1.2.0)
 
-The lobby server checks chat and new names against a separate, maintainer-reviewed
-hate-term list. A blocked chat message is never broadcast. The sender receives
+The lobby server checks chat and new names against a separate hate-term list.
+The supplied starter list requires maintainer and native-speaker review before
+deployment. A blocked chat message is never broadcast. The sender receives
 `Message blocked: hate terms are not allowed.` as a normal protocol error; other
 players receive nothing. This works with older clients without a protocol update.
 Updated launchers translate the notices in every existing catalog language.

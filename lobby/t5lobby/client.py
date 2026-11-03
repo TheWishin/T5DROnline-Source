@@ -208,6 +208,7 @@ class LobbyClient(TourCalls, SpectateClientMixin):
         self._mute_replay_task = None
         self._mute_replay_generation = None
         self._guest_unmuting = {}
+        self._mute_lock = threading.RLock()
         self.room_tables = bool(private_rooms and room_tables)
         self.match_rules = match_rules
         self.life150 = bool(match_rules and life150)
@@ -1870,15 +1871,23 @@ class LobbyClient(TourCalls, SpectateClientMixin):
 
     def mutes(self):
         """The one personal mute list; account rows come from the server."""
-        if self.mutes_ok():
-            reply = self._call({"t": "mutes"})
-            if not (self.me or {}).get("guest"):
-                self._set_mute_rows(reply.get("rows", []))
-            return dict(reply, rows=list(self.mute_rows))
-        return {"t": "mutes", "rows": list(self.mute_rows)}
+        # A list refresh can otherwise restore rows from before a later mute action.
+        with self._mute_lock:
+            if self.mutes_ok():
+                reply = self._call({"t": "mutes"})
+                if not (self.me or {}).get("guest"):
+                    self._set_mute_rows(reply.get("rows", []))
+                return dict(reply, rows=list(self.mute_rows))
+            return {"t": "mutes", "rows": list(self.mute_rows)}
 
     def mute(self, name, muted=True):
         """Hide this player's chat, mentions and invites; matchmaking is unchanged."""
+        # UI actions run on separate workers. Keep a request and its local row
+        # update together so a later reply cannot restore another action's rows.
+        with self._mute_lock:
+            return self._mute(name, muted)
+
+    def _mute(self, name, muted):
         if not proto.valid_name(name):
             raise LobbyError(proto.E_BAD_REQUEST, "bad field: name")
         if (self.me or {}).get("guest"):

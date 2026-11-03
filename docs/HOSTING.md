@@ -573,7 +573,7 @@ notices, drains, tournament hosts) every 5 s (`T5L_ADMIN_POLL`) and kicks the pl
 | `recovery-codes NAME`, `logout-all NAME` | a new set of recovery codes (printed once), or end every remembered login. The same account commands as `accounts_admin` |
 | `reset-rating NAME` | back to 1500 / RD 350 and unranked (placement again); the win/loss record stays |
 | `delete-user NAME --yes` | also removes the account's remembered logins and recovery codes |
-| `purge-guests [--days 30]` | deletes records of guest-only matches older than this. Guests themselves are never stored |
+| `purge-guests [--days 30]` | deletes records of guest-only matches older than this. Private reports, including guest names and selected message text, are retained separately under the [private-report retention policy](PRIVATE_CHAT.md) |
 | `purge-inactive --days N [--include-played] --yes` | deletes accounts not seen for N days (by default only accounts that never finished a game: name squatters) |
 | `backup [DIR] [--keep N]`, `restore FILE --yes` | see Backups |
 | `notice TEXT [--minutes N \| --hours H]`, `notice --clear`, `notices` | a message for every connected player, for example `notice "server restart in 20 min"`. It shows in the launcher's status bar until it ends (default 60 minutes) or is cleared. The server picks it up within 5 s. Players who log in while it shows get it too. At most 200 characters |

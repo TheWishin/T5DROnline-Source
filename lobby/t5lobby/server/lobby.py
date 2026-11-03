@@ -4726,8 +4726,8 @@ class LobbyServer(PrivateChatMixin, SpectateMixin, RoomsMixin, CasualMixin, Matc
             p.conn.send(self._update_msg(p, self.latest_release))
 
     # ------------------------------------------------------------------ "update your launcher" (admin release)
-    # Players on different game builds are never paired (queue, rooms, challenges, invites): after a release, an
-    # older launcher waits in a queue nobody it can play is in. Once the owner has published a release, `admin
+    # Pairing requires exact game builds or an operator-approved compatibility group. Release labels alone
+    # do not determine compatibility. Once the owner has published a release, `admin
     # release X.Y.Z` says so (never before: an unpublished release must not be announced), and every launcher
     # that says it is an older release gets a notice of its own that stays in its status bar -- a message every
     # launcher since 1.0 shows (server_notice; a plain notice for the oldest). `admin release --clear` takes it
@@ -4748,7 +4748,7 @@ class LobbyServer(PrivateChatMixin, SpectateMixin, RoomsMixin, CasualMixin, Matc
         return new is not None and mine is not None and mine < new
 
     def _update_msg(self, p, latest, cleared=False):
-        text = (f"T5DR Online {latest} is out. Players on it cannot play against your {p.release}: update the "
+        text = (f"T5DR Online {latest} is out. Update the "
                 "launcher (it offers the update when it starts, or press \"Check for updates\").")
         if "notices" in p.conn.caps:
             return {"t": "server_notice", "id": self.UPDATE_NOTICE_ID, "text": text, "expires": 0,

@@ -10,6 +10,8 @@ Same keys and groups as i18n_de.py; tests/test_i18n.py and tools/i18n_extract.py
 """
 
 MESSAGES = {
+    'T5DR Online {latest} is out. Update the launcher (it offers the update when it starts, or press "Check for updates").':
+        'T5DR Online {latest} 버전이 출시되었습니다. 런처를 업데이트하세요(시작할 때 업데이트를 안내하며, 또는 "업데이트 확인"을 누르세요).',
     "Intel HD Graphics 4400: graphics device lost": "Intel HD Graphics 4400: 그래픽 장치 연결 끊김",
     "Game log: Intel HD Graphics 4400 was selected and the graphics device was lost.":
         "게임 로그: Intel HD Graphics 4400이 선택되었고 그래픽 장치 연결이 끊겼습니다.",

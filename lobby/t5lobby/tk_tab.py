@@ -366,12 +366,13 @@ class OnlineTab:
         s = (self.cfg.get("sessions") or {}).get(self._server_key())
         return s if isinstance(s, dict) and s.get("token") else None
 
-    def _remember_session(self, name, token):
+    def _remember_session(self, name, token, server_key=None):
+        server_key = server_key or self._server_key()
         sessions = self.cfg.setdefault("sessions", {})
         if token:
-            sessions[self._server_key()] = {"name": name, "token": token, "saved": time.time()}
+            sessions[server_key] = {"name": name, "token": token, "saved": time.time()}
         else:
-            sessions.pop(self._server_key(), None)
+            sessions.pop(server_key, None)
         self._save_cfg()
 
     # ------------------------------------------------------------------ UI
@@ -483,7 +484,7 @@ class OnlineTab:
     def _show_notice(self):
         """The server admin's message(s), or nothing."""
         texts = self.client.active_notices() if self.client else []
-        line = "  |  ".join(texts)
+        line = "  |  ".join(translate_message(text) for text in texts)
         if line != self.notice_var.get():
             self.notice_var.set(line)
             if line and hasattr(self.app, "set_status"):
@@ -762,6 +763,7 @@ class OnlineTab:
 
     def _new_client(self, server, build):
         spec = server
+        server_key = server.strip().lower() or DEFAULT_SERVER
         tls = False
         fp = self.fp_var.get().strip() or None
         try:      # a servers.json entry by name, or host:port#FINGERPRINT / tls://host:port
@@ -775,7 +777,7 @@ class OnlineTab:
         elif spec.lower().startswith("tls://"):
             spec, tls = spec[6:], True
         c = LobbyClient(spec, build, tls=tls, tls_fingerprint=fp,
-                        guest_mutes=(self.cfg.get("guest_mutes") or {}).get(self._server_key(), []),
+                        guest_mutes=(self.cfg.get("guest_mutes") or {}).get(server_key, []),
                         game_port=int(self.cfg.get("game_port", 0) or 0),
                         plain_passwords=bool(self.cfg.get("plain_passwords")), blind_ready=True,
                         ingame_pick=self._game_can_pick(),
@@ -788,6 +790,8 @@ class OnlineTab:
                         port_mapping=bool(getattr(self.app, "settings", {}).get("router_ports", True)),
                         tournaments=True,
                         **self.spec.client_kw())
+        # The server selector can change while login runs on its worker thread.
+        c._guest_mutes_server_key = server_key
         self.spec.new_client(c)
         self.casual.new_client(c)
         # this PC's game speed from its last online match (the lobby warns / keeps slow PCs out of ranked);
@@ -827,11 +831,14 @@ class OnlineTab:
         return self._game_has_ingame_ui() and game_supports_auto_skip(game_files(out))
 
     def do_login(self, mode, session=None):
+        if self._login_busy or self.client is not None:
+            return
         if mode != "session":
             self._relogin_at = None                 # the player logs in by hand
         self._kicked = False
         name, pw = self.name_var.get().strip(), self.pw_var.get()
         server = self.server_var.get().strip() or DEFAULT_SERVER
+        server_key = server.lower()
         build, err = self._build_info()
         if build is None:
             self.status(err, error=True)
@@ -840,6 +847,9 @@ class OnlineTab:
             self.status(t("Enter a password (6 characters or more), or play as a guest."), error=True)
             return
         if mode == "register" and not self._confirm_password(pw):
+            return
+        # A confirmation dialog runs Tk's event loop: another login may finish or start there.
+        if self._login_busy or self.client is not None:
             return
         remember = bool(self.remember_var.get())
         self._save_cfg()
@@ -868,10 +878,12 @@ class OnlineTab:
             self._relogin_at = None
             w, me = r
             self.client = client
+            # Later account actions must still refer to the server that accepted this login.
+            self.server_var.set(server)
             self.pw_var.set("")
             self.name_var.set(me["name"])
             if mode in ("account", "register"):
-                self._remember_session(me["name"], client.session if remember else None)
+                self._remember_session(me["name"], client.session if remember else None, server_key=server_key)
             self._make_driver()
             self._set_account_view(True)
             self._show_me()
@@ -898,7 +910,7 @@ class OnlineTab:
             # update, an outage, no internet) leaves it: it works again once the server is back.
             if mode == "session" and refused.get("auth"):
                 self._relogin_at = None
-                self._remember_session(None, None)
+                self._remember_session(None, None, server_key=server_key)
                 self.status(t("Your saved login has expired; log in with your password."))
 
         def work_guarded():
@@ -1023,16 +1035,30 @@ class OnlineTab:
         return self.app.start_game(env)
 
     def do_logout(self):
+        c = self.client
+        server_key = self._server_key()
         self._relogin_at = None
         forget = False
-        if self.client and self.client.session:
-            forget = self.ask_yes_no(t("Log out"), t("Also forget the saved login on this PC?\n\n"
-                                                      "(No = you are logged in automatically next time.)"),
-                                     parent=self.parent)
+        if c and c.session:
+            # A disconnect during this modal loop must not start a new login.
+            login_busy = self._login_busy
+            self._login_busy = True
+            try:
+                forget = self.ask_yes_no(t("Log out"), t("Also forget the saved login on this PC?\n\n"
+                                                          "(No = you are logged in automatically next time.)"),
+                                         parent=self.parent)
+            finally:
+                self._login_busy = login_busy
+        if self.client is not c:
+            if self.client is None:
+                self._relogin_at = None
+                if forget:
+                    self._remember_session(None, None, server_key=server_key)
+            return
         self.spec.stop()
-        c, self.client = self.client, None
+        self.client = None
         if forget:
-            self._remember_session(None, None)
+            self._remember_session(None, None, server_key=server_key)
         if self.driver is not None:
             self.driver.close()
             self.driver = None
@@ -1076,6 +1102,10 @@ class OnlineTab:
         self.rooms_ui.refresh()
 
     def do_passwd(self):
+        c = self.client
+        if c is None:
+            return
+        server_key = self._server_key()
         title = t("Change password")
         old = self.ask_string(title, t("Current password:"), show="*", parent=self.parent)
         if not old:
@@ -1086,28 +1116,41 @@ class OnlineTab:
         if self.ask_string(title, t("New password again:"), show="*", parent=self.parent) != new:
             self.status(t("The two new passwords differ."))
             return
-        remember = bool(self._saved_session())
-        c = self.client
+        if self.client is not c:
+            return
+        saved = (self.cfg.get("sessions") or {}).get(server_key)
+        remember = isinstance(saved, dict) and bool(saved.get("token"))
 
         def done(_r):
-            self._remember_session(c.me["name"], c.session if remember else None)
+            if self.client is not c:
+                return
+            self._remember_session(c.me["name"], c.session if remember else None, server_key=server_key)
             self.status(t("Password changed. Saved logins on other PCs have ended."))
         self.call(c.change_password, old, new, remember, then=done)
 
     def do_new_codes(self):
+        c = self.client
+        if c is None:
+            return
         pw = self.ask_string(t("Recovery codes"), t("Your password (the old codes stop working):"), show="*",
                              parent=self.parent)
-        if pw:
-            self.call(self.client.new_recovery_codes, pw, then=lambda codes: self.show_codes(codes))
+        if pw and self.client is c:
+            def done(codes):
+                if self.client is c:
+                    self.show_codes(codes)
+            self.call(c.new_recovery_codes, pw, then=done)
 
     def show_codes(self, codes, first=False):
+        name = self.client.me["name"] if self.client else ""
+        server = self.server_var.get()
+
         def save(w):
             p = filedialog.asksaveasfilename(parent=w, title=t("Save recovery codes"), defaultextension=".txt",
                                              initialfile="t5dr-recovery-codes.txt")
             if p:
                 with open(p, "w", encoding="utf-8") as f:
                     f.write(t("T5DR Online recovery codes for {name} on {server}",
-                              name=self.client.me["name"] if self.client else "", server=self.server_var.get())
+                              name=name, server=server)
                             + "\n" + "\n".join(codes) + "\n")
         self.codes_window = self.view.codes_window(codes, first, save)
 
@@ -1116,6 +1159,7 @@ class OnlineTab:
         if build is None:
             self.status(err)
             return
+        server = self.server_var.get().strip() or DEFAULT_SERVER
         title = t("Forgot password")
         name = self.ask_string(title, t("Account name:"), initialvalue=self.name_var.get(), parent=self.parent)
         if not name:
@@ -1126,7 +1170,7 @@ class OnlineTab:
         new = self.ask_string(title, t("New password (6 characters or more):"), show="*", parent=self.parent)
         if not new:
             return
-        client = self._new_client(self.server_var.get().strip() or DEFAULT_SERVER, build)
+        client = self._new_client(server, build)
 
         def work():
             try:
@@ -1244,7 +1288,8 @@ class OnlineTab:
         if c is None:
             return
         if (c.me or {}).get("guest"):
-            self.cfg.setdefault("guest_mutes", {})[self._server_key()] = [
+            server_key = getattr(c, "_guest_mutes_server_key", None) or self._server_key()
+            self.cfg.setdefault("guest_mutes", {})[server_key] = [
                 r["name"] for r in getattr(c, "mute_rows", []) if isinstance(r, dict) and r.get("name")]
             self._save_cfg()
         for tag in self.chat_log.tag_names():
@@ -2786,7 +2831,10 @@ class OnlineTab:
         kind = ev.get("event")
         if kind == "ready":
             self.host_info = ev
-            self.server_var.set(ev["local"])
+            # Hosting may finish after a login to another server has completed.
+            # Account actions must keep that login's server and saved-session key.
+            if self.client is None:
+                self.server_var.set(ev["local"])
             share = ev.get("internet") or f"{t('<your public IP>')}:{ev['port']}" + (
                 f"#{ev['fingerprint']}" if ev.get("fingerprint") else "")
             try:

@@ -72,6 +72,13 @@ own evaluated box (`al_hud_place`):
   mirrored. In such a frame the split name sits by up to its second part's width away from the edge (its
   first part alone decided the place); art drawn before its texture's flip appeared is placed like text.
   `tests/c/always_left_render_test.c` cuts a whole HUD at every point and checks order, spacing and side.
+- Stages with a soft-focus filter (34 Ominous Mist above Native, 5 Moonlit Wilderness at Native with
+  its undrawn margin, and the other soft-focus stages above Native): the copy of the 3D picture onto the screen
+  reads the 3D target through its guest-size view (patches 0043/0106), a surface that is not in the draw's own
+  list. Before patch 0111 that copy was never recognised, so Always left never switched on there (trace outcome
+  `before-copy` for the whole fight). 0111 counts the view as a surface the draw reads. Checked in the game
+  (offline VS, stage 34 at 1080p): old build never on (3,346 copies `before-copy`), new build on from the
+  fight's start (every later picture mirrored), HUD in its normal layout.
 - A frame whose 3D picture was mirrored keeps its HUD on the mirrored side even if the game's request goes
   off before that HUD is drawn.
 

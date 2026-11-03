@@ -209,6 +209,26 @@ class Renderer(unittest.TestCase):
         # Guest scissors must be clipped before the unsigned host-pixel scaling in the renderer.
         self.assertIn("al_clip_scissor(W, al_dx_px, al_mirror, &l, &rr);", added)
 
+    def test_filter_kernel_copy_counts_as_the_3d_picture(self):
+        """patch 0111: a soft-focus stage's screen copy reads the 3D target through its guest-size view
+        (view_big), which is not in surf_used -- Always left must see that view, or it never switches on."""
+        path = os.path.join(ROOT, "patches", "ps3recomp", "0111-always-left-kernel-copy.patch")
+        with open(path, encoding="utf-8") as f:
+            patch = f.read()
+        files = re.findall(r"^diff --git a/(\S+)", patch, re.M)
+        self.assertEqual(files, ["libs/video/rsx_live_draw.c"])
+        added = "\n".join(l[1:] for l in patch.splitlines() if l.startswith("+") and not l.startswith("+++"))
+        removed = "\n".join(l[1:] for l in patch.splitlines() if l.startswith("-") and not l.startswith("---"))
+        self.assertIn("ld_al_draw(target, surf_used, n_surf_used,", removed)
+        self.assertIn("if (view_big >= 0)", added)
+        self.assertIn("if (!seen) al_surf[n_al++] = (u32)view_big;", added)
+        self.assertIn("ld_al_draw(target, al_surf, n_al,", added)
+        # room for the extra surface; the draw's own list (used by the rest of the draw) stays as it was
+        self.assertIn("u32 al_surf[SRV_TABLE_SIZE + 1]", added)
+        self.assertNotRegex(added, r"surf_used\[[^\]]*\]\s*=(?!=)")
+        for guest_write in ("vm_write", "wr32(", "wr16(", "guest_write"):
+            self.assertNotIn(guest_write, added)
+
     def test_series_order(self):
         names = sorted(n for n in os.listdir(os.path.join(ROOT, "patches", "ps3recomp")) if n.endswith(".patch"))
         # in the series, its number taken once (the Mac patches 0100-0102 come later)

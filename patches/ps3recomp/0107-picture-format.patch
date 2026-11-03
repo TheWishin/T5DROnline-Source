@@ -87,7 +87,7 @@ index c67a6ea..6cc1972 100644
      } else {
          state->state = 0; /* disabled */
 diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
-index e289700..7402a60 100644
+index 46c7183..dac751b 100644
 --- a/libs/video/rsx_live_draw.c
 +++ b/libs/video/rsx_live_draw.c
 @@ -225,6 +225,7 @@ static volatile long g_ld_ps1_vram_ready = 0;
@@ -98,7 +98,7 @@ index e289700..7402a60 100644
  #include <sys/stat.h>
  
  #pragma comment(lib, "d3d12.lib")
-@@ -12764,6 +12765,11 @@ float rsx_internal_res_scale(void)
+@@ -12805,6 +12806,11 @@ float rsx_internal_res_scale(void)
              g_ld_res_source = oka && okb ? "PS3_RES_SCALE x PS3_RENDER_SCALE"
                                           : oka ? "PS3_RES_SCALE" : "PS3_RENDER_SCALE";
      }
@@ -110,7 +110,7 @@ index e289700..7402a60 100644
      if (!(s >= 0.25f)) s = 0.25f;
      if (s > 4.0f) s = 4.0f;
      cached = s;
-@@ -12775,7 +12781,8 @@ const char* rsx_internal_res_label(void)
+@@ -12816,7 +12822,8 @@ const char* rsx_internal_res_label(void)
  {
      static char label[48];
      static float label_s = 0.0f;
@@ -120,7 +120,7 @@ index e289700..7402a60 100644
      if (!label[0] || label_s != s) {   /* patch 0063: auto may settle after the first call */
          label_s = s;
          if (s == 0.5f)        snprintf(label, sizeof label, "Lowest (0.5x)");
-@@ -13142,25 +13149,38 @@ static void ld_test_backbuffer_shot(ID3D12Resource* bb)
+@@ -13183,25 +13190,38 @@ static void ld_test_backbuffer_shot(ID3D12Resource* bb)
  /* Replaces the present's CopyResource(bb, src). Same contract: src is in
   * COPY_SOURCE, bb in COPY_DEST, and both are left that way. When the sizes
   * match this IS that copy; otherwise src is drawn scaled into the backbuffer,
@@ -167,7 +167,7 @@ index e289700..7402a60 100644
      D3D12_RESOURCE_BARRIER b[2] = {0};
      for (int i = 0; i < 2; i++) {
          b[i].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-@@ -13188,7 +13208,7 @@ static void ld_present_copy(ID3D12Resource* bb, u32 bbi, ID3D12Resource* src, u3
+@@ -13229,7 +13249,7 @@ static void ld_present_copy(ID3D12Resource* bb, u32 bbi, ID3D12Resource* src, u3
      g.dev->lpVtbl->CreateShaderResourceView(g.dev, src, &srv, cpu);
  
      const D3D12_CPU_DESCRIPTOR_HANDLE rtv = rtv_handle(bbi);
@@ -176,7 +176,7 @@ index e289700..7402a60 100644
          static const float black[4] = { 0, 0, 0, 1 };
          LDL->lpVtbl->ClearRenderTargetView(LDL, rtv, black, 0, NULL);
      }
-@@ -14812,6 +14832,12 @@ static void ld_present_body(u32 buffer_id, int display_synced, const hp_target*
+@@ -14853,6 +14873,12 @@ static void ld_present_body(u32 buffer_id, int display_synced, const hp_target*
      if (!g_ld_lock_mode) ld_wait_frame_latency();
      const u32 bbi = g.swap->lpVtbl->GetCurrentBackBufferIndex(g.swap);
      ID3D12Resource* bb = g.backbuf[bbi];
@@ -189,7 +189,7 @@ index e289700..7402a60 100644
  
      D3D12_RESOURCE_BARRIER bar[2] = {0};
      bar[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-@@ -14834,7 +14860,7 @@ static void ld_present_body(u32 buffer_id, int display_synced, const hp_target*
+@@ -14875,7 +14901,7 @@ static void ld_present_body(u32 buffer_id, int display_synced, const hp_target*
          if (dot) snprintf(dot, sizeof loop_path - (size_t)(dot - loop_path), "_loop.ppm");
          const int saved = ld_present_fast();
          g_ld_present_fast = 0;
@@ -198,7 +198,7 @@ index e289700..7402a60 100644
          g_ld_present_fast = saved;
          char keep[MAX_PATH];
          snprintf(keep, sizeof keep, "%s", g_ld_bb_shot_path);
-@@ -14842,9 +14868,9 @@ static void ld_present_body(u32 buffer_id, int display_synced, const hp_target*
+@@ -14883,9 +14909,9 @@ static void ld_present_body(u32 buffer_id, int display_synced, const hp_target*
          ld_test_backbuffer_shot(bb);
          snprintf(g_ld_bb_shot_path, sizeof g_ld_bb_shot_path, "%s", keep);
      }
@@ -211,7 +211,7 @@ index e289700..7402a60 100644
      ld_test_backbuffer_shot(bb);
  
 diff --git a/libs/video/rsx_overlay.c b/libs/video/rsx_overlay.c
-index fde4903..8388bbc 100644
+index fde4903..4b0e68a 100644
 --- a/libs/video/rsx_overlay.c
 +++ b/libs/video/rsx_overlay.c
 @@ -16,6 +16,7 @@
@@ -222,7 +222,7 @@ index fde4903..8388bbc 100644
  
  #include <math.h>
  #include <stdio.h>
-@@ -553,16 +554,15 @@ static float ovl_round(float v) { return floorf(v + 0.5f); }
+@@ -553,16 +554,21 @@ static float ovl_round(float v) { return floorf(v + 0.5f); }
  
  /* The picture's rectangle in the backbuffer: the same letterbox as the
   * present copy (rsx_live_draw.c ld_present_copy). */
@@ -240,6 +240,12 @@ index fde4903..8388bbc 100644
 -    *vy = (float)(long)((fh - *vh) * 0.5f);
 +    rsx_pic_rect r;
 +    rsx_picture_rect(rsx_picture_mode_env(), bw, bh, aw, ah, &r);
++    if ((uint64_t)aw * 720u != (uint64_t)ah * 1280u) {   /* RSX_OVERLAY_CANVAS_W x _H */
++        /* a picture of another shape (the game's own 4:3, patch 0107): the canvas keeps its own shape inside
++         * the visible part, so the overlay's letters are never squeezed */
++        rsx_pic_fit((float)r.cl, (float)r.ct, (float)(r.cr - r.cl), (float)(r.cb - r.ct),
++                    1280u, 720u, &r.ox, &r.oy, &r.ow, &r.oh);
++    }
 +    *vx = r.ox; *vy = r.oy; *vw = r.ow; *vh = r.oh;
  }
  

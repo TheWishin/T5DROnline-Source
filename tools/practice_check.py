@@ -177,6 +177,46 @@ def check(log_lines):
     return ok
 
 
+RE_RESULT = re.compile(r"^(\d+) result (P[12]) startup \S+ \S+ adv ([+-]\d+) ")
+RE_MOVE = re.compile(r"^(\d+) adv_compare move (P[12]) .*? old=([+-]\d+) ")
+
+
+def compare_coverage(lines):
+    """(results without their comparison line, pairs whose old value is not the result's adv, comparison lines
+    without a result) -- review optin-check-120 P2: one comparison line used to be enough for any number of
+    results. The training writes both lines for one result in the same frame (training.cpp log_result +
+    shadow_log_old), but only while the comparison runs: from an 'adv_compare mapping' line (it starts) to an
+    'adv_compare reset' line (it stops); results outside that need none."""
+    active = False
+    pending = []                 # (frame, player, adv, line) of results waiting for their comparison line
+    missing, wrong, extra = [], [], []
+    for ln in lines:
+        if " adv_compare mapping " in ln:
+            active = True
+            continue
+        if " adv_compare reset " in ln:
+            active = False
+            missing += [p[3] for p in pending]
+            pending = []
+            continue
+        m = RE_RESULT.match(ln)
+        if m and " adv_compare " not in ln:
+            if active:
+                pending.append((m.group(1), m.group(2), int(m.group(3)), ln))
+            continue
+        m = RE_MOVE.match(ln)
+        if m:
+            k = next((i for i, p in enumerate(pending) if p[0] == m.group(1) and p[1] == m.group(2)), None)
+            if k is None:
+                extra.append(ln)
+                continue
+            frame, player, adv, res = pending.pop(k)
+            if int(m.group(3)) != adv:
+                wrong.append(f"{res.strip()}  <->  {ln.strip()}")
+    missing += [p[3] for p in pending]
+    return missing, wrong, extra
+
+
 def check_adv_compare(lines):
     """The training log of an --adv-compare run (docs/TRAINING.md): observation only, fails closed."""
     ok = True
@@ -193,6 +233,12 @@ def check_adv_compare(lines):
     good(old, f"the overlay's own results are logged ({len(old)})")
     good({"P1", "P2"} <= {ln.split()[3] for ln in mapping}, "a mapping line for both players")
     good(moves, "comparison lines for the overlay's results")
+    missing, wrong, extra = compare_coverage(lines)
+    good(not missing and not wrong and not extra,
+         f"every overlay result while the comparison runs has its comparison line with the same old value "
+         f"(missing {len(missing)}, other value {len(wrong)}, without a result {len(extra)})")
+    for ln in (missing[:2] + wrong[:2] + extra[:2]):
+        print("    ! " + ln[:220])
     good(all("new=unavailable" in ln and "new_status=mapping_conflict_position_x" in ln for ln in moves),
          "every comparison fails closed (new=unavailable, mapping_conflict_position_x)")
     good(not [ln for ln in adv if " new=candidate" in ln], "no second number from the conflicting mapping")

@@ -5,20 +5,21 @@ part is in the README's status table.
 
 ## v1.2.0 (UNRELEASED)
 
-**Casual first-to sets, rooms with several tables, input delay up to 8 frames, "always see me on the right", private
-chat, per-fighter ranked stats, a "Connecting..." screen while an online game starts, and a long list of fixes.**
+**Casual first-to sets, a rematch you answer with your pad inside the game, rooms with several tables that you watch
+while you wait, input delay up to 8 frames, "always see me on the left / right" with the whole HUD mirrored, picture
+formats, the fighters' intros skipped online, private chat, per-fighter ranked stats and a long list of fixes.**
 Casual challenges, invites and rooms can now be played as a set (first to 1, 2, 3, 5 or 10 games), and a casual room
-can run several matches at the same time. The challenger can pick the input delay from Auto up to 8 frames, which
-helps on long distances. Your screen side can be "As dealt", "Always left" or "Always right". Online games show a
-plain "Connecting..." screen instead of logos, movies and menus while they start. The profile lists every fighter's
-ranked games, wins and win rate. Lobby chat gets DEV badges, `@name` mentions with Tab completion, private messages
-and a mute list. Fixed: a white-costume fallback online, START and SELECT pressed together resetting an online game,
-replay playback that could not be left with SELECT, and the training dummy's recordings going the wrong way. A few
-bigger things are in the game but **switched off by default** because nobody has played them in a real match yet:
-the pad-driven rematch inside the game, a pacing mode for variable-refresh screens, and watching automatically while
-idle. Both players need 1.2.0, because the game code changed. After the update press **BUILD GAME** once, as the
-launcher asks. The lobby server must be updated for the new lobby features; on an older server they simply do not
-appear. The European release still plays offline only; online play for it is not supported.
+can run several matches at the same time. After a casual match the game itself asks "Rematch?" and you answer with
+your pad. The challenger can pick the input delay from Auto up to 8 frames, which helps on long distances. Your
+screen side can be "As dealt", "Always left" or "Always right", now with life bars and names that look like the normal
+view. New picture formats (fill, stretch, 4:3) and your own window size. A found match plays the game's announcer
+("Get ready for the next battle") or a sound you choose. The profile lists every fighter's ranked games, wins and win
+rate. Lobby chat gets DEV badges, `@name` mentions with Tab completion, private messages and a mute list. Watching
+automatically while idle in the lobby, a pacing mode for variable-refresh screens and an adaptive rollback delay are in
+the game but **switched off by default** because nobody has played them in a real match yet. Both players need
+1.2.0, because the game code changed. After the update press **BUILD GAME** once, as the launcher asks. The lobby
+server must be updated for the new lobby features; on an older server they simply do not appear. The European release
+still plays offline only; online play for it is not supported.
 
 ### Online
 - **Casual sets.** When you challenge a player, send a friend's invite or create a casual room, you choose how many
@@ -36,13 +37,16 @@ appear. The European release still plays offline only; online play for it is not
 - **Screen side: As dealt, Always left or Always right** (Settings, and the casual row in the Online tab). It only
   changes your own picture and controls, in casual matches: your fighter is shown on the side you chose, and left and
   right are swapped for you when the picture is mirrored. The default is "As dealt" (nothing changes). The old
-  "Always left" checkbox becomes the "Always left" choice. If you want a real side without a mirrored picture, use
-  the P1 / P2 choice in the casual row. Known: some one-sided details (scars, writing) look reversed in a mirrored
-  picture, and the HUD of a mirrored fight is only partly checked in the game.
-- **"Connecting..." while an online game starts.** The logos, intro movie and title screen are covered by a black
-  screen with "Connecting..." until the character select or the fight is ready. The game still boots the same way and
-  the sound is not muted; it is not faster. If you do not like it, set `T5_ONLINE_FAST_BOOT=0` in Extra settings.
-  Not yet checked in a real game on other PCs.
+  "Always left" checkbox becomes the "Always left" choice. In a mirrored fight both life bars now show and drain like
+  the normal ones, names and ranks sit at the outer edges, and the round intro's player strip follows its player
+  (GitHub issue #31), also on the soft-focus stages. If you want a real side without a mirrored picture, use the
+  P1 / P2 choice in the casual row. Known: some one-sided details (scars, writing) look reversed in a mirrored picture.
+- **The fighters' intros are skipped online.** When both players have 1.2.0 and the server is updated, every online
+  match (casual, ranked, tournaments) goes straight from the loading screen to READY / FIGHT; the round call and the
+  fight itself are unchanged. The replays after a round are skipped too when both players tick "Skip replays after
+  rounds" (off by default). Both PCs do the same, so the match stays in sync and its replay plays back the same.
+- **An online game starts as in 1.1.9**: logos, movie, title and select screen as before. (The test builds' black
+  "Connecting..." screen is off; `T5_ONLINE_FAST_BOOT=1` in Extra settings brings it back.)
 - **START with SELECT no longer resets an online game.** The soft-reset chord is removed from both players' input
   online, also in replays. The START skips of intros and replays work as in 1.1.9.
 - **White costume fixed.** When a custom costume was missing or refused, the game fell back to costume colour 0,
@@ -51,11 +55,12 @@ appear. The European release still plays offline only; online play for it is not
 - **Blocked lobby port.** If the lobby's usual port is blocked on your network, the launcher can fall back to the
   server's TCP port 443 (same certificate checks). It works only when the server has that listener turned on; the
   game traffic itself still uses UDP.
-- **In-game rematch (off by default, experimental).** After a match you can accept or decline the rematch with your
-  pad on a panel in the game, without the launcher coming to the front, and a room can agree to skip the between-round
-  replays automatically. It needs the lobby to turn it on (`T5L_INGAME_REMATCH=1`) and `T5_INGAME_REMATCH=1` in the
-  launcher's environment; there is no Settings checkbox yet. It has not been played in a real match. The normal
-  rematch button is unchanged.
+- **Rematch inside the game.** After a casual match (Quick Match, challenge, invite, classic room) a panel in the game
+  asks "Rematch?": accept or decline with your pad (the panel shows your own buttons, or the keyboard keys), with a
+  10 second countdown and your opponent's answer. If both accept, the rematch starts in the running game without the
+  launcher coming to the front; decline or time out and you are back in the lobby. Buttons mashed at the end of a
+  match cannot answer it by accident. It needs both players on 1.2.0 and the updated server; otherwise the launcher's
+  Rematch buttons work as before. Ranked sets, community rooms and training rooms keep their own flow.
 - **Pacing for variable-refresh screens (off by default, experimental).** `PS3_VRR_PACING=1` or `2` in Extra settings
   tries to show frames at an even 59.94 Hz; `0` (the default) is the old behaviour. Nothing has been measured, so
   it is not known whether it helps. It does not change the game's timing, only when frames are shown.
@@ -81,6 +86,13 @@ appear. The European release still plays offline only; online play for it is not
 - **Ranked per fighter.** Your profile now lists every fighter you played in counted ranked games with games, wins,
   losses, draws and win rate (before: only your top five fighters, ranked and casual together). Rating and rank are
   unchanged.
+- **Rooms: watch your table while you wait.** In a community room you watch the match at your table automatically
+  while you wait for your turn (on by default; "Automatically watch" in the room view and in Settings -> Spectators).
+  When your turn or the ready check comes, the spectator game closes at once. Private rooms: members only. Known:
+  after your first room match your game stays open for the next match, and auto-watch does not start again until it
+  is closed.
+- **Chat says why a line was refused.** A line the chat filter or a mute refuses now says why on the status line
+  instead of vanishing.
 - **Watch automatically while idle (off by default).** Settings -> Spectators -> "Automatically watch matches while
   idle": after 15 s idle in the lobby the launcher can watch your room, a friend, or a public room. Your own match,
   a queue search, a challenge or a ready check always comes first. Private or hidden rooms are never picked. Not yet
@@ -88,10 +100,26 @@ appear. The European release still plays offline only; online play for it is not
 - **Leaving a replay.** SELECT now always closes a replay or a live watch, also during the first loading and between
   fights, where it could do nothing.
 
+### Picture and sound
+- **Picture format** (Settings): Whole picture (default), Fill the screen (no bars, edges cut), Stretch, 4:3 (the
+  middle of the picture) and True 4:3 (the game draws a real 4:3 picture; offline only, online you get the 4:3
+  middle). For 16:10 and 3:2 laptop screens use Display -> "Window, my own size". Everything but True 4:3 changes only
+  what you see, so the two players of a match can choose differently.
+- **Moonlit Wilderness and the other soft-focus stages**: the thin dark lines at the bottom and right edge of the
+  picture (with Stage blur / glow On) are fixed.
+- **Sound when a match is found** (Settings): the game's announcer "Get ready for the next battle" (default; read from
+  your own installed game on your PC), the old beep, your own short WAV file, or off, with a Play button. If the
+  announcer line cannot be read, the beep plays.
+
 ### Training
 - **Dummy recordings follow the dummy.** In Practice with the dummy on the right, LEFT in a recording is the dummy's
   forward (toward you) and RIGHT is its back, and playback keeps forward and back when the dummy crosses to the other
   side. Recordings still live only while the game runs. Please re-record old slots after the update.
+- **Skip replays and round endings offline** (Settings -> Round endings, off by default): the between-round replays
+  and animations go by themselves. In Versus both players' are skipped; in the one-player modes only yours, Arcade never
+  opens "new challenger", and nothing is pressed while you hold SELECT.
+- **Practice reset waits until you stand.** SELECT+3 used to reset while a fighter was still flying or lying down; now
+  it waits until both fighters stand (at most about 4 seconds).
 - **Frame data.** Contact tracking got small fixes. A second way to calculate advantage can write a text log for
   developers (`T5_TRAINING_ADV_COMPARE=1`); it shows nothing in the overlay and is off by default, and the numbers you
   see are calculated as in 1.1.9. The position reset in Practice still resets positions only, not a full "back to
@@ -119,7 +147,8 @@ appear. The European release still plays offline only; online play for it is not
 
 ### Lobby server (for operators)
 - New optional settings, described in docs/DEPLOY_1.2.0.md: `T5L_TCP_FALLBACK_PORT` (443; default off),
-  `T5L_INGAME_REMATCH` (default off) and `T5L_CASUAL_REMATCH_POLICY`, `T5L_PRIVATE_CHAT` (default on),
+  `T5L_INGAME_REMATCH` (default on, `T5L_INGAME_REMATCH_SECONDS` 10) and `T5L_CASUAL_REMATCH_POLICY`,
+  `T5L_AUTO_SKIP_INTRO` (default on) and `T5L_AUTO_SKIP` (default on; still needs both players' box), `T5L_PRIVATE_CHAT` (default on),
   `T5L_CHAT_FILTER` and `T5L_CHAT_FILTER_PATH` (default on), `T5L_COMPAT_GROUPS` (empty: only identical builds play
   each other; no group is shipped).
 - `t5lobby-admin badge NAME dev` gives or removes a DEV badge; there are admin commands for server-wide chat mutes
@@ -137,13 +166,18 @@ appear. The European release still plays offline only; online play for it is not
 - A rematch after a casual challenge or room game reconnected both games instead of going on in the running session
   (every casual game is a set since 1.2.0, and the decided set let the game go before the rematch window ended).
 - The rematch after such a game ignored the players' stage and side wishes (it drew a random stage).
+- "Host for friends" from the release zip refused to start ("Cannot load the chat filter").
+- On a relayed connection the launcher answered every punch packet, also the answers, so two launchers could keep
+  sending them to each other for the whole match.
+- Extra settings written in another letter case (for example `ps3_vsync`) were not seen by the online checks.
+- A taken-back accept could close the game of a rematch the lobby had already set up.
 
 ### Not in this release
-- A "true 4:3 / CRT" picture format is not done, and there is no setting for it.
+- True 4:3 online is not possible yet (its camera changes the game state, so two PCs would drift apart).
+- Sidestep from a crouch is not done.
 - A cheaper lightning effect and sound-core speed-ups for slow PCs are not done. An experimental faster maths path for
   slow PCs is in the source but compiled out by default.
-- The thin lines on the Moonlit Wilderness stage are not fixed.
-- In a mirrored ("Always left/right") fight the life bars can still show up wrongly in some cases (GitHub issue #31).
+- Frame data for some moves can still be wrong.
 
 ## v1.1.9 (2026-10-29)
 

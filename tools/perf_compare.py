@@ -2,7 +2,7 @@
 """Repeatable speed measurements of one game build, and a before/after table of two (1.1.7's gate).
 
     python tools/perf_compare.py run --game C:/T5DROnline/build/int115/x-final --out DIR [--parts ...]
-        [--runs 2] [--lock C:/T5DROnline/build/int115/HEAVY.lock --lock-name NAME]
+        [--runs 2] [--lock C:/T5DROnline/build/int115/HEAVY.lock[,...HEAVY2.lock] --lock-name NAME]
     python tools/perf_compare.py table DIR/results.json
     python tools/perf_compare.py compare BEFORE/results.json AFTER/results.json
     python tools/perf_compare.py pacing frames.csv [--series intervals.csv]
@@ -72,42 +72,67 @@ def delay_for(rtt):
 
 # ------------------------------------------------------------------ the shared lock (one heavy step at a time)
 class Lock:
+    """The shared heavy lock, taken per game run. `path` may name several lock files, comma-separated (the PC's
+    heavy slots, e.g. HEAVY.lock,HEAVY2.lock): a timing measurement then holds all of them, so no other heavy run
+    shares the PC with it. Each file is created atomically (O_EXCL); a file someone else holds is waited for while the
+    ones already taken are kept (the run starts as soon as the last slot frees)."""
     def __init__(self, path, name):
+        self.paths = [p.strip() for p in (path or "").split(",") if p.strip()]
         self.path, self.name = path, name
         self.given = 0.0
+        self.held = []
 
     GAP = 35.0      # after giving the lock back: others poll every 30 s, so wait that long before the next take
 
     def __enter__(self):
         return self
 
+    def _try(self, p, what):
+        try:
+            cur = open(p, encoding="utf-8", errors="replace").read().strip()
+        except OSError:
+            cur = ""
+        if cur and cur.split()[0] == self.name:      # ours from an earlier take of this name
+            return True
+        if cur:
+            return False
+        try:
+            fd = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_EXCL)
+        except FileExistsError:
+            return False
+        except OSError:
+            return False
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(f"{self.name} {time.strftime('%H:%M')} {what}\n")
+        return True
+
     def take(self, what):
-        if not self.path:
+        if not self.paths:
             return
         if time.time() - self.given < self.GAP:
             time.sleep(self.GAP - (time.time() - self.given))
-        while True:
-            try:
-                cur = open(self.path, encoding="utf-8", errors="replace").read().strip()
-            except OSError:
-                cur = ""
-            if not cur or cur.split()[0] == self.name:
-                with open(self.path, "w", encoding="utf-8") as f:
-                    f.write(f"{self.name} {time.strftime('%H:%M')} {what}\n")
-                return
-            print(f"  lock held: {cur!r}; waiting", flush=True)
-            time.sleep(30)
+        for p in self.paths:
+            while not self._try(p, what):
+                try:
+                    cur = open(p, encoding="utf-8", errors="replace").read().strip()
+                except OSError:
+                    cur = ""
+                print(f"  lock held: {os.path.basename(p)} {cur!r}; waiting", flush=True)
+                time.sleep(30 if len(self.paths) == 1 else 5)
+            self.held.append(p)
 
     def give(self):
-        if not self.path:
+        if not self.paths:
             return
-        try:
-            cur = open(self.path, encoding="utf-8", errors="replace").read().strip()
-            if cur.split() and cur.split()[0] == self.name:
-                os.remove(self.path)
-                self.given = time.time()
-        except OSError:
-            pass
+        for p in self.paths:
+            try:
+                cur = open(p, encoding="utf-8", errors="replace").read().strip()
+                if cur.split() and cur.split()[0] == self.name:
+                    os.remove(p)
+                    self.given = time.time()
+            except OSError:
+                pass
+        self.held = []
 
     def __exit__(self, *a):
         self.give()
@@ -797,7 +822,7 @@ def main():
     r.add_argument("--secs", type=float, default=50.0)
     r.add_argument("--rb-cpus1", default="0xFF0000")
     r.add_argument("--rb-cpus2", default="0xFF000000")
-    r.add_argument("--lock", default="", help="the shared lock file (taken per game run)")
+    r.add_argument("--lock", default="", help="the shared lock file(s), comma-separated (all taken per game run)")
     r.add_argument("--lock-name", default="perf")
     r.add_argument("--lock-gap", type=float, default=35.0, help="seconds between giving the lock back and taking it again")
     r.add_argument("--redo", action="store_true", help="measure again what results.json already has")

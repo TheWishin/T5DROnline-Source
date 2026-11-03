@@ -5922,29 +5922,51 @@ def _pace_modes(path):
 
 @scenario("net_vrr_adaptive_120", "15 1.2.0 opt-in", game=True, suites=("game",),
           desc="VRR pacing on one side (A: PS3_VRR_PACING=2 + tearing, display lock off), B default; both "
-               "with the adaptive rollback delay (T5_RB_NET_ADAPTIVE_DELAY=1), RTT 150 / jitter 15 / 2 % loss, Quick "
+               "with the adaptive rollback delay (T5_RB_NET_ADAPTIVE_DELAY=1), B also with the experimental practice "
+               "advantage comparison switched on (must stay inactive online), RTT 150 / jitter 15 / 2 % loss, Quick "
                "matches with input delay Auto: confirmed, 0 mismatching frames, ~60 fps, the frame log shows A's "
                "pacing mode, the host logs the jitter delay")
 def net_vrr_adaptive_120(ctx):
+    _net_vrr_120(ctx, "rollback")
+
+
+@scenario("net_vrr_lockstep_120", "15 1.2.0 opt-in", game=True, suites=("game",),
+          desc="the same in lockstep (both T5_RB_MODE=off): A VRR pacing 2, B default + the practice advantage "
+               "comparison on, RTT 150 / jitter 15 / 2 % loss: confirmed, 0 mismatching frames")
+def net_vrr_lockstep_120(ctx):
+    _net_vrr_120(ctx, "lockstep")
+
+
+def _net_vrr_120(ctx, mode):
     game_server(ctx)
     fl = os.path.join(ctx.dir, "frames_A.csv")
-    a = ctx.player("E2E Vrr", char="jin", env={"PS3_VRR_PACING": "2", "RSX_PRESENT_MODE": "tearing",
-                                               "PS3_DISPLAY_LOCK": "0", "PS3_FRAMELOG": fl,
-                                               "T5_RB_NET_ADAPTIVE_DELAY": "1"})
-    b = ctx.player("E2E Fix", char="paul", env={"T5_RB_NET_ADAPTIVE_DELAY": "1"})
+    tl = os.path.join(ctx.dir, "training_B.log")
+    extra = {"T5_RB_MODE": "off"} if mode == "lockstep" else {"T5_RB_NET_ADAPTIVE_DELAY": "1"}
+    a = ctx.player("E2E Vrr", char="jin", env=dict(extra, PS3_VRR_PACING="2", RSX_PRESENT_MODE="tearing",
+                                                   PS3_DISPLAY_LOCK="0", PS3_FRAMELOG=fl))
+    b = ctx.player("E2E Fix", char="paul", env=dict(extra, T5_TRAINING="frames", T5_TRAINING_ADV_COMPARE="1",
+                                                    T5_TRAINING_LOG=tl))
     login(ctx, a)
     login(ctx, b)
-    row = net_case(ctx, a, b, "VRR 2 vs default, adaptive delay, RTT 150 jitter 15", 150, 15, 0.02, "auto", False, None)
+    row = net_case(ctx, a, b, f"VRR 2 vs default ({mode}), RTT 150 jitter 15", 150, 15, 0.02, "auto", False, None,
+                   mode=mode)
     modes = _pace_modes(fl)
     ctx.check("A's frame log: pacing mode 2 (controlled present) took effect", modes.get("2", 0) > 600, modes)
-    for p in (a, b):
-        ctx.note(f"{p.name}: {(_game_lines(p, r'jitter delay:|rollback input delay for this match') or ['-'])[-2:]}")
-    host = a if a.matches[list(a.matches)[-1]].get("slot") == 0 else b
-    jit = _game_lines(host, r"jitter delay:")
-    ctx.check("the host logs the adaptive (jitter) delay, fixed for the match", bool(jit), jit[-1:] or "no line")
+    try:
+        with open(tl, encoding="utf-8", errors="replace") as f:
+            adv = [ln for ln in f if " adv_compare " in ln]
+    except OSError:
+        adv = []
+    ctx.check("B: the practice advantage comparison stayed inactive online (no adv_compare line)", not adv, adv[:2])
+    if mode == "rollback":
+        for p in (a, b):
+            ctx.note(f"{p.name}: {(_game_lines(p, r'jitter delay:|rollback input delay for this match') or ['-'])[-2:]}")
+        host = a if a.matches[list(a.matches)[-1]].get("slot") == 0 else b
+        jit = _game_lines(host, r"jitter delay:")
+        ctx.check("the host logs the adaptive (jitter) delay, fixed for the match", bool(jit), jit[-1:] or "no line")
     from e2e_harness import TOOLS
     r = subprocess.run([sys.executable, os.path.join(TOOLS, "perf_compare.py"), "pacing", fl], capture_output=True,
                        text=True, encoding="utf-8", errors="replace", timeout=120)
     ctx.note(f"perf_compare pacing (A, mode 2): {(r.stdout or r.stderr)[:1500]}")
-    with open(os.path.join(ctx.dir, "pacing_A_mode2.json"), "w", encoding="utf-8") as f:
+    with open(os.path.join(ctx.dir, f"pacing_A_mode2_{mode}.json"), "w", encoding="utf-8") as f:
         f.write(r.stdout or r.stderr)

@@ -5396,3 +5396,158 @@ def net_always_left(ctx):
     else:
         ctx.note("the coin made A P1 in all four Quick matches: the 'not mirrored as P2' case was not reached")
     ctx.note(f"pictures of A's game (T5_DF_SHOT ++240,++600): {shots}")
+
+
+# ============================================================================== 15. 1.2.0 opt-in features
+def _admin(ctx, *args):
+    """python -m t5lobby.server.admin --db <this scenario's database> ARGS (the operator's tool)."""
+    from e2e_harness import LOBBY
+    r = subprocess.run([sys.executable, "-m", "t5lobby.server.admin", "--db", ctx.server.db] + list(args), cwd=LOBBY,
+                       env=dict(os.environ, PYTHONPATH=LOBBY), capture_output=True, text=True, encoding="utf-8",
+                       errors="replace", timeout=60, creationflags=core.CREATE_NO_WINDOW if core.IS_WIN else 0)
+    return r.returncode, r.stdout + r.stderr
+
+
+def _filter_term():
+    """A term of the server's own list, read at run time (this file never spells one)."""
+    from e2e_harness import LOBBY
+    path = os.path.join(LOBBY, "t5lobby", "server", "data", "chat_filter_terms.json")
+    with open(path, encoding="utf-8") as f:
+        terms = json.load(f)["terms"]
+    return next(e["term"] for e in terms if e.get("match", "word") == "word" and e["term"].isascii()
+                and e["term"].isalpha())
+
+
+class _Entry:
+    """The chat entry as complete_mention() sees it (cursor position only)."""
+
+    def __init__(self, n):
+        self.n = n
+
+    def index(self, _what):
+        return self.n
+
+    def icursor(self, n):
+        self.n = n
+
+
+@scenario("chat_private_120", "15 1.2.0 opt-in", suites=("quick", "lobby"),
+          desc="1.2.0 chat (stub players): DEV badge granted by the admin tool shows in the roster and chat; an "
+               "@mention reaches only its target; a private message A->B and back, unread for B, nothing for C; A "
+               "reports 2 of 4 lines and only those reach the moderator inbox; the chat filter blocks a listed term "
+               "in lobby chat, private chat and a guest name")
+def chat_private_120(ctx):
+    if not {"private_chat", "badges", "mentions"}.issubset(features()):
+        raise Skip("this tree has no 1.2.0 chat")
+    stub_server(ctx)
+    a = ctx.player("E2E Dev", kind="stub", password="dev-pass-123")
+    login(ctx, a, "register")
+    a.logout(forget=True)
+    ctx.wait(lambda: a.tab.client is None, 10, "A logged out")
+    code, out = _admin(ctx, "badge", "E2E Dev", "dev")
+    ctx.require("admin: badge E2E Dev dev", code == 0, out.strip())
+    login(ctx, a, "account")
+    b = ctx.player("E2E Bea", kind="stub")
+    c = ctx.player("E2E Cal", kind="stub")
+    login(ctx, b)
+    login(ctx, c)
+    ctx.wait(lambda: any(p["name"] == "E2E Dev" for p in b.client.players), 10, "B sees A in the roster")
+    row = next(p for p in b.client.players if p["name"] == "E2E Dev")
+    ctx.check("roster: A carries the DEV badge from the server", row.get("badge") == "dev", row.get("badge"))
+    ctx.wait(lambda: b.tab.tv_players.exists(row["id"]), 10, "A's row in B's player list")
+    shown = str(b.tab.tv_players.item(row["id"], "values")[0])
+    ctx.check("player list: A's name shows DEV", "DEV" in shown and shown.startswith("E2E Dev"), shown)
+    crow = next((p for p in b.client.players if p["name"] == "E2E Cal"), {})
+    ctx.check("player list: a guest has no badge", not crow.get("badge"), crow.get("badge"))
+
+    # mentions: Tab completes from the roster, the server resolves the target, only A is mentioned
+    b.tab.chat_var.set("hello @e2e d")
+    ev = type("E", (), {"widget": _Entry(len("hello @e2e d"))})()
+    b.tab.complete_mention(ev)
+    ctx.check("Tab completes @e2e d to the roster name", b.tab.chat_var.get() == "hello @E2E Dev ", b.tab.chat_var.get())
+    t0 = time.time()
+    b.tab.chat_var.set(b.tab.chat_var.get() + "are you there?")
+    b.tab.do_chat()
+    ctx.wait(lambda: a.events_of("chat", t0) and c.events_of("chat", t0), 10, "the chat line reaches A and C")
+    ea, ec = a.events_of("chat", t0)[-1], c.events_of("chat", t0)[-1]
+    ctx.check("A is mentioned (server ids)", a.tab._chat_mentions_me(ea), ea.get("mentions"))
+    ctx.check("C is not mentioned", not c.tab._chat_mentions_me(ec), ec.get("mentions"))
+    ctx.check("A's chat log marks the line as a mention", bool(a.tab.chat_log.tag_ranges("chat_mention")))
+    t1 = time.time()
+    a.tab.chat_var.set("dev line")
+    a.tab.do_chat()
+    ctx.wait(lambda: b.events_of("chat", t1), 10, "A's chat line reaches B")
+    ctx.check("chat: A's line carries the DEV badge", b.tab._player_badge(b.events_of("chat", t1)[-1]["from"]) == "dev",
+              b.events_of("chat", t1)[-1].get("from"))
+
+    # private messages
+    pa, pb = a.tab.private_chat, b.tab.private_chat
+    ctx.check("private chat is available on both", pa.available() and pb.available())
+    a.tab.tv_players.selection_set(next(p["id"] for p in a.client.players if p["name"] == "E2E Bea"))
+    pa.selected_player()
+    ctx.check("A's private window opened for B (from the player list)", pa.window is not None and pa.name == "E2E Bea",
+              pa.name)
+    t2 = time.time()
+    for k, text in enumerate(("pm one", "pm two", "pm three")):
+        pa.text.set(text)
+        pa.send()
+        ctx.wait(lambda k=k: len(b.events_of("private_message", t2)) >= k + 1, 10, f"B gets private line {k + 1}")
+    row_b = pb.model.rows.get("e2e dev") or {}
+    ctx.check("B: a conversation with A, 3 unread", row_b.get("unread") == 3, row_b.get("unread"))
+    pb.show("E2E Dev")
+    pb.text.set("pm reply")
+    pb.send()
+    ctx.wait(lambda: a.events_of("private_message", t2), 10, "A gets B's reply")
+    ctx.wait(lambda: len((pa.model.rows.get("e2e bea") or {}).get("lines") or ()) == 4, 10, "A's view has 4 lines")
+    ctx.check("C got no private message", not c.events_of("private_message", t2))
+
+    # report 2 of the 4 lines A sees (A's 'pm two' and B's reply), never the rest
+    pa.draw()
+    texts = [pa.lines.get(i) for i in range(pa.lines.size())]
+    want = [i for i, s in enumerate(texts) if s.endswith(": pm two") or s.endswith(": pm reply")]
+    ctx.require("A's view lists the lines", len(want) == 2, texts)
+    pa.lines.selection_clear(0, "end")
+    for i in want:
+        pa.lines.selection_set(i)
+    a.tab.ask_yes_no = lambda *a_, **k: True
+    t3 = time.time()
+    pa.report()
+    ctx.wait(lambda: a.saw_status("Report sent", t3), 10, "A: 'Report sent to moderators.'")
+    code, out = _admin(ctx, "private-reports", "--json")
+    try:
+        reports = json.loads(out)
+    except ValueError:
+        reports = []
+    ctx.check("moderator inbox: one report", code == 0 and len(reports) == 1, out[:300])
+    if reports:
+        got = sorted(line["text"] for line in reports[0]["lines"])
+        ctx.check("the report holds exactly the 2 selected lines", got == ["pm reply", "pm two"], got)
+        ctx.check("reporter A, peer B", reports[0]["reporter_name"] == "E2E Dev" and
+                  reports[0]["peer_name"] == "E2E Bea", f"{reports[0]['reporter_name']} {reports[0]['peer_name']}")
+    with open(ctx.server.db, "rb") as f:
+        db_text = f.read()
+    ctx.check("unreported lines are not in the database", b"pm one" not in db_text and b"pm three" not in db_text)
+
+    # chat filter (the server's list, read at run time)
+    term = _filter_term()
+    t4 = time.time()
+    b.tab.chat_var.set(f"you are a {term}")
+    b.tab.do_chat()
+    ctx.wait(lambda: b.saw_status("blocked", t4), 10, "lobby chat with a listed term: B told it was blocked")
+    ctx.sleep(1.0)
+    ctx.check("... and nobody got it", not [e for e in a.events_of("chat", t4) + c.events_of("chat", t4)
+                                            if term in e.get("text", "")])
+    t5 = time.time()
+    pb.text.set(f"{term} again")
+    pb.send()
+    ctx.wait(lambda: b.saw_status("blocked", t5), 10, "private message with a listed term: blocked")
+    ctx.sleep(1.0)
+    ctx.check("... and A got nothing", not a.events_of("private_message", t5))
+    g = ctx.player("E2E " + term.capitalize(), kind="stub", tag="badname")
+    t6 = time.time()
+    g.login_guest()
+    ctx.wait(lambda: g.saw_status("not allowed|blocked", t6), 10, "guest name with a listed term: refused")
+    ctx.check("... not logged in", not g.logged_in())
+    for p in (a, b):
+        if p.tab.private_chat.window is not None:
+            p.tab.private_chat.close()

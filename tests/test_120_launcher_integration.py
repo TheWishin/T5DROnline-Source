@@ -40,11 +40,13 @@ class LauncherIntegration(unittest.TestCase):
         tree = ast.parse((ROOT / "launcher/core.py").read_text(encoding="utf-8"))
         tables = {"DEFAULTS", "SETTINGS_VERSION", "INTERNAL_RES", "OLD_RENDER_SCALES",
                   "SCREEN_SIDES", "VSYNC_MODES", "POWER_SAVING", "STAGE_BLUR_MODES",
-                  "ON_OFF_MODES", "GRAPHICS", "TRAINING_MODES", "TRAINING_POS", "PRACTICE_DUMMY"}
+                  "ON_OFF_MODES", "GRAPHICS", "TRAINING_MODES", "TRAINING_POS", "PRACTICE_DUMMY",
+                  "DISPLAY_MODES", "TRUE_43", "TRUE_43_ONLINE", "PICTURE_FORMATS", "WINDOW_SIZE_MIN", "WINDOW_SIZE_MAX"}
         namespace = {"N_": lambda text: text, "SETTINGS_FILE": "unused", "json": json}
         for node in tree.body:
-            if isinstance(node, ast.Assign) and any(
-                    isinstance(target, ast.Name) and target.id in tables for target in node.targets):
+            if (isinstance(node, ast.Assign) and any(
+                    isinstance(target, ast.Name) and target.id in tables for target in node.targets)) or (
+                    isinstance(node, ast.FunctionDef) and node.name == "window_size"):
                 exec(compile(ast.fix_missing_locations(ast.Module(body=[node], type_ignores=[])),
                              "launcher/core.py", "exec"), namespace)
         cls = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "Settings")

@@ -73,9 +73,9 @@ def delay_for(rtt):
 # ------------------------------------------------------------------ the shared lock (one heavy step at a time)
 class Lock:
     """The shared heavy lock, taken per game run. `path` may name several lock files, comma-separated (the PC's
-    heavy slots, e.g. HEAVY.lock,HEAVY2.lock): a timing measurement then holds all of them, so no other heavy run
-    shares the PC with it. Each file is created atomically (O_EXCL); a file someone else holds is waited for while the
-    ones already taken are kept (the run starts as soon as the last slot frees)."""
+    heavy slots, e.g. HEAVY.lock,HEAVY2.lock): a timing measurement then holds all of them at once. Each file is
+    created atomically (O_EXCL); all or none: when one is someone else's, the ones just taken are given back at once
+    and the whole set is tried again a few seconds later (a slot is never held while waiting for another)."""
     def __init__(self, path, name):
         self.paths = [p.strip() for p in (path or "").split(",") if p.strip()]
         self.path, self.name = path, name
@@ -111,15 +111,36 @@ class Lock:
             return
         if time.time() - self.given < self.GAP:
             time.sleep(self.GAP - (time.time() - self.given))
-        for p in self.paths:
-            while not self._try(p, what):
+        said = 0.0
+        while True:
+            got, busy = [], None
+            for p in self.paths:
+                if self._try(p, what):
+                    got.append(p)
+                else:
+                    busy = p
+                    break
+            if busy is None:
+                self.held = got
+                return
+            for p in got:                                   # all or none: never sit on a slot while waiting
+                self._drop(p)
+            if time.time() - said > 300:
                 try:
-                    cur = open(p, encoding="utf-8", errors="replace").read().strip()
+                    cur = open(busy, encoding="utf-8", errors="replace").read().strip()
                 except OSError:
                     cur = ""
-                print(f"  lock held: {os.path.basename(p)} {cur!r}; waiting", flush=True)
-                time.sleep(30 if len(self.paths) == 1 else 5)
-            self.held.append(p)
+                print(f"  lock held: {os.path.basename(busy)} {cur!r}; waiting", flush=True)
+                said = time.time()
+            time.sleep(30 if len(self.paths) == 1 else 4)
+
+    def _drop(self, p):
+        try:
+            cur = open(p, encoding="utf-8", errors="replace").read().strip()
+            if cur.split() and cur.split()[0] == self.name:
+                os.remove(p)
+        except OSError:
+            pass
 
     def give(self):
         if not self.paths:

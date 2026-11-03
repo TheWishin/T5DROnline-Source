@@ -42,7 +42,7 @@ class MultiSlotLockTest(unittest.TestCase):
         lk.give()
         self.assertFalse(os.path.exists(self.a) or os.path.exists(self.b))
 
-    def test_waits_for_a_slot_someone_else_holds_and_keeps_the_first(self):
+    def test_waits_for_a_slot_someone_else_holds_without_sitting_on_the_other(self):
         with open(self.b, "w", encoding="utf-8") as f:
             f.write("other 12:00 e2e\n")
         lk = self.lock([self.a, self.b])
@@ -53,12 +53,13 @@ class MultiSlotLockTest(unittest.TestCase):
             t.start()
             time.sleep(0.3)
             self.assertTrue(t.is_alive(), "must wait while HEAVY2.lock is someone else's")
-            self.assertEqual(owner(self.a), "perfgate", "the free slot is held while waiting")
+            free = [not os.path.exists(self.a) for _ in range(20) if perf_sleep(0.01) is None]
+            self.assertTrue(any(free), "HEAVY.lock is given back while HEAVY2.lock is waited for")
             self.assertEqual(owner(self.b), "other")
             os.remove(self.b)
             t.join(5)
             self.assertFalse(t.is_alive())
-            self.assertEqual(owner(self.b), "perfgate")
+            self.assertEqual((owner(self.a), owner(self.b)), ("perfgate", "perfgate"))
         finally:
             perf.time.sleep = perf_sleep
         lk.give()

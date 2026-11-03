@@ -148,7 +148,8 @@ class Source(unittest.TestCase):
         code = re.sub(r"/\*.*?\*/", "", hdr, flags=re.S)
         self.assertNotRegex(code, r"local_slot|slot|Mode::|enabled\(|replaying\(")
         self.assertIn("static unsigned apply(Verdict v, PadInput in[2], bool soft_reset_guard = true)", hdr)
-        self.assertIn("Verdict record(uint32_t f, const State& st, const PadInput in[2], bool auto_skip_after_round = false)", hdr)
+        self.assertIn("Verdict record(uint32_t f, const State& st, const PadInput in[2], bool auto_skip_after_round = false,\n"
+                      "                   bool auto_skip_intro = false)", hdr)
 
     def test_automatic_skip_is_part_of_the_deterministic_rule(self):
         hdr = read("src/netplay/no_pause.h")
@@ -156,6 +157,23 @@ class Source(unittest.TestCase):
         self.assertIn("% kPressEvery < kPressFrames", hdr)
         hooks = read("src/netplay/t5_hooks.cpp")
         self.assertIn("rules.auto_skip_after_round", hooks)
+
+    def test_intro_skip_is_part_of_the_deterministic_rule(self):
+        """1.2.0: the fight line's auto_skip_intro=1 (match_rules.h bit 2) gives both votes in the intros (1, 2)
+        only -- READY/FIGHT and the parts after a round are left to the players / the after-round rule"""
+        hdr = read("src/netplay/no_pause.h")
+        self.assertIn("if (auto_skip_intro && pt == kIntro) pr = 3;", hdr)
+        self.assertIn("kIntroRounds = (1u << 1) | (1u << 2);", hdr)
+        hooks = read("src/netplay/t5_hooks.cpp")
+        self.assertIn("rules.auto_skip_after_round, rules.auto_skip_intro)", hooks)
+        rules = read("src/netplay/match_rules.h")
+        self.assertIn("(auto_skip_intro ? 4u : 0u)", rules)
+        self.assertIn("r.auto_skip_intro = (w & 4) != 0;", rules)
+        fight = read("src/directfight/df_fight.cpp")
+        self.assertIn('_stricmp(k.c_str(), "auto_skip_intro") == 0', fight)
+        rp = read("src/netplay/replay.cpp")
+        self.assertIn("if (ver < 7) m.ft.rules &= ~4u;", rp)
+        self.assertIn('*line += " auto_skip_intro=1";', rp)
 
 
 if __name__ == "__main__":

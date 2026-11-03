@@ -1,4 +1,4 @@
-﻿/*
+/*
  * T5DR direct fight -- the match driver (NPUB30009 v01.00; docs/DIRECTFIGHT.md).
  *
  *   T5_FIGHT=p1,p2,stage[,rounds][,p1color,p2color][ match=<id>]
@@ -51,7 +51,7 @@
 #include <atomic>
 #include "df.h"
 #include "../netplay/match_score.h"   /* a decided match's score: the fighters' round counts */
-#include "../netplay/match_rules.h"   /* agreed simulation rules (train=, life=, auto_skip_after_round=) */
+#include "../netplay/match_rules.h"   /* agreed simulation rules (train=, life=, auto_skip_after_round=, auto_skip_intro=) */
 
 extern "C" void t5_netplay_start(void);
 extern "C" int  t5_netplay_lockstep_active(void);
@@ -239,7 +239,7 @@ bool parse_fight(const char* s0, Fight& out)
 {
     std::string line = s0 ? s0 : "";
     if (!g_rules_default.empty() && line.find("train=") == std::string::npos && line.find("life=") == std::string::npos &&
-        line.find("auto_skip_after_round=") == std::string::npos)
+        line.find("auto_skip_after_round=") == std::string::npos && line.find("auto_skip_intro=") == std::string::npos)
         line += " " + g_rules_default;
     const char* s = line.c_str();
     Fight f; f.text = s;
@@ -264,6 +264,8 @@ bool parse_fight(const char* s0, Fight& out)
          * preference must never alter the simulated START sequence. */
         else if (_stricmp(k.c_str(), "auto_skip_after_round") == 0)
             f.rules.auto_skip_after_round = cur.substr(eq + 1) == "1";
+        else if (_stricmp(k.c_str(), "auto_skip_intro") == 0)   /* 1.2.0: the server's rule for every pair (no_pause.h) */
+            f.rules.auto_skip_intro = cur.substr(eq + 1) == "1";
         else if (_stricmp(k.c_str(), "life") == 0) {   /* life=P1|P2: each side's health in percent (the handicap) */
             const std::string v = cur.substr(eq + 1);
             const size_t bar = v.find('|');
@@ -1473,6 +1475,7 @@ std::string rules_text()
     char b[160];
     if (g_rules.training) o += ", training (endless health, no timer, SELECT held 1 s gives up)";
     if (g_rules.auto_skip_after_round) o += ", agreed automatic after-round skip";
+    if (g_rules.auto_skip_intro) o += ", intros skipped";
     snprintf(b, sizeof b, ", health P1 %d %% / P2 %d %% (handicap words %u / %u)", g_rules.life[0], g_rules.life[1],
              rd32(kLifeP1), rd32(kLifeP2));
     o += b;

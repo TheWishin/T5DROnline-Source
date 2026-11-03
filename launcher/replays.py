@@ -163,6 +163,7 @@ def read_payload(path):
         rules = r.u32() if out["version"] >= 5 else 0
         m["training"] = bool(rules & 1)
         m["auto_skip_after_round"] = version >= 6 and bool(rules & 2)
+        m["auto_skip_intro"] = version >= 7 and bool(rules & 4)     # 1.2.0: the fighters' intros skipped
         m["life"] = [((rules >> 8) & 0xFF) or 100, ((rules >> 16) & 0xFF) or 100]
         ms.append(m)
     out["matches"] = ms

@@ -55,16 +55,19 @@ struct MatchRules {
     static constexpr int kLifeMin = 10, kLifeMax = 150;   /* 1.1.7: up to 150 % (docs/NETPLAY.md) */
     bool training = false;
     bool auto_skip_after_round = false;  /* authoritative match agreement, never a local UI preference */
+    bool auto_skip_intro = false;        /* 1.2.0: the fighters' intros skipped (the server's fight line, every pair
+                                          * whose games have it; no_pause.h) -- never a local preference either */
     int life[2] = { 100, 100 };
 
     static int clamp_life(int v) { return v < kLifeMin ? kLifeMin : v > kLifeMax ? kLifeMax : v; }
-    bool any() const { return training || auto_skip_after_round || life[0] != 100 || life[1] != 100; }
-    /* bit 0 training, bit 1 automatic after-round skips (format 6), bits 8-15 P1's life %, bits 16-23 P2's (a replay's per-match word); 0 = no rules (a match
-     * as before 1.1.5, and what older replay files read as) */
+    bool any() const { return training || auto_skip_after_round || auto_skip_intro || life[0] != 100 || life[1] != 100; }
+    /* bit 0 training, bit 1 automatic after-round skips (format 6), bit 2 automatic intro skips (format 7, 1.2.0),
+     * bits 8-15 P1's life %, bits 16-23 P2's (a replay's per-match word); 0 = no rules (a match as before 1.1.5, and
+     * what older replay files read as) */
     uint32_t pack() const
     {
         if (!any()) return 0;
-        return (training ? 1u : 0u) | (auto_skip_after_round ? 2u : 0u) |
+        return (training ? 1u : 0u) | (auto_skip_after_round ? 2u : 0u) | (auto_skip_intro ? 4u : 0u) |
                (uint32_t)clamp_life(life[0]) << 8 | (uint32_t)clamp_life(life[1]) << 16;
     }
     static MatchRules unpack(uint32_t w)
@@ -72,6 +75,7 @@ struct MatchRules {
         MatchRules r;
         r.training = (w & 1) != 0;
         r.auto_skip_after_round = (w & 2) != 0;
+        r.auto_skip_intro = (w & 4) != 0;
         const int a = (int)(w >> 8 & 0xFF), b = (int)(w >> 16 & 0xFF);
         r.life[0] = a ? clamp_life(a) : 100;
         r.life[1] = b ? clamp_life(b) : 100;
@@ -80,6 +84,7 @@ struct MatchRules {
     bool operator==(const MatchRules& o) const
     {
         return training == o.training && auto_skip_after_round == o.auto_skip_after_round &&
+               auto_skip_intro == o.auto_skip_intro &&
                life[0] == o.life[0] && life[1] == o.life[1];
     }
     bool operator!=(const MatchRules& o) const { return !(*this == o); }

@@ -355,18 +355,20 @@ static void test_soft_reset()
 }
 
 /* ---- lockstep / rollback / replay ----------------------------------------------------------- */
-struct Timeline { std::vector<uint64_t> hash; std::vector<PadInput> raw0, raw1; Game end; bool automatic = false; };
+struct Timeline { std::vector<uint64_t> hash; std::vector<PadInput> raw0, raw1; Game end; bool automatic = false, intro = false; };
 
 /* The reference: inputs known before every frame (lockstep), the rule in front of the game. */
-static Timeline run_lockstep(uint32_t frames, uint32_t rate0, uint32_t rate1, uint32_t s0, uint32_t s1, bool automatic = false)
+static Timeline run_lockstep(uint32_t frames, uint32_t rate0, uint32_t rate1, uint32_t s0, uint32_t s1, bool automatic = false,
+                             bool intro = false)
 {
     Timeline tl;
     tl.automatic = automatic;
+    tl.intro = intro;
     Game g; NoPauseRule r;
     for (uint32_t f = 0; f < frames; f++) {
         PadInput in[2] = { player_input(s0, f, rate0), player_input(s1, f, rate1) };
         tl.raw0.push_back(in[0]); tl.raw1.push_back(in[1]);
-        NoPauseRule::apply(r.record(f, g.facts(), in, automatic), in);
+        NoPauseRule::apply(r.record(f, g.facts(), in, automatic, intro), in);
         g.step(in);
         check(g.soft_resets == 0, "simulation: START+SELECT reached the game", f);
         check(!g.paused, "lockstep: the pause menu opened", f);
@@ -407,7 +409,7 @@ static std::vector<uint64_t> run_rollback(const Timeline& ref, int slot, uint32_
         used[f] = rem;
         PadInput in[2];
         in[slot] = mine[f]; in[1 - slot] = rem;
-        NoPauseRule::apply(r.record(f, g.facts(), in, ref.automatic), in);
+        NoPauseRule::apply(r.record(f, g.facts(), in, ref.automatic, ref.intro), in);
         g.step(in);
         check(g.soft_resets == 0, "simulation: START+SELECT reached the game", f);
         hash[f] = g.hash;
@@ -437,22 +439,33 @@ static void test_netplay()
 {
     const uint32_t frames = 30000;
     uint32_t total_matches = 0, total_skips = 0, total_replay_skips = 0;
-    for (int k = 0; k < 8; k++) {
-        const bool automatic = k >= 6;
+    for (int k = 0; k < 12; k++) {
+        /* 6, 7: the after-round rule; 8, 9: the intro rule (1.2.0); 10, 11: both (k 8 and 10: nobody presses START) */
+        const bool automatic = (k >= 6 && k < 8) || k >= 10, intro = k >= 8;
         const uint32_t s0 = 11 + k * 7, s1 = 23 + k * 13;
         /* START from P1 only, from P2 only, from both; mashed hard or now and then */
-        const uint32_t rate = k < 3 ? 5 : 40;
+        const uint32_t rate = k < 3 ? 5 : k == 8 || k == 10 ? 0 : 40;
         const uint32_t rate0 = k % 3 == 1 ? 0 : rate, rate1 = k % 3 == 0 ? 0 : rate;
-        Timeline ref = run_lockstep(frames, rate0, rate1, s0, s1, automatic);
+        Timeline ref = run_lockstep(frames, rate0, rate1, s0, s1, automatic, intro);
         /* without the rule the same inputs open the pause menu (the model is not toothless) */
         {
             Game g; uint32_t opened = 0;
             for (uint32_t f = 0; f < frames; f++) { PadInput in[2] = { ref.raw0[f], ref.raw1[f] }; g.step(in); opened += g.paused; }
-            check(opened > 0 && g.pauses > 0, "model: START pauses without the rule", k);
+            if (rate0 || rate1) check(opened > 0 && g.pauses > 0, "model: START pauses without the rule", k);
         }
         check(ref.end.matches >= 3, "lockstep: matches end", (long)ref.end.matches);
         check(ref.end.replays >= ref.end.matches, "lockstep: round replays", (long)ref.end.replays);
-        if (automatic) {
+        check(ref.end.pauses == 0, "lockstep: never paused", k, (long)ref.end.pauses);
+        if (intro) {
+            /* the intro rule: every intro of every match (the rematches' too) skipped, whoever presses START --
+             * P1's and P2's intro, 2 per match; the after-round parts as without it */
+            check(ref.end.intro_skips >= 2 * (ref.end.intros - 1), "intro rule: both intros of every fight skipped", k,
+                  (long)ref.end.intro_skips);
+            if (automatic)
+                check(ref.end.replay_skips > 0 && ref.end.next_skips > 0, "intro + after-round rules: round parts skipped", k);
+            else if (!rate0 || !rate1)
+                check(!ref.end.replay_skips && !ref.end.next_skips, "intro rule: the parts after a round still need both", k);
+        } else if (automatic) {
             check(ref.end.replay_skips > 0 && ref.end.next_skips > 0, "automatic: round parts skipped without both START", k);
             if (!rate0 || !rate1) check(!ref.end.intro_skips, "automatic: intro still needs both votes", k);
         } else if (!rate0 || !rate1)   /* one player pressing never skips anything in a round */
@@ -474,7 +487,7 @@ static void test_netplay()
             Game g; NoPauseRule r;
             for (uint32_t f = 0; f < frames; f++) {
                 PadInput in[2] = { ref.raw0[f], ref.raw1[f] };
-                NoPauseRule::apply(r.record(f, g.facts(), in, ref.automatic), in);
+                NoPauseRule::apply(r.record(f, g.facts(), in, ref.automatic, ref.intro), in);
                 g.step(in);
                 check(g.soft_resets == 0, "simulation: START+SELECT reached the game", f);
                 check(g.hash == ref.hash[f], "replay: differs", f, k);
@@ -517,6 +530,40 @@ static void test_auto_skip()
     enabled.reset(); st.decided = false; st.mode_next = 6;
     check(enabled.record(0, st, none, true) == NoPauseRule::kCut, "automatic: select request closes skip");
     printf("automatic skips ok\n");
+
+    /* The intro rule (1.2.0, auto_skip_intro): the both-pressed presses from the P1 intro's first frame through the
+     * P2 intro, nobody pressing; never in READY/FIGHT (4), the fight or after a round; a rematch's intro too (the
+     * last match's decided byte still up); the select request closes it; it supplies no after-round votes. */
+    for (int stale = 0; stale < 2; stale++) {
+        NoPauseRule r;
+        NoPauseRule::State s = { true, 17, stale != 0, 14, 1 };
+        uint32_t f = 0;
+        for (; f < 50; f++) {
+            if (f == 25) s.round = 2;
+            check(r.record(f, s, none, false, true) == (f % 20 < 3 ? NoPauseRule::kPress : NoPauseRule::kCut),
+                  "intro rule: pulses through both intros", f, stale);
+            check(disabled.record(f, s, none, false, false) == NoPauseRule::kCut, "intro rule off: no skip without votes", f);
+        }
+        for (uint32_t round : { 4u, 5u, 6u, 8u, 9u, 0xCu }) {
+            s.round = round;
+            for (int k = 0; k < 25; k++, f++)
+                check(r.record(f, s, none, false, true) == NoPauseRule::kCut, "intro rule: nothing outside the intros", round, k);
+        }
+        disabled.reset();
+    }
+    {
+        NoPauseRule r;
+        NoPauseRule::State s = { true, 17, false, 6, 1 };
+        check(r.record(0, s, none, false, true) == NoPauseRule::kCut, "intro rule: select request closes it");
+        s = { true, 10, false, 14, 1 };
+        check(r.record(1, s, none, false, true) == NoPauseRule::kCut, "intro rule: not in the loading");
+        /* both rules: the intro rule adds no after-round votes, the after-round rule no intro votes */
+        NoPauseRule a, b;
+        NoPauseRule::State i = { true, 17, false, 14, 1 }, k8 = { true, 17, false, 14, 8 };
+        check(a.record(0, i, none, true, false) == NoPauseRule::kCut, "after-round rule: no intro votes");
+        check(b.record(0, k8, none, false, true) == NoPauseRule::kCut, "intro rule: no after-round votes");
+    }
+    printf("automatic intro skips ok\n");
 }
 
 /* Offline auto-skip (no_pause.h OfflineSkip): one PC, the rule's START on both ports into the model game. Every

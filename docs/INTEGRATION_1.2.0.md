@@ -39,7 +39,7 @@ with the existing behavior; new files were copied only after their diffs were re
   waiting's selected-GPU evidence is collected inside that tail. Screen-side migration preserves the
   old left checkbox as a fallback. First-start controls guidance and GPU pre-build advice coexist.
 - **Lobby negotiation:** retained the legacy first 16 capabilities and all earlier additions, appending
-  `compat_groups`, `private_chat` and `mutes`. Fully enabled clients now send **28**, within the server's
+  `compat_groups`, `private_chat` and `mutes`. Fully enabled clients now send **29**, within the server's
   first-32 limit. Release discovery/TLS cleanup, badges, FT sets, table rooms, rematch UI and skip consent
   remain. Compatibility groups do not bypass table capabilities or automatically enable EU online;
   tournament and spectator matching retain exact-build restrictions.

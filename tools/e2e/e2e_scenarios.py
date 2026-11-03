@@ -5272,7 +5272,8 @@ def _al_script(path, frames=30000):
 def _al_fight(ctx, p, mid):
     """p's game log of match mid: (fights shown mirrored, [(trace n, mirrored, distance)] of its fight)."""
     lines = p.log_segment(mid)
-    mirrored = sum("always left: the fight is shown mirrored" in ln for ln in lines)
+    mirrored = sum(("always left: " in ln or "screen side: " in ln) and "the fight is shown mirrored" in ln
+                   for ln in lines)       # (1.2.0 logs "screen side: ...")
     trace = [(int(m.group(1)), int(m.group(2)), int(m.group(7))) for m in map(RE_AL_TRACE.search, lines) if m]
     return mirrored, trace
 
@@ -5363,6 +5364,15 @@ def net_always_left(ctx):
     for p in (a, b):
         leave(ctx, p)
     ctx.sleep(2.0)
+    # (1.2.0: a challenge is a FT1 casual set; a draw (these idle fights often end 1-1) starts its next game by
+    # itself: leave the set, between the games or in its next game, before the Quick part)
+    if not ctx.wait(lambda: a.action_on("quick") and b.action_on("quick"), 1, fail=False):
+        for p in (a, b):
+            try:
+                p.client.leave_set()
+            except Exception as e:          # (no set going on that side any more)
+                ctx.note(f"{p.name}: leave_set: {e}")
+    ctx.wait(lambda: a.action_on("quick") and b.action_on("quick"), 60, "Quick is on again for both")
 
     # 2. Quick matches (not casual): never mirrored; until A is P2 (the coin), at most four
     for k in range(4):

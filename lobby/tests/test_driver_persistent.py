@@ -264,6 +264,22 @@ class SetEndTest(unittest.TestCase):
         drv.on_event({"t": "match_found", "match": "m3"})           # after a fight: the reset again
         self.assertEqual((self.cmd()["cmd"], self.cmd()["seq"]), ("idle", 4))
 
+    def test_a_decided_casual_set_keeps_the_session_for_the_rematch(self):
+        # 1.2.0: every challenge/room game is a casual set (FT1); its "decided" set_end comes with the result while
+        # the rematch window is open -- the running games keep their session for a continued rematch
+        drv = self.played()
+        drv.last = {"match": "m1", "rematch_window": 20}
+        drv.on_event({"t": "set_end", "set": "s1", "reason": "decided", "casual": True, "first_to": 1})
+        drv.poll()
+        self.assertEqual(self.cmd()["cmd"], "fight")
+        drv._hold_until = time.monotonic() - 1      # the window ran out without a rematch: let it go
+        drv.poll()
+        self.assertEqual((self.cmd()["cmd"], self.cmd()["seq"]), ("idle", 2))
+        drv = self.played()
+        drv.last = {"match": "m1", "rematch_window": 0}     # no rematch possible: at once
+        drv.on_event({"t": "set_end", "set": "s1", "reason": "decided", "casual": True, "first_to": 1})
+        self.assertEqual(self.cmd()["cmd"], "idle")
+
     def test_not_while_a_match_runs_or_is_set_up(self):
         drv = self.played()
         drv.ticket = object()                    # a match being played

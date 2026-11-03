@@ -514,6 +514,7 @@ class MatchDriver:
         self.last_fps = None         # this PC's sustained speed in its last match (reported to the lobby)
         self.ctl_wait = None         # (seq, sent at, booting) of a control command the game has not taken yet
         self.released = False        # persistent game: "idle" sent since its last "fight" (its session is let go)
+        self._hold_until = None      # a decided casual set's rematch window: the session is kept until then
         self.ctl_alive_seen = None   # when the game's last session was last seen still running while a command waited
         self.ctl_failures = 0        # persistent games that died or did not answer
         self.need_session = None     # persistent game, a new session: its netplay session number (lines before it
@@ -674,6 +675,7 @@ class MatchDriver:
             if kind == "match_cancel":
                 self.note("ingame_ui_fallback")
         if kind == "match_found":
+            self._hold_until = None
             if not ev.get("keep"):
                 self._release_game()
         elif kind == "match_start":
@@ -691,7 +693,14 @@ class MatchDriver:
                 self.status(t("Your opponent does not want a rematch."))
                 self._offer_next_ui()
         elif kind == "set_end":
-            self._set_over()
+            # A decided casual set (1.2.0: every challenge/room game is one, FT1 by default) still has its rematch
+            # window: the running games keep the session for it, as before casual sets (a match found without
+            # `keep` lets them go).
+            window = (self.last or {}).get("rematch_window") or 0
+            if ev.get("casual") and ev.get("reason") == "decided" and window:
+                self._hold_until = time.monotonic() + window + 3     # then let it go (poll), like _set_over
+            else:
+                self._set_over()
             self._offer_next_ui()
         elif kind == "disconnected":
             self.ticket = None
@@ -1259,6 +1268,9 @@ class MatchDriver:
         self._watch_ctl()
         self._watch_ingame_ui()
         self._watch_state()
+        if self._hold_until is not None and time.monotonic() > self._hold_until:
+            self._hold_until = None
+            self._set_over()
         t = self.ticket
         if t is not None and not self.reported:
             self._watch_playing(t)

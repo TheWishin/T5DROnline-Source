@@ -109,7 +109,7 @@ class CasualMixin:
         if m.ranked or (m.room is not None and m.room.ranked and not m.room.community):
             return False
         first = m.set.matches[0] if m.set is not None and m.set.matches else m
-        return first.origin in CASUAL_ORIGINS
+        return getattr(first, "first_origin", first.origin) in CASUAL_ORIGINS
 
     # ---------------------------------------------------------------- sides
     def _casual_sides(self, a, b, ranked=False):

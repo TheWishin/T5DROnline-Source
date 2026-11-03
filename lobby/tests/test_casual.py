@@ -249,6 +249,27 @@ class RematchTest(Base):
         self.assertEqual(expect(a, "match_found")["role"], "host")
 
 
+    def test_the_wishes_count_after_a_decided_casual_set(self):
+        # 1.2.0 launchers (sets + casual_sets): every challenge is a casual set (FT1), decided by its one game; the
+        # rematch starts a new set, which still comes from the challenge (e2e net_casual_choice: s31 instead of s27)
+        a, b = self.c("Alice", stage="s27", sets=True), self.c("Bob", stage="s27", sets=True)
+        sa, sb, _ = self.challenge(a, b)
+        self.assertEqual(sa["fight"]["stage"], "s27")
+        mid = self.finish(a, b, sa)
+        a.rematch(mid, True, keep=True, swap=True)
+        expect(b, "rematch")
+        b.rematch(mid, True, keep=True)
+        sa2 = expect(a, "match_start", 20)
+        self.assertEqual(sa2["fight"]["stage"], "s27")
+        self.assertEqual(sa2["casual"], {"swap": True})
+        mid2 = self.finish(a, b, sa2)
+        a.rematch(mid2, True, keep=True)
+        expect(b, "rematch")
+        b.rematch(mid2, True, keep=True)
+        fa = expect(a, "match_found")
+        self.assertTrue(fa["keep"])                    # (no swap: the running games go on)
+        self.assertEqual(expect(a, "match_start", 20)["fight"]["stage"], "s27")
+
 class RoomTest(Base):
     def test_classic_room(self):
         a, b = self.c("Alice", side=1, stage="s33"), self.c("Bob", stage="s33")

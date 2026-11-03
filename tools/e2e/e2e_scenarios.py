@@ -5342,10 +5342,11 @@ def net_always_left(ctx):
     for p in (a, b):               # the checkbox at the end of the casual row, as a player ticks it
         ui = p.tab.casual
         ui.refresh()
-        if not ui.left_var.get():
+        if ui.left_var.get() != "left":          # (1.2.0: "Screen side" dealt / left / right; left = the old tick)
             ui.left_check.invoke()
-        ctx.check(f"{p.name}: 'Always see me on the left' ticked in the Online tab, saved in the settings",
-                  ui.left_var.get() and p.app.settings.get("always_left") is True, str(p.app.settings.get("always_left")))
+        ctx.check(f"{p.name}: Screen side 'left' chosen in the Online tab, saved in the settings",
+                  ui.left_var.get() == "left" and p.app.settings.get("always_left") is True,
+                  f"{ui.left_var.get()} / {p.app.settings.get('screen_side')} / {p.app.settings.get('always_left')}")
 
     # 1. a casual challenge, A is P2: mirrored on A's PC only
     _casual_wish(ctx, a, 1, "random")

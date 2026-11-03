@@ -2259,6 +2259,9 @@ class LobbyServer(PrivateChatMixin, SpectateMixin, RoomsMixin, CasualMixin, Matc
         m = Match(host, join, ranked, origin, room)
         m.requested_ranked = requested_ranked
         m.tournament_origin = origin == "tournament" or getattr(rematch_of, "tournament_origin", False)
+        # How the first match of these games in a row came about (casual.py: whose wishes count). A rematch after a
+        # decided casual set (1.2.0) starts a new set; it keeps the origin of the games before it.
+        m.first_origin = getattr(rematch_of, "first_origin", rematch_of.origin) if rematch_of is not None else origin
         if table is None and rematch_of is not None and room is rematch_of.room:
             table = getattr(rematch_of, "table", None)
         m.table = table

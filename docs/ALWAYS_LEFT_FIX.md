@@ -1,37 +1,91 @@
-# Always left: 1.2.0 partial renderer repair
+# Always left / Always right: the HUD fix (issue #31)
 
-Status: **partial; the reported name/bar bug is not yet acceptance-tested or fully fixed.** Changes are host presentation only in `patches/ps3recomp/0086-always-left.patch`. No guest state, game addresses, controller assignment, or match simulation is changed by this renderer repair. The default remains off. The setting still applies only where `src/netplay/always_left.h` allows it.
+Status (2026-11-03, branch `fix-31-hpbar`): **fixed and checked in the game.** Host presentation only, in
+`patches/ps3recomp/0086-always-left.patch` (`libs/video/rsx_always_left.h` + the hook in `rsx_live_draw.c`).
+No guest memory, game address, controller rule or simulated state changes; the setting's policy
+(`src/netplay/always_left.h`: casual online, offline Versus as a preview) is unchanged.
 
-## Why the old code can garble names and hide bars
+## The report
 
-The old renderer evaluated up to 64 vertices and reduced an entire draw to one bounding box. It inferred strings from the preceding frame. A glyph outside a known string box moved to its own horizontally reflected box. Thus three right-side glyphs at x=1000,1022,1044 moved to x=260,238,216 on the first frame: the glyph art remained readable, but letter order reversed. Later the same glyphs used a shared string displacement, and entering or changing glyphs could use a different displacement from their neighbours. This supplies a source-level reproduction of the reported garble without using game data.
+GitHub issue #31, Always left with the local player as P2: "my own life bar is empty, the right bar is mine",
+names garbled or flickering.
 
-The old scene-copy test accepted an oversized render target bound in texture unit 0. Binding state alone does not say that the current fragment program samples that unit, nor that the draw covers the picture. HUD draws can retain scene bindings while the camera changes. A false scene-copy detection reflected the HUD and restarted the preceding-frame layout, producing flicker. The bar scissor then followed whichever inconsistent transform was chosen; wholly offscreen scissors also needed both ends clamped before conversion to unsigned scaled coordinates. These paths are consistent with the life-bar symptom attributed to issue #31; the report's exact game draw sequence has not been captured or verified here.
+## What the game draws (measured)
 
-## What this change does
+`RSX_ALWAYS_LEFT_TRACE` on a 1.2.0 offline Versus fight (guest 1280 x 720, one record per draw after the
+mirrored 3D copy). Tekken 5 DR draws its fight HUD **one draw per quad**, in this order: the timer's two digits
+(564..666 and 618..719 across the middle), the round marks of each side (396..575 / 706..885), P1's bar frame
+(41..588), P1's two fill layers (life and the orange drain, both ending at 569 -- next to the timer's first digit
+at 564.7), P2's frame (693..1240) and fills (from 712), the name plates (53..477 / 804..1228), the rank plates
+(53..181 / 1100..1228), then every glyph of both names as its own draw (P1 left-aligned from 58, P2 right-aligned
+to 1226, y 89..113). Below that, centred titles (ROUND n, READY, FIGHT, K.O., one draw per letter, y 245..445),
+the round intro's PLAYER DATA strip (one panel per side 522..594, wider than its half and reaching past the
+screen edge; the numbers one draw per glyph at 557..581), an intro text line across the middle (632..656) and
+REPLAY (bottom right). No draw in a fight holds elements of both sides.
 
-- A side HUD draw moves exactly half the target width, preserving glyph order and the relative positions of its name, frame, and health fill. Displacement no longer depends on the individual glyph's width, the previous string's bounds, or whether equal health bars happened to form a mirrored pair. HUD art and fill direction remain as drawn; this is a half translation, not exact reflected anchoring.
-- A scene copy must evaluate to all four screen corners, within two guest pixels, and sample the oversized non-display render target in texture unit 0. The actual fragment-program texture mask is decoded on every renderer tier. The tier-2 descriptor fallback mask `0xFFFF` is not used as proof that a unit is sampled.
-- HUD texture identity comes from the textures actually sampled by the current program, instead of the stale texture-0 binding.
-- Both horizontal scissor ends are clamped to the target before host scaling, including wholly offscreen empty rectangles.
-- A draw with more than six vertices spanning the centre is left intact and does not seed a false centre-overlay box for the next frame.
+## Why the old code broke the bars and names
 
-`al_picture_quad`, `al_clip_scissor`, and `al_hud_place` are pure helpers extracted by the existing game-free renderer test. New regression cases are authored in `tests/c/always_left_render_test.c` and wiring checks in `tests/test_always_left.py`. No test, compiler, build, or game was run for this task, as requested.
+The 1.1.8-1.2.0 renderer grouped the previous frame's quads into "elements" (strings, flipped pairs) and
+placed this frame's draws by them. P1's fills end 5 px from the timer's first digit, so they were grouped with
+the timer -- the centre element, which stays -- while P1's frame moved to the right: the left frame held P2's
+fill, the right frame was empty or held only part of a fill. Which draw joined which element changed as the
+fill shrank and as digits changed, so bars and names jumped between frames, and on the first mirrored frame
+(no previous layout) every glyph was placed on its own. Captured with the old runtime (`runs/B_left`):
+the left bar empty while the right one still had life, the right frame missing, and frames in which the whole
+HUD stood unmoved.
 
-## Remaining implementation work
+## The rule now (stateless)
 
-An entire batch containing independent elements on both sides still has only one transform. Leaving it intact avoids introducing an arbitrary split through its glyphs, but does not swap those names or bars. The complete fix needs a verified hook that partitions by complete primitive or HUD element using its evaluated screen position, applies one transform consistently to every vertex of that element, and carries its scissor with it. Splitting by raw attribute x, camera constants, or by each vertex separately would cut or distort triangles and glyphs.
+`al_hud_place(q, n, &why)` decides from the draw's own evaluated box, the same way on every frame -- no
+history, so nothing changes between frames or on the first mirrored one:
 
-The complete upstream `rsx_live_draw.c` capture/reset implementation is absent from this clone: the checked-in patch series exposes pieces, not the complete lifetime of `dc.arr`, `dc.idx`, vertex translation buffers, and draw submission. Replaying the sink recursively or rewriting capture ranges without that lifetime evidence would be speculative. No external runtime or other T5DR folder was opened. No new guest address was invented.
+- **Top band** (the draw ends above 30 % of the height): a draw wholly on one side moves by exactly half the
+  width to the other side. Frame, both fill layers at any length, round marks, plates and every name glyph
+  of a side move by the same amount, so each side's HUD arrives whole, in order and inside its own frame. A
+  draw across the middle (the timer's digits) stays.
+- **PLAYER DATA strip** (wholly inside 500..600 of 720): a panel (wider than 1/8 of the width) takes the
+  other panel's place (its box mirrored, art as drawn); its numbers move by half the width, in order, inside
+  the moved panel.
+- **Everything else below the band** stays: centred titles (one draw per letter -- a letter must not move
+  alone), ROUND n and its separate digit, the intro line, REPLAY.
+- A draw of more than six vertices across the middle in the band (both sides in one batch; never seen in
+  Tekken 5 DR) is left whole, never cut.
+- The scissor moves with its draw (`al_clip_scissor`); a frame whose 3D picture was mirrored keeps its HUD
+  on the mirrored side even if the game's request goes off before that HUD is drawn.
 
-Centre overlays still partly use preceding-frame adjacency (for example the separate `1` next to `ROUND`). A newly appearing multi-draw centre title and a changing batch layout require first-frame checks and may need current-frame buffering. Unsupported vertex programs and draws over 64 source vertices remain unchanged. Fullscreen copy shapes other than the documented four-vertex quad or six-vertex triangle-list quad are not recognized. These limits block calling item 2 complete.
+The look: each side's HUD is the other side's art moved across -- the bars fill toward the timer from the
+outer end, the round marks sit at the outer end and the name is aligned toward the timer. Placing each name
+at the mirrored anchor would need the string's width before its first glyph is drawn (only the previous
+frame knows it -- the history that caused the bug), so it is not done.
 
-## Required maintainer build and game checks
+Scene-copy detection is unchanged from 1.2.0: a full-screen quad (all four corners within two guest pixels)
+that samples the oversized non-display target in unit 0, checked against the fragment program's real
+texture mask.
 
-Apply the patch series in the maintainer's real runtime tree and build there. First run the game-free regression tests there, including the renderer C test and its optional decompiler encoding check. Patch applicability and compilation were not proved in this working copy.
+## Tests
 
-In a casual match, make the local player P2. Use distinct long mixed-width names (including the reported strings), different characters, unequal health, and different round-win marks. Compare Always left off/on from the very first displayed fight frame. The on view must preserve every letter's order and spacing, show the correct name with the correct fighter, retain both nonempty health bars, update damage and recoverable portions continuously, and keep timer digits and round marks correctly associated. Check names that lengthen or change, shadows, simultaneous name batches, partially scissored fills, round transitions, and the separate ROUND/FIGHT/K.O. overlays. A failure to swap a mixed-side batch is an expected remaining blocker, not a passed test.
+- `tests/c/always_left_render_test.c` (built by `tests/test_always_left.py`): the measured HUD frame placed
+  three times (no history: identical every pass), each fill inside its own moved frame at nine life steps
+  with unequal life, names of every length glyph by glyph in order under their own bar, the timer, titles,
+  ROUND 1, intro line, REPLAY, the band's edge, both-sides batches, the PLAYER DATA strip, the scissor
+  diagnostics; plus the vertex-program evaluator and the scene-copy shape.
+- `tests/test_always_left.py`: wiring (placement from the draw alone, no frame history in the renderer,
+  scissor trace before host scaling, presentation only, series order) and the game/launcher side.
 
-Repeat while the camera pans, zooms, rotates, changes sides, and during KO slow-motion/replays. Toggle between matches; cover character intro, result, and menus to ensure the renderer request stops at the intended boundaries. Check 720p, the existing internal scales, and the intended output/window sizes. Inspect asymmetric bar art and fill direction: the partial half-translation intentionally retains their source orientation and must be judged before acceptance.
+## Checked in the game
 
-Use one PC with the option enabled and one disabled. Both must show the same health, round result, and match outcome, and a full set must record **0 simulation mismatches**. The pictures may differ. Also test offline Versus, ranked/Quick/tournament exclusions, and replay exclusion under the existing policy. These are proposed checks, not results obtained here.
+See NETPLAY.md "Issue #31" for the runs and numbers. Tools (scratch, not in the repo): offline Versus in
+netplay local mode with scripted pads (`T5_NET_MODE=local`, `T5_NET_SCRIPT`/`T5_NET_SCRIPT2`), frame-exact
+backbuffer pictures (`T5_DF_SHOT=+n` + `LD_SURF_DUMP` + `LD_SURF_DUMP_BB_ONLY=1`), the trace only at those
+frames (`RSX_ALWAYS_LEFT_TRACE=gate[:n]` with `LD_SURF_DUMP_GATE`), every frame of a window
+(`LD_FRAME_DUMP` + `LD_FRAME_DUMP_GATE`) for the switch-on, pixel checks of both bars' teal run and of the
+name boxes.
+
+## Diagnostics
+
+- `RSX_ALWAYS_LEFT_TRACE=<first>:<count>` (renderer frames) or `gate[:n]` (n frames each time the file
+  `LD_SURF_DUMP_GATE` appears): one `[always-left-trace]` line per draw -- outcome (`copy-mirrored`,
+  `hud-moved`, `hud-panel-swapped`, `hud-stays-across`, `hud-stays-centre`, `mixed-side-batch`, ...), raw
+  and scissor-clipped box, texture hash, U direction, scissor before/after. Text only.
+- Every 600 mirrored frames: `[always-left] N frames mirrored: ... HUD draws M moved / K kept in place / L
+  left as they were`.

@@ -3,7 +3,7 @@
 All notable changes, newest first. The project is a test release. Short commit hashes are in parentheses. The state of each
 part is in the README's status table.
 
-## v1.2.0 (UNRELEASED)
+## v1.2.0 (2026-11-04)
 
 **Casual first-to sets, a rematch you answer with your pad inside the game, rooms with several tables that you watch
 while you wait, input delay up to 8 frames, "always see me on the left / right" with the whole HUD mirrored, picture

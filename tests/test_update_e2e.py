@@ -6,6 +6,7 @@ URL outside the allow-list, so no download can come from GitHub's real releases 
 
 What must hold: the player's files (native\\: the built game, saves, controls.ini, replays, logs; launcher.json)
 are byte for byte the same afterwards; nothing is replaced unless the download is the published file."""
+import gc
 import json
 import os
 import shutil
@@ -58,9 +59,19 @@ class Settings:
         self.out_dir = out_dir
 
 
+def free_tk(test):
+    """A closed window's Tk objects are freed here, on the main thread: these tests use a plain Tk root (no tkgc), and
+    the update check's worker thread would otherwise collect them whenever it happens to allocate -- a Variable then
+    waits for a main loop in the worker, the check comes late, and a root freed there aborts the process
+    ("Tcl_AsyncDelete"). When that happens depends on what ran before: whole-suite runs died in this module."""
+    test.app = None
+    gc.collect()
+
+
 @unittest.skipIf(tk is None, "no tkinter")
 class OneClickUpdate(unittest.TestCase):
     def setUp(self):
+        gc.collect()                                    # (see free_tk)
         p = mock.patch.object(updater, "fetch_lobby_release", return_value=None)
         p.start()
         self.addCleanup(p.stop)
@@ -98,6 +109,7 @@ class OneClickUpdate(unittest.TestCase):
             self.app.destroy()
         except tk.TclError:
             pass
+        free_tk(self)
         for _ in range(100):                           # (the stand-in launcher may still be ending)
             shutil.rmtree(self.tmp, ignore_errors=True)
             if not os.path.exists(self.tmp):
@@ -213,6 +225,7 @@ class OfferAtStart(unittest.TestCase):
     opens it again. The Updater as the launcher makes it (its own start check), a real main loop, FakeGitHub."""
 
     def setUp(self):
+        gc.collect()                                    # (see free_tk)
         p = mock.patch.object(updater, "fetch_lobby_release", return_value=None)
         p.start()
         self.addCleanup(p.stop)
@@ -240,6 +253,7 @@ class OfferAtStart(unittest.TestCase):
                 self.app.destroy()
             except tk.TclError:
                 pass
+            free_tk(self)
         self.addCleanup(close)
         for p in (mock.patch.object(updater, "processes_under", lambda dirs, exclude=(): []),
                   mock.patch.object(updater, "START_CHECK_MS", 50), mock.patch.object(updater, "FREE_POLL_MS", 100)):

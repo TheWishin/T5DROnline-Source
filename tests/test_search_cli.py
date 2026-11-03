@@ -22,13 +22,19 @@ for sub in ("tools", "lobby", "launcher"):
         sys.path.insert(0, p)
 
 
+_launcher = []
+
+
 def load_launcher():
-    path = os.path.join(ROOT, "launcher", "t5dr_launcher.pyw")
-    loader = importlib.machinery.SourceFileLoader("t5dr_launcher_search", path)
-    spec = importlib.util.spec_from_loader("t5dr_launcher_search", loader)
-    mod = importlib.util.module_from_spec(spec)
-    loader.exec_module(mod)
-    return mod
+    """Once per process: every load's App wraps Tk's callback class once more (guard_tk_callbacks)."""
+    if not _launcher:
+        path = os.path.join(ROOT, "launcher", "t5dr_launcher.pyw")
+        loader = importlib.machinery.SourceFileLoader("t5dr_launcher_search", path)
+        spec = importlib.util.spec_from_loader("t5dr_launcher_search", loader)
+        mod = importlib.util.module_from_spec(spec)
+        loader.exec_module(mod)
+        _launcher.append(mod)
+    return _launcher[0]
 
 
 class FakeApp:

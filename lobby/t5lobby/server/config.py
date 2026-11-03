@@ -72,7 +72,9 @@ class Config:
     strike_limit: int = 3           # T5L_STRIKE_LIMIT: voids caused within 24 h before they count as losses
     pair_cap: int = 10              # T5L_PAIR_CAP: ranked matches per pair of accounts per 24 h that count
     rematch_window: float = 20.0    # T5L_REMATCH_WINDOW: seconds to agree on a rematch
-    ingame_rematch: bool = False    # T5L_INGAME_REMATCH: optional protocol, default off
+    ingame_rematch: bool = True     # T5L_INGAME_REMATCH: the rematch question in the game (1.2.0 launchers + games)
+    ingame_rematch_seconds: float = 10.0  # T5L_INGAME_REMATCH_SECONDS: its countdown (both players have it)
+    auto_skip: bool = False         # T5L_AUTO_SKIP: the agreed after-round skip rule (opt-in draft, unproved in games)
     casual_rematch_policy: str = "both_confirm"  # T5L_CASUAL_REMATCH_POLICY: both_confirm | auto_unless_declined
     rematch_direct: bool = True     # T5L_REMATCH_DIRECT: a rematch after a match on the relay tries the direct path again
                                     # (a new connection) instead of continuing on the relay; a second failure keeps it

@@ -61,7 +61,7 @@ from .releases import ReleaseCache
 from .relays import MAIN as RELAY_MAIN, MAX_RELAYS, RelayPool
 from .matchrules import MatchRulesMixin
 from .private_chat import PrivateChatMixin
-from .rematch import RematchMixin
+from .rematch import RematchMixin, VOTE_GRACE
 from .rooms import Room, RoomsMixin  # noqa: F401 -- (Room: lobby.Room for tools and tests)
 from .spectating import SpectateMixin
 from .store import COUNTED, SET_COUNTED, Store, check_password, hash_password
@@ -1086,6 +1086,8 @@ class LobbyServer(PrivateChatMixin, SpectateMixin, RoomsMixin, CasualMixin, Matc
         conn.release = proto.clean_text(build.get("release", ""), 32)     # (shown to everybody in the lobby list)
         caps = msg.get("caps")
         conn.caps = CAPS.intersection(str(c) for c in caps[:32]) if isinstance(caps, list) else frozenset()  # (1.1.5: 32, a 1.1.5 launcher sends 16)
+        if not self.cfg.auto_skip:
+            conn.caps = frozenset(conn.caps) - {"auto_skip_after_round_v1"}     # (an opt-in draft: T5L_AUTO_SKIP)
         conn.compat_group = self.build_groups.group(bid, int(build.get("net", 0)), conn.caps)
         conn.region = REGIONS.get(str(build.get("elf", "")).lower(), "?")
         conn.helloed = True
@@ -2092,7 +2094,7 @@ class LobbyServer(PrivateChatMixin, SpectateMixin, RoomsMixin, CasualMixin, Matc
         prev.rematch[side] = {"keep": bool(msg.get("keep")), "swap": self._rematch_swap(prev, msg)}
         if prev.rematch[1 - side] is None:
             other.send({"t": "rematch", "match": prev.id, "state": "offered", "from": p.brief(),
-                        "timeout": self.cfg.rematch_window, **({"swap": True} if prev.rematch[side]["swap"] else {})})
+                        "timeout": self._rematch_window(prev), **({"swap": True} if prev.rematch[side]["swap"] else {})})
             return {"t": "rematch", "match": prev.id, "state": "waiting"}
         if not other.online or other.match is not None or other.status not in ("idle", "room"):
             self.recent.pop(prev.id, None)
@@ -3558,15 +3560,18 @@ class LobbyServer(PrivateChatMixin, SpectateMixin, RoomsMixin, CasualMixin, Matc
             if m.set.current is m:
                 m.set.current = None
             m.set.last = m
-        asyncio.get_running_loop().call_later(self.cfg.rematch_window, self._expire_recent, m)
         if gs is not None:
             # the set decides what comes next: its next game after a countdown, or its end (and the rating)
             self._set_game_over(gs, m, status, winner, score, reason, blame)
             ch = gs.outcome and gs.outcome["changes"]
             if ch:
                 changes = [ch[q.id] for q in m.players]
-        # Set progression decides whether a result can offer a rematch at all.
+        # Set progression decides whether a result can offer a rematch at all (and the window: the in-game
+        # question's 10 s when both players have it, rematch.py)
         self._rematch_ui_open(m)
+        window = self._rematch_window(m)
+        asyncio.get_running_loop().call_later(window + (VOTE_GRACE if hasattr(m, "ui_deadline") else 0),
+                                              self._expire_recent, m)
         set_going = gs is not None and gs.outcome is None
         for side, p in enumerate(m.players):
             if p.match is m:
@@ -3578,7 +3583,7 @@ class LobbyServer(PrivateChatMixin, SpectateMixin, RoomsMixin, CasualMixin, Matc
                     "fight": {"p1": m.chars[0], "p2": m.chars[1], "stage": m.stage} if m.chars else None,
                     "set": m.set.info() if m.set is not None else None,
                     **self._rematch_ui_result(m, p),
-                    "rematch_window": self.cfg.rematch_window if p.online and m.players[1 - side].online
+                    "rematch_window": window if p.online and m.players[1 - side].online
                     and not set_going and getattr(m.set, "tour", None) is None
                     and not (m.room is not None and m.room.community) else 0})
             if not p.online and p.match is None:

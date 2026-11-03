@@ -5632,9 +5632,17 @@ def _cover_checks(ctx, p, sampler, first_fight_at, label):
         reveal_at = rows[first_pic][0]
         ctx.note(f"{label}: {p.name}: revealed {reveal_at - rows[0][0]:.1f} s after the first picture, "
                  f"{reveal_at - first_fight_at:+.1f} s from FIGHT START; picture {rows[first_pic][2]}")
-        after = [k for t, k, _p in rows if t > reveal_at and t < first_fight_at + 20]
-        ctx.check(f"{label}: {p.name}: no cover again once revealed, up to 20 s into the fight",
-                  "cover" not in after, "".join({"cover": "C", "black": "b", "picture": "P"}[k] for k in after))
+        # DIRECTFIGHT.md "Online startup presentation": the interactive select is shown, the automatic confirm,
+        # the fight's loading and the intros are covered again, the fight from phase 17 on stays visible.
+        fight = [(t, k) for t, k, _p in rows if t >= first_fight_at]
+        shown = next((t for t, k in fight if k == "picture"), None)
+        ctx.check(f"{label}: {p.name}: the fight becomes visible after FIGHT START", shown is not None,
+                  "".join({"cover": "C", "black": "b", "picture": "P"}[k] for _t, k in fight)[:80])
+        if shown is not None:
+            ctx.note(f"{label}: {p.name}: covered {shown - first_fight_at:.1f} s from FIGHT START (loading, intros)")
+            after = [k for t, k in fight if shown <= t < shown + 15]
+            ctx.check(f"{label}: {p.name}: no cover again in the first 15 s of the visible fight",
+                      "cover" not in after, "".join({"cover": "C", "black": "b", "picture": "P"}[k] for k in after))
     return rows
 
 

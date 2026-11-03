@@ -104,5 +104,17 @@ goes and the launcher comes forward with its own question (the rest of the windo
 
 ## Measured
 
-See "Proof" in the branch notes (build/coordination/T5DR_120_REMATCH.md) and the report of branch
-`rematch-ingame-120`.
+2026-11-03, branch `rematch-ingame-120` (fd213cc9, one real game pair per scenario, local lobby, `--replays`):
+
+| scenario | rollback | lockstep |
+|---|---|---|
+| accept/accept, then accept/decline (`ingame_rematch_flow`) | PASS, 75 checks | PASS, 75 checks |
+| a yes at 9.2 s, then a timeout (`ingame_rematch_timing`) | PASS, 76 | PASS, 76 |
+| both mashing from the KO through the question, 3 matches (`ingame_rematch_mash`) | PASS, 120 | PASS, 120 |
+| classic room, rematch + Circle stays in the room (`ingame_rematch_room`) | PASS, 71 | PASS, 71 |
+| relayed match: the rematch is a new connection, relay again (`ingame_rematch_relay`) | PASS, 62 | PASS, 62 |
+| one launcher with `T5_INGAME_REMATCH=0` (`ingame_rematch_off`) | PASS, 51 | PASS, 51 |
+
+28 matches, 0 mismatching frames, the same result hash on both PCs every time; 36 of 36 recorded sessions played back
+identical. The local pairs had no network shaping (95 rollbacks in all in the rollback runs). Pictures of the question
+in all 7 languages at Lowest (1280x720) and 4K (1920x1080 window): `ingame_rematch_pictures` (build/ only).

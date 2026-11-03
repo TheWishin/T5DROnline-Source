@@ -1,0 +1,123 @@
+diff --git a/libs/video/rsx_always_left.h b/libs/video/rsx_always_left.h
+index 59e691b..238d5eb 100644
+--- a/libs/video/rsx_always_left.h
++++ b/libs/video/rsx_always_left.h
+@@ -280,16 +280,36 @@ static uint32_t al_root(uint32_t* p, uint32_t i)
+     return i;
+ }
+ 
++/* Patch 0110: what the frame's earlier command lists already placed. A flush in the middle of the HUD (a full
++ * ring, a readback) runs the list with the side draws that came so far; they are placed from those draws only
++ * (no frame history). The rest of the frame's HUD must then follow what was placed: a text group continued in a
++ * later list (a name split between two glyphs) takes the translation its first part got -- so the glyphs stay in
++ * order and at their spacing, never "CDAB" -- and a texture mirrored earlier in the frame stays mirrored. Kept
++ * from a frame's first list to its present (this frame's draws only), reset at the next frame. */
++typedef struct { uint64_t tex; float x0, x1, y0, y1, dx; int mirror; } al_placed;
++
++static void al_hud_layout_frame(const al_quad* q, const uint8_t* can_mirror, uint32_t n, uint8_t* mirror, float* dx,
++                                al_placed* placed, uint32_t* n_placed, uint32_t max_placed);
++
+ static void al_hud_layout(const al_quad* q, const uint8_t* can_mirror, uint32_t n, uint8_t* mirror, float* dx)
++{
++    al_hud_layout_frame(q, can_mirror, n, mirror, dx, (al_placed*)0, (uint32_t*)0, 0);
++}
++
++static void al_hud_layout_frame(const al_quad* q, const uint8_t* can_mirror, uint32_t n, uint8_t* mirror, float* dx,
++                                al_placed* placed, uint32_t* n_placed, uint32_t max_placed)
+ {
+     static uint32_t parent[AL_PEND_MAX];
+-    static float gx0[AL_PEND_MAX], gx1[AL_PEND_MAX];
++    static float gx0[AL_PEND_MAX], gx1[AL_PEND_MAX], gy0[AL_PEND_MAX], gy1[AL_PEND_MAX];
++    const uint32_t np0 = (placed && n_placed) ? *n_placed : 0;
+     if (n > AL_PEND_MAX) n = AL_PEND_MAX;
+     for (uint32_t i = 0; i < n; i++) {
+         mirror[i] = 0; dx[i] = 0.0f; parent[i] = i;
+         if (!can_mirror[i]) continue;
+         for (uint32_t j = 0; j < n; j++)
+             if (q[j].tex == q[i].tex && q[j].uflip) { mirror[i] = 1; break; }
++        for (uint32_t k = 0; k < np0 && !mirror[i]; k++)
++            if (placed[k].mirror && placed[k].tex == q[i].tex) mirror[i] = 1;
+     }
+     for (uint32_t i = 0; i < n; i++) {
+         if (mirror[i]) continue;
+@@ -299,18 +319,51 @@ static void al_hud_layout(const al_quad* q, const uint8_t* can_mirror, uint32_t
+                 if (a != b) parent[a] = b;
+             }
+     }
+-    for (uint32_t i = 0; i < n; i++) { gx0[i] = 1e30f; gx1[i] = -1e30f; }
++    for (uint32_t i = 0; i < n; i++) { gx0[i] = gy0[i] = 1e30f; gx1[i] = gy1[i] = -1e30f; }
+     for (uint32_t i = 0; i < n; i++) {
+         if (mirror[i]) continue;
+         const uint32_t r = al_root(parent, i);
+         gx0[r] = al_minf(gx0[r], q[i].x0);
+         gx1[r] = al_maxf(gx1[r], q[i].x1);
++        gy0[r] = al_minf(gy0[r], q[i].y0);
++        gy1[r] = al_maxf(gy1[r], q[i].y1);
++    }
++    /* a group continued from an earlier list of this frame takes that part's translation (patch 0110); the
++     * groups and mirrored textures of this list are kept for the frame's later lists */
++    for (uint32_t i = 0; i < n; i++) {
++        if (mirror[i] || al_root(parent, i) != i) continue;
++        const al_quad g = { q[i].tex, gx0[i], gx1[i], gy0[i], gy1[i], 0, 0.0f, 0.0f };
++        float d = -(gx0[i] + gx1[i]);
++        int found = 0;
++        for (uint32_t k = 0; k < np0 && !found; k++) {
++            if (placed[k].mirror) continue;
++            const al_quad p = { placed[k].tex, placed[k].x0, placed[k].x1, placed[k].y0, placed[k].y1, 0, 0.0f, 0.0f };
++            if (al_same_line(&g, &p)) {
++                d = placed[k].dx;
++                found = 1;
++                placed[k].x0 = al_minf(placed[k].x0, g.x0); placed[k].x1 = al_maxf(placed[k].x1, g.x1);
++            }
++        }
++        if (!found && placed && n_placed && *n_placed < max_placed) {
++            const al_placed e = { q[i].tex, gx0[i], gx1[i], gy0[i], gy1[i], d, 0 };
++            placed[(*n_placed)++] = e;
++        }
++        gx0[i] = d;              /* (the group's translation from here on) */
+     }
+     for (uint32_t i = 0; i < n; i++) {
+         if (mirror[i]) continue;
+-        const uint32_t r = al_root(parent, i);
+-        dx[i] = -(gx0[r] + gx1[r]);
++        dx[i] = gx0[al_root(parent, i)];
+     }
++    if (placed && n_placed)
++        for (uint32_t i = 0; i < n; i++) {
++            if (!mirror[i]) continue;
++            int known = 0;
++            for (uint32_t k = 0; k < *n_placed && !known; k++) known = placed[k].mirror && placed[k].tex == q[i].tex;
++            if (!known && *n_placed < max_placed) {
++                const al_placed e = { q[i].tex, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1 };
++                placed[(*n_placed)++] = e;
++            }
++        }
+ }
+ 
+ /* The scene copy must be a full-screen quad in evaluated screen coordinates. Stale render-target
+diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
+index 851fb97..887ff0f 100644
+--- a/libs/video/rsx_live_draw.c
++++ b/libs/video/rsx_live_draw.c
+@@ -11264,12 +11264,19 @@ static float ld_al_defer_commit(float* cxf, const float xf[8], int full_scissor,
+  * what came so far (counted: "placed before the frame's end"). */
+ static void ld_al_resolve(ld_flush_reason reason)
+ {
++    /* patch 0110: what this frame's earlier lists placed (a flush in the middle of the HUD); a frame starts after
++     * the previous frame's present -- this frame's draws only */
++    static al_placed placed[AL_PEND_MAX];
++    static uint32_t n_placed;
++    static int mid_frame;
+     AcquireSRWLockExclusive(&g_al_pend.lock);
+     const u32 n = g_al_pend.n;
+-    if (!n) { ReleaseSRWLockExclusive(&g_al_pend.lock); return; }
++    if (!mid_frame) n_placed = 0;
++    mid_frame = reason != LD_FLUSH_PRESENT;
++    if (!n) { if (!mid_frame) n_placed = 0; ReleaseSRWLockExclusive(&g_al_pend.lock); return; }
+     static uint8_t mir[AL_PEND_MAX];
+     static float dxs[AL_PEND_MAX];
+-    al_hud_layout(g_al_pend.q, g_al_pend.can_mirror, n, mir, dxs);
++    al_hud_layout_frame(g_al_pend.q, g_al_pend.can_mirror, n, mir, dxs, placed, &n_placed, AL_PEND_MAX);
+     const int trace = ld_al_trace_enabled();
+     for (u32 i = 0; i < n; i++) {
+         float* c = g_al_pend.cxf[i];

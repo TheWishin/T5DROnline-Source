@@ -562,6 +562,67 @@ static void test_hud_layout_normal_look(void)
     }
 }
 
+/* Patch 0110 (review fix-31-hpbar P2): a flush in the middle of the HUD (full ring, readback) runs the first
+ * part of the side draws before the rest is known. Each later part must follow what was placed: a name split
+ * between glyphs keeps its glyphs in order at their spacing (before: "ABCD" flushed after "B" showed "CDAB"), a
+ * texture mirrored in an earlier part stays mirrored. Every split point of a whole frame's HUD is tried. */
+static void test_hud_layout_split_by_a_flush(void)
+{
+    uint32_t ix[16];
+    lay_frame(0.6f, 0.8f, "ABCD", "WXYZ", ix);
+    const uint32_t n = L.n;
+    static al_quad q[AL_PEND_MAX];
+    static uint8_t cm[AL_PEND_MAX];
+    memcpy(q, L.q, sizeof q);
+    memcpy(cm, L.cm, sizeof cm);
+    int teeth = 0;
+    for (uint32_t cut = 1; cut < n; cut++) {
+        static al_placed placed[AL_PEND_MAX];
+        uint32_t n_placed = 0;
+        al_hud_layout_frame(q, cm, cut, L.mir, L.dx, placed, &n_placed, AL_PEND_MAX);
+        al_hud_layout_frame(q + cut, cm + cut, n - cut, L.mir + cut, L.dx + cut, placed, &n_placed, AL_PEND_MAX);
+        for (int side = 0; side < 2; side++) {
+            const uint32_t from = side ? ix[14] : ix[12], to = side ? ix[15] : ix[13];
+            float prev_a = -1e9f;
+            for (uint32_t i = from; i < to; i++) {
+                float a, b;
+                lay_box(i, &a, &b);
+                CHECK(!L.mir[i] && a > prev_a, "cut %u: name %d glyph %u in order", cut, side, i - from);
+                if (i > from)
+                    CHECK(near(a - prev_a, 14.67f), "cut %u: name %d glyph %u keeps its spacing (%f)", cut, side,
+                          i - from, a - prev_a);
+                CHECK(side ? b < 640.0f : a > 640.0f, "cut %u: name %d on the mirrored side", cut, side);
+                prev_a = a;
+            }
+        }
+        /* art the game flips: mirrored in every part once a part saw its flip (a part that ran before the
+         * texture's flip was drawn could not know it: P1's plate alone in the first part is placed like text) */
+        CHECK(L.mir[ix[1]] && L.mir[ix[10]] && (cut == 10 || L.mir[ix[9]]) && (cut == 1 || L.mir[ix[0]]),
+              "cut %u: marks / name plates mirrored", cut);
+        CHECK(n_placed >= 4, "cut %u: the parts' groups are kept for the frame (%u)", cut, n_placed);
+        /* the old way (each part on its own) puts a split name out of order */
+        if (cut > ix[14] && cut < ix[15]) {
+            al_hud_layout(q, cm, cut, L.mir, L.dx);
+            al_hud_layout(q + cut, cm + cut, n - cut, L.mir + cut, L.dx + cut);
+            float a0, b0, a1, b1;
+            lay_box(cut - 1, &a0, &b0);
+            lay_box(cut, &a1, &b1);
+            teeth += a1 < a0;
+        }
+    }
+    CHECK(teeth > 0, "the old per-part layout reorders a split name (the test has teeth): %d", teeth);
+    /* unsplit: the frame layout is the old layout exactly */
+    static al_placed placed[AL_PEND_MAX];
+    uint32_t n_placed = 0;
+    static uint8_t m2[AL_PEND_MAX];
+    static float d2[AL_PEND_MAX];
+    al_hud_layout(q, cm, n, L.mir, L.dx);
+    al_hud_layout_frame(q, cm, n, m2, d2, placed, &n_placed, AL_PEND_MAX);
+    int same = 1;
+    for (uint32_t i = 0; i < n; i++) same &= m2[i] == L.mir[i] && d2[i] == L.dx[i];
+    CHECK(same, "one list per frame: the same layout as before 0110");
+}
+
 /* Diagnostics: a centred raw quad whose visible scissor part is on one side is flagged (side_clipped_center);
  * al_hud_clip keeps texture identity and direction. */
 static void test_hud_scissor_diagnostics(void)
@@ -630,6 +691,7 @@ int main(void)
     test_hud_centre_and_titles();
     test_hud_player_data();
     test_hud_layout_normal_look();
+    test_hud_layout_split_by_a_flush();
     test_hud_scissor_diagnostics();
     test_picture_quad_and_scissor();
     if (g_fails) { printf("FAILED %d of %d checks\n", g_fails, g_checks); return 1; }

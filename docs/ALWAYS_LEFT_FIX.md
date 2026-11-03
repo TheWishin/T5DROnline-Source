@@ -65,7 +65,13 @@ own evaluated box (`al_hud_place`):
   vertices across the middle in the band (both sides in one batch) is left whole, never cut.
 - A flush in the middle of the HUD (a full ring, a readback) places what came so far; the log counts it
   ("placed before the frame's end", by flush reason). In normal play: 0; with picture dumps for tests: a
-  few.
+  few. The rest of that frame's HUD follows what was placed (patch 0110, `al_hud_layout_frame`, this frame's
+  draws only): a text group split by the flush (a name between two glyphs) takes the translation its first
+  part got, so its glyphs stay in order at their spacing -- before 0110 each part was mirrored on its own and
+  "ABCD" split after "B" showed "CDAB" (review of fix-31-hpbar); a texture mirrored in an earlier part stays
+  mirrored. In such a frame the split name sits by up to its second part's width away from the edge (its
+  first part alone decided the place); art drawn before its texture's flip appeared is placed like text.
+  `tests/c/always_left_render_test.c` cuts a whole HUD at every point and checks order, spacing and side.
 - A frame whose 3D picture was mirrored keeps its HUD on the mirrored side even if the game's request goes
   off before that HUD is drawn.
 

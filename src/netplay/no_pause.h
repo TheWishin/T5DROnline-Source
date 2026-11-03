@@ -207,13 +207,28 @@ struct OfflineSkip {
         return st.game_mode && st.phase == 17 && st.round < 32 && st.mode_next != NoPauseRule::kModeSelect &&
                ((NoPauseRule::kAfterRounds >> st.round) & 1);
     }
-    /* One frame's boundary: true = START for both ports in this frame. */
+    /* One frame's boundary: true = START in this frame (on the ports ports() names). */
     bool press(const NoPauseRule::State& st)
     {
         if (!after_round(st)) { in_part = 0; return false; }
         if (in_part == 0) parts++;
         const uint32_t k = in_part++;
         return k % NoPauseRule::kPressEvery < NoPauseRule::kPressFrames;
+    }
+
+    /* Which ports get the START (bit 0 = port 1, bit 1 = port 2). Offline one press of either player skips the
+     * replay and the way to the next round, but START on the port that does not play is "HERE COMES A NEW
+     * CHALLENGER" in the one-player modes (seen in the game: Arcade, the CPU's side, during the KO's slow motion ->
+     * the VS select screen). So: VS (game type 4) both ports; the one-player modes (0 arcade, 1 ghost, 9 survival,
+     * and the others but demo 2 and practice 10) only the port that sent any input in this fight, and none when both
+     * did or neither did (who plays is not known then: skip nothing rather than call a challenger). */
+    static constexpr uint32_t kGtDemo = 2, kGtVersus = 4, kGtPractice = 10;
+    static unsigned ports(uint32_t game_type, bool used1, bool used2)
+    {
+        if (game_type == kGtVersus) return 3;
+        if (game_type == kGtDemo || game_type == kGtPractice) return 0;
+        if (used1 != used2) return used1 ? 1 : 2;
+        return 0;
     }
 };
 

@@ -573,6 +573,16 @@ static void test_offline_skip()
     check(!s.press(st) && s.in_part == 0, "offline: the fight ends the part");
     st.round = 0xC;
     check(s.press(st), "offline: a new part starts with a press");
+    /* which ports: VS both; the one-player modes only the port that played (START on the other one is a new
+     * challenger); nobody / both played, demo, practice: none */
+    check(np::OfflineSkip::ports(4, false, false) == 3 && np::OfflineSkip::ports(4, true, true) == 3, "offline: VS both ports");
+    check(np::OfflineSkip::ports(0, true, false) == 1 && np::OfflineSkip::ports(0, false, true) == 2,
+          "offline: arcade only the port that played");
+    check(np::OfflineSkip::ports(1, true, false) == 1 && np::OfflineSkip::ports(9, false, true) == 2, "offline: ghost / survival");
+    check(np::OfflineSkip::ports(0, true, true) == 0 && np::OfflineSkip::ports(0, false, false) == 0,
+          "offline: arcade with both or no port playing: nothing (no challenger)");
+    check(np::OfflineSkip::ports(2, true, false) == 0 && np::OfflineSkip::ports(10, true, false) == 0,
+          "offline: demo and practice: nothing");
     printf("offline skips ok\n");
 }
 

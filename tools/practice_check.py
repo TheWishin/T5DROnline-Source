@@ -5,12 +5,13 @@
 
 Starts the game through the smoke harness's menu driver (tools/smoke: title -> PRACTICE -> the cursor's
 fighters -> the fight) with the practice tools on (T5_PRACTICE=1, T5_PRACTICE_LOG) and drives P1's pad file:
-SELECT+3 after walking away, the four wall resets (each followed by SELECT+3), the dummy's behaviours, and a
-recording played once and in a loop. The practice log must show
+SELECT+3 after walking away, the four wall resets (each followed by SELECT+3), the dummy's behaviours, a
+recording played once and in a loop, and SELECT+3 right after a launcher. The practice log must show
 
     the fighters 2000 apart at the round start; every reset still in place 30 frames later;
     a wall found for every wall reset, the other fighter 1100 in front of it, facing each other;
-    the slot recorded, played and looped; the dummy's behaviours cycled.
+    the slot recorded, played and looped; the dummy's behaviours cycled;
+    a reset pressed while the dummy is in the air (after df+2) waits until both stand, then holds.
 
 The game runs muted and minimised; nothing of it is kept unless --keep. Exit 0 = PASS.
 
@@ -93,6 +94,21 @@ def drive(g):
     g.wait(4)
     sel(g, btn="CIRCLE")
     g.wait(1)
+    sel(g)                                              # back to the start, then a launcher and SELECT+3 while
+    g.wait(1)                                           # the dummy is in the air: the reset waits until both stand
+    g.hold("RIGHT")
+    g.wait(1.4)
+    g.release()
+    g.wait(0.2)
+    g.hold("DOWN", "RIGHT")
+    g.wait(0.08)
+    g.hold("DOWN", "RIGHT", "TRIANGLE")                 # df+2: a launcher for most of the cast
+    g.wait(0.12)
+    g.release()
+    g.wait(0.35)
+    sel(g)
+    g.wait(3)
+    g.shot("after-launcher-reset", expect="any", settle=0.5)
 
 
 def check(log_lines):
@@ -123,6 +139,26 @@ def check(log_lines):
             good(abs(a[0] - s[0]) < 60 and abs(a[1] - s[1]) < 60 and abs(a[3] - s[3]) < 60 and abs(a[4] - s[4]) < 60,
                  f"30 frames after the reset at frame {places[i][0]}: P1 ({a[0]:.0f}, {a[1]:.0f}) "
                  f"dummy ({a[3]:.0f}, {a[4]:.0f})")
+    # the reset after the launcher: it waited until both stood, then both at the start, still there 30 frames later
+    # (the last waiting reset: the crouching / blocking dummy earlier on waits a few frames too)
+    waits = [i for i, ln in enumerate(log_lines) if " reset waits until both stand:" in ln]
+    wait_at = waits[-1] if waits else None
+    if wait_at is None:
+        good(False, "a reset pressed with the dummy in the air waited for both to stand (no 'reset waits' line: did "
+                    "the launcher hit?)")
+    else:
+        rest = log_lines[wait_at:]
+        done = next((ln for ln in rest if re.match(r"^\d+ reset after waiting \d+ frames", ln)), "")
+        good(done and "anyway" not in done, f"the waiting reset came once both stood: {done.split(' ', 1)[-1] if done else 'never'}")
+        later_p = [m.groups() for m in (PLACE.match(ln) for ln in rest) if m]
+        r_i = next((i for i, p in enumerate(later_p) if p[1] == "reset round start:"), None)
+        a_p = next((p for p in later_p[r_i:] if p[1] == "30 frames later:"), None) if r_i is not None else None
+        if s and a_p:
+            a = xyz(a_p)
+            good(abs(a[0] - s[0]) < 60 and abs(a[1] - s[1]) < 60 and abs(a[3] - s[3]) < 60 and abs(a[4] - s[4]) < 60,
+                 f"30 frames after the waiting reset: P1 ({a[0]:.0f}, {a[1]:.0f}) dummy ({a[3]:.0f}, {a[4]:.0f})")
+        else:
+            good(False, "no places 30 frames after the waiting reset")
     walls = [p for p in places if p[1] == "wall:"]
     nowall = [p for p in places if p[1].startswith("no wall")]
     good(len(walls) == 4 and not nowall, f"{len(walls)} walls found, {len(nowall)} without a wall (want 4 / 0)")

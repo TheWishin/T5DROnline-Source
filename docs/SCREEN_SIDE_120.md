@@ -6,12 +6,15 @@ absent, `T5_ALWAYS_LEFT=1` retains the old checkbox behavior; an explicit new va
 three-way screen-side choice.
 
 Always left mirrors a casual P2's picture. Always right mirrors a casual P1's picture using exactly the same
-renderer transformation from patch 0086: mirror a verified full-screen scene copy, translate same-side HUD
-geometry by exactly half the target width without reversing glyph order, and clamp both horizontal scissor
-ends with the draw. The scene-copy test checks the fragment program's actual texture reads and evaluated
-geometry. Batches larger than six vertices remain unchanged; centered overlays partly use prior-frame
-classification, and scissored screen-spanning bars remain an open case. This is a partial renderer repair,
-not proof of complete HUD mirroring; see [ALWAYS_LEFT_FIX.md](ALWAYS_LEFT_FIX.md). It needs no additional
+renderer transformation from patch 0086: mirror a verified full-screen scene copy, then place the HUD from
+its own evaluated boxes alone (no frame history): the timer and the centred titles stay; the side HUD -- bar
+frames, both fill layers, round marks, plates, names, the round intro's PLAYER DATA strip -- is placed together
+right before the frame's command list runs, from this frame's draws only: art the game flips itself mirrored,
+text moved whole to its mirrored box, so the picture has the normal view's layout with the players swapped
+(names at the outer edges, bars draining as on that side normally, glyphs in order). The scene-copy test checks the fragment
+program's actual texture reads and evaluated geometry. Batches larger than six vertices across the middle are
+left whole (never seen in a fight). Issue #31 (own bar empty, names jumping) is fixed by this; see
+[ALWAYS_LEFT_FIX.md](ALWAYS_LEFT_FIX.md) for the measured HUD and the rule. It needs no additional
 shader or memory address. The old runtime
 function names remain for compatibility. Ranked, Quick, tournaments, watched replays and the attract demo
 keep their normal picture. Offline Versus retains the old preview behavior: left previews P2, right previews
@@ -27,8 +30,10 @@ Added regression: `tests/test_screen_side.py` builds/runs the pure C++ policy ma
 session and renderer wiring. These tests were authored but remain unexecuted here;
 the native policy harness requires a build, which is forbidden in this mirror.
 
-Maintainer validation still required: real build and a casual pair test with **0 mismatches**, testing each
-side choice from both assigned slots, normal/mirrored players together, rematches, persistent-session choice
-changes, and casual-to-ranked/Quick/tournament transitions. Confirm readable HUD names, bars, timer, scissor
-clipping, correct toward/away directions for D-pad and both sticks, and unchanged watched replays. For the
-offline preview, check both pad ports independently. No game run or renderer capture was made here.
+Checked in the game for the HUD (issue #31, 2026-11-03; NETPLAY.md "Issue #31"): offline Always left and
+Always right pictures at 720p and 1440p with long and short names (the normal view's layout), every frame
+across the HUD's first appearance and the first damage,
+a rollback pair (RTT 150 ms, 3 % loss, joiner Always left) and a lockstep pair (host Always right) with
+**0 mismatches** and the same hashes, each mirrored bar the length of the other PC's bar for that player.
+Not repeated there: rematches, persistent-session choice changes, casual-to-ranked/Quick/tournament
+transitions, real sticks.

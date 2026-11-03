@@ -144,8 +144,11 @@ class Renderer(unittest.TestCase):
         draw = draw.group(0)
         self.assertNotIn("al_hud_clip(", draw)
         self.assertIn("const int hud = want && g_al.active && g_al.copy_seen;", draw)
-        self.assertIn("al_hud_place(&g_al.hud, &q, &m)", draw)
-        self.assertIn("al_hud_note(&g_al.hud, &q)", draw)
+        # Issue #31: the placement is decided from this draw alone -- no layout remembered from earlier frames
+        # (that history kept a fill touching the timer in place while its frame moved, and flickered).
+        self.assertIn("al_hud_place(&q, n, &why)", draw)
+        self.assertNotIn("al_hud_note(", body)
+        self.assertNotIn("al_hud_frame_end(", body)
         self.assertLess(draw.index("g_al_trace.raw = q;"), draw.index("al_hud_place("))
         # Capture the renderer's already-computed scissor before mirror/move, then trace before host scaling.
         capture = self.patch.index("+    const D3D12_RECT al_sc_before = sc;")
@@ -155,6 +158,23 @@ class Renderer(unittest.TestCase):
         self.assertLess(capture, transform)
         self.assertLess(transform, emit)
         self.assertLess(emit, scale)
+
+    def test_side_hud_placed_from_the_frame_before_its_list_runs(self):
+        """The owner's look (normal-view layout) without frame history: side draws are placed together
+        right before the command list that holds them runs, each in a constant block of its own."""
+        body = "\n".join(l[1:] for l in self.patch.splitlines() if l.startswith("+") and not l.startswith("+++"))
+        # first thing of ld_flush_owned, which closes and executes the list (the hunk's context)
+        self.assertRegex(self.patch, r" static void ld_flush_owned\(ld_flush_reason reason\)\r?\n \{\r?\n"
+                                     r"     ld_begin_recording\(\);\r?\n\+    ld_al_resolve\(reason\);")
+        resolve = re.search(r"static void ld_al_resolve\(ld_flush_reason reason\)\n\{.*?\n\}\n", body, re.S).group(0)
+        self.assertIn("al_hud_layout(g_al_pend.q, g_al_pend.can_mirror, n, mir, dxs);", resolve)
+        self.assertIn("g_al_pend.n = 0;", resolve)          # this frame's draws only
+        self.assertIn("const int cb_reuse = !al_defer && ", body)
+        self.assertIn("if (al_defer) s_cb_after = 0;", body)
+        # culling on: never mirrored (a mirror reverses the winding)
+        self.assertIn("g_al_dcm = !(rsx_dsp_reg(&g.rsx, M_CULL_FACE_ENABLE) & 1u);", body)
+        # a narrow scissor cannot follow a later placement: that draw is moved at once
+        self.assertIn("sc.left <= 0 && sc.top <= 0 && sc.right >= (LONG)W && sc.bottom >= (LONG)H", body)
 
     def test_scene_copy_requires_evaluated_geometry_and_actual_texture_reads(self):
         added = "\n".join(l[1:] for l in self.patch.splitlines() if l.startswith("+") and not l.startswith("+++"))

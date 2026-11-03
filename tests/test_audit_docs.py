@@ -39,10 +39,10 @@ class AuditDocumentation(unittest.TestCase):
         self.assertIn("replay format 7 and guarded live SESSION 3", rematch)
         self.assertNotIn("Skip-off recordings keep replay format 5", rematch)
 
-    def test_screen_side_summary_retains_partial_renderer_limits(self):
+    def test_screen_side_summary_states_the_renderer_rule(self):
         source = (ROOT / "docs/SCREEN_SIDE_120.md").read_text(encoding="utf-8")
-        for text in ("actual texture reads and evaluated", "larger than six vertices remain unchanged",
-                     "scissored screen-spanning bars remain an open case", "partial renderer repair",
+        for text in ("actual texture reads and evaluated", "larger than six vertices across the middle are",
+                     "from this frame's draws only", "Issue #31",
                      "ALWAYS_LEFT_FIX.md", "**0 mismatches**"):
             with self.subTest(contract=text):
                 self.assertIn(text, source)

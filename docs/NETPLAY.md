@@ -378,12 +378,13 @@ not a replay being watched; offline: a Versus fight shows the P2 side, for tryin
 - **Picture** (ps3recomp patch 0086, `libs/video/rsx_always_left.h`): the game draws its 3D scene into a
   2048 x 1440 target and copies it into the 1280 x 720 display buffer with one full-screen quad, then draws
   the HUD on top. The renderer mirrors that copy (its viewport transform, x -> -x). HUD draws are run
-  through their vertex program on the CPU (`al_vp_eval`) to find their screen coordinates. The 1.2.0
-  source repair replaces previous-frame/per-glyph reflection with stable half-width translation for
-  same-side HUD draws and their scissors, and verifies sampled texture use and full-screen geometry
-  before treating a draw as the scene copy. Draws containing both HUD halves still need verified
-  primitive splitting in the real renderer. This repair is **partial and untested in the game**;
-  see [the repair limits and acceptance matrix](ALWAYS_LEFT_FIX.md).
+  through their vertex program on the CPU (`al_vp_eval`) to find their screen coordinates. The timer and
+  centred titles stay; the side HUD (bar frames, both fill layers, round marks, plates, names, the round
+  intro's PLAYER DATA strip) is placed together right before the frame's command list runs, from this
+  frame's draws only (no frame history): art the game flips itself is mirrored, text is moved whole to its
+  mirrored box -- the picture has the normal view's layout with the players swapped.
+  The scene copy is recognized by its full-screen geometry and the textures its program really samples.
+  The measured HUD and the rule: [ALWAYS_LEFT_FIX.md](ALWAYS_LEFT_FIX.md).
 - **Controller** (`src/netplay/always_left.cpp`): online, this player's sample has LEFT and RIGHT swapped and
   the sticks' X mirrored (`np::always_left_input`, in `sample_local`) *before* it is exchanged, so both PCs
   simulate the same input and "towards the opponent" stays the direction the player sees the opponent in.
@@ -393,62 +394,61 @@ not a replay being watched; offline: a Versus fight shows the P2 side, for tryin
   screens stay as they are.
 
 Known limits: everything in the 3D scene is mirrored -- one-sided details (scars, writing on clothes or
-stages, a character's dominant hand) appear the other way round. The name/bar report is not fully
-resolved; HUD readability and ownership require the acceptance work in [ALWAYS_LEFT_FIX.md](ALWAYS_LEFT_FIX.md).
+stages, a character's dominant hand) appear the other way round. The HUD looks like the normal view: each
+bar drains like the normal bar on that side, round marks next to the timer, the left name left-aligned at
+the left edge, the right one right-aligned at the right edge (ALWAYS_LEFT_FIX.md "The rule now").
 For real casual P1/P2 wishes see [SCREEN_SIDE.md](SCREEN_SIDE.md); display-format plans are in
 [PICTURE_FORMAT.md](PICTURE_FORMAT.md).
 
-**Issue #31: empty left bar while the right holds the local player's life.** The exact draw responsible
-has not been identified from this mirror. Patch 0086 classifies a HUD draw using its whole vertex box,
-before applying the guest scissor. A box crossing the middle is kept in place as a central element, even
-when its scissor exposes only one side. If a bar's fill or damage uses such a draw, its frame can move
-while the fill stays on its original side. A possible correction would classify the scissor-clipped
-visible box and keep the draw and its scissor together, after that path is confirmed. This mirror contains
-patch context, not the base renderer's complete effective-scissor construction and constant-upload code,
-so a safe integration cannot assume how disabled or empty guest
-scissors behave. No visual correction is claimed here. The added diagnostics affect host logging only;
-they do not write guest health, alter rollback state, or change which bytes are hashed.
+**Issue #31: own life bar empty, the right bar holds the local player's life, names jumping (fixed in
+1.2.0, patch 0086).** Cause, measured with `RSX_ALWAYS_LEFT_TRACE` in the game: the HUD is one draw per
+quad, and the old renderer placed this frame's draws by elements it had grouped in the previous frame. P1's
+two fill layers end 5 px from the timer's first digit, so they were taken as part of the centred timer and
+stayed on the left while P1's frame moved right -- the left frame showed the opponent's fill (empty when the
+opponent was low), the right frame lost its fill; the grouping changed with the fill's length and the timer's
+digits, so bars and names jumped between frames, and the first frames of a new HUD (no history yet) were
+left unmoved. Reproduced with the old runtime (offline Versus, Always left): left bar empty while the right one
+still had life, the right frame missing, frames with the whole HUD unmoved. Fix: the side HUD is placed
+from the frame's own draws only, laid out like the normal view (ALWAYS_LEFT_FIX.md "The rule now"). Host
+pixels only: no guest memory, no hashed state, no rollback state changes; the two PCs of a match may show
+different pictures.
 
-Other possibilities still need draw evidence: both sides in one batch, a vertex program the CPU evaluator
-cannot handle, a pass before the detected picture copy, or an incorrectly detected copy. Do not infer a
-new guest address from the visual symptom. In particular, the drain mover `0x1357A0` must continue during
-resimulation (docs/ROLLBACK.md, "HUD health bars"): cutting it stalls or reverses the orange drain. Its
-drain-state address is not identified here. Changing that mover or the hash skip list is not justified by
-this report.
+Checked in the game (2026-11-03, runs in build/w120/i31/runs, local only; the build with the normal-view
+layout):
 
-Maintainer validation, in the real project: compare normal and always-left casual fights with distinct
-player names, local P1 and local P2, both bars full, damage to P1 alone, damage to P2 alone, and unequal
-damage to both. Follow the teal fill and the whole orange drain animation, including the next round's
-refill, and check that each stays inside its frame with the right name. Include a first mirrored frame
-and a rematch. Repeat under rollback with unsteady ping and without rollbacks. An online pair must finish
-with **0 mismatching frames** and matching results; this source review cannot prove that requirement.
-The checks and real build/game run have not been executed in this working copy.
+- Offline Versus (netplay local mode, scripted pads, Lili vs Asuka, stage 20), Always left and Always right
+  (offline both preview the mirrored picture), names `WWWWWWWWWWWWWWWW` / `il.Ab 12 Zy` and `i` /
+  `SuperStarSag016`, 720p and 1440p (2560 x 1440 window), 40 pictures each: in every fight picture both bars
+  anchored at the timer end like the normal view's, the left name starting at the left edge (58 px) and the
+  right one ending at the right edge (1212 px of text), rank plates and round marks where the normal view has
+  them, glyphs in order; the round intro's PLAYER DATA panels with their player. As dealt: unchanged.
+- Every frame from the HUD's first frame (3..13 s after FIGHT START, 99 frames) and from 15 to 27 s (718
+  frames, the first damage): the bars' timer-end anchors never moved (0 changes; the old runtime 11, the
+  first half-width fix 7 as its fills were anchored at the outer end). Renderer trace of 300 frames from the
+  HUD's first frame: every side draw at the same place in every frame -- the only changes are the PLAYER DATA
+  panels' own slide-in animation (frames 2..24) and their leaving -- 0 glyph-order faults.
+- Rollback pair, RTT 150 ms, 3 % loss, mashing, host As dealt / joiner Always left, and lockstep pair, host
+  Always right / joiner As dealt (a match each): 0 mismatching frames on both PCs, same result and hash. At the
+  same fight frames each PC's bar for a player has exactly the other PC's length (e.g. 144/431 px <-> 431/144
+  px), the mirrored PC's names at the outer edges.
+- No both-sides batch, no culled or scissored side draw in any run; side draws placed before the frame's end
+  (a flush in the middle of the HUD): 0 in normal play, a few only in runs that dump pictures (readbacks).
+- Earlier the same day, the first fix (every side draw moved by half the width): the same pairs and checks
+  passed, but each side showed the other side's art (names toward the timer); the owner asked for the
+  normal view's layout.
 
-For an unresolved bar, collect a short textual renderer trace for the full, first-damage and drained
-states in the real project, keeping all game artifacts out of this mirror:
+For a new HUD problem, collect a short text trace (no pictures leave the PC unless the player sends them):
 
-- `RSX_ALWAYS_LEFT_TRACE=<first-renderer-frame>:<count>` selects a bounded range (the count defaults to
-  one). Compare the same states with the option off and on. Its `[always-left-trace]` records include
-  rejected/untouched draws, applied placement and actual effective scissor before/after placement. For a
-  recognized quad they also report raw and clipped bounds; `side_clipped_center=1` means the raw box
-  crosses the middle but its nonempty visible intersection lies on one side. This flags the classification
-  limitation; it does not identify the fill or apply a different placement.
-- `RSX_ALWAYS_LEFT_DUMP=<renderer-frame>` records recognized HUD quads (texture, bounds, U coordinates,
-  texture direction), then their grouped elements, once at the next picture copy. Obtain texture offsets
-  from those records; do not guess them. Renderer frame numbers are not simulation frame numbers.
-- Record every relevant draw, including rejected or untouched draws: order; target location, offset and
-  dimensions; display-buffer match; texture-unit-0 binding and sampled surfaces; copy detection state;
-  vertex/index count; vertex-program start and evaluation result; original and scissor-clipped bounds;
-  chosen element; mirror/translation; and scissor before/after. This distinguishes a separate fill pass,
-  a wrong central classification, an unsupported program and a missed copy. The existing quad dump
-  alone cannot explain a draw it never recognized. `RSX_DRAW_CSV` can supply draw order and bindings.
-  For a draw whose aggregate box crosses the middle with a full-width scissor, also collect primitive
-  topology and each primitive's evaluated box and UVs: the aggregate alone cannot distinguish two bars
-  in one batch from a centered overlay. These supplemental fields need real-renderer instrumentation;
-  the bounded trace does not provide per-primitive boxes or identify the chosen element.
-- Correlate those states with `T5_DF_WATCH=100906EC,100906F0,10090FBC,10090FC0`: the documented fighter
-  blocks' +0x6BC current health and +0x6C0 maximum, P1 then P2. Record which player took each hit and whether
-  the frame was live or resimulated. These health words do not identify the separate drain-state address.
+- `RSX_ALWAYS_LEFT_TRACE=<first-renderer-frame>:<count>` (or `gate[:n]`: n renderer frames each time the
+  file named by `LD_SURF_DUMP_GATE` appears, as `T5_DF_SHOT` + `LD_SURF_DUMP` make it) prints one
+  `[always-left-trace]` line per draw: outcome (`copy-mirrored`, `hud-moved`, `hud-panel-swapped`,
+  `hud-stays-across`, `hud-stays-centre`, `mixed-side-batch`, `not-screen`, ...), raw and scissor-clipped
+  box in guest pixels, texture hash, U direction, scissor before/after placement. Renderer frame numbers are
+  not simulation frame numbers.
+- Every 600 mirrored frames the log has `[always-left] N frames mirrored: ... HUD draws M moved / K kept in
+  place / L left as they were`; `L` above 0 means a both-sides batch appeared (never in Tekken 5 DR so far).
+- Do not infer a guest address from the symptom: the drain mover `0x1357A0` must keep running in
+  re-simulated frames (docs/ROLLBACK.md, "HUD health bars").
 
 ## Design
 

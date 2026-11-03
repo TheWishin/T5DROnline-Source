@@ -4742,6 +4742,7 @@ def _room_autowatch(ctx, real, auto=True):
     _create_room_window(a, size=4)
     ctx.wait(lambda: (a.client.my_room or {}).get("size") == 4, 10, "Ana's room for 4")
     rid = a.client.my_room["id"]
+    t1 = time.time() - 0.5                               # match 1 starts as soon as Ben sits down
     for p in (b, c, d):                                  # in this order: the line is Ana, Ben, Cy, Dee
         ctx.wait(lambda p=p: p.tab.tv_rooms.exists(rid), 10, f"{p.name}: the room is listed")
         p.tab.tv_rooms.selection_set(rid)
@@ -4749,7 +4750,6 @@ def _room_autowatch(ctx, real, auto=True):
         ctx.wait(lambda p=p: (p.client.my_room or {}).get("id") == rid, 10, f"{p.name} joins")
     ctx.wait(lambda: all(p.action_on("room_autowatch") for p in ps), 10, "the room row offers 'Automatically watch'")
     ctx.check("... ticked as set", all(bool(p.tab.rooms_ui.autowatch_var.get()) == auto for p in ps))
-    t1 = time.time() - 5.0
     mid1 = found_both(ctx, a, b, t1, timeout=30)
     ctx.check("match 1: Ana vs Ben (the first two of the line)", not latest(c, "match_found", t1) and
               not latest(d, "match_found", t1))
@@ -4853,11 +4853,30 @@ def _room_autowatch(ctx, real, auto=True):
                       (bool(done) or p not in fresh) and all(not vd.get("hash_mismatches") and
                                                              vd.get("identical") is not False for vd in done),
                       f"{len(done)} verdict(s)")
+            if not done:
+                # its only watch was closed by its own turn: the status file of that spectator game has what it
+                # compared until then
+                st = read_json(os.path.join(p.out, "logs", "online", "watch-status.json")) or {}
+                ctx.check(f"{p.name}: its watch, closed by its own turn, was identical until then",
+                          (st.get("hashes_compared") or 0) > 0 and st.get("hash_mismatches") == 0,
+                          f"{st.get('hashes_compared')} hashes, {st.get('hash_mismatches')} different")
         for p in fresh:
             last = read_json(os.path.join(p.out, "logs", "online", "watch-verdict.json")) or {}
-            ctx.check(f"{p.name}: the next pair's match watched to its end, identical",
-                      last.get("identical") is True and len(last.get("matches") or []) >= 1,
-                      f"{last.get('hashes_compared')} hashes")
+            nxt = ((p.client.my_room or {}).get("next") or {}).get("players") or []
+            if p.me["id"] in nxt and not last.get("matches"):
+                # Winner stays: after match 2 this watcher is next in the line, so its own turn closed the spectator
+                # game before the KO (as it must) and no verdict was written. What it had compared up to then is in
+                # the status file the game keeps while it plays.
+                st = read_json(os.path.join(p.out, "logs", "online", "watch-status.json")) or {}
+                ctx.check(f"{p.name}: the next pair's match watched until its own turn came, identical so far",
+                          (st.get("hashes_compared") or 0) > 0 and st.get("hash_mismatches") == 0,
+                          f"{st.get('hashes_compared')} hashes, {st.get('hash_mismatches')} different, frame "
+                          f"{st.get('frame')} of {st.get('received')} received")
+                ctx.check(f"{p.name}: its own turn closed the spectator game", _auto_w(p) is None)
+            else:
+                ctx.check(f"{p.name}: the next pair's match watched to its end, identical",
+                          last.get("identical") is True and len(last.get("matches") or []) >= 1,
+                          f"{last.get('hashes_compared')} hashes")
     for r in rows:
         ctx.note(f"{r['label']}: " + ", ".join(f"{n}: fps {r[n]['result_file'].get('fps')}, desync "
                                                 f"{r[n]['result_file'].get('desync')}" for n in r

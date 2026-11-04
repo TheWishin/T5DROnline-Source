@@ -128,7 +128,7 @@ class DispatchTests(unittest.TestCase):
             tours=SimpleNamespace(tick=noop), rooms_ui=SimpleNamespace(tick=noop),
             _set_actions=noop,
         )
-        for name in ("_tick_ready", "_tick_set", "_invite_wait_tick", "_relogin_tick",
+        for name in ("_coexist_tick", "_tick_ready", "_tick_set", "_invite_wait_tick", "_relogin_tick",
                      "_presence_tick", "_show_notice", "_pad_tick"):
             setattr(tab, name, noop)
         method("_poll")(tab)

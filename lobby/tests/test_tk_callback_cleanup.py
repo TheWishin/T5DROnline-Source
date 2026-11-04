@@ -43,7 +43,7 @@ class PollCleanupTest(unittest.TestCase):
         tab.rooms_ui = SimpleNamespace(tick=mock.Mock())
         # _build_ui creates this controller before the first poll is scheduled.
         tab.private_chat = SimpleNamespace(reset=mock.Mock())
-        for name in ("_tick_ready", "_tick_set", "_invite_wait_tick", "_relogin_tick",
+        for name in ("_coexist_tick", "_tick_ready", "_tick_set", "_invite_wait_tick", "_relogin_tick",
                      "_presence_tick", "_show_notice", "_pad_tick", "_stop_presence", "stop_hosting"):
             setattr(tab, name, mock.Mock())
         return tab

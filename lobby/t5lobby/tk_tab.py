@@ -70,7 +70,7 @@ import weakref
 import tkinter as tk
 from tkinter import filedialog, ttk
 
-from . import chat, discord_rpc, fighters, fwcheck, lag, notify, padmap, padnav, proto, ranks, servers, sets
+from . import chat, coexist, discord_rpc, fighters, fwcheck, lag, notify, padmap, padnav, proto, ranks, servers, sets
 from .buildid import BuildInfo
 from .client import LobbyClient
 from .i18n import N_, stamp, t, translate_message
@@ -246,13 +246,15 @@ def _controls_path_for(settings):
 
 
 class OnlineTab:
-    def __init__(self, parent, app):
+    def __init__(self, parent, app, detector=None):
         self.app = app
         self.parent = parent
         self._closed = False
         self._after = None
         self.client = None
         self.driver = None
+        self.coexist = detector if detector is not None else coexist.Detector()
+        self._outside_unqueue = None
         self.ui_q = queue.Queue()        # callables to run on the Tk thread
         self.results_q = queue.Queue()   # (key, ok, value) from worker threads (see call())
         self._callbacks = {}
@@ -404,6 +406,7 @@ class OnlineTab:
         self.prof_text = tk.StringVar(value="")
         self.status_var = tk.StringVar(value="")
         self.notice_var = tk.StringVar(value="")          # a message from the server's admin, until it ends
+        self.coexist_var = tk.StringVar(value="")
         self.fw_hint_var = tk.StringVar(value="")         # the firewall hint (empty: hidden)
         # controller: A / Cross accepts, B / Circle declines (padnav.py, docs/ONLINE.md)
         self.pad_var = tk.IntVar(value=1 if self.cfg.get("pad", True) else 0)
@@ -618,6 +621,7 @@ class OnlineTab:
                 if self.client is c and c.my_room is None:
                     self.room_watch.reset()
 
+        self._coexist_tick()
         client_events()
         # A completed watch request must see any ready check/challenge already in
         # the event queue before its callback is allowed to start a game.
@@ -663,6 +667,37 @@ class OnlineTab:
                 self._after = self.parent.after(100, self._poll)
             except tk.TclError:
                 pass
+
+    # ------------------------------------------------------------------ other launchers on this PC
+    def _coexist_note(self, refresh=True):
+        opened = self.coexist.openrecomp_open() if refresh else self.coexist.window_open
+        text = t("OpenRecomp-FGC is open: you can be online in one launcher at a time.") if opened else ""
+        if self.coexist_var.get() != text:
+            self.coexist_var.set(text)
+        return opened
+
+    def _coexist_tick(self):
+        self.coexist.poll()
+        self._coexist_note(refresh=False)
+        c = self.client
+        if not c or not c.connected or not c.me or c.me.get("status") != "queue":
+            self._outside_unqueue = None
+            return
+        if not self.coexist.game_running or self._outside_unqueue is c:
+            return
+        self._outside_unqueue = c
+        reason = t("Search stopped because the game is running in another launcher. You are still logged in.")
+        self.status(reason)
+
+        def done(_reply):
+            if self.client is c:
+                self.status(reason)
+
+        def failed():
+            if self._outside_unqueue is c:
+                self._outside_unqueue = None
+
+        self.call(c.cancel_queue, then=done, fail=failed)
 
     # ------------------------------------------------------------------ the firewall hint
     def _game_exe(self):
@@ -961,6 +996,9 @@ class OnlineTab:
     def _relogin_tick(self):
         if self._relogin_at is None or time.monotonic() < self._relogin_at or self._login_busy:
             return
+        if self._coexist_note():
+            self._relogin_at = None
+            return
         s = self._saved_session()
         if self.client is not None or s is None or self._kicked or time.monotonic() > self._relogin_until:
             self._relogin_at = None
@@ -979,6 +1017,8 @@ class OnlineTab:
         if self._auto_tried or self.client is not None:
             return
         self._auto_tried = True
+        if self._coexist_note():
+            return
         s = self._saved_session()
         if s and self.app.game_state().get("ok"):
             self.name_var.set(s.get("name", self.name_var.get()))
@@ -1230,12 +1270,35 @@ class OnlineTab:
 
     def do_queue(self, mode):
         c = self.client
+        if self.coexist.game_running:
+            self.status(t("Search stopped because the game is running in another launcher. You are still logged in."))
+            return
+        self._outside_unqueue = None
         self.cfg["last_search"] = mode           # the controller's A button searches the same way again
         self._save_cfg()
         strict = mode == "ranked" and bool(self.strict_var.get())
         args = (self._char_key(), True) if strict else (self._char_key(),)
         fn = c.ranked_match if mode == "ranked" else c.quick_match
-        self.call(fn, *args, then=lambda _r: self.status(self._searching_text(mode, strict)))
+        self.call(fn, *args, then=lambda _r: self._queue_status(self._searching_text(mode, strict)))
+
+    def _queue_status(self, base=None):
+        c = self.client
+        if not c or not c.me:
+            return
+        # The queue reply can arrive before the lobby broadcast changes idle to queue.
+        if c.me.get("status") != "queue" and not (base and c.me.get("status") == "idle"):
+            return
+        if self._outside_unqueue is c:
+            return
+        ev = getattr(self, "_last_lobby", {})
+        q = ev.get("queue", {})
+        text = base or t("Searching... ({ranked} in the ranked queue, {quick} quick)",
+                         ranked=q.get("ranked", 0), quick=q.get("quick", 0))
+        count = sum(1 for p in ev.get("players", []) if p.get("id") != c.me.get("id")
+                    and p.get("status") == "queue" and not c.compatible(p))
+        if count:
+            text += " " + t("{count} other player(s) are searching with a different build", count=count)
+        self.status(text)
 
     @staticmethod
     def _searching_text(mode, strict):
@@ -2386,10 +2449,7 @@ class OnlineTab:
                          self.view.room_image(closed), ("closed",) if closed else ()))
         tklist.sync(self.tv_rooms, rows)
         _reselect(self.tv_rooms)
-        q = ev.get("queue", {})
-        if self.client and self.client.me and self.client.me.get("status") == "queue":
-            self.status(t("Searching... ({ranked} in the ranked queue, {quick} quick)", ranked=q.get("ranked", 0),
-                          quick=q.get("quick", 0)))
+        self._queue_status()
 
     def _answer(self, accept):
         cid, self.challenge = self.challenge, None

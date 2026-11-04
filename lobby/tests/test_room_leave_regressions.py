@@ -25,7 +25,7 @@ class RoomLeaveNotificationTest(unittest.TestCase):
         tab.spec = mock.Mock()
         tab.rooms_ui = mock.Mock()
         tab.tours = mock.Mock()
-        for name in ("_tick_ready", "_tick_set", "_invite_wait_tick", "_relogin_tick",
+        for name in ("_coexist_tick", "_tick_ready", "_tick_set", "_invite_wait_tick", "_relogin_tick",
                      "_presence_tick", "_show_notice", "_pad_tick"):
             setattr(tab, name, mock.Mock())
         tab.notifier = mock.Mock()

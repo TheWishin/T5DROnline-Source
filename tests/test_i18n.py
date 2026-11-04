@@ -33,6 +33,7 @@ for sub in ("tools", "lobby", "launcher"):
 os.environ.setdefault("T5_PAD_NAV", "0")        # no controller thread in the Online tab
 os.environ["T5_NOTIFY"] = "0"                   # no chime, no taskbar flash on this PC
 os.environ.setdefault("T5_FW_CHECK", "0")       # the Online tab's firewall hint never reads this PC's firewall
+os.environ["T5_COEXIST_CHECK"] = "0"            # coexistence tests inject fake processes and locks
 
 import core  # noqa: E402,F401  (imported now: it puts tools/ on the path, and other test modules import run late)
 import i18n_extract as x   # noqa: E402
@@ -1142,6 +1143,7 @@ class FakeClient:
     tls = False
     server_rtt = 20.0
     session = None
+    my_room = None
 
     class build:
         build_id = "b1"

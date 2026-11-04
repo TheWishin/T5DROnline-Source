@@ -11,6 +11,12 @@ texts to paste into the right group.
 """
 
 MESSAGES = {
+    "OpenRecomp-FGC is open: you can be online in one launcher at a time.":
+        "OpenRecomp-FGC ist geöffnet: Du kannst jeweils in einem Launcher online sein.",
+    "Search stopped because the game is running in another launcher. You are still logged in.":
+        "Suche beendet, weil das Spiel in einem anderen Launcher läuft. Du bist weiterhin angemeldet.",
+    "{count} other player(s) are searching with a different build":
+        "{count} andere Spieler suchen mit einem anderen Build",
     'T5DR Online {latest} is out. Update the launcher (it offers the update when it starts, or press "Check for updates").':
         'T5DR Online {latest} ist da. Aktualisiere den Launcher (er bietet das Update beim Start an, oder klicke auf „Nach Updates suchen“).',
     "Intel HD Graphics 4400: graphics device lost": "Intel HD Graphics 4400: Grafikgerät verloren",

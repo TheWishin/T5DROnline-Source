@@ -456,15 +456,47 @@ MESSAGES = {
     "online play is not available.\n\n({reason})":
         "このランチャーにはロビーのファイル（lobby/t5lobby）がないため、オンラインプレイは使えません。\n\n({reason})",
     # ---- launcher/problem_report_ui.py
-    "Before the zip is made, your Windows user name in file paths becomes <user>, "
-    "internet IP addresses become <ip> (addresses of your own network stay), lobby player "
-    "names (yours and your opponents') become <player>, and passwords, tokens and match keys "
-    "are left out. Your game files, keys, .pkg and .rap are never included. Nothing is "
-    "uploaded: you send the zip yourself.":
-        "zip を作る前に、ファイルパス内の Windows ユーザー名は <user>、インターネットの IP アドレスは <ip>（自分のネッ"
-        "トワークのアドレスはそのまま）、ロビーのプレイヤー名（自分と対戦相手）は <player> に置き換えられ、パスワード"
-        "、トークン、対戦キーは除外されます。ゲームファイル、キー、.pkg、.rap が含まれることはありません。アップロード"
-        "は一切しません。zip はご自身で送ってください。",
+    # Report a problem: Send to the developer (problem_report_ui.py, report_send.py); one Discord server
+    'New launcher':
+        '新しいランチャー',
+    'Optional launcher with Tekken 5 DR and Tekken 4 in one window; this launcher keeps working.':
+        'Tekken 5 DR と Tekken 4 を 1 つのウィンドウで使える任意のランチャーです。このランチャーもそのまま使えます。',
+    'Contact (optional, e.g. your Discord name):':
+        '連絡先（任意、例: Discord の名前）:',
+    'Enough reports from this PC for today. Save the zip and send it yourself.':
+        '今日はこの PC からのレポートが上限に達しました。zip を保存して自分で送ってください。',
+    'Making the report and sending it...':
+        'レポートを作成して送信しています...',
+    'OpenRecomp-FGC Discord':
+        'OpenRecomp-FGC Discord',
+    'Press Send: your logs and settings go straight to the developer. Or save the zip and send it yourself.':
+        '送信を押すと、ログと設定が開発者に直接届きます。zip を保存して自分で送ることもできます。',
+    'Questions? Ask the players in the OpenRecomp-FGC Discord: {url}':
+        '質問は OpenRecomp-FGC Discord のプレイヤーに聞いてください: {url}',
+    'Save on the Desktop instead':
+        '代わりにデスクトップに保存',
+    'Send to the developer':
+        '開発者に送信',
+    'Sending... {done} of {total}':
+        '送信中... {done} / {total}',
+    'Sends your logs to the developer with your lobby name. No game files, no keys, no passwords.':
+        'ログをロビー名と一緒に開発者へ送ります。ゲームファイル、キー、パスワードは含みません。',
+    'Sent, thanks (report #{id})':
+        '送信しました。ありがとうございます（レポート #{id}）',
+    'The developer has your report ({size}). If you asked for an answer, it comes to the contact you gave.':
+        '開発者がレポートを受け取りました（{size}）。返事を希望した場合は、入力した連絡先に届きます。',
+    'The report could not be sent: {error}':
+        'レポートを送信できませんでした: {error}',
+    'The report is too big to send. Save the zip and send it yourself.':
+        'レポートが大きすぎて送信できません。zip を保存して自分で送ってください。',
+    'The server cannot take reports yet. Save the zip and send it yourself.':
+        'サーバーはまだレポートを受け付けていません。zip を保存して自分で送ってください。',
+    'The server cannot take reports yet. Save the zip and send it yourself: to the person who gave you the game, or attach it to an issue.':
+        'サーバーはまだレポートを受け付けていません。zip を保存して自分で送ってください。ゲームをくれた人に送るか、issue に添付してください。',
+    'The server could not be reached. Check the internet connection, or save the zip.':
+        'サーバーに接続できませんでした。インターネット接続を確認するか、zip を保存してください。',
+    "Before the zip is made, your Windows user name in file paths becomes <user>, internet IP addresses become <ip> (addresses of your own network stay), lobby player names (yours and your opponents') become <player>, and passwords, tokens and match keys are left out. Your game files, keys, .pkg and .rap are never included.":
+        'zip を作る前に、ファイルパス内の Windows ユーザー名は <user>、インターネットの IP アドレスは <ip>（自分のネットワークのアドレスはそのまま）、ロビーのプレイヤー名（自分と対戦相手）は <player> に置き換えられ、パスワード、トークン、対戦キーは除外されます。ゲームファイル、キー、.pkg、.rap が含まれることはありません。',
     "{count} bytes": "{count} バイト",
     "Report a problem": "問題を報告",
     "This makes one zip file on your Desktop with the logs and settings that help to "
@@ -822,9 +854,7 @@ MESSAGES = {
     "A build is running. Stop it and quit?": "ビルドが実行中です。停止して終了しますか？",
     # ---- launcher/updater.py
     "Check for updates": "アップデートを確認",
-    "Community Discord": "コミュニティ Discord",
     "Could not open a browser. The address: {url}": "ブラウザーを開けませんでした。アドレス: {url}",
-    "Questions? Ask the players in the community Discord: {url}": "質問は? コミュニティの Discord でプレイヤーに聞いてください: {url}",
     "Updated from {old} to {new}.": "{old} から {new} にアップデートしました。",
     "the new version": "新しいバージョン",
     "The update to {version} failed and could not be undone completely: {error}.\n\nThe "

@@ -27,6 +27,9 @@ import online  # noqa: E402
 from core import N_, t  # noqa: E402  (English text in, the player's language out; lobby/t5lobby/i18n.py)
 import problem_report as report  # noqa: E402
 import problem_report_ui as report_ui  # noqa: E402
+import report_send  # noqa: E402
+
+NEW_LAUNCHER_NOTE = N_("Optional launcher with Tekken 5 DR and Tekken 4 in one window; this launcher keeps working.")
 import problem_check_ui  # noqa: E402
 import tab_look  # noqa: E402
 import tkgc  # noqa: E402
@@ -331,14 +334,22 @@ class App(tk.Tk):
 
     def open_discord(self):
         """The community Discord (core.DISCORD_URL) in the default browser."""
+        self._open_url(core.DISCORD_URL)
+
+    def open_new_launcher(self):
+        """The OpenRecomp-FGC launcher's releases page (core.OPENRECOMP_URL): optional, this launcher keeps working."""
+        self.status.set(t(NEW_LAUNCHER_NOTE))
+        self._open_url(core.OPENRECOMP_URL)
+
+    def _open_url(self, url):
         import webbrowser
         try:
-            opened = webbrowser.open(core.DISCORD_URL)
+            opened = webbrowser.open(url)
         except Exception as e:      # noqa: BLE001 -- no browser on this PC
             opened = False
-            core.log(f"Community Discord: no browser ({e})")
+            core.log(f"{url}: no browser ({e})")
         if not opened:
-            self.status.set(t("Could not open a browser. The address: {url}", url=core.DISCORD_URL))
+            self.status.set(t("Could not open a browser. The address: {url}", url=url))
 
     def _click_through(self):
         """WS_EX_TRANSPARENT on the (layered) frame: mouse clicks go to the windows below."""
@@ -464,12 +475,17 @@ class App(tk.Tk):
         if dark and getattr(self.updater, "button", None) is not None:
             self.updater.button.pack_configure(padx=(0, self.px(16)))
         # the players' community on Discord (1.1.7, the owner's wish): one click from every tab, left of the updates
-        self.discord_btn = ttk.Button(head, text=t("Community Discord"), command=self.open_discord, cursor="hand2")
+        self.discord_btn = ttk.Button(head, text=t("OpenRecomp-FGC Discord"), command=self.open_discord, cursor="hand2")
         self.discord_btn.pack(side="right", padx=(0, self.px(8)))
+        # the optional OpenRecomp-FGC launcher (1.2.1): its releases page; the status bar says what it is on hover
+        self.new_launcher_btn = ttk.Button(head, text=t("New launcher"), command=self.open_new_launcher, cursor="hand2")
+        self.new_launcher_btn.pack(side="right", padx=(0, self.px(8)))
+        self.new_launcher_btn.bind("<Enter>", lambda _e: self.status.set(t(NEW_LAUNCHER_NOTE)), add="+")
         if dark:
-            # the band asks for room for its texts and both buttons (the window is never narrower than that)
-            buttons = sum(b.winfo_reqwidth() for b in (self.discord_btn, getattr(self.updater, "button", None)) if b)
-            head.configure(width=int(head.cget("width")) + buttons + self.px(8 + 16))
+            # the band asks for room for its texts and the buttons (the window is never narrower than that)
+            buttons = sum(b.winfo_reqwidth() for b in (self.discord_btn, self.new_launcher_btn,
+                                                      getattr(self.updater, "button", None)) if b)
+            head.configure(width=int(head.cget("width")) + buttons + self.px(8 + 8 + 16))
         self.nb = ttk.Notebook(self, style="Main.TNotebook") if dark else ttk.Notebook(self)
         self.nb.pack(fill="both", expand=True, padx=12, pady=(4, 0))
         self.tabs = {}
@@ -1953,10 +1969,16 @@ class App(tk.Tk):
                                   release=info, build_info=lambda: report.build_info_for(out, info, core.ROOT),
                                   online_dir=online_dir, online_info=online_info, build_problem=build_problem,
                                   replay_dir=replay_dir)
-        core.log("report window opened")
+        try:        # "Send to the developer": the project's lobby server (report_send.py); None -> Save only
+            name, kind = self.online.report_identity()
+        except Exception:      # noqa: BLE001 -- an older Online tab, or none: sent without a name
+            name, kind = "", ""
+        sender = report_send.make_sender(release=info, build_info=lambda: report.build_info_for(out, info, core.ROOT),
+                                         name=name, name_kind=kind, language=self.language or "")
+        core.log("report window opened" + ("" if sender else " (no server to send to: save only)"))
         self._report_dlg = report_ui.ReportDialog(self, make_context, core.desktop_dir(), reveal=core.reveal_file,
                                                   issues_url=core.ISSUES_URL, log=core.log,
-                                                  discord_url=core.DISCORD_URL)
+                                                  discord_url=core.DISCORD_URL, sender=sender)
         return self._report_dlg
 
     def _speed_notes(self):

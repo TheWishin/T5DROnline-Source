@@ -454,15 +454,47 @@ MESSAGES = {
     "online play is not available.\n\n({reason})":
         "이 런처 사본에 로비 파일(lobby/t5lobby)이 없어 온라인 플레이를 할 수 없습니다.\n\n({reason})",
     # ---- launcher/problem_report_ui.py
-    "Before the zip is made, your Windows user name in file paths becomes <user>, "
-    "internet IP addresses become <ip> (addresses of your own network stay), lobby player "
-    "names (yours and your opponents') become <player>, and passwords, tokens and match keys "
-    "are left out. Your game files, keys, .pkg and .rap are never included. Nothing is "
-    "uploaded: you send the zip yourself.":
-        "zip을 만들기 전에 파일 경로의 Windows 사용자 이름은 <user>로, 인터넷 IP 주소는 <ip>로 바뀌고 (내 네트워크 "
-        "주소는 그대로), 로비 플레이어 이름(내 이름과 상대 이름)은 <player>로 바뀌며, 비밀번호, 토큰, 매치 키는 빠집니"
-        "다. 게임 파일, 키, .pkg, .rap는 절대 포함되지 않습니다. 아무것도 업로드하지 않으며, zip은 직접 보내면 됩니다"
-        ".",
+    # Report a problem: Send to the developer (problem_report_ui.py, report_send.py); one Discord server
+    'New launcher':
+        '새 런처',
+    'Optional launcher with Tekken 5 DR and Tekken 4 in one window; this launcher keeps working.':
+        'Tekken 5 DR과 Tekken 4를 한 창에서 쓰는 선택형 런처입니다. 이 런처도 계속 쓸 수 있습니다.',
+    'Contact (optional, e.g. your Discord name):':
+        '연락처(선택, 예: Discord 이름):',
+    'Enough reports from this PC for today. Save the zip and send it yourself.':
+        '오늘은 이 PC에서 보낸 보고서가 충분합니다. zip을 저장해서 직접 보내 주세요.',
+    'Making the report and sending it...':
+        '보고서를 만들어 보내는 중...',
+    'OpenRecomp-FGC Discord':
+        'OpenRecomp-FGC Discord',
+    'Press Send: your logs and settings go straight to the developer. Or save the zip and send it yourself.':
+        '보내기를 누르면 로그와 설정이 개발자에게 바로 갑니다. zip을 저장해서 직접 보낼 수도 있습니다.',
+    'Questions? Ask the players in the OpenRecomp-FGC Discord: {url}':
+        '질문이 있나요? OpenRecomp-FGC Discord에서 플레이어들에게 물어보세요: {url}',
+    'Save on the Desktop instead':
+        '대신 바탕 화면에 저장',
+    'Send to the developer':
+        '개발자에게 보내기',
+    'Sending... {done} of {total}':
+        '보내는 중... {done} / {total}',
+    'Sends your logs to the developer with your lobby name. No game files, no keys, no passwords.':
+        '로비 이름과 함께 로그를 개발자에게 보냅니다. 게임 파일, 키, 비밀번호는 보내지 않습니다.',
+    'Sent, thanks (report #{id})':
+        '보냈습니다. 감사합니다(보고서 #{id})',
+    'The developer has your report ({size}). If you asked for an answer, it comes to the contact you gave.':
+        '개발자가 보고서를 받았습니다({size}). 답변을 원했다면 입력한 연락처로 갑니다.',
+    'The report could not be sent: {error}':
+        '보고서를 보낼 수 없습니다: {error}',
+    'The report is too big to send. Save the zip and send it yourself.':
+        '보고서가 너무 커서 보낼 수 없습니다. zip을 저장해서 직접 보내 주세요.',
+    'The server cannot take reports yet. Save the zip and send it yourself.':
+        '서버가 아직 보고서를 받지 않습니다. zip을 저장해서 직접 보내 주세요.',
+    'The server cannot take reports yet. Save the zip and send it yourself: to the person who gave you the game, or attach it to an issue.':
+        '서버가 아직 보고서를 받지 않습니다. zip을 저장해서 직접 보내 주세요. 게임을 준 사람에게 보내거나 issue에 첨부하세요.',
+    'The server could not be reached. Check the internet connection, or save the zip.':
+        '서버에 연결할 수 없습니다. 인터넷 연결을 확인하거나 zip을 저장하세요.',
+    "Before the zip is made, your Windows user name in file paths becomes <user>, internet IP addresses become <ip> (addresses of your own network stay), lobby player names (yours and your opponents') become <player>, and passwords, tokens and match keys are left out. Your game files, keys, .pkg and .rap are never included.":
+        'zip을 만들기 전에 파일 경로의 Windows 사용자 이름은 <user>로, 인터넷 IP 주소는 <ip>로 바뀌고 (내 네트워크 주소는 그대로), 로비 플레이어 이름(내 이름과 상대 이름)은 <player>로 바뀌며, 비밀번호, 토큰, 매치 키는 빠집니다. 게임 파일, 키, .pkg, .rap는 절대 포함되지 않습니다.',
     "{count} bytes": "{count}바이트",
     "Report a problem": "문제 신고",
     "This makes one zip file on your Desktop with the logs and settings that help to "
@@ -815,9 +847,7 @@ MESSAGES = {
     "A build is running. Stop it and quit?": "빌드가 진행 중입니다. 중지하고 종료할까요?",
     # ---- launcher/updater.py
     "Check for updates": "업데이트 확인",
-    "Community Discord": "커뮤니티 Discord",
     "Could not open a browser. The address: {url}": "브라우저를 열 수 없습니다. 주소: {url}",
-    "Questions? Ask the players in the community Discord: {url}": "질문이 있나요? 커뮤니티 Discord에서 플레이어들에게 물어보세요: {url}",
     "Updated from {old} to {new}.": "{old}에서 {new}(으)로 업데이트했습니다.",
     "the new version": "새 버전",
     "The update to {version} failed and could not be undone completely: {error}.\n\nThe "

@@ -63,6 +63,8 @@ DEV_ONLY = {
     "score is [P1 rounds, P2 rounds]", "chars is [P1 fighter, P2 fighter]", "costumes is [P1 button, P2 button]",
     "fps is a number", "fps out of range",
     "unknown character X", "kind is casual or room",
+    # problem reports (server/reports.py): the launcher's report connection never logs in
+    "a report connection cannot log in",
     # tournaments (lobby/t5lobby/server/tournaments.py): fields the launcher always sends right
     "set length, player limit, check-in and start time are numbers",
     "op is start, cancel, report, override, reset or dq", "the winner is side 0 or 1",

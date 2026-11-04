@@ -46,6 +46,11 @@ or simply the wrapper `t5lobby-admin`; Docker: `docker compose exec lobby t5lobb
     notices                              the latest messages and whether they are showing
     private-reports [--limit N] [--json]  moderator inbox: only lines explicitly selected by reporters
     private-reports --delete ID          remove one reviewed report (does not change backups)
+    reports [list] [--limit N] [--json]  problem reports the launchers sent (newest first; reports.py)
+    reports show ID                      one report: facts, the player's note, the files in its zip
+    reports get ID [--out DIR]           copy its zip to DIR (default: the current folder)
+    reports delete ID                    remove it (zip and facts)
+    reports send ID                      post it to T5L_REPORT_WEBHOOK again (after the webhook failed)
     drain [--wait SECONDS] [--off]       before a restart (an update): no new matches -- queues, rooms,
                                          challenges and rematches are refused -- while the running ones
                                          finish; --wait returns when none is left (exit 1 on timeout).
@@ -628,6 +633,84 @@ def cmd_private_reports(a):
         st.close()
 
 
+def _report_folder(a):
+    from .reports import ReportFolder, report_dir
+    path = report_dir(os.environ.get("T5L_REPORT_DIR", ""), _db_path(a))
+    if not path or not os.path.isdir(path):
+        sys.exit(f"no report folder at {path} (T5L_REPORT_DIR, or 'reports' next to T5L_DB)")
+    return ReportFolder(path)
+
+
+def _report_line(m):
+    from .reports import _human
+    who = m.get("name") or "-"
+    desc = (m.get("description") or "").replace(chr(10), " ")
+    return (f"#{m.get('id')}  {_fmt_t(m.get('time'))}  {m.get('game', '?')} {m.get('version', '?')}  "
+            f"{_human(int(m.get('size', 0))):>8}  {who:<16}  {desc[:60]}")
+
+
+def cmd_reports(a):
+    folder = _report_folder(a)
+    if a.action == "list":
+        rows = [m for m, _z in folder.all()][::-1][:a.limit]
+        if a.json:
+            print(json.dumps(rows, indent=2, ensure_ascii=True))
+        else:
+            for m in rows:
+                print(_report_line(m))
+            if not rows:
+                print("(no problem reports)")
+        return 0
+    if not a.id:
+        sys.exit(f"reports {a.action} needs a report id (reports list shows them)")
+    found = folder.find(a.id)
+    if found is None:
+        sys.exit(f"no report {a.id!r}")
+    meta, zpath = found
+    if a.action == "show":
+        for k in ("id", "game", "version", "build_id", "os", "name", "name_kind", "contact", "launcher", "language",
+                  "release", "build_seen", "via", "size", "sha256", "webhook"):
+            if meta.get(k) not in (None, ""):
+                print(f"{k:<11} {meta[k]}")
+        print(f"{'time':<11} {_fmt_t(meta.get('time'))}")
+        print(f"{'zip':<11} {zpath}")
+        if meta.get("description"):
+            print()
+            print("What happened (the player's words):")
+            print("  " + meta["description"])
+        print()
+        print(f"Files ({meta.get('files', '?')}):")
+        for name, size in meta.get("members") or []:
+            print(f"  {name}  {size:,} bytes")
+        return 0
+    if a.action == "get":
+        import shutil
+        out = os.path.abspath(a.out or ".")
+        os.makedirs(out, exist_ok=True)
+        dest = os.path.join(out, f"report-{meta['id']}.zip")
+        shutil.copyfile(zpath, dest)
+        with open(dest[:-4] + ".json", "w", encoding="utf-8") as f:
+            json.dump(meta, f, indent=2, ensure_ascii=False)
+        print(dest)
+        return 0
+    if a.action == "delete":
+        folder.delete(meta, zpath)
+        print(f"report #{meta['id']} removed")
+        return 0
+    if a.action == "send":
+        from . import reports
+        url = os.environ.get("T5L_REPORT_WEBHOOK", "")
+        if not url:
+            sys.exit("T5L_REPORT_WEBHOOK is not set (run with the server's environment: t5lobby-admin)")
+        max_kb = int(os.environ.get("T5L_REPORT_WEBHOOK_MAX_KB", "8000"))
+        ok, attached, why = reports.post_webhook(url, reports.webhook_text(meta, True), zpath, max_kb * 1024)
+        meta["webhook"] = ("posted with the zip" if attached else "posted without the zip") if ok else "failed: " + why
+        folder.save_meta(meta, zpath)
+        print(f"report #{meta['id']}: {meta['webhook']}")
+        return 0 if ok else 1
+    return 2
+
+
 def cmd_release(a):
     """The newest published release: launchers that report an older one get a notice to update (lobby.py
     "update your launcher"). Only after the owner has published it -- never announce a draft."""
@@ -817,6 +900,12 @@ def main(argv=None):
     p.add_argument("--limit", type=int, default=20)
     p.add_argument("--json", action="store_true")
     p.add_argument("--delete", type=int, metavar="ID")
+    p = add("reports", cmd_reports, "problem reports the launchers sent")
+    p.add_argument("action", nargs="?", default="list", choices=("list", "show", "get", "delete", "send"))
+    p.add_argument("id", nargs="?")
+    p.add_argument("--limit", type=int, default=30)
+    p.add_argument("--json", action="store_true")
+    p.add_argument("--out", metavar="DIR", help="get: where the zip goes (default: the current folder)")
     p = add("release", cmd_release, "tell launchers of an older release to update (after publishing)")
     p.add_argument("version", nargs="?", help="the newest published release, e.g. 1.1.2 (none: show it)")
     p.add_argument("--clear", action="store_true", help="nobody is told to update any more")

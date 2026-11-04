@@ -1518,6 +1518,29 @@ def build(ctx, dest_dir, note="", enabled=None, cap=DEFAULT_CAP, now=None, group
     return res
 
 
+SEND_TARGET = 7900 * 1024     # a sent report fits the server's Discord post (8 MB; server/reports.py)
+
+
+def build_for_send(ctx, dest_dir, note="", enabled=None, target=SEND_TARGET, now=None, groups=None):
+    """build() for "Send to the developer": the same zip, made smaller (the oldest and biggest logs shortened first,
+    as build() does at its cap) until it is at most `target` bytes. -> Result (the last try when none fits)."""
+    groups = groups if groups is not None else discover(ctx, note, now)
+    cap = DEFAULT_CAP
+    res = None
+    for _ in range(5):
+        if res is not None:
+            try:
+                os.remove(res.path)
+            except OSError:
+                pass
+        res = build(ctx, dest_dir, note, enabled, cap=cap, now=now, groups=groups)
+        if res.zip_size <= target:
+            return res
+        # the zip packs text about 3-10x: scale the cap by how far over it is, with room to spare
+        cap = max(MANIFEST_ROOM + MIN_USEFUL * 4, int(cap * target / res.zip_size * 0.85))
+    return res
+
+
 def _zinfo(name, now):
     zi = zipfile.ZipInfo(name, date_time=now.timetuple()[:6])
     zi.compress_type = zipfile.ZIP_DEFLATED
@@ -1527,8 +1550,9 @@ def _zinfo(name, now):
 
 def contents_text(res, now, left_out):
     L = [f"T5DR Online problem report, {now:%Y-%m-%d %H:%M:%S}",
-         "", "This zip was made on the player's PC by the launcher's 'Report a problem' button. Nothing was",
-         "uploaded. Before the files went in, private data was removed from every text file:",
+         "", "This zip was made on the player's PC by the launcher's 'Report a problem' button. It leaves the PC",
+         "only when the player saves it and sends it, or presses 'Send to the developer' (then it goes to the",
+         "lobby server). Before the files went in, private data was removed from every text file:",
          f"  {res.counts['user']} Windows user or PC names -> {P_USER} / {P_PC}",
          f"  {res.counts['ip']} internet IP addresses -> {P_IP} (local network addresses stay)",
          f"  {res.counts['secret']} passwords, tokens, match keys or long hex strings -> {P_REMOVED} / {P_HEX}",

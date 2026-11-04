@@ -42,6 +42,7 @@ from package_release import PY_SELFTEST, windows_only_env  # noqa: E402
 REQUIRED = [
     "T5DR Online.exe", "README.txt", "release.json", "CMakeLists.txt",
     "launcher/t5dr_launcher.pyw", "launcher/core.py", "launcher/problem_report.py", "launcher/problem_report_ui.py",
+    "launcher/report_send.py",
     "launcher/updater.py", "launcher/release_sig.py", "launcher/controls_ui.py", "launcher/controls_edit.py",
     "lobby/t5lobby/client.py",
     "launcher/replays.py", "launcher/replays_ui.py",

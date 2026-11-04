@@ -724,14 +724,20 @@ MESSAGES = {
     "Crouches": "S'accroupit",
     "Walks forward and back": "Avance et recule",
     "Sidesteps": "Fait des pas de côté",
-    "In Practice, hold SELECT and press: 3 round start; f+3 / b+3 the dummy against the wall in front "
-    "of / behind you; df+3 / db+3 you against the wall in front of / behind you. 1 records the dummy "
-    "(you play it), 2 plays the recording once, 4 in a loop; tap up / down for slot 1-5, forward / "
-    "back for what the dummy does.":
-        "En Practice, maintiens SELECT et appuie : 3 début de round ; f+3 / b+3 le mannequin contre le "
-        "mur devant / derrière toi ; df+3 / db+3 toi contre le mur devant / derrière toi. 1 enregistre le "
-        "mannequin (tu le contrôles), 2 rejoue l'enregistrement une fois, 4 en boucle ; touche haut / bas "
-        "pour l'emplacement 1-5, avant / arrière pour ce que fait le mannequin.",
+    "Dashes in": "Fait des dashs avant",
+    "Backdashes": "Fait des backdashs",
+    "Backdash cancels": "Annule ses backdashs",
+    "Wavedashes": "Fait des wavedashs",
+    "In Practice, START opens the practice menu: the dummy's behaviour and counter-attack, recordings (8 "
+    "slots per character, kept for next time), restart position, input delay. Hold SELECT and press: 3 "
+    "restart; f+3 / b+3 the dummy against the wall in front of / behind you; df+3 / db+3 you against the "
+    "wall; START remembers the position. 1 records the dummy (you play it), 2 plays once, 4 in a loop; "
+    "tap up / down for the slot.":
+        "En Practice, START ouvre le menu d'entraînement : comportement et contre-attaque du mannequin, "
+        "enregistrements (8 emplacements par personnage, conservés), position de départ, délai d'entrée. "
+        "Maintiens SELECT et appuie : 3 recommencer ; f+3 / b+3 le mannequin contre le mur devant / derrière "
+        "toi ; df+3 / db+3 toi contre le mur ; START mémorise la position. 1 enregistre le mannequin (tu le "
+        "contrôles), 2 rejoue une fois, 4 en boucle ; touche haut / bas pour l'emplacement.",
     "Also online (only your own inputs, no frame data)":
         "Aussi en ligne (seulement tes inputs, sans données de frames)",
     "In Practice: your last inputs with how many frames each was held, and after each exchange the "

@@ -10,7 +10,7 @@ recording played once and in a loop, and SELECT+3 right after a launcher. The pr
 
     the fighters 2000 apart at the round start; every reset still in place 30 frames later;
     a wall found for every wall reset, the other fighter 1100 in front of it, facing each other;
-    the slot recorded, played and looped; the dummy's behaviours cycled;
+    the slot recorded, played and looped; the dummy's behaviours cycled (nine since 1.3.0);
     a reset pressed while the dummy is in the air (after df+2) waits until both stand, then holds.
 
 The game runs muted and minimised; nothing of it is kept unless --keep. Exit 0 = PASS.
@@ -82,6 +82,8 @@ def drive(g):
             g.press("SQUARE", gap=300)
         g.wait(1.5)
         sel(g)
+    for _ in range(4):                                  # 1.3.0: the movement loops, then the game's own again
+        sel(g, "RIGHT", btn=None)
     sel(g, btn="SQUARE")                                # record slot 1: P1's pad plays the dummy
     g.hold("RIGHT")
     g.wait(1)
@@ -169,7 +171,8 @@ def check(log_lines):
     good(any(" record slot 1" in ln for ln in log_lines) and any(" play slot 1" in ln for ln in log_lines)
          and any(" loop slot 1" in ln for ln in log_lines), "slot 1 recorded, played and looped")
     modes = [ln.split()[2] for ln in log_lines if re.match(r"^\d+ dummy \w+$", ln)]
-    good(modes[:5] == ["block", "crouch", "walk", "step", "game"], f"dummy behaviours cycled: {modes}")
+    good(modes[:9] == ["block", "crouch", "walk", "step", "dash", "backdash", "kbd", "wavedash", "game"],
+         f"dummy behaviours cycled: {modes}")
     sets = [int(m.group(1)) for m in (re.match(r"^\d+ training dummy setting (\d+)", ln) for ln in log_lines) if m]
     good(4 in sets, "blocks after the first hit: the game's guard against all attacks (setting 4) after the hit")
     good(10 in sets, "crouch / walk / step / recordings: CONTROLLER (setting 10)")

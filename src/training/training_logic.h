@@ -531,6 +531,7 @@ enum class PAction : uint8_t {
     SlotPrev,          /* SELECT, tap d */
     DummyNext,         /* SELECT, tap f: the dummy's behaviour */
     DummyPrev,         /* SELECT, tap b */
+    RememberPos,       /* SELECT + START (1.3.0): keep both fighters' places; the restart goes there */
 };
 
 /* P1's SELECT combos. While SELECT is held -- and afterwards until P1's pad is
@@ -565,6 +566,9 @@ public:
                 } else if (btn & kSquare) out = PAction::Record;
                 else if (btn & kTriangle) out = PAction::Play;
                 else if (btn & kCircle) out = PAction::Loop;
+            } else if (press & kStart) {
+                tap_ = 0;
+                out = PAction::RememberPos;
             } else if (n.dir != dir_) {
                 if (dir_ == 5 && !(in & (kSquare | kTriangle | kCross | kCircle))) tap_ = n.dir;   /* a direction from neutral */
                 else if (n.dir == 5) {                                                            /* released */
@@ -737,8 +741,56 @@ enum class DummyMode : uint8_t {
     Crouch,         /* holds down */
     Walk,           /* walks forward and back */
     Step,           /* sidesteps, one way and then the other */
+    /* 1.3.0: movement loops, the inputs as a player enters them (forward = toward P1), on CONTROLLER */
+    Dash,           /* f,f and holds forward: a dash in, then a pause */
+    Backdash,       /* b,b: a backdash, then a pause */
+    BackdashCancel, /* b,b then u/b,b again and again: backdash cancels */
+    Wavedash,       /* f,n,d,d/f again and again: a wavedash for those who have one (a crouch dash) */
     Count
 };
+
+/* one step of a movement loop: the mask (forward = kRight) for this many frames */
+struct MoveStep { uint16_t rel; uint8_t frames; };
+/* the loop of a movement mode (n = steps), or nullptr */
+inline const MoveStep* move_script(DummyMode m, int* n)
+{
+    static const MoveStep dash[] = { { kRight, 2 }, { 0, 2 }, { kRight, 16 }, { 0, 42 } };
+    static const MoveStep bd[] = { { kLeft, 2 }, { 0, 2 }, { kLeft, 2 }, { 0, 44 } };
+    static const MoveStep kbd[] = { { kLeft, 2 }, { 0, 2 }, { kLeft, 3 },
+                                    { kUp | kLeft, 2 }, { kLeft, 3 }, { kUp | kLeft, 2 }, { kLeft, 3 },
+                                    { kUp | kLeft, 2 }, { kLeft, 3 }, { kUp | kLeft, 2 }, { kLeft, 3 }, { 0, 40 } };
+    static const MoveStep wave[] = { { kRight, 2 }, { 0, 2 }, { kDown, 2 }, { kDown | kRight, 2 },
+                                     { 0, 2 }, { kDown, 2 }, { kDown | kRight, 2 },
+                                     { 0, 2 }, { kDown, 2 }, { kDown | kRight, 2 }, { 0, 44 } };
+    switch (m) {
+    case DummyMode::Dash: *n = (int)(sizeof dash / sizeof dash[0]); return dash;
+    case DummyMode::Backdash: *n = (int)(sizeof bd / sizeof bd[0]); return bd;
+    case DummyMode::BackdashCancel: *n = (int)(sizeof kbd / sizeof kbd[0]); return kbd;
+    case DummyMode::Wavedash: *n = (int)(sizeof wave / sizeof wave[0]); return wave;
+    default: *n = 0; return nullptr;
+    }
+}
+/* the frames of one pass of a movement loop */
+inline int move_script_frames(DummyMode m)
+{
+    int n = 0, f = 0;
+    const MoveStep* s = move_script(m, &n);
+    for (int i = 0; i < n; i++) f += s[i].frames;
+    return f;
+}
+/* the mask of frame t of a movement loop (forward = kRight), 0 for other modes */
+inline uint16_t move_script_mask(DummyMode m, uint32_t t)
+{
+    int n = 0;
+    const MoveStep* s = move_script(m, &n);
+    if (!s) return 0;
+    uint32_t k = t % (uint32_t)move_script_frames(m);
+    for (int i = 0; i < n; i++) {
+        if (k < s[i].frames) return s[i].rel;
+        k -= s[i].frames;
+    }
+    return 0;
+}
 
 class Dummy {
 public:
@@ -771,6 +823,12 @@ public:
             const int k = t_ % kStepEvery;
             if (k < kStepTap) out = (t_ / kStepEvery) % 2 ? kDown : kUp;
             break; }
+        case DummyMode::Dash:
+        case DummyMode::Backdash:
+        case DummyMode::BackdashCancel:
+        case DummyMode::Wavedash:
+            out = from_rel(move_script_mask(m, t_), d.right);
+            break;
         default: break;
         }
         t_++;
@@ -796,7 +854,11 @@ public:
         case DummyMode::BlockAfterHit: return guard_ ? kSetGuardAll : kSetStand;
         case DummyMode::Crouch:
         case DummyMode::Walk:
-        case DummyMode::Step: return kSetController;
+        case DummyMode::Step:
+        case DummyMode::Dash:
+        case DummyMode::Backdash:
+        case DummyMode::BackdashCancel:
+        case DummyMode::Wavedash: return kSetController;
         default: return -1;
         }
     }
@@ -808,25 +870,43 @@ private:
     int idle_ = 0;
 };
 
-/* ---- recordings: 5 slots of the dummy's input -------------------------------------
+/* ---- recordings: 8 slots of the dummy's input (5 before 1.3.0) ---------------------
  * Stored as the dummy sees it (forward = toward the opponent), so a recording
- * plays the same from either side. */
+ * plays the same from either side. Since 1.3.0 the slots are saved per dummy
+ * character (practice_logic.h save_slots / load_slots) and a playback can take a
+ * random recorded slot each time (set_random). */
 class Recorder {
 public:
-    static constexpr int kSlots = 5;
+    static constexpr int kSlots = 8;
     static constexpr int kMaxFrames = 60 * 20;   /* 20 s per slot */
     enum class State : uint8_t { Idle, Recording, Playing, Looping };
 
     int slot() const { return slot_; }
+    /* the slot that plays now (the selected one, or the random pick) */
+    int play_slot() const { return play_; }
     State state() const { return st_; }
-    int length(int s) const { return len_[s]; }
+    int length(int s) const { return s >= 0 && s < kSlots ? len_[s] : 0; }
     int pos() const { return pos_; }
+    const uint16_t* data(int s) const { return data_[s]; }
+    int recorded() const { int n = 0; for (int s = 0; s < kSlots; s++) n += len_[s] > 0; return n; }
 
     void select(int delta)
     {
         if (st_ != State::Idle) stop();
         slot_ = ((slot_ + delta) % kSlots + kSlots) % kSlots;
     }
+    void select_slot(int s)
+    {
+        if (s < 0 || s >= kSlots || s == slot_) return;
+        if (st_ != State::Idle) stop();
+        slot_ = s;
+    }
+    /* random playback: every play (and every pass of a loop) takes one of the recorded slots
+     * (rng: any 32-bit value per call) */
+    void set_random(bool on) { random_ = on; }
+    bool random() const { return random_; }
+    void set_rng(uint32_t seed) { rng_ = seed ? seed : 0x9E3779B9u; }
+
     /* SELECT+1: start recording the current slot (its old content goes), or stop */
     void toggle_record()
     {
@@ -842,11 +922,46 @@ public:
         const State want = loop ? State::Looping : State::Playing;
         if (st_ == want) { stop(); return; }
         stop();
-        if (!len_[slot_]) return;
-        st_ = want;
+        play(loop);
+    }
+    /* start a playback (a counter-attack: always from the start); false: nothing recorded to play */
+    bool play(bool loop)
+    {
+        stop();
+        if (!pick()) return false;
+        st_ = loop ? State::Looping : State::Playing;
         pos_ = 0;
+        return true;
+    }
+    /* play slot s once from its start (s < 0: a random recorded slot); false: nothing recorded there */
+    bool play_once(int s)
+    {
+        stop();
+        if (s < 0) {
+            const bool r = random_;
+            random_ = true;
+            const bool ok = pick();
+            random_ = r;
+            if (!ok) return false;
+        } else {
+            if (s >= kSlots || !len_[s]) return false;
+            play_ = s;
+        }
+        st_ = State::Playing;
+        pos_ = 0;
+        return true;
     }
     void stop() { st_ = State::Idle; pos_ = 0; }
+    void clear(int s) { if (s >= 0 && s < kSlots) { if (s == slot_ || s == play_) stop(); len_[s] = 0; } }
+    /* a slot from a file (n frames, cut to kMaxFrames) */
+    void set(int s, const uint16_t* d, int n)
+    {
+        if (s < 0 || s >= kSlots) return;
+        if (n > kMaxFrames) n = kMaxFrames;
+        if (n < 0) n = 0;
+        for (int i = 0; i < n; i++) data_[s][i] = (uint16_t)(d[i] & ~(kSelect | kStart));
+        len_[s] = n;
+    }
 
     /* Recording: one frame of the recorder's pad (rel: forward = kRight). Stops by itself when the slot is full. */
     void record(uint16_t rel)
@@ -859,16 +974,28 @@ public:
     bool next(uint16_t* rel)
     {
         if (st_ != State::Playing && st_ != State::Looping) return false;
-        if (pos_ >= len_[slot_]) {
-            if (st_ == State::Looping && len_[slot_]) pos_ = 0;
+        if (pos_ >= len_[play_]) {
+            if (st_ == State::Looping && pick()) pos_ = 0;
             else { stop(); return false; }
         }
-        *rel = data_[slot_][pos_++];
+        *rel = data_[play_][pos_++];
         return true;
     }
     void clear_all() { *this = Recorder{}; }
 
 private:
+    /* the slot to play: the selected one, or a random recorded one */
+    bool pick()
+    {
+        if (!random_) { play_ = slot_; return len_[slot_] > 0; }
+        const int n = recorded();
+        if (!n) return false;
+        rng_ ^= rng_ << 13; rng_ ^= rng_ >> 17; rng_ ^= rng_ << 5;
+        int k = (int)(rng_ % (uint32_t)n);
+        for (int s = 0; s < kSlots; s++)
+            if (len_[s] && k-- == 0) { play_ = s; return true; }
+        return false;
+    }
     /* the neutral frames before the first input go (letting go of the SELECT combo); the
      * rest stays, so a loop keeps its pause at the end */
     void trim(int s)
@@ -881,7 +1008,9 @@ private:
     }
     uint16_t data_[kSlots][kMaxFrames] = {};
     int len_[kSlots] = {};
-    int slot_ = 0, pos_ = 0;
+    int slot_ = 0, pos_ = 0, play_ = 0;
+    bool random_ = false;
+    uint32_t rng_ = 0x9E3779B9u;
     State st_ = State::Idle;
 };
 

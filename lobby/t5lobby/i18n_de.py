@@ -754,14 +754,20 @@ MESSAGES = {
     "Crouches": "Duckt sich",
     "Walks forward and back": "Geht vor und zurück",
     "Sidesteps": "Macht Seitschritte",
-    "In Practice, hold SELECT and press: 3 round start; f+3 / b+3 the dummy against the wall in front "
-    "of / behind you; df+3 / db+3 you against the wall in front of / behind you. 1 records the dummy "
-    "(you play it), 2 plays the recording once, 4 in a loop; tap up / down for slot 1-5, forward / "
-    "back for what the dummy does.":
-        "Im Practice-Modus SELECT halten und drücken: 3 Rundenstart; f+3 / b+3 der Dummy an der Wand vor "
-        "/ hinter dir; df+3 / db+3 du an der Wand vor / hinter dir. 1 nimmt den Dummy auf (du steuerst "
-        "ihn), 2 spielt die Aufnahme einmal ab, 4 in Schleife; oben / unten tippen für Platz 1-5, vor / "
-        "zurück für das, was der Dummy tut.",
+    "Dashes in": "Dasht nach vorn",
+    "Backdashes": "Macht Backdashes",
+    "Backdash cancels": "Backdash-Cancel",
+    "Wavedashes": "Wavedash",
+    "In Practice, START opens the practice menu: the dummy's behaviour and counter-attack, recordings (8 "
+    "slots per character, kept for next time), restart position, input delay. Hold SELECT and press: 3 "
+    "restart; f+3 / b+3 the dummy against the wall in front of / behind you; df+3 / db+3 you against the "
+    "wall; START remembers the position. 1 records the dummy (you play it), 2 plays once, 4 in a loop; "
+    "tap up / down for the slot.":
+        "Im Practice-Modus öffnet START das Trainingsmenü: Verhalten und Konter des Dummys, Aufnahmen (8 "
+        "Plätze pro Figur, bleiben gespeichert), Startposition, Eingabeverzögerung. SELECT halten und "
+        "drücken: 3 Neustart; f+3 / b+3 der Dummy an der Wand vor / hinter dir; df+3 / db+3 du an der Wand; "
+        "START merkt sich die Position. 1 nimmt den Dummy auf (du steuerst ihn), 2 spielt einmal ab, 4 in "
+        "Schleife; oben / unten tippen für den Platz.",
     "Also online (only your own inputs, no frame data)": "Auch online (nur deine eigenen Eingaben, keine Framedaten)",
     "In Practice: your last inputs with how many frames each was held, and after each exchange the "
     "startup of the move and who can act first (+3, -12). F2 in the game switches it.":

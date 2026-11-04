@@ -313,6 +313,59 @@ stage 20, 2 rounds), 8 logical processors per game:
 | D0a | 0 / auto, RTT 0 | 3 ms | 1 (auto: the settings differ) | 0 | same |
 | K0, K50, K150 | lockstep (`T5_RB_MODE=off`), RTT 0/50/150 | -- | lockstep delay 6 | 0 | same |
 
+## Online feel and rollback capacity
+
+Branch `netext` (`src/netplay/rollback_feel.h`, `netplay_core.cpp` `decide_rb_delay_locked`, `rb_net.cpp`
+`CostAcc`). Only the host's **auto** pick changes (above: different settings, or `auto` on either side); a fixed value
+both players chose and every value the lobby sends (ranked, far matches, a challenge's delay) stay exactly as they
+were. The pick still travels in PING / INPUT as `rbd` from the host's match start, so both PCs use the same delay
+from the same frame: nothing the game simulates changes, only which delay the two agree on.
+
+**Rollback capacity.** In every online fight the rollback loop measures this PC: the main thread's CPU time for a
+live fight frame without the rollbacks in it (L: the game's frame and the snapshot), the restore (R) and the wall
+time of a re-simulated frame (S). Once 30 rollbacks and 600 live fight frames are in (at a session's end: 10 and
+300) the netplay core keeps them -- halfway between the old value and the new one -- and writes them to
+`T5_RB_COST_FILE` (the launcher: `<out>/rb_cost.txt`), so the next game starts with them. The capacity is the
+deepest rollback the PC can run inside one frame and still keep 60 fps:
+`C = floor((15 ms - L - R) / S)`, 0..15 (15 ms of the 16.7: room for the present and jitter). On this dev PC in a
+fight (L ~5, R ~0.6, S ~1.9 ms) that is 5; a weak 4-core laptop (L 12, R 1, S 4) gets 0. `T5_RB_COST=L,R,S` sets
+the numbers (tests).
+
+**HELLO.** A game that offers rollback sets flag bit 2 (`kHelloRbCost`) and appends 8 bytes after the HelloExt:
+`HelloCost {feel, cap, live_us, restore_us, resim_us}` (feel 0 responsive / 1 balanced / 2 smooth, cap 0xFF = not
+measured). An older game copies only the 12 bytes of the HelloExt and never looks further, and an older peer's HELLO
+has no flag: no protocol version change, a 1.2.0 game connects both ways. The host logs both sides: `the opponent's
+online feel: balanced, rollback capacity 3 frame(s) (...)`.
+
+**The pick.** Each player chooses an **online feel** (launcher Settings -> Online input delay -> Online feel,
+`T5_RB_NET_FEEL`): two equal choices count, two different ones meet at Balanced, a peer without the HELLO extension
+(1.2.0) leaves the host's own. With the expected rollback depth `E = ceil(rtt / 33.4 ms) + 1 - delay` (frames of the
+opponent's input still on the way) and the slower PC's capacity (the smaller of the known ones):
+
+| Feel | Delay |
+|---|---|
+| Responsive | the 1.2.0 auto pick (1 up to 60 ms, 2 above) |
+| Balanced (default) | the auto pick, one frame more when the slower PC cannot re-simulate E inside a frame (E > C): its rollbacks would drop frames, and the game waits for the slower PC |
+| Smooth | at least `ceil(rtt / 33.4 ms) + 1 - 2` (at most two frames predicted), at most two more than the auto pick, and the capacity frame on top when still needed |
+
+Never above the session's lockstep delay (`T5_NET_DELAY`, the lobby's suggestion) and never below the auto pick.
+The log: `online feel balanced (this player balanced, the opponent balanced), rollback capacity this PC 5 / opponent
+0 frame(s), expected depth 3 -> 3 frame(s): balanced: a frame for the slower PC's rollbacks`. The opt-in jitter rule
+(`T5_RB_NET_ADAPTIVE_DELAY`, docs/ROLLBACK_120.md) runs after it as before. A delay changed during a match would need
+a frame-indexed protocol and replay support; the choice stays frozen for the session, like every rollback delay.
+
+### Connection line
+
+`T5_NET_LINE=1` (launcher Settings -> "Show the connection line in online matches", off by default) and F3 in the
+game (focus needed, like F2) show one line at the bottom of the picture during an online session: `Ping 52 ms |
+Delay 2 (+1) | Rollbacks 3.1/s max 4 | direct | 60 fps` -- the PING median (green up to 80 ms, yellow up to 150, red
+above), the input delay now (on the host with the frames the online feel added), rollbacks per second and the deepest
+one of the last ~2 s, the path from the lobby (`T5_NET_PATH`), this PC's frames per second; "Lockstep" in a lockstep
+session, "Waiting for the opponent" while it is not connected. Updated 4 times a second from the main thread's live
+boundary (never in a re-simulated frame); it reads the netplay core's and the rollback loop's numbers only. Drawn into
+the runtime overlay's status layer (ps3recomp patch 0113: layer 2, drawn over the training display and the rematch
+panel instead of replacing them). Every ~10 s the netplay log has `connection line: ...` with the same text.
+
 ## Which controller plays online (1.1.2)
 
 Player report on 1.1.1: "my DualSense works only offline; the launcher doesn't see it at all". The runtime

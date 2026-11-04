@@ -246,6 +246,20 @@ struct Stats {
 } g_st, g_tot;
 LARGE_INTEGER g_t_window;
 
+/* This PC's rollback cost (docs/NETPLAY.md "Online feel and rollback capacity"), measured in fights only: the main
+ * thread's CPU time per live frame without the rollbacks in it, the restore, the re-simulated frames' wall time.
+ * Handed to the netplay core (np::rb_cost_note) once 30 rollbacks and 600 live frames are in. Host-side numbers
+ * only; nothing here changes what the game simulates. */
+struct CostAcc {
+    uint64_t prev_cyc = 0; bool prev_ok = false;
+    uint64_t rb_cyc = 0;                 /* rollback CPU since the last live boundary */
+    double live_ms = 0; uint32_t live_n = 0;
+    double restore_ms = 0, resim_ms = 0; uint32_t rb_n = 0, resim_n = 0;
+    double last_rms = 0;                 /* the current rollback's restore */
+} g_cost;
+/* the connection line (line_stats) */
+uint32_t g_line_rollbacks = 0, g_line_deepest = 0;
+
 double ms_since(LARGE_INTEGER t0) { LARGE_INTEGER t; QueryPerformanceCounter(&t); return 1000.0 * (double)(t.QuadPart - t0.QuadPart) / (double)g_qpf.QuadPart; }
 
 np::PadInput remote_for(uint32_t g, bool* predicted)
@@ -312,6 +326,17 @@ double ft_pct(const uint32_t* h, double q)
     return kFtBins * 0.5;
 }
 
+/* Enough measured (or the session ends with at least a little): this PC's rollback cost to the netplay core. */
+void cost_flush(bool session_end)
+{
+    const uint32_t need_rb = session_end ? 10 : 30, need_live = session_end ? 300 : 600;
+    if (g_cost.rb_n >= need_rb && g_cost.live_n >= need_live && g_cost.resim_n)
+        np::rb_cost_note(g_cost.live_ms / g_cost.live_n, g_cost.restore_ms / g_cost.rb_n, g_cost.resim_ms / g_cost.resim_n);
+    else if (!session_end)
+        return;   /* keep collecting */
+    g_cost = CostAcc();
+}
+
 void report()
 {
     const double win_ms = ms_since(g_t_window);
@@ -355,6 +380,7 @@ void report()
          g_st.early_rollbacks, g_st.rollbacks, g_st.early_wait_ms, g_st.frames ? g_st.early_commit_ms / g_st.frames : 0.0,
          (unsigned long long)dcut_hits());
     memset(g_ft_win, 0, sizeof g_ft_win);
+    cost_flush(false);
     g_tot.frames += g_st.frames; g_tot.rollbacks += g_st.rollbacks; g_tot.resim_frames += g_st.resim_frames;
     g_tot.max_depth = std::max(g_tot.max_depth, g_st.max_depth); g_tot.stalls += g_st.stalls; g_tot.predicted += g_st.predicted;
     g_tot.rollback_ms += g_st.rollback_ms; g_tot.rollback_ms_max = std::max(g_tot.rollback_ms_max, g_st.rollback_ms_max);
@@ -533,6 +559,8 @@ void session_reset()
     cellGcm_display_margin_min_ms(-1.0);   /* ... and the display lock's own margin */
     sound_reset();
     report();
+    cost_flush(true);
+    g_line_rollbacks = g_line_deepest = 0;
     note("rbnet: session over: the loop stops (whole session: %u frames, %u rollbacks, %u stalls; reader tokens given back %u)",
          g_tot.frames, g_tot.rollbacks, g_tot.stalls, g_tot.reader_tokens);
     { char hs[256]; sndheap_stats(hs, sizeof hs); note("rbnet: sound heap: %s", hs); }
@@ -551,6 +579,15 @@ void session_reset()
     g_st = Stats(); g_tot = Stats();
     g_dumps = 0;   /* T5_NET_DESYNC_DUMP: 20 per session (a deliberately desynced session used to take them all) */
     state_reset();
+}
+
+bool line_stats(uint32_t* rollbacks, uint32_t* deepest)
+{
+    if (!g_active) return false;
+    if (rollbacks) *rollbacks = g_line_rollbacks;
+    if (deepest) *deepest = g_line_deepest;
+    g_line_deepest = 0;
+    return true;
 }
 
 bool final_hash(uint32_t f, uint64_t* h)
@@ -732,6 +769,8 @@ static bool start_rollback(uint32_t f, uint32_t first_wrong, np::PadInput out[2]
     LATLOG('M', "%u %u %.2f", f, first_wrong, rms);   /* PS3_LATENCY_LOG: rollback from f to first_wrong (restore ms) */
     g_st.rollbacks++; g_st.depth_hist[std::min<uint32_t>(depth, 16)]++; g_st.restore_ms += rms;
     if (depth > g_st.max_depth) g_st.max_depth = depth;
+    g_line_rollbacks++; if (depth > g_line_deepest) g_line_deepest = depth;
+    g_cost.last_rms = rms;
     QueryPerformanceCounter(&g_resim_t0);
     if (g_sample_left) { g_sample_left--; sample_start(); g_sampling = true; }   /* T5_RB_NET_SAMPLE */
     g_resim = true; g_resim_from = first_wrong; g_resim_target = f;
@@ -778,6 +817,11 @@ static void rollback_done(uint32_t f)
     g_st.rs_jobs += cellSpurs_jobs_run() - g_rs_jobs0;
     const uint32_t d = std::min<uint32_t>(g_resim_target - g_resim_from, 16);
     g_st.depth_ms[d] += wall; if (wall > g_st.depth_ms_max[d]) g_st.depth_ms_max[d] = wall;
+    g_cost.rb_cyc += thread_cycles() - g_rs_cyc0;
+    if (fighting_now() && g_resim_target > g_resim_from && wall > g_cost.last_rms) {
+        g_cost.restore_ms += g_cost.last_rms; g_cost.rb_n++;
+        g_cost.resim_ms += wall - g_cost.last_rms; g_cost.resim_n += g_resim_target - g_resim_from;
+    }
     if (g_early_f == f && !g_tick_waited && g_early_tick_seen) {   /* an early rollback that the tick overtook */
         const double late = 1000.0 * (double)(t.QuadPart - g_t_tick_seen.QuadPart) / (double)g_qpf.QuadPart;
         g_st.late++; g_st.late_ms += late; if (late > g_st.late_ms_max) g_st.late_ms_max = late;
@@ -896,6 +940,14 @@ static uint32_t boundary(uint32_t f, bool scene_flag, np::PadInput out[2])
     } else {
         g_st.commit_ms += cms;
         g_st.frames++;
+        {   /* rollback cost: the main thread's CPU since the last live boundary, the rollbacks in it left out */
+            const uint64_t c = thread_cycles();
+            if (g_cost.prev_ok && fighting_now()) {
+                const double ms = ((double)(c - g_cost.prev_cyc) - (double)g_cost.rb_cyc) / cyc_per_ms();
+                if (ms > 0 && ms < 100) { g_cost.live_ms += ms; g_cost.live_n++; }
+            }
+            g_cost.prev_cyc = c; g_cost.prev_ok = true; g_cost.rb_cyc = 0;
+        }
         /* the title's ATRAC streaming rings are the feeder thread's: never rewound */
         if ((f % 30) == 0) {
             uint32_t ea[16], sz[16];

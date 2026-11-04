@@ -181,6 +181,22 @@ void     rb_set_lead(int lead);
 int      rb_peer_lead();
 uint32_t rb_mismatches();
 uint32_t rb_peer_ack();                          /* the peer has our inputs for frames < this */
+/* Online feel (docs/NETPLAY.md "Online feel and rollback capacity"): the rollback loop's measurement of this PC
+ * in a match -- main-thread ms per live fight frame, per restore, per re-simulated frame. Kept for the process
+ * and in T5_RB_COST_FILE; every HELLO carries it. */
+void     rb_cost_note(double live_ms, double restore_ms, double resim_ms);
+/* The connection line (net_line.cpp, T5_NET_LINE / F3): the session's numbers now. */
+struct LineInfo {
+    bool active = false;       /* host or join (not local, not a replay) */
+    bool connected = false;
+    bool rollback = false;     /* both offered rollback (else the lockstep) */
+    int  rtt_ms = -1;          /* PING median, else the lobby's; -1 unknown */
+    int  rtt_samples = 0;
+    int  delay = 0;            /* the input delay now (the match's rollback delay once agreed) */
+    int  feel_extra = -1;      /* host: frames the online feel added (-1: not known here) */
+    char path[16] = {};        /* T5_NET_PATH: direct | lan | relay | "" */
+};
+LineInfo line_info();
 
 /* While on, the local player's sample is exactly `buttons` (direct-fight menu
  * driving during lockstep; see t5_netplay_inject). */

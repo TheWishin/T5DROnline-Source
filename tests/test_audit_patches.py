@@ -49,6 +49,7 @@ class PatchAudit(unittest.TestCase):
             "0103-vrr-pacing.patch", "0104-low-end.patch", "0105-warmup-hidden.patch",
             "0106-kernel-edge.patch", "0107-picture-format.patch", "0109-picture-copy-scissor.patch",
             "0110-always-left-split-hud.patch", "0111-always-left-kernel-copy.patch",
+            "0113-overlay-status-layer.patch",
         )
         header = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
         for name in names:

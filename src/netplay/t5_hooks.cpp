@@ -96,6 +96,7 @@ extern "C" uint32_t t5_df_mode_cur(void);  /* src/directfight/df_fight.cpp: the 
 extern "C" uint32_t t5_df_mode_next(void); /* src/directfight/df_fight.cpp: the mode the manager was asked for (14 = none) */
 extern "C" void t5_df_window_closed(void);   /* src/directfight/df_fight.cpp: state.json "quit" (persistent game) */
 extern "C" void t5_training_frame(ppu_context* ctx);   /* src/training/training.cpp: the training overlay */
+void t5_net_line_frame();   /* net_line.cpp: the connection line (T5_NET_LINE / F3), read only */
 extern "C" void t5_always_left_frame(void);              /* always_left.cpp: "Always left" (T5_ALWAYS_LEFT) */
 extern "C" void t5_always_left_pad_read(ppu_context* ctx);   /* always_left.cpp: offline port 2, mirrored */
 bool t5_always_left_enabled();
@@ -1682,6 +1683,7 @@ void on_frame_start(ppu_context* ctx)
     if (!rb::net::bypass() && !np::replaying() &&
         ctx->thread_id == (g_main_tid != ~0ull ? g_main_tid : 1)) df::ui_tick();
     if (!rb::net::bypass()) t5_training_frame(ctx);   /* src/training: reads the frame that just ran (read only) */
+    if (!rb::net::bypass() && ctx->thread_id == (g_main_tid != ~0ull ? g_main_tid : 1)) t5_net_line_frame();
     if (!rb::net::bypass()) t5_always_left_frame();   /* "Always left": this PC's picture and pad only */
     rb::rand_install();   /* the game-DLL build: once the lifted table is out (no-op after the first time) */
     t5_unlock_install();  /* likewise */

@@ -64,6 +64,7 @@
 #include "net_bind.h"
 #include "netplay.h"
 #include "rollback_delay.h"
+#include "rollback_feel.h"
 #include "replay.h"
 #include "replay_paths.h"
 #include "match_rule_agreement.h"
@@ -139,6 +140,11 @@ constexpr uint32_t kCostumeMax   = 10240;   /* a table, at most (src/directfight
 constexpr uint32_t kCostumeChunk = 1024;    /* a piece: at most 10, one bit each in ack_mask */
 constexpr uint32_t kHelloRollback = 1u;
 constexpr uint32_t kHelloMatchRules = 2u;  /* optional v4 extension; old peers ignore it */
+constexpr uint32_t kHelloRbCost = 4u;      /* netext: a HelloCost follows the HelloExt (an older game reads only the HelloExt) */
+/* The sender's online feel and what a rollback costs on its PC (docs/NETPLAY.md "Online feel and rollback
+ * capacity"): the host's auto pick adds a frame when the slower PC cannot re-simulate the expected depth inside a
+ * frame. Times in microseconds (0: not measured); cap: rollback_feel.h capacity() (0xFF: not measured). */
+struct HelloCost { uint8_t feel; uint8_t cap; uint16_t live_us; uint16_t restore_us; uint16_t resim_us; };
 constexpr int      kRbAuto = 0xFF;    /* T5_RB_NET_DELAY=auto: the input delay follows the measured round trip */
 #pragma pack(pop)
 
@@ -249,6 +255,10 @@ struct Session {
     int  rb_auto_ms = 60;              /* T5_RB_NET_DELAY_AUTO: round trip up to which auto picks 1 frame */
     bool rb_adaptive_delay = false;     /* opt-in jitter policy, frozen at match start */
     int  rb_adaptive_cap = 3;           /* never above the existing lockstep delay */
+    uint8_t rb_feel = feel::kBalanced;  /* T5_RB_NET_FEEL: this player's online feel (responsive | balanced | smooth) */
+    bool peer_cost_known = false;       /* the peer's HELLO carried a HelloCost (an older game sends none) */
+    HelloCost peer_cost{ feel::kUnknown, feel::kCapUnknown, 0, 0, 0 };
+    int rb_feel_extra = 0;              /* host: frames the online feel added to the match's delay (connection line) */
     uint32_t peer_ping_us = 0;         /* t_us of the peer's last PING, and when it arrived (our clock) */
     uint64_t peer_ping_rx_us = 0;
     float rtt_ms[32] = {};             /* round-trip samples from PING echoes */
@@ -402,6 +412,62 @@ std::string path_env(const char* k)
         if (it != g_env_over.end()) return it->second.first ? it->second.second : std::string();
     }
     return replay_paths::env(k);
+}
+
+/* ---- this PC's rollback cost (docs/NETPLAY.md "Online feel and rollback capacity") ----------------------------
+ * The rollback loop (rb_net.cpp) measures it in fights and hands it over (rb_cost_note); it outlives the session
+ * (a persistent game plays many) and goes to T5_RB_COST_FILE (the launcher: <out>/rb_cost.txt), so the next game
+ * starts with it. T5_RB_COST=<live ms>,<restore ms>,<resim ms> sets it (tests). Sent in every HELLO. */
+struct LocalCost { bool known = false; double live_ms = 0, restore_ms = 0, resim_ms = 0; uint32_t matches = 0; };
+std::mutex g_cost_mu;
+LocalCost g_cost;
+bool g_cost_loaded = false, g_cost_forced = false;
+
+bool parse_cost(const char* v, LocalCost* c)
+{
+    double l = 0, r = 0, s = 0;
+    unsigned m = 1;
+    if (!v || sscanf(v, "%lf,%lf,%lf,%u", &l, &r, &s, &m) < 3) return false;
+    if (!(l >= 0 && l < 200 && r >= 0 && r < 200 && s > 0 && s < 200)) return false;
+    c->known = true; c->live_ms = l; c->restore_ms = r; c->resim_ms = s; c->matches = m;
+    return true;
+}
+
+/* (caller holds g_cost_mu) the file or the test override, once per process */
+void cost_load_locked()
+{
+    if (g_cost_loaded) return;
+    g_cost_loaded = true;
+    if (parse_cost(env("T5_RB_COST"), &g_cost)) { g_cost_forced = true; return; }
+    const std::string path = path_env("T5_RB_COST_FILE");
+    if (path.empty()) return;
+    if (FILE* fp = replay_paths::open(path.c_str(), "rb")) {
+        char buf[128] = { 0 };
+        const size_t n = fread(buf, 1, sizeof buf - 1, fp);
+        fclose(fp);
+        buf[n] = 0;
+        LocalCost c;
+        if (parse_cost(buf, &c)) g_cost = c;
+    }
+}
+
+LocalCost local_cost()
+{
+    std::lock_guard<std::mutex> lk(g_cost_mu);
+    cost_load_locked();
+    return g_cost;
+}
+
+HelloCost local_hello_cost(uint8_t feel_choice)
+{
+    const LocalCost c = local_cost();
+    auto us = [](double ms) { return (uint16_t)std::max(0.0, std::min(65535.0, ms * 1000.0 + 0.5)); };
+    HelloCost h{ feel_choice, feel::kCapUnknown, 0, 0, 0 };
+    if (c.known) {
+        h.cap = feel::capacity(c.live_ms, c.restore_ms, c.resim_ms);
+        h.live_us = us(c.live_ms); h.restore_us = us(c.restore_ms); h.resim_us = us(c.resim_ms);
+    }
+    return h;
 }
 
 /* What decides this PC's floating-point results, for the log: the target the
@@ -667,9 +733,11 @@ Hdr make_hdr(uint8_t type)
 void send_hello_locked(const sockaddr_in* to = nullptr)
 {
     State& s = S();
-    struct { Hdr h; HelloExt x; } p = { make_hdr(PKT_HELLO), { s.build, s.seed, kHelloMatchRules |
-        (s.rb_offer ? (kHelloRollback | ((uint32_t)(s.rb_delay & 0xFF) << 8)) : 0u) } };
-    send_to(&p, sizeof p, to);
+    /* (the HelloCost goes with a rollback offer only: the lockstep's delay is the host's T5_NET_DELAY) */
+    struct { Hdr h; HelloExt x; HelloCost c; } p = { make_hdr(PKT_HELLO), { s.build, s.seed, kHelloMatchRules |
+        (s.rb_offer ? (kHelloRollback | kHelloRbCost | ((uint32_t)(s.rb_delay & 0xFF) << 8)) : 0u) },
+        local_hello_cost(s.rb_feel) };
+    send_to(&p, s.rb_offer ? (int)sizeof p : (int)(sizeof p.h + sizeof p.x), to);
     s.last_hello_ms = GetTickCount64();
 }
 
@@ -834,6 +902,23 @@ void decide_rb_delay_locked()
                  rtt, samples, samples ? "" : ", lobby's measurement", pick, s.rb_auto_ms,
                  s.rb_delay == kRbAuto ? "auto" : std::to_string(s.rb_delay).c_str(),
                  peer < 0 ? "?" : peer == kRbAuto ? "auto" : std::to_string(peer).c_str());
+        if (s.mode == Mode::Host) {
+            /* online feel + rollback capacity (rollback_feel.h): an older peer sends neither -- then this
+             * player's choice and this PC's capacity alone */
+            const HelloCost mine = local_hello_cost(s.rb_feel);
+            const uint8_t theirs_feel = s.peer_cost_known ? s.peer_cost.feel : feel::kUnknown;
+            const uint8_t theirs_cap = s.peer_cost_known ? s.peer_cost.cap : feel::kCapUnknown;
+            const uint8_t f = feel::combine(s.rb_feel, theirs_feel);
+            const uint8_t cap = feel::slower(mine.cap, theirs_cap);
+            const feel::Pick fp = feel::decide(pick, rtt, s.delay, f, cap);
+            auto capstr = [](uint8_t c) { return c == feel::kCapUnknown ? std::string("?") : std::to_string(c); };
+            note("online feel %s (this player %s, the opponent %s), rollback capacity this PC %s / opponent %s frame(s), "
+                 "expected depth %d -> %d frame(s): %s", feel::name(f), feel::name(s.rb_feel),
+                 s.peer_cost_known ? feel::name(theirs_feel) : "an older game", capstr(mine.cap).c_str(),
+                 capstr(theirs_cap).c_str(), fp.depth, fp.delay, fp.why);
+            s.rb_feel_extra = fp.extra;
+            pick = fp.delay;
+        }
         if (s.rb_adaptive_delay && s.mode == Mode::Host) {
             const int before = pick;
             pick = detail::jitter_delay(s.rtt_ms, std::min<uint32_t>(s.nrtt, 32), pick,
@@ -1182,6 +1267,15 @@ void handle_packet(const uint8_t* p, int n, const sockaddr_in& from)
         s.peer_match_rules_known = true;
         s.rb_peer = (x.flags & kHelloRollback) != 0;
         if (s.rb_peer) s.peer_rb_delay = (int)((x.flags >> 8) & 0xFF);
+        if ((x.flags & kHelloRbCost) && n >= (int)(sizeof(Hdr) + sizeof(HelloExt) + sizeof(HelloCost))) {
+            HelloCost c; memcpy(&c, (const uint8_t*)(h + 1) + sizeof(HelloExt), sizeof c);
+            if (!s.peer_cost_known || memcmp(&c, &s.peer_cost, sizeof c))
+                note("the opponent's online feel: %s, rollback capacity %s (live frame %.2f ms, restore %.2f ms, "
+                     "re-simulated frame %.2f ms)", feel::name(c.feel),
+                     c.cap == feel::kCapUnknown ? "not measured yet" : (std::to_string(c.cap) + " frame(s)").c_str(),
+                     c.live_us / 1000.0, c.restore_us / 1000.0, c.resim_us / 1000.0);
+            s.peer_cost = c; s.peer_cost_known = true;
+        }
         if (s.mode == Mode::Host) {
             /* Before the handshake the latest valid hello is the candidate; the
              * echo of our session id (the joiner adopted it) completes it. */
@@ -1519,6 +1613,7 @@ void configure()
     if (const char* v = env("T5_RB_NET_DELAY_AUTO")) s.rb_auto_ms = std::max(0, std::min(1000, atoi(v)));
     if (const char* v = env("T5_RB_NET_ADAPTIVE_DELAY")) s.rb_adaptive_delay = !strcmp(v, "1");
     if (const char* v = env("T5_RB_NET_ADAPTIVE_CAP")) s.rb_adaptive_cap = std::max(1, std::min(6, atoi(v)));
+    s.rb_feel = feel::parse(env("T5_RB_NET_FEEL"));
     if (s.delay < 0) s.delay = 0;
     if (s.delay > kMaxDelay) s.delay = kMaxDelay;
     if (const char* v = env("T5_NET_TIMEOUT")) s.timeout_s = atoi(v);
@@ -2353,6 +2448,61 @@ int rb_apply_delay()
     return s.delay;
 }
 int rb_rtt_ms() { State& s = S(); std::lock_guard<std::mutex> lk(s.mu); int n = 0; return (int)(rtt_estimate_locked(&n) + 0.5f); }
+
+/* The rollback loop measured this PC in a match (ms per live fight frame, per restore, per re-simulated frame):
+ * the kept value moves halfway towards it, and the file gets it for the next game. */
+void rb_cost_note(double live_ms, double restore_ms, double resim_ms)
+{
+    LocalCost c;
+    if (!(live_ms >= 0 && live_ms < 200 && restore_ms >= 0 && restore_ms < 200 && resim_ms > 0 && resim_ms < 200)) return;
+    std::string path;
+    {
+        std::lock_guard<std::mutex> lk(g_cost_mu);
+        cost_load_locked();
+        if (g_cost_forced) return;              /* T5_RB_COST (tests): the given numbers stay */
+        if (g_cost.known) {
+            g_cost.live_ms = 0.5 * (g_cost.live_ms + live_ms);
+            g_cost.restore_ms = 0.5 * (g_cost.restore_ms + restore_ms);
+            g_cost.resim_ms = 0.5 * (g_cost.resim_ms + resim_ms);
+            g_cost.matches++;
+        } else {
+            g_cost.known = true; g_cost.live_ms = live_ms; g_cost.restore_ms = restore_ms; g_cost.resim_ms = resim_ms;
+            g_cost.matches = 1;
+        }
+        c = g_cost;
+        path = path_env("T5_RB_COST_FILE");
+    }
+    note("rollback cost on this PC: live frame %.2f ms, restore %.2f ms, re-simulated frame %.2f ms -> capacity %u "
+         "frame(s) (kept: %.2f / %.2f / %.2f ms, %u measurement(s))", live_ms, restore_ms, resim_ms,
+         (unsigned)feel::capacity(c.live_ms, c.restore_ms, c.resim_ms), c.live_ms, c.restore_ms, c.resim_ms, c.matches);
+    if (path.empty()) return;
+    const std::string tmp = path + ".tmp";
+    if (FILE* fp = replay_paths::open(tmp.c_str(), "wb")) {
+        fprintf(fp, "%.3f,%.3f,%.3f,%u\n# live ms, restore ms, re-simulated frame ms, measurements (T5DR rollback cost)\n",
+                c.live_ms, c.restore_ms, c.resim_ms, c.matches);
+        fclose(fp);
+        if (!replay_paths::replace(tmp.c_str(), path.c_str())) note("rollback cost: cannot write %s", path.c_str());
+    }
+}
+
+/* The connection line (net_line.cpp): what the session knows now. */
+LineInfo line_info()
+{
+    State& s = S();
+    std::lock_guard<std::mutex> lk(s.mu);
+    LineInfo li;
+    li.active = s.mode == Mode::Host || s.mode == Mode::Join;
+    li.connected = s.connected && !s.peer_lost;
+    li.rollback = s.rb_offer && s.rb_peer;
+    int n = 0;
+    li.rtt_ms = li.active ? (int)(rtt_estimate_locked(&n) + 0.5f) : -1;
+    li.rtt_samples = n;
+    li.delay = s.delay;
+    li.feel_extra = s.mode == Mode::Host ? s.rb_feel_extra : -1;
+    const char* p = env("T5_NET_PATH");
+    snprintf(li.path, sizeof li.path, "%s", p ? p : "");
+    return li;
+}
 void rb_set_lead(int lead) { State& s = S(); std::lock_guard<std::mutex> lk(s.mu); s.local_lead = (int8_t)std::max(-100, std::min(100, lead)); }
 int  rb_peer_lead() { State& s = S(); std::lock_guard<std::mutex> lk(s.mu); return s.peer_lead; }
 uint32_t rb_mismatches() { State& s = S(); std::lock_guard<std::mutex> lk(s.mu); return s.mismatches; }

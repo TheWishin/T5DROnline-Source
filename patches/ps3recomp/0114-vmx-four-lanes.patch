@@ -1,0 +1,129 @@
+diff --git a/runtime/ppu/ppu_vmx.h b/runtime/ppu/ppu_vmx.h
+--- a/runtime/ppu/ppu_vmx.h
++++ b/runtime/ppu/ppu_vmx.h
+@@ -271,12 +271,12 @@
+     if (x == 0 && y == 0) return signbit(x) ? x : y;      /* min(-0,+0) = -0 */
+     return x < y ? x : y;
+ }
+-VMX_FBIN(vmx_vaddfp, vmx_f(x) + vmx_f(y), 1)
+-VMX_FBIN(vmx_vsubfp, vmx_f(x) - vmx_f(y), 1)
++VMX_FBIN(vmx_vaddfp_scalar, vmx_f(x) + vmx_f(y), 1)
++VMX_FBIN(vmx_vsubfp_scalar, vmx_f(x) - vmx_f(y), 1)
+ VMX_FBIN(vmx_vmaxfp, vmx_maxf(vmx_f(x), vmx_f(y)), 0)
+ VMX_FBIN(vmx_vminfp, vmx_minf(vmx_f(x), vmx_f(y)), 0)
+ 
+-VMX_INL void vmx_vmaddfp(VMX_D, VMX_A, VMX_B, VMX_C, uint32_t vscr) { VMX_ARGS_PREP; const uint8_t* c = (const uint8_t*)c_;
++VMX_INL void vmx_vmaddfp_scalar(VMX_D, VMX_A, VMX_B, VMX_C, uint32_t vscr) { VMX_ARGS_PREP; const uint8_t* c = (const uint8_t*)c_;
+ #if PPU_VMX_SOFT2 && defined(PPU_FP_X64) && !defined(__FMA__)
+     /* Only this host arithmetic changes; guest order, NJ input/output flush,
+      * NaN canonicalisation and aliased destination semantics stay the same. */
+@@ -302,11 +302,108 @@
+         float x = vmx_f(vmx_flush(vmx_w(a, i), vscr)), y = vmx_f(vmx_flush(vmx_w(b, i), vscr)),
+               z = vmx_f(vmx_flush(vmx_w(c, i), vscr));
+         vmx_sw(r, i, vmx_flush(vmx_fix(vmx_u(ppu_fmaf_det(x, z, y))), vscr)); } VMX_OUT; }
+-VMX_INL void vmx_vnmsubfp(VMX_D, VMX_A, VMX_B, VMX_C, uint32_t vscr) { VMX_ARGS_PREP; const uint8_t* c = (const uint8_t*)c_;
++VMX_INL void vmx_vnmsubfp_scalar(VMX_D, VMX_A, VMX_B, VMX_C, uint32_t vscr) { VMX_ARGS_PREP; const uint8_t* c = (const uint8_t*)c_;
+     for (int i = 0; i < 4; i++) {
+         float x = vmx_f(vmx_flush(vmx_w(a, i), vscr)), y = vmx_f(vmx_flush(vmx_w(b, i), vscr)),
+               z = vmx_f(vmx_flush(vmx_w(c, i), vscr));
+         vmx_sw(r, i, vmx_flush(vmx_fix(vmx_u(-ppu_fmaf_det(x, z, -y))), vscr)); } VMX_OUT; }
++
++/* Patch 0114: vaddfp, vsubfp, vmaddfp and vnmsubfp four lanes at a time (x86-64). The scalar
++ * forms above (*_scalar) stay the definition: each lane here runs the same IEEE operations in the
++ * same order on the same values -- addps/subps for addss/subss; vfmadd213ps for vfmadd213ss with
++ * FMA (ppu_fmaf_det); without FMA ppu_fmaf_soft's double product, TwoSum and round to odd in two
++ * f64x2 halves -- and the same flushes and NaN rules as bit masks. So the bits are those of the
++ * scalar loops on every PC, whatever MXCSR holds (tests/c/vmx_vec_test.c compares them on random
++ * and special operands, both VSCR[NJ] settings, aliased destinations, v3 and baseline builds).
++ * They were most of the game thread's float work: a lifted matrix function with 16 vmaddfp was
++ * 4,700 instructions in the baseline build, 2,300 with FMA (docs/RENDER_PERF.md "VMX float math
++ * four lanes at a time"). PPU_VMX_SCALAR (a compile definition) keeps the loops. */
++#if defined(PPU_FP_X64) && !defined(PPU_VMX_SCALAR)
++#define PPU_VMX_VEC 1
++VMX_INL __m128i vmx_bswap_v(__m128i x)            /* the four words byte-swapped (SSE2) */
++{
++    x = _mm_or_si128(_mm_slli_epi16(x, 8), _mm_srli_epi16(x, 8));
++    return _mm_shufflehi_epi16(_mm_shufflelo_epi16(x, 0xB1), 0xB1);
++}
++VMX_INL __m128i vmx_ld_v(const void* p) { return vmx_bswap_v(_mm_loadu_si128((const __m128i*)p)); }
++VMX_INL void vmx_st_v(void* p, __m128i x) { _mm_storeu_si128((__m128i*)p, vmx_bswap_v(x)); }
++/* vmx_flush: with VSCR[NJ], a lane with biased exponent 0 keeps only its sign */
++VMX_INL __m128i vmx_flush_v(__m128i x, uint32_t vscr)
++{
++    if (!(vscr & VMX_NJ)) return x;
++    const __m128i z = _mm_cmpeq_epi32(_mm_and_si128(x, _mm_set1_epi32(0x7F800000)), _mm_setzero_si128());
++    return _mm_andnot_si128(_mm_and_si128(z, _mm_set1_epi32(0x7FFFFFFF)), x);
++}
++VMX_INL __m128i vmx_isnan_v(__m128i x)            /* (x & 0x7FFFFFFF) > 0x7F800000 */
++{
++    return _mm_cmpgt_epi32(_mm_and_si128(x, _mm_set1_epi32(0x7FFFFFFF)), _mm_set1_epi32(0x7F800000));
++}
++VMX_INL __m128i vmx_sel_v(__m128i m, __m128i a, __m128i b) { return _mm_or_si128(_mm_and_si128(m, a), _mm_andnot_si128(m, b)); }
++VMX_INL __m128i vmx_fix_v(__m128i r) { return vmx_sel_v(vmx_isnan_v(r), _mm_set1_epi32(0x7FC00000), r); }
++VMX_INL __m128i vmx_vnan2_v(__m128i r, __m128i a, __m128i b)
++{
++    const __m128i q = _mm_set1_epi32(0x7FC00000);
++    return vmx_sel_v(vmx_isnan_v(a), _mm_or_si128(a, q), vmx_sel_v(vmx_isnan_v(b), _mm_or_si128(b, q), vmx_fix_v(r)));
++}
++#if !defined(__FMA__)
++/* ppu_fmaf_soft for two lanes, in the same order of operations */
++VMX_INL __m128d vmx_fmaf_soft_pd(__m128d x, __m128d y, __m128d dz)
++{
++    PPU_FP_NOCONTRACT
++    const __m128d p = _mm_mul_pd(x, y);
++    const __m128d s = _mm_add_pd(p, dz);
++    const __m128d bb = _mm_sub_pd(s, p);
++    const __m128d err = _mm_add_pd(_mm_sub_pd(p, _mm_sub_pd(s, bb)), _mm_sub_pd(dz, bb));
++    /* err != 0.0 && err == err, and s's last bit even */
++    const __m128i adj = _mm_castpd_si128(_mm_and_pd(_mm_cmpneq_pd(err, _mm_setzero_pd()), _mm_cmpord_pd(err, err)));
++    const __m128i u = _mm_castpd_si128(s);
++    const __m128i e32 = _mm_cmpeq_epi32(_mm_and_si128(u, _mm_set_epi32(0, 1, 0, 1)), _mm_setzero_si128());
++    const __m128i even = _mm_and_si128(e32, _mm_shuffle_epi32(e32, 0xB1));
++    /* (err > 0.0) == (s > 0.0) ? u + 1 : u - 1 */
++    const __m128i diff = _mm_castpd_si128(_mm_xor_pd(_mm_cmpgt_pd(err, _mm_setzero_pd()),
++                                                     _mm_cmpgt_pd(s, _mm_setzero_pd())));
++    const __m128i one = _mm_set_epi32(0, 1, 0, 1);
++    const __m128i step = vmx_sel_v(diff, _mm_sub_epi64(_mm_setzero_si128(), one), one);
++    return _mm_castsi128_pd(_mm_add_epi64(u, _mm_and_si128(_mm_and_si128(adj, even), step)));
++}
++#endif
++/* the four lanes of ppu_fmaf_det(x, y, z) */
++VMX_INL __m128 vmx_fmaf_v(__m128 x, __m128 y, __m128 z)
++{
++#if defined(__FMA__)
++    return _mm_fmadd_ps(x, y, z);
++#else
++    const __m128d lo = vmx_fmaf_soft_pd(_mm_cvtps_pd(x), _mm_cvtps_pd(y), _mm_cvtps_pd(z));
++    const __m128d hi = vmx_fmaf_soft_pd(_mm_cvtps_pd(_mm_movehl_ps(x, x)), _mm_cvtps_pd(_mm_movehl_ps(y, y)),
++                                        _mm_cvtps_pd(_mm_movehl_ps(z, z)));
++    return _mm_movelh_ps(_mm_cvtpd_ps(lo), _mm_cvtpd_ps(hi));
++#endif
++}
++#define VMX_FBIN_V(name, op) \
++VMX_INL void name(VMX_D, VMX_A, VMX_B, uint32_t vscr) { \
++    const __m128i x = vmx_flush_v(vmx_ld_v(a_), vscr), y = vmx_flush_v(vmx_ld_v(b_), vscr); \
++    const __m128i z = _mm_castps_si128(op(_mm_castsi128_ps(x), _mm_castsi128_ps(y))); \
++    vmx_st_v(d_, vmx_flush_v(vmx_vnan2_v(z, x, y), vscr)); }
++VMX_FBIN_V(vmx_vaddfp, _mm_add_ps)
++VMX_FBIN_V(vmx_vsubfp, _mm_sub_ps)
++VMX_INL void vmx_vmaddfp(VMX_D, VMX_A, VMX_B, VMX_C, uint32_t vscr) {       /* a * c + b */
++    const __m128 x = _mm_castsi128_ps(vmx_flush_v(vmx_ld_v(a_), vscr));
++    const __m128 y = _mm_castsi128_ps(vmx_flush_v(vmx_ld_v(b_), vscr));
++    const __m128 z = _mm_castsi128_ps(vmx_flush_v(vmx_ld_v(c_), vscr));
++    vmx_st_v(d_, vmx_flush_v(vmx_fix_v(_mm_castps_si128(vmx_fmaf_v(x, z, y))), vscr)); }
++VMX_INL void vmx_vnmsubfp(VMX_D, VMX_A, VMX_B, VMX_C, uint32_t vscr) {      /* -(a * c - b) */
++    const __m128 sign = _mm_castsi128_ps(_mm_set1_epi32((int)0x80000000u));
++    const __m128 x = _mm_castsi128_ps(vmx_flush_v(vmx_ld_v(a_), vscr));
++    const __m128 y = _mm_castsi128_ps(vmx_flush_v(vmx_ld_v(b_), vscr));
++    const __m128 z = _mm_castsi128_ps(vmx_flush_v(vmx_ld_v(c_), vscr));
++    const __m128 r = _mm_xor_ps(vmx_fmaf_v(x, z, _mm_xor_ps(y, sign)), sign);
++    vmx_st_v(d_, vmx_flush_v(vmx_fix_v(_mm_castps_si128(r)), vscr)); }
++#else
++VMX_INL void vmx_vaddfp(VMX_D, VMX_A, VMX_B, uint32_t vscr) { vmx_vaddfp_scalar(d_, a_, b_, vscr); }
++VMX_INL void vmx_vsubfp(VMX_D, VMX_A, VMX_B, uint32_t vscr) { vmx_vsubfp_scalar(d_, a_, b_, vscr); }
++VMX_INL void vmx_vmaddfp(VMX_D, VMX_A, VMX_B, VMX_C, uint32_t vscr) { vmx_vmaddfp_scalar(d_, a_, b_, c_, vscr); }
++VMX_INL void vmx_vnmsubfp(VMX_D, VMX_A, VMX_B, VMX_C, uint32_t vscr) { vmx_vnmsubfp_scalar(d_, a_, b_, c_, vscr); }
++#endif
+ 
+ #define VMX_FUN(name, expr, flush_in, nanmode) \
+ VMX_INL void name(VMX_D, VMX_B, uint32_t vscr) { const uint8_t* b = (const uint8_t*)b_; uint8_t r[16]; \

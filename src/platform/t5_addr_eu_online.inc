@@ -109,7 +109,7 @@ static constexpr Span kEuOnline[] = {
     { 0x0046A358u, 0x4u, 0x0047AE7Cu },   /* TOC slot: the same r2-relative load in 6 aligned instruction(s) */
     { 0x0046ECD0u, 0x4u, 0x0047F830u },   /* TOC slot: the same r2-relative load in 61 aligned instruction(s) */
     { 0x0046EE20u, 0x4u, 0x0047F9C0u },   /* TOC slot: the same r2-relative load in 3 aligned instruction(s) */
-    { 0x00470540u, 0x4u, 0x00481130u },   /* TOC slot: the same r2-relative load in 1 aligned instruction(s) */
+    { 0x00470540u, 0x4u, 0x00481000u },   /* TOC BASE (r2), from the entry/keyread OPDs, not the slot at this US address */
     { 0x10050054u, 0x4u, 0x10050054u },   /* data: this word, paired 2x (+0x0) */
     { 0x10052F04u, 0x4u, 0x10053094u },   /* data: this word, paired 1x (+0x190) */
     { 0x10053578u, 0x4u, 0x10053708u },   /* data: this word, paired 9x (+0x190) */

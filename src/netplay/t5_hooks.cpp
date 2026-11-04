@@ -889,7 +889,7 @@ uint64_t gcall2(uint32_t code, uint64_t a0, uint64_t a1)
 void keyread_tick()
 {
     if (rd32(kKeyreadQuit)) return;
-    gcall(kFnTickCounter);                       /* 0x9A204: 60-tick countdown */
+    gcall(kFnTickCounter);                       /* guest countdown: US resets to 60, EU Online to 50 */
     wr32(kKeyreadObj + 0x1810, 0);
     gcall(kFnPadUpdate);                         /* 0x8F3A4: cellPadGetInfo/GetData, port states */
     if (rd32(kRingResetFlag)) gcall(kFnRingReset);
@@ -1681,12 +1681,8 @@ extern "C" volatile int g_lat_log_on;
 void offline_frame(ppu_context* ctx)
 {
     if (g_offline_gave_up) return;
-    static const bool no_takeover = getenv("T5_TEST_NO_TAKEOVER") != nullptr;   /* TEMP bisect */
-    static const uint32_t takeover_at = getenv("T5_TEST_TAKEOVER_AT") ? (uint32_t)atoi(getenv("T5_TEST_TAKEOVER_AT")) : 0;
-    if (no_takeover) return;
     if (!g_active) {
         g_boot_frames++;
-        if (g_boot_frames < takeover_at) return;
         if (!rd32(kKeyreadSemPtr)) return;
         if (!g_swallow.load()) {
             g_swallow = true;

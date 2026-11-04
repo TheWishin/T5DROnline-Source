@@ -105,8 +105,8 @@ US_PROGRAM = PROGRAMS[ELF_SHA1]
 # the same instructions, every fighter data entry of T55DATA1.BIN byte-identical to the US one, the data layout moved
 # by small per-unit shifts. Two versions of its package exist; v02.01 is the v02.00 program with three bytes changed
 # (an age-rating compare of sceNpManagerGetContentRatingFlag and a data word next to it) and the same game data.
-# Since 1.2.1 it builds without an opt-in, and the netplay modules know its addresses (src/platform/t5_addr.h): it
-# plays online against other EU Online games (its own compatibility group; docs/EU.md "EU Online").
+# Since 1.2.1 it builds without an opt-in, and the netplay modules know its addresses (src/platform/t5_addr.h).
+# Keep the lobby disabled until EU-vs-EU rollback and lockstep pairs pass (docs/EU.md "EU Online").
 #   sfo    what its PARAM.SFO says (VERSION is the edition's own number, APP_VER stays 01.00)
 #   code_end      the last firmware import stub (0x3D7864) + 0x20
 #   spu_extra     the sound core's effect table (the same 12 names at the US place, 0x11AD0) points at these 13
@@ -118,7 +118,7 @@ EU_ONLINE_PROGRAMS = {
         "name": "Tekken 5: Dark Resurrection Online (PS3, EU PSN, NPEA00019 v02.01)",
         "sfo": {"VERSION": "02.01", "APP_VER": "01.00"},
         "content_ids": ("EP9000-NPEA00019_00-TEKKENRETAIL0000",), "pkg_size": 631901088, "code_end": "0x3D7884",
-        "spu_extra": EU_ONLINE_SPU_EXTRA, "pgo": False, "online": True,
+        "spu_extra": EU_ONLINE_SPU_EXTRA, "pgo": False, "online": False,
     },
     "a26bc6e037e5a8faf40250849acfa8a40d027fff": {
         "key": "eu_online200", "title_id": "NPEA00019", "version": "02.00", "region": "EU",
@@ -126,7 +126,7 @@ EU_ONLINE_PROGRAMS = {
         "sfo": {"VERSION": "02.00", "APP_VER": "01.00"},
         # (package size from the co-developer's build script; no v02.00 package was here to measure)
         "content_ids": ("UP0700-NPEA00019_00-TEKKEN5DRO000000",), "pkg_size": 628324080, "code_end": "0x3D7884",
-        "spu_extra": EU_ONLINE_SPU_EXTRA, "pgo": False, "online": True,
+        "spu_extra": EU_ONLINE_SPU_EXTRA, "pgo": False, "online": False,
     },
 }
 # (1.2.0's opt-in, T5DR_EU_ONLINE=1 / --eu-online, is no longer needed; both are still accepted and change nothing)
@@ -138,7 +138,7 @@ PROGRAMS.update(EU_ONLINE_PROGRAMS)
 EDITIONS = {
     "us": ("Tekken 5: Dark Resurrection Online, US PSN (NPUB30009 v01.00)", "online and offline"),
     "eu_online": ("Tekken 5: Dark Resurrection Online, European PSN (NPEA00019 v02.00 or v02.01)",
-                  "offline, and online against other European Online games"),
+                  "offline only for now (online awaits EU-vs-EU validation)"),
     "eu": ("Tekken 5: Dark Resurrection, European PSN (NPEA00019 v01.00)", "offline only"),
     "us0101": ("Tekken 5: Dark Resurrection, US PSN, version 01.01 (NPUB30009, not the Online edition)", None),
 }
@@ -964,11 +964,11 @@ def step_decrypt(a):
         fail(f"This copy's program is not one the port knows: \"{title}\" version {sfo_version_text(s)}, content ID "
              f"{cid} (program SHA-1 {got[:12]}...). The port builds: {SUPPORTED_TEXT}.")
     print(f"  program OK: SHA-1 {got} ({have['title_id']} v{have['version']}, {have['region']})")
-    if not have["online"]:
+    if have["key"].startswith("eu_online"):
+        print(f"  note: {have['name']}: it plays offline; online play awaits EU-vs-EU validation (docs/EU.md)")
+    elif not have["online"]:
         print(f"  note: {have['title_id']} is another build of the game than the US one -- it plays offline; online "
               "play, the practice tools and the training overlay need the US version (NPUB30009) for now")
-    if have["key"].startswith("eu_online"):
-        print(f"  note: {have['name']}: it plays offline, and online against other European Online games (docs/EU.md)")
 
 
 def step_unpack(a):

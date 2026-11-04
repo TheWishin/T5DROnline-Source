@@ -93,14 +93,22 @@ the same game. (The US "non-Online" package, UP0700-NPUB30009_00-000000000000000
 RESURRECTION" VERSION 01.01, ELF 4,206,424 bytes, SHA-1 aa047e02e79e96955835f6bcfd4e6c44d47cdd78, is the "v01.01"
 some players have: the US counterpart of EU v01.00.)
 
-**Opt-in build (1.2.0, experiment):** `python tools/build_game.py --eu-online ...` or `T5DR_EU_ONLINE=1` accepts
-both (v02.01 with its .rap; v02.00 without one -- tools/unself.py then takes NP_KLIC_FREE from the local keys file,
-which must hold it). Its tables: code end 0x3D7884 (the last of its 256 import stubs + 0x20), the sound core's 13
+**Build (1.2.1, offline):** both packages are accepted without an opt-in (v02.01 with its .rap; v02.00 without one,
+using the free-license key from the local keys file). The old `--eu-online` / `T5DR_EU_ONLINE=1` options remain
+accepted for scripts and change nothing. Its tables: code end 0x3D7884 (the last of its 256 import stubs + 0x20), the sound core's 13
 effect functions from its own effect table (`EU_ONLINE_SPU_EXTRA`), the skinning jobs (the US images byte for byte,
-0x600 further on) and its own signal job (`JOBS_EU_ONLINE` in tools/lift_spu_jobs.py), no PGO profile. Like EU
-v01.00 it plays **offline only**: its build stamp says `"online": false` and t5_game.h turns every hook off (it
-already identified this program, by entry 0x457898 and size, for both versions). Without the opt-in both packages
-are named ("version 02.00 (Online)" / "version 02.01 (Online) of the game") and refused before decrypting, as before.
+0x600 further on) and its own signal job (`JOBS_EU_ONLINE` in tools/lift_spu_jobs.py), no PGO profile. It plays
+**offline only**: both versions have `"online": false` in the build table and stamp, so the launcher cannot log
+them into the lobby. Enable online only after EU-vs-EU rollback and lockstep pairs pass with zero mismatches.
+The EU Online hooks now use the per-program table in `src/platform/t5_addr.h` / `t5_addr_eu_online.inc`;
+EU v01.00 hooks remain disabled. No US/EU compatibility group is approved.
+
+**Late-input boot fix (1.2.1):** the keyread takeover called EU code with the wrong TOC base in r2. Its function
+descriptor specifies `0x481000`; the address table had mapped the US TOC base to `0x481130`, a TOC slot rather
+than the base. The wrong r2 made the takeover's calls read unrelated globals, stopping boot before sound setup
+or at the BANDAI NAMCO logo depending on takeover timing. Use the EU descriptor's actual TOC base; US addresses
+and paths remain unchanged. The EU keyread's once-a-second counter is 50 rather than 60, but only that function
+uses it; it does not explain the boot hang. Offline boot and EU pair validation remain separate gates.
 
 **Sound needs runtime patch 0108.** The EU Online program starts its sound core's SPU thread with
 `sys_spu_thread_initialize(..., spu_num 0xFF, ...)` (the US program and EU v01.00 pass 1). The PS3 kernel numbers a
@@ -160,9 +168,12 @@ What differs between US 01.00 and EU Online, as far as read:
   menu structures have another size. The function matcher agrees with the co-developer's independently measured
   v02.00 addresses on all 29 of his direct entries (0 different; 16 more are fields of those).
 
-So the fighters' data and most of the fight are the same, but not all of it is proven, and one difference (the
-camera) can reach gameplay: (a) every differing per-frame function must be identified and either shown harmless or
-made to behave as the US one on the EU side (e.g. a detour that skips the EU camera smoothing in cross-play),
+Follow-up (2026-11-04): the EU camera smoothing is 50 Hz frame blending, gated by the mode manager's refresh-rate
+phase. The runtime reports 59.94 Hz, which leaves the phase at 7 and the blend weight at 1.0. Under that setting
+the camera uses the new position like US; confirm phase 7 in fight dumps when testing pairs.
+
+The fighters' data and most of the fight are the same, but cross-play is not proven: (a) every differing per-frame
+function must be identified and shown harmless or made to behave as the US one on the EU side,
 (b) the random generators' consumption around a match (menus and loads differ in code), and (c) the state hash: the US hash covers whole address ranges whose inner layout differs by program and holds
 pointers, so a US-vs-EU desync check needs a canonical, per-variable form. The conditions, in order:
 
@@ -174,26 +185,27 @@ pointers, so a US-vs-EU desync check needs a canonical, per-variable form. The c
 4. a real US-vs-EU Online pair through picks, full matches, rematches, every stage and fighter, both netcodes, at 0
    mismatching frames; only then an approved compatibility group in `T5L_COMPAT_GROUPS`.
 
-Owner decision needed for step 1: the US addresses live in src/; an EU Online table in the public repository would
-be the same kind of fact about another program -- or the build would find the addresses on the player's PC by
-signature. Until decided, the table stays private.
+Step 1 now uses a public, explicit EU Online address table in `src/platform/t5_addr_eu_online.inc`, with separate
+regions where lengths differ. A missing EU mapping aborts instead of falling back to a US address. The evidence
+and generated study tables remain private. Steps 2 through 4 still require game runs; address coverage alone
+does not enable the lobby.
 
 ## How the build handles it
 
 * `tools/build_game.py`: `PROGRAMS` holds per program what differs (title ID, content IDs, package size, code
   end, sound core functions, PGO profile yes/no, online yes/no); the decrypt step accepts both title IDs and pins
-  the result to one of the two SHA-1s; the later steps follow the decrypted program: the game data under
+  the result to a supported program's SHA-1; the later steps follow the decrypted program: the game data under
   `/dev_hdd0/game/NPEA00019/USRDIR/`, the lift with its code end, the sound core with its functions, no PGO
   profile (the shipped one names the US program's functions), and the build stamp says `"title": "NPEA00019"`,
   `"online": false`. An output folder that held the other version starts again from the package chosen.
-* `src/platform/t5_game.h`: the runtime tells the programs apart by the ELF header of the file it boots; the
-  netplay hooks (with late input, the training overlay and the practice tools), the direct fight, rollback and
-  the frame-timing log install nothing for any program but the US one. The game then runs on its own.
+* `src/platform/t5_game.h`: the runtime tells the programs apart by the ELF header of the file it boots. US and
+  EU Online hooks use `src/platform/t5_addr.h`; US values are unchanged, EU Online values use its explicit
+  table. EU v01.00 hooks remain disabled. The build stamp separately gates lobby access.
 * The launcher: the Build tab names the European package ("the European version: it builds and plays offline
   ..."), the Online tab says that online play needs the US version, the rank plates and fighter pictures are not
   read from the European data (other entries), the shader warm-up is skipped.
 
-## Porting the rest (plan)
+## Porting the rest (historical EU v01.00 plan)
 
 Every US address in src/ needs its European counterpart, found -- not guessed -- from the two programs:
 
@@ -218,9 +230,10 @@ data. The existing numbers above describe earlier work; newly generated analysis
 
 ## EU Online v02.00: owner-local review handoff
 
-**Status: tooling and a review plan, not EU Online support or proven US cross-play.** (Written in 1.1.9 without
-a European package; in 1.2.0 the comparison above was repeated on the owner's v02.01 package and the co-developer's
-v02.00 program, and the opt-in offline build exists -- the rest of this section still applies to the address work.)
+**Historical review workflow; US cross-play remains unproven.** This section was written in 1.1.9 without a
+European package. In 1.2.0 the comparison above was repeated on the owner's v02.01 package and the co-developer's
+v02.00 program. The current branch builds EU Online without an opt-in and has its runtime address table;
+the private evidence workflow below remains useful when reviewing new addresses.
 The earlier measurements above are recorded evidence, not a substitute for repeating the comparison on the owner's
 exact package.
 EU v01.00 and EU Online v02.00 must remain separate targets; neither is a constant shift of the US program.
@@ -289,28 +302,21 @@ private PC outside this repo; share the review decisions separately without atta
 
 ### Selecting addresses in the game
 
-Today `src/platform/t5_game.h` identifies the ELF by recorded entry point and file size; the build separately
-pins the decrypted SHA-1. `hooks_ok()` enables the existing address users only for US (and the historical
-`Unread` test-harness fallback). It identifies EU v01.00 and EU Online v02.00 but enables **neither**. Nothing
-in this change redirects the US addresses or changes matchmaking/build IDs.
+`src/platform/t5_game.h` identifies the ELF by recorded entry point and file size; the build separately pins the
+decrypted SHA-1. In 1.2.1, `hooks_ok()` enables US and EU Online (plus the historical `Unread` test-harness fallback).
+The explicit per-program table preserves US values and maps EU Online readers/writers, hook targets, icalls,
+state/hash regions and sound detours; missing EU mappings fail closed. EU v01.00 remains disabled. Field layouts
+and region lengths are separate where they differ. The address review accounts for individual locations,
+rather than applying one overall delta.
 
-After the owner verifies every required address, use an explicit per-program address structure, selected
-once from `t5game::Game`, with US values copied unchanged from current source and a separate, complete
-EU Online table. Unknown, unread or incomplete EU tables must fail closed in this new selection path; never
-fall back to US addresses for an identified EU program. Keep EU v01.00 disabled. Migrate every reader/writer,
-hook target, icall, state/hash region, sound detour and struct field to named entries; a mixed US/EU table is
-unsafe. Field layouts need separate verified descriptions where they differ. A review should account for every
-item in the source inventory plus calculated locations, rather than approving an overall address delta.
-
-Done in 1.2.0 (opt-in, offline): free-licence support, the EU Online sound-core function table, its SPURS job
-tables and code end (`EU_ONLINE_PROGRAMS` in tools/build_game.py, `JOBS_EU_ONLINE`). Still missing before hooks
-may be enabled: verified data layouts and complete address coverage. Then test reads/late input, training/practice,
-direct fight, lockstep and
-rollback in stages. Any implementation must preserve the simulation on both PCs. Two EU Online PCs require
+Done in 1.2.0: free-licence support, the EU Online sound-core function table, its SPURS job tables and code end
+(`EU_ONLINE_PROGRAMS` in tools/build_game.py, `JOBS_EU_ONLINE`). In 1.2.1 the opt-in is removed and the address
+table enables offline hook testing. Test late input, training/practice, direct fight, lockstep and rollback in
+stages before enabling lobby access. Any implementation must preserve the simulation on both PCs. Two EU Online PCs require
 **0 mismatches**, followed by a real EU Online–US pair at **0 mismatches** through picks, complete fights, rematches
 and rollback. Equal fighter data alone proves neither matching simulation nor compatible state hashing;
 cross-version canonical hashes and the complete compatible-build contract need review before approving any
 cross-build group. The integrated lobby defaults to exact build IDs; `T5L_COMPAT_GROUPS` permits only explicit
 operator-approved groups when both clients support them (see [COMPATIBILITY_GROUPS.md](COMPATIBILITY_GROUPS.md)).
-No EU/US group ships, EU v01.00 remains incompatible, and the unsupported EU Online program must not be grouped
-with US merely because fighter data matches. Identifying the region does not enable hooks or grant compatibility.
+No EU/US group ships, EU v01.00 remains incompatible, and EU Online must not be grouped with US merely because
+fighter data matches. Identifying the region does not grant compatibility.

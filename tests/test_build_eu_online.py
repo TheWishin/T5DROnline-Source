@@ -48,7 +48,7 @@ class Defaults(unittest.TestCase):
                 self.assertNotIn(cid, bg.OTHER_VERSIONS)
                 self.assertIn(cid, bg.ALL_CONTENT_IDS)
                 self.assertEqual((p["version"], p["sfo"]["VERSION"], p["sfo"]["APP_VER"]), (ver, ver, "01.00"))
-                self.assertEqual((p["online"], p["pgo"], p["code_end"]), (True, False, "0x3D7884"))
+                self.assertEqual((p["online"], p["pgo"], p["code_end"]), (False, False, "0x3D7884"))
                 self.assertNotIn("experimental", p)
                 self.assertEqual(len(p["spu_extra"].split("=")[1].split(",")), 13)
             # title ID alone still means the EU v01.00 game (the first NPEA00019 entry)
@@ -61,7 +61,7 @@ class Defaults(unittest.TestCase):
         bg = load_build_game(False)
         t = bg.SUPPORTED_TEXT
         self.assertIn("US PSN (NPUB30009 v01.00): online and offline", t)
-        self.assertIn("European PSN (NPEA00019 v02.00 or v02.01): offline, and online against other European Online", t)
+        self.assertIn("European PSN (NPEA00019 v02.00 or v02.01): offline only for now", t)
         self.assertIn("European PSN (NPEA00019 v01.00): offline only", t)
         self.assertNotIn("01.01", t)
 
@@ -71,6 +71,24 @@ class Defaults(unittest.TestCase):
             bg.enable_eu_online()
             self.assertEqual(os.environ.get("T5DR_EU_ONLINE"), "1")
         self.assertIn(E201_SHA1, bg.PROGRAMS)
+
+    def test_online_gate_is_written_for_both_eu_versions_only(self):
+        # Address coverage alone does not qualify a build for the lobby: EU-vs-EU
+        # rollback and lockstep pairs must pass before either version is enabled.
+        bg = load_build_game(False)
+        with tempfile.TemporaryDirectory() as out:
+            bg.P = bg.Paths(out, os.path.join(out, "ps3recomp"))
+            os.makedirs(os.path.dirname(bg.P.stamp), exist_ok=True)
+            for sha, online in ((E201_SHA1, False), (E200_SHA1, False), (bg.ELF_SHA1, True)):
+                with self.subTest(sha=sha), mock.patch.object(bg, "built_program", return_value=bg.PROGRAMS[sha]), \
+                        mock.patch.object(bg, "code_id", return_value="fixture-code"):
+                    bg.write_stamp("fixture-compiler")
+                    with open(bg.P.stamp) as f:
+                        stamp = json.load(f)
+                    self.assertEqual(stamp["elf_sha1"], sha)
+                    self.assertIs(stamp.get("online", True), online)
+                    if online:
+                        self.assertNotIn("online", stamp)  # US stamp stays unchanged.
 
     def test_sfo_version_text(self):
         bg = load_build_game(False)
@@ -155,7 +173,8 @@ class Steps(unittest.TestCase):
         self.assertIs(self.bg.built_program(), self.bg.PROGRAMS[E201_SHA1])
         out = self.out.getvalue()
         self.assertIn("version 01.00 (VERSION 02.01)", out)
-        self.assertIn("it plays offline, and online against other European Online games", out)
+        self.assertIn("it plays offline; online play awaits EU-vs-EU validation", out)
+        self.assertNotIn("practice tools and the training overlay need the US version", out)
 
     def test_v0201_needs_its_rap(self):
         self.stage(E201_CID, self.SFO201)
@@ -234,7 +253,7 @@ class Steps(unittest.TestCase):
         with open(self.bg.P.stamp) as f:
             stamp = json.load(f)
         self.assertEqual((stamp["title"], stamp["elf_sha1"], stamp["version"], stamp.get("online", True)),
-                         ("NPEA00019", E201_SHA1, "02.01", True))
+                         ("NPEA00019", E201_SHA1, "02.01", False))
 
 
 class StepsWithoutOptIn(Steps):
@@ -277,7 +296,7 @@ class PlayerLog120(unittest.TestCase):
         self.assertIn("This copy's program is not one the port knows", msg)
         self.assertIn("version 01.00 (VERSION 02.01)", msg)          # both numbers, not "01.00" alone
         self.assertNotIn("supports only", msg)
-        self.assertIn("European PSN (NPEA00019 v02.00 or v02.01): offline, and online", msg)
+        self.assertIn("European PSN (NPEA00019 v02.00 or v02.01): offline only for now", msg)
 
 
 class SoundCoreThread(unittest.TestCase):

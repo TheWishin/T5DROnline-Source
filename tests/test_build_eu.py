@@ -305,11 +305,12 @@ class LauncherLines(unittest.TestCase):
             "  program content ID: UP0700-NPEA00019_00-TEKKEN5DRO000000\nERROR: This package is version 02.00\n")
         with mock.patch.object(self.pc.report, "last_build_failed", lambda d: True):
             found = self.pc.check_build(out)
-        self.assertEqual([f.key for f in found], ["package_version"])
+        self.assertEqual([f.key for f in found], ["eu_online_refused"])
         title, seen, fix = found[0].text()
         self.assertIn("02.00", title)
-        self.assertIn("NPEA00019", fix)
-        self.assertIn("599,050,576", fix)
+        self.assertIn("European Online edition", seen)
+        self.assertIn("press BUILD GAME", fix)
+        self.assertNotIn("599,050,576", fix)  # do not suggest replacing it with EU v01.00
         # the European 01.00 package itself is no version problem
         mkput(os.path.join(out, "build.log"), "[decrypt]\n  PARAM.SFO: T5 / NPEA00019 / version 01.00\n"
             f"  program content ID: {EU_CID}\nERROR: something else\n")

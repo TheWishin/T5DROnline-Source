@@ -141,7 +141,8 @@ class Lookup(unittest.TestCase):
     def test_eu_online_program_and_a_missing_address(self):
         subprocess.run([self.exe], capture_output=True, timeout=120, cwd=self.tmp.name)    # writes the stand-ins
         r = subprocess.run([self.exe, "eu_online.elf"], capture_output=True, text=True, timeout=60, cwd=self.tmp.name)
-        self.assertIn("game 3 eu 0x00481130 hooks on", r.stdout)                # the TOC, from the table
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)                 # compiled keyread address pins
+        self.assertIn("game 3 eu 0x00481000 hooks on", r.stdout)                # r2 from the EU entry/keyread OPDs
         self.assertIn("addresses from src/platform/t5_addr.h", r.stderr)
         r = subprocess.run([self.exe, "eu_online.elf", "missing"], capture_output=True, text=True, timeout=60,
                            cwd=self.tmp.name)
@@ -150,6 +151,7 @@ class Lookup(unittest.TestCase):
                       r.stderr)
         self.assertNotIn("reached", r.stdout)
         r = subprocess.run([self.exe, "us.elf"], capture_output=True, text=True, timeout=60, cwd=self.tmp.name)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)                 # all US takeover values unchanged
         self.assertIn("game 1 eu 0x00470540 hooks on", r.stdout)                 # the US program: the US address
         self.assertEqual(r.stderr, "")
 

@@ -684,7 +684,7 @@ class OnlineView:
         f.columnconfigure(0, weight=1, uniform="hero")
         f.columnconfigure(1, weight=1, uniform="hero")
         top = self.body(f)
-        top.grid(row=0, column=0, columnspan=2, sticky="we", pady=(0, px(10)))
+        top.grid(row=0, column=0, columnspan=3, sticky="we", pady=(0, px(10)))
         top.columnconfigure(0, weight=1)
         ttk.Label(top, text=t("Find an opponent online").upper(), style="Card.Caps.TLabel").grid(
             row=0, column=0, sticky="w")
@@ -719,23 +719,22 @@ class OnlineView:
         tab.strict_check.grid(row=3, column=0, sticky="w", pady=(px(6), 0))
         # side and stage for challenges, invites and rooms (tk_casual.py), right of Strict: the card keeps its height
         row = tab.casual.build(f, px)
-        row.grid(row=3, column=0, columnspan=2, sticky="e", pady=(px(6), 0))
+        row.grid(row=3, column=0, columnspan=3, sticky="e", pady=(px(6), 0))
         row.grid_remove()                    # (shown after a login on a server that has them)
         # ... or on a line of its own below when both do not fit (1.1.6 drew them over each other in German and
         # Japanese at 100 % and 150 %)
         self.casual_row = row
         for w in (f, row, tab.strict_check):
             w.bind("<Configure>", lambda _e: self.place_casual_row(), add="+")
-        # search options (tk_search.py): highest ping, Wi-Fi, 60 fps; your area and language
-        opts = self.body(f)
-        opts.grid(row=5, column=0, columnspan=2, sticky="w", pady=(px(6), 0))
-        ttk.Button(opts, text=t("Search options..."), style="Card.Small.TButton",
-                   command=tab.do_search_options).pack(side="left")
-        self.search_opts_label = ttk.Label(opts, text="", style="Card.Small.TLabel")
-        self.search_opts_label.pack(side="left", padx=(px(8), 0))
+        # search options (tk_search.py): highest ping, Wi-Fi, 60 fps; your area and language -- a third column right of
+        # the two search buttons, its summary under it (integration 1.2.1: a row of its own took the lobby lists' height)
+        ttk.Button(f, text=t("Search options..."), style="Card.Small.TButton",
+                   command=tab.do_search_options).grid(row=1, column=2, sticky="nsew", padx=(px(8), 0))
+        self.search_opts_label = ttk.Label(f, text="", style="Card.Small.TLabel")
+        self.search_opts_label.grid(row=2, column=2, sticky="w", padx=(px(8), 0), pady=(px(5), 0))
         self.search_options_shown(tk_search.summary(tab.cfg))
         self.wrap(ttk.Label(f, textvariable=tab.hint_var, style="Card.Faint.TLabel", justify="left"),
-                  card, 40).grid(row=6, column=0, columnspan=2, sticky="w", pady=(px(6), 0))
+                  card, 40).grid(row=5, column=0, columnspan=3, sticky="w", pady=(px(6), 0))
         return f
 
     def search_options_shown(self, text):
@@ -760,9 +759,9 @@ class OnlineView:
                                                                                        f.winfo_reqwidth())
             at = int(row.grid_info()["row"])
             if below and at == 3:
-                row.grid_configure(row=4, column=0, columnspan=2, sticky="w")
+                row.grid_configure(row=4, column=0, columnspan=3, sticky="w")
             elif not below and at == 4:
-                row.grid_configure(row=3, column=0, columnspan=2, sticky="e")
+                row.grid_configure(row=3, column=0, columnspan=3, sticky="e")
         except (tk.TclError, KeyError, ValueError):
             pass
 

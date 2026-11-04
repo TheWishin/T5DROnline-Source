@@ -29,7 +29,8 @@ class WelcomeReleaseTest(unittest.IsolatedAsyncioTestCase):
         cache.version, cache.data, cache.expires = version, data, float("inf")
         server = SimpleNamespace(cfg=Config(), latest_release=version, release_cache=cache,
                                  udp=SimpleNamespace(port=7781, port2=7782), _casual_welcome=lambda conn: {},
-                                 _rematch_enabled=lambda: False)
+                                 _rematch_enabled=lambda: False,
+                                 reports_on=lambda: False, reports_welcome=lambda conn: {})   # (1.2.1 reports.py)
         # Match the constructor's policy while keeping this handler test socket-free.
         server.build_groups = BuildGroups(server.cfg.compat_groups)
         conn = SimpleNamespace(player=None, ip="192.0.2.1", writer=mock.Mock())

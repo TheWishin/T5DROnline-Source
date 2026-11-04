@@ -2883,6 +2883,9 @@ MESSAGES = {
     "The announcer needs your built game (BUILD GAME): until then the chime plays.": "O locutor precisa do seu jogo compilado (BUILD GAME): até lá, toca o sino.",
     "For an incoming challenge or invite when you are in another window. The announcer is read from your own game (after BUILD GAME); without it the chime plays. Your own sound: a WAV file of at most 5 seconds and 2 MB, copied into the launcher's folder.": "Para um desafio ou convite recebido quando você está em outra janela. O locutor é lido do seu próprio jogo (depois do BUILD GAME); sem ele, toca o sino. Seu próprio som: um arquivo WAV de no máximo 5 segundos e 2 MB, copiado para a pasta do launcher.",
     "For a found match or tournament set when you are in another window. The announcer is read from your own game (after BUILD GAME); without it the beep plays. Your own sound: a WAV file of at most 5 seconds and 2 MB, copied into the launcher's folder.": "Para uma partida encontrada ou um set de torneio quando você está em outra janela. O locutor é lido do seu próprio jogo (depois do BUILD GAME); sem ele, toca o bipe. Seu próprio som: um arquivo WAV de no máximo 5 segundos e 2 MB, copiado para a pasta do launcher.",
+    'Video clips': 'Clipes de v?deo',
+    'Keep the last 30 seconds': 'Guardar os ?ltimos 30 segundos',
+    'Ctrl+F10 or hold SELECT + R3 for 1 second to save an MP4 in Videos/T5DR Online. Includes game sound only. Disabled while power saving is on. Windows only.': 'Pressione Ctrl+F10 ou segure SELECT + R3 por 1 segundo para salvar um MP4 em V?deos/T5DR Online. Inclui apenas o som do jogo. Desativado durante a economia de energia. Apenas no Windows.',
 }
 
 # Replay viewer and local library.

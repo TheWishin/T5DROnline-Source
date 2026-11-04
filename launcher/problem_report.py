@@ -971,7 +971,7 @@ def system_text(ctx, now=None, game_log=None):
     return "\n".join(L) + "\n"
 
 
-SETTING_KEYS = ("display", "internal_res", "vsync", "stage_blur", "shadows", "effects", "power_saving", "input_delay",
+SETTING_KEYS = ("display", "internal_res", "vsync", "stage_blur", "shadows", "effects", "power_saving", "clips", "input_delay",
                 "mute", "background", "low_priority", "unlock_stages", "unlock_items", "unlock_jinpachi", "always_left",
                 "screen_side")
 
@@ -997,6 +997,7 @@ def settings_lines(settings, labels=None, env_overrides=None, out_dir=None):
          f"Shadows: {lab('shadows')}",
          f"Effects: {lab('effects')}",
          f"Power saving (laptops, handhelds): {lab('power_saving')}",
+         f"Video clips: {yesno(st.get('clips'))}",
          f"Online input delay (netcode): {lab('input_delay')}",
          f"Mute sound: {yesno(st.get('mute'))}",
          f"Start minimized without focus: {yesno(st.get('background'))}",

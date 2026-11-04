@@ -146,6 +146,7 @@ DEFAULTS = {
     "auto_spectate": False,    # watch an available match while idle; always yield to this player's match
     "auto_watch_table": True,  # in a community room: watch the match at my table while I wait (docs/SPECTATE.md)
     "power_saving": "auto",    # auto | on | off: PS3_LAPTOP (POWER_SAVING)
+    "clips": False,           # host-only rolling video/audio capture; disabled while power saving is active
     "unlock_stages": False,    # offline: the Tekken 5 stages without clearing Arcade (T5_UNLOCK_STAGES, docs/DIRECTFIGHT.md "Unlocks")
     "unlock_items": False,     # offline: every customization item free in the item shop (T5_UNLOCK_ITEMS)
     "unlock_jinpachi": False,  # offline: Jinpachi and the random cell on the select screen (T5_UNLOCK_JINPACHI)
@@ -223,6 +224,8 @@ class Settings(dict):
             self["vsync"] = "on"
         if not isinstance(self["power_saving"], str) or self["power_saving"] not in POWER_SAVING:
             self["power_saving"] = "auto"
+        if not isinstance(self["clips"], bool):
+            self["clips"] = False
         if not isinstance(self["stage_blur"], str) or self["stage_blur"] not in STAGE_BLUR_MODES:
             self["stage_blur"] = "off"
         for key, (_name, _env, modes, default) in GRAPHICS.items():
@@ -435,6 +438,12 @@ class Settings(dict):
             env["T5_REPLAY_DIR"] = self.replay_dir
         else:
             env.pop("T5_REPLAY_DIR", None)
+        # Capture is opt-in, including when an inherited environment enabled it. Resolve the final
+        # power setting after Extra settings; the runtime also gates capture on its own power policy.
+        laptop = env.get("PS3_LAPTOP", "auto")
+        saving = laptop == "1" or (laptop not in ("0", "1") and self["clips"] and power_saving_auto()[0])
+        env["PS3_CLIPS"] = "1" if self["clips"] and not saving else "0"
+        env["PS3_CLIPS_SECONDS"] = "30"
         return env
 
 

@@ -2861,6 +2861,9 @@ MESSAGES = {
     "The announcer needs your built game (BUILD GAME): until then the chime plays.": "アナウンスにはビルド済みのゲームが必要です（BUILD GAME）。それまではチャイムが鳴ります。",
     "For an incoming challenge or invite when you are in another window. The announcer is read from your own game (after BUILD GAME); without it the chime plays. Your own sound: a WAV file of at most 5 seconds and 2 MB, copied into the launcher's folder.": "別のウィンドウを見ているとき、挑戦や招待を受けると鳴ります。アナウンスは自分のゲーム（BUILD GAME後）から読み込み、ない場合はチャイムが鳴ります。自分のサウンド：5秒・2 MB以内のWAVファイル（ランチャーのフォルダーにコピーされます）。",
     "For a found match or tournament set when you are in another window. The announcer is read from your own game (after BUILD GAME); without it the beep plays. Your own sound: a WAV file of at most 5 seconds and 2 MB, copied into the launcher's folder.": "別のウィンドウを見ているとき、マッチが見つかるか大会のセットが準備できると鳴ります。アナウンスは自分のゲーム（BUILD GAME後）から読み込み、ない場合はビープ音が鳴ります。自分のサウンド：5秒・2 MB以内のWAVファイル（ランチャーのフォルダーにコピーされます）。",
+    'Video clips': '??????',
+    'Keep the last 30 seconds': '???30???????',
+    'Ctrl+F10 or hold SELECT + R3 for 1 second to save an MP4 in Videos/T5DR Online. Includes game sound only. Disabled while power saving is on. Windows only.': 'Ctrl+F10????SELECT + R3?1????????????/T5DR Online?MP4??????????????????????????????????Windows?????',
 }
 
 # Replay viewer and local library.

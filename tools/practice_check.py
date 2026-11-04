@@ -10,7 +10,7 @@ recording played once and in a loop, and SELECT+3 right after a launcher. The pr
 
     the fighters 2000 apart at the round start; every reset still in place 30 frames later;
     a wall found for every wall reset, the other fighter 1100 in front of it, facing each other;
-    the slot recorded, played and looped; the dummy's behaviours cycled (nine since 1.3.0);
+    the slot recorded, played and looped; the dummy's behaviours cycled (nine since 1.2.1);
     a reset pressed while the dummy is in the air (after df+2) waits until both stand, then holds.
 
 The game runs muted and minimised; nothing of it is kept unless --keep. Exit 0 = PASS.
@@ -82,7 +82,7 @@ def drive(g):
             g.press("SQUARE", gap=300)
         g.wait(1.5)
         sel(g)
-    for _ in range(4):                                  # 1.3.0: the movement loops, then the game's own again
+    for _ in range(4):                                  # 1.2.1: the movement loops, then the game's own again
         sel(g, "RIGHT", btn=None)
     sel(g, btn="SQUARE")                                # record slot 1: P1's pad plays the dummy
     g.hold("RIGHT")

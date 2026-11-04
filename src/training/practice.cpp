@@ -1,7 +1,7 @@
 /*
  * T5DR practice tools (docs/TRAINING.md "Practice tools", "Practice menu"):
  * position resets, the dummy's behaviour and recording slots, steered with
- * SELECT combos on P1's pad, and since 1.3.0 the practice menu (START): the
+ * SELECT combos on P1's pad, and since 1.2.1 the practice menu (START): the
  * dummy's movement and counter-attack, recordings kept per character on disk,
  * random playback, restart positions (remembered, switched sides, back turned)
  * and a simulated input delay for P1. The logic is in training_logic.h (Combo,

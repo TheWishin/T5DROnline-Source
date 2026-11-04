@@ -93,7 +93,7 @@ combo never makes P1 attack, walk or open the menu.
 
 | Combo | What it does |
 |---|---|
-| SELECT + 3 | both fighters back to where the fight started (1.3.0: to the menu's RESTART AT) |
+| SELECT + 3 | both fighters back to where the fight started (1.2.1: to the menu's RESTART AT) |
 | SELECT + f+3 | the dummy against the wall in front of you, you right in front of it |
 | SELECT + b+3 | the dummy against the wall behind you, you in front of it (you switch sides) |
 | SELECT + df+3 | you against the wall in front of you, the dummy in front of you (you switch sides) |
@@ -101,9 +101,9 @@ combo never makes P1 attack, walk or open the menu.
 | SELECT + 1 | record the dummy in the current slot: your pad plays the dummy, your own fighter stands; again: stop (at most 20 s) |
 | SELECT + 2 | play the current slot once; again: stop |
 | SELECT + 4 | play the current slot again and again; again: stop |
-| SELECT, tap up / down | the next / previous slot (8 slots since 1.3.0, 5 before) |
-| SELECT + START | remember both fighters' places: the restart goes there (1.3.0) |
-| SELECT, tap forward / back | what the dummy does: as set in the game's Practice menu, blocks after the first hit, crouches, walks forward and back, sidesteps (1.3.0: and the movement loops, see "Practice menu") |
+| SELECT, tap up / down | the next / previous slot (8 slots since 1.2.1, 5 before) |
+| SELECT + START | remember both fighters' places: the restart goes there (1.2.1) |
+| SELECT, tap forward / back | what the dummy does: as set in the game's Practice menu, blocks after the first hit, crouches, walks forward and back, sidesteps (1.2.1: and the movement loops, see "Practice menu") |
 
 The resets (SELECT + 3 and the four wall resets) happen when both fighters
 stand (1.2.0, player report "after a launcher the opponent keeps flying /
@@ -122,11 +122,11 @@ use the dummy's new side. P1 stands still. Each frame is stored relative to
 the dummy's facing, so playback keeps forward/back on either side, including
 after a side switch during playback. SELECT shortcuts still use P1's side.
 
-Before 1.3.0 the slots lived only in memory while the game ran; since 1.3.0
+Before 1.2.1 the slots lived only in memory while the game ran; since 1.2.1
 they are kept per dummy character on disk (see "Practice menu"). Issue #30 corrected recording directions that had used P1's side
 instead of the dummy's. Existing slots already described the dummy's executed
 forward/back motion and need no automatic flip. Restarting for an update
-cleared them; the files written since 1.3.0 already store the dummy's own forward/back.
+cleared them; the files written since 1.2.1 already store the dummy's own forward/back.
 
 The overlay shows what changed for two seconds under the frame data (`SLOT 2
 (3.4s)  DUMMY: CROUCH`), and `REC 1  2.5s` / `PLAY 1  1.2/3.4s` /
@@ -139,7 +139,7 @@ short help text. Environment: `T5_PRACTICE=1`, `T5_PRACTICE_DUMMY=game|block|
 crouch|walk|step|dash|backdash|kbd|wavedash`, `T5_PRACTICE_MENU`, `T5_PRACTICE_DIR` (see "Practice menu"), `T5_PRACTICE_LOG=<file>` (one line per action and the
 places of both fighters; `tools/practice_check.py` reads it).
 
-## Practice menu (1.3.0)
+## Practice menu (1.2.1)
 
 In offline **Practice**, **START** opens the practice menu over the fight
 (the game's own pause menu -- command list, the game's dummy settings, exit --

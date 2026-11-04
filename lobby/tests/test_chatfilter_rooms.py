@@ -16,7 +16,7 @@ from t5lobby.server.rooms import RoomsMixin
 
 
 class RoomHarness(RoomsMixin):
-    _room_tags = MatchFiltersMixin._room_tags   # 1.3.0: room_create reads the area / language tags (mmfilters.py)
+    _room_tags = MatchFiltersMixin._room_tags   # 1.2.1: room_create reads the area / language tags (mmfilters.py)
     def __init__(self):
         self.cfg = SimpleNamespace(room_max_size=8, ranked_rooms=True, guest_ranked=False)
         self.rooms = {}

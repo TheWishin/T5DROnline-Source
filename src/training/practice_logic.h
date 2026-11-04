@@ -1,5 +1,5 @@
 /*
- * T5DR practice suite (1.3.0; docs/TRAINING.md "Practice menu"): the in-game
+ * T5DR practice suite (1.2.1; docs/TRAINING.md "Practice menu"): the in-game
  * practice menu, the dummy's counter-attack, P1's simulated input delay, the
  * restart positions and the files the recordings and settings are kept in.
  *

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check the practice menu in the game (docs/TRAINING.md "Practice menu", 1.3.0).
+"""Check the practice menu in the game (docs/TRAINING.md "Practice menu", 1.2.1).
 
     python tools/practice_menu_check.py [--exe build/cmake/t5dr.exe] [--root DIR] [--out DIR] [--keep]
 

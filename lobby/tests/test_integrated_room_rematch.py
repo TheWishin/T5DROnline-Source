@@ -26,7 +26,7 @@ def player(name):
 
 
 class Harness(RoomsMixin, RematchMixin):
-    _room_tags = MatchFiltersMixin._room_tags   # 1.3.0: room_create reads the area / language tags (mmfilters.py)
+    _room_tags = MatchFiltersMixin._room_tags   # 1.2.1: room_create reads the area / language tags (mmfilters.py)
     _set_next = LobbyServer._set_next
     _check_filtered_text = LobbyServer._check_filtered_text
 

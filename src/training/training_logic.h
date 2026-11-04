@@ -531,7 +531,7 @@ enum class PAction : uint8_t {
     SlotPrev,          /* SELECT, tap d */
     DummyNext,         /* SELECT, tap f: the dummy's behaviour */
     DummyPrev,         /* SELECT, tap b */
-    RememberPos,       /* SELECT + START (1.3.0): keep both fighters' places; the restart goes there */
+    RememberPos,       /* SELECT + START (1.2.1): keep both fighters' places; the restart goes there */
 };
 
 /* P1's SELECT combos. While SELECT is held -- and afterwards until P1's pad is
@@ -741,7 +741,7 @@ enum class DummyMode : uint8_t {
     Crouch,         /* holds down */
     Walk,           /* walks forward and back */
     Step,           /* sidesteps, one way and then the other */
-    /* 1.3.0: movement loops, the inputs as a player enters them (forward = toward P1), on CONTROLLER */
+    /* 1.2.1: movement loops, the inputs as a player enters them (forward = toward P1), on CONTROLLER */
     Dash,           /* f,f and holds forward: a dash in, then a pause */
     Backdash,       /* b,b: a backdash, then a pause */
     BackdashCancel, /* b,b then u/b,b again and again: backdash cancels */
@@ -870,9 +870,9 @@ private:
     int idle_ = 0;
 };
 
-/* ---- recordings: 8 slots of the dummy's input (5 before 1.3.0) ---------------------
+/* ---- recordings: 8 slots of the dummy's input (5 before 1.2.1) ---------------------
  * Stored as the dummy sees it (forward = toward the opponent), so a recording
- * plays the same from either side. Since 1.3.0 the slots are saved per dummy
+ * plays the same from either side. Since 1.2.1 the slots are saved per dummy
  * character (practice_logic.h save_slots / load_slots) and a playback can take a
  * random recorded slot each time (set_random). */
 class Recorder {

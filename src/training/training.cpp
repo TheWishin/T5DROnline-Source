@@ -56,7 +56,7 @@ extern "C" int t5_netplay_local_slot(void);
 extern "C" int t5_df_boot_cover(void);         /* host-only presentation state; no guest access */
 extern "C" int t5_practice_on(void);                                   /* practice.cpp: the practice tools */
 extern "C" int t5_practice_status(char* out, unsigned n, int de);      /* ... their status line ("" = none) */
-extern "C" int t5_practice_menu_open(void);                            /* ... the practice menu is open (1.3.0) */
+extern "C" int t5_practice_menu_open(void);                            /* ... the practice menu is open (1.2.1) */
 extern "C" void t5_practice_menu_draw(void);                           /* ... drawn into this list, on top */
 
 namespace {

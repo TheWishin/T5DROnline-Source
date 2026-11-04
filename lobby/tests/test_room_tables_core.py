@@ -27,7 +27,7 @@ def player(name):
 
 
 class Harness(RoomsMixin, RematchMixin):
-    _room_tags = MatchFiltersMixin._room_tags   # 1.3.0: room_create reads the area / language tags (mmfilters.py)
+    _room_tags = MatchFiltersMixin._room_tags   # 1.2.1: room_create reads the area / language tags (mmfilters.py)
     def __init__(self, count=6, size=6):
         self.players = {n: player(n) for n in "ABCDEFGH"[:count]}
         self.r = Room(self.players["A"], "Tables", False, size, first_to=3, mode="tables")

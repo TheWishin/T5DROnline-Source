@@ -397,7 +397,7 @@ class Settings(dict):
         env["T5_PRACTICE"] = "1" if self["practice"] else "0"
         if self["practice"]:
             env["T5_PRACTICE_DUMMY"] = self["practice_dummy"] if self["practice_dummy"] in PRACTICE_DUMMY else "game"
-            # the practice menu's settings and the recordings per character (1.3.0)
+            # the practice menu's settings and the recordings per character (1.2.1)
             env["T5_PRACTICE_DIR"] = os.path.join(self.out_dir, "practice")
             env.setdefault("T5_TRAINING_LANG", i18n.resolve(self["language"]) if I18N else "en")
         # Explicit dealt also clears a previous side in the persistent online game.

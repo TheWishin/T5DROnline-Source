@@ -69,7 +69,7 @@ class IntegratedCapabilities(unittest.IsolatedAsyncioTestCase):
                                  relays=SimpleNamespace(public_list=lambda: []),
                                  tours=SimpleNamespace(welcome=lambda: {}),
                                  _casual_welcome=lambda _: {}, _rematch_enabled=lambda: True,
-                                 reports_on=lambda: False, reports_welcome=lambda _: {})   # 1.3.0: problem reports (reports.py)
+                                 reports_on=lambda: False, reports_welcome=lambda _: {})   # 1.2.1: problem reports (reports.py)
         conn = SimpleNamespace(player=None, ip="127.0.0.1", writer=mock.Mock())
         conn.writer.get_extra_info.return_value = None
         welcome = await LobbyServer.h_hello(server, conn, hello)

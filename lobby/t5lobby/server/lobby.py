@@ -102,7 +102,7 @@ FEATURES += ["private_chat", "mutes"]
 FEATURES.append("input_delay8")        # 1.2.0: only pairs announcing this cap use the new challenge delays
 FEATURES += ["badges", "mentions", "casual_sets", "room_tables"]
 FEATURES.append(COMPAT_CAP)
-FEATURES += ["mm_filters", "forget_me"]  # 1.3: search options + area / language (mmfilters.py), "Remove my data" (forget.py)
+FEATURES += ["mm_filters", "forget_me"]  # 1.2.1: search options + area / language (mmfilters.py), "Remove my data" (forget.py)
 CHALLENGES_OPEN = 5                    # a player's open challenges at once (1.1.9; before: one)
 CHALLENGE_GAP_S = 0.7                  # ... sent at most this often (before: one every 2 s)
 CHALLENGE_DELAYS = tuple(range(9))     # challenge input delays (frames; None = auto); above 2 needs both clients' cap

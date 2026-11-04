@@ -1,4 +1,4 @@
-"""The practice suite (1.3.0, docs/TRAINING.md "Practice menu").
+"""The practice suite (1.2.1, docs/TRAINING.md "Practice menu").
 
 * tests/c/practice_test.cpp, built against src/training/practice_logic.h and the patched runtime's
   libs/video/rsx_overlay.c (ps3recomp patch 0045, without Direct3D), must print PASS: the menu's navigation, its
@@ -117,7 +117,7 @@ class PracticeMenuGateTest(unittest.TestCase):
     def test_documented(self):
         with open(os.path.join(ROOT, "docs", "TRAINING.md"), encoding="utf-8") as f:
             doc = f.read()
-        self.assertIn("## Practice menu (1.3.0)", doc)
+        self.assertIn("## Practice menu (1.2.1)", doc)
         for env in ("T5_PRACTICE_MENU", "T5_PRACTICE_DIR"):
             self.assertIn(env, doc)
 

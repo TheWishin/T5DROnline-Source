@@ -817,7 +817,7 @@ static void test_recorder()
     CHECK(r.state() == Recorder::State::Looping);
     r.toggle_play(true);
     CHECK(r.state() == Recorder::State::Idle);
-    /* slots: 8 (1.3.0; 5 before), wrapping both ways; changing the slot stops a playback */
+    /* slots: 8 (1.2.1; 5 before), wrapping both ways; changing the slot stops a playback */
     CHECK_EQ(Recorder::kSlots, 8);
     r.toggle_play(true);
     r.select(1);

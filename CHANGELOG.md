@@ -3,6 +3,76 @@
 All notable changes, newest first. The project is a test release. Short commit hashes are in parentheses. The state of each
 part is in the README's status table.
 
+## v1.2.1 (2026-11-04)
+
+**A practice menu like in newer Tekken games, faster play on old PCs, an "online feel" for the input delay, a
+connection line, search options, "Remove my data", one-click problem reports to the developer and better Linux /
+Steam Deck support.** In offline Practice, START now opens a practice menu: the dummy dashes, backdashes, wavedashes
+or counter-attacks after a block or hit, 8 recording slots per character are kept on disk, and you can restart at the
+round start, a remembered place or at the walls. Old PCs (2-core processors such as an i3-2100 / i3-3240, graphics
+cards from 2012-2013) get the new **Old PC** settings by themselves, and the game's sound and vector math cost less
+processor time on every PC. Both players need 1.2.1 (the lobby pairs equal versions only). After the update press
+**BUILD GAME** once, as the launcher asks. Search options, "Remove my data" and sending problem reports need the
+updated lobby server; on an older server they simply do not appear.
+
+### Practice
+- **Practice menu.** In offline Practice, **START** opens a menu over the fight (the game's own pause menu is one item
+  in it, GAME'S PAUSE MENU). Up / down choose a line, left / right change it, 3 does an action, 4 or START close it.
+  - **Dummy:** besides the old choices it can **dash in, backdash, backdash cancel or wavedash** in a loop, and
+    **counter-attack** after a block, after a hit or after either -- every time or every 2nd to 5th time -- with a
+    recording slot you choose or a random recorded one.
+  - **Recording:** **8 slots** per dummy character (5 before), **kept on disk** for the next session; play once, in a
+    loop, or a random recorded slot each time.
+  - **Restart:** at the round start, at a **remembered position** (SELECT + START remembers both fighters' places), or
+    with the dummy or you at the wall ahead or behind; sides switched; the dummy back turned. SELECT + 3 goes there too.
+  - **Settings:** a **simulated input delay** of 0-6 frames for you (to practise for online matches) and the training
+    display (off / inputs / inputs + frame data).
+  - Offline Practice only; online matches and other modes are unchanged. `T5_PRACTICE_MENU=0` gives START back to the
+    game.
+
+### Speed and old PCs
+- **Old PC settings.** Settings -> Graphics has a new **Old PC** button: like Lowest, with the effects off too. On a
+  2-core processor or an old graphics card (resource binding tier 1) the launcher chooses it by itself once, as long
+  as you have not changed the graphics settings. "Lowest" itself is unchanged.
+- **Less processor time on every PC.** The game's sound core and the fighters' skinning jobs keep their registers in
+  the processor (about 7-10 % less time), and the game thread's vector math runs four values at a time (about 5 % less
+  time in fights). The results are exactly the same as before, bit for bit, so a 1.2.1 game stays in sync with any
+  other 1.2.1 game on any processor.
+- **Check my problem** now says when a processor is too old for the game (no SSE4.1, e.g. Core 2 Quad Q6600, Phenom II)
+  before you build.
+- New minimum requirements in the README: a processor with SSE4.1, a DirectX 12 (feature level 11_0) graphics card and
+  4 GB RAM; 60 fps in fights from a 4-core processor of about 2011 (Core i5-2500 + GeForce GT 730).
+
+### Online
+- **Online feel** (Settings -> Online input delay, for Auto): **Responsive** (the 1.2.0 pick), **Balanced** (default:
+  one frame more when the slower PC cannot keep up with its rollbacks) or **Smooth** (more delay, fewer and smaller
+  rollbacks). Each game measures how deep a rollback its PC can run inside a frame and remembers it for the next match.
+  Different choices meet at Balanced. Fixed delays and ranked are unchanged.
+- **Connection line** (Settings, off by default; **F3** in the game): one line at the bottom of an online match with
+  the ping, the input delay, rollbacks per second and the deepest one, direct or relay, and your fps.
+- **Search options** for Quick and Ranked match: the highest ping you accept, no opponents on Wi-Fi, only opponents
+  whose PC keeps 60 fps; your area and language are shown in the lobby and on rooms. The more you choose, the longer
+  the search can take. Needs the updated server.
+- **Remove my data** (Online tab): removes your account on the server (profile, rating, friends, blocks, saved
+  logins; your matches stay in other players' history as "deleted player") and, if you want, the online data on this
+  PC. Nothing is removed before you confirm twice. Needs the updated server.
+
+### Launcher and help
+- **Report a problem sends the report straight to the developer** with one click (**Send to the developer**); you can
+  still save the zip. Your logs are cleaned as before; no game files, keys or passwords are sent. Needs the updated
+  server; on an older one only Save is offered.
+- The Discord button is now **OpenRecomp-FGC Discord** (one server for T5DR, Tekken 4 and the new launcher), and a
+  **New launcher** button opens the releases page of OpenRecomp-FGC, the optional launcher with Tekken 5 DR and
+  Tekken 4 in one window. This launcher keeps working.
+
+### Linux and Steam Deck (Proton, Wine)
+- The launcher looks for the game package in your Linux Downloads, Desktop and Documents folders, and saves "Report a
+  problem" on your Linux Desktop (your Linux user name is removed from it).
+- **Check my problem** explains a dark blue game window (the game's graphics did not start, GitHub issue #26) and what
+  to try.
+- The game log's `[wine]` line says which Direct3D 12 and which shader compiler the Proton prefix has.
+- New guide `docs/LINUX_STEAM_DECK.md` with a test checklist for Linux players.
+
 ## v1.2.0 (2026-11-04)
 
 **Casual first-to sets, a rematch you answer with your pad inside the game, rooms with several tables that you watch

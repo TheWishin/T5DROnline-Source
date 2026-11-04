@@ -39,7 +39,8 @@ still plays offline only; online play for it is not supported.
   right are swapped for you when the picture is mirrored. The default is "As dealt" (nothing changes). The old
   "Always left" checkbox becomes the "Always left" choice. In a mirrored fight both life bars now show and drain like
   the normal ones, names and ranks sit at the outer edges, and the round intro's player strip follows its player
-  (GitHub issue #31), also on the soft-focus stages. If you want a real side without a mirrored picture, use the
+  (GitHub issue #31), also on the soft-focus stages. On Burning Temple and Industrial Complex the picture was not
+  mirrored at all while left and right were already swapped; fixed. If you want a real side without a mirrored picture, use the
   P1 / P2 choice in the casual row. Known: some one-sided details (scars, writing) look reversed in a mirrored picture.
 - **The fighters' intros are skipped online.** When both players have 1.2.0 and the server is updated, every online
   match (casual, ranked, tournaments) goes straight from the loading screen to READY / FIGHT; the round call and the

@@ -1,0 +1,30 @@
+diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
+--- a/libs/video/rsx_live_draw.c
++++ b/libs/video/rsx_live_draw.c
+@@ -11172,9 +11172,15 @@
+                              g_ld_current_pso.fp_size);
+     if (!fp) { g_al_trace.outcome = "fp-unavailable"; if (want) g_al.left_alone++; return; }
+     const u32 reads = rsx_fp_texture_mask(fp, g_ld_current_pso.fp_size);
+-    rsx_dsp_texture t0;
+-    rsx_dsp_get_texture(&g.rsx, 0, &t0);
+-    if ((reads & 1u) && t0.enabled && al_picture_quad((const float (*)[2])xy, n, W * 0.5f, H * 0.5f))
++    /* Patch 0112: the 3D picture may be sampled in any unit the program reads, not only unit 0 -- Industrial
++     * Complex (stage 33) and Burning Temple (stage 1) copy it from unit 1 with a 512 x 512 texture in unit 0, and
++     * Always left never switched on there while the controls were already swapped. */
++    const int quad = al_picture_quad((const float (*)[2])xy, n, W * 0.5f, H * 0.5f);
++    for (u32 u = 0; quad && u < SRV_TABLE_SIZE; u++) {
++        if (!((reads >> u) & 1u)) continue;
++        rsx_dsp_texture t0;
++        rsx_dsp_get_texture(&g.rsx, u, &t0);
++        if (!t0.enabled) continue;
+         for (u32 i = 0; i < n_surf_used; i++) {
+             const surface_t* s = &g.surfaces[surf_used[i]];
+             if (s->location != t0.location || s->offset != t0.offset || ld_al_is_display(surf_used[i]) ||
+@@ -11188,6 +11194,7 @@
+             g_al.copies++;
+             return;
+         }
++    }
+     const int hud = want && g_al.active && g_al.copy_seen;
+     /* Identify HUD art by sampled textures, never by the stale unit-0 binding (diagnostics only). */
+     q.tex = 1469598103934665603ull;

@@ -35,6 +35,7 @@ class PatchSeries(unittest.TestCase):
             "0109-picture-copy-scissor.patch",
             "0110-always-left-split-hud.patch",
             "0111-always-left-kernel-copy.patch",
+            "0112-always-left-copy-any-unit.patch",
         ]
         self.assertEqual([name for name in names if name >= "0088-"], expected)
 

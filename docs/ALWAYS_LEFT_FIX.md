@@ -82,9 +82,13 @@ own evaluated box (`al_hud_place`):
 - A frame whose 3D picture was mirrored keeps its HUD on the mirrored side even if the game's request goes
   off before that HUD is drawn.
 
-Scene-copy detection is unchanged from 1.2.0: a full-screen quad (all four corners within two guest pixels)
-that samples the oversized non-display target in unit 0, checked against the fragment program's real
-texture mask.
+Scene-copy detection: a full-screen quad (all four corners within two guest pixels) that samples the oversized
+non-display target, checked against the fragment program's real texture mask. Until patch 0112 only unit 0 was
+looked at; Industrial Complex (stage 33) and Burning Temple (stage 1) copy the 3D picture from unit 1 (a 512 x 512
+texture in unit 0), so Always left never switched on there -- the controls were swapped (the game side's choice) but
+the picture stayed normal (found at the 1.2.0 gate: offline VS with `T5_SCREEN_SIDE=right`, every stage 0..34: only
+1 and 33 without `[always-left] on`; the trace showed `before-copy` for the copy draw, `source=` the 2048 x 1440
+target in `t1`). 0112 accepts the target in any unit the program reads.
 
 ## Tests
 

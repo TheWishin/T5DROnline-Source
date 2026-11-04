@@ -5504,36 +5504,37 @@ def _al_places(ctx, p, mid):
             for m in map(RE_AL_TRACE.search, p.log_segment(mid)) if m]
 
 
-def al_first_step(places, slot, min_step=100):
-    """Which way A (P1 for slot 0, P2 for slot 1) first moved, while it holds the pad's RIGHT: +1 towards the
-    opponent, -1 away, 0 when it never moved min_step from where it was placed. A's own displacement along the line
-    to where the opponent stood, from the first placed line (a round start is 2000 apart) to the first line where A
-    has moved min_step -- before an attack of the script can carry A (Devil Jin's b+1 lunges ~870 forward: the
-    1.1.9 gate's Quick match walked away first, then the lunge made the distance shrink) or a hit can push the
-    opponent away."""
+def al_first_step(places, slot, samples=30, min_move=100):
+    """Which way A (P1 for slot 0, P2 for slot 1) went while it held the pad's RIGHT: +1 towards the opponent, -1
+    away, 0 when it moved less than min_move. A's displacement along the line to where the opponent stood, from the
+    first placed line (a round start is about 2000 apart) to the line `samples` later (30 trace lines = 600
+    frames, ~10 s; the last line if the fight is shorter). The script holds RIGHT and nothing else, so A walks
+    the whole time. Not the first step (1.1.9-1.2.0 gate): with the 1.2.0 intro skip the fighters are first
+    traced at their intro places and then set to the round start, a jump of a few hundred units that is not a
+    step; and while the script still attacked, held back + Square lunged forward for many fighters."""
     placed = [r for r in places if abs(r[1] - r[3]) + abs(r[2] - r[4]) >= 1500]
     if not placed:
         return 0
-    _n, x1, z1, x2, z2 = placed[0]
+    rows = places[places.index(placed[0]):]
+    _n, x1, z1, x2, z2 = rows[0]
     ax, az, ox, oz = (x1, z1, x2, z2) if slot == 0 else (x2, z2, x1, z1)
-    for _n, p1x, p1z, p2x, p2z in places[places.index(placed[0]):]:
-        nx, nz = (p1x, p1z) if slot == 0 else (p2x, p2z)
-        dx, dz = nx - ax, nz - az
-        if (dx * dx + dz * dz) ** 0.5 >= min_step:
-            along = dx * (ox - ax) + dz * (oz - az)
-            return 1 if along > 0 else -1
-    return 0
+    _n, p1x, p1z, p2x, p2z = rows[min(samples, len(rows) - 1)]
+    nx, nz = (p1x, p1z) if slot == 0 else (p2x, p2z)
+    dx, dz = nx - ax, nz - az
+    if (dx * dx + dz * dz) ** 0.5 < min_move:
+        return 0
+    return 1 if dx * (ox - ax) + dz * (oz - az) > 0 else -1
 
 
 def _al_direction(ctx, places, slot, towards, label):
-    """A's first step while it holds the pad's RIGHT (al_first_step): towards the opponent on a mirrored P2 screen
+    """Where A went while it held the pad's RIGHT (al_first_step): towards the opponent on a mirrored P2 screen
     (the game's LEFT for P2) or as P1, away as an unmirrored P2."""
     if len(places) < 10:
         ctx.check(f"{label}: the fighters' places traced", False, f"{len(places)} trace lines")
         return
     step = al_first_step(places, slot)
     want = 1 if towards else -1
-    ctx.check(f"{label}: A's RIGHT walks A {'towards' if towards else 'away from'} the opponent (first step)",
+    ctx.check(f"{label}: A's RIGHT walks A {'towards' if towards else 'away from'} the opponent (first 10 s)",
               step == want, {1: "towards", -1: "away", 0: "A never moved 100 from its start"}[step])
 
 

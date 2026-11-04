@@ -148,21 +148,27 @@ class ScenarioListTest(unittest.TestCase):
 
 
 class AlwaysLeftStepTest(unittest.TestCase):
-    """net_always_left judges A's first step, not the closest distance: in the 1.1.9 gate's Quick match A (Devil Jin,
-    unmirrored P2) walked away with RIGHT held, then the script's attack lunged ~870 forward and the old distance
-    check failed. Trace rows (n, P1 x, P1 z, P2 x, P2 z) as the game logged them."""
-    QUICK_P2 = [(4740, 0, 0, 0, 0), (4760, 0, -1000, 0, 1000), (4900, 0, -1000, 0, 1000), (4920, 0, -1000, 3, 999),
-                (4940, 0, -1000, -5, 1238), (4980, 0, -1000, 25, 369), (5000, 34, -1253, 23, 471)]
+    """net_always_left judges where A went in the first ~10 s of holding RIGHT, not its first step: in the 1.2.0 gate
+    an unmirrored P2 (Eddy, Christie) was first traced at its intro place and then set to the round start a few
+    hundred units nearer the opponent by the automatic intro skip -- the old first-step rule read that jump as
+    'towards' (and before that, the script's back + Square lunged forward). Trace rows (n, P1 x, P1 z, P2 x, P2 z)
+    as the game logged them (gate_int_al5, Kazuya vs Eddy, every second row)."""
+    QUICK_P2 = [(7840, 0, 0, 1, 0), (7860, -819, 0, 819, 0), (7900, -819, 0, 819, 0), (8020, -819, 0, 375, 0),
+                (8080, -819, 0, 375, 0), (8100, -819, 0, 1735, 0), (8220, -819, 0, 3184, 0), (8340, -819, 0, 2796, 0),
+                (8400, -819, 0, 3637, 0), (8460, -819, 0, 2823, 0), (8520, -819, 0, 3655, 0)]
     CASUAL_P2_MIRRORED = [(500, 0, 0, 0, 0), (520, 1000, 0, -1000, 0), (680, 1000, 0, -992, 0),
                           (720, 1550, -6, -751, 98), (760, 1750, -10, 66, 129)]
 
-    def test_first_step(self):
-        self.assertEqual(scenarios.al_first_step(self.QUICK_P2, 1), -1)              # away (then the lunge)
-        self.assertEqual(scenarios.al_first_step(self.CASUAL_P2_MIRRORED, 1), 1)     # towards (the opponent knocked away)
+    def test_where_a_went(self):
+        self.assertEqual(scenarios.al_first_step(self.QUICK_P2, 1), -1)              # away (after the intro jump)
+        self.assertEqual(scenarios.al_first_step(self.CASUAL_P2_MIRRORED, 1), 1)     # towards
+        # the jump alone would have read 'towards' (the old first-step rule)
+        self.assertEqual(scenarios.al_first_step(self.QUICK_P2[:5], 1), 1)
         # a P2 whose RIGHT walked it towards P1 unmirrored (left/right swapped by mistake) is told apart
         wrong = [(0, 0, -1000, 0, 1000), (20, 0, -1000, 0, 860)]
         self.assertEqual(scenarios.al_first_step(wrong, 1), 1)
         self.assertEqual(scenarios.al_first_step([(0, 0, 0, 0, 0)], 1), 0)
+        self.assertEqual(scenarios.al_first_step([(0, 1000, 0, -1000, 0), (20, 1000, 0, -1040, 0)], 1), 0)  # < 100
 
 
 class OptinScenarioReviewTest(unittest.TestCase):

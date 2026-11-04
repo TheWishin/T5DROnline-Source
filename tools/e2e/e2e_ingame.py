@@ -248,6 +248,11 @@ def ingame_rematch_mash(ctx):
         for p in (a, b):
             v = _votes(p, mid)
             ctx.check(f"mash {k + 1}: {p.name}: at most one yes and one no", v.count(True) <= 1 and v.count(False) <= 1, v)
+        # the wait above ends when EITHER launcher has the rematch's match_found; the other one's comes a moment
+        # later over its own connection (gate 1.2.0: [True, False] read at once while both games went on into the
+        # rematch) -- give it a few seconds before comparing
+        if any(p.events_of("match_found", since) for p in (a, b)):
+            ctx.wait(lambda: all(p.events_of("match_found", since) for p in (a, b)), 5, fail=False)
         found = [bool(p.events_of("match_found", since)) for p in (a, b)]
         ctx.check(f"mash {k + 1}: both PCs agree (rematch on both or on neither)", found[0] == found[1], found)
         if not all(found):

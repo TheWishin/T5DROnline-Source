@@ -5480,12 +5480,12 @@ RE_AL_TRACE = re.compile(r"\[always-left\] trace (\d+) mirrored=(\d) P1 (-?\d+) 
 
 
 def _al_script(path, frames=30000):
-    """'Always left' test presses (T5_NET_SCRIPT, netplay frames): the pad's RIGHT held all the time, an attack
-    (Square, 2 frames) every 24 frames."""
+    """'Always left' test presses (T5_NET_SCRIPT, netplay frames): the pad's RIGHT held all the time, nothing else.
+    (Until 1.2.0 also an attack every 24 frames: held back + Square is a forward-lunging move for many fighters --
+    Heihachi, Yoshimitsu, Devil Jin --, so the first step of an unmirrored P2 was a lunge towards the opponent after
+    less than 100 units of walking back whenever the fight began just before an attack: 2 of 3 runs at the 1.2.0 gate.)"""
     with open(path, "w") as f:
         f.write(f"0 {frames} 0x20\n")
-        for fr in range(12, frames, 24):
-            f.write(f"{fr} 2 0x8000\n")
     return path
 
 

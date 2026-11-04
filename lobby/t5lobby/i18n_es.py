@@ -465,15 +465,47 @@ MESSAGES = {
         "Faltan los archivos del lobby (lobby/t5lobby) en esta copia del launcher, así que el juego online no está "
         "disponible.\n\n({reason})",
     # ---- launcher/problem_report_ui.py
-    "Before the zip is made, your Windows user name in file paths becomes <user>, "
-    "internet IP addresses become <ip> (addresses of your own network stay), lobby player "
-    "names (yours and your opponents') become <player>, and passwords, tokens and match keys "
-    "are left out. Your game files, keys, .pkg and .rap are never included. Nothing is "
-    "uploaded: you send the zip yourself.":
-        "Antes de crear el zip, tu nombre de usuario de Windows en las rutas se vuelve <user>, las direcciones IP de "
-        "internet se vuelven <ip> (las de tu propia red se quedan), los nombres de jugadores del lobby (el tuyo y "
-        "los de tus rivales) se vuelven <player>, y se omiten contraseñas, tokens y claves de partida. Tus archivos "
-        "del juego, claves, .pkg y .rap nunca se incluyen. No se sube nada: tú mismo envías el zip.",
+    # Report a problem: Send to the developer (problem_report_ui.py, report_send.py); one Discord server
+    'New launcher':
+        'Nuevo launcher',
+    'Optional launcher with Tekken 5 DR and Tekken 4 in one window; this launcher keeps working.':
+        'Launcher opcional con Tekken 5 DR y Tekken 4 en una sola ventana; este launcher sigue funcionando.',
+    'Contact (optional, e.g. your Discord name):':
+        'Contacto (opcional, p. ej. tu nombre de Discord):',
+    'Enough reports from this PC for today. Save the zip and send it yourself.':
+        'Ya hay suficientes informes de este PC por hoy. Guarda el zip y envíalo tú mismo.',
+    'Making the report and sending it...':
+        'Creando el informe y enviándolo...',
+    'OpenRecomp-FGC Discord':
+        'OpenRecomp-FGC Discord',
+    'Press Send: your logs and settings go straight to the developer. Or save the zip and send it yourself.':
+        'Pulsa Enviar: tus registros y ajustes van directamente al desarrollador. O guarda el zip y envíalo tú mismo.',
+    'Questions? Ask the players in the OpenRecomp-FGC Discord: {url}':
+        '¿Preguntas? Pregunta a los jugadores en el OpenRecomp-FGC Discord: {url}',
+    'Save on the Desktop instead':
+        'Guardar en el escritorio en su lugar',
+    'Send to the developer':
+        'Enviar al desarrollador',
+    'Sending... {done} of {total}':
+        'Enviando... {done} de {total}',
+    'Sends your logs to the developer with your lobby name. No game files, no keys, no passwords.':
+        'Envía tus registros al desarrollador con tu nombre del lobby. Sin archivos del juego, sin claves, sin contraseñas.',
+    'Sent, thanks (report #{id})':
+        'Enviado, gracias (informe #{id})',
+    'The developer has your report ({size}). If you asked for an answer, it comes to the contact you gave.':
+        'El desarrollador tiene tu informe ({size}). Si pediste una respuesta, llegará al contacto que diste.',
+    'The report could not be sent: {error}':
+        'No se pudo enviar el informe: {error}',
+    'The report is too big to send. Save the zip and send it yourself.':
+        'El informe es demasiado grande para enviarlo. Guarda el zip y envíalo tú mismo.',
+    'The server cannot take reports yet. Save the zip and send it yourself.':
+        'El servidor todavía no acepta informes. Guarda el zip y envíalo tú mismo.',
+    'The server cannot take reports yet. Save the zip and send it yourself: to the person who gave you the game, or attach it to an issue.':
+        'El servidor todavía no acepta informes. Guarda el zip y envíalo tú mismo: a la persona que te dio el juego, o adjúntalo a un issue.',
+    'The server could not be reached. Check the internet connection, or save the zip.':
+        'No se pudo conectar con el servidor. Revisa la conexión a internet o guarda el zip.',
+    "Before the zip is made, your Windows user name in file paths becomes <user>, internet IP addresses become <ip> (addresses of your own network stay), lobby player names (yours and your opponents') become <player>, and passwords, tokens and match keys are left out. Your game files, keys, .pkg and .rap are never included.":
+        'Antes de crear el zip, tu nombre de usuario de Windows en las rutas se vuelve <user>, las direcciones IP de internet se vuelven <ip> (las de tu propia red se quedan), los nombres de jugadores del lobby (el tuyo y los de tus rivales) se vuelven <player>, y se omiten contraseñas, tokens y claves de partida. Tus archivos del juego, claves, .pkg y .rap nunca se incluyen.',
     "{count} bytes": "{count} bytes",
     "Report a problem": "Reportar un problema",
     "This makes one zip file on your Desktop with the logs and settings that help to "
@@ -832,9 +864,7 @@ MESSAGES = {
     "A build is running. Stop it and quit?": "Hay una compilación en curso. ¿Detenerla y salir?",
     # ---- launcher/updater.py
     "Check for updates": "Buscar actualizaciones",
-    "Community Discord": "Discord de la comunidad",
     "Could not open a browser. The address: {url}": "No se pudo abrir un navegador. La dirección: {url}",
-    "Questions? Ask the players in the community Discord: {url}": "¿Preguntas? Pregunta a los jugadores en el Discord de la comunidad: {url}",
     "Updated from {old} to {new}.": "Actualizado de {old} a {new}.",
     "the new version": "la nueva versión",
     "The update to {version} failed and could not be undone completely: {error}.\n\nThe "

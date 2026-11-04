@@ -2738,6 +2738,18 @@ class OnlineTab:
         if fn:
             fn()
 
+    def report_identity(self):
+        """(lobby name, "account" | "guest" | "") for a problem report sent to the developer (launcher/report_send.py):
+        the player logged in now, else the remembered account login, else the name typed in the tab (a guest)."""
+        c = self.client
+        if c is not None and c.me:
+            return c.me.get("name", ""), "guest" if c.me.get("guest") else "account"
+        s = self._saved_session()
+        if s and s.get("name"):
+            return str(s["name"]), "account"
+        name = (self.cfg.get("name") or "").strip()
+        return (name, "guest") if name else ("", "")
+
     def report_info(self):
         """Technical lines about the lobby and the last match for the problem report. No names,
         addresses, keys or tokens: the report tool cleans every file again, this is the first filter."""

@@ -62,6 +62,7 @@ from .relays import MAIN as RELAY_MAIN, MAX_RELAYS, RelayPool
 from .matchrules import MatchRulesMixin
 from .private_chat import PrivateChatMixin
 from .rematch import RematchMixin, VOTE_GRACE
+from .reports import CAP as REPORT_CAP, ReportsMixin
 from .rooms import Room, RoomsMixin  # noqa: F401 -- (Room: lobby.Room for tools and tests)
 from .spectating import SpectateMixin
 from .store import COUNTED, SET_COUNTED, Store, check_password, hash_password
@@ -82,6 +83,7 @@ CAPS |= {"input_delay8"}       # 1.2.0: challenge input delay 0..8 and the exten
 CAPS |= {"badges", "mentions", "ranked_chars", "casual_sets", "room_tables",
          "ingame_rematch_v1", "auto_skip_after_round_v1"}
 CAPS |= {"auto_skip_intro_v1"}  # 1.2.0: the game skips the fighters' intros by the fight line's rule (matchrules.py)
+CAPS |= {REPORT_CAP}           # 1.2.x: problem reports from the launcher (reports.py)
 QUEUE_MODES = ("quick", "ranked")
 # What this server supports beyond protocol 1's base (the client checks before using them).
 FEATURES = ["ranks", "sessions", "recovery", "passwd", "profile", "history", "chars", "integrity", "rematch",
@@ -612,7 +614,7 @@ class Conn:
 
 # =============================================================================== server
 
-class LobbyServer(PrivateChatMixin, SpectateMixin, RoomsMixin, CasualMixin, MatchRulesMixin, RematchMixin):
+class LobbyServer(PrivateChatMixin, SpectateMixin, RoomsMixin, CasualMixin, MatchRulesMixin, RematchMixin, ReportsMixin):
     def __init__(self, cfg=None):
         self.cfg = cfg or Config.from_env()
         self.build_groups = BuildGroups(self.cfg.compat_groups)
@@ -646,6 +648,7 @@ class LobbyServer(PrivateChatMixin, SpectateMixin, RoomsMixin, CasualMixin, Matc
         self.pw_ops = KeyedBuckets(rate=1 / 20.0, burst=3)
         self.chat_rate = KeyedBuckets(rate=1.0, burst=5)          # chat lines per player
         self._private_init()
+        self._reports_init()       # problem reports from the launcher (reports.py)
         self._rooms_init()         # private rooms: the invite-code index, wrong-guess limits (rooms.py)
         self.bans = BanList()
         self.dirty = True
@@ -1000,7 +1003,7 @@ class LobbyServer(PrivateChatMixin, SpectateMixin, RoomsMixin, CasualMixin, Matc
             self.player_dropped(p)
 
     # ------------------------------------------------------------------ dispatch
-    PRE_LOGIN = ("hello", "login", "ping", "logout", "recover")
+    PRE_LOGIN = ("hello", "login", "ping", "logout", "recover", "report_begin", "report_data")   # (reports: no login)
     HEAVY = frozenset(("leaderboard", "profile", "history", "lobby", "friends"))
     HEAVY = HEAVY | {"stats"}
     STATE = frozenset(("queue", "unqueue", "room_create", "room_join", "room_leave", "room_lock", "room_kick",
@@ -1077,6 +1080,10 @@ class LobbyServer(PrivateChatMixin, SpectateMixin, RoomsMixin, CasualMixin, Matc
         if int(msg.get("proto", 0)) != proto.PROTO_VERSION:
             raise LobbyError(proto.E_PROTO, f"this server speaks lobby protocol {proto.PROTO_VERSION}; "
                                             "update the launcher")
+        if msg.get("purpose") == "report":
+            # A launcher's problem report connection (reports.py): any build, even none (a report is most needed when
+            # the game does not build); it can send a report and nothing else -- h_login refuses it.
+            return self.report_hello(conn, msg)
         build = msg.get("build") or {}
         bid = BuildInfo.wire_id(build)
         if self.cfg.builds and bid not in self.cfg.builds:
@@ -1100,7 +1107,8 @@ class LobbyServer(PrivateChatMixin, SpectateMixin, RoomsMixin, CasualMixin, Matc
                 "compat_group": conn.compat_group, "region": conn.region,
                 "accounts": self.cfg.accounts, "guests": self.cfg.guests, "motd": self.cfg.motd,
                 "ip": conn.ip, "time": time.time(),
-                "features": [f for f in FEATURES if f != "private_chat" or self.cfg.private_chat],
+                "features": [f for f in FEATURES if f != "private_chat" or self.cfg.private_chat]
+                + ([REPORT_CAP] if self.reports_on() else []),
                 "tls": conn.writer.get_extra_info("ssl_object") is not None,
                 "ranked_guests": self.cfg.guest_ranked, "placement": self.cfg.placement,
                 "caps": sorted(conn.caps), "relay_only": self.cfg.force_relay,
@@ -1118,11 +1126,14 @@ class LobbyServer(PrivateChatMixin, SpectateMixin, RoomsMixin, CasualMixin, Matc
                 # rooms: the most players a community room may hold, the pause between its matches
                 **({"room_limits": {"max_size": self.cfg.room_max_size, "next_seconds": self.cfg.room_next_seconds}}
                    if "private_rooms" in conn.caps else {}),
+                **self.reports_welcome(conn),         # problem reports: the largest zip this server takes
                 **self._casual_welcome(conn)}          # the stages a launcher may offer for casual matches
 
     async def h_login(self, conn, msg):
         if not conn.helloed:
             raise LobbyError(proto.E_STATE, "hello first")
+        if getattr(conn, "report_only", False):
+            raise LobbyError(proto.E_STATE, "a report connection cannot log in")
         if conn.player is not None:
             raise LobbyError(proto.E_STATE, "already logged in")
         mode = msg.get("mode", "guest")
@@ -1358,6 +1369,8 @@ class LobbyServer(PrivateChatMixin, SpectateMixin, RoomsMixin, CasualMixin, Matc
         password. Works without logging in; every remembered login of the account ends."""
         if not conn.helloed:
             raise LobbyError(proto.E_STATE, "hello first")
+        if getattr(conn, "report_only", False):
+            raise LobbyError(proto.E_STATE, "a report connection cannot log in")
         name = str(msg.get("name", ""))
         new = msg.get("password", "")
         self._check_pw_rules(new)

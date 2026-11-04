@@ -580,7 +580,58 @@ notices, drains, tournament hosts) every 5 s (`T5L_ADMIN_POLL`) and kicks the pl
 | `drain [--wait SECONDS] [--off]` | before a restart: no new matches (queues, rooms, challenges, rematches are refused with "the server restarts for an update in a moment"), the running ones and the ranked sets finish. `--wait` returns 0 when none is left (1 on timeout). A restart ends the drain. See Updates and restarts |
 | `release [X.Y.Z] [--clear]` | after the owner has published a release: launchers that report an older one see "T5DR Online X.Y.Z is out ... update the launcher" in their status bar (now and at every login) until `--clear`. Without an argument: what is set |
 | `tour-host add NAME [--admin]`, `tour-host remove NAME`, `tour-hosts` | community tournaments (docs/TOURNAMENTS.md "Who may create tournaments"): `add NAME` makes the account a **tournament host** -- it may create tournaments, with the normal limits, whatever `T5L_TOUR_ORGANIZERS` says; at most `T5L_TOUR_MAX_HOSTS` (20) hosts, beyond that `add` refuses ("remove one first"). `--admin` makes it a **tournament admin** instead, like `T5L_TOUR_ADMINS`: runs every tournament, no limits, takes no host slot. `add` again with or without `--admin` changes the role; `remove` takes it away (their tournaments stay theirs). The account must exist. `tour-hosts` lists hosts, admins (also those of the env file) and "N of 20 host slots used". The server picks a change up within 5 s and tells the player's launcher at once: no restart, no new login |
+| `reports [list] [--limit N] [--json]`, `reports show ID`, `reports get ID [--out DIR]`, `reports delete ID`, `reports send ID` | problem reports the launchers sent (see Problem reports): newest first; one report's facts, the player's note and the files in its zip; a copy of the zip (and its facts) into DIR; remove it; post it to `T5L_REPORT_WEBHOOK` again after the webhook failed |
 | `gen-cert`, `fingerprint`, `server-entry` | see TLS and servers.json |
+
+### Problem reports
+
+The launcher's **Report a problem** window has **Send to the developer** (focused; Enter sends). It makes the same
+cleaned zip as "Save" (user names in paths, internet addresses, passwords, tokens and lobby names taken out; no game
+files, keys, .pkg or .rap), small enough for a Discord post (about 8 MB: the biggest logs are shortened first), and
+sends it with a few facts: game, version, build id, Windows version, the player's note, a contact if they gave one,
+and the lobby name the launcher knows (guest or account). It always goes to the release's own server (the default of
+`lobby/servers.json`), never to a server the player added.
+
+How it travels: a short TLS connection of its own to the control port (7781), no login needed (guests and players who
+never got online can send too): `hello {purpose: "report"}` -> `report_begin {size, sha256, meta}` -> `report_go {id}`
+-> `report_data` followed by exactly `size` bytes -> `report_done {id}`. Every other line keeps the 8 KB limit. A report
+connection cannot log in. A server without this feature (older ones, or `T5L_REPORTS=0`) does not offer
+`problem_reports` in its welcome: the launcher then hides Send and offers Save only.
+
+The server never unpacks a report to disk. It reads the zip's directory and inflates each file into nothing, counting
+and checking its CRC, and refuses anything else: not a zip, more than 200 files, names outside the report's layout
+(letters, digits, `_-.`, at most 4 folders, extensions .txt .log .json .ini .csv .md .bin .t5replay .t4replay), folder
+entries, `..`, encryption, other compression methods, a file over 32 MB or 64 MB in all unpacked, a file that unpacks
+to more than it says (zip bomb), no `contents.txt`.
+
+Stored as `/var/lib/t5lobby/reports/<YYYY-MM-DD>/<id>.zip` + `<id>.json` (`T5L_REPORT_DIR`). No IP address is kept.
+
+| Setting | Default | |
+|---|---|---|
+| `T5L_REPORTS` | 1 | 0 = no reports (launchers offer Save only) |
+| `T5L_REPORT_MAX_KB` | 15360 | largest zip taken |
+| `T5L_REPORT_PER_ADDRESS_DAY`, `T5L_REPORT_PER_NAME_DAY`, `T5L_REPORT_PER_DAY` | 5, 5, 300 | per 24 h: from one address (IPv6 /64), with one lobby name, for the whole server (refused ones count too) |
+| `T5L_REPORT_CONCURRENT` | 4 | uploads at once (each holds up to the max in memory) |
+| `T5L_REPORT_TOTAL_MB`, `T5L_REPORT_KEEP_DAYS` | 2048, 120 | the folder's size and the oldest report's age; beyond them the oldest go first |
+| `T5L_REPORT_WEBHOOK` | (none) | Discord webhook URL: each new report is posted there. **Secret**: only in the server's env file |
+| `T5L_REPORT_WEBHOOK_MAX_KB` | 8000 | the zip is attached up to this size (8 MB on a Discord server without boosts); bigger or refused for size: the post says `t5lobby-admin reports get ID` |
+
+The Discord post: "New problem report #ID -- T5DR Online 1.2.1", the build id and Windows version, the player's name
+(and whether the launcher says account or guest: the report connection does not log in, so the name is what the
+launcher sent), the contact, the size and number of files, the player's note, and the zip as an attachment. Mentions
+in a note never ping anybody (`allowed_mentions` none). A failed post is logged; `reports send ID` tries again.
+
+**Making the webhook (owner, about one minute):**
+
+1. In Discord, open your private channel's settings (the gear next to the channel name) -> **Integrations** ->
+   **Webhooks** -> **New Webhook**.
+2. Name it "Problem reports" (any name), keep the channel, and press **Copy Webhook URL**.
+3. Give the URL to whoever updates the server (it is a password: anybody with it can post into the channel).
+4. On the server: add `T5L_REPORT_WEBHOOK=<the URL>` to `/etc/t5lobby/t5lobby.env` and restart the lobby
+   (`t5lobby-admin drain --wait 600 && systemctl restart t5lobby`).
+
+To fetch the reports onto a PC instead: `python tools/fetch_reports.py` (ssh/scp with the deploy key into
+`build/reports/`).
 
 ### Status, health, metrics
 

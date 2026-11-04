@@ -859,7 +859,7 @@ class Window(unittest.TestCase):
         self.assertTrue(any("report saved" in m for m in self.logged))
         shown = " ".join(str(w.cget("text")) for w in dlg.body.winfo_children() if w.winfo_class() == "TLabel")
         self.assertIn("attach it to an issue at https://example.org/issues", shown)
-        self.assertIn("Questions? Ask the players in the community Discord: https://discord.gg/x", shown)   # 1.1.7
+        self.assertIn("Questions? Ask the players in the OpenRecomp-FGC Discord: https://discord.gg/x", shown)   # 1.1.7, 1.2.x name
         dlg.open_folder()
         self.assertEqual(len(self.revealed), 2)
         dlg.close()

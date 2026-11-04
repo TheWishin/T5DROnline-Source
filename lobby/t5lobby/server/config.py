@@ -150,6 +150,21 @@ class Config:
     private_chat: bool = True      # T5L_PRIVATE_CHAT: optional private_chat cap; no ordinary PM storage
     private_report_days: float = 30.0  # T5L_PRIVATE_REPORT_DAYS: retain only explicitly reported lines
     max_private_reports: int = 1000 # T5L_MAX_PRIVATE_REPORTS: bounded moderator inbox (oldest removed first)
+    # problem reports the launcher sends (server/reports.py, docs/HOSTING.md "Problem reports")
+    reports: bool = True            # T5L_REPORTS: take them (0 = off: launchers offer Save only)
+    report_dir: str = ""            # T5L_REPORT_DIR: where they are kept; default: "reports" next to T5L_DB
+                                    # (an in-memory database and no folder: off)
+    report_max_kb: int = 15360      # T5L_REPORT_MAX_KB: largest zip taken
+    report_total_mb: int = 2048     # T5L_REPORT_TOTAL_MB: the folder's size; the oldest reports go first beyond it
+    report_keep_days: float = 120.0  # T5L_REPORT_KEEP_DAYS: reports older than this are removed (0 = kept)
+    report_per_address_day: int = 5  # T5L_REPORT_PER_ADDRESS_DAY: reports per 24 h from one internet address (IPv6 /64)
+    report_per_name_day: int = 5    # T5L_REPORT_PER_NAME_DAY: ... with one lobby name
+    report_per_day: int = 300       # T5L_REPORT_PER_DAY: ... for the whole server
+    report_concurrent: int = 4      # T5L_REPORT_CONCURRENT: uploads at the same time (each up to T5L_REPORT_MAX_KB in memory)
+    report_webhook: str = ""        # T5L_REPORT_WEBHOOK: Discord webhook URL; every new report is posted there (secret:
+                                    # only in the server's env file, never in a client)
+    report_webhook_max_kb: int = 8000  # T5L_REPORT_WEBHOOK_MAX_KB: the zip goes along up to this size (Discord without
+                                    # boosts: 8 MB); a bigger one is posted without the file
     # friends and invites (docs/ONLINE.md "Friends and invites"): accounts only
     max_friends: int = 100          # T5L_MAX_FRIENDS: friends per account
     friend_requests_day: int = 20   # T5L_FRIEND_REQUESTS_DAY: friend requests an account may send per 24 h

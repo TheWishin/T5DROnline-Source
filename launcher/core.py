@@ -54,7 +54,11 @@ SETTINGS_FILE = os.path.join(ROOT, "launcher.json")
 LAUNCHER_LOG = os.path.join(ROOT, "launcher.log")     # what the launcher did; goes into the problem report
 LAUNCHER_LOG_MAX = 512 * 1024                         # then it moves to launcher.log.1 (one old copy is kept)
 ISSUES_URL = "https://github.com/TheWishin/T5DROnline/issues"
-DISCORD_URL = "https://discord.gg/4DwDHAkk2x"      # the players' community (header button, the report window)
+# The one Discord server of T5DR, T4 and the OpenRecomp-FGC launcher ("OpenRecomp-FGC"): the header button and the
+# report window. The one place to change the invite (the OpenRecomp launcher has its own copy: openrecomp/community.py).
+DISCORD_URL = "https://discord.gg/4DwDHAkk2x"
+# The optional new launcher (Tekken 5 DR and Tekken 4 in one window): the header's "New launcher" (1.2.1)
+OPENRECOMP_URL = "https://github.com/TheWishin/OpenRecomp-FGC/releases"
 _log_lock = threading.Lock()
 
 

@@ -950,22 +950,26 @@ no game audio, no file. winsound cannot play a memory image asynchronously, so a
 thread never waits; if Windows refuses it (no sound card), the system's "SystemAsterisk" plays instead. `T5_NOTIFY=0`
 turns the real sound and flash off (every test sets it; the tests give the tab a fake player and a fake flash).
 
-**The announcer (1.2.0).** For a match found, a challenge and a tournament set (`notify.VOICE_KINDS`) the game's own
-announcer says "Get ready for the next battle!" instead of the chime (Settings -> "Sound when a match is found" ->
-Announcer, the default; it follows the notification checkbox above).
-`announcer.py` reads the line when it is needed from the player's own unpacked game -- entry 11 of the data table in
-`T55DATA1.BIN` (the TOC/XOR/zlib coding of rank_art.py) is the announcer's sound bank, sample 1 is the line,
-PlayStation ADPCM at 18 kHz, decoded in memory and brought to 45 % of full scale. Nothing of it is shipped or written
-to disk; the sample's size and SHA-256 make sure no other sound plays. Before BUILD GAME, with a European program or
-other/damaged data the chime rings. `python -m t5lobby.announcer --out <output folder> --play` plays it (a check).
-How the sample was found: the bank's 21 samples compared with spoken phrases (MFCC + DTW against a TTS voice) --
-samples 1 and 9 are two takes of the line, 8 is likely "... the final battle", 0 "Welcome to the King of Iron Fist
-Tournament". Tests: `lobby/tests/test_announcer.py` (a made-up bank and an independent ADPCM encoder).
+**The announcer (1.2.0).** For a match found and a tournament set (`notify.VOICE_KINDS`) the game's own announcer says
+"Get ready for the next battle!" instead of the chime (Settings -> "Sound when a match is found" -> Announcer, the
+default). Incoming challenges and invites (`notify.CHALLENGE_KINDS`) say "A new challenger!" by default, with their
+own "Sound for a challenge" setting. Both follow the notification checkbox above.
+`announcer.py` reads the lines when needed from the player's own unpacked game -- entry 11 of the data table in
+`T55DATA1.BIN` (the TOC/XOR/zlib coding of rank_art.py) is announcer bank 2. Sample 1 is "Get ready for the next battle!";
+sample 20, the last of its 21 samples, is "A new challenger!", identified by the owner by ear after listening to all
+21 samples. Sample 20 is 12,352 bytes of PlayStation ADPCM at 18,000 Hz, with SHA-256
+`0ffd929779ec929dd85a14a5221b2f50552cdf8b38c75a782226ca29e35d4754`.
+Both lines are decoded in memory and brought to 45 % of full scale. Nothing of them is shipped or written to disk;
+each sample's rate, size and SHA-256 make sure no other sound plays. Before BUILD GAME, with a European program,
+another release or other/damaged data the chime rings. `python -m t5lobby.announcer --out <output folder> --play`
+plays the next-battle line (a check). Samples 1 and 9 were found as two takes of that line by comparing the bank's
+samples with spoken phrases (MFCC + DTW against a TTS voice). Tests: `lobby/tests/test_announcer.py` (a made-up bank
+and an independent ADPCM encoder).
 
 **Sound when a match is found (1.2.0).** Settings -> "Sound when a match is found" (launcher.json `"notify_sound"`,
-`notify.MATCH_SOUNDS`) picks what a match, a challenge and a tournament set ring: **Announcer** (default, above),
+`notify.MATCH_SOUNDS`) picks what a match and a tournament set ring: **Announcer** (default, above),
 **Beep** (the chime), **Your own WAV file** or **Off** (no sound; the taskbar button still flashes). The other lobby
-notifications (joins, turns, invites, rematch questions, mentions) keep the chime. "Choose WAV file..." opens the normal
+notifications (joins, turns, rematch questions, mentions) keep the chime. "Choose WAV file..." opens the normal
 Windows file dialog; the file must be a plain PCM WAV (what winsound plays from memory: 1-2 channels, 8-32 bit, 8-192
 kHz) of at most 5 seconds and 2 MB (`notify.check_wav`). A file that passes is copied next to launcher.json as
 `match_sound.wav` (the original may be moved or deleted afterwards); one that does not switches the choice to Beep and
@@ -977,6 +981,13 @@ navigation; the controller presses Accept / Decline / search on the Online tab o
 build with the old "announcer" box unticked (`notify_voice: false`) becomes Beep; `notify_voice` is still written
 (true = Announcer) for an older launcher. Tests: `lobby/tests/test_match_sound.py` (the checks, the copy, what rings
 per choice, the Online tab's hook), `tests/test_match_sound_ui.py` (the Settings box with a faked file dialog).
+
+**Sound for a challenge.** Settings -> "Sound for a challenge" (launcher.json `"notify_challenge_sound"`,
+`notify.CHALLENGE_SOUNDS`) independently picks the sound for an incoming challenge or invite: **New challenger
+(default)** ("A new challenger!", above), **Chime**, **Your own WAV file** or **Off**. Its custom WAV uses the same
+limits and fallback rules, with a separate copy named `challenge_sound.wav`, so changing it does not change the
+match sound. "Play" previews the challenge sound, including its chime fallback when the pinned game sample is
+unavailable. Off leaves the taskbar flash enabled.
 
 ## Developer badges and chat mentions
 

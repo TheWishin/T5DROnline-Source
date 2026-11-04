@@ -38,9 +38,10 @@ Chime and taskbar flash (notify.py, launcher Settings, on by default): when a ma
 the player (1.1.7), someone joins the player's room, a community room's turn comes, a friend invites, a tournament set
 is ready or the opponent asks for a rematch -- and the player is elsewhere (another program in front, the launcher
 minimized, another tab) -- a short chime plays and the launcher's taskbar button flashes until the window is in
-front. Once per event. A match, a challenge and a tournament set say the game's own "Get ready for the next battle!"
-instead of the chime (1.2.0, announcer.py, Settings "notify_sound": announcer / beep / own WAV / off), read from the
-player's unpacked game.
+front. Once per event. A found match and a tournament set default to the game's own "Get ready for the next battle!"
+(announcer.py, Settings "notify_sound": announcer / beep / own WAV / off), read from the player's unpacked game.
+Challenges and invites have a separate "notify_challenge_sound" choice: New challenger (default) / chime / own WAV /
+off. Its announcer line is "A new challenger!", read from the player's own game; unavailable lines use the chime.
 
 Firewall hint (docs/TROUBLESHOOTING.md "The firewall blocks the game"): a read-only look at Windows Firewall's rules
 for the exact t5dr.exe the launcher starts and for the launcher itself (t5lobby.fwcheck, on a worker thread when the tab
@@ -73,6 +74,7 @@ from tkinter import filedialog, ttk
 from . import chat, discord_rpc, fighters, fwcheck, lag, notify, padmap, padnav, proto, ranks, servers, sets
 from .buildid import BuildInfo
 from .client import LobbyClient
+from .editions import edition_note
 from .i18n import N_, stamp, t, translate_message
 from .match_driver import MatchDriver, fps_from_logs, game_files, game_supports_pick, game_supports_rules, \
     game_supports_life150, game_supports_ingame_ui, game_supports_auto_skip, ingame_rematch_wanted, \
@@ -286,7 +288,8 @@ class OnlineTab:
         self._game_fronted = None                     # the match the game's window last came forward for
         # chime + taskbar flash (notify.py; tests set fake hooks); and what is new in this player's room
         self.notifier = notify.Notifier(enabled=self._notify_enabled, away=self._notify_away,
-                                        flash=self._notify_flash, log=_launcher_log, voice=self._notify_voice)
+                                        flash=self._notify_flash, log=_launcher_log, voice=self._notify_voice,
+                                        challenge=self._notify_challenge)
         self.room_watch = notify.RoomWatch()
         self._challenge_rung = {}        # challenger's name (lower case) -> notifier clock of the last chime for them
         self.codes_window = None
@@ -1880,6 +1883,12 @@ class OnlineTab:
             if p.get("place"):
                 rating += ", " + t("#{place} on the leaderboard", place=p["place"])
             lines = [rating]
+            # Account profiles on older servers omit region; the live lobby still has the game edition.
+            edition_player = p if "region" in p else next(
+                (player for player in self.client.players if player["name"].lower() == p["name"].lower()), {})
+            edition = edition_note(edition_player, self.client.me)
+            if edition:
+                lines.append(edition)
             st = p.get("stats") if isinstance(p.get("stats"), dict) else None
             mode = {k: st.get(k) or {} for k in ("ranked", "casual")} if st else {}
             played = sum(m.get("games", 0) for m in mode.values())
@@ -2176,7 +2185,7 @@ class OnlineTab:
             return False
 
     def _notify_voice(self):
-        """The sound for a match / challenge / tournament set (notify.VOICE_KINDS), as chosen in Settings "Sound when a
+        """The sound for a found match or tournament set, as chosen in Settings "Sound when a
         match is found" (notify.match_sound_choice): the game's announcer read from the player's unpacked game
         (announcer.py), the beep, the player's own WAV (copied next to launcher.json) or none. False -> the chime."""
         settings = self.app.settings
@@ -2186,6 +2195,17 @@ class OnlineTab:
         path = getattr(settings, "path", None)
         folder = os.path.dirname(os.path.abspath(path)) if path else None
         return notify.play_match_sound(choice, getattr(settings, "out_dir", None), folder, log=_launcher_log)
+
+    def _notify_challenge(self):
+        """Challenges and invites use their own sound setting; "A new challenger!" is the default."""
+        settings = self.app.settings
+        choice = notify.challenge_sound_choice(settings)
+        if choice == notify.CHIME:
+            return False
+        path = getattr(settings, "path", None)
+        folder = os.path.dirname(os.path.abspath(path)) if path else None
+        return notify.play_match_sound(choice, getattr(settings, "out_dir", None), folder,
+                                       log=_launcher_log, challenge=True)
 
     def _notify_flash(self):
         return notify.flash_window(padnav.toplevel_hwnd(self.parent.winfo_toplevel()))
@@ -2360,10 +2380,13 @@ class OnlineTab:
             rec = p.get("record") or [0, 0, 0]
             name = chat.display_name(dict(p, badge=self._player_badge(p))) + (
                 self._you_suffix() if me and p["id"] == me["id"] else "")
-            if p.get("region") in ("US", "EU"):
-                name += " [" + p["region"] + "]"
+            edition = edition_note(p, me)
+            if edition:
+                status += " · " + edition
             main = self.table.fighter_name(p.get("main")) if p.get("main") else ""
             tags = ("me",) if me and p["id"] == me["id"] else ("other",) if not same else ()
+            if edition:
+                tags += ("edition",)           # keep the status note readable when columns stretch
             if not self.chal.playable(p, me, mine, compatible_build=same):
                 tags += ("away",)              # (1.1.9: below the players you can play now)
             if p["id"] in challenged:

@@ -1,7 +1,7 @@
-"""The game's own announcer, "Get ready for the next battle!", for the Online tab's notification sound -- read from
-the player's own game files when it is needed, never shipped with the launcher and never written to disk.
+"""The game's own announcer, "Get ready for the next battle!" and "A new challenger!", for Online notifications --
+read from the player's own game files when needed, never shipped with the launcher and never written to disk.
 
-The line is a sample of the announcer's sound bank, entry 11 of the game's data table in T55DATA1.BIN (the table and
+The lines are samples of the announcer's sound bank, entry 11 of the game's data table in T55DATA1.BIN (the table and
 its coding: rank_art.py and docs/DATA_FORMAT notes in rank_art.py):
 
 * the bank (big-endian): "00 02 01 00", 0, the bank id (2), the sample count (21), the data offset, the data size,
@@ -10,9 +10,11 @@ its coding: rank_art.py and docs/DATA_FORMAT notes in rank_art.py):
 * a sample is PlayStation ADPCM (VAG): 16-byte frames {shift | filter << 4, flags, 14 bytes = 28 four-bit samples};
   flag bit 0 ends the sample.
 
-Sample 1 of bank 2 is the line (found by comparing the bank's 21 samples with spoken phrases: samples 1 and 9 are two
-takes of it, sample 0 is "Welcome to the King of Iron Fist Tournament"); its size and SHA-256 below make sure no
-other sound is ever played (another release of the game, other data -> None, and notify.py rings its own chime).
+Sample 1 of bank 2 is "Get ready for the next battle!" (found by comparing the bank's 21 samples with spoken phrases:
+samples 1 and 9 are two takes of it, sample 0 is "Welcome to the King of Iron Fist Tournament"). The owner listened
+to all 21 samples and identified the last, sample 20, as "A new challenger!" by ear. Matches and tournament sets use
+sample 1; incoming challenges and invites use sample 20. Each line's rate, size and SHA-256 below make sure no other
+sound is ever played (another release of the game, other data -> None, and notify.py rings its own chime).
 
     python -m t5lobby.announcer --out <the launcher's output folder, e.g. native> [--wav FILE] [--play]
 """
@@ -34,6 +36,10 @@ SAMPLE = 1                        # "Get ready for the next battle!"
 SAMPLE_RATE = 18000
 SAMPLE_SIZE = 17744               # bytes of ADPCM
 SAMPLE_SHA256 = "4f7d1b013fe870402f05a996da276b29029cb68c89e70b5d22348f32a3c60855"
+NEW_CHALLENGER_SAMPLE = 20        # "A new challenger!", identified by the owner by ear
+NEW_CHALLENGER_RATE = 18000
+NEW_CHALLENGER_SIZE = 12352       # bytes of ADPCM, measured from the owner's own game
+NEW_CHALLENGER_SHA256 = "0ffd929779ec929dd85a14a5221b2f50552cdf8b38c75a782226ca29e35d4754"
 RECORD = 0xC0
 PEAK = 0.45                       # of full scale: the game's own level is ~1.0, the chime's 0.30 (notify.py)
 
@@ -101,22 +107,25 @@ def wav_bytes(samples, rate, peak=PEAK):
     return out.getvalue()
 
 
-def voice_from(elf, data):
-    """The line as a WAV image from the game's program and T55DATA1.BIN. Raises VoiceError."""
+def voice_from(elf, data, *, challenger=False):
+    """The requested pinned line as a WAV image from the game's program and T55DATA1.BIN. Raises VoiceError."""
     try:
         bank = rank_art.read_entry(elf, data, ENTRY)
     except rank_art.ArtError as e:
         raise VoiceError(str(e)) from None
-    adpcm, rate = bank_sample(bank, SAMPLE)
-    if rate != SAMPLE_RATE or len(adpcm) != SAMPLE_SIZE or hashlib.sha256(adpcm).hexdigest() != SAMPLE_SHA256:
+    sample, expected_rate, size, sha = (
+        (NEW_CHALLENGER_SAMPLE, NEW_CHALLENGER_RATE, NEW_CHALLENGER_SIZE, NEW_CHALLENGER_SHA256) if challenger else
+        (SAMPLE, SAMPLE_RATE, SAMPLE_SIZE, SAMPLE_SHA256))
+    adpcm, rate = bank_sample(bank, sample)
+    if rate != expected_rate or len(adpcm) != size or hashlib.sha256(adpcm).hexdigest() != sha:
         raise VoiceError("not the line this launcher knows (another release of the game?)")
     return wav_bytes(adpcm_decode(adpcm), rate)
 
 
 @functools.lru_cache(maxsize=4)
-def _cached(elf, data, stamp):
+def _cached(elf, data, stamp, challenger):
     try:
-        return voice_from(elf, data)
+        return voice_from(elf, data, challenger=challenger)
     except (VoiceError, OSError, ValueError, struct.error):
         return None
 
@@ -124,6 +133,16 @@ def _cached(elf, data, stamp):
 def next_battle_wav(out_dir):
     """The announcer's "Get ready for the next battle!" as a WAV image (bytes), or None: no unpacked game in
     `out_dir`, a European program, other or damaged data. Read once per game files (kept in memory)."""
+    return _line_wav(out_dir, challenger=False)
+
+
+def new_challenger_wav(out_dir):
+    """The announcer's "A new challenger!" as a WAV image (bytes), or None under the same safety rules as
+    next_battle_wav. Only sample 20 with the pinned rate, size and hash is accepted; kept in memory."""
+    return _line_wav(out_dir, challenger=True)
+
+
+def _line_wav(out_dir, *, challenger):
     if not out_dir:
         return None
     try:
@@ -134,7 +153,7 @@ def next_battle_wav(out_dir):
         stamp = tuple((os.path.getsize(p), os.path.getmtime(p)) for p in src)
     except OSError:
         return None
-    return _cached(elf, data, stamp)
+    return _cached(elf, data, stamp, challenger)
 
 
 def main(argv=None):

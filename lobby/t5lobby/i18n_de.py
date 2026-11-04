@@ -714,7 +714,6 @@ MESSAGES = {
     "Your own WAV file": "Eigene WAV-Datei",
     "Choose WAV file…": "WAV-Datei wählen…",
     "Play": "Abspielen",
-    "For a found match, a challenge and a tournament set when you are in another window. The announcer is read from your own game (after BUILD GAME); without it the beep plays. Your own sound: a WAV file of at most 5 seconds and 2 MB, copied into the launcher's folder.": "Für ein gefundenes Match, eine Herausforderung und ein Turnier-Set, wenn du in einem anderen Fenster bist. Die Ansage wird aus deinem eigenen Spiel gelesen (nach BUILD GAME); ohne es kommt der Piepton. Eigener Ton: eine WAV-Datei mit höchstens 5 Sekunden und 2 MB, sie wird in den Ordner des Launchers kopiert.",
     "That file is not a WAV sound the launcher can play (plain PCM WAV only).": "Die Datei ist kein WAV-Ton, den der Launcher abspielen kann (nur normales PCM-WAV).",
     "That sound is longer than 5 seconds.": "Der Ton ist länger als 5 Sekunden.",
     "That file is larger than 2 MB.": "Die Datei ist größer als 2 MB.",
@@ -2861,4 +2860,14 @@ MESSAGES = {
 
     "Personal mute is unavailable on this server.": "Persönliches Stummschalten ist auf diesem Server nicht verfügbar.",
     "Chat is muted until {until}.": "Der Chat ist bis {until} stummgeschaltet.",
+
+    "EU edition": "EU-Ausgabe",
+    "US edition": "US-Ausgabe",
+    "Sound for a challenge:": "Ton bei einer Herausforderung:",
+    "New challenger (default)": "Neuer Herausforderer (Standard)",
+    "Chime": "Glockenklang",
+    "{problem} The chime is used instead.": "{problem} Stattdessen erklingt der Glockenton.",
+    "The announcer needs your built game (BUILD GAME): until then the chime plays.": "Der Ansager braucht dein gebautes Spiel (BUILD GAME): Bis dahin erklingt der Glockenton.",
+    "For an incoming challenge or invite when you are in another window. The announcer is read from your own game (after BUILD GAME); without it the chime plays. Your own sound: a WAV file of at most 5 seconds and 2 MB, copied into the launcher's folder.": "Bei einer eingehenden Herausforderung oder Einladung, wenn du in einem anderen Fenster bist. Der Ansager wird aus deinem eigenen Spiel gelesen (nach BUILD GAME); ohne ihn erklingt der Glockenton. Dein eigener Ton: eine WAV-Datei von höchstens 5 Sekunden und 2 MB, die in den Ordner des Launchers kopiert wird.",
+    "For a found match or tournament set when you are in another window. The announcer is read from your own game (after BUILD GAME); without it the beep plays. Your own sound: a WAV file of at most 5 seconds and 2 MB, copied into the launcher's folder.": "Bei einem gefundenen Match oder Turnierset, wenn du in einem anderen Fenster bist. Der Ansager wird aus deinem eigenen Spiel gelesen (nach BUILD GAME); ohne ihn erklingt der Signalton. Dein eigener Ton: eine WAV-Datei von höchstens 5 Sekunden und 2 MB, die in den Ordner des Launchers kopiert wird.",
 }

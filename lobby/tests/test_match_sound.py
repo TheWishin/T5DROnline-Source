@@ -1,6 +1,6 @@
 """Settings "Sound when a match is found" (launcher.json "notify_sound"; t5lobby/notify.py "the sound for a found
 match"): the announcer, the beep, the player's own WAV file (checked, copied next to launcher.json) or nothing, for
-a found match, a challenge and a tournament set. Made-up WAV files only; nothing is played on this PC (fake
+a found match; challenges and invites have an independent setting. Made-up WAV files only; nothing is played on this PC (fake
 winsound), nothing is written outside a temporary folder."""
 import io
 import os
@@ -160,6 +160,19 @@ class WhatRingsTests(unittest.TestCase):
         A._cached.cache_clear()
         self.addCleanup(A._cached.cache_clear)
 
+    def test_challenge_custom_playback_uses_its_own_copy_and_fallback(self):
+        match = make_wav(seconds=0.2)
+        challenge = make_wav(seconds=0.4)
+        for name, data in ((notify.CUSTOM_WAV_NAME, match), (notify.CHALLENGE_WAV_NAME, challenge)):
+            with open(os.path.join(self.dir, name), "wb") as f:
+                f.write(data)
+        self.assertEqual(notify.match_sound_wav(notify.CUSTOM, folder=self.dir), (match, ""))
+        self.assertEqual(notify.match_sound_wav(notify.CUSTOM, folder=self.dir, challenge=True), (challenge, ""))
+        os.remove(os.path.join(self.dir, notify.CHALLENGE_WAV_NAME))
+        self.assertEqual(notify.match_sound_wav(notify.CUSTOM, folder=self.dir, challenge=True),
+                         (notify.chime_wav(), notify.WAV_MISSING))
+        self.assertEqual(notify.match_sound_wav(notify.CUSTOM, folder=self.dir), (match, ""))
+
     def test_each_choice(self):
         self.assertEqual(notify.match_sound_wav(notify.OFF, self.dir, self.dir), (None, ""))
         self.assertEqual(notify.match_sound_wav(notify.BEEP, self.dir, self.dir), (notify.chime_wav(), ""))
@@ -180,6 +193,43 @@ class WhatRingsTests(unittest.TestCase):
         self.assertEqual(note, "")
         self.assertNotEqual(wav, notify.chime_wav())
         self.assertIsNone(notify.check_wav(wav))
+
+    def test_the_right_sample_for_each_event_and_a_wrong_hash_chimes(self):
+        from t5lobby import tk_tab
+        import hashlib
+        battle = adpcm_encode(tone(280, 440))
+        challenger = adpcm_encode(tone(560, 660))
+        fake_install(self.dir, bank({A.SAMPLE: battle, A.NEW_CHALLENGER_SAMPLE: challenger}))
+        settings = types.SimpleNamespace(get=lambda key, default=None: default,
+                                         path=os.path.join(self.dir, "launcher.json"), out_dir=self.dir)
+        tab = types.SimpleNamespace(app=types.SimpleNamespace(settings=settings))
+        pins = dict(SAMPLE_SIZE=len(battle), SAMPLE_SHA256=hashlib.sha256(battle).hexdigest(),
+                    NEW_CHALLENGER_SIZE=len(challenger),
+                    NEW_CHALLENGER_SHA256=hashlib.sha256(challenger).hexdigest())
+        for wrong_hash in (False, True):
+            with self.subTest(wrong_challenger_hash=wrong_hash):
+                A._cached.cache_clear()
+                expected_battle = A.wav_bytes(A.adpcm_decode(battle), A.SAMPLE_RATE)
+                expected_challenger = (notify.chime_wav() if wrong_hash else
+                                       A.wav_bytes(A.adpcm_decode(challenger), A.NEW_CHALLENGER_RATE))
+                patched_pins = dict(pins)
+                if wrong_hash:
+                    patched_pins["NEW_CHALLENGER_SHA256"] = "0" * 64
+                for kind, expected in ((notify.MATCH, expected_battle), (notify.TOUR, expected_battle),
+                                       (notify.CHALLENGE, expected_challenger), (notify.INVITE, expected_challenger)):
+                    played = []
+
+                    def sound(choice, out_dir, folder, log=None, *, challenge=False):
+                        wav, _note = notify.match_sound_wav(choice, out_dir, folder, challenge=challenge)
+                        played.append(wav)
+                        return True
+
+                    n = notify.Notifier(play=lambda: played.append(notify.chime_wav()),
+                                        voice=lambda: tk_tab.OnlineTab._notify_voice(tab),
+                                        challenge=lambda: tk_tab.OnlineTab._notify_challenge(tab))
+                    with mock.patch.multiple(A, **patched_pins), mock.patch.object(notify, "play_match_sound", sound):
+                        self.assertTrue(n.notify(kind, "event"))
+                    self.assertEqual(played, [expected], kind)
 
 
 @unittest.skipUnless(os.name == "nt", "the sound is Windows only")
@@ -236,6 +286,21 @@ class PlayTests(unittest.TestCase):
             self.assertTrue(ws.done.wait(10))
         self.assertEqual(ws.calls[0][0], notify.chime_wav())
 
+    def test_challenge_preview_uses_new_challenger_and_its_fallback(self):
+        line = make_wav(seconds=0.2)
+        for wav, note in ((line, ""), (None, "no_game")):
+            with self.subTest(available=wav is not None):
+                ws = FakeWinsound()
+                with mock.patch.dict(os.environ, {"T5_NOTIFY": "1"}), mock.patch.object(notify, "winsound", ws), \
+                        mock.patch.object(A, "new_challenger_wav", return_value=wav) as challenger, \
+                        mock.patch.object(A, "next_battle_wav") as battle:
+                    self.assertEqual(notify.preview_match_sound(notify.ANNOUNCER, self.dir, self.dir, challenge=True),
+                                     note)
+                    self.assertTrue(ws.done.wait(10))
+                challenger.assert_called_once_with(self.dir)
+                battle.assert_not_called()
+                self.assertEqual(ws.calls[0][0], wav or notify.chime_wav())
+
 
 class NotifierTests(unittest.TestCase):
     """The Online tab's hook (tk_tab.OnlineTab._notify_voice) with the setting: Off rings nothing but still flashes,
@@ -275,6 +340,80 @@ class NotifierTests(unittest.TestCase):
                             flash=lambda: None, clock=lambda: 1.0, voice=lambda: voiced.append(1) or True)
         n.notify(notify.JOIN, "j")
         self.assertEqual((played, voiced), ([1], []))
+
+    def test_event_to_sound_with_independent_settings(self):
+        from t5lobby import tk_tab
+        for match_choice in notify.MATCH_SOUNDS:
+            for challenge_choice in (None,) + notify.CHALLENGE_SOUNDS:
+                settings = core.Settings(os.path.join(ROOT, "build", "unused-sound-test.json"))
+                settings["notify_sound"] = match_choice
+                if challenge_choice is None:
+                    settings.pop("notify_challenge_sound")
+                else:
+                    settings["notify_challenge_sound"] = challenge_choice
+                tab = types.SimpleNamespace(app=types.SimpleNamespace(settings=settings))
+                for kind in (notify.MATCH, notify.CHALLENGE, notify.INVITE, notify.TOUR, notify.JOIN,
+                             notify.TURN, notify.REMATCH, "mention"):
+                    with self.subTest(match=match_choice, challenge=challenge_choice, kind=kind):
+                        played, flashed = [], []
+                        n = notify.Notifier(play=lambda: played.append("chime"),
+                                            flash=lambda: flashed.append(1), clock=lambda: 1.0,
+                                            voice=lambda: tk_tab.OnlineTab._notify_voice(tab),
+                                            challenge=lambda: tk_tab.OnlineTab._notify_challenge(tab))
+                        with mock.patch.object(notify, "play_match_sound", return_value=True) as sound:
+                            self.assertTrue(n.notify(kind, "event"))
+                        choice = (match_choice if kind in (notify.MATCH, notify.TOUR) else
+                                  (challenge_choice or notify.ANNOUNCER) if kind in notify.CHALLENGE_KINDS else notify.CHIME)
+                        self.assertEqual(flashed, [1])
+                        if choice in (notify.CHIME, notify.BEEP):
+                            self.assertEqual(played, ["chime"])
+                            sound.assert_not_called()
+                        else:
+                            self.assertEqual(played, [])
+                            self.assertEqual(sound.call_args.args[0], choice)
+                            self.assertEqual(sound.call_args.kwargs.get("challenge", False), kind in notify.CHALLENGE_KINDS)
+
+    def test_failed_challenge_hook_falls_back_to_chime(self):
+        for hook in (lambda: False, mock.Mock(side_effect=OSError("no sound"))):
+            for kind in notify.CHALLENGE_KINDS:
+                played = []
+                n = notify.Notifier(play=lambda: played.append(1), challenge=hook)
+                self.assertTrue(n.notify(kind, "c"))
+                self.assertEqual(played, [1])
+
+
+class ChallengeSettingsTests(unittest.TestCase):
+    def test_default_validation_and_round_trip(self):
+        import json
+        with tempfile.TemporaryDirectory() as folder:
+            path = os.path.join(folder, "launcher.json")
+            for value in (None, "wrong", [], {}, 3, *notify.CHALLENGE_SOUNDS):
+                saved = {"notify_sound": "off", "notify_voice": False, "notify_challenge_sound": value,
+                         "notify_challenge_sound_name": 123, "settings_version": core.SETTINGS_VERSION}
+                with open(path, "w", encoding="utf-8") as f:
+                    json.dump(saved, f)
+                settings = core.Settings(path)
+                expected = value if value in notify.CHALLENGE_SOUNDS else notify.ANNOUNCER
+                self.assertEqual(settings["notify_challenge_sound"], expected)
+                self.assertEqual(notify.challenge_sound_choice(saved), expected)
+                self.assertEqual(settings["notify_challenge_sound_name"], "")
+                settings.save()
+                loaded = core.Settings(path)
+                self.assertEqual(loaded["notify_challenge_sound"], expected)
+                self.assertEqual(loaded["notify_sound"], "off")
+            self.assertEqual(notify.challenge_sound_choice({"notify_sound": "off", "notify_voice": False}),
+                             notify.ANNOUNCER)
+            self.assertEqual(notify.challenge_sound_choice(None), notify.ANNOUNCER)
+            self.assertEqual(list(core.CHALLENGE_SOUNDS), list(notify.CHALLENGE_SOUNDS))
+
+    def test_new_texts_in_every_language(self):
+        from t5lobby import i18n
+        texts = list(core.CHALLENGE_SOUNDS.values()) + [core.CHALLENGE_SOUND_HELP, "Sound for a challenge:",
+                "EU edition", "US edition", "{problem} The chime is used instead.",
+                "The announcer needs your built game (BUILD GAME): until then the chime plays."]
+        for lang in i18n.CATALOGS:
+            for text in texts:
+                self.assertIn(text, i18n.catalog(lang), (lang, text))
 
 
 if __name__ == "__main__":

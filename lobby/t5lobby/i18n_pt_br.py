@@ -678,7 +678,6 @@ MESSAGES = {
     "Your own WAV file": "Seu próprio arquivo WAV",
     "Choose WAV file…": "Escolher arquivo WAV…",
     "Play": "Reproduzir",
-    "For a found match, a challenge and a tournament set when you are in another window. The announcer is read from your own game (after BUILD GAME); without it the beep plays. Your own sound: a WAV file of at most 5 seconds and 2 MB, copied into the launcher's folder.": "Para uma partida encontrada, um desafio e um set de torneio quando você está em outra janela. O locutor é lido do seu próprio jogo (depois do BUILD GAME); sem ele, toca o bipe. Seu próprio som: um arquivo WAV de no máximo 5 segundos e 2 MB, copiado para a pasta do launcher.",
     "That file is not a WAV sound the launcher can play (plain PCM WAV only).": "Esse arquivo não é um som WAV que o launcher consiga tocar (apenas WAV PCM simples).",
     "That sound is longer than 5 seconds.": "Esse som dura mais de 5 segundos.",
     "That file is larger than 2 MB.": "Esse arquivo tem mais de 2 MB.",
@@ -2750,4 +2749,14 @@ MESSAGES = {
 
     "Personal mute is unavailable on this server.": "Não é possível silenciar jogadores neste servidor.",
     "Chat is muted until {until}.": "O chat está silenciado até {until}.",
+
+    "EU edition": "Edição EU",
+    "US edition": "Edição US",
+    "Sound for a challenge:": "Som para um desafio:",
+    "New challenger (default)": "Novo desafiante (padrão)",
+    "Chime": "Sino",
+    "{problem} The chime is used instead.": "{problem} O sino é usado no lugar.",
+    "The announcer needs your built game (BUILD GAME): until then the chime plays.": "O locutor precisa do seu jogo compilado (BUILD GAME): até lá, toca o sino.",
+    "For an incoming challenge or invite when you are in another window. The announcer is read from your own game (after BUILD GAME); without it the chime plays. Your own sound: a WAV file of at most 5 seconds and 2 MB, copied into the launcher's folder.": "Para um desafio ou convite recebido quando você está em outra janela. O locutor é lido do seu próprio jogo (depois do BUILD GAME); sem ele, toca o sino. Seu próprio som: um arquivo WAV de no máximo 5 segundos e 2 MB, copiado para a pasta do launcher.",
+    "For a found match or tournament set when you are in another window. The announcer is read from your own game (after BUILD GAME); without it the beep plays. Your own sound: a WAV file of at most 5 seconds and 2 MB, copied into the launcher's folder.": "Para uma partida encontrada ou um set de torneio quando você está em outra janela. O locutor é lido do seu próprio jogo (depois do BUILD GAME); sem ele, toca o bipe. Seu próprio som: um arquivo WAV de no máximo 5 segundos e 2 MB, copiado para a pasta do launcher.",
 }

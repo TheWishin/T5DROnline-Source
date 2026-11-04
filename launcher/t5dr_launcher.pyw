@@ -843,11 +843,12 @@ class App(tk.Tk):
             "Sound and taskbar flash for lobby notifications"),
                         variable=self.notify_var, style=self.wrap_style("TCheckbutton", 440),
                         command=self.save_settings).pack(anchor="w", pady=(4, 0))
-        # (1.2.0) a match, a challenge or a tournament set: the game's own "Get ready for the next battle!" (read
-        # from the unpacked game, lobby/t5lobby/announcer.py), the beep, the player's own WAV or nothing
+        # (1.2.0) a match or tournament set: "Get ready for the next battle!"; a challenge or invite:
+        # "A new challenger!" (from the unpacked game, lobby/t5lobby/announcer.py), a chime, own WAV or nothing
         # (lobby/t5lobby/notify.py "the sound for a found match"); radio buttons and buttons: Tab / arrows / Space
         if lobby_notify is not None:
             self._match_sound_box(other)
+            self._match_sound_box(other, challenge=True)
         ttk.Checkbutton(other, text=t("Start minimized, without taking focus (for testing)"), variable=self.bg_var,
                         style=self.wrap_style("TCheckbutton", 440), command=self.save_settings).pack(anchor="w",
                                                                                                     pady=(4, 0))
@@ -1534,68 +1535,79 @@ class App(tk.Tk):
         return folder, warning
 
     # ------------------------------------------------------------------ Sound when a match is found
-    def _match_sound_box(self, parent):
+    def _match_sound_box(self, parent, challenge=False):
         snd = ttk.Frame(parent)
         snd.pack(anchor="w", fill="x", pady=(4, 0), padx=(18, 0))
-        ttk.Label(snd, text=t("Sound when a match is found:")).pack(anchor="w")
-        self.match_sound_var = tk.StringVar(value=self.settings["notify_sound"])
-        self._match_sound_last = self.settings["notify_sound"]
-        for key, label in core.MATCH_SOUNDS.items():
-            ttk.Radiobutton(snd, text=t(label), value=key, variable=self.match_sound_var,
+        ttk.Label(snd, text=t("Sound for a challenge:") if challenge else t("Sound when a match is found:")).pack(anchor="w")
+        prefix = "challenge_sound" if challenge else "match_sound"
+        setting = "notify_challenge_sound" if challenge else "notify_sound"
+        var = tk.StringVar(value=self.settings[setting])
+        setattr(self, prefix + "_var", var)
+        setattr(self, "_" + prefix + "_last", self.settings[setting])
+        for key, label in (core.CHALLENGE_SOUNDS if challenge else core.MATCH_SOUNDS).items():
+            ttk.Radiobutton(snd, text=t(label), value=key, variable=var,
                             style=self.wrap_style("TRadiobutton", 420),
-                            command=self._match_sound_changed).pack(anchor="w")
+                            command=lambda: self._match_sound_changed(challenge)).pack(anchor="w")
         row = ttk.Frame(snd)
         row.pack(anchor="w", pady=(4, 0))
-        ttk.Button(row, text=t("Choose WAV file…"), command=self._choose_match_sound).pack(side="left")
-        self.match_sound_play = ttk.Button(row, text=t("Play"), command=self._preview_match_sound)
-        self.match_sound_play.pack(side="left", padx=(6, 0))
-        self.match_sound_hint = ttk.Label(snd, wraplength=self.px(420), justify="left")
-        self.match_sound_hint.pack(anchor="w", pady=(4, 0))
+        ttk.Button(row, text=t("Choose WAV file…"), command=lambda: self._choose_match_sound(challenge)).pack(side="left")
+        play = ttk.Button(row, text=t("Play"), command=lambda: self._preview_match_sound(challenge))
+        play.pack(side="left", padx=(6, 0))
+        setattr(self, prefix + "_play", play)
+        hint = ttk.Label(snd, wraplength=self.px(420), justify="left")
+        hint.pack(anchor="w", pady=(4, 0))
+        setattr(self, prefix + "_hint", hint)
         ttk.Label(snd, style="Muted.TLabel", wraplength=self.px(420), justify="left",
-                  text=t(core.MATCH_SOUND_HELP)).pack(anchor="w", pady=(2, 0))
-        self._match_sound_status()
+                  text=t(core.CHALLENGE_SOUND_HELP if challenge else core.MATCH_SOUND_HELP)).pack(anchor="w", pady=(2, 0))
+        self._match_sound_status(challenge=challenge)
 
     def _match_sound_folder(self):
         return self.settings.settings_dir
 
-    def _match_sound_problem(self, problem):
-        return t("{problem} The beep is used instead.",
+    def _match_sound_problem(self, problem, challenge=False):
+        template = N_("{problem} The chime is used instead.") if challenge else N_("{problem} The beep is used instead.")
+        return t(template,
                  problem=t(core.MATCH_SOUND_PROBLEMS.get(problem, core.MATCH_SOUND_PROBLEMS["unreadable"])))
 
-    def _match_sound_status(self, note=None):
+    def _match_sound_status(self, note=None, challenge=False):
         """The line under the choice: the player's WAV (or why the beep stands in), the announcer without a game."""
-        choice = self.match_sound_var.get()
+        prefix = "challenge_sound" if challenge else "match_sound"
+        setting = "notify_challenge_sound" if challenge else "notify_sound"
+        choice = getattr(self, prefix + "_var").get()
         text = ""
         if choice == "custom":
-            _wav, problem = lobby_notify.custom_wav(self._match_sound_folder())
-            text = self._match_sound_problem(problem) if problem else t(
-                "Your sound: {name}", name=self.settings.get("notify_sound_name") or lobby_notify.CUSTOM_WAV_NAME)
+            _wav, problem = lobby_notify.custom_wav(self._match_sound_folder(), challenge=challenge)
+            text = self._match_sound_problem(problem, challenge) if problem else t(
+                "Your sound: {name}", name=self.settings.get(setting + "_name") or (
+                    lobby_notify.CHALLENGE_WAV_NAME if challenge else lobby_notify.CUSTOM_WAV_NAME))
         elif choice == "announcer" and note == "no_game":
-            text = t("The announcer needs your built game (BUILD GAME): until then the beep plays.")
+            text = (t("The announcer needs your built game (BUILD GAME): until then the chime plays.") if challenge
+                    else t("The announcer needs your built game (BUILD GAME): until then the beep plays."))
         if note and note not in ("", "no_game") and choice == "custom":
-            text = self._match_sound_problem(note)
-        self.match_sound_hint.configure(text=text)
-        self.match_sound_play.configure(state="disabled" if choice == "off" else "normal")
+            text = self._match_sound_problem(note, challenge)
+        getattr(self, prefix + "_hint").configure(text=text)
+        getattr(self, prefix + "_play").configure(state="disabled" if choice == "off" else "normal")
 
-    def _match_sound_set(self, choice):
-        self.match_sound_var.set(choice)
-        self._match_sound_last = choice
-        self.settings["notify_sound"] = choice
+    def _match_sound_set(self, choice, challenge=False):
+        prefix = "challenge_sound" if challenge else "match_sound"
+        getattr(self, prefix + "_var").set(choice)
+        setattr(self, "_" + prefix + "_last", choice)
+        self.settings["notify_challenge_sound" if challenge else "notify_sound"] = choice
         self.save_settings()
 
-    def _match_sound_changed(self):
+    def _match_sound_changed(self, challenge=False):
         """A radio button: Your own WAV without a usable copy yet opens the file dialog first."""
-        choice = self.match_sound_var.get()
+        choice = getattr(self, "challenge_sound_var" if challenge else "match_sound_var").get()
         if self.readonly:
             return
-        if choice == "custom" and lobby_notify.custom_wav(self._match_sound_folder())[0] is None:
-            if not self._choose_match_sound():
+        if choice == "custom" and lobby_notify.custom_wav(self._match_sound_folder(), challenge=challenge)[0] is None:
+            if not self._choose_match_sound(challenge):
                 return
         else:
-            self._match_sound_set(choice)
-        self._match_sound_status()
+            self._match_sound_set(choice, challenge)
+        self._match_sound_status(challenge=challenge)
 
-    def _choose_match_sound(self):
+    def _choose_match_sound(self, challenge=False):
         """Choose WAV file...: the Windows file dialog; a WAV that fits is copied next to launcher.json and becomes
         the sound; one that does not -> the beep and why. Cancel keeps what was chosen. -> True when it was taken."""
         if self.readonly:
@@ -1603,26 +1615,28 @@ class App(tk.Tk):
         path = filedialog.askopenfilename(parent=self, title=t("Choose a WAV sound"),
                                           filetypes=[(t("WAV sound"), "*.wav")])
         if not path:
-            self.match_sound_var.set(self._match_sound_last)
-            self._match_sound_status()
+            prefix = "challenge_sound" if challenge else "match_sound"
+            getattr(self, prefix + "_var").set(getattr(self, "_" + prefix + "_last"))
+            self._match_sound_status(challenge=challenge)
             return False
-        problem = lobby_notify.install_custom_wav(path, self._match_sound_folder())
+        problem = lobby_notify.install_custom_wav(path, self._match_sound_folder(), challenge=challenge)
         if problem:
             core.log(f"match sound: {os.path.basename(path)} refused ({problem})")
-            self._match_sound_set("beep")
-            self._match_sound_status()
-            self.match_sound_hint.configure(text=self._match_sound_problem(problem))
+            self._match_sound_set("chime" if challenge else "beep", challenge)
+            self._match_sound_status(challenge=challenge)
+            getattr(self, "challenge_sound_hint" if challenge else "match_sound_hint").configure(
+                text=self._match_sound_problem(problem, challenge))
             return False
-        self.settings["notify_sound_name"] = os.path.basename(path)[:120]
-        self._match_sound_set("custom")
-        self._match_sound_status()
+        self.settings["notify_challenge_sound_name" if challenge else "notify_sound_name"] = os.path.basename(path)[:120]
+        self._match_sound_set("custom", challenge)
+        self._match_sound_status(challenge=challenge)
         return True
 
-    def _preview_match_sound(self):
+    def _preview_match_sound(self, challenge=False):
         """Play: the sound a found match would ring now (the beep where it would stand in)."""
-        choice = self.match_sound_var.get()
-        note = lobby_notify.preview_match_sound(choice, self.settings.out_dir, self._match_sound_folder())
-        self._match_sound_status(note)
+        choice = getattr(self, "challenge_sound_var" if challenge else "match_sound_var").get()
+        note = lobby_notify.preview_match_sound(choice, self.settings.out_dir, self._match_sound_folder(), challenge=challenge)
+        self._match_sound_status(note, challenge)
 
     def _browse_replay_folder(self):
         if self.readonly:
@@ -1735,6 +1749,9 @@ class App(tk.Tk):
         if hasattr(self, "match_sound_var"):
             choice = self.match_sound_var.get()
             self.settings["notify_sound"] = choice if choice in core.MATCH_SOUNDS else "announcer"
+        if hasattr(self, "challenge_sound_var"):
+            choice = self.challenge_sound_var.get()
+            self.settings["notify_challenge_sound"] = choice if choice in core.CHALLENGE_SOUNDS else "announcer"
         self.settings["background"] = bool(self.bg_var.get())
         self.settings["extra_env"] = self.env_text.get("1.0", "end").strip()
         self.settings["nickname"] = self.nick_var.get().strip()

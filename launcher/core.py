@@ -989,7 +989,7 @@ class BuildRun:
             if hint and not self._quiet_noted:
                 self._quiet_noted = True
                 line = "[launcher] " + hint
-                log(f"build: step {self.step} printed nothing for {int(now - self.last_output)} s"
+                log(f"build: step {self.step} printed nothing for {round(now - self.last_output)} s"
                     + (f" ({self.tool})" if self.tool else ""))
                 self.events.put(("line", line))
                 if self._log is not None:

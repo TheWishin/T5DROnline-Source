@@ -64,6 +64,7 @@ class MatchSoundUITests(unittest.TestCase):
         cls.launcher = load_launcher()
 
     def setUp(self):
+        os.makedirs(os.path.join(ROOT, "build"), exist_ok=True)     # (a fresh checkout, e.g. CI, has no build/)
         self.temp = tempfile.TemporaryDirectory(dir=os.path.join(ROOT, "build"))
         self.addCleanup(self.temp.cleanup)
         self.settings = core.Settings(os.path.join(self.temp.name, "settings ü", "launcher.json"))

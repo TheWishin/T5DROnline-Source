@@ -935,8 +935,8 @@ class BuildRun:
         warmup.close_all(self.out)
         # PYTHONUTF8: the build's tools write their files in UTF-8 on any Windows code page (cp949 broke the lift)
         env = dict(os.environ, PYTHONUNBUFFERED="1", PYTHONIOENCODING="utf-8", PYTHONUTF8="1")
-        if sys.executable.lower().endswith("pythonw.exe"):     # tools must not run windowless-python
-            exe = os.path.join(os.path.dirname(sys.executable), "python.exe")
+        if self.cmd[0].lower().endswith("pythonw.exe"):     # tools must not run windowless-python
+            exe = os.path.join(os.path.dirname(self.cmd[0]), "python.exe")
             if os.path.exists(exe):
                 self.cmd[0] = exe
         self.proc = subprocess.Popen(self.cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,

@@ -446,7 +446,9 @@ struct Register {
             /* Through the OS environment, not getenv(): the runtime's getenv
              * caches every answer, a miss too (boot_main.cpp cached_getenv),
              * and main() reads this one from that cache. */
-            const bool needs = strcmp(m, "net") ? true : net::offered_by_env();
+            const bool needs = strcmp(m, "net") ? true :
+                (net::offered_by_env() || (getenv("T5_NET_MODE") &&
+                 !_stricmp(getenv("T5_NET_MODE"), "replay") && getenv("T5_REPLAY_COMMAND")));
             char ww[8] = "";
             t5p_getenv_os("PS3_VM_WRITE_WATCH", ww, sizeof ww);
             if (needs && ww[0] != '1') {

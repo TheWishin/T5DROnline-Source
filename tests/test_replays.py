@@ -487,6 +487,15 @@ class GameCodeTest(unittest.TestCase):
         if not os.path.isfile(exe):
             raise AssertionError("could not build tests/c/replay_test.cpp: " + (r.stdout + r.stderr)[-2000:])
         cls.exe = exe
+        state_exe = os.path.join(cls.tmp, "replay_state_test.exe")
+        state_srcs = [os.path.join(ROOT, "tests", "c", "replay_state_test.cpp"),
+                      os.path.join(ROOT, "src", "rollback", "rb_state.cpp")]
+        state_cmd = (f'"{vcvars}" >nul 2>&1 && "{clang}" /nologo /O1 /EHsc /std:c++17 /W0 /D_CRT_SECURE_NO_WARNINGS '
+                     + " ".join(f'"{s}"' for s in state_srcs) + f' /Fe:"{state_exe}" /Fo:"{cls.tmp}\\\\"')
+        result = subprocess.run(f'cmd /s /c "{state_cmd}"', capture_output=True, text=True, timeout=120, cwd=cls.tmp)
+        if not os.path.isfile(state_exe):
+            raise AssertionError("could not build replay_state_test.cpp: " + (result.stdout + result.stderr)[-2000:])
+        cls.state_exe = state_exe
 
     def run_exe(self, *args):
         r = subprocess.run([self.exe, *args], capture_output=True, text=True, timeout=120)
@@ -494,6 +503,11 @@ class GameCodeTest(unittest.TestCase):
 
     def lines(self, out, tag):
         return [ln[len(tag) + 1:] for ln in out.splitlines() if ln.startswith(tag + " ")]
+
+    def test_full_state_checkpoint_preserves_live_bytes_and_rejects_invalid_pages(self):
+        result = subprocess.run([self.state_exe], capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("PASS replay state checkpoint", result.stdout)
 
     def synthetic_live(self, name, *, ended=False, buffered=False):
         """Only made-up format records; no game executable, input log or server."""
@@ -564,6 +578,62 @@ class GameCodeTest(unittest.TestCase):
                 self.assertEqual(code, 0, output)
                 self.assertEqual(self.lines(output, "SOFTRESET"), [str(int(version >= 7))])
 
+    def test_start_capsule_round_index_and_wrong_build_fallback(self):
+        folder = tempfile.mkdtemp(dir=self.tmp)
+        code, output = self.run_exe("write", folder, "1000", "91")
+        self.assertEqual(code, 0, output)
+        path = self.lines(output, "FILE")[0]
+        code, output = self.run_exe("capsule", path, "read")
+        self.assertEqual(code, 0, output)
+        self.assertEqual(self.lines(output, "CAPSULE"), ["1 501 1024 165"])
+        self.assertEqual(self.lines(output, "STARTMATCH"), ["2"])
+        self.assertEqual(self.lines(output, "ROUND"), ["502"])
+        code, output = self.run_exe("capsule", path, "wrong-build")
+        self.assertEqual(code, 0, output)
+        self.assertEqual(self.lines(output, "CAPSULE"), ["0 0 0 0"])
+        self.assertEqual(self.lines(output, "STARTMATCH"), ["1"])
+        # A truncated zlib stream is ignored, leaving legacy playback available.
+        with open(path + ".start2", "rb") as f:
+            capsule = f.read()
+        with open(path + ".start2", "wb") as f:
+            f.write(capsule[:-8])
+        code, output = self.run_exe("capsule", path, "read")
+        self.assertEqual(code, 0, output)
+        self.assertEqual(self.lines(output, "CAPSULE"), ["0 0 0 0"])
+        self.assertEqual(self.lines(output, "STARTMATCH"), ["1"])
+
+    def test_playback_cursor_restores_mapping_and_keeps_takeover_unverified(self):
+        folder = tempfile.mkdtemp(dir=self.tmp)
+        code, output = self.run_exe("write", folder, "1000", "92")
+        self.assertEqual(code, 0, output)
+        path = self.lines(output, "FILE")[0]
+        verdict = os.path.join(folder, "verdict.json")
+        with mock.patch.dict(os.environ, {"T5_REPLAY_RESULT": verdict}):
+            code, output = self.run_exe("capsule", path, "cursor")
+        self.assertEqual(code, 0, output)
+        self.assertEqual(self.lines(output, "RESTORE"), ["1"])
+        self.assertEqual(self.lines(output, "ACTUALLINE"), ["1"])
+        self.assertEqual(self.lines(output, "CURSOR"), ["2 506 506"])
+        self.assertEqual(self.lines(output, "BRANCHLOCAL"), ["1 1 0"])
+        self.assertEqual(self.lines(output, "CORRUPTCURSOR"), ["0"])
+        with open(verdict, encoding="utf-8") as f:
+            result = json.load(f)
+        self.assertFalse(result["identical"])
+        self.assertFalse(result["verified"])
+        self.assertEqual(result["unverified_from"], 451)  # barrier introduced an offset of 100 before takeover
+        self.assertEqual([m["n"] for m in result["matches"]], [2])
+
+    def test_names_off_does_not_persist_raw_memory_capsules(self):
+        folder = tempfile.mkdtemp(dir=self.tmp)
+        with mock.patch.dict(os.environ, {"T5_REPLAY_NAMES": "0"}):
+            code, output = self.run_exe("write", folder, "1000", "92")
+        self.assertEqual(code, 0, output)
+        path = self.lines(output, "FILE")[0]
+        self.assertTrue(os.path.isfile(path))
+        self.assertFalse(os.path.exists(path + ".start1"))
+        self.assertFalse(os.path.exists(path + ".start2"))
+        self.assertEqual(replays.read_payload(path)["matches"][0]["names"], ["", ""])
+
     def test_game_writes_what_python_reads_and_back(self):
         d = tempfile.mkdtemp(dir=self.tmp)
         code, out = self.run_exe("write", d, "3000", "0x5eed")
@@ -585,6 +655,8 @@ class GameCodeTest(unittest.TestCase):
         self.assertEqual((m2["winner"], m2["score"], m2["desync"], m2["start"]), (0, [2, 1], 3, 1500))
         self.assertEqual(m1["names"], ["Alpha One", "B\u00e9ta"])
         self.assertEqual(h["build"], "test-build-id")
+        self.assertEqual(m1["round_marks"], [2])
+        self.assertEqual(m2["round_marks"], [1502])
         # the game reads it back: every frame's inputs, the lines, the sync points
         code, out = self.run_exe("read", path)
         self.assertEqual(code, 0, out)

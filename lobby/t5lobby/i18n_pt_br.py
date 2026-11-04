@@ -2359,11 +2359,6 @@ MESSAGES = {
         "Apagar",
     "Open replays folder":
         "Abrir pasta de replays",
-    "While a replay plays: START (Enter) pauses and goes on, SELECT (Tab) ends the replay. A "
-    "rematch is played after the matches before it in the same session: it starts from what they "
-    "left.":
-        "Durante um replay: START (Enter) pausa e continua, SELECT (Tab) encerra o replay. Uma revanche é "
-        "reproduzida depois das partidas anteriores da mesma sessão: ela começa de onde elas pararam.",
     "Save online matches as replays":
         "Salvar partidas online como replays",
     "Watch replay": "Ver replay",
@@ -2887,3 +2882,24 @@ MESSAGES = {
     "For an incoming challenge or invite when you are in another window. The announcer is read from your own game (after BUILD GAME); without it the chime plays. Your own sound: a WAV file of at most 5 seconds and 2 MB, copied into the launcher's folder.": "Para um desafio ou convite recebido quando você está em outra janela. O locutor é lido do seu próprio jogo (depois do BUILD GAME); sem ele, toca o sino. Seu próprio som: um arquivo WAV de no máximo 5 segundos e 2 MB, copiado para a pasta do launcher.",
     "For a found match or tournament set when you are in another window. The announcer is read from your own game (after BUILD GAME); without it the beep plays. Your own sound: a WAV file of at most 5 seconds and 2 MB, copied into the launcher's folder.": "Para uma partida encontrada ou um set de torneio quando você está em outra janela. O locutor é lido do seu próprio jogo (depois do BUILD GAME); sem ele, toca o bipe. Seu próprio som: um arquivo WAV de no máximo 5 segundos e 2 MB, copiado para a pasta do launcher.",
 }
+
+# Replay viewer and local library.
+MESSAGES.update({
+    'Back 10 s': 'Voltar 10 s',
+    'Favourite': 'Favorito',
+    'Favourites only': 'S? favoritos',
+    'Forward 10 s': 'Avan?ar 10 s',
+    'Frame step': 'Avan?ar um quadro',
+    'Frame {frame} / {end}': 'Quadro {frame} / {end}',
+    'Pause': 'Pausar',
+    'Replay over: unverified from frame {frame} (player control).': 'Replay encerrado: n?o verificado a partir do quadro {frame} (controle do jogador).',
+    'Resume': 'Continuar',
+    'Round {n}': 'Round {n}',
+    'START (Enter) pauses or resumes; SELECT (Tab) ends playback. Taking control uses the local pad and marks playback unverified from that frame. Older replays may need earlier matches to play first.': 'START (Enter) pausa ou continua; SELECT (Tab) encerra a reprodu??o. Assumir o controle usa o controle local e marca o replay como n?o verificado a partir desse quadro. Replays antigos podem exigir a reprodu??o das partidas anteriores primeiro.',
+    'Speed': 'Velocidade',
+    'Take P{side}': 'Controlar P{side}',
+    'Unverified: player control': 'N?o verificado: controle do jogador',
+    'Verified playback': 'Reprodu??o verificada',
+})
+
+MESSAGES['This replay command is unavailable at the current frame.'] = 'Este comando do replay n?o est? dispon?vel no quadro atual.'

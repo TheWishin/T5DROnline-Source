@@ -21,6 +21,7 @@
 #pragma once
 #include <stdint.h>
 #include <string>
+#include <vector>
 #include "netplay.h"
 
 namespace rp {
@@ -99,6 +100,24 @@ void play_fail(const char* path, const char* why);  /* the file could not be pla
 uint32_t play_target();                             /* the match being watched (1-based) */
 uint32_t play_match_index();                        /* matches begun so far in the playback */
 bool play_select_mix();                             /* the select seed mixes the match number (format 4; older: per session) */
+
+/* Optional local start capsules. Kept beside the legacy replay so formats
+ * 1..7 and privacy-safe exports remain unchanged. The blob belongs to the
+ * drained frame-boundary hook; compression/writing runs on the recorder's
+ * worker. Capsules contain guest memory and must never enter reports; recording
+ * them is disabled when T5_REPLAY_NAMES=0 to preserve that privacy choice. */
+void rec_capsule(uint32_t frame, const std::vector<uint8_t>& blob);
+void rec_round(uint32_t frame);
+std::vector<uint32_t> play_rounds();   /* recorded round starts for the selected match */
+bool play_capsule(uint32_t match, uint32_t* frame, std::vector<uint8_t>* blob);
+uint32_t play_start_match();   /* first driver match maps here; 1 without a usable capsule */
+void play_start_at(uint32_t match, uint32_t recorded_frame);
+void play_cursor_capture(std::vector<uint8_t>* out);
+bool play_cursor_restore(const std::vector<uint8_t>& cursor);
+uint32_t play_recorded_frame(uint32_t playback_frame);
+uint32_t play_playback_frame(uint32_t recorded_frame);
+void play_bounds(uint32_t* start, uint32_t* end);
+void play_mark_unverified(uint32_t playback_frame);
 
 /* ---- spectating (docs/SPECTATE.md) ----------------------------------------
  * Players: T5_REPLAY_LIVE=<file> (the session's environment) appends the session

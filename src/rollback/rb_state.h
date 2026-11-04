@@ -12,6 +12,7 @@
 #pragma once
 #include <stdint.h>
 #include <stddef.h>
+#include <vector>
 
 namespace rb {
 
@@ -92,5 +93,13 @@ uint32_t state_log_pages(uint32_t f); /* pages in frame f's undo log (0 when gon
 
 /* Pointer into the shadow copy (the state as of the last commit), or null. */
 const uint8_t* state_shadow(uint32_t ea);
+
+/* Full replay checkpoint. Call only on the main thread after draining loaders
+ * and geometry workers, at the same frame boundary on capture and restore.
+ * Unlike undo logs this includes render/job output: it survives scene barriers.
+ * Runtime handles, CPU context, reader semaphores and host driver state belong
+ * to the caller's checkpoint. Invalid snapshots never modify guest memory. */
+bool state_capture(std::vector<uint8_t>* out);
+bool state_restore(const std::vector<uint8_t>& snapshot);
 
 } // namespace rb

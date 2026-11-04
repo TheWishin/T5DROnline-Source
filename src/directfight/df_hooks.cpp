@@ -36,6 +36,7 @@ uint32_t guest_of_host(uintptr_t host_pc, uint32_t* off);
 std::string guest_backtrace(int max);
 }
 #include "df.h"
+#include "../replay/blob.h"
 
 extern "C" {
 void    ps3_hle_register_ctx(uint32_t nid, const char* name, void (*fn)(ppu_context*));
@@ -212,6 +213,33 @@ uint32_t g_mode_changes = 0;
 uint32_t mode_manager() { return g_mgr; }
 uint32_t mode_cur()  { return g_mgr ? rd32(g_mgr + kModeReq) : 0xFFFFFFFFu; }
 uint32_t mode_next() { return g_mgr ? rd32(g_mgr + kModeReq + 4) : 0xFFFFFFFFu; }
+
+bool replay_hook_capture(std::vector<uint8_t>* out)
+{
+    if (!out) return false;
+    rv::Writer w;
+    w.pod(uint32_t{1});
+    w.pod(g_frame.load(std::memory_order_relaxed));
+    w.pod(g_mgr); w.pod(g_last_cur); w.pod(g_last_next); w.pod(g_last_obj);
+    *out = std::move(w.bytes);
+    return true;
+}
+
+bool replay_hook_restore(const std::vector<uint8_t>& data, bool apply)
+{
+    rv::Reader r{data};
+    uint32_t version, frame, mgr, cur, next, obj;
+    if (!r.pod(&version) || version != 1 || !r.pod(&frame) || !r.pod(&mgr) ||
+        !r.pod(&cur) || !r.pod(&next) || !r.pod(&obj) || !r.done()) return false;
+    // find_object scans both ELF data and heap; the normal manager lives in data.
+    if (mgr && !rv::object_fits(mgr, kDataBase, kDataLen, 0x100u) &&
+        !rv::object_fits(mgr, kHeapBase, kHeapLen, 0x100u)) return false;
+    if (apply) {
+        g_frame.store(frame, std::memory_order_relaxed);
+        g_mgr = mgr; g_last_cur = cur; g_last_next = next; g_last_obj = obj;
+    }
+    return true;
+}
 
 /* The title mode starts a savedata autosave thread (entry 0x458740) after a
  * fight; it takes a 5 MB memory container and 1 MB blocks from it while it

@@ -156,7 +156,7 @@ same frame in the playback -- the recorded inputs go through the same rule, so t
 identical. The viewer's START only pauses the playback; it cannot skip anything there (that would
 make the playback differ from the live match).
 
-The game closes by itself a few seconds after the watched match's KO, and the tab shows the verdict
+Noninteractive playback closes by itself a few seconds after the watched match's KO, and the tab shows the verdict
 ("identical to the live match (N checks, same result)", or the frame from which it went another way).
 `T5_REPLAY_CONTROLS=0` takes the pad away from the playback (tests), `T5_REPLAY_EXIT=0` keeps the
 game open after the end.
@@ -189,19 +189,61 @@ The launcher still releases the watch after observing process death. See
 [the 1.2.0 review checklist](AUTOSPECTATE_1.2.0_REVIEW.md) for the phase matrix, window-close checks
 and the real-game evidence still required.
 
-**No faster pace.** Double speed, and the earlier matches of a session as fast as possible, were
-built and measured: the frame did not wait for its vblank tick, but the game still shows one picture
-per vblank (the flip waits for it), and such a playback ran at 30-44 frames a second -- slower than
-normal (59). Faster would need frames that skip the draw and the flip, like the rollback loop's
-re-simulated frames; not done. A playback runs at the game's own pace.
+### Viewer controls (replay2)
 
-**A rematch is played after the matches before it.** The game state at a rematch's start is what the
-match before it left (leftovers in the fight block, the C heap, effect pools...): both live PCs share
-that history, a freshly started game does not -- a persistent game that has played and a fresh one
-differ in 1,662 of 1,662 frames' hashes without the boot-state copy (docs/DIRECTFIGHT.md "A game that
-has played meets a fresh one"). The netplay guarantee is "a fresh game equals a persistent game at a
-new session's start" (title visit, boot-state copy). So a replay always starts at its session's
-start, and watching match k plays matches 1..k-1 first (the viewer sees them; SELECT ends it).
+The library combines fighter (either side), opponent, netcode and favourites filters. Favourites
+are per match in `.replay-library.json`; the original replay bytes do not change. Watch opens a
+control panel with pause/resume, a frame timeline, back/forward 10 seconds, round jumps,
+0.25x/0.5x/1x/2x/4x speed, frame step, and Take P1/Take P2. START and SELECT retain their viewer
+meanings. Interactive playback parks just after the deciding KO, before result-screen loading, so the viewer can seek; **Stop replay**
+requests a clean verdict before a fallback process stop.
+
+A seek restores the closest earlier checkpoint and runs the recorded inputs up to the requested
+frame. It parks **before that frame's input**; one frame step executes exactly one input frame.
+Checkpoints are taken every 300 frames while a loaded match is undecided. Eight compressed
+checkpoints are retained, including the first, so older intervals can be reached by resimulation.
+A new match clears that cache. The final catch-up frame is presented before parking, so seeking refreshes the picture. The timeline starts one frame after the first safe loaded checkpoint: seek into
+loading or an earlier match is unavailable. Old files acquire round marks as they are watched;
+new recordings also keep their round marks in the header and a validated `.rounds` sidecar.
+
+Taking control replaces the chosen side's input with the local pad. START/SELECT remain viewer
+commands. The other side keeps its recorded inputs. Hash and result verification stops from the
+first controlled frame, and the verdict has `verified: false`, `unverified_from` and
+`identical: false`. Seeking or returning to recorded inputs cannot erase that provenance.
+Seeking after a takeover uses original recorded inputs during catch-up, then resumes the selected
+local side at the requested frame. This is a local retry, with no network session or ranked result. Altered round transitions use local counters/seeds; the retry can continue beyond the original input length (the recorded side becomes neutral there) and parks at its own match result.
+
+Slow motion holds extra vblank ticks. Fast-forward skips draw/present work on intermediate frames
+using the rollback presentation bypass, and displays one frame per speed group. Loading stays
+paced normally. This replaces the old attempt that only removed the frame wait and measured
+30?44 fps. **New skipped-present speeds have not yet been measured in a real game; the 2x/4x
+settings are requested rates, not measured performance claims.**
+
+### Independent match starts
+
+New recordings capture a compressed local start capsule per match as
+`<file>.t5replay.startN`. Capture happens at the first drained, loaded frame, rather than inside
+FIGHT START's asynchronous loading. The capsule includes the rollback state set, CPU registers,
+private RNGs, frame and barrier cursors, skip/training rules, direct-fight state and reader tokens.
+The worker compresses/writes it and releases the raw memory after publication. The local two-match proof produced approximately 21?24 MB per capsule, separate from its 5.8 KB input replay; these caches use substantially more disk than the input file.
+
+Watch enables `T5_REPLAY_CAPSULES=1`: when a matching capsule exists for a selected later match,
+the game loads that match's fighters/stage, restores the capsule, and starts there. It checks the
+build id, session, setup, bounded decoded size and complete state-page map before applying it.
+A missing, corrupt or other-build capsule falls back to the historical session-start path. A
+capsule that passes the outer checks but cannot be restored closes with a failure verdict.
+
+The `.t5replay` binary remains format 7. Formats 1?7 retain their original input policy and
+session-start playback, including `tools/replay_play.py` without capsule opt-in. Older recordings
+have no capsules and still play earlier matches first. Cross-process starts, seeks and all speeds
+require the real-game gates in [REPLAY2_HANDOFF.md](REPLAY2_HANDOFF.md) before release.
+
+Capsules contain raw guest state, potentially including names and game data. **They are local
+cache files, never report attachments or privacy-safe exports.** When **Keep the players' names
+in replays** is off, no start capsules are written: raw memory can retain earlier HUD names.
+Those recordings use historical session-start playback; their input files remain anonymous. Export/share the `.t5replay`
+file alone. Removing sidecars loses acceleration/round indexing only. Current replay-folder move
+and delete helpers operate on `.t5replay` files; remove/move local sidecars separately if needed.
 
 ## How the playback works
 
@@ -255,6 +297,12 @@ plays back), the same rule as for the logs. Known replay folder paths in report 
 with `<replays>`, including a saved custom choice that is currently unavailable.
 
 ## Cost
+
+The historical numbers below measure input/hash recording only. The new full start-capsule
+capture copies about 103 MB once per match at a confirmed loaded boundary; that copy is not
+included in the old per-frame recorder timer. Compression and writing run on the worker, and
+raw data is released after publication. Capture time, its frame-time impact and new seek-cache
+cost still need separate measurement on the supported PC tiers.
 
 Recording reads netplay's rings and the hashes it computes anyway. The inputs go into 4096-frame
 chunks that never move: the main thread appends and publishes the frame count, one writer thread
@@ -359,3 +407,14 @@ never stops before a recorded match's end).
 | `tools/replay_play.py` | play files or folders back, print the table, exit 0 when all are identical; `--press` tests the controls |
 | `launcher/replays.py` | read, list, safely move files, strip names; `prune` remains an explicit tool helper |
 | `tests/test_replays.py`, `tests/c/replay_test.cpp` | format, both readers and writers against each other, the frame renumbering, the tab, the report |
+
+### Local viewer IPC
+
+`T5_REPLAY_COMMAND` names a local UTF-8 command file, published by atomic replace. The game
+consumes/removes one complete command before the launcher sends the next: `pause`, `resume`,
+`seek <absolute recorded frame>`, `speed <0.25|0.5|1|2|4>`, `step`, `control <0|1|2>`, `quit`.
+`T5_REPLAY_STATUS` is atomically replaced JSON with `frame`, `start`, `end`, `paused`, `speed`,
+`control`, `verified`, `unverified_from`, `seeking`, `seekable`, `rounds` and `error`. This IPC is enabled only
+for local replay files, never a live spectator stream. `T5_REPLAY_CONTROLS=0` disables pad viewer
+commands but permits this IPC for automated tests. `control 0` returns to recorded inputs and
+retains the unverified marker. Frame numbers in commands/status are those of the original file.

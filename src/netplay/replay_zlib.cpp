@@ -44,3 +44,10 @@ unsigned char* rp_zlib_decompress(const unsigned char* data, int len, int* out_l
 {
     return (unsigned char*)stbi_zlib_decode_malloc_guesssize((const char*)data, len, 256 * 1024, out_len);
 }
+
+/* Checkpoint files announce a bounded decoded size; do not let an untrusted
+ * sidecar make the growable inflate helper allocate without a ceiling. */
+bool rp_zlib_decompress_into(const unsigned char* data, int len, unsigned char* out, int out_len)
+{
+    return stbi_zlib_decode_buffer((char*)out, out_len, (const char*)data, len) == out_len;
+}

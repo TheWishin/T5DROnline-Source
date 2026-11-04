@@ -74,6 +74,7 @@ uint32_t on_boundary(uint32_t f, bool scene_flag, np::PadInput out[2]);
 /* The caller ran a scene barrier at frame f (continuing at nf >= f): no
  * rollback may reach back before nf. */
 void     scene_change(uint32_t nf);
+void     replay_rewind(uint32_t f); /* discard future loop cursors after a local replay restore */
 
 /* The game waited for its loader threads before live frame f (t5_hooks.cpp's
  * drain): a load completed. Loader and kernel state are not rolled back, so no

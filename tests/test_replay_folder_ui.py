@@ -104,12 +104,15 @@ class ReplayFolderCacheTests(unittest.TestCase):
         tab.tv, tab.count_var, tab.folder_warning = mock.Mock(), mock.Mock(), mock.Mock()
         tab.tv.get_children.return_value = []
         tab._buttons = mock.Mock()
+        tab._filter = mock.Mock()  # This fixture tests folder resolution, not the widget/filter rendering.
         with mock.patch.object(replays_ui.os.path, "isdir", return_value=True), \
                 mock.patch.object(replays_ui.replays, "list_replays", return_value=[]) as listing:
             tab.refresh()
         listing.assert_called_once_with("fallback")
         tab.folder_warning.set.assert_called_once_with("folder unavailable")
         self.assertEqual(tab._listed_folder, "fallback")
+        self.assertEqual(tab._listed, [])
+        tab._filter.assert_called_once_with()
 
     def test_open_unavailable_default_shows_warning_without_making_folder(self):
         settings = types.SimpleNamespace(replay_dir_status=lambda: ("fallback", "folder unavailable"))

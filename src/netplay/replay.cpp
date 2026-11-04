@@ -54,6 +54,7 @@
 extern "C" int t5_unlock_online_open(void);   /* src/directfight/df_unlock.cpp: T5_NET_UNLOCKS=open of this session */
 unsigned char* rp_zlib_compress(const unsigned char* data, int len, int* out_len);     /* replay_zlib.cpp */
 unsigned char* rp_zlib_decompress(const unsigned char* data, int len, int* out_len);
+bool rp_zlib_decompress_into(const unsigned char* data, int len, unsigned char* out, int out_len);
 
 namespace rp {
 namespace {
@@ -93,6 +94,7 @@ struct Data {
     std::vector<std::pair<uint32_t, uint64_t>> hashes;
     std::vector<Barrier> bars;
     std::vector<Match> matches;
+    std::vector<std::pair<uint32_t, uint32_t>> rounds; /* match (1-based), frame; local index sidecar */
 };
 
 void note(const char* fmt, ...)
@@ -367,6 +369,13 @@ std::string to_json(const Data& d, bool names, uint32_t frames)
                  !m.have_result || m.winner < 0 ? "null" : m.winner == 0 ? "0" : "1", m.score[0], m.score[1], m.frames, m.desync,
                  m.complete ? "true" : "false");
         j += b;
+        j += ", \"round_marks\": [";
+        bool comma = false;
+        for (const auto& mark : d.rounds) if (mark.first == k + 1) {
+            if (comma) j += ", ";
+            j += std::to_string(mark.second); comma = true;
+        }
+        j += "]";
         if (m.ft.rules) {   /* format 5: a training fight, the health handicap (match_rules.h) */
             const np::MatchRules ru = np::MatchRules::unpack(m.ft.rules);
             snprintf(b, sizeof b, ", \"training\": %s, \"life\": [%d, %d]", ru.training ? "true" : "false", ru.life[0],
@@ -394,7 +403,123 @@ std::string to_json(const Data& d, bool names, uint32_t frames)
  * session's end writes on the calling thread. */
 constexpr uint32_t kChunk = 4096, kMaxChunks = 4096;   /* up to 16.7 M frames: 77 hours */
 struct Chunk { np::PadInput in[2][kChunk]; };
+/* Start capsules are optional, local-only caches. A wrong build or session
+ * silently falls back to the original session-start playback path. */
+constexpr uint32_t kCapsuleLimit = 160u << 20;
+uint64_t capsule_identity(const Data& d, uint32_t match)
+{
+    if (match < 1 || match > d.matches.size()) return 0;
+    std::vector<uint8_t> b;
+    put32(b, d.session_seed); put32(b, d.match_seed); put32(b, d.slot);
+    put32(b, d.delay); put32(b, d.rollback ? 1 : 0); put32(b, match);
+    Match m = d.matches[match - 1];
+    m.end = m.frames = m.hash_frame = m.desync = 0;
+    m.have_result = m.have_hash = m.complete = false;
+    m.winner = -1; m.score[0] = m.score[1] = 0; m.hash = 0;
+    put_match(b, m);
+    uint64_t h = 1469598103934665603ull;
+    for (uint8_t v : b) { h ^= v; h *= 1099511628211ull; }
+    return h;
+}
+std::string capsule_path(const std::string& replay, uint32_t match)
+{
+    return replay + ".start" + std::to_string(match);
+}
+bool write_rounds(const std::string& path, const Data& d)
+{
+    if (d.rounds.empty()) return true;
+    std::vector<uint8_t> b{ 'T', '5', 'R', 'O', 'U', 'N', 'D', '1' };
+    put32(b, d.session_seed); put32(b, (uint32_t)d.rounds.size());
+    for (const auto& mark : d.rounds) {
+        put32(b, mark.first); put32(b, mark.second); put64(b, capsule_identity(d, mark.first));
+    }
+    const std::string file = path + ".rounds", tmp = file + ".tmp";
+    bool ok = false;
+    if (FILE* fp = replay_paths::open(tmp.c_str(), "wb")) {
+        ok = fwrite(b.data(), 1, b.size(), fp) == b.size();
+        ok = fclose(fp) == 0 && ok;
+    }
+    return ok && replay_paths::replace(tmp.c_str(), file.c_str()) != 0;
+}
+void read_rounds(const std::string& path, Data& d)
+{
+    const std::string file = path + ".rounds";
+    FILE* fp = replay_paths::open(file.c_str(), "rb");
+    if (!fp) return;
+    std::vector<uint8_t> b; uint8_t chunk[4096];
+    for (size_t n; (n = fread(chunk, 1, sizeof chunk, fp)) > 0;) {
+        if (b.size() + n > 1600016) { fclose(fp); return; }
+        b.insert(b.end(), chunk, chunk + n);
+    }
+    fclose(fp);
+    if (b.size() < 16 || memcmp(b.data(), "T5ROUND1", 8)) return;
+    Reader r{ b.data(), b.size() }; r.i = 8;
+    if (r.u32() != d.session_seed) return;
+    const uint32_t count = r.u32();
+    if (b.size() != 16ull + 16ull * count) return;
+    std::vector<std::pair<uint32_t, uint32_t>> marks;
+    for (uint32_t i = 0; i < count; ++i) {
+        const uint32_t k = r.u32(), f = r.u32(); const uint64_t identity = r.u64();
+        if (k < 1 || k > d.matches.size() || f < d.matches[k - 1].start ||
+            (d.matches[k - 1].have_result && f > d.matches[k - 1].end) || identity != capsule_identity(d, k)) return;
+        marks.push_back({ k, f });
+    }
+    d.rounds.swap(marks);
+}
+bool write_capsule(const std::string& path, const Data& d, uint32_t match, uint32_t frame,
+                   const std::vector<uint8_t>& blob)
+{
+    if (blob.empty() || blob.size() > kCapsuleLimit) return false;
+    int zn = 0;
+    unsigned char* z = rp_zlib_compress(blob.data(), (int)blob.size(), &zn);
+    if (!z) return false;
+    std::vector<uint8_t> head{ 'T', '5', 'C', 'A', 'P', 'S', '1', 0 };
+    put32(head, (uint32_t)blob.size()); put32(head, match); put32(head, frame);
+    put64(head, capsule_identity(d, match)); putstr(head, d.build);
+    const std::string target = capsule_path(path, match), tmp = target + ".tmp";
+    bool ok = false;
+    if (FILE* fp = replay_paths::open(tmp.c_str(), "wb")) {
+        ok = fwrite(head.data(), 1, head.size(), fp) == head.size() && fwrite(z, 1, zn, fp) == (size_t)zn;
+        ok = fclose(fp) == 0 && ok;
+    }
+    free(z);
+    if (ok) ok = replay_paths::replace(tmp.c_str(), target.c_str()) != 0;
+    if (!ok) note("cannot write start capsule %s", target.c_str());
+    return ok;
+}
+bool read_capsule(const std::string& path, const Data& d, uint32_t match, uint32_t* frame,
+                  std::vector<uint8_t>* blob)
+{
+    if (!frame || !blob || match < 1 || match > d.matches.size()) return false;
+    const std::string name = capsule_path(path, match);
+    FILE* fp = replay_paths::open(name.c_str(), "rb");
+    if (!fp) return false;
+    std::vector<uint8_t> b;
+    uint8_t chunk[65536];
+    for (size_t n; (n = fread(chunk, 1, sizeof chunk, fp)) > 0;) {
+        if (b.size() + n > kCapsuleLimit) { fclose(fp); return false; }
+        b.insert(b.end(), chunk, chunk + n);
+    }
+    fclose(fp);
+    if (b.size() < 30 || memcmp(b.data(), "T5CAPS1\0", 8)) return false;
+    Reader r{ b.data(), b.size() }; r.i = 8;
+    const uint32_t size = r.u32(), k = r.u32(), f = r.u32();
+    const uint64_t identity = r.u64();
+    const std::string build = r.str();
+    const char* running_build = t5_env("T5_NET_BUILD");
+    if (r.bad || !size || size > kCapsuleLimit || k != match || identity != capsule_identity(d, match) ||
+        !running_build || !*running_build || build != running_build || f < d.matches[match - 1].start ||
+        (d.matches[match - 1].have_result && f > d.matches[match - 1].end)) return false;
+    std::vector<uint8_t> decoded(size);
+    if (!rp_zlib_decompress_into(b.data() + r.i, (int)(b.size() - r.i), decoded.data(), (int)size)) return false;
+    blob->swap(decoded); *frame = f;
+    return true;
+}
+
 struct Store : InputSource {
+    struct Capsule { uint32_t frame = 0; std::shared_ptr<const std::vector<uint8_t>> blob; bool captured = false; };
+    std::vector<Capsule> capsules;
+    uint32_t capsules_written = 0;                 /* g_write_mu */
     Data d;                                        /* everything but the inputs (d.in stays empty) */
     std::vector<std::unique_ptr<Chunk>> chunks;    /* reserved up front: the pointers never move */
     std::atomic<uint32_t> n{ 0 };                  /* frames recorded */
@@ -469,10 +594,12 @@ void write_store(const std::shared_ptr<Store>& st, uint32_t seq)
 {
     Rec& r = R();
     Data d;
+    std::vector<Store::Capsule> capsules;
     uint32_t n;
     {
         std::lock_guard<std::mutex> lk(r.mu);
         d = st->d;
+        capsules = st->capsules;
         n = st->frames();
         d.last = st->last.load(std::memory_order_relaxed);
     }
@@ -481,11 +608,11 @@ void write_store(const std::shared_ptr<Store>& st, uint32_t seq)
     if (seq < g_written_seq) return;
     g_written_seq = seq;
     LARGE_INTEGER q0, q1, qf; QueryPerformanceCounter(&q0);
+    if (!st->names) for (Match& m : d.matches) m.ft.names[0].clear(), m.ft.names[1].clear();
     const std::vector<uint8_t> bin = to_binary(d, Frozen(*st, n));
     int zlen = 0;
     unsigned char* z = rp_zlib_compress(bin.data(), (int)bin.size(), &zlen);
     if (!z) { note("cannot compress %s", st->path.c_str()); return; }
-    if (!st->names) for (Match& m : d.matches) m.ft.names[0].clear(), m.ft.names[1].clear();
     const std::string json = to_json(d, st->names, n) + "\n";
     const std::string tmp = st->path + ".tmp";
     bool ok = false;
@@ -498,6 +625,14 @@ void write_store(const std::shared_ptr<Store>& st, uint32_t seq)
     if (ok) ok = detail::publish_retry(
         [&] { return replay_paths::replace(tmp.c_str(), st->path.c_str()) != 0; },
         [] { Sleep(2); });
+    if (ok) for (size_t k = st->capsules_written; k < capsules.size(); ++k) {
+        const auto& c = capsules[k];
+        if (!c.blob) { st->capsules_written = (uint32_t)k + 1; continue; }
+        if (!write_capsule(st->path, d, (uint32_t)k + 1, c.frame, *c.blob)) break;
+        st->capsules_written = (uint32_t)k + 1;
+        { std::lock_guard<std::mutex> lk(r.mu); st->capsules[k].blob.reset(); }
+    }
+    if (ok && !write_rounds(st->path, d)) note("cannot write round index for %s", st->path.c_str());
     QueryPerformanceCounter(&q1); QueryPerformanceFrequency(&qf);
     note("%s %s: %zu matches, %u frames, %zu bytes (inputs and hashes %zu -> %d compressed), %.1f ms", ok ? "written" : "COULD NOT WRITE",
          st->path.c_str(), d.matches.size(), n, (size_t)(sizeof kMagic - 1) + json.size() + (size_t)zlen, bin.size(), zlen,
@@ -704,6 +839,8 @@ struct MatchCheck {
     int winner = -1, score[2] = { 0, 0 }; uint64_t hash = 0; bool have_hash = false;
 };
 struct Play {
+    uint32_t first_match = 1, driver_start = 1;
+    int64_t unverified_from = -1;
     bool on = false;
     std::string error;
     Data d;
@@ -1259,6 +1396,28 @@ void rec_match_begin(uint32_t f)
     live_match_locked(r);
 }
 
+void rec_capsule(uint32_t frame, const std::vector<uint8_t>& blob)
+{
+    Rec& r = R();
+    if (blob.empty() || blob.size() > kCapsuleLimit) return;
+    std::lock_guard<std::mutex> lk(r.mu);
+    if (!r.on || !r.cur->names || r.cur->path.empty() || r.cur->d.matches.empty()) return;
+    const size_t k = r.cur->d.matches.size() - 1;
+    r.cur->capsules.resize(k + 1);
+    if (r.cur->capsules[k].captured) return;
+    r.cur->capsules[k] = { frame, std::make_shared<const std::vector<uint8_t>>(blob), true };
+    request_write_locked(r);
+}
+void rec_round(uint32_t frame)
+{
+    Rec& r = R();
+    std::lock_guard<std::mutex> lk(r.mu);
+    if (!r.on || r.cur->d.matches.empty() || r.cur->d.rounds.size() >= 100000) return;
+    const auto mark = std::make_pair((uint32_t)r.cur->d.matches.size(), frame);
+    auto& rounds = r.cur->d.rounds;
+    if (std::find(rounds.begin(), rounds.end(), mark) == rounds.end()) rounds.push_back(mark);
+}
+
 void rec_result(const char* winner, unsigned w1, unsigned w2, const char* reason, uint32_t frames, bool have_hash, uint64_t hash,
                 uint32_t desync, uint32_t at_frame)
 {
@@ -1313,6 +1472,105 @@ uint32_t play_match_seed() { return P().d.match_seed; }
 uint32_t play_target() { return P().target; }
 uint32_t play_match_index() { return P().begun; }
 bool play_select_mix() { return P().d.select_mix; }
+uint32_t play_recorded_frame(uint32_t f)
+{
+    const int64_t v = (int64_t)f - P().offset;
+    return (uint32_t)std::max<int64_t>(0, std::min<int64_t>(UINT32_MAX, v));
+}
+uint32_t play_playback_frame(uint32_t f)
+{
+    const int64_t v = (int64_t)f + P().offset;
+    return (uint32_t)std::max<int64_t>(0, std::min<int64_t>(UINT32_MAX, v));
+}
+void play_bounds(uint32_t* start, uint32_t* end)
+{
+    const Play& p = P();
+    uint32_t lo = 0, hi = p.end_frame();
+    if (p.target && p.target <= p.d.matches.size()) {
+        const Match& m = p.d.matches[p.target - 1];
+        lo = m.start;
+        if (m.have_result) {
+            // Interactive viewing parks just after the deciding boundary, before
+            // result-screen loading can invalidate the current fight's resources.
+            const bool viewer = !replay_paths::env("T5_REPLAY_COMMAND").empty();
+            hi = std::min(hi, m.end + (viewer ? 1u : p.tail));
+        }
+    }
+    if (start) *start = lo;
+    if (end) *end = hi;
+}
+bool play_capsule(uint32_t match, uint32_t* frame, std::vector<uint8_t>* blob)
+{
+    Play& p = P();
+    return p.on && !p.live && read_capsule(p.path, p.d, match, frame, blob);
+}
+uint32_t play_start_match() { return P().driver_start; }
+std::vector<uint32_t> play_rounds()
+{
+    const Play& p = P(); std::vector<uint32_t> out;
+    for (const auto& mark : p.d.rounds) if (mark.first == p.target) out.push_back(mark.second);
+    return out;
+}
+void play_start_at(uint32_t match, uint32_t frame)
+{
+    Play& p = P();
+    if (!p.on || p.live || match < 1 || match > p.d.matches.size()) return;
+    p.offset = 0; p.begun = match; p.first_match = match;
+    p.driver_start = 1;  /* runtime driver metadata now carries the actual match index */
+    /* The fresh target load is preparation, before the recorded checkpoint.
+     * Its provisional frame/scene hashes must not count as watched evidence. */
+    p.compared = p.mismatched = p.bar_bad = p.model_bad = p.seed_bad = 0;
+    p.first_bad = -1;
+    p.last_p = frame; p.end_at = UINT32_MAX;
+    p.mc.assign(p.d.matches.size(), MatchCheck());
+    p.mc[match - 1].seen = true;
+    p.bar_seen = 0;
+    for (const Barrier& b : p.d.bars) if (b.nf < frame) ++p.bar_seen;
+    p.finished = false; p.end_why.clear();
+}
+void play_mark_unverified(uint32_t frame)
+{
+    Play& p = P();
+    const uint32_t f = play_recorded_frame(frame);
+    if (p.unverified_from < 0 || f < p.unverified_from) p.unverified_from = f;
+}
+void play_cursor_capture(std::vector<uint8_t>* out)
+{
+    if (!out) return;
+    const Play& p = P();
+    std::vector<uint8_t> b{ 'T', '5', 'C', '1' };
+    put32(b, p.d.session_seed); put64(b, (uint64_t)p.offset);
+    put32(b, p.begun); put32(b, p.last_p); put32(b, p.end_at); put32(b, p.bar_seen);
+    put32(b, (uint32_t)p.mc.size());
+    for (const MatchCheck& c : p.mc) {
+        put32(b, (c.seen ? 1u : 0u) | (c.result ? 2u : 0u) | (c.same ? 4u : 0u) |
+                 (c.settled ? 8u : 0u) | (c.have_hash ? 16u : 0u));
+        put32(b, c.winner); put32(b, c.score[0]); put32(b, c.score[1]); put64(b, c.hash);
+    }
+    out->swap(b);
+}
+bool play_cursor_restore(const std::vector<uint8_t>& b)
+{
+    Play& p = P();
+    if (!p.on || p.live || b.size() < 36 || memcmp(b.data(), "T5C1", 4)) return false;
+    Reader r{ b.data(), b.size() }; r.i = 4;
+    if (r.u32() != p.d.session_seed) return false;
+    const int64_t offset = (int64_t)r.u64();
+    const uint32_t begun = r.u32(), last = r.u32(), end = r.u32(), bars = r.u32(), count = r.u32();
+    if (begun > p.d.matches.size() || bars > p.d.bars.size() || count != p.mc.size() ||
+        b.size() != 36ull + (uint64_t)count * 24) return false;
+    std::vector<MatchCheck> mc(count);
+    for (MatchCheck& c : mc) {
+        const uint32_t flags = r.u32();
+        c.seen = flags & 1; c.result = flags & 2; c.same = flags & 4;
+        c.settled = flags & 8; c.have_hash = flags & 16;
+        c.winner = (int)r.u32(); c.score[0] = (int)r.u32(); c.score[1] = (int)r.u32(); c.hash = r.u64();
+    }
+    if (r.bad) return false;
+    p.offset = offset; p.begun = begun; p.last_p = last; p.end_at = end; p.bar_seen = bars;
+    p.mc.swap(mc); p.finished = false; p.end_why.clear();
+    return true;
+}
 } // namespace rp
 /* df_unlock.cpp: a playback offers Jinpachi and the random cell as the recorded session did (-1: no playback) */
 extern "C" int t5_replay_unlocks_open(void) { return rp::P().on ? (rp::P().d.unlocks_open ? 1 : 0) : -1; }
@@ -1457,6 +1715,7 @@ bool play_load(const char* path)
     free(bin);
     if (!ok) { p.error = why; return false; }
     if (p.d.matches.empty()) { p.error = "no match in it"; return false; }
+    read_rounds(p.path, p.d);
     const uint32_t nm = (uint32_t)p.d.matches.size();
     const char* tm = env("T5_REPLAY_MATCH");
     p.target = tm ? (uint32_t)atoi(tm) : 0;
@@ -1465,6 +1724,13 @@ bool play_load(const char* path)
     p.result_path = np::path_environment("T5_REPLAY_RESULT");
     p.mc.assign(nm, MatchCheck());
     p.on = true;
+    /* Only a deliberately selected match can skip its predecessors. Complete
+     * session verification (tools/replay_play.py) always keeps the old path. */
+    if (tm && atoi(tm) > 1 && env("T5_REPLAY_CAPSULES") && strcmp(env("T5_REPLAY_CAPSULES"), "0")) {
+        uint32_t frame; std::vector<uint8_t> capsule;
+        if (read_capsule(p.path, p.d, p.target, &frame, &capsule)) p.driver_start = p.target;
+    }
+
     note("playing %s: %s, %u match(es), %zu frames, %zu sync points, %zu hashes (every %u frames), recorded on P%d's PC, "
          "match %u is watched", p.path.c_str(), p.d.rollback ? "rollback" : "lockstep", nm, p.d.in[0].size(), p.d.bars.size(),
          p.d.hashes.size(), p.d.hash_every, p.d.slot + 1, p.target);
@@ -1488,6 +1754,7 @@ uint32_t play_barrier(uint32_t k, uint32_t f)
 {
     Play& p = P();
     p.bar_seen = k + 1;
+    if (p.unverified_from >= 0 && (int64_t)play_recorded_frame(f) >= p.unverified_from) return f;
     if (p.live && k >= p.d.bars.size())   /* the live game may not have sent it yet */
         live_block(p, [&] { return k < p.d.bars.size(); }, (bool (*)())nullptr, "the next sync point");
     if (k >= p.d.bars.size()) {
@@ -1510,6 +1777,7 @@ uint32_t play_barrier(uint32_t k, uint32_t f)
 uint32_t play_barrier_seed(uint32_t k, uint32_t kind, uint32_t computed)
 {
     Play& p = P();
+    if (p.unverified_from >= 0 && (int64_t)play_recorded_frame(p.last_p) >= p.unverified_from) return computed;
     if (k >= p.d.bars.size()) return computed;
     const Barrier& b = p.d.bars[k];
     if (b.kind != kind && p.bar_bad++ < 5) note("sync point %u is a kind %u here, kind %u in the recording", k, kind, b.kind);
@@ -1521,6 +1789,7 @@ uint32_t play_barrier_seed(uint32_t k, uint32_t kind, uint32_t computed)
 bool play_barrier_state(uint32_t k, uint64_t* clock, uint32_t c[3])
 {
     Play& p = P();
+    if (p.unverified_from >= 0 && (int64_t)play_recorded_frame(p.last_p) >= p.unverified_from) return false;
     if (k >= p.d.bars.size() || !p.d.bars[k].has_state) return false;
     *clock = p.d.bars[k].clock;
     for (int i = 0; i < 3; i++) c[i] = p.d.bars[k].c[i];
@@ -1531,6 +1800,7 @@ void play_hash(uint32_t pf, uint64_t h)
 {
     Play& p = P();
     const int64_t r = (int64_t)pf - p.offset;
+    if (p.unverified_from >= 0 && r >= p.unverified_from) return;
     if (r < 0) return;
     const auto& hs = p.d.hashes;
     auto it = std::lower_bound(hs.begin(), hs.end(), std::make_pair((uint32_t)r, (uint64_t)0));
@@ -1567,6 +1837,7 @@ void play_match_begin(uint32_t pf)
 void play_fight(const Fight& ft, uint32_t match)
 {
     Play& p = P();
+    match += p.driver_start - 1;
     if (match < 1 || match > p.d.matches.size()) return;
     const Fight& rec = p.d.matches[match - 1].ft;
     if (ft.rules != rec.rules) {
@@ -1596,6 +1867,7 @@ void play_fight(const Fight& ft, uint32_t match)
 bool play_fight_line(uint32_t match, std::string* line)
 {
     Play& p = P();
+    match += p.driver_start - 1;
     if (p.live) p.waiting_fight = match > p.d.matches.size() ? match : 0;
     /* live: the direct fight asks at the select screen (every 15 frames) until the players' games got to
      * that fight -- nothing else reads the file there */
@@ -1636,6 +1908,7 @@ bool play_fight_line(uint32_t match, std::string* line)
 void play_result(const char* winner, unsigned w1, unsigned w2, uint32_t frames, bool have_hash, uint64_t hash, uint32_t pf)
 {
     Play& p = P();
+    if (p.unverified_from >= 0 && (int64_t)play_recorded_frame(pf) >= p.unverified_from) return;
     const uint32_t k = p.begun;
     if (k < 1 || k > p.d.matches.size()) return;
     MatchCheck& c = p.mc[k - 1];
@@ -1687,20 +1960,20 @@ void play_finish(const char* why)
     bool results_same = true, all_seen = true;
     std::string ms;
     char b[512];
-    for (uint32_t k = 1; k <= p.target && k <= p.d.matches.size(); k++) {
+    for (uint32_t k = p.first_match; k <= p.target && k <= p.d.matches.size(); k++) {
         const MatchCheck& c = p.mc[k - 1];
         const Match& m = p.d.matches[k - 1];
         if (!c.seen) all_seen = false;
         if (m.complete && !c.same) results_same = false;
         snprintf(b, sizeof b, "%s{\"n\": %u, \"played\": %s, \"winner\": %s, \"score\": [%d, %d], \"hash\": %s, \"recorded_winner\": %s, "
                               "\"recorded_score\": [%d, %d], \"recorded_hash\": %s, \"recorded_complete\": %s, \"same\": %s}",
-                 k > 1 ? ", " : "", k, c.result ? "true" : "false", !c.result || c.winner < 0 ? "null" : c.winner == 0 ? "0" : "1",
+                 k > p.first_match ? ", " : "", k, c.result ? "true" : "false", !c.result || c.winner < 0 ? "null" : c.winner == 0 ? "0" : "1",
                  c.score[0], c.score[1], hexq(c.have_hash, c.hash).c_str(),
                  !m.have_result || m.winner < 0 ? "null" : m.winner == 0 ? "0" : "1", m.score[0], m.score[1],
                  hexq(m.have_hash, m.hash).c_str(), m.complete ? "true" : "false", c.same ? "true" : "false");
         ms += b;
     }
-    const bool identical = p.compared > 0 && p.mismatched == 0 && p.bar_bad == 0 && p.model_bad == 0 && results_same && all_seen;
+    const bool identical = p.unverified_from < 0 && p.compared > 0 && p.mismatched == 0 && p.bar_bad == 0 && p.model_bad == 0 && results_same && all_seen;
     std::string fb = p.first_bad < 0 ? "null" : std::to_string(p.first_bad);
     const char* slash = strrchr(p.path.c_str(), '\\');
     const char* slash2 = strrchr(p.path.c_str(), '/');
@@ -1711,6 +1984,8 @@ void play_finish(const char* why)
              jstr(base ? base + 1 : p.path).c_str(), p.target, p.d.matches.size(), jstr(p.end_why).c_str(), p.last_p, p.compared,
              p.mismatched, fb.c_str(), p.bar_seen, p.d.bars.size(), p.bar_bad, p.model_bad, identical ? "true" : "false");
     std::string out = std::string(b) + ms + "]";
+    out += ", \"verified\": " + std::string(p.unverified_from < 0 ? "true" : "false") +
+           ", \"unverified_from\": " + (p.unverified_from < 0 ? std::string("null") : std::to_string(p.unverified_from));
     if (p.live) {
         snprintf(b, sizeof b, ", \"live\": true, \"stream_end\": %s, \"stalls\": %u, \"stall_seconds\": %.2f, \"uncompared\": %zu, "
                               "\"delay_avg\": %.2f, \"delay_max\": %.2f, \"received_frames\": %zu, \"received_bytes\": %llu",
@@ -1752,6 +2027,7 @@ extern "C" void t5_replay_fight_start(unsigned match, const int chr[2], const in
 extern "C" int t5_replay_costumes(unsigned match, unsigned char* out)
 {
     Play& p = P();
+    match += p.driver_start - 1;
     if (!p.on || match < 1 || match > p.d.matches.size() || !p.d.matches[match - 1].ft.costumes) return 0;
     const Fight& f = p.d.matches[match - 1].ft;
     memcpy(out, f.cos[0], kCostumeBlock);

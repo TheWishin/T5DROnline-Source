@@ -66,6 +66,7 @@
  *   T5_NET_TRACE=1   log semaphore / syscall traffic per thread and allocations.
  */
 #define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
 #include "../platform/t5_win.h"
 #include "../platform/t5_game.h"   /* hooks_ok: only for NPUB30009 v01.00 */
 #if defined(_WIN32)
@@ -87,6 +88,22 @@
 #include "match_rules.h"  /* online training and the health handicap (docs/NETPLAY.md "Online training ...") */
 #include "../directfight/df_ui.h"  /* host-only rematch prompt; never a re-simulated frame */
 #include "../rollback/rb_net.h"   /* T5_RB_MODE=net: the rollback loop takes the per-frame decisions */
+#include "../rollback/rb.h"
+#include "../rollback/rb_state.h"
+#include "../directfight/df.h"
+#include "../replay/blob.h"
+#include "../replay/viewer.h"
+#include "replay_paths.h"
+unsigned char* rp_zlib_compress(const unsigned char*, int, int*);
+bool rp_zlib_decompress_into(const unsigned char*, int, unsigned char*, int);
+namespace rb {
+bool rand_capture(std::vector<uint8_t>*);
+bool rand_restore(const std::vector<uint8_t>&, bool apply = true);
+}
+extern "C" int32_t t5_sem_count(uint32_t id);
+extern "C" int t5_sem_set_count(uint32_t id, int32_t v);
+extern "C" void cellGcm_skip_ticks(int n);
+extern "C" int cellAtrac_rb_live_rings(uint32_t* ea, uint32_t* size, int cap);
 namespace rb { void rand_install(); void tls_rand_reseed(uint32_t tls_base, uint32_t seed, bool streams); }   /* rb_rand.cpp: the TLS random generator */
 
 extern "C" int t5_df_in_fight(void);   /* src/directfight/df_fight.cpp (T5_NET_SCRIPT_FIGHT) */
@@ -1408,6 +1425,7 @@ uint32_t g_main_tls = 0;   /* the main thread's TLS block (its r13 - 0x7000), fr
 uint32_t select_seed(uint32_t* match_no)
 {
     uint32_t k = t5_df_session_matches();
+    if (np::replaying()) k += rp::play_start_match() - 1;
     if (np::replaying() && !rp::play_select_mix()) k = 0;
     *match_no = k;
     return (np::session_seed() ^ 0x7E1EC7EDu) + k * 0x9E3779B9u;
@@ -1524,6 +1542,61 @@ struct ReplayPace {
     uint16_t prev = 0;
     LARGE_INTEGER qf = {};
 } g_rp;
+rv::Viewer g_viewer;
+rv::Checkpoints<std::vector<uint8_t>> g_checkpoints;
+uint32_t g_seek_to = UINT32_MAX, g_capsule_match = 0;
+uint32_t g_view_match = 0;
+std::vector<uint32_t> g_replay_rounds;
+std::vector<uint32_t> g_replay_round_scores;
+std::string g_view_error;
+bool g_view_skip = false;
+
+bool replay_wants_skip()
+{
+    // Present the final catch-up frame so a paused seek shows the requested state.
+    if (g_seek_to != UINT32_MAX) return (uint64_t)rp::play_recorded_frame(g_frame) + 1 < g_seek_to;
+    return g_viewer.speed > 1.0 && g_frame % static_cast<uint32_t>(g_viewer.speed) != 0;
+}
+
+bool replay_viewer()
+{
+    static const bool requested = !replay_paths::env("T5_REPLAY_COMMAND").empty();
+    return requested && np::replaying() && !rp::play_live();
+}
+
+void replay_skip(bool on)
+{
+    g_view_skip = on;
+    rb::set_bypass(on); rb::cut_set(on); rb::sound_skip(on);
+    // Lockstep recordings also use the rollback presentation bypass when watched.
+    if (replay_viewer()) { wr32(0x106D4D98u, 0); wr32(0x106D4D9Cu, 0); }
+}
+
+void replay_commands()
+{
+    if (!replay_viewer()) return;
+    const std::string path = replay_paths::env("T5_REPLAY_COMMAND");
+    char line[160] = {};
+    if (FILE* fp = replay_paths::open(path.c_str(), "rb")) {
+        const size_t n = fread(line, 1, sizeof(line) - 1, fp);
+        const bool complete = feof(fp) != 0;
+        fclose(fp);
+#if defined(_WIN32)
+        DeleteFileW(replay_paths::wide(path.c_str()).c_str());
+#else
+        remove(path.c_str());
+#endif
+        uint32_t start = 0, end = 0; rp::play_bounds(&start, &end);
+        if (!g_checkpoints.entries().empty()) start = std::max(start, g_checkpoints.entries().front().frame + 1);
+        if (complete && (!strcmp(line, "quit") || !strcmp(line, "quit\n"))) { g_rp.quit = true; return; }
+        if (!complete || n == 0 || !g_viewer.command(line, rp::play_recorded_frame(g_frame), start, end))
+            g_view_error = "invalid command";
+        else {
+            g_view_error.clear();
+            if (!g_viewer.verified) rp::play_mark_unverified(rp::play_playback_frame(g_viewer.unverified_from));
+        }
+    }
+}
 constexpr uint16_t kPadSelect = 0x0001, kPadStart = 0x0008;
 void replay_end(const char* why, bool force = false);
 
@@ -1541,6 +1614,7 @@ uint16_t replay_pad()
 /* SELECT while a live stream's data is awaited */
 bool replay_quit_poll()
 {
+    replay_commands();
     /* Loader waits also poll between frame-boundary control samples. Leave
      * START's edge history to replay_frame_wait, otherwise a START first seen
      * here would be consumed without ever pausing the playback. */
@@ -1602,6 +1676,266 @@ void replay_end(const char* why, bool force)
     t5p_exit_now(0);
 }
 
+// Captured after the driver's boundary tick and before this frame's input.
+// The native call stack is at the same semaphore boundary on both paths.
+struct ReplayHookState {
+    uint32_t magic = 0x32565254, version = 1;
+    uint32_t frame = 0, scenes = 0, barriers = 0, match_f0 = 0, matches = 0;
+    uint32_t match = 0, reader_id = 0;
+    int32_t reader_tokens = -1;
+    bool result_done = false, match_running = false, await_load = false;
+    np::PadInput cur[2] = {};
+    np::NoPauseRule skip;
+    np::TrainingRule training;
+    PendingResult pending = {};
+    ppu_context cpu = {};
+};
+
+void replay_live_regions()
+{
+    // Lockstep has no rb_net boundary to discover streaming buffers for us.
+    // They belong to the decoder thread and must survive every kind of seek.
+    uint32_t ea[16], size[16];
+    const int n = cellAtrac_rb_live_rings(ea, size, 16);
+    for (int i = 0; i < n; ++i) rb::state_add_exclude(ea[i], size[i]);
+}
+
+bool replay_capture(ppu_context* ctx, std::vector<uint8_t>* out)
+{
+    struct RestorePresentation {
+        bool skipped;
+        ~RestorePresentation() { if (skipped) replay_skip(true); }
+    } presentation{g_view_skip};
+    if (presentation.skipped) replay_skip(false);
+    std::vector<uint8_t> memory, driver, random, cursor;
+    if (!rb::rand_capture(&random)) return false;
+    replay_live_regions();
+    if (!df::replay_capture(&driver) || !rb::state_capture(&memory)) return false;
+    if (np::replaying()) rp::play_cursor_capture(&cursor);
+    ReplayHookState h;
+    h.frame = g_frame; h.scenes = g_scenes; h.barriers = np::barriers();
+    h.match_f0 = g_match_f0; h.matches = g_matches;
+    h.match = t5_df_session_matches(); h.reader_id = rd32(0x1009FE2Cu);
+    h.reader_tokens = t5_sem_count(h.reader_id);
+    h.result_done = g_result_done; h.match_running = g_match_running; h.await_load = g_await_load;
+    h.cur[0] = g_cur[0]; h.cur[1] = g_cur[1]; h.skip = g_np_rule; h.training = g_train;
+    h.pending = g_pending; h.cpu = *ctx;
+    rv::Writer w; w.pod(h); w.blob(memory); w.blob(driver); w.blob(random); w.blob(cursor);
+    out->swap(w.bytes);
+    return true;
+}
+
+bool replay_restore(ppu_context* ctx, const std::vector<uint8_t>& data, uint32_t start_match = 0)
+{
+    ReplayHookState h;
+    std::vector<uint8_t> memory, driver, random, cursor, previous_cursor;
+    rv::Reader r{data};
+    if (!r.pod(&h) || h.magic != 0x32565254 || h.version != 1 || h.await_load ||
+        !r.blob(&memory) || !r.blob(&driver) || !r.blob(&random) || !r.blob(&cursor) || !r.done()) {
+        np::note("replay checkpoint: malformed hook state"); return false;
+    }
+    if (!df::replay_restore(driver, false)) { np::note("replay checkpoint: driver state rejected"); return false; }
+    if (!rb::rand_restore(random, false)) { np::note("replay checkpoint: RNG state rejected"); return false; }
+    // A drained reader has the same identity; never set a token on another loader.
+    if (h.reader_tokens >= 0 && (rd32(0x1009FE2Cu) != h.reader_id || t5_sem_count(h.reader_id) < 0)) {
+        np::note("replay checkpoint: reader identity rejected"); return false;
+    }
+    if (!start_match) {
+        rp::play_cursor_capture(&previous_cursor);
+        if (!rp::play_cursor_restore(cursor)) { np::note("replay checkpoint: replay cursor rejected"); return false; }
+    }
+    replay_skip(false);
+    replay_live_regions();
+    if (!rb::state_restore(memory)) {
+        np::note("replay checkpoint: guest state rejected");
+        if (!start_match) rp::play_cursor_restore(previous_cursor);
+        return false;
+    }
+    df::replay_restore(driver); rb::rand_restore(random);
+    g_frame = h.frame; g_scenes = h.scenes; g_match_f0 = h.match_f0; g_matches = h.matches;
+    g_result_done = h.result_done; g_match_running = h.match_running; g_await_load = h.await_load;
+    g_cur[0] = h.cur[0]; g_cur[1] = h.cur[1]; g_np_rule = h.skip; g_train = h.training;
+    g_pending = h.pending; g_pending.t = GetTickCount64();
+    g_np_live = UINT32_MAX; g_start_requested = false; g_pause_requested = false;
+    const uint64_t tid = ctx->thread_id; *ctx = h.cpu; ctx->thread_id = tid;
+    if (h.reader_tokens >= 0 && !t5_sem_set_count(h.reader_id, h.reader_tokens))
+        np::note("replay: could not restore reader token count");
+    if (start_match) rp::play_start_at(start_match, h.frame);
+    np::replay_rewind(h.frame, h.barriers); rb::net::replay_rewind(h.frame);
+    rb::sound_reset();
+    np::note("replay: restored boundary %u (match %u)", h.frame, h.match);
+    return true;
+}
+
+std::vector<uint8_t> replay_pack(const std::vector<uint8_t>& raw)
+{
+    int n = 0;
+    unsigned char* compressed = rp_zlib_compress(raw.data(), (int)raw.size(), &n);
+    if (!compressed || n <= 0) { free(compressed); return {}; }
+    rv::Writer w; w.pod(static_cast<uint32_t>(raw.size()));
+    w.bytes.insert(w.bytes.end(), compressed, compressed + n); free(compressed);
+    return std::move(w.bytes);
+}
+
+bool replay_unpack(const std::vector<uint8_t>& packed, std::vector<uint8_t>* out)
+{
+    rv::Reader r{packed}; uint32_t n;
+    if (!r.pod(&n) || n > (160u << 20)) return false;
+    out->resize(n);
+    const bool ok = rp_zlib_decompress_into(packed.data() + r.pos, (int)(packed.size() - r.pos), out->data(), (int)n);
+    if (!ok) np::note("replay checkpoint: inflate rejected (%zu bytes -> %u)", packed.size() - r.pos, n);
+    return ok;
+}
+
+void replay_status(bool force = false)
+{
+    if (!replay_viewer()) return;
+    static ULONGLONG last = 0;
+    if (!force && GetTickCount64() - last < 100) return;
+    last = GetTickCount64();
+    const std::string path = replay_paths::env("T5_REPLAY_STATUS"), tmp = path + ".tmp";
+    if (path.empty()) return;
+    uint32_t start = 0, end = 0; rp::play_bounds(&start, &end);
+    if (const auto* anchor = g_checkpoints.at_or_before(end)) {
+        (void)anchor;
+        if (!g_checkpoints.entries().empty()) start = std::max(start, g_checkpoints.entries().front().frame + 1);
+    }
+    if (FILE* fp = replay_paths::open(tmp.c_str(), "wb")) {
+        fprintf(fp, "{\"frame\":%u,\"start\":%u,\"end\":%u,\"paused\":%s,\"speed\":%.2f,"
+                    "\"control\":%d,\"verified\":%s,\"seeking\":%s,\"seekable\":%s,\"rounds\":[",
+                rp::play_recorded_frame(g_frame), start, end, g_viewer.paused ? "true" : "false",
+                g_viewer.speed, g_viewer.control, g_viewer.verified ? "true" : "false",
+                g_seek_to != UINT32_MAX ? "true" : "false",
+                !g_await_load && rd32(0x1008F070u) == 17 && g_checkpoints.size() ? "true" : "false");
+        bool comma = false;
+        for (uint32_t f : g_replay_rounds) if (f >= start && f <= end) { fprintf(fp, "%s%u", comma ? "," : "", f); comma = true; }
+        fprintf(fp, "],\"error\":\"%s\",\"unverified_from\":", g_view_error.c_str());
+        if (g_viewer.verified) fputs("null", fp); else fprintf(fp, "%u", g_viewer.unverified_from);
+        fputs("}", fp); fclose(fp); replay_paths::replace(tmp.c_str(), path.c_str());
+    }
+}
+
+void replay_view_boundary(ppu_context* ctx)
+{
+    const bool viewer = replay_viewer();
+    const bool rec = rp::recording() && !rb::net::bypass();
+    if (!viewer && !rec && rp::play_start_match() == 1) return;
+    // Snapshot only after loading, with every request and geometry worker parked.
+    bool stable = !g_await_load && t5_df_game_mode() && rd32(0x1008F070u) == 17;
+    if (stable) {
+        drain_workers(g_frame); side_drain(g_frame);
+        stable = geom_idle() && draw_idle();
+    }
+    const uint32_t match = np::replaying() ? rp::play_match_index() : t5_df_session_matches();
+    if (viewer && g_view_match != match) {
+        g_checkpoints.clear(); g_view_match = match; g_replay_round_scores.clear();
+    }
+    static bool start_tried = false;
+    if (stable && np::replaying() && !start_tried && rp::play_start_match() > 1) {
+        start_tried = true;
+        std::vector<uint8_t> capsule; uint32_t at;
+        const uint32_t first = rp::play_start_match();
+        if (!rp::play_capsule(first, &at, &capsule) || !replay_restore(ctx, capsule, first)) {
+            // Driver already selected that match. Continuing with its fresh history would lie.
+            rp::play_fail(replay_paths::env("T5_REPLAY_FILE").c_str(), "match start capsule could not be restored");
+            np::note("replay: start capsule restore failed; closing without an identical verdict");
+            t5p_exit_now(2);
+        }
+        g_view_match = first;
+    }
+    static uint32_t session = UINT32_MAX;
+    if (session != np::sessions()) { session = np::sessions(); g_capsule_match = 0; }
+    if (stable && rec && g_capsule_match != match && !rd8(kMatchOver) && rb::net::state_final(g_frame)) {
+        std::vector<uint8_t> snapshot;
+        if (replay_capture(ctx, &snapshot)) { rp::rec_capsule(g_frame, snapshot); g_capsule_match = match; }
+    }
+    if (rec && stable && rb::net::state_final(g_frame)) {
+        static uint64_t round_key = UINT64_MAX;
+        static std::vector<uint32_t> seen;
+        const uint64_t key = (uint64_t)np::sessions() << 32 | match;
+        if (key != round_key) { round_key = key; seen.clear(); }
+        const uint32_t round = rd32(kRoundState);
+        const uint32_t score = rd8(kWinsP1) + rd8(kWinsP2);
+        if ((round == 4 || round == 5) && !rd8(kMatchOver) && std::find(seen.begin(), seen.end(), score) == seen.end()) {
+            rp::rec_round(g_frame); seen.push_back(score);
+        }
+    }
+    if (!viewer) return;
+    const auto saved_rounds = rp::play_rounds();
+    for (uint32_t mark : saved_rounds)
+        if (std::find(g_replay_rounds.begin(), g_replay_rounds.end(), mark) == g_replay_rounds.end()) g_replay_rounds.push_back(mark);
+    std::sort(g_replay_rounds.begin(), g_replay_rounds.end());
+    const uint32_t round = rd32(kRoundState), recorded = rp::play_recorded_frame(g_frame);
+    const uint32_t score = rd8(kWinsP1) + rd8(kWinsP2);
+    if (saved_rounds.empty() && stable && (round == 4 || round == 5) && !rd8(kMatchOver) &&
+        std::find(g_replay_round_scores.begin(), g_replay_round_scores.end(), score) == g_replay_round_scores.end()) {
+        g_replay_rounds.push_back(recorded); std::sort(g_replay_rounds.begin(), g_replay_rounds.end());
+        g_replay_round_scores.push_back(score);
+    }
+    if (stable && !rd8(kMatchOver) && g_viewer.verified && g_checkpoints.due(recorded)) {
+        std::vector<uint8_t> raw;
+        if (replay_capture(ctx, &raw)) {
+            auto packed = replay_pack(raw);
+            if (!packed.empty()) g_checkpoints.add(recorded, std::move(packed));
+        }
+    }
+    bool waited = false;
+    for (;;) {
+        replay_commands();
+        const uint16_t b = replay_pad(), press = (uint16_t)(b & ~g_rp.prev); g_rp.prev = b;
+        if (press & kPadSelect) g_rp.quit = true;
+        if (press & kPadStart) g_viewer.paused = !g_viewer.paused;
+        if (g_rp.quit) replay_end("ended by the viewer (SELECT)", true);
+        uint32_t seek;
+        if (g_viewer.take_seek(&seek)) {
+            const auto* cp = seek ? g_checkpoints.at_or_before(seek - 1) : nullptr;
+            std::vector<uint8_t> raw;
+            if (!stable) np::note("replay checkpoint: current boundary not ready (phase %u, geometry %d, draw %d)",
+                                  rd32(0x1008F070u), (int)geom_idle(), (int)draw_idle());
+            if (!cp) np::note("replay checkpoint: no cached boundary at or before %u", seek);
+            if (!stable || !cp || !replay_unpack(cp->state, &raw) || !replay_restore(ctx, raw)) {
+                g_view_error = "no checkpoint for this frame";
+                g_seek_to = UINT32_MAX;
+            } else {
+                g_seek_to = seek; // Keep the target in file coordinates across sync-point renumbering.
+                g_viewer.paused = true; // A seek parks exactly before the requested input frame.
+            }
+        }
+        if (g_seek_to != UINT32_MAX && rp::play_recorded_frame(g_frame) >= g_seek_to) {
+            if (g_viewer.control) {
+                g_viewer.unverified_from = std::min(g_viewer.unverified_from, rp::play_recorded_frame(g_frame));
+                rp::play_mark_unverified(g_frame);
+            }
+            g_seek_to = UINT32_MAX; replay_skip(false); replay_status(true);
+        }
+        replay_status();
+        uint32_t lo, hi; rp::play_bounds(&lo, &hi);
+        const bool retry_over = !g_viewer.verified && g_result_done && !g_match_running;
+        if ((g_viewer.verified && g_frame > rp::play_playback_frame(hi)) || retry_over) g_viewer.paused = true;
+        if (g_seek_to != UINT32_MAX || (!retry_over &&
+            (!g_viewer.verified || g_frame <= rp::play_playback_frame(hi)) && g_viewer.permit_frame())) break;
+        replay_skip(false); waited = true; Sleep(10);
+    }
+    if (waited) replay_take_tokens(ctx);
+    replay_skip(stable && !rd8(kMatchOver) && !g_start_requested.load() && !g_pause_requested.load() &&
+                replay_wants_skip());
+    rb::set_sim_frame(g_frame);
+}
+
+void replay_control_input(np::PadInput in[2])
+{
+    if (!replay_viewer() || !g_viewer.control || g_seek_to != UINT32_MAX) return;
+    HostPadData d = {}; np::local_player_sample(&d);
+    np::PadInput local = np::kNeutral;
+    if (d.len) {
+        local.buttons = (uint16_t)((d.button[2] & 0xFF) | ((d.button[3] & 0xFF) << 8));
+        local.buttons &= (uint16_t)~(kPadStart | kPadSelect);
+        local.rx = (uint8_t)d.button[4]; local.ry = (uint8_t)d.button[5];
+        local.lx = (uint8_t)d.button[6]; local.ly = (uint8_t)d.button[7];
+    }
+    in[g_viewer.control - 1] = local;
+}
+
 /* The playback's frame wait (main thread, once the lockstep runs): the end, the
  * viewer's buttons, then the frame semaphore wait as always (the direct-fight
  * driver's frame hook runs inside it). */
@@ -1613,11 +1947,24 @@ int64_t replay_frame_wait(ppu_context* ctx)
         QueryPerformanceFrequency(&r.qf);
         np::note("replay: START pauses, SELECT ends the replay");
     }
-    if (!rp::play_frame(g_frame)) { replay_end(rp::play_live() ? "the live match is over" : "the replay is over"); return g_orig_wait(ctx); }
+    if (!rp::play_frame(g_frame)) {
+        if (replay_viewer()) { if (g_viewer.verified) g_viewer.paused = true; }
+        else { replay_end(rp::play_live() ? "the live match is over" : "the replay is over"); return g_orig_wait(ctx); }
+    }
     if (rp::play_live()) {   /* spectating: the data for the next frames must be here (a short buffer) */
         const int w = rp::play_live_wait(g_frame, replay_wait_quit);
         if (w == 0) { replay_end("ended by the viewer (SELECT)", true); return g_orig_wait(ctx); }
         if (w == 2) replay_take_tokens(ctx);   /* no burst of frames after the wait */
+    }
+    if (replay_viewer()) {
+        replay_commands();
+        const bool stable = !g_await_load && t5_df_game_mode() && rd32(0x1008F070u) == 17;
+        const bool skip = stable && !rd8(kMatchOver) && !g_start_requested.load() && !g_pause_requested.load() &&
+            (g_viewer.seek_pending || replay_wants_skip());
+        replay_skip(skip);
+        if (skip) { t5_df_frame_tick(ctx); replay_take_tokens(ctx); return 0; }
+        if (g_viewer.speed < 1.0) cellGcm_skip_ticks((int)(1.0 / g_viewer.speed) - 1);
+        return g_orig_wait(ctx);
     }
     const uint16_t b = replay_pad(), press = (uint16_t)(b & ~r.prev);
     r.prev = b;
@@ -1788,6 +2135,7 @@ void on_frame_start(ppu_context* ctx)
             np::note("lockstep of session %u from here (the keyread thread is still parked)", np::sessions());
         }
     }
+    if (np::replaying() || rp::recording()) replay_view_boundary(ctx);
     uint32_t f = g_frame;
     {   /* T5_NET_SCRIPT_FIGHT=1 (tests): scripted presses only while direct fight is in a fight */
         static int gate = -1;
@@ -1897,6 +2245,7 @@ void on_frame_start(ppu_context* ctx)
         }
         g_frame = run + 1;
         if (np::replaying()) rp::play_inputs(run, in);   /* (a sync point may have renumbered the frames: the recorded frame's inputs) */
+        replay_control_input(in);
         no_pause_rule(run, in, run >= f);   /* (memory: the state at run's boundary, restored if it is re-simulated) */
         training_rule(run, in, run >= f);   /* (after the inputs are final for this run, like the no-pause rule) */
         g_cur[0] = in[0];
@@ -1988,6 +2337,7 @@ void on_frame_start(ppu_context* ctx)
      * first frame on; in lockstep it only matters for that first boundary. */
     start_gate(f);   /* this PC's START out only in a skip part */
     np::begin_frame(f, h, in, g_directfight && intro_input_now());
+    replay_control_input(in);
     no_pause_rule(f, in, true);
     training_rule(f, in, true);
     g_cur[0] = in[0];
@@ -2103,7 +2453,7 @@ int64_t w_sem_wait(ppu_context* ctx)
     if (fs && id == fs && ctx->thread_id == (g_main_tid != ~0ull ? g_main_tid : 1) &&
         !rb::net::bypass() && np::replaying()) replay_control_boundary();
     if (fs && id == fs && ctx->thread_id == g_main_tid) g_frame_wait_ctx = ctx;   /* the boundary's tick wait (early rollback) */
-    if (fs && id == fs && ctx->thread_id == g_main_tid && rb::net::bypass()) {
+    if (fs && id == fs && ctx->thread_id == g_main_tid && rb::net::bypass() && !replay_viewer()) {
         /* a re-simulated frame: no wait, straight to the next boundary */
         on_frame_start(ctx);
         return 0;

@@ -50,6 +50,7 @@
 #include <vector>
 #include <atomic>
 #include "df.h"
+#include "../replay/blob.h"
 #include "../netplay/match_score.h"   /* a decided match's score: the fighters' round counts */
 #include "../netplay/match_rules.h"   /* agreed simulation rules (train=, life=, auto_skip_after_round=, auto_skip_intro=) */
 
@@ -1918,6 +1919,77 @@ void fight_on_frame(uint32_t f)
 }
 
 bool fight_configured() { return g_configured; }
+
+namespace {
+struct ReplayDriver {
+    uint32_t version = 1, match = 0, session_matches = 0, phase = 0;
+    uint32_t phase_frame = 0, fight_frame = 0, decided = 0, flags = 0, rules = 0;
+    int cfg_chr[2] = {}, cfg_btn[2] = {}, cfg_stage = 0, cfg_rounds = 0;
+    int winner = 0, score[2] = {}, last_chr[2] = {}, last_btn[2] = {}, models[2] = {}, steps[2] = {};
+    uint32_t press_buttons[2] = {}, press_until[2] = {}, press_next[2] = {}, press_active[2] = {};
+};
+}
+
+bool replay_capture(std::vector<uint8_t>* out)
+{
+    if (!out || !g_configured || (g_ph != Ph::Fight && g_ph != Ph::Over)) return false;
+    ReplayDriver s;
+    s.match = g_match; s.session_matches = g_session_matches; s.phase = static_cast<uint32_t>(g_ph);
+    s.phase_frame = g_ph_frame; s.fight_frame = g_fight_frame; s.decided = g_decided; s.rules = g_rules.pack();
+    s.flags = (g_result_done ? 1u : 0u) | (g_over_clear ? 2u : 0u) | (g_held ? 4u : 0u) |
+              (g_intro_hold ? 8u : 0u) | (g_after_match ? 16u : 0u) | (g_over_wait ? 32u : 0u) |
+              (g_pause_asked ? 64u : 0u) | (g_game_seen ? 128u : 0u) | (g_wait_setup ? 256u : 0u) |
+              (g_boot_fight_ready ? 512u : 0u);
+    s.cfg_stage = g_cfg.stage; s.cfg_rounds = g_cfg.rounds; s.winner = g_last_winner;
+    for (int p = 0; p < 2; p++) {
+        s.cfg_chr[p] = g_cfg.chr[p]; s.cfg_btn[p] = g_cfg.btn[p];
+        s.score[p] = g_last_score[p]; s.last_chr[p] = g_last_chr[p]; s.last_btn[p] = g_last_btn[p];
+        s.models[p] = g_models[p]; s.steps[p] = g_steps[p];
+        s.press_buttons[p] = g_press[p].buttons; s.press_until[p] = g_press[p].until;
+        s.press_next[p] = g_press[p].next; s.press_active[p] = g_press[p].active ? 1u : 0u;
+    }
+    std::vector<uint8_t> hooks;
+    if (!replay_hook_capture(&hooks)) return false;
+    rv::Writer w;
+    w.pod(s); w.blob(hooks);
+    *out = std::move(w.bytes);
+    return true;
+}
+
+bool replay_restore(const std::vector<uint8_t>& data, bool apply)
+{
+    rv::Reader r{data};
+    ReplayDriver s;
+    std::vector<uint8_t> hooks;
+    if (!r.pod(&s) || !r.blob(&hooks) || !r.done() || s.version != 1 || (s.flags & ~1023u) ||
+        (s.phase != static_cast<uint32_t>(Ph::Fight) && s.phase != static_cast<uint32_t>(Ph::Over)) ||
+        !g_configured || s.cfg_stage != g_cfg.stage || s.cfg_rounds != g_cfg.rounds ||
+        s.rules != g_cfg.rules.pack() || s.winner < -2 || s.winner > 1 ||
+        !replay_hook_restore(hooks, false)) return false;
+    for (int p = 0; p < 2; p++)
+        if (s.cfg_chr[p] != g_cfg.chr[p] || s.cfg_btn[p] != g_cfg.btn[p] ||
+            s.press_buttons[p] > 0xffffu || s.press_active[p] > 1u ||
+            s.score[p] < 0 || s.score[p] > 255) return false;
+    if (!apply) return true;
+    replay_hook_restore(hooks, true);
+    g_match = s.match; g_session_matches = s.session_matches; g_ph = static_cast<Ph>(s.phase);
+    g_ph_frame = s.phase_frame; g_fight_frame = s.fight_frame; g_decided = s.decided;
+    g_rules = np::MatchRules::unpack(s.rules); g_last_winner = s.winner;
+    g_result_done = (s.flags & 1) != 0; g_over_clear = (s.flags & 2) != 0;
+    g_held = (s.flags & 4) != 0; g_intro_hold = (s.flags & 8) != 0;
+    g_after_match = (s.flags & 16) != 0; g_over_wait = (s.flags & 32) != 0;
+    g_pause_asked = (s.flags & 64) != 0; g_game_seen = (s.flags & 128) != 0;
+    g_wait_setup = (s.flags & 256) != 0; g_boot_fight_ready = (s.flags & 512) != 0;
+    g_state_name = g_ph == Ph::Fight ? "fight" : "over";
+    g_ph_ms = GetTickCount64();
+    for (int p = 0; p < 2; p++) {
+        g_last_score[p] = s.score[p]; g_last_chr[p] = s.last_chr[p]; g_last_btn[p] = s.last_btn[p];
+        g_models[p] = s.models[p]; g_steps[p] = s.steps[p];
+        g_press[p].buttons = static_cast<uint16_t>(s.press_buttons[p]); g_press[p].until = s.press_until[p];
+        g_press[p].next = s.press_next[p]; g_press[p].active = s.press_active[p] != 0;
+    }
+    return true;
+}
 
 } // namespace df
 

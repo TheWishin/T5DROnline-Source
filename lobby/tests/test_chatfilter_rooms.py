@@ -11,10 +11,12 @@ from unittest.mock import AsyncMock, Mock
 import util  # noqa: F401 -- (sets up the lobby import path)
 from t5lobby import proto
 from t5lobby.proto import LobbyError
+from t5lobby.server.mmfilters import MatchFiltersMixin
 from t5lobby.server.rooms import RoomsMixin
 
 
 class RoomHarness(RoomsMixin):
+    _room_tags = MatchFiltersMixin._room_tags   # 1.3.0: room_create reads the area / language tags (mmfilters.py)
     def __init__(self):
         self.cfg = SimpleNamespace(room_max_size=8, ranked_rooms=True, guest_ranked=False)
         self.rooms = {}

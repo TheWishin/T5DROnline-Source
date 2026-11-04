@@ -9,6 +9,7 @@ from t5lobby.proto import LobbyError
 from t5lobby.server.config import Config
 from t5lobby.server.lobby import LobbyServer
 from t5lobby.server.rematch import CAP, SKIP_CAP, RematchMixin
+from t5lobby.server.mmfilters import MatchFiltersMixin
 from t5lobby.server.rooms import Room, RoomsMixin
 
 
@@ -25,6 +26,7 @@ def player(name):
 
 
 class Harness(RoomsMixin, RematchMixin):
+    _room_tags = MatchFiltersMixin._room_tags   # 1.3.0: room_create reads the area / language tags (mmfilters.py)
     _set_next = LobbyServer._set_next
     _check_filtered_text = LobbyServer._check_filtered_text
 

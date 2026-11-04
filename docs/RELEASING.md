@@ -128,6 +128,14 @@ before it was public; it closed 2 s after its start on every PC with a .pkg, als
    binary check; the preflight finds that in ~4 minutes locally.) Run it at a desktop (not over a
    service session): the GUI checks need one.
 
+   For a local-only gate, reuse a local ps3recomp clone and a complete local keys file:
+
+       python tools/release_preflight.py --version X --llvm <LLVM> --ps3recomp-source <LOCAL_CLONE> --keys <LOCAL_KEYS> --jobs 4 --keep
+
+   `--keys` also seeds only the private GUI smoke folder, so selecting its stand-in package does not trigger the
+   launcher's first package-preview key download. Keys are still scanned out of the release archive. These options
+   keep the clean-checkout requirement and every GUI check intact; they do not permit tagging a dirty tree.
+
 5. **Push `main`** and wait for CI to be green -- every job of the push, none skipped or cancelled. Once: the secret `T5DR_RELEASE_SIGNING_KEY` must exist in
    the `release` environment ("Release signature", owner steps), or the run stops before publishing.
 

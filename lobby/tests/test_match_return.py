@@ -121,6 +121,23 @@ class MatchReturnTest(unittest.TestCase):
         self.driver.stop_game.assert_called_once()
         tab.bring_forward.assert_called_once_with(tab.parent)
 
+    def test_queued_return_notice_preserves_set_result_but_other_statuses_still_show(self):
+        self.driver.on_event({"t": "set_end", "reason": "decided"})
+        notice = next(n for n in self.notes() if n["kind"] == "status")
+        self.assertTrue(notice["return_notice"])
+        tab = object.__new__(OnlineTab)
+        tab.driver = None
+        tab.status = mock.Mock()
+        tab._notify_driver = mock.Mock()
+        tab._set_actions = mock.Mock()
+        for result in (None, {"set_end": None}, {"set_end": {"games": 2}}):
+            for is_return in (False, True):
+                with self.subTest(result=result, return_notice=is_return):
+                    tab.view = types.SimpleNamespace(result_info=result, after_driver=mock.Mock())
+                    tab.status.reset_mock()
+                    tab.on_driver(dict(notice, return_notice=is_return))
+                    self.assertEqual(tab.status.call_count, int(not (is_return and result and result.get("set_end"))))
+
 
 if __name__ == "__main__":
     unittest.main()

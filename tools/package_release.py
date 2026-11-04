@@ -107,7 +107,7 @@ OUR_FILES = [
 OUR_OPTIONAL_FILES = ["CHANGELOG.md", "docs/TROUBLESHOOTING.md", "docs/README.de.md", "docs/ONLINE.md",
                       "docs/RANKED.md", "docs/controls.ini", "docs/HOSTING.md", "docs/TRAINING.md", "docs/REPLAYS.md",
                       "docs/SPECTATE.md", "docs/TOURNAMENTS.md", "docs/WEAK_PC.md", "docs/RELEASE.md", "docs/CI.md",
-                      "docs/LINUX_STEAM_DECK.md"]
+                      "docs/LINUX_STEAM_DECK.md", "docs/CLIPS.md"]
 # lobby/t5lobby/*.py is the client side (Online tab, match driver). lobby/t5lobby/server/ ships too:
 # the Online tab's "Host for friends" runs a lobby server from the zip (lobby/run.py host); the
 # Windows deploy scripts stay in the repository: script files in a game download get flagged
@@ -118,7 +118,7 @@ OUR_GLOBS = ["patches/ps3recomp/*.patch", "tools/gamedll/include/*.h", "lobby/t5
              "lobby/t5lobby/data/*.json", "lobby/t5lobby/server/*.py",
              # freely licensed fonts the launcher loads for itself (theme.load_fonts), each with its licence file
              "lobby/t5lobby/fonts/*.ttf", "lobby/t5lobby/fonts/*.otf", "lobby/t5lobby/fonts/*.txt",
-             "src/*/*.cpp", "src/*/*.h", "src/*/*.c", "src/*/*.manifest", "src/*/*.rc.in", "src/*/*/*.c"]
+             "src/*/*.cpp", "src/*/*.h", "src/*/*.inc", "src/*/*.c", "src/*/*.manifest", "src/*/*.rc.in", "src/*/*/*.c"]
 
 # ps3recomp: only what tools/build_game.py and CMakeLists.txt use.
 PS3_KEEP_DIRS = ["include", "libs", "runtime", "third_party"]

@@ -8,6 +8,7 @@ progress and log), Play, Settings, Online (online.py), Replays (replays_ui.py).
 """
 import argparse
 import ctypes
+import json
 import os
 import subprocess
 import sys
@@ -237,6 +238,7 @@ def run_mainloop(app):
 class App(tk.Tk):
     def destroy(self):
         tkgc.uninstall(self)         # the collector back to Python (tkgc.py: the tests make one window after another)
+        self._closing = True
         super().destroy()
 
     def __init__(self, offscreen=False, settings=None):
@@ -316,9 +318,18 @@ class App(tk.Tk):
             self._internal_res_changed(save=False)
 
     def _controls_first_start(self):
+        if getattr(self, "_closing", False):
+            return
+
+        def save_hint():
+            # Closing the root inside the modal hint ends wait_window too.
+            # on_close already saved the marker while its widgets were alive.
+            if not getattr(self, "_closing", False):
+                self.save_settings()
+
         first_start.show_controls_hint(
             self.settings, lambda text: dialogs.show_info(APP_TITLE, text, parent=self),
-            self.save_settings, readonly=self.readonly)
+            save_hint, readonly=self.readonly)
 
     def report_callback_exception(self, exc, val, tb):
         """An error inside a button or timer: Tk would only print it (nowhere, under pythonw). It goes
@@ -2255,10 +2266,12 @@ def screenshots(app, outdir, prefix="launcher", build_steps=None, play_seconds=0
         app.after(play_seconds * 1000 + 3500, lambda: (cap("play_stopped"), app.destroy()))
 
     if not build_steps:
-        seq = [("build", 0), ("play", 1), ("settings", 2), ("online", 3)]
+        seq = [(key, index) for index, key in enumerate(app.tab_keys)]
 
         def shot(i=0):
             if i >= len(seq):
+                with open(os.path.join(outdir, "tabs.json"), "w", encoding="utf-8") as f:
+                    json.dump({"tabs": [key for key, _ in seq]}, f)
                 finish_with_play()
                 return
             name, idx = seq[i]

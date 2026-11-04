@@ -190,8 +190,8 @@ const uint32_t kRingReadIdx   = T5A(0x104CCE40);
 const uint32_t kFrameClock    = T5A(0x106D4D88);  /* u64 read by the pad repeat logic; +8: vblank count */
 const uint32_t kTOC           = T5A(0x470540);    /* main TOC (r2) */
 const uint32_t kMatchOver     = T5A(0x1008EBD5);  /* u8: 0 during a match, set when it is decided */
-const uint32_t kWinsP1        = np::MatchScore::kRoundWinsP1;  /* u8: rounds won by P1 in this match (match_score.h) */
-const uint32_t kWinsP2        = np::MatchScore::kRoundWinsP2;  /* u8: rounds won by P2 */
+const uint32_t kWinsP1        = np::MatchScore::round_wins_p1();  /* u8: rounds won by P1 in this match (match_score.h) */
+const uint32_t kWinsP2        = np::MatchScore::round_wins_p2();  /* u8: rounds won by P2 */
 const uint32_t kWinnerIdx     = T5A(0x1008EBD6);  /* u8: 0 = P1, 1 = P2, set together with kMatchOver (seen in the dry run) */
 const uint32_t kFnTickCounter = T5A(0x09A204);
 const uint32_t kFnPadUpdate   = T5A(0x08F3A4);

@@ -2913,29 +2913,29 @@ MESSAGES = {
     "For a found match or tournament set when you are in another window. The announcer is read from your own game (after BUILD GAME); without it the beep plays. Your own sound: a WAV file of at most 5 seconds and 2 MB, copied into the launcher's folder.": "Para uma partida encontrada ou um set de torneio quando você está em outra janela. O locutor é lido do seu próprio jogo (depois do BUILD GAME); sem ele, toca o bipe. Seu próprio som: um arquivo WAV de no máximo 5 segundos e 2 MB, copiado para a pasta do launcher.",
     'Video clips': 'Clipes de v?deo',
     'Keep the last 30 seconds': 'Guardar os ?ltimos 30 segundos',
-    'Ctrl+F10 or hold SELECT + R3 for 1 second to save an MP4 in Videos/T5DR Online. Includes game sound only. Disabled while power saving is on. Windows only.': 'Pressione Ctrl+F10 ou segure SELECT + R3 por 1 segundo para salvar um MP4 em V?deos/T5DR Online. Inclui apenas o som do jogo. Desativado durante a economia de energia. Apenas no Windows.',
+    'Ctrl+F10 or hold SELECT + R3 for 1 second to save an MP4 in Videos/T5DR Online. Includes game sound only. Disabled while power saving is on. Windows only.': 'Pressione Ctrl+F10 ou segure SELECT + R3 por 1 segundo para salvar um MP4 em Vídeos/T5DR Online. Inclui apenas o som do jogo. Desativado durante a economia de energia. Apenas no Windows.',
 }
 
 # Replay viewer and local library.
 MESSAGES.update({
     'Back 10 s': 'Voltar 10 s',
     'Favourite': 'Favorito',
-    'Favourites only': 'S? favoritos',
-    'Forward 10 s': 'Avan?ar 10 s',
-    'Frame step': 'Avan?ar um quadro',
+    'Favourites only': 'Só favoritos',
+    'Forward 10 s': 'Avançar 10 s',
+    'Frame step': 'Avançar um quadro',
     'Frame {frame} / {end}': 'Quadro {frame} / {end}',
     'Pause': 'Pausar',
-    'Replay over: unverified from frame {frame} (player control).': 'Replay encerrado: n?o verificado a partir do quadro {frame} (controle do jogador).',
+    'Replay over: unverified from frame {frame} (player control).': 'Replay encerrado: não verificado a partir do quadro {frame} (controle do jogador).',
     'Resume': 'Continuar',
     'Round {n}': 'Round {n}',
-    'START (Enter) pauses or resumes; SELECT (Tab) ends playback. Taking control uses the local pad and marks playback unverified from that frame. Older replays may need earlier matches to play first.': 'START (Enter) pausa ou continua; SELECT (Tab) encerra a reprodu??o. Assumir o controle usa o controle local e marca o replay como n?o verificado a partir desse quadro. Replays antigos podem exigir a reprodu??o das partidas anteriores primeiro.',
+    'START (Enter) pauses or resumes; SELECT (Tab) ends playback. Taking control uses the local pad and marks playback unverified from that frame. Older replays may need earlier matches to play first.': 'START (Enter) pausa ou continua; SELECT (Tab) encerra a reprodução. Assumir o controle usa o controle local e marca o replay como não verificado a partir desse quadro. Replays antigos podem exigir a reprodução das partidas anteriores primeiro.',
     'Speed': 'Velocidade',
     'Take P{side}': 'Controlar P{side}',
-    'Unverified: player control': 'N?o verificado: controle do jogador',
-    'Verified playback': 'Reprodu??o verificada',
+    'Unverified: player control': 'Não verificado: controle do jogador',
+    'Verified playback': 'Reprodução verificada',
 })
 
-MESSAGES['This replay command is unavailable at the current frame.'] = 'Este comando do replay n?o est? dispon?vel no quadro atual.'
+MESSAGES['This replay command is unavailable at the current frame.'] = 'Este comando do replay não está disponível no quadro atual.'
 
 # Practice while searching.
 MESSAGES.update({

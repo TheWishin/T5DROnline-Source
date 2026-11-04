@@ -35,8 +35,8 @@
 namespace np {
 
 struct MatchScore {
-    static inline const uint32_t kRoundWinsP1 = T5A(0x100900D1);   /* u8: P1's fighter block 0x10090030 + 0xA1 */
-    static inline const uint32_t kRoundWinsP2 = T5A(0x100909A1);   /* u8: P2's fighter block 0x10090900 + 0xA1 */
+    static uint32_t round_wins_p1() { return T5A(0x100900D1); }   /* u8: P1's fighter block 0x10090030 + 0xA1 */
+    static uint32_t round_wins_p2() { return T5A(0x100909A1); }   /* u8: P2's fighter block 0x10090900 + 0xA1 */
 
     unsigned p1 = 0, p2 = 0;
     bool counted = false;        /* the fighters' round counts (false: made up from the decided byte) */

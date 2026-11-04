@@ -392,6 +392,7 @@ def main():
     ap.add_argument("--seed1", type=int, default=11)
     ap.add_argument("--seed2", type=int, default=22)
     ap.add_argument("--vfs", default=VFS)
+    ap.add_argument("--vfs2", help="joiner's own VFS/ELF for a different game edition (default: --vfs)")
     ap.add_argument("--runs", default=RUNS)
     ap.add_argument("--cpus1", default="", help="host's CPU affinity: N logical processors (0..N-1) or 0xMASK")
     ap.add_argument("--cpus2", default="", help="joiner's CPU affinity (e.g. 0xFF0000 / 0xFF000000: 8 processors each on the second CCD)")
@@ -461,6 +462,9 @@ def main():
         wd = os.path.join(d, who)
         os.makedirs(wd, exist_ok=True)
         env = dict(base)
+        peer_vfs = a.vfs2 if who == "join" and a.vfs2 else vfs
+        if who == "join" and a.vfs2:
+            env.update(PS3_VFS_ROOT=peer_vfs, PS3_HDD0_ROOT=peer_vfs + "/dev_hdd0")
         mode = a.mode1 if who == "host" else a.mode2
         if mode == "default":
             env.pop("T5_RB_MODE", None)   # what a player gets: no T5_RB_MODE at all
@@ -511,7 +515,7 @@ def main():
         old_mask = set_affinity(cpus) if cpus else None   # inherited by the game before it sizes its pools
         try:
             flags = subprocess.BELOW_NORMAL_PRIORITY_CLASS if (os.name == "nt" and (a.below_normal or a.polite)) else 0
-            p = subprocess.Popen([exe if who == "host" else exe2, vfs + "/PS3_GAME/USRDIR/EBOOT.elf"], env=env, cwd=wd,
+            p = subprocess.Popen([exe if who == "host" else exe2, peer_vfs + "/PS3_GAME/USRDIR/EBOOT.elf"], env=env, cwd=wd,
                                  stdout=glog, stderr=subprocess.STDOUT, creationflags=flags)
         finally:
             if old_mask:

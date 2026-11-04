@@ -2891,29 +2891,29 @@ MESSAGES = {
     "For a found match or tournament set when you are in another window. The announcer is read from your own game (after BUILD GAME); without it the beep plays. Your own sound: a WAV file of at most 5 seconds and 2 MB, copied into the launcher's folder.": "別のウィンドウを見ているとき、マッチが見つかるか大会のセットが準備できると鳴ります。アナウンスは自分のゲーム（BUILD GAME後）から読み込み、ない場合はビープ音が鳴ります。自分のサウンド：5秒・2 MB以内のWAVファイル（ランチャーのフォルダーにコピーされます）。",
     'Video clips': '??????',
     'Keep the last 30 seconds': '???30???????',
-    'Ctrl+F10 or hold SELECT + R3 for 1 second to save an MP4 in Videos/T5DR Online. Includes game sound only. Disabled while power saving is on. Windows only.': 'Ctrl+F10????SELECT + R3?1????????????/T5DR Online?MP4??????????????????????????????????Windows?????',
+    'Ctrl+F10 or hold SELECT + R3 for 1 second to save an MP4 in Videos/T5DR Online. Includes game sound only. Disabled while power saving is on. Windows only.': 'Ctrl+F10を押すか、SELECT + R3を1秒間押し続けると、ビデオ/T5DR OnlineにMP4を保存します。ゲーム音声のみを含みます。省電力モードでは無効です。Windowsのみ対応。',
 }
 
 # Replay viewer and local library.
 MESSAGES.update({
-    'Back 10 s': '10???',
-    'Favourite': '?????',
-    'Favourites only': '???????',
-    'Forward 10 s': '10???',
-    'Frame step': '????',
-    'Frame {frame} / {end}': '???? {frame} / {end}',
-    'Pause': '????',
-    'Replay over: unverified from frame {frame} (player control).': '??????????? {frame} ????????????????',
-    'Resume': '??',
-    'Round {n}': '???? {n}',
-    'START (Enter) pauses or resumes; SELECT (Tab) ends playback. Taking control uses the local pad and marks playback unverified from that frame. Older replays may need earlier matches to play first.': 'START?Enter??????????SELECT?Tab????????????????????????????????????????????????????????????????????????',
-    'Speed': '??',
-    'Take P{side}': 'P{side}???',
-    'Unverified: player control': '???????????',
-    'Verified playback': '??????',
+    'Back 10 s': '10秒戻る',
+    'Favourite': 'お気に入り',
+    'Favourites only': 'お気に入りのみ',
+    'Forward 10 s': '10秒進む',
+    'Frame step': 'コマ送り',
+    'Frame {frame} / {end}': 'フレーム {frame} / {end}',
+    'Pause': '一時停止',
+    'Replay over: unverified from frame {frame} (player control).': 'リプレイ終了：フレーム{frame}以降は未検証（プレイヤー操作）。',
+    'Resume': '再開',
+    'Round {n}': 'ラウンド {n}',
+    'START (Enter) pauses or resumes; SELECT (Tab) ends playback. Taking control uses the local pad and marks playback unverified from that frame. Older replays may need earlier matches to play first.': 'START（Enter）で一時停止・再開、SELECT（Tab）で再生を終了します。操作を引き継ぐとローカルのコントローラーを使用し、そのフレーム以降は未検証になります。古いリプレイでは、先に前の試合を再生する必要がある場合があります。',
+    'Speed': '速度',
+    'Take P{side}': 'P{side}を操作',
+    'Unverified: player control': '未検証：プレイヤー操作',
+    'Verified playback': '検証済みの再生',
 })
 
-MESSAGES['This replay command is unavailable at the current frame.'] = '??????????????????????????'
+MESSAGES['This replay command is unavailable at the current frame.'] = '現在のフレームでは、このリプレイ操作は利用できません。'
 
 # Practice while searching.
 MESSAGES.update({

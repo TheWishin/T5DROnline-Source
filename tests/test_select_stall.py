@@ -77,7 +77,7 @@ class DriverSourceTest(unittest.TestCase):
             self.src = f.read()
 
     def const(self, name):
-        m = re.search(name + r" = (0x[0-9A-Fa-f]+)u", self.src)
+        m = re.search(name + r" = T5A\((0x[0-9A-Fa-f]+)u\)", self.src)
         self.assertIsNotNone(m, name)
         return int(m.group(1), 16)
 

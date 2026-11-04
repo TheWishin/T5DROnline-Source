@@ -14,7 +14,9 @@ COUNTER = 0x106D4C8C   # graphics object 0x106D4A00 + 0x28C: the present's frame
 
 def ranges(src, name):
     body = re.search(r"const Range %s\[\] = \{(.*?)\n\};" % name, src, re.S).group(1)
-    return [(int(a, 16), int(n, 16)) for a, n in re.findall(r"\{\s*0x([0-9A-Fa-f]+)u?,\s*0x([0-9A-Fa-f]+)u?\s*\}", body)]
+    pattern = (r"\{\s*(?:T5REG\(\s*)?0x([0-9A-Fa-f]+)u?\s*,\s*"
+               r"0x([0-9A-Fa-f]+)u?\s*(?:\))?\s*\}")
+    return [(int(a, 16), int(n, 16)) for a, n in re.findall(pattern, body)]
 
 
 class SemaAcquire(unittest.TestCase):

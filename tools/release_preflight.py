@@ -95,6 +95,9 @@ def main():
     ap.add_argument("--llvm", default=os.path.join(ROOT, "build", "rd", "llvm"),
                     help="unpacked LLVM (tools/fetch_llvm.py --dest DIR); default build/rd/llvm")
     ap.add_argument("--keep", action="store_true", help="keep build/preflight/")
+    ap.add_argument("--ps3recomp-source", help="existing local ps3recomp clone for an offline preparation")
+    ap.add_argument("--keys", help="local keys file for the zip scan and private GUI smoke folder (no key download)")
+    ap.add_argument("--jobs", type=int, help="parallel runtime compile jobs")
     a = ap.parse_args()
     ver = a.version[1:] if a.version.startswith("v") else a.version
     py = sys.executable
@@ -127,18 +130,27 @@ def main():
     step("2b. guard: commits since " + (last or "the start"),
          [py, "tools/check_no_game_data.py", "--history", f"{last}..HEAD" if last else "HEAD"])
     ps3 = os.path.join(work, "ps3recomp")
-    step("3. ps3recomp + patch series", [py, "tools/prepare_ps3recomp.py", "--dest", ps3])
+    prepare = [py, "tools/prepare_ps3recomp.py", "--dest", ps3]
+    if a.ps3recomp_source:
+        prepare += ["--source", os.path.abspath(a.ps3recomp_source)]
+    step("3. ps3recomp + patch series", prepare)
     dist = os.path.join(work, "dist")
     pkg = [py, "tools/package_release.py", "--release", "--version", ver, "--llvm", llvm, "--ps3recomp", ps3,
            "--out", dist]
+    if a.keys:
+        pkg += ["--keys", os.path.abspath(a.keys)]
+    if a.jobs:
+        pkg += ["--jobs", str(a.jobs)]
     if shutil.which("link") and shutil.which("cl"):
         step("4. player zip (package_release --release)", pkg)
     else:
         step("4. player zip (package_release --release, inside vcvars64)",
              f'cmd /c ""{VCVARS}" >nul 2>&1 && {subprocess.list2cmdline(pkg)}"', shell=True)
     zipf = os.path.join(dist, f"T5DR-Online-{ver}.zip")
-    step("5. zip smoke test (bare PATH)", [py, "tools/smoke_release.py", zipf, "--version", ver,
-                                           "--work", os.path.join(work, "smoke")])     # with the GUI checks (1.1.5)
+    smoke = [py, "tools/smoke_release.py", zipf, "--version", ver, "--work", os.path.join(work, "smoke")]
+    if a.keys:
+        smoke += ["--keys", os.path.abspath(a.keys)]
+    step("5. zip smoke test (bare PATH)", smoke)     # with the GUI checks (1.1.5)
     # against the tree of step 3 (the zip's), not deps/ps3recomp of this checkout, which may hold an older series
     step("6. unit tests", [py, "-m", "unittest", "discover", "-s", "tests"], env=dict(os.environ, PS3RECOMP_DIR=ps3))
     print("\n== 7. ready for players (changelog: release date, no HTML comments; README release lines)", flush=True)

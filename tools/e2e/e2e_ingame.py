@@ -27,6 +27,18 @@ def _instrument(players):
     for p in players:
         p.forward = []
         p.tab.bring_forward = (lambda *_a, _p=p, **_k: _p.forward.append(time.time()))
+        # The challenger and the later rematch share a match id. Observe
+        # which prompt actually became ready; an old ready note cannot start
+        # the rematch's input-lock clock.
+        original_note = p.tab.driver.note
+
+        def note(kind, _p=p, _note=original_note, **details):
+            if kind == "ingame_ui_ready":
+                document = _p.tab.driver.ui.snapshot()
+                details.update(ui_kind=document.get("kind"), ui_prompt=document.get("prompt"))
+            _note(kind, **details)
+
+        p.tab.driver.note = note
 
 
 def _note_times(p, kind, mid=None, since=0.0):
@@ -59,9 +71,18 @@ def _answered_in_game_log(p, mid):
     return re.findall(r"in-game question answered: (\w+) \(match " + re.escape(mid) + r"\)", text)
 
 
+def _rematch_ready_times(p, mid):
+    document = p.tab.driver.ui.snapshot()
+    if document.get("kind") != "rematch":
+        return []
+    return [ts for ts, n in p.notes if n.get("kind") == "ingame_ui_ready"
+            and n.get("match") == mid and n.get("ui_kind") == "rematch"
+            and n.get("ui_prompt") == document.get("prompt")]
+
+
 def question(ctx, players, mid, timeout=40):
     """Both games show the question for `mid`: returns the time each driver saw it shown."""
-    ok = ctx.wait(lambda: all(_note_times(p, "ingame_ui_ready", mid) for p in players), timeout,
+    ok = ctx.wait(lambda: all(_rematch_ready_times(p, mid) for p in players), timeout,
                   f"{mid}: the rematch question is shown in both games")
     if not ok:
         for p in players:
@@ -77,7 +98,7 @@ def question(ctx, players, mid, timeout=40):
                   and doc["total_ms"] == 10000 and doc["opp_state"] in ("deciding", "accept") and doc["opponent"],
                   {k: doc.get(k) for k in ("allowed", "countdown_ms", "total_ms", "opponent", "opp_state",
                                            "key_confirm", "key_cancel")})
-    return [min(_note_times(p, "ingame_ui_ready", mid)) for p in players]
+    return [min(_rematch_ready_times(p, mid)) for p in players]
 
 
 LOCK_SECONDS = 1.0      # (the game ignores the buttons for the question's first 0.7 s: ui_logic.h kInputLockMs)

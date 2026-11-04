@@ -754,6 +754,7 @@ class TkSetTest(tkt.TkBase if tk is not None else unittest.TestCase):
         self.pump(lambda: "You won the set 2-0" in tab.status_var.get())
         for _ in range(5):
             tab._poll()
+        self.assertIn("You won the set 2-0", tab.status_var.get())
         self.assertEqual(self.fronted, [])
 
     def test_leave_set_button(self):

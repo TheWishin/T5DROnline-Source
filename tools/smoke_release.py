@@ -141,10 +141,54 @@ def _log_tail(root, n=15):
 def launcher_processes(folder):
     """PIDs of pythonw.exe processes started from this folder's python/."""
     exe = os.path.join(folder, "python", "pythonw.exe").replace("'", "''")
-    ps = (f"Get-CimInstance Win32_Process -Filter \"Name='pythonw.exe'\" | "
-          f"Where-Object {{ $_.ExecutablePath -eq '{exe}' }} | ForEach-Object {{ $_.ProcessId }}")
+    # Reading our own process images needs no WMI/CIM permissions. Restricted
+    # desktops can deny Win32_Process even while the launcher is running.
+    ps = ("Get-Process -Name pythonw -ErrorAction SilentlyContinue | "
+          f"Where-Object {{ $_.Path -eq '{exe}' }} | ForEach-Object {{ $_.Id }}")
     rc, out = run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps], timeout=60)
     return [int(x) for x in out.split() if x.strip().isdigit()]
+
+
+def close_launchers(folder, pids, timeout=10):
+    """Close only this smoke run's launcher PIDs, without WMI tree access."""
+    def remaining():
+        return sorted(set(pids).intersection(launcher_processes(folder)))
+    for pid in remaining():
+        run(["powershell", "-NoProfile", "-NonInteractive", "-Command",
+             f"$p=Get-Process -Id {pid} -ErrorAction SilentlyContinue; "
+             "if ($p) { [void]$p.CloseMainWindow() }"], timeout=30)
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        left = remaining()
+        if not left:
+            return []
+        time.sleep(.2)
+    for pid in remaining():
+        run(["powershell", "-NoProfile", "-NonInteractive", "-Command",
+             f"Stop-Process -Id {pid} -Force -ErrorAction SilentlyContinue"], timeout=30)
+    return remaining()
+
+
+def tab_images_ready(shots):
+    """Require every real notebook tab, including Replays, to have rendered."""
+    try:
+        with open(os.path.join(shots, "tabs.json"), encoding="utf-8") as f:
+            tabs = json.load(f)["tabs"]
+        required = {"build", "play", "settings", "online", "replays"}
+        if not isinstance(tabs, list) or not all(isinstance(t, str) and t.isidentifier() for t in tabs):
+            return False, "invalid tab manifest"
+        if len(tabs) != len(set(tabs)) or not required.issubset(tabs):
+            return False, "tab manifest omits a required launcher tab"
+        missing = []
+        for tab in tabs:
+            with open(os.path.join(shots, f"launcher_{tab}.png"), "rb") as f:
+                if f.read(8) != b"\x89PNG\r\n\x1a\n":
+                    missing.append(tab)
+        if missing:
+            return False, "invalid tab images: " + ", ".join(missing)
+        return True, f"all {len(tabs)} tabs rendered"
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        return False, f"tab images or manifest missing: {exc}"
 
 
 def main():
@@ -153,6 +197,7 @@ def main():
     ap.add_argument("--version", required=True)
     ap.add_argument("--work", help="folder to unpack into (emptied first; default: next to the zip)")
     ap.add_argument("--no-gui", action="store_true", help="skip the launcher and starter checks")
+    ap.add_argument("--keys", help="local keys file to seed the private smoke folder; avoids the first package preview downloading keys")
     ap.add_argument("--gui-checks", choices=("all", "starter", "launcher"), default="all",
                     help="which GUI checks run (default all; --no-gui: none)")
     ap.add_argument("--starter-seconds", type=int, default=15)
@@ -250,8 +295,10 @@ def main():
         rc, out = run([pyw, "-B", os.path.join(root, "launcher", "t5dr_launcher.pyw"), "--screenshots", shots],
                       env=env, cwd=root, timeout=180)
         pngs = sorted(f for f in os.listdir(shots) if f.endswith(".png")) if os.path.isdir(shots) else []
-        check("launcher: renders offscreen and exits", rc == 0,
+        tabs_ok, tabs_detail = tab_images_ready(shots)
+        check("launcher: renders offscreen and exits", rc == 0 and tabs_ok,
               f"exit {rc} after {time.time() - t0:.0f} s, {len(pngs)} tab image(s) in {shots}"
+              + f"; {tabs_detail}"
               + (f"\n{out.strip()[-500:]}" if rc else ""))
 
     if not a.no_gui and a.gui_checks in ("all", "starter"):
@@ -268,6 +315,10 @@ def main():
             f.write(bytes(hdr))
         with open(os.path.join(root, "launcher.json"), "w", encoding="utf-8") as f:
             json.dump({"pkg": fake_pkg, "rap": ""}, f)
+        if a.keys:
+            keydir = os.path.join(root, "native", "keys")
+            os.makedirs(keydir, exist_ok=True)
+            shutil.copyfile(a.keys, os.path.join(keydir, "ps3.keys"))
         before = set(launcher_processes(root))
         p = subprocess.Popen([os.path.join(root, "T5DR Online.exe")], cwd=root, env=env)
         try:
@@ -280,10 +331,7 @@ def main():
         check("starter: launcher running (a package chosen)", rc == 0 and pids,
               f"starter exit {rc}, launcher pid(s) {pids} alive after {a.starter_seconds} s"
               + ("" if pids else chr(10) + _log_tail(root)))
-        for pid in pids:
-            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True)
-        time.sleep(1)
-        left = [x for x in launcher_processes(root) if x not in before]
+        left = close_launchers(root, pids)
         check("starter: launcher closed", not left, f"still running: {left}" if left else "")
 
     failed = [n for n, ok in results if not ok]

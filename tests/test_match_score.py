@@ -51,20 +51,20 @@ class Reading(unittest.TestCase):
         out = r.stdout[-3000:] + r.stderr[-2000:]
         self.assertEqual(r.returncode, 0, out)
         self.assertRegex(r.stdout, r"(?m)^PASS \d+ checks$", out)
-        for part in ("seen ok", "draws ok", "fallback ok", "session ok"):
+        for part in ("reader addresses ok", "seen ok", "draws ok", "fallback ok", "session ok"):
             self.assertIn(part, r.stdout)
 
 
 class Source(unittest.TestCase):
     def test_both_readers_use_the_fighters_counts(self):
         hdr = read("src/netplay/match_score.h")
-        self.assertIn("kRoundWinsP1 = 0x100900D1", hdr)
-        self.assertIn("kRoundWinsP2 = 0x100909A1", hdr)
+        self.assertIn("round_wins_p1() { return T5A(0x100900D1); }", hdr)
+        self.assertIn("round_wins_p2() { return T5A(0x100909A1); }", hdr)
         for rel in ("src/netplay/t5_hooks.cpp", "src/directfight/df_fight.cpp"):
             src = read(rel)
             code = re.sub(r"/\*.*?\*/|//[^\n]*", "", src, flags=re.S)
             self.assertIn("np::MatchScore::of(rd8(kWinsP1), rd8(kWinsP2), rd8(kMatchOver), rd8(kWinnerIdx), rd8(kRoundsToWin))", code, rel)
-            self.assertRegex(code, r"kWinsP1\s*=\s*np::MatchScore::kRoundWinsP1", rel)
+            self.assertRegex(code, r"kWinsP1\s*=\s*np::MatchScore::round_wins_p1\(\)", rel)
             self.assertNotRegex(code, r"0x1008EBD[AB]", rel)        # the battle config's +0x2E/+0x2F: not the score
 
     def test_a_partial_score_is_never_the_last_matchs(self):

@@ -936,7 +936,12 @@ class BuildRun:
         self.cancelled = False
         os.makedirs(out, exist_ok=True)
         self.log_path = os.path.join(out, "build.log")
-        cmd = [sys.executable, os.path.join(TOOLS, "build_game.py"), "--out", out]
+        # OpenRecomp-FGC imports this module using its own portable Python,
+        # which does not ship pycryptodome. Build with this install's Python
+        # (and its dependencies), falling back for a developer checkout.
+        own_python = os.path.join(ROOT, "python", "python.exe")
+        python = own_python if os.path.isfile(own_python) else sys.executable
+        cmd = [python, os.path.join(TOOLS, "build_game.py"), "--out", out]
         if pkg:
             cmd += ["--pkg", pkg]
         if rap:

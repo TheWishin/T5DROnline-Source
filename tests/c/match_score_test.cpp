@@ -17,6 +17,12 @@
 
 #include "../../src/netplay/match_score.h"
 
+/* These are the exact namespace-scope aliases used by both real readers.
+ * T5A makes the header values dynamic: copying an inline variable here used
+ * to freeze zero before that variable's initialization in the native build. */
+static const uint32_t kReaderWinsP1 = np::MatchScore::round_wins_p1();
+static const uint32_t kReaderWinsP2 = np::MatchScore::round_wins_p2();
+
 static int g_checks = 0;
 #define CHECK(c) do { g_checks++; if (!(c)) { printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #c); exit(1); } } while (0)
 
@@ -32,6 +38,9 @@ static void expect(uint8_t w1, uint8_t w2, uint8_t decided, uint8_t win, uint8_t
 
 int main()
 {
+    CHECK(kReaderWinsP1 == T5A(0x100900D1));
+    CHECK(kReaderWinsP2 == T5A(0x100909A1));
+    printf("reader addresses ok\n");
     /* seen: the rollback pairs' matches (decided byte 1 = P1, 2 = P2; the winner byte with it) */
     expect(3, 2, 1, 0, 3, 3, 2, 0, true);
     expect(3, 1, 1, 0, 3, 3, 1, 0, true);

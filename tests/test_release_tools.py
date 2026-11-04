@@ -19,6 +19,51 @@ notes = load_tool("release_notes")
 package = load_tool("package_release")
 fetch = load_tool("fetch_llvm")
 
+
+class PackagedRuntimeSources(unittest.TestCase):
+    def test_eu_address_header_has_its_include_in_the_staged_tree(self):
+        # The developer build sees this include, but a release builds only from
+        # staged files. Omitting it breaks every fresh runtime release build.
+        with tempfile.TemporaryDirectory() as stage:
+            package.add_our_files(stage)
+            header = os.path.join(stage, "src", "platform", "t5_addr.h")
+            included = os.path.join(stage, "src", "platform", "t5_addr_eu_online.inc")
+            with open(header, encoding="utf-8") as f:
+                self.assertIn('#include "t5_addr_eu_online.inc"', f.read())
+            with open(included, "rb") as f:
+                staged = f.read()
+            with open(os.path.join(package.ROOT, "src", "platform", "t5_addr_eu_online.inc"), "rb") as f:
+                self.assertEqual(staged, f.read())
+
+
+class ReleaseTabImages(unittest.TestCase):
+    def test_old_four_tab_smoke_cannot_hide_missing_replays(self):
+        smoke = load_tool("smoke_release")
+        with tempfile.TemporaryDirectory() as folder:
+            tabs = ["build", "play", "settings", "online"]
+            put(os.path.join(folder, "tabs.json"), json.dumps({"tabs": tabs}))
+            for tab in tabs:
+                with open(os.path.join(folder, f"launcher_{tab}.png"), "wb") as f:
+                    f.write(b"\x89PNG\r\n\x1a\n")
+            self.assertFalse(smoke.tab_images_ready(folder)[0])
+            tabs.append("replays")
+            put(os.path.join(folder, "tabs.json"), json.dumps({"tabs": tabs}))
+            self.assertFalse(smoke.tab_images_ready(folder)[0])
+            with open(os.path.join(folder, "launcher_replays.png"), "wb") as f:
+                f.write(b"\x89PNG\r\n\x1a\n")
+            self.assertTrue(smoke.tab_images_ready(folder)[0])
+
+    def test_future_manifest_tabs_must_also_have_an_image(self):
+        smoke = load_tool("smoke_release")
+        with tempfile.TemporaryDirectory() as folder:
+            tabs = ["build", "play", "settings", "online", "replays", "future"]
+            put(os.path.join(folder, "tabs.json"), json.dumps({"tabs": tabs}))
+            for tab in tabs[:-1]:
+                with open(os.path.join(folder, f"launcher_{tab}.png"), "wb") as f:
+                    f.write(b"\x89PNG\r\n\x1a\n")
+            self.assertFalse(smoke.tab_images_ready(folder)[0])
+
+
 CHANGELOG = """# Changelog
 
 Intro text.

@@ -2307,7 +2307,11 @@ class OnlineTab:
             self.cfg["last_fps"] = self.driver.last_fps
             self._save_cfg()
         if k == "status":
-            self.status(n["text"])
+            # Driver notes are drained after lobby events. The generic return
+            # notice must not replace the set score/rating just rendered there.
+            result = getattr(getattr(self, "view", None), "result_info", None) or {}
+            if not (n.get("return_notice") and result.get("set_end")):
+                self.status(n["text"])
             self._set_actions()
         elif k == "challenger_vote":
             if self.match is not None and self.match.get("match") == n.get("match"):

@@ -44,6 +44,18 @@ updated lobby server; on an older server they simply do not appear.
   4 GB RAM; 60 fps in fights from a 4-core processor of about 2011 (Core i5-2500 + GeForce GT 730).
 
 ### Online
+- **Rematch controls respond to short taps over a relay**, and the rematch prompt keeps pad and keyboard focus
+  when the launcher updates the match state.
+- **Completed set scores stay visible** when the game returns to the lobby, including the rating result.
+- Round scores use the fighters' counters correctly after the edition-aware address conversion.
+- **Online fullscreen uses borderless mode**, including when exclusive fullscreen was selected, so switching
+  between the game and launcher does not interrupt the match.
+- **Throw breaks work online**, including during rollback. Both players need the rebuilt 1.2.1 game;
+  new recordings use replay format 8.
+- **Practise while searching.** Start Practice while waiting for Quick or Ranked Match; when a challenger is ready,
+  answer the ready check and move into the online match.
+- **EU Online edition builds** no longer need an experimental opt-in. Online play and US/EU crossplay remain gated
+  until the European build passes the same match and replay checks as the US build.
 - **Online feel** (Settings -> Online input delay, for Auto): **Responsive** (the 1.2.0 pick), **Balanced** (default:
   one frame more when the slower PC cannot keep up with its rollbacks) or **Smooth** (more delay, fewer and smaller
   rollbacks). Each game measures how deep a rollback its PC can run inside a frame and remembers it for the next match.
@@ -58,6 +70,15 @@ updated lobby server; on an older server they simply do not appear.
   PC. Nothing is removed before you confirm twice. Needs the updated server.
 
 ### Launcher and help
+- **The lobby uses the launcher's Tk interface**, with pad navigation and match controls in the same window.
+- **Replay viewer:** browse recordings, pause playback and seek through a match.
+- Replay controls and the clip hotkey help display their translated characters correctly in all languages.
+- **Clips:** keep a rolling video buffer and save the recent action during a match with the clip hotkey.
+- **Hidden games stay silent.** A persistent game waiting behind the launcher no longer plays menu or game audio.
+- **Shader warm-up starts correctly** after a build and keeps its background game silent.
+- **Building from OpenRecomp-FGC uses T5DR's bundled Python**, including its decryption support, even when the
+  launcher's portable interpreter has no pycryptodome installed.
+- Closing the launcher while its first-start controls hint is open no longer tries to save destroyed widgets.
 - **A challenge or an invite now plays the announcer's "A new challenger!"** (from your own game files; the chime when
   they are missing). A found match still plays "Get ready for the next battle!". New setting **Sound for a challenge**.
 - The game edition is no longer shown as **[US]** after every player's name (players read it as where someone lives);

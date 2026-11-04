@@ -555,8 +555,8 @@ class MatchDriver:
             kw["match"] = (self._rq or {}).get("match")
         self.notes.put(dict(kw, t="driver", kind=kind))
 
-    def status(self, text):
-        self.note("status", text=proto.scrub_addresses(str(text)))      # never an IP address in what the player reads
+    def status(self, text, **details):
+        self.note("status", text=proto.scrub_addresses(str(text)), **details)   # never an IP address in what the player reads
 
     def game_running(self):
         return self.game is not None and self.game.running()
@@ -775,7 +775,7 @@ class MatchDriver:
         self._rq_end(fallback=False, new_match=True)
         self._hold_until = None
         self._return = (mid, time.monotonic() + RETURN_SECONDS, text)
-        self.status(t(text))
+        self.status(t(text), return_notice=True)
         if self.ui is not None:
             self.ui.offer(mid, "notice", [], RETURN_SECONDS + 0.5, {"body": text})
 

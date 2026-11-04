@@ -29,16 +29,30 @@ def hooks_skip():
     return out
 
 
-def state_skip():
-    src = open(os.path.join(ROOT, "src", "rollback", "rb_state.cpp"), encoding="utf-8").read()
+def state_skip(src=None):
+    if src is None:
+        with open(os.path.join(ROOT, "src", "rollback", "rb_state.cpp"), encoding="utf-8") as f:
+            src = f.read()
     m = re.search(r"static const Range kGameSkip\[\] = \{(.*?)\n\};", src, re.S)
     out = set()
-    for addr, length in re.findall(r"\{\s*0x([0-9A-Fa-f]+)u,\s*(0x[0-9A-Fa-f]+|\d+)", _strip_comments(m.group(1))):
+    # T5REG maps the US region into the selected edition at runtime. Compare
+    # its US operands with the lockstep defaults, just as for literal ranges.
+    pattern = (r"\{\s*(?:T5REG\(\s*)?0x([0-9A-Fa-f]+)[uUlL]*\s*,\s*"
+               r"(0x[0-9A-Fa-f]+|\d+)[uUlL]*\s*(?:\))?\s*\}")
+    for addr, length in re.findall(pattern, _strip_comments(m.group(1))):
         out.add((int(addr, 16), int(length, 0)))
     return out
 
 
 class HashSkipSync(unittest.TestCase):
+    def test_literal_and_edition_mapped_ranges_are_compared(self):
+        src = """static const Range kGameSkip[] = {
+            { 0x100996B4u, 0x24 },
+            { T5REG(0x10099730u, 496u) },
+            /* { T5REG(0x10090202u, 4) }, */
+};"""
+        self.assertEqual(state_skip(src), {(0x100996B4, 0x24), (0x10099730, 496)})
+
     def test_same_words_left_out(self):
         a, b = hooks_skip(), state_skip()
         self.assertGreater(len(a), 10)

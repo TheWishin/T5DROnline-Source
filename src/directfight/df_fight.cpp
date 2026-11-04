@@ -96,8 +96,8 @@ const uint32_t kRoundsToWin  = T5A(0x1008EBD4);   /* u8 */
 const uint32_t kLifeP1       = T5A(0x1008EBF4);   /* u32: P1's health handicap in percent (100 after the select's bar) */
 const uint32_t kLifeP2       = T5A(0x1008EBF8);   /* u32: P2's; the game mode's set-up scales both fighters' health by them */
 const uint32_t kMatchOver    = T5A(0x1008EBD5);   /* u8: non-zero once the match is decided */
-const uint32_t kWinsP1       = np::MatchScore::kRoundWinsP1;   /* u8: rounds P1 won (fighter block +0xA1) */
-const uint32_t kWinsP2       = np::MatchScore::kRoundWinsP2;   /* u8: rounds P2 won */
+const uint32_t kWinsP1       = np::MatchScore::round_wins_p1();   /* u8: rounds P1 won (fighter block +0xA1) */
+const uint32_t kWinsP2       = np::MatchScore::round_wins_p2();   /* u8: rounds P2 won */
 const uint32_t kWinnerIdx    = T5A(0x1008EBD6);   /* u8: 0 = P1, 1 = P2, set together with kMatchOver (seen in the dry run) */
 const uint32_t kSelectState  = T5A(0x1008F070);   /* select mode: 1,2,3 (choosing), 4 (stage confirmed), 5 (leaving); fight phases after */
 const uint32_t kStageId      = T5A(0x1008F088);   /* chosen stage, written at the stage confirm, read by the game-mode loader */

@@ -83,8 +83,8 @@ class Source(unittest.TestCase):
         self.assertIn("if (f.rules.training) f.rounds = 1;", df)
         # the handicap: next to the rounds, at the game mode's first frame (before its set-up builds the fighters)
         self.assertRegex(df, r"wr8\(kRoundsToWin, \(uint8_t\)g_cfg\.rounds\);(.|\n)*?wr32\(kLifeP1, (.|\n)*?wr32\(kLifeP2, ")
-        self.assertIn("constexpr uint32_t kLifeP1       = 0x1008EBF4;", df)
-        self.assertIn("constexpr uint32_t kLifeP2       = 0x1008EBF8;", df)
+        self.assertRegex(df, r"const uint32_t kLifeP1\s*= T5A\(0x1008EBF4\);")
+        self.assertRegex(df, r"const uint32_t kLifeP2\s*= T5A\(0x1008EBF8\);")
         # latched at FIGHT START, before netplay starts; into the replay
         start = df[df.index("g_rules = g_cfg.rules;"):]
         self.assertLess(start.index("g_rules.pack()"), start.index("t5_netplay_start();"))

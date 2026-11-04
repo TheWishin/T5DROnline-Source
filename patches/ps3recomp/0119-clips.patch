@@ -334,7 +334,7 @@ diff --git a/libs/video/rsx_clips.cpp b/libs/video/rsx_clips.cpp
 new file mode 100644
 --- /dev/null
 +++ b/libs/video/rsx_clips.cpp
-@@ -0,0 +1,432 @@
+@@ -0,0 +1,441 @@
 +/* Patch 0119: bounded, host-only instant replay. No guest memory, input writes,
 + * loopback capture, network, or work on the game thread. All MF/IO is on the
 + * low-priority worker. Two-second standalone MP4s make every eviction decodable.
@@ -643,8 +643,17 @@ new file mode 100644
 +    enc.audio_frames=target;
 +}
 +std::wstring clip_path() {
-+    PWSTR folder=nullptr;check(SHGetKnownFolderPath(FOLDERID_Videos,KF_FLAG_CREATE,nullptr,&folder));
-+    std::wstring dir(folder);CoTaskMemFree(folder);dir+=L"\\T5DR Online";
++    std::wstring dir;
++    DWORD count=GetEnvironmentVariableW(L"PS3_CLIPS_DIR",nullptr,0);
++    if(count) {
++        std::vector<wchar_t> value(count);
++        DWORD length=GetEnvironmentVariableW(L"PS3_CLIPS_DIR",value.data(),count);
++        if(!length || length>=count)throw Failure{HRESULT_FROM_WIN32(ERROR_INVALID_PARAMETER)};
++        dir.assign(value.data(),length);
++    } else {
++        PWSTR folder=nullptr;check(SHGetKnownFolderPath(FOLDERID_Videos,KF_FLAG_CREATE,nullptr,&folder));
++        dir.assign(folder);CoTaskMemFree(folder);dir+=L"\\T5DR Online";
++    }
 +    if(!CreateDirectoryW(dir.c_str(),nullptr)&&GetLastError()!=ERROR_ALREADY_EXISTS)throw Failure{HRESULT_FROM_WIN32(GetLastError())};
 +    SYSTEMTIME now;GetLocalTime(&now);static unsigned counter=0;wchar_t name[128];
 +    swprintf_s(name,L"\\T5DR-%04u%02u%02u-%02u%02u%02u-%03u-%lu-%u",now.wYear,now.wMonth,now.wDay,now.wHour,now.wMinute,now.wSecond,now.wMilliseconds,GetCurrentProcessId(),++counter);
@@ -857,3 +866,266 @@ new file mode 100644
 +};
 +} // namespace clips
 +#endif
+diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
+index 9190e8d4..daf0aaa1 100644
+--- a/libs/video/rsx_live_draw.c
++++ b/libs/video/rsx_live_draw.c
+@@ -44,6 +44,9 @@ void rsx_pf_max(int slot, long long value)
+ #define WIN32_LEAN_AND_MEAN
+ #endif
+ #include <windows.h>
++#include "rsx_clips.h"
++#include "../input/cellPad.h"
++#include "../input/pad_host.h"
+ #include <stdio.h>
+ #include <stdlib.h>
+ void rsx_pf_stamp(int slot)
+@@ -14788,6 +14791,207 @@ static void ld_vertex_diag_emit(const char* reason, int dump_surface)
+  * thread after rsx_live_draw_present handed the frame off -- with the
+  * guest-memory reads and the display's size/fullscreen sync (display_synced)
+  * done already. */
++/* Patch 0119: present-only capture. These readbacks have their OWN monotonic
++ * fence; their lifetime must not depend on the renderer's recycled frame fence.
++ * Nothing here waits for the capture GPU copy or touches guest memory/input.
++ * Original RGBA is passed to the worker; resizing/colour conversion/encoding
++ * and disk access are all outside the renderer. At 4K three slots total 95 MiB.
++ */
++#define LD_CLIP_READBACKS 3
++typedef struct LdClipReadback {
++    ID3D12Resource* resource;
++    UINT64 pending;
++    long long time;
++    volatile LONG held; /* mapped view owned by the encoder worker */
++} LdClipReadback;
++static LdClipReadback g_ld_clip_readbacks[LD_CLIP_READBACKS];
++static ID3D12Fence* g_ld_clip_fence;
++static UINT64 g_ld_clip_sequence;
++static long long g_ld_clip_last;
++static u32 g_ld_clip_pitch, g_ld_clip_width, g_ld_clip_height;
++static int g_ld_clip_failed;
++
++static void ld_clips_controls(long long now)
++{
++    static int key_was_down;
++    static long long held[CELL_PAD_MAX_PORT_NUM];
++    static int fired[CELL_PAD_MAX_PORT_NUM];
++    int down = GetForegroundWindow() == g_ldp.hwnd &&
++               (GetAsyncKeyState(VK_CONTROL) & 0x8000) &&
++               (GetAsyncKeyState(VK_F10) & 0x8000);
++    if (down && !key_was_down) rsx_clips_request_save();
++    key_was_down = down;
++    for (u32 p = 0; p < CELL_PAD_MAX_PORT_NUM; ++p) {
++        PadHostPort pad;
++        const u16 chord = CELL_PAD_CTRL_SELECT | CELL_PAD_CTRL_R3;
++        /* Cached peek performs no device I/O and never waits for input locks. */
++        int sampled = padh_peek_cached(p, &pad);
++        if (sampled < 0) continue; /* skip a contended sample without resetting a held chord */
++        int pressed = sampled && pad.connected && (pad.buttons & chord) == chord;
++        if (!pressed) { held[p] = 0; fired[p] = 0; }
++        else if (!held[p]) held[p] = now;
++        else if (!fired[p] && now - held[p] >= 10000000LL) {
++            fired[p] = 1;
++            rsx_clips_request_save();
++        }
++    }
++}
++
++/* Executed by the worker after conversion, or immediately by the renderer
++ * when the bounded worker queue rejects a frame. Resource release at shutdown
++ * happens only after rsx_clips_shutdown has joined and returned every view. */
++static void ld_clips_unmap(void* context)
++{
++    LdClipReadback* slot = (LdClipReadback*)context;
++    D3D12_RANGE written = {0, 0};
++    slot->resource->lpVtbl->Unmap(slot->resource, 0, &written);
++    InterlockedExchange(&slot->held, 0);
++}
++
++static void ld_clips_collect(void)
++{
++    if (!g_ld_clip_fence) return;
++    UINT64 done = g_ld_clip_fence->lpVtbl->GetCompletedValue(g_ld_clip_fence);
++    if (done == UINT64_MAX) {
++        if (!g_ld_clip_failed) fprintf(stderr, "[clips] GPU readback disabled: device removed\n");
++        g_ld_clip_failed = 1;
++        return;
++    }
++    /* Process in capture order when a slow encoder causes more than one slot
++     * to become ready. Never Map an unfinished copy (Map itself does not wait). */
++    for (int n = 0; n < LD_CLIP_READBACKS; ++n) {
++        int oldest = -1;
++        for (int i = 0; i < LD_CLIP_READBACKS; ++i)
++            if (g_ld_clip_readbacks[i].pending &&
++                (oldest < 0 || g_ld_clip_readbacks[i].pending < g_ld_clip_readbacks[oldest].pending))
++                oldest = i;
++        if (oldest < 0 || g_ld_clip_readbacks[oldest].pending > done) break;
++        void* mapped = NULL;
++        D3D12_RANGE range = {0, (SIZE_T)g_ld_clip_pitch * g_ld_clip_height};
++        ID3D12Resource* r = g_ld_clip_readbacks[oldest].resource;
++        if (SUCCEEDED(r->lpVtbl->Map(r, 0, &range, &mapped)) && mapped) {
++            LdClipReadback* slot = &g_ld_clip_readbacks[oldest];
++            InterlockedExchange(&slot->held, 1);
++            slot->pending = 0;
++            /* Transfer the mapped GPU readback view; no CPU pixel copy on the
++             * render thread. A rejected transfer remains ours to unmap. */
++            if (!rsx_clips_video(mapped, g_ld_clip_width, g_ld_clip_height, g_ld_clip_pitch,
++                                 slot->time, ld_clips_unmap, slot))
++                ld_clips_unmap(slot);
++        } else {
++            g_ld_clip_readbacks[oldest].pending = 0;
++        }
++    }
++}
++
++/* Records the copy with the source in PRESENT, restores PRESENT, and returns
++ * the slot whose fence is signalled after this command list executes. */
++static int ld_clips_record(ID3D12Resource* bb, u32 width, u32 height)
++{
++    if (!rsx_clips_enabled()) return -1;
++    long long now = rsx_clips_clock();
++    ld_clips_controls(now);
++    ld_clips_collect();
++    if (g_ld_clip_failed || !width || !height ||
++        width > 3840 || height > 2160 || now - g_ld_clip_last < 333333LL) return -1;
++    /* A resized live swapchain must never reuse an undersized slot. Fail
++     * closed if that changes, rather than mapping/copying an undersized slot. */
++    if (g_ld_clip_fence && (g_ld_clip_width != width || g_ld_clip_height != height)) {
++        g_ld_clip_failed = 1;
++        fprintf(stderr, "[clips] GPU readback disabled: swapchain size changed\n");
++        return -1;
++    }
++    if (!g_ld_clip_fence) {
++        HRESULT hr = g.dev->lpVtbl->CreateFence(g.dev, 0, D3D12_FENCE_FLAG_NONE,
++                        &IID_ID3D12Fence, (void**)&g_ld_clip_fence);
++        if (FAILED(hr)) {
++            fprintf(stderr, "[clips] GPU fence failed 0x%08lX\n", (unsigned long)hr);
++            g_ld_clip_failed = 1; return -1;
++        }
++        g_ld_clip_width = width; g_ld_clip_height = height;
++        g_ld_clip_pitch = (width * 4 + 255) & ~255u;
++    }
++    for (int i = 0; i < LD_CLIP_READBACKS; ++i) {
++        if (g_ld_clip_readbacks[i].pending ||
++            InterlockedCompareExchange(&g_ld_clip_readbacks[i].held, 0, 0)) continue;
++        if (!g_ld_clip_readbacks[i].resource) {
++            D3D12_HEAP_PROPERTIES hp = {0}; hp.Type = D3D12_HEAP_TYPE_READBACK;
++            D3D12_RESOURCE_DESC desc = {0};
++            desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
++            desc.Width = (UINT64)g_ld_clip_pitch * height;
++            desc.Height = 1; desc.DepthOrArraySize = 1; desc.MipLevels = 1;
++            desc.SampleDesc.Count = 1; desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
++            HRESULT hr = g.dev->lpVtbl->CreateCommittedResource(g.dev,
++                &hp, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COPY_DEST,
++                NULL, &IID_ID3D12Resource, (void**)&g_ld_clip_readbacks[i].resource);
++            if (FAILED(hr)) {
++                fprintf(stderr, "[clips] GPU readback allocation failed 0x%08lX\n", (unsigned long)hr);
++                g_ld_clip_failed = 1; return -1;
++            }
++        }
++        D3D12_RESOURCE_BARRIER b = {0};
++        b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
++        b.Transition.pResource = bb;
++        b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
++        b.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
++        b.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
++        LDL->lpVtbl->ResourceBarrier(LDL, 1, &b);
++        D3D12_TEXTURE_COPY_LOCATION dst = {0}, src = {0};
++        dst.pResource = g_ld_clip_readbacks[i].resource;
++        dst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
++        dst.PlacedFootprint.Footprint.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
++        dst.PlacedFootprint.Footprint.Width = width;
++        dst.PlacedFootprint.Footprint.Height = height;
++        dst.PlacedFootprint.Footprint.Depth = 1;
++        dst.PlacedFootprint.Footprint.RowPitch = g_ld_clip_pitch;
++        src.pResource = bb;
++        src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
++        LDL->lpVtbl->CopyTextureRegion(LDL, &dst, 0, 0, 0, &src, NULL);
++        b.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
++        b.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
++        LDL->lpVtbl->ResourceBarrier(LDL, 1, &b);
++        g_ld_clip_readbacks[i].pending = ++g_ld_clip_sequence;
++        g_ld_clip_readbacks[i].time = now;
++        /* Advance a stable 30 Hz deadline: anchoring each deadline at now
++         * would turn tiny 60 Hz jitter into systematic 20 Hz capture. */
++        g_ld_clip_last = g_ld_clip_last ? g_ld_clip_last + 333333LL : now;
++        if (now - g_ld_clip_last > 333333LL) g_ld_clip_last = now;
++        return i;
++    }
++    return -1; /* GPU or worker busy: drop rather than stall the game. */
++}
++
++static void ld_clips_release(void)
++{
++    /* Stop/unmap only completion-proven CPU views. A failed Present or
++     * shutdown flush may leave copies in flight on a healthy device. */
++    rsx_clips_shutdown();
++    const UINT64 done = g_ld_clip_fence ? g_ld_clip_fence->lpVtbl->GetCompletedValue(g_ld_clip_fence) : 0;
++    int retained = 0;
++    for (int i = 0; i < LD_CLIP_READBACKS; ++i) {
++        if (g_ld_clip_readbacks[i].resource) {
++            /* UINT64_MAX proves device removal. Otherwise retain every
++             * pending destination until its own capture fence completes. */
++            if (g_ld_clip_readbacks[i].pending && done < g_ld_clip_readbacks[i].pending) {
++                retained = 1; continue;
++            }
++            g_ld_clip_readbacks[i].resource->lpVtbl->Release(g_ld_clip_readbacks[i].resource);
++        }
++        memset(&g_ld_clip_readbacks[i], 0, sizeof g_ld_clip_readbacks[i]);
++    }
++    if (retained) {
++        /* Bounded by three readbacks; process teardown owns these refs.
++         * Keep the fence alive too, since its queue signal can be pending. */
++        fprintf(stderr, "[clips] retaining pending GPU capture buffers until process exit\n");
++        g_ld_clip_failed = 1; return;
++    }
++    if (g_ld_clip_fence) g_ld_clip_fence->lpVtbl->Release(g_ld_clip_fence);
++    g_ld_clip_fence = NULL;
++    g_ld_clip_sequence = 0; g_ld_clip_last = 0; g_ld_clip_failed = 0;
++    g_ld_clip_pitch = g_ld_clip_width = g_ld_clip_height = 0;
++}
++
++
+ static void ld_present_body(u32 buffer_id, int display_synced, const hp_target* pace)
+ {
+     if (!g.ready) return;
+@@ -15105,8 +15309,18 @@ static void ld_present_body(u32 buffer_id, int display_synced, const hp_target*
+     bar[1].Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
+     LDL->lpVtbl->ResourceBarrier(LDL, 2, bar);
+-
++
++    /* The composed, letterboxed backbuffer is in PRESENT here. Capture
++     * through LDL so the recorder preserves copy/barrier ordering. */
++    const int clip_slot = ld_clips_record(bb, g_ldp.bb_w, g_ldp.bb_h);
+     const LONGLONG pf_present_begin = ld_pf_qpc();
+     ld_flush(LD_FLUSH_PRESENT);
++    /* ld_flush synchronously submits the real list, including queued LDL
++     * calls. Signal only after that submission; never wait for capture. */
++    if (clip_slot >= 0 && (!g.ready || FAILED(g.queue->lpVtbl->Signal(
++            g.queue, g_ld_clip_fence, g_ld_clip_readbacks[clip_slot].pending)))) {
++        fprintf(stderr, "[clips] live GPU capture signal failed\n");
++        g_ld_clip_failed = 1;
++    }
+     const LONGLONG pf_present_flushed = ld_pf_qpc();
+     g_pf.present_flush_ticks += pf_present_flushed - pf_present_begin;
+     {
+@@ -16371,13 +16585,19 @@ void rsx_live_draw_shutdown(void)
+         WaitForSingleObject(g_pf_writer, INFINITE); CloseHandle(g_pf_writer); g_pf_writer = NULL;
+     }
+     hp_wait_close();
+-    if (!g.ready) return;
++    if (!g.ready) {
++        /* Join the worker and release only completion-proven readbacks;
++         * failed Present does not by itself prove device removal. */
++        ld_clips_release();
++        return;
++    }
+     ld_vertex_diag_emit("shutdown", 1);
+     ld_present_measure_dump();
+     ld_pso_lib_maybe_save(1);
+     /* let the GPU drain, then release. (Best-effort; process teardown also
+      * reclaims.) */
+     ld_flush(LD_FLUSH_SHUTDOWN);
++    ld_clips_release();
+ #if defined(YZ_PERF_PROFILE)
+     fprintf(stderr,
+             "[rsx-perf-summary] frames=%u "

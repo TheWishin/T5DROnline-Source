@@ -2928,7 +2928,7 @@ MESSAGES = {
     "For a found match or tournament set when you are in another window. The announcer is read from your own game (after BUILD GAME); without it the beep plays. Your own sound: a WAV file of at most 5 seconds and 2 MB, copied into the launcher's folder.": "Para una partida encontrada o un set de torneo cuando estás en otra ventana. El locutor se lee de tu propio juego (después de BUILD GAME); si no está, suena el pitido. Tu propio sonido: un archivo WAV de hasta 5 segundos y 2 MB, copiado en la carpeta del launcher.",
     'Video clips': 'Clips de v?deo',
     'Keep the last 30 seconds': 'Conservar los ?ltimos 30 segundos',
-    'Ctrl+F10 or hold SELECT + R3 for 1 second to save an MP4 in Videos/T5DR Online. Includes game sound only. Disabled while power saving is on. Windows only.': 'Pulsa Ctrl+F10 o mant?n SELECT + R3 durante 1 segundo para guardar un MP4 en V?deos/T5DR Online. Solo incluye el sonido del juego. Desactivado mientras el ahorro de energ?a est? activo. Solo Windows.',
+    'Ctrl+F10 or hold SELECT + R3 for 1 second to save an MP4 in Videos/T5DR Online. Includes game sound only. Disabled while power saving is on. Windows only.': 'Pulsa Ctrl+F10 o mantén SELECT + R3 durante 1 segundo para guardar un MP4 en Vídeos/T5DR Online. Solo incluye el sonido del juego. Desactivado mientras el ahorro de energía está activo. Solo Windows.',
 }
 
 # Replay viewer and local library.
@@ -2940,17 +2940,17 @@ MESSAGES.update({
     'Frame step': 'Avanzar un fotograma',
     'Frame {frame} / {end}': 'Fotograma {frame} / {end}',
     'Pause': 'Pausar',
-    'Replay over: unverified from frame {frame} (player control).': 'Repetici?n terminada: sin verificar desde el fotograma {frame} (control del jugador).',
+    'Replay over: unverified from frame {frame} (player control).': 'Repetición terminada: sin verificar desde el fotograma {frame} (control del jugador).',
     'Resume': 'Continuar',
     'Round {n}': 'Ronda {n}',
-    'START (Enter) pauses or resumes; SELECT (Tab) ends playback. Taking control uses the local pad and marks playback unverified from that frame. Older replays may need earlier matches to play first.': 'START (Enter) pausa o contin?a; SELECT (Tab) termina la reproducci?n. Tomar el control usa el mando local y marca la repetici?n como no verificada desde ese fotograma. Las repeticiones antiguas pueden requerir reproducir primero las partidas anteriores.',
+    'START (Enter) pauses or resumes; SELECT (Tab) ends playback. Taking control uses the local pad and marks playback unverified from that frame. Older replays may need earlier matches to play first.': 'START (Enter) pausa o continúa; SELECT (Tab) termina la reproducción. Tomar el control usa el mando local y marca la repetición como no verificada desde ese fotograma. Las repeticiones antiguas pueden requerir reproducir primero las partidas anteriores.',
     'Speed': 'Velocidad',
     'Take P{side}': 'Controlar P{side}',
     'Unverified: player control': 'Sin verificar: control del jugador',
-    'Verified playback': 'Reproducci?n verificada',
+    'Verified playback': 'Reproducción verificada',
 })
 
-MESSAGES['This replay command is unavailable at the current frame.'] = 'Este comando de repetici?n no est? disponible en el fotograma actual.'
+MESSAGES['This replay command is unavailable at the current frame.'] = 'Este comando de repetición no está disponible en el fotograma actual.'
 
 # Practice while searching.
 MESSAGES.update({

@@ -29,6 +29,10 @@ when slots or the worker queue are busy. The renderer transfers ownership of
 a mapped RGBA readback view to a separate worker, which scales to a bounded recording resolution and feeds Media
 Foundation. The sink writer permits hardware transforms, with software encoding
 available when the machine has no suitable hardware encoder.
+The production `rsx_live_draw.c` path captures the composed backbuffer after
+the game overlay and letterboxing, before its command list is submitted. Its
+dedicated capture fence is signalled after that submission. The older
+`rsx_d3d12_backend.c` diagnostic renderer also retains its capture hook.
 Recording is 1280×720 at up to 30 frames/s, H.264 at 4 Mbit/s and stereo AAC
 at 160 kbit/s. Frames preserve the display aspect ratio with letterboxing.
 
@@ -55,6 +59,9 @@ Three D3D12 readbacks hold at most 94.9 MiB together at 3840x2160.
 The worker borrows mapped views until conversion finishes; there are no extra
 CPU raw-frame buffers or render-thread CPU pixel copies. Capture above that output size is
 skipped. A swapchain size change disables capture safely until game restart.
+Shutdown joins the encoder before releasing completed readbacks. If a failed
+present or shutdown submission leaves a copy in flight, its buffer and fence
+remain retained until process teardown, within the same three-slot bound.
 Media Foundation and encoder-owned allocations are additional to these
 explicit payload caps; they are not an unbounded queue owned by this feature.
 
@@ -64,16 +71,27 @@ chooses a duration from 5 to 120 seconds (default 30), still subject to the
 transforms for diagnostic fallback runs. Effective power saving still suppresses
 capture. `PS3_TEST_NO_MEDIA_FOUNDATION=1` exercises the unavailable-MF path.
 
+`PS3_CLIPS_DIR` optionally selects a clip output directory instead of the Videos
+folder. Spaces and Unicode are supported. Its parent directory must already
+exist; the selected directory is created if necessary. This also lets local
+diagnostics keep their clips in an isolated scratch folder.
+
 ## Tests without the game
 
 `python tests/test_clips_ring.py -v` compiles the exact header extracted from
-patch `0116` and runs `tests/c/clips_ring_test.cpp`. It covers time eviction,
+patch `0119` and runs `tests/c/clips_ring_test.cpp`. It covers time eviction,
 byte eviction, independently decodable segment boundaries, oversized and empty
 segments, invalid timestamps, clock gaps, clear/reuse, signed-limit timestamps,
 allocation-capacity accounting, 512-segment metadata eviction, stale capture
 expiry, and 20,000
 iterations under variable bitrate and time pressure. Before the
 patch is emitted, `PS3RECOMP_DIR` can name the prepared runtime checkout.
+
+`python -m unittest discover -s tests -p test_clips_live.py -v` guards the actual
+live present hook and compiles the shipped resource-release helper against
+synthetic COM objects. It checks incomplete-copy retention, completed-copy
+release, device removal, and worker shutdown ordering without opening a GPU,
+encoder, game, audio endpoint or input device.
 
 The opt-in Windows integration test is:
 

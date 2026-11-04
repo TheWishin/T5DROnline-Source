@@ -2859,29 +2859,29 @@ MESSAGES = {
     "For a found match or tournament set when you are in another window. The announcer is read from your own game (after BUILD GAME); without it the beep plays. Your own sound: a WAV file of at most 5 seconds and 2 MB, copied into the launcher's folder.": "다른 창을 보고 있을 때 매치를 찾거나 토너먼트 세트가 준비되면 울립니다. 아나운서 음성은 내 게임(BUILD GAME 이후)에서 읽으며, 없으면 비프음이 납니다. 내 사운드: 최대 5초, 2MB의 WAV 파일이며 런처 폴더에 복사됩니다.",
     'Video clips': '??? ??',
     'Keep the last 30 seconds': '?? 30? ??',
-    'Ctrl+F10 or hold SELECT + R3 for 1 second to save an MP4 in Videos/T5DR Online. Includes game sound only. Disabled while power saving is on. Windows only.': 'Ctrl+F10? ???? SELECT + R3? 1? ?? ??? ???/T5DR Online? MP4? ?????. ?? ??? ?????. ?? ????? ???????. Windows ?????.',
+    'Ctrl+F10 or hold SELECT + R3 for 1 second to save an MP4 in Videos/T5DR Online. Includes game sound only. Disabled while power saving is on. Windows only.': 'Ctrl+F10을 누르거나 SELECT + R3를 1초 동안 누르면 동영상/T5DR Online에 MP4를 저장합니다. 게임 소리만 포함합니다. 절전 모드에서는 비활성화됩니다. Windows 전용입니다.',
 }
 
 # Replay viewer and local library.
 MESSAGES.update({
-    'Back 10 s': '10? ??',
-    'Favourite': '????',
-    'Favourites only': '?????',
-    'Forward 10 s': '10? ???',
-    'Frame step': '? ??? ??',
-    'Frame {frame} / {end}': '??? {frame} / {end}',
-    'Pause': '?? ??',
-    'Replay over: unverified from frame {frame} (player control).': '???? ??: {frame} ????? ??? (???? ??).',
-    'Resume': '??',
-    'Round {n}': '??? {n}',
-    'START (Enter) pauses or resumes; SELECT (Tab) ends playback. Taking control uses the local pad and marks playback unverified from that frame. Older replays may need earlier matches to play first.': 'START (Enter)? ?? ?? ?? ??, SELECT (Tab)? ??? ?????. ??? ????? ?? ??? ???? ?? ????? ????? ?????. ?? ????? ?? ??? ?? ???? ? ? ????.',
-    'Speed': '??',
-    'Take P{side}': 'P{side} ??',
-    'Unverified: player control': '???: ???? ??',
-    'Verified playback': '??? ??',
+    'Back 10 s': '10초 뒤로',
+    'Favourite': '즐겨찾기',
+    'Favourites only': '즐겨찾기만',
+    'Forward 10 s': '10초 앞으로',
+    'Frame step': '한 프레임 이동',
+    'Frame {frame} / {end}': '프레임 {frame} / {end}',
+    'Pause': '일시 정지',
+    'Replay over: unverified from frame {frame} (player control).': '리플레이 종료: {frame} 프레임부터 미검증 (플레이어 조작).',
+    'Resume': '재개',
+    'Round {n}': '라운드 {n}',
+    'START (Enter) pauses or resumes; SELECT (Tab) ends playback. Taking control uses the local pad and marks playback unverified from that frame. Older replays may need earlier matches to play first.': 'START (Enter)로 일시 정지하거나 재개하고 SELECT (Tab)으로 재생을 종료합니다. 조작을 넘겨받으면 로컬 컨트롤러를 사용하며 해당 프레임부터 미검증으로 표시됩니다. 이전 리플레이는 앞선 경기를 먼저 재생해야 할 수 있습니다.',
+    'Speed': '속도',
+    'Take P{side}': 'P{side} 조작',
+    'Unverified: player control': '미검증: 플레이어 조작',
+    'Verified playback': '검증된 재생',
 })
 
-MESSAGES['This replay command is unavailable at the current frame.'] = '?? ?????? ? ???? ??? ??? ? ????.'
+MESSAGES['This replay command is unavailable at the current frame.'] = '현재 프레임에서는 이 리플레이 명령을 사용할 수 없습니다.'
 
 # Practice while searching.
 MESSAGES.update({

@@ -142,6 +142,31 @@ that validation, not a claim of completed game-level release acceptance.
 that unrelated behavior was not changed. Dynamic swapchain size changes fail
 closed for capture until restart, and output above 4K is skipped.
 
+## Release gate integration correction (1.2.1)
+
+The first real match in the integration gate exposed a missing production
+hook: the initial patch instrumented `rsx_d3d12_backend.c`, while T5DR uses
+the separate `rsx_live_draw.c` renderer. The pair stayed deterministic and
+both recordings replayed identically, but no clip was captured.
+
+Patch 0119 now also captures the actual live renderer's composed backbuffer.
+It records copies and barriers through the existing command recorder, then
+signals its own monotonic fence after the real submission. Capture remains
+bounded to three GPU readbacks and a one-frame worker queue. Failed-present
+and failed-shutdown paths retain any still-pending GPU destinations and their
+fence rather than releasing resources still in use.
+
+`PS3_CLIPS_DIR` selects an isolated output folder, including spaces and Unicode,
+for local diagnostics. Its native path-resolution test passes in every encoder
+test mode. The live hook compiles, and two new regression tests pass, including
+a native synthetic COM lifetime test against the shipped release helper.
+Actual clip export, decoding and timing proof on the corrected release host
+are separate gate runs; their results must be recorded before release.
+
+Evidence: `build/release-gate-121/pairs/native-clips-results.json`,
+`clips-live-syntax-2/`, `clips-live-regression/`, and the original diagnostic
+pair and replays under `data/throw-rollback/` and `data/throw-rollback-replay/`.
+
 ## Proposed commit message
 
 `feat(clips): add bounded host-side instant replay capture`

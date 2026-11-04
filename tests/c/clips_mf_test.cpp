@@ -38,6 +38,19 @@ static void verify(const wchar_t* path) {
 }
 int wmain(int argc,wchar_t** argv) {
     if(argc<2)return 2;
+    // The game and diagnostics use this same Unicode output-path resolver.
+    // Keep this probe under the caller's scratch folder, outside real Videos.
+    {
+        const std::wstring directory=std::wstring(argv[1])+L".clips \u00dc\u65e5";
+        assert(_wputenv_s(L"PS3_CLIPS_DIR",directory.c_str())==0);
+        const auto output=clip_path();
+        assert(output.compare(0,directory.size()+6,directory+L"\\T5DR-")==0);
+        DWORD attributes=GetFileAttributesW(directory.c_str());
+        assert(attributes!=INVALID_FILE_ATTRIBUTES && (attributes&FILE_ATTRIBUTE_DIRECTORY));
+        assert(RemoveDirectoryW(directory.c_str()));
+        assert(_wputenv_s(L"PS3_CLIPS_DIR",L"")==0);
+        printf("PASS: clip output override preserves spaces and Unicode\n");
+    }
     if(argc>2 && (!wcscmp(argv[2],L"disabled") || !wcscmp(argv[2],L"power-saving") || !wcscmp(argv[2],L"missing-mf"))) {
         _putenv_s("PS3_CLIPS",!wcscmp(argv[2],L"disabled")?"0":"1");
         test_laptop=!wcscmp(argv[2],L"power-saving");

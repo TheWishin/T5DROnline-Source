@@ -2624,6 +2624,18 @@ void replay_session_known()
          rp::play_rollback() ? "rollback" : "lockstep");
 }
 uint32_t barriers() { State& s = S(); std::lock_guard<std::mutex> lk(s.mu); return s.nbar; }
+/* Local file playback only: a checkpoint replaces the frame/hash cursors,
+ * never a live transport session. Inputs remain in the immutable replay. */
+void replay_rewind(uint32_t f, uint32_t nbar)
+{
+    State& s = S(); std::lock_guard<std::mutex> lk(s.mu);
+    if (!s.replay || rp::play_live()) return;
+    s.nbar = nbar;
+    s.local = Ring{}; s.remote = Ring{};
+    s.local_hash_max = s.remote_hash_max = s.checked = f;
+    s.count_from = f; s.match_mismatches = 0;
+    s.mismatch_queue.clear(); s.last_frame_qpc = 0;
+}
 void rec_pump() { State& s = S(); std::lock_guard<std::mutex> lk(s.mu); rec_pump_locked(); }
 
 } // namespace np

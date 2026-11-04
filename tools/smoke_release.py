@@ -45,7 +45,7 @@ REQUIRED = [
     "launcher/report_send.py",
     "launcher/updater.py", "launcher/release_sig.py", "launcher/controls_ui.py", "launcher/controls_edit.py",
     "lobby/t5lobby/client.py",
-    "launcher/replays.py", "launcher/replays_ui.py",
+    "launcher/replays.py", "launcher/replays_ui.py", "launcher/replay_library.py",
     "tools/build_game.py", "tools/build_game_dll.py", "tools/prereqs.py", "tools/make_keys.py",
     "deps/ps3recomp/.t5dr-vendored.json", "deps/ps3recomp/tools/ppu_lifter.py",
     "python/python.exe", "python/pythonw.exe",

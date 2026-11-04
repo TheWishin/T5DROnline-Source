@@ -80,6 +80,9 @@ static int do_write(const char* dir, uint32_t frames, uint32_t seed, const char*
     rp::rec_fight(ft);
     ft.costumes = false;
     rp::rec_match_begin(0);
+    rp::rec_capsule(1, std::vector<uint8_t>(1024, 0x5A));
+    rp::rec_round(2);
+    rp::rec_round(2);   /* duplicate hooks do not duplicate a round */
     uint64_t dg = 1469598103934665603ull;
     np::PadInput held[2] = { np::kNeutral, np::kNeutral };
     const uint32_t half = frames / 2;
@@ -110,6 +113,8 @@ static int do_write(const char* dir, uint32_t frames, uint32_t seed, const char*
             if (getenv("T5_TEST_AUTO_SKIP")) ft.rules |= 2u;  /* format 6 and guarded live upgrade, no game */
             rp::rec_fight(ft);
             rp::rec_match_begin(half);
+            rp::rec_capsule(half + 1, std::vector<uint8_t>(1024, 0xA5));
+            rp::rec_round(half + 2);
         }
     }
     rp::rec_result("0", 2, 1, nullptr, frames - half - 5, true, 0xFEDCBA9876543210ull, 3, frames - 5);
@@ -238,6 +243,38 @@ static int do_live_exit(const char* file, const char* which)
     return g_quit_polls == 1 ? 0 : 2;
 }
 
+static int do_capsule(const char* file, const char* which)
+{
+    _putenv_s("T5_NET_BUILD", !strcmp(which, "wrong-build") ? "another-build" : "test-build-id");
+    _putenv_s("T5_REPLAY_MATCH", "2");
+    _putenv_s("T5_REPLAY_CAPSULES", "1");
+    if (!rp::play_load(file)) { printf("ERROR %s\n", rp::play_error()); return 2; }
+    uint32_t frame = 0; std::vector<uint8_t> blob;
+    const bool ok = rp::play_capsule(2, &frame, &blob);
+    printf("CAPSULE %d %u %zu %u\n", ok ? 1 : 0, frame, blob.size(), blob.empty() ? 0 : blob[0]);
+    printf("STARTMATCH %u\n", rp::play_start_match());
+    for (uint32_t f : rp::play_rounds()) printf("ROUND %u\n", f);
+    if (!strcmp(which, "cursor")) {
+        rp::play_start_at(2, frame);
+        std::string actual_line;
+        printf("ACTUALLINE %d\n", rp::play_fight_line(2, &actual_line) ? 1 : 0);
+        std::vector<uint8_t> cursor; rp::play_cursor_capture(&cursor);
+        rp::play_barrier(2, frame + 99);
+        rp::play_mark_unverified(frame + 50);
+        printf("RESTORE %d\n", rp::play_cursor_restore(cursor) ? 1 : 0);
+        printf("CURSOR %u %u %u\n", rp::play_match_index(), rp::play_recorded_frame(frame + 5), rp::play_playback_frame(frame + 5));
+        rp::play_frame(frame + 51);
+        uint64_t branch_clock = 0; uint32_t branch_c[3] = {};
+        printf("BRANCHLOCAL %d %d %d\n", rp::play_barrier(999, frame + 51) == frame + 51,
+               rp::play_barrier_seed(0, rp::kLoad, 1234) == 1234,
+               rp::play_barrier_state(0, &branch_clock, branch_c));
+        cursor.push_back(0);
+        printf("CORRUPTCURSOR %d\n", rp::play_cursor_restore(cursor) ? 1 : 0);
+        rp::play_finish("cursor test");
+    }
+    return 0;
+}
+
 int main(int argc, char** argv)
 {
     setvbuf(stdout, nullptr, _IONBF, 0);
@@ -248,6 +285,7 @@ int main(int argc, char** argv)
     if (argc >= 3 && !strcmp(argv[1], "read")) return do_read(argv[2], 0, nullptr, false);
     if (argc >= 3 && !strcmp(argv[1], "map")) return do_read(argv[2], argc - 3, argv + 3, true);
     if (argc >= 4 && !strcmp(argv[1], "live-exit")) return do_live_exit(argv[2], argv[3]);
+    if (argc >= 4 && !strcmp(argv[1], "capsule")) return do_capsule(argv[2], argv[3]);
     printf("usage: replay_test write <dir> <frames> <seed> | read <file> | map <file> k:f ... | live-exit <file> <case>\n");
     return 1;
 }

@@ -42,6 +42,12 @@ bool fight_configured();                 /* T5_FIGHT, T5_FIGHT_FILE or T5_CTL_DI
 void fight_init();                       /* parse the environment (static init time) */
 void fight_on_frame(uint32_t f);         /* main thread, top of every frame */
 extern uint32_t g_fight_frame;           /* frame of the last FIGHT START (0: none yet) */
+/* Build-bound local replay checkpoint host state. Validation with apply=false
+ * permits the caller to validate every component before changing anything. */
+bool replay_capture(std::vector<uint8_t>* out);
+bool replay_restore(const std::vector<uint8_t>& data, bool apply = true);
+bool replay_hook_capture(std::vector<uint8_t>* out);
+bool replay_hook_restore(const std::vector<uint8_t>& data, bool apply = true);
 
 /* in-game character select (df_pick.cpp; docs/DIRECTFIGHT.md "Character select in the game") */
 uint16_t    pick_read_local_pad();         /* the local pad for the select screen: directions, face buttons, Select */

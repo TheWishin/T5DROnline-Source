@@ -499,7 +499,9 @@ class App(tk.Tk):
         self._play_tab(self.tabs["play"])
         self._settings_tab(self.tabs["settings"])
         self.online = online.OnlineTab(self.tabs["online"], self)
-        self.replays = replays_ui.ReplaysTab(self.tabs["replays"], self)
+        self.replays_scroll = VScroll(self.tabs["replays"], self.px)
+        self.replays = replays_ui.ReplaysTab(self.replays_scroll.inner, self)
+        self.replays_scroll.adopt()
         tab_look.apply(self)                          # Build, Play offline, Settings: the Online tab's cards
         self.nb.bind("<<NotebookTabChanged>>", self._on_tab)
         self.status = tk.StringVar(value="")

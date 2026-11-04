@@ -238,6 +238,7 @@ uint32_t sessions();                             /* sessions begun in this proce
 bool     replaying();                            /* T5_NET_MODE=replay: local mode fed by T5_REPLAY_FILE */
 void     replay_session_known();                 /* a live stream's SESSION came after configure() (replay.cpp) */
 uint32_t barriers();                             /* scene_barrier() calls so far in this session */
+void replay_rewind(uint32_t frame, uint32_t barriers); /* local file checkpoint only */
 void     rec_pump();                             /* recording: hand the frames whose inputs are final to the replay */
 
 } // namespace np

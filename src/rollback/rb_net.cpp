@@ -627,6 +627,21 @@ void scene_change(uint32_t nf)
     if (g_verbose) note("rbnet: scene barrier at %u: rollback floor raised", nf);
 }
 
+void replay_rewind(uint32_t f)
+{
+    if (!np::replaying() || rp::play_live()) return;
+    g_resim = false; g_commit_from = 0;
+    memset(g_hash_tag, 0, sizeof g_hash_tag);
+    memset(g_used_tag, 0, sizeof g_used_tag);
+    memset(g_phase_tag, 0, sizeof g_phase_tag);
+    memset(g_post_tag, 0, sizeof g_post_tag);
+    g_checked = g_hash_sent = g_floor = f;
+    g_next_f = f; g_early_f = UINT32_MAX; g_early_committed = 0;
+    g_tick_waited = false; g_early_tick_seen = false;
+    g_last_phase = rd32(kPhaseWord); g_last_remote = np::kNeutral;
+    g_t_live_ok = false; g_t_bnd_out_ok = false; g_cost.prev_ok = false;
+}
+
 static uint32_t boundary(uint32_t f, bool scene_flag, np::PadInput out[2]);
 
 /* At the frame's tick: frame timing, the time-sync lead, and this PC's input

@@ -72,6 +72,7 @@
 #include "ppu_recomp.h"
 #include "rb.h"
 #include "rb_detour.h"
+#include "../replay/blob.h"
 
 extern "C" uint32_t t5_df_mode_cur(void);    /* src/directfight/df_fight.cpp: the mode manager's current / next mode */
 extern "C" uint32_t t5_df_mode_next(void);
@@ -364,6 +365,60 @@ void tls_rand_reseed(uint32_t tls_base, uint32_t seed, bool streams)
 }
 
 uint64_t rand_private_draws() { return g_private_draws.load(); }
+
+bool rand_capture(std::vector<uint8_t>* out)
+{
+    if (!out || t_scene) return false;    /* main thread at a completed frame boundary */
+    rv::Writer w;
+    w.pod(uint32_t{1});
+    w.pod(uint32_t{(g_on ? 1u : 0u) | (g_isolating ? 2u : 0u)});
+    w.pod(g_site_seed); w.pod(g_sites_used);
+    w.pod(g_site_reseed.load(std::memory_order_relaxed));
+    w.pod(g_private_draws.load(std::memory_order_relaxed));
+    auto save_shuffle = [&w](const Shuffle& s) {
+        w.pod(s.s); w.pod(s.last); w.pod(s.tab); w.pod(uint32_t{s.init ? 1u : 0u});
+    };
+    for (const Site& s : g_sites) { w.pod(s.lr); save_shuffle(s.g); }
+    save_shuffle(g_overflow);
+    w.pod(g_sound_lcg); w.pod(uint32_t{g_sound_lcg_init ? 1u : 0u});
+    *out = std::move(w.bytes);
+    return true;
+}
+
+bool rand_restore(const std::vector<uint8_t>& data, bool apply)
+{
+    rv::Reader r{data};
+    uint32_t version, flags, seed, used, sound_lcg, sound_init;
+    uint64_t pending, draws;
+    Site sites[kSites];
+    Shuffle overflow;
+    if (!r.pod(&version) || version != 1 || !r.pod(&flags) ||
+        flags != ((g_on ? 1u : 0u) | (g_isolating ? 2u : 0u)) || !r.pod(&seed) || !r.pod(&used) ||
+        used > kSites || !r.pod(&pending) || (pending && (pending >> 32) != 1u) || !r.pod(&draws)) return false;
+    auto read_shuffle = [&r](Shuffle* s) {
+        uint32_t init;
+        if (!r.pod(&s->s) || !r.pod(&s->last) || !r.pod(&s->tab) || !r.pod(&init) || init > 1u) return false;
+        s->init = init != 0;
+        return true;
+    };
+    uint32_t count = 0;
+    for (int i = 0; i < kSites; i++) {
+        if (!r.pod(&sites[i].lr) || !read_shuffle(&sites[i].g)) return false;
+        if (sites[i].lr) {
+            count++;
+            for (int j = 0; j < i; j++) if (sites[j].lr == sites[i].lr) return false;
+        }
+    }
+    if (count != used || !read_shuffle(&overflow) || !r.pod(&sound_lcg) || !r.pod(&sound_init) ||
+        sound_init > 1u || !r.done()) return false;
+    if (!apply) return true;
+    memcpy(g_sites, sites, sizeof g_sites);
+    g_site_seed = seed; g_sites_used = used; g_overflow = overflow;
+    g_site_reseed.store(pending, std::memory_order_release);
+    g_private_draws.store(draws, std::memory_order_relaxed);
+    g_sound_lcg = sound_lcg; g_sound_lcg_init = sound_init != 0;
+    return true;
+}
 
 namespace {
 struct AutoInstall { AutoInstall() { rand_install(); } } g_auto;   /* the exe build: the table is there at static init */

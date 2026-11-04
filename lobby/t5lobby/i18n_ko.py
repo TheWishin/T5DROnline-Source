@@ -2323,12 +2323,6 @@ MESSAGES = {
         "삭제",
     "Open replays folder":
         "리플레이 폴더 열기",
-    "While a replay plays: START (Enter) pauses and goes on, SELECT (Tab) ends the replay. A "
-    "rematch is played after the matches before it in the same session: it starts from what they "
-    "left.":
-        "리플레이 재생 중: START(Enter)로 일시정지/계속, SELECT(Tab)로 리플레이를 끝냅니다. "
-        "재대전은 같은 세션의 앞선 대전 다음에 재생됩니다: 앞선 대전이 남긴 "
-        "상태에서 시작하기 때문입니다.",
     "Save online matches as replays":
         "온라인 대전을 리플레이로 저장",
     "Watch replay": "리플레이 보기",
@@ -2836,3 +2830,24 @@ MESSAGES = {
     "For an incoming challenge or invite when you are in another window. The announcer is read from your own game (after BUILD GAME); without it the chime plays. Your own sound: a WAV file of at most 5 seconds and 2 MB, copied into the launcher's folder.": "다른 창을 보고 있을 때 도전이나 초대를 받으면 울립니다. 아나운서 음성은 내 게임(BUILD GAME 이후)에서 읽으며, 없으면 차임이 울립니다. 내 사운드: 최대 5초, 2MB의 WAV 파일이며 런처 폴더에 복사됩니다.",
     "For a found match or tournament set when you are in another window. The announcer is read from your own game (after BUILD GAME); without it the beep plays. Your own sound: a WAV file of at most 5 seconds and 2 MB, copied into the launcher's folder.": "다른 창을 보고 있을 때 매치를 찾거나 토너먼트 세트가 준비되면 울립니다. 아나운서 음성은 내 게임(BUILD GAME 이후)에서 읽으며, 없으면 비프음이 납니다. 내 사운드: 최대 5초, 2MB의 WAV 파일이며 런처 폴더에 복사됩니다.",
 }
+
+# Replay viewer and local library.
+MESSAGES.update({
+    'Back 10 s': '10? ??',
+    'Favourite': '????',
+    'Favourites only': '?????',
+    'Forward 10 s': '10? ???',
+    'Frame step': '? ??? ??',
+    'Frame {frame} / {end}': '??? {frame} / {end}',
+    'Pause': '?? ??',
+    'Replay over: unverified from frame {frame} (player control).': '???? ??: {frame} ????? ??? (???? ??).',
+    'Resume': '??',
+    'Round {n}': '??? {n}',
+    'START (Enter) pauses or resumes; SELECT (Tab) ends playback. Taking control uses the local pad and marks playback unverified from that frame. Older replays may need earlier matches to play first.': 'START (Enter)? ?? ?? ?? ??, SELECT (Tab)? ??? ?????. ??? ????? ?? ??? ???? ?? ????? ????? ?????. ?? ????? ?? ??? ?? ???? ? ? ????.',
+    'Speed': '??',
+    'Take P{side}': 'P{side} ??',
+    'Unverified: player control': '???: ???? ??',
+    'Verified playback': '??? ??',
+})
+
+MESSAGES['This replay command is unavailable at the current frame.'] = '?? ?????? ? ???? ??? ??? ? ????.'

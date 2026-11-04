@@ -724,4 +724,101 @@ static bool state_rollback_(uint32_t to, uint32_t* pages, double* ms, bool lazy)
     return true;
 }
 
+/* The portable checkpoint deliberately stores addresses, never host pointers.
+ * A sorted complete page table validates both the state map and exclusions
+ * before any byte is restored. Job output is included even while the undo
+ * logger omits it: its meaning can change across a loading barrier. */
+static bool checkpoint_excluded(uint32_t ea)
+{
+    for (const Range& r : kExclude) if (ea >= r.base && ea - r.base < r.len) return true;
+    for (const Range& r : g_exclude_dyn) if (ea >= r.base && ea - r.base < r.len) return true;
+    return false;
+}
+static void checkpoint_u32(std::vector<uint8_t>& b, uint32_t v)
+{
+    for (int i = 0; i < 4; ++i) b.push_back((uint8_t)(v >> (8 * i)));
+}
+static uint32_t checkpoint_get(const uint8_t* p)
+{
+    return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24;
+}
+bool state_capture(std::vector<uint8_t>* out)
+{
+    if (!out) return false;
+    PumpHold hold;
+    if (!hold.held) return false;
+    std::vector<uint8_t> b;
+    size_t reserve = 8;
+    for (const Range& r : kSave) reserve += (size_t)(r.len >> 12) * 0x1004;
+    b.reserve(reserve);
+    b.insert(b.end(), { 'T', '5', 'S', '2' });
+    checkpoint_u32(b, 0);
+    checkpoint_u32(b, (uint32_t)g_exclude_dyn.size());
+    for (const Range& r : g_exclude_dyn) { checkpoint_u32(b, r.base); checkpoint_u32(b, r.len); }
+    uint32_t count = 0;
+    for (const Range& r : kSave) for (uint32_t off = 0; off < r.len; off += 0x1000) {
+        const uint32_t ea = r.base + off;
+        if (checkpoint_excluded(ea)) continue;
+        checkpoint_u32(b, ea);
+        b.insert(b.end(), vm_base + ea, vm_base + ea + 0x1000);
+        ++count;
+    }
+    for (int i = 0; i < 4; ++i) b[4 + i] = (uint8_t)(count >> (8 * i));
+    out->swap(b);
+    return true;
+}
+bool state_restore(const std::vector<uint8_t>& b)
+{
+    if (b.size() < 12 || memcmp(b.data(), "T5S2", 4)) return false;
+    const uint32_t count = checkpoint_get(b.data() + 4), nd = checkpoint_get(b.data() + 8);
+    if (nd > 4096 || b.size() != 12ull + (uint64_t)nd * 8 + (uint64_t)count * 0x1004) return false;
+    std::vector<Range> saved_excludes;
+    for (uint32_t i = 0; i < nd; ++i) {
+        const uint32_t ea = checkpoint_get(b.data() + 12 + i * 8), len = checkpoint_get(b.data() + 16 + i * 8);
+        if ((ea & 0xFFF) || !len || (len & 0xFFF) || (uint64_t)ea + len > UINT32_MAX) return false;
+        saved_excludes.push_back({ ea, len });
+    }
+    const size_t pages_at = 12 + (size_t)nd * 8;
+    size_t pos = pages_at;
+    for (const Range& r : kSave) for (uint32_t off = 0; off < r.len; off += 0x1000) {
+        const uint32_t ea = r.base + off;
+        bool excluded = false;
+        for (const Range& x : kExclude) if (ea >= x.base && ea - x.base < x.len) excluded = true;
+        for (const Range& x : saved_excludes) if (ea >= x.base && ea - x.base < x.len) excluded = true;
+        if (excluded) continue;
+        if (pos + 0x1004 > b.size() || checkpoint_get(b.data() + pos) != ea) return false;
+        pos += 0x1004;
+    }
+    if (pos != b.size()) return false;
+    PumpHold hold;
+    if (!hold.held) return false;
+    uint8_t keep[sizeof kKeepWords / sizeof kKeepWords[0]][0x10];
+    for (size_t i = 0; i < sizeof kKeepWords / sizeof kKeepWords[0]; ++i)
+        memcpy(keep[i], vm_base + kKeepWords[i].base, kKeepWords[i].len);
+    for (pos = pages_at; pos < b.size(); pos += 0x1004) {
+        const uint32_t ea = checkpoint_get(b.data() + pos);
+        /* Streaming can discover more live buffers after this checkpoint (or
+         * in another process). Preserve the union of saved and current live
+         * exclusions instead of restoring an active decoder's ring. */
+        if (!checkpoint_excluded(ea)) restore_page(ea, b.data() + pos + 4);
+    }
+    for (size_t i = 0; i < sizeof kKeepWords / sizeof kKeepWords[0]; ++i)
+        memcpy(vm_base + kKeepWords[i].base, keep[i], kKeepWords[i].len);
+    /* Drop old undo logs and rebuild the shadow from the restored state. The
+     * PumpHold is released before state_reset takes its own hold. */
+    if (g_ready) {
+        memset(g_log, 0, sizeof g_log);
+        g_ring_pos = 0; g_newest = 0; g_oldest = 0;
+        g_job_active = false; g_job_spent = false;
+        if (g_job_lines) spurs_job_put_reset();
+        size_t off = 0;
+        for (const Range& r : kSave) {
+            memcpy(g_shadow + off, vm_base + r.base, r.len); off += r.len;
+            t5p_write_watch_reset(vm_base + r.base, r.len);
+        }
+        if (g_page_hashing) state_hash_full();
+    }
+    return true;
+}
+
 } // namespace rb

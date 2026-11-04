@@ -2,7 +2,7 @@
 the player's own game files when it is needed, never shipped with the launcher and never written to disk.
 
 The line is a sample of the announcer's sound bank, entry 11 of the game's data table in T55DATA1.BIN (the table and
-its coding: rank_art.py, CLAUDE.md "Data format"):
+its coding: rank_art.py and docs/DATA_FORMAT notes in rank_art.py):
 
 * the bank (big-endian): "00 02 01 00", 0, the bank id (2), the sample count (21), the data offset, the data size,
   then at +0x20 one offset per sample to its 0xC0-byte record;

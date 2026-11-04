@@ -80,12 +80,17 @@ Online wurde zwischen zwei echten PCs über das Internet getestet
 
 ## Voraussetzungen
 
-**Mindestanforderungen:** Windows 10 oder 11 (64 Bit), eine CPU mit 4 Kernen ab
-etwa 2014 (Intel Core i5/i7 der 4. Generation, AMD Ryzen oder neuer; AVX2
-empfohlen), eine Grafikkarte, die DirectX 12 kann (Feature-Level 11_0), und 8 GB
-Arbeitsspeicher. Am meisten zählt die CPU: Die Hauptarbeit des Spiels läuft auf
-einem Kern, ein schneller Kern bringt also mehr als viele Kerne oder eine starke
-Grafikkarte.
+**Mindestanforderungen:** Windows 10 oder 11 (64 Bit), ein Prozessor mit SSE4.1
+(Intel Core 2 ab 2008, jeder Core i3/i5/i7; AMD FX, A-Serie ab 2012, Ryzen), eine
+DirectX-12-Grafikkarte (Feature-Level 11_0: NVIDIA GeForce GTX 400 / GT 600 und
+neuer, AMD Radeon HD 7000 und neuer, Intel HD 4400 und neuer) und 4 GB
+Arbeitsspeicher. Für 60 fps in Kämpfen: ein Prozessor mit 4 Kernen ab etwa 2011
+(ein Intel Core i5-2500 mit einer GeForce GT 730 spielt mit 55-60 fps). Ein
+Prozessor mit 2 Kernen (Core i3-2100 / i3-3240) spielt mit den Einstellungen
+**Alter PC**, die der Launcher dort von selbst wählt (siehe
+[Old PCs](WEAK_PC.md#old-pcs-121)). Am meisten zählt die CPU: Die Hauptarbeit
+des Spiels läuft auf einem Kern, ein schneller Kern bringt also mehr als viele
+Kerne oder eine starke Grafikkarte.
 
 Im Einzelnen:
 
@@ -93,8 +98,9 @@ Im Einzelnen:
 - Eine Grafikkarte mit DirectX 12 und eine 64-Bit-CPU mit SSE4.1 (praktisch jeder
   PC der letzten 10+ Jahre). Damit startet das Spiel; für volles Tempo siehe die
   Mindestanforderungen oben.
-- Arbeitsspeicher: Das Spiel brauchte auf dem Entwicklungs-PC etwa 1,2 GB. Kleine
-  PCs haben wir nicht getestet. 8 GB oder mehr sind eine sichere Schätzung.
+- 4 GB Arbeitsspeicher: Das Spiel braucht in einem Kampf etwa 0,8 GB (1,1 GB
+  reserviert); BUILD GAME startet nur so viele Compiler, wie der freie Speicher
+  erlaubt.
 - Etwa 1,5 GB freier Speicherplatz. Nach dem Bauen belegt es etwa 1,1 GB, dazu
   die 90 MB der Zip-Datei.
 - Eine Internetverbindung beim ersten Bauen. Etwa 50 KB öffentliche Schlüsseldaten

@@ -210,6 +210,13 @@ void draw(Host& h,uint64_t now) {
     const uint64_t sig=(p.rev<<20)^((uint64_t)seconds<<10)^((uint64_t)bar_step<<2)^(locked?2u:0u)^(waiting?1u:0u);
     if(h.shown&&sig==h.drawn_sig) return;                    /* nothing on screen changed */
     rsx_overlay_begin_layer(1);
+    if(p.kind=="notice") {
+        /* Final match notices use the runtime overlay, never a separate native window.
+         * Keep this a single English line, readable over a frozen fight or character select. */
+        rsx_overlay_rect(160,316,960,62,RSX_OVL_RGBA(8,10,18,248));
+        line(p.body,184,338,2.0f,RSX_OVL_RGBA(245,245,245,255),912);
+        rsx_overlay_end(); h.shown=true; h.drawn_sig=sig; return;
+    }
     rsx_overlay_rect(kPanelX,kPanelY,kPanelW,kPanelH,RSX_OVL_RGBA(8,10,18,248));
     rsx_overlay_rect(kPanelX,kPanelY,kPanelW,4,RSX_OVL_RGBA(255,214,72,255));
     line(p.title,kLeft,kPanelY+20,3.0f,RSX_OVL_RGBA(255,214,72,255),kTextW-90);

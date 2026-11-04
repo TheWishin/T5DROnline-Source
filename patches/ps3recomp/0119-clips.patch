@@ -6,7 +6,7 @@ index c656bf6f..4b1d838e 100644
  # cellVdec's H.264 decoder: Media Foundation on Windows (C++/COM), a stub that
  # reports "unavailable" elsewhere. It links mfplat/mfuuid itself (#pragma).
  list(APPEND HLE_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/libs/codec/mf_h264.cpp")
-+# Patch 0116: host-side instant replay (Windows MF; stubs elsewhere).
++# Patch 0119: host-side instant replay (Windows MF; stubs elsewhere).
 +list(APPEND HLE_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/libs/video/rsx_clips.cpp")
  
  # Runtime core (syscalls, PPU, SPU, memory)
@@ -27,7 +27,7 @@ index 5f595740..8f6bd105 100644
  
  static void audio_submit_mix(void)
  {
-+    /* Patch 0116: capture our own final stereo mix before host mute. No endpoint
++    /* Patch 0119: capture our own final stereo mix before host mute. No endpoint
 +     * loopback, guest writes, allocation or encoder work on the mixer thread. */
 +    if (rsx_clips_enabled())
 +        rsx_clips_audio(s_mix_buffer, CELL_AUDIO_BLOCK_SAMPLES, rsx_clips_clock());
@@ -89,7 +89,7 @@ index c1a40e81..c3837ce6 100644
   * (returns 0 then); returns 1 when a new sample was taken. */
  int  padh_sample(u32 port, PadHostPort* out, u32 min_interval_us);
  
-+/* Patch 0116: nonblocking copy of a recent cached sample for host capture
++/* Patch 0119: nonblocking copy of a recent cached sample for host capture
 + * controls. No init, device I/O, tap consumption or input-state mutation.
 + * Returns 1 for recent data, 0 for no data, -1 while the cache is busy. */
 +int  padh_peek_cached(u32 port, PadHostPort* out);
@@ -115,7 +115,7 @@ index add34dcf..abb87727 100644
  }
  
  
-+/* Patch 0116: present-only capture. These readbacks have their OWN monotonic
++/* Patch 0119: present-only capture. These readbacks have their OWN monotonic
 + * fence; their lifetime must not depend on the renderer's recycled frame fence.
 + * Nothing here waits for the capture GPU copy or touches guest memory/input.
 + * Original RGBA is passed to the worker; resizing/colour conversion/encoding
@@ -335,7 +335,7 @@ new file mode 100644
 --- /dev/null
 +++ b/libs/video/rsx_clips.cpp
 @@ -0,0 +1,432 @@
-+/* Patch 0116: bounded, host-only instant replay. No guest memory, input writes,
++/* Patch 0119: bounded, host-only instant replay. No guest memory, input writes,
 + * loopback capture, network, or work on the game thread. All MF/IO is on the
 + * low-priority worker. Two-second standalone MP4s make every eviction decodable.
 + */
@@ -777,7 +777,7 @@ new file mode 100644
 +#ifdef __cplusplus
 +extern "C" {
 +#endif
-+/* Patch 0116: host-only capture. Producers never wait for encoder or disk.
++/* Patch 0119: host-only capture. Producers never wait for encoder or disk.
 + * RGBA8 present copy; stereo float 48 kHz own-mixer samples before output mute.
 + * Both timestamps use the same monotonic 100 ns clock, at block/frame start. */
 +int rsx_clips_enabled(void);
@@ -799,7 +799,7 @@ new file mode 100644
 --- /dev/null
 +++ b/libs/video/rsx_clips_ring.h
 @@ -0,0 +1,58 @@
-+/* Patch 0116: bounded independently decodable MP4 segments. */
++/* Patch 0119: bounded independently decodable MP4 segments. */
 +#ifndef PS3RECOMP_RSX_CLIPS_RING_H
 +#define PS3RECOMP_RSX_CLIPS_RING_H
 +#include <cstddef>

@@ -29,7 +29,7 @@ class LauncherFullscreen(unittest.TestCase):
                     mock.patch.object(core, "costume_env"), \
                     mock.patch.object(core.warmup, "pause_all"), \
                     mock.patch.object(core.threading, "Thread"), \
-                    mock.patch.object(core.subprocess, "Popen") as popen:
+                    mock.patch.object(core.process_owner, "popen") as popen:
                 popen.return_value.pid = 123
                 self.assertEqual(game.start(extra_env), 123)
                 # The game still has no console window; all handles and launches are fake.

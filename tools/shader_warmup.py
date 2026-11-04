@@ -49,6 +49,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "tools"))
 sys.path.insert(0, os.path.join(ROOT, "lobby"))
 import run_game  # noqa: E402
+from t5lobby import process_owner  # noqa: E402
 
 # Stage select ids first (what ranked and quick matches draw), then the Tekken 5 stages (lobby fighters.json).
 STAGES = list(range(17, 35)) + list(range(0, 14)) + [15]
@@ -149,7 +150,8 @@ def warmup(a, out):
     previous = read_json(marker)
     plan = {"fights": a.fights, "seconds": a.fight_seconds}
     matching = previous.get("exe") == stamp and (not background or previous.get("plan") == plan)
-    if not a.force and matching and (not background or previous.get("complete") is True):
+    if not a.force and matching and (not background or previous.get("complete") is True
+                                    or previous.get("skipped") is True):
         note("already done for this build")
         return 0
     if sys.platform != "win32":
@@ -206,6 +208,8 @@ def warmup(a, out):
         env.update({"PS3_WINDOW_HIDDEN": "1", "RSX_LIVE_DRAW": "1"})
     for k, v in extra.items():
         env[k] = v
+    # The hidden warm-up must never inherit an audible/foreground override.
+    env.update({"PS3_WINDOW_BACKGROUND": "1", "PS3_WINDOW_HIDDEN": "1", "PS3_AUDIO_MUTE": "1"})
     log_path = os.path.join(out, "logs", "warmup.log")
     os.makedirs(os.path.dirname(log_path), exist_ok=True)
     note(f"{len(lines)} short fights in a hidden game, so the first real fights do not stutter "
@@ -216,16 +220,10 @@ def warmup(a, out):
     paused = False
     with open(log_path, "w", encoding="utf-8", errors="replace") as log:
         child_file = os.path.join(out, CHILD_FILE) if background else None
-        if child_file:
-            with open(child_file, "w", encoding="ascii") as f:
-                json.dump({"state": "starting"}, f)
-        try:
-            p = subprocess.Popen(cmd, env=env, cwd=cwd, stdout=log, stderr=subprocess.STDOUT,
-                                 creationflags=subprocess.BELOW_NORMAL_PRIORITY_CLASS)
-        except OSError:
-            if child_file:
-                os.remove(child_file)  # No child was created.
-            raise
+        # Job ownership covers crashes before the PID is published. An unknown
+        # "starting" marker would otherwise permanently block a later real game.
+        p = process_owner.popen(cmd, env=env, cwd=cwd, stdout=log, stderr=subprocess.STDOUT,
+                                creationflags=subprocess.BELOW_NORMAL_PRIORITY_CLASS)
         try:
             if child_file:
                 tmp = child_file + ".tmp"
@@ -251,13 +249,25 @@ def warmup(a, out):
                 except subprocess.TimeoutExpired:
                     pass
         finally:
-            if p.poll() is None:
-                p.kill()
-                p.wait()
+            try:
+                if p.poll() is None:
+                    p.kill()
+                    p.wait(timeout=5)
+            finally:
+                process_owner.release(p)
             if child_file:
                 os.remove(child_file)  # Only cleared after the hidden child's confirmed exit.
     shutil.rmtree(work, ignore_errors=True)
     if background:
+        if skipped:
+            state = read_json(marker)
+            state["skipped"] = True
+            with open(marker, "w", encoding="utf-8") as f:
+                json.dump(state, f)
+            try:
+                os.remove(skip)
+            except FileNotFoundError:
+                pass
         note("paused" if paused else f"done: {completed + done} of {total} fights")
         return 0
     if done or skipped:

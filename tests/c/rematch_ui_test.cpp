@@ -99,5 +99,14 @@ static void parsing() {
     std::string unicode=good; unicode.replace(unicode.find("Ready?"),6,"\\uD83D\\uDE00");
     CHECK(parse_prompt(unicode,p)); CHECK(p.title=="\xf0\x9f\x98\x80");
 }
-int main() { decisions(); directions_do_not_block(); second_vote_after_a_loading_frame(); countdown(); identities_expiry_focus(); contexts(); parsing();
+static void terminal_notice() {
+    Prompt p=prompt(); p.kind="notice"; p.remaining_ms=4000; p.countdown_ms=0; p.allowed={};
+    p.body="Your opponent left the match -- back to the lobby";
+    Menu m; CHECK(m.update(p,1000,"launch","session"));
+    CHECK(m.visible(1000)&&m.visible(4999)&&!m.visible(5000));
+    CHECK(!m.tick(0,true,2000)); CHECK(!m.tick(kConfirm,true,2001));
+    CHECK(!m.tick(0,true,2002)); CHECK(!m.tick(kCancel,true,2003)); CHECK(!m.pending().seq);
+    CHECK(m.prompt().body==p.body);
+}
+int main() { decisions(); directions_do_not_block(); second_vote_after_a_loading_frame(); countdown(); identities_expiry_focus(); contexts(); parsing(); terminal_notice();
     std::printf("PASS %u checks\n",checks); }

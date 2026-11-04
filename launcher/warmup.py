@@ -81,6 +81,7 @@ class BackgroundWarmup:
         self._holds = set()
         self._stop_failed = False
         self._lock = threading.RLock()
+        self._timer = None
 
     @property
     def paused(self):
@@ -89,11 +90,14 @@ class BackgroundWarmup:
     def start(self, force=False):
         """Queue at most six short fights; return as soon as the worker is started."""
         with self._lock:
+            from t5lobby import process_owner
             self.enabled = True
             if self.paused or sys.platform != "win32":
                 return False
             if self.proc is not None and self.proc.poll() is None:
                 return False
+            if self.proc is not None:
+                process_owner.release(self.proc)
             if os.path.exists(os.path.join(self.out, CHILD_FILE)) and not _recover_child(self.out):
                 return False  # A crashed worker has not confirmed its hidden game's exit.
             pause = os.path.join(self.out, PAUSE_FILE)
@@ -111,14 +115,52 @@ class BackgroundWarmup:
                        "--fight-seconds", "3", "--minutes", "3"]
                 if force:
                     cmd.append("--force")
-                self.proc = subprocess.Popen(
+                self.proc = process_owner.popen(
                     cmd, cwd=self.out, stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                     creationflags=CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY_CLASS)
+                proc = self.proc
+                self._timer = threading.Timer(195, self._expire, (proc,))
+                self._timer.daemon = True
+                self._timer.start()
             except OSError:
                 # Optional work cannot turn a successful build into a failure.
                 self.proc = None
                 return False
+            return True
+
+    def _expire(self, proc):
+        with self._lock:
+            if self.proc is proc:
+                self.enabled = False
+                self._stop()
+
+    def running(self):
+        with self._lock:
+            if self.proc is None:
+                return False
+            if self.proc.poll() is None:
+                return True
+            from t5lobby import process_owner
+            process_owner.release(self.proc)
+            if self._timer is not None:
+                self._timer.cancel()
+            return False
+
+    def skip(self):
+        """End this queue without letting a later real-game tail restart it."""
+        with self._lock:
+            self.enabled = False
+            if not self.running():
+                return False
+            path = os.path.join(self.out, "logs", "warmup.skip")
+            with open(path, "w", encoding="ascii") as f:
+                f.write("skip\n")
+            if self._timer is not None:
+                self._timer.cancel()
+            self._timer = threading.Timer(2, self._expire, (self.proc,))
+            self._timer.daemon = True
+            self._timer.start()
             return True
 
     def pause(self):
@@ -137,6 +179,9 @@ class BackgroundWarmup:
             return token
 
     def _stop(self):
+        from t5lobby import process_owner
+        if self._timer is not None:
+            self._timer.cancel()
         proc = self.proc
         if proc is not None and proc.poll() is None:
             try:
@@ -144,16 +189,21 @@ class BackgroundWarmup:
                     f.write("pause\n")
                 proc.wait(timeout=1)
             except (OSError, subprocess.TimeoutExpired):
+                owned = getattr(proc, "_t5_job", None) is not None
+                process_owner.release(proc)  # Own the whole tree even if its worker has crashed.
                 try:
-                    subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)],
-                                   stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                   stderr=subprocess.DEVNULL, timeout=5,
-                                   creationflags=CREATE_NO_WINDOW, check=False)
+                    if not owned:
+                        subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)],
+                                       stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                       stderr=subprocess.DEVNULL, timeout=5,
+                                       creationflags=CREATE_NO_WINDOW, check=False)
                     proc.wait(timeout=1)
                 except (OSError, subprocess.TimeoutExpired) as exc:
                     raise _stop_error() from exc
             if proc.poll() is None:
                 raise _stop_error()
+        if proc is not None:
+            process_owner.release(proc)
         if os.path.exists(os.path.join(self.out, CHILD_FILE)) and not _recover_child(self.out):
             # Never infer that the child exited merely from its worker's exit.
             raise _stop_error()
@@ -188,6 +238,12 @@ def controller(out):
 
 def start(out, force=False):
     return controller(out).start(force=force)
+
+
+def running_out():
+    """Find work resumed after a real game, including an earlier output folder."""
+    with _controllers_lock:
+        return next((item.out for item in _controllers.values() if item.running()), None)
 
 
 def pause(out):

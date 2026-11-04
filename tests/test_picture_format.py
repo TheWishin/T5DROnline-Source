@@ -185,7 +185,7 @@ class SettingsAndEnv(unittest.TestCase):
         def popen(cmd, env=None, **kw):
             seen.update(env)
             return Proc()
-        with mock.patch.object(core.subprocess, "Popen", popen),                 mock.patch.object(core.warmup, "pause_all", return_value=None),                 mock.patch.object(core.warmup, "resume_all"),                 mock.patch.dict(os.environ, inherited or {}):
+        with mock.patch.object(core.process_owner, "popen", popen),                 mock.patch.object(core.warmup, "pause_all", return_value=None),                 mock.patch.object(core.warmup, "resume_all"),                 mock.patch.dict(os.environ, inherited or {}):
             core.GameRun(out, self.settings(saved)).start(extra_env=extra_env)
         return seen
 

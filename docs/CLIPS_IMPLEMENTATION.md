@@ -7,7 +7,8 @@ slot files were created outside it, and each owned lock was released.
 
 ## Design
 
-`0116-clips.patch` follows the previously highest runtime patch, `0115`.
+`0119-clips.patch` follows hidden-game audio (`0118`), preserving
+the rematch tap latch (`0116`) and online borderless (`0117`).
 The render thread records a copy of the actual presented RGBA backbuffer into
 three fenced D3D12 readbacks. Fence checks, queue handoff, and pad-cache reads
 never wait. A mapped readback is borrowed by the worker until conversion
@@ -49,7 +50,7 @@ The launcher uses 30 seconds. Whole-segment eviction normally yields about
 
 ## Files changed
 
-- `patches/ps3recomp/0116-clips.patch`: runtime CMake integration; new
+- `patches/ps3recomp/0119-clips.patch`: runtime CMake integration; new
   `libs/video/rsx_clips.cpp`, `rsx_clips.h`, `rsx_clips_ring.h`; D3D12 present
   readbacks and controls; `cellAudio.c` mixer tap; cached pad API in
   `libs/input/pad_host.h` and `pad_host_win32.c`.

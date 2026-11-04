@@ -90,7 +90,7 @@ class LauncherIntegration(unittest.TestCase):
         process = SimpleNamespace(Popen=mock.Mock())
         logf = mock.Mock()
         namespace = {"self": SimpleNamespace(out="chosen-output", _warmup_lease=None),
-                     "warmup": warmup, "subprocess": process, "logf": logf}
+                     "warmup": warmup, "subprocess": process, "process_owner": SimpleNamespace(popen=process.Popen), "logf": logf}
         with self.assertRaises(OSError):
             exec(self.spawn_block(), namespace)
         process.Popen.assert_not_called()
@@ -104,7 +104,8 @@ class LauncherIntegration(unittest.TestCase):
                                   STDOUT=-2, DEVNULL=-3)
         game = SimpleNamespace(out="chosen-output", _warmup_lease=None)
         namespace = {"self": game, "warmup": warmup, "subprocess": process, "logf": mock.Mock(),
-                     "cmd": [], "env": {}, "cwd": ".", "si": None, "IS_WIN": False}
+                     "cmd": [], "env": {}, "cwd": ".", "si": None, "IS_WIN": False,
+                     "process_owner": SimpleNamespace(popen=process.Popen)}
         with self.assertRaises(OSError):
             exec(self.spawn_block(), namespace)
         warmup.pause_all.assert_called_once_with("chosen-output")
@@ -116,14 +117,17 @@ class LauncherIntegration(unittest.TestCase):
             with self.subTest(running=running):
                 token = object()
                 warmup = SimpleNamespace(resume_all=mock.Mock())
-                tail = method("launcher/core.py", "GameRun", "_tail", {"warmup": warmup})
+                owner = SimpleNamespace(release=mock.Mock())
+                tail = method("launcher/core.py", "GameRun", "_tail", {"warmup": warmup, "process_owner": owner})
                 game = SimpleNamespace(_warmup_lease=token, _read_tail=mock.Mock(),
-                                       running=mock.Mock(return_value=running))
+                                       running=mock.Mock(return_value=running), proc=object())
                 tail(game)
                 if running:
+                    owner.release.assert_not_called()
                     warmup.resume_all.assert_not_called()
                     self.assertIs(game._warmup_lease, token)
                 else:
+                    owner.release.assert_called_once_with(game.proc)
                     warmup.resume_all.assert_called_once_with(token)
                     self.assertIsNone(game._warmup_lease)
 

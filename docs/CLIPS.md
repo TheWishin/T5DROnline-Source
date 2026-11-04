@@ -14,7 +14,8 @@ power saving. The launcher and runtime both enforce that policy.
 
 ## Design
 
-Runtime patch `0116-clips.patch` follows the previous highest patch, `0115`.
+Runtime patch `0119-clips.patch` follows hidden-game audio (`0118`), preserving
+the rematch tap latch (`0116`) and online borderless (`0117`).
 The feature hooks only the host renderer, host mixer and physical input view.
 It does not write guest memory, consume a game button, change input packets,
 or participate in rollback snapshots, deterministic state hashes or replays.

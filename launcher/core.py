@@ -31,6 +31,10 @@ import gpu_error   # noqa: E402
 # is translated where it is shown. The launcher chooses the language once, at start (apply_language).
 sys.path.append(os.path.join(ROOT, "lobby"))      # (appended: lobby/run.py must not hide another run module)
 try:
+    from t5lobby import process_owner  # launcher-owned games die even if the launcher crashes
+except ImportError:
+    process_owner = None  # Keep incomplete-copy diagnostics usable; game starts fail closed.
+try:
     from t5lobby import i18n  # noqa: E402
     from t5lobby.i18n import N_, t, translate_message  # noqa: E402,F401
     I18N = True
@@ -1268,6 +1272,8 @@ class GameRun:
         self._warmup_lease = None
 
     def start(self, extra_env=None, monitor_point=None):
+        if process_owner is None:
+            raise FileNotFoundError(2, os.strerror(2), os.path.join(ROOT, "lobby", "t5lobby", "process_owner.py"))
         self.gpu_adapter = None     # never diagnose a new run using the previous run's selected adapter
         self.last_lines = []
         env_over = self.settings.env_overrides()
@@ -1275,6 +1281,10 @@ class GameRun:
             env_over["PS3_WINDOW_MONITOR"] = "%d,%d" % monitor_point   # open on the launcher's monitor
         env_over.update(extra_env or {})
         canon_env(env_over)    # one spelling per name before the online filters below look for them
+        # Persistent online games and spectators can wait minimized before they
+        # are shown. Keep their audio pipeline alive, but silence hidden windows.
+        # Enforce this after extra settings, including inherited Windows values.
+        env_over["PS3_AUDIO_MUTE_HIDDEN"] = "1"
         # run_game removes None values from the inherited environment. Otherwise an old Windows
         # T5_REPLAY_DIR would keep recording even when the launcher checkbox is Off.
         env_over["T5_REPLAY_DIR"] = self.settings.replay_dir if self.settings["replays"] else None
@@ -1325,7 +1335,7 @@ class GameRun:
         try:
             # Stop the hidden worker and its game before the player's process can start.
             self._warmup_lease = warmup.pause_all(self.out)
-            self.proc = subprocess.Popen(cmd, env=env, cwd=cwd, stdout=logf, stderr=subprocess.STDOUT,
+            self.proc = process_owner.popen(cmd, env=env, cwd=cwd, stdout=logf, stderr=subprocess.STDOUT,
                                          stdin=subprocess.DEVNULL, startupinfo=si,
                                          creationflags=CREATE_NO_WINDOW if IS_WIN else 0)
         except OSError:
@@ -1357,7 +1367,16 @@ class GameRun:
                 except (OSError, subprocess.TimeoutExpired):
                     pass
             else:
-                kill_tree(self.proc.pid)
+                if IS_WIN and getattr(self.proc, "_t5_job", None) is not None:
+                    # Close the captured job rather than invoking taskkill on a
+                    # PID; shutdown stays bounded even if the renderer is hung.
+                    process_owner.release(self.proc)
+                    try:
+                        self.proc.wait(timeout=self.PLAYBACK_STOP_WAIT)
+                    except (OSError, subprocess.TimeoutExpired):
+                        pass
+                else:
+                    kill_tree(self.proc.pid)
         return not self.running()
 
     def _tail(self):
@@ -1366,6 +1385,7 @@ class GameRun:
         finally:
             # Never restart a hidden game while the real one still runs (including log read failures).
             if not self.running():
+                process_owner.release(self.proc)
                 warmup.resume_all(self._warmup_lease)
                 self._warmup_lease = None
 

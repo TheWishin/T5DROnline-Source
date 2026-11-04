@@ -74,6 +74,7 @@ class RematchFocusTest(unittest.TestCase):
             self.tab.on_driver(note)
 
     def offer(self, **kwargs):
+        self.driver.ingame_rematch = True
         ev = result(**kwargs)
         self.driver.on_event(ev)
         self.driver.ui.ready_at = self.now
@@ -162,6 +163,36 @@ class RematchFocusTest(unittest.TestCase):
         self.tab.launcher_in_front.return_value = True
         self.tab.on_driver({"kind": "game_state", "match": "m2", "state": "loading"})
         self.assert_no_attention()
+
+
+    def test_parked_game_is_revealed_without_activating_over_another_app(self):
+        self.tab.game_in_front.return_value = False
+        with mock.patch.object(winfront, "show_game_window") as show:
+            self.tab._game_forward(("loading", "m2"))
+            self.tab._game_forward(("loading", "m2"))
+        show.assert_called_once_with(4242)
+        self.assert_no_attention()
+
+    def test_parked_game_takes_focus_when_launcher_is_foreground(self):
+        self.tab.game_in_front.return_value = False
+        self.tab.launcher_in_front.return_value = True
+        with mock.patch.object(winfront, "show_game_window") as show:
+            self.tab._game_forward(("loading", "m2"))
+        show.assert_called_once_with(4242)
+        self.tab.bring_game_forward.assert_called_once_with(4242)
+        self.tab.bring_forward.assert_not_called()
+
+    def test_foreground_game_and_background_setting_do_not_restore_game(self):
+        for foreground, background in ((True, False), (False, True)):
+            with self.subTest(foreground=foreground, background=background):
+                self.tab._game_fronted = None
+                self.tab.game_in_front.return_value = foreground
+                self.tab.launcher_in_front.return_value = True
+                self.tab.app.settings["background"] = background
+                with mock.patch.object(winfront, "show_game_window") as show:
+                    self.tab._game_forward(("loading", "m2"))
+                show.assert_not_called()
+                self.assert_no_attention()
 
 
 class ForegroundProcessTest(unittest.TestCase):

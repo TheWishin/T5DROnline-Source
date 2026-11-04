@@ -41,6 +41,8 @@ class PatchSeries(unittest.TestCase):
             "0115-overlay-status-layer.patch",
             "0116-ui-pad-tap-latch.patch",
             "0117-online-borderless.patch",
+            "0118-hidden-game-audio.patch",
+            "0119-clips.patch",
         ]
         self.assertEqual([name for name in names if name >= "0088-"], expected)
 

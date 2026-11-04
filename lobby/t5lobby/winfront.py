@@ -115,6 +115,13 @@ def find_process_window(pid, prefix="ps3recomp"):
 def raise_game_window(pid):
     """The game's window (process `pid`) to the front. -> True when it is the foreground window afterwards."""
     hwnd = find_process_window(pid)
+    if hwnd:
+        try:
+            user32 = ctypes.WinDLL("user32")
+            user32.ShowWindow.argtypes = (ctypes.c_void_p, ctypes.c_int)
+            user32.ShowWindow(hwnd, SW_RESTORE)
+        except (AttributeError, OSError):
+            return False
     return bool(hwnd) and _raise_hwnd(hwnd)
 
 
@@ -134,5 +141,46 @@ def process_in_front(pid):
         foreground_pid = ctypes.c_ulong()
         user32.GetWindowThreadProcessId(hwnd, ctypes.byref(foreground_pid))
         return foreground_pid.value == pid
+    except (AttributeError, OSError):
+        return False
+
+
+def game_in_front(pid):
+    """Whether this game's own window currently owns the foreground."""
+    hwnd = find_process_window(pid)
+    if not hwnd:
+        return False
+    try:
+        user32 = ctypes.WinDLL("user32")
+        user32.GetForegroundWindow.restype = ctypes.c_void_p
+        return user32.GetForegroundWindow() == hwnd
+    except (AttributeError, OSError):
+        return False
+
+
+def hide_game_window(pid):
+    """Park the owned game without activating any other window. The runtime mutes hidden windows."""
+    hwnd = find_process_window(pid)
+    if not hwnd:
+        return False
+    try:
+        user32 = ctypes.WinDLL("user32")
+        user32.ShowWindow.argtypes = (ctypes.c_void_p, ctypes.c_int)
+        user32.ShowWindow(hwnd, 0)  # SW_HIDE; a persistent renderer continues accepting commands
+        return True
+    except (AttributeError, OSError):
+        return False
+
+
+def show_game_window(pid):
+    """Reveal a parked game without taking focus from another application."""
+    hwnd = find_process_window(pid)
+    if not hwnd:
+        return False
+    try:
+        user32 = ctypes.WinDLL("user32")
+        user32.ShowWindow.argtypes = (ctypes.c_void_p, ctypes.c_int)
+        user32.ShowWindow(hwnd, 4)  # SW_SHOWNOACTIVATE
+        return True
     except (AttributeError, OSError):
         return False

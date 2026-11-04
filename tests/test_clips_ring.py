@@ -1,4 +1,4 @@
-"""Compile the exact bounded ring shipped by patch 0116; no game or network."""
+"""Compile the exact bounded ring shipped by patch 0119; no game or network."""
 import os
 from pathlib import Path
 import shutil
@@ -7,7 +7,7 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
-PATCH = ROOT / "patches/ps3recomp/0116-clips.patch"
+PATCH = ROOT / "patches/ps3recomp/0119-clips.patch"
 
 
 def ring_header():
@@ -22,7 +22,7 @@ def ring_header():
         header = Path(tree) / "libs/video/rsx_clips_ring.h"
         if header.is_file():
             return header.read_text(encoding="utf-8-sig")
-    raise FileNotFoundError("patch 0116 or PS3RECOMP_DIR containing rsx_clips_ring.h required")
+    raise FileNotFoundError("patch 0119 or PS3RECOMP_DIR containing rsx_clips_ring.h required")
 
 
 def find_vcvars():

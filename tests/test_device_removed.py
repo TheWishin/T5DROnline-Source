@@ -83,7 +83,7 @@ class DeviceRemoved(unittest.TestCase):
         with mock.patch.object(core.run_game, "game_command", side_effect=ValueError("synthetic stop")) as command:
             with self.assertRaisesRegex(ValueError, "synthetic stop"):
                 run.start()
-        command.assert_called_once_with(ROOT, {"T5_REPLAY_DIR": None})
+        command.assert_called_once_with(ROOT, {"T5_REPLAY_DIR": None, "PS3_AUDIO_MUTE_HIDDEN": "1"})
         self.assertIsNone(run.gpu_adapter)
         self.assertEqual(run.last_lines, [])
 

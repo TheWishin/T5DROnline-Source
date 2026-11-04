@@ -14,6 +14,7 @@ for directory in ("launcher", "tools", "lobby"):
     if path not in sys.path:
         sys.path.append(path)
 import warmup
+from t5lobby import process_owner
 _path = list(sys.path)
 import shader_warmup as worker
 sys.path[:] = _path
@@ -58,7 +59,7 @@ class Background(unittest.TestCase):
         controller = warmup.BackgroundWarmup(self.out)
         proc = Process()
         with mock.patch.object(warmup.sys, "platform", "win32"), \
-                mock.patch.object(warmup.subprocess, "Popen", return_value=proc) as spawn, \
+                mock.patch.object(process_owner, "popen", return_value=proc) as spawn, \
                 mock.patch.object(proc, "wait", side_effect=AssertionError("start waited")):
             self.assertTrue(controller.start())
             self.assertFalse(controller.start())
@@ -73,7 +74,7 @@ class Background(unittest.TestCase):
     def test_pause_stops_worker_before_return_and_resume_restarts(self):
         controller = warmup.BackgroundWarmup(self.out)
         with mock.patch.object(warmup.sys, "platform", "win32"), \
-                mock.patch.object(warmup.subprocess, "Popen", side_effect=[Process(), Process()]) as spawn:
+                mock.patch.object(process_owner, "popen", side_effect=[Process(), Process()]) as spawn:
             controller.start()
             first = controller.proc
             token = controller.pause()
@@ -87,7 +88,7 @@ class Background(unittest.TestCase):
     def test_close_allows_a_later_build_but_does_not_resume_on_its_own(self):
         controller = warmup.BackgroundWarmup(self.out)
         with mock.patch.object(warmup.sys, "platform", "win32"), \
-                mock.patch.object(warmup.subprocess, "Popen", side_effect=[Process(), Process()]) as spawn:
+                mock.patch.object(process_owner, "popen", side_effect=[Process(), Process()]) as spawn:
             controller.start()
             token = controller.pause()
             controller.close()
@@ -107,7 +108,7 @@ class Background(unittest.TestCase):
     def test_old_game_tail_cannot_resume_during_a_new_game(self):
         controller = warmup.BackgroundWarmup(self.out)
         with mock.patch.object(warmup.sys, "platform", "win32"), \
-                mock.patch.object(warmup.subprocess, "Popen", side_effect=[Process(), Process()]) as spawn:
+                mock.patch.object(process_owner, "popen", side_effect=[Process(), Process()]) as spawn:
             controller.start()
             first = controller.pause()
             second = controller.pause()
@@ -167,7 +168,7 @@ class Background(unittest.TestCase):
         with mock.patch.dict(warmup._controllers, {}, clear=True), \
                 mock.patch.dict(warmup._global_holds, {}, clear=True), \
                 mock.patch.object(warmup.sys, "platform", "win32"), \
-                mock.patch.object(warmup.subprocess, "Popen", side_effect=[Process(), Process(), Process()]) as spawn:
+                mock.patch.object(process_owner, "popen", side_effect=[Process(), Process(), Process()]) as spawn:
             self.assertTrue(warmup.start(self.out))
             first = warmup.pause_all()
             self.assertFalse(warmup.start(other_out))
@@ -219,7 +220,7 @@ class Background(unittest.TestCase):
                 mock.patch.object(worker.os.path, "isfile", return_value=True), \
                 mock.patch.object(worker, "exe_stamp", return_value={"size": 1, "mtime": 2}), \
                 mock.patch.object(worker.sys, "platform", "win32"), \
-                mock.patch.object(worker.subprocess, "Popen", side_effect=[Process(), Process()]), \
+                mock.patch.object(process_owner, "popen", side_effect=[Process(), Process()]), \
                 mock.patch("t5lobby.match_driver.Control", Control), \
                 mock.patch.object(worker, "play", side_effect=lambda *a, **kw:
                                   (first_play if not calls else second_play)(*a, **kw)):
@@ -251,12 +252,108 @@ class Background(unittest.TestCase):
                 self.assertRaises(worker.BudgetExpired):
             worker.play(ctl, "status", Process(), worker.fight_lines(1), 3, 1, "pad")
 
+    def test_skip_and_launcher_deadline_stop_the_owned_worker(self):
+        controller = warmup.BackgroundWarmup(self.out)
+        proc = Process()
+        timer = mock.Mock()
+        with mock.patch.object(warmup.sys, "platform", "win32"), \
+                mock.patch.object(process_owner, "popen", return_value=proc), \
+                mock.patch.object(warmup.threading, "Timer", return_value=timer), \
+                mock.patch.object(process_owner, "release") as release:
+            self.assertTrue(controller.start())
+            self.assertTrue(controller.skip())
+            self.assertTrue(os.path.exists(os.path.join(self.out, worker.SKIP_FILE)))
+            self.assertFalse(controller.enabled)
+            controller._expire(proc)
+        self.assertIsNotNone(proc.poll())
+        release.assert_called_once_with(proc)
+
+    def test_hung_owned_worker_is_stopped_by_job_without_pid_kill(self):
+        controller = warmup.BackgroundWarmup(self.out)
+        proc = Process()
+        proc._t5_job = object()
+        controller.proc = proc
+
+        def wait(timeout=None):
+            if proc.poll() is None:
+                raise warmup.subprocess.TimeoutExpired("worker", timeout)
+            return proc.returncode
+
+        with mock.patch.object(proc, "wait", side_effect=wait), \
+                mock.patch.object(process_owner, "release", side_effect=lambda p: p.kill()) as release, \
+                mock.patch.object(warmup.subprocess, "run") as pid_kill:
+            controller._expire(proc)
+        self.assertIsNotNone(proc.poll())
+        pid_kill.assert_not_called()
+        self.assertGreaterEqual(release.call_count, 1)
+        newer = Process()
+        controller.proc = newer
+        controller._expire(proc)  # A cancelled old timer cannot stop a newer queue.
+        self.assertIsNone(newer.poll())
+
+    def test_worker_is_always_hidden_muted_and_cleaned_up_on_every_outcome(self):
+        for outcome in ("success", "skip", "timeout", "error"):
+            with self.subTest(outcome=outcome), tempfile.TemporaryDirectory() as out:
+                proc = Process()
+                args = SimpleNamespace(env=["PS3_AUDIO_MUTE=0", "PS3_WINDOW_BACKGROUND=0", "PS3_WINDOW_HIDDEN=0"],
+                                       force=True, fights=1, fight_seconds=3, minutes=3, background=True)
+
+                def play(*values, **options):
+                    if outcome == "skip":
+                        raise worker.Skipped(0)
+                    if outcome == "timeout":
+                        raise worker.BudgetExpired()
+                    if outcome == "error":
+                        raise ValueError("test failure")
+                    return 1
+
+                with mock.patch.object(worker.run_game, "game_command", return_value=(["host", "program"], {}, out)), \
+                        mock.patch.object(worker.os.path, "isfile", return_value=True), \
+                        mock.patch.object(worker, "exe_stamp", return_value={"size": 1}), \
+                        mock.patch.object(worker.sys, "platform", "win32"), \
+                        mock.patch.object(process_owner, "popen", return_value=proc) as spawn, \
+                        mock.patch.object(process_owner, "release") as release, \
+                        mock.patch("t5lobby.match_driver.Control", Control), \
+                        mock.patch.object(worker, "play", side_effect=play):
+                    if outcome == "error":
+                        with self.assertRaisesRegex(ValueError, "test failure"):
+                            worker.warmup(args, out)
+                    else:
+                        self.assertEqual(worker.warmup(args, out), 0)
+                self.assertIsNotNone(proc.poll())
+                release.assert_called_once_with(proc)
+                env = spawn.call_args.kwargs["env"]
+                for name in ("PS3_AUDIO_MUTE", "PS3_WINDOW_BACKGROUND", "PS3_WINDOW_HIDDEN"):
+                    self.assertEqual(env[name], "1")
+                self.assertEqual(spawn.call_args.kwargs["creationflags"], worker.subprocess.BELOW_NORMAL_PRIORITY_CLASS)
+                self.assertFalse(os.path.exists(os.path.join(out, worker.CHILD_FILE)))
+
     def test_hidden_queue_uses_the_opt_in_runtime_patch(self):
         patch = os.path.join(ROOT, "patches", "ps3recomp", "0105-warmup-hidden.patch")
         with open(patch, encoding="utf-8") as f:
             text = f.read()
         self.assertIn('if (background && !getenv("PS3_WINDOW_HIDDEN"))', text)
         self.assertIn('ShowWindow(s_state.hwnd, SW_SHOWMINNOACTIVE)', text)
+
+    def test_failed_owned_spawn_cannot_leave_an_unknown_child_marker(self):
+        args = SimpleNamespace(env=[], force=True, fights=1, fight_seconds=3,
+                               minutes=3, background=True)
+        child_file = os.path.join(self.out, worker.CHILD_FILE)
+
+        def fail_spawn(*values, **options):
+            self.assertFalse(os.path.exists(child_file))
+            raise OSError("job assignment failed")
+
+        with mock.patch.object(worker.run_game, "game_command", return_value=(["host", "program"], {}, self.out)), \
+                mock.patch.object(worker.os.path, "isfile", return_value=True), \
+                mock.patch.object(worker, "exe_stamp", return_value={"size": 1}), \
+                mock.patch.object(worker.sys, "platform", "win32"), \
+                mock.patch.object(process_owner, "popen", side_effect=fail_spawn), \
+                mock.patch("t5lobby.match_driver.Control", Control):
+            with self.assertRaisesRegex(OSError, "job assignment failed"):
+                worker.warmup(args, self.out)
+        self.assertFalse(os.path.exists(child_file))
+        self.assertTrue(warmup._recover_child(self.out))
 
 
 if __name__ == "__main__":

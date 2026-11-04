@@ -64,7 +64,7 @@ class DriverIngameUITest(unittest.TestCase):
         self.addCleanup(self.directory.cleanup)
         self.client = Client()
         self.driver = MatchDriver(self.client, lambda env: self.fail("must not launch"), self.directory.name,
-                                  mode="persistent", ingame_rematch=False)
+                                  mode="persistent", ingame_rematch=True)
         self.driver.game = Game()
         self.driver.glog = GameLog(None)
         self.driver.glog.connected = True
@@ -320,13 +320,14 @@ class DriverIngameUITest(unittest.TestCase):
         self.assertTrue(ingame_rematch_wanted({"T5_INGAME_REMATCH": "1"}))
         self.assertFalse(ingame_rematch_wanted({"T5_INGAME_REMATCH": "0"}))
 
-    def test_process_mode_decline_closes_the_game_after_the_words(self):
+    def test_process_mode_decline_hands_game_to_launcher_after_the_words(self):
         self.driver.mode = "process"
         self.open()
         self.press("decline")
         self.assertTrue(self.driver.game_running())
         self.tick(CLOSE_SECONDS)
-        self.assertIsNone(self.driver.game)
+        self.assertTrue(self.driver.game_running())
+        self.assertIn("return_to_lobby", self.kinds())  # UI captures foreground, then hides/stops it
 
     def test_process_mode_take_back_racing_a_committed_rematch_keeps_the_game(self):
         # review rematch-ingame-120 P2: accept, the opponent's accept commits the rematch at the server, our take
@@ -342,7 +343,7 @@ class DriverIngameUITest(unittest.TestCase):
         self.tick(CLOSE_SECONDS)
         self.assertTrue(self.driver.game_running())
         self.assertEqual(self.doc()["kind"], "hidden")
-        # without a new match the take back still closes the game after its words
+        # without a new match the take back hands the game back to the launcher after its words
         self.driver._rq = None
         self.driver.rematch_sent.clear()
         self.driver.rematch_declined.clear()
@@ -353,7 +354,8 @@ class DriverIngameUITest(unittest.TestCase):
         self.press("accept")
         self.press("decline", 2)
         self.tick(CLOSE_SECONDS)
-        self.assertIsNone(self.driver.game)
+        self.assertTrue(self.driver.game_running())
+        self.assertIn("return_to_lobby", self.kinds())
 
     def test_skip_fight_line_only_from_authoritative_server_true(self):
         self.assertEqual(fight_rules({"auto_skip_after_round": True}), " auto_skip_after_round=1")

@@ -655,6 +655,10 @@ MESSAGES = {
     "That works, with a few known differences: since 1.1.5 the launcher sets the safe graphics defaults for Wine by itself. A dark blue or black game window (sound playing) means the Proton build does not suit the game: try another one (Proton Experimental, proton-cachyos-slr). See \"Linux and Steam Deck\" in the help.":
         "動作しますが、いくつか既知の違いがあります。1.1.5からランチャーがWine向けの安全なグラフィックス設定を自動で使います。ゲーム画面が濃い青や黒のまま（音は出る）なら、そのProtonビルドはゲームに合っていません。別のもの（Proton Experimental、proton-cachyos-slr）を試してください。ヘルプの「Linux and Steam Deck」を見てください。",
     "This PC: {wine}.": "このPC：{wine}。",
+    "The game's graphics did not start under Wine or Proton": "WineまたはProtonでゲームのグラフィックが起動しませんでした",
+    "Try another Proton build first (in Steam: the game's Properties > Compatibility: Proton Experimental, GE-Proton or proton-cachyos). If that does not help, install Microsoft's shader compiler into the game's prefix: protontricks <the game's Steam id> d3dcompiler_47 (plain Wine: winetricks d3dcompiler_47). Plain Wine also needs vkd3d-proton for Direct3D 12. See \"Linux and Steam Deck\" in the help.":
+        "まず別のProtonを試してください（Steamでゲームのプロパティ > 互換性：Proton Experimental、GE-Proton、proton-cachyos）。それでも直らない場合は、MicrosoftのシェーダーコンパイラーをゲームのPrefixに入れてください：protontricks <ゲームのSteam ID> d3dcompiler_47（Steamを使わないWine：winetricks d3dcompiler_47）。Steamを使わないWineではDirect3D 12のためにvkd3d-protonも必要です。ヘルプの「Linux and Steam Deck」を参照してください。",
+    "Game log: {line}": "ゲームのログ：{line}",
     "Windows Firewall blocks the game": "Windowsファイアウォールがゲームをブロックしています",
     "Online matches then often go through a relay (more lag) or do not connect. Open Windows Security > Firewall & network protection > Allow an app through firewall, and allow t5dr.exe (in {folder}) for private and public networks; or remove the block rule for it there.":
         "その場合、オンライン対戦はリレー経由（遅延が増える）になるか、つながりません。Windows セキュリティ > ファイアウォールとネットワーク保護 > ファイアウォールによるアプリケーションの許可 を開き、t5dr.exe（{folder}内）をプライベートとパブリックのネットワークで許可するか、そこにあるブロックのルールを削除してください。",

@@ -37,12 +37,47 @@ def _ntdll():
     return ctypes.WinDLL("ntdll")
 
 
-def wine_info(nt=None):
-    """{"version", "build", "host", "proton"} when this process runs under Wine (Proton is Wine; ntdll exports
-    wine_get_version only there), else None. "proton": the name of Steam's compatibility tool folder
-    (GE-Proton10-11, proton-cachyos-slr, ...), never the path (it holds the Linux user name). `nt`: ntdll (tests)."""
+# A Wine builtin DLL carries this text right after its DOS header (winebuild writes it; Wine's loader reads it).
+WINE_BUILTIN = b"Wine builtin DLL"
+# The two DLLs the game's picture depends on under Wine (docs/LINUX_STEAM_DECK.md): Direct3D 12 (Proton: vkd3d-proton,
+# a DLL of its own; plain Wine: Wine's own vkd3d, which lacks much of what the game uses) and the HLSL compiler the
+# game compiles every shader with (Wine's own, from vkd3d-shader, unless Microsoft's was installed with
+# winetricks/protontricks d3dcompiler_47). GitHub #26's dark blue window = the game's Direct3D 12 renderer did not start.
+WINE_DLLS = ("d3d12.dll", "d3dcompiler_47.dll")
+
+
+def dll_origin(name, k32=None):
+    """Where this Wine prefix takes `name` from: "wine" (Wine's own builtin), "native" (a DLL of its own:
+    vkd3d-proton's d3d12, Microsoft's compiler), "" (not there). Mapped without running any of it
+    (DONT_RESOLVE_DLL_REFERENCES) and freed again. Only asked under Wine. `k32`: kernel32 (tests)."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+        k32 = k32 or ctypes.WinDLL("kernel32")
+        load, free = k32.LoadLibraryExW, k32.FreeLibrary
+        load.restype = ctypes.c_void_p
+        load.argtypes = [wintypes.LPCWSTR, wintypes.HANDLE, wintypes.DWORD]
+        free.argtypes = [ctypes.c_void_p]
+        h = load(name, None, 0x00000001)
+        if not h:
+            return ""
+        try:
+            return "wine" if ctypes.string_at(h + 0x40, len(WINE_BUILTIN)) == WINE_BUILTIN else "native"
+        finally:
+            free(h)
+    except (AttributeError, OSError, ValueError):
+        return ""
+
+
+def wine_info(nt=None, k32=None):
+    """{"version", "build", "host", "proton", "dlls"} when this process runs under Wine (Proton is Wine; ntdll
+    exports wine_get_version only there), else None. "proton": the name of Steam's compatibility tool folder
+    (GE-Proton10-11, proton-cachyos-slr, ...), never the path (it holds the Linux user name). "dlls": {name:
+    dll_origin} for WINE_DLLS (the launcher shares the game's prefix and DLL overrides, so it sees what the game
+    will load). `nt`: ntdll, `k32`: kernel32 (tests; a stand-in ntdll without k32 asks no DLLs)."""
     if nt is None and os.name != "nt":
         return None
+    probe = nt is None or k32 is not None
     try:
         import ctypes
         nt = nt or _ntdll()
@@ -68,7 +103,55 @@ def wine_info(nt=None):
     tools = [t for t in os.environ.get("STEAM_COMPAT_TOOL_PATHS", "").replace("\\", "/").split(":") if t.strip()]
     names = [os.path.basename(t.rstrip("/")) for t in tools]
     info["proton"] = next((n for n in names if "proton" in n.lower()), names[0] if names else "")
+    if probe:
+        info["dlls"] = {n: dll_origin(n, k32) for n in WINE_DLLS}
     return info
+
+
+def dll_note(dlls):
+    """'d3d12: vkd3d-proton, d3dcompiler_47: Wine's own' for the [wine] line ('' without dlls)."""
+    words = {"d3d12.dll": {"native": "vkd3d-proton (native)", "wine": "Wine's own (vkd3d)", "": "missing"},
+             "d3dcompiler_47.dll": {"native": "Microsoft's (native)", "wine": "Wine's own", "": "missing"}}
+    return ", ".join(f"{n[:-4]}: {words[n].get(dlls[n], dlls[n])}" for n in WINE_DLLS if n in (dlls or {}))
+
+
+def wine_home(env=None):
+    """The Linux home folder as a Windows path ("Z:\\home\\deck") when this process runs under Wine, else None.
+    Wine puts WINEHOMEDIR ("\\??\\Z:\\home\\deck") into every process's environment. Under Proton the prefix's own
+    Desktop/Downloads (C:\\users\\steamuser\\...) are folders deep inside steamapps/compatdata that no player finds:
+    the real ones are under this home."""
+    v = (os.environ if env is None else env).get("WINEHOMEDIR", "")
+    if v.startswith("\\??\\"):
+        v = v[4:]
+    return v if v and os.path.isdir(v) else None
+
+
+XDG_DEFAULTS = {"DESKTOP": "Desktop", "DOWNLOAD": "Downloads", "DOCUMENTS": "Documents"}
+
+
+def wine_user_dirs(home):
+    """{"DESKTOP": path, "DOWNLOAD": path, "DOCUMENTS": path} under the Linux `home` (a Windows path): the
+    folders ~/.config/user-dirs.dirs names (localized ones such as ~/Schreibtisch, as Wine maps them), else
+    ~/Desktop, ~/Downloads, ~/Documents. Only folders that exist."""
+    named = {}
+    try:
+        with open(os.path.join(home, ".config", "user-dirs.dirs"), encoding="utf-8", errors="replace") as f:
+            for line in f:
+                key, _, value = line.strip().partition("=")
+                key = key.strip()
+                if key.startswith("XDG_") and key.endswith("_DIR") and key[4:-4] in XDG_DEFAULTS:
+                    value = value.strip().strip('"')
+                    if value.startswith("$HOME/"):
+                        named[key[4:-4]] = os.path.join(home, *value[6:].split("/"))
+    except OSError:
+        pass
+    out = {}
+    for key, default in XDG_DEFAULTS.items():
+        for p in (named.get(key), os.path.join(home, default)):
+            if p and os.path.isdir(p):
+                out[key] = p
+                break
+    return out
 
 
 _WINE = []
@@ -97,7 +180,8 @@ def wine_note(info, env=None):
     else:
         used = ", ".join(f"{k}={env.get(k, '(unset)')}" + ("" if env.get(k) == v else " (your own setting)")
                          for k, v in WINE_ENV.items())
-    return "[wine] " + " ".join(p for p in parts if p) + f" -- {used}"
+    dlls = dll_note(info.get("dlls"))
+    return "[wine] " + " ".join(p for p in parts if p) + f" -- {used}" + (f" -- {dlls}" if dlls else "")
 
 
 def game_command(out=ROOT, extra_env=None):

@@ -1044,7 +1044,9 @@ From 1.1.5:
 ## Linux and Steam Deck (Wine, Proton)
 
 Linux is not supported, and we have no Linux PC to test on. Some players run
-the Windows release under Proton (Steam) or Wine anyway. This is what they
+the Windows release under Proton (Steam) or Wine anyway. The whole guide (set-up
+in Steam, which Proton, what to try, which log to send, a test checklist) is
+[docs/LINUX_STEAM_DECK.md](LINUX_STEAM_DECK.md). In short, this is what players
 found:
 
 - **From 1.1.5 the launcher detects Wine** and starts the game with
@@ -1063,9 +1065,17 @@ found:
   game's **Properties -> Compatibility**, tick "Force the use of a specific
   Steam Play compatibility tool" and pick proton-cachyos-slr (on CachyOS),
   Proton Experimental or another GE-Proton release. **(untested)**: one
-  player's report.
-- A problem report (**Report a problem**) works there too. In an issue, say
-  which Proton or Wine build you used and which ones you tried.
+  player's report. The dark blue is the empty game window: the game's
+  Direct3D 12 renderer did not start. Since 1.2.0 **Check my problem** finds
+  the reason in the game log (`[rsx] live-draw init FAILED`, `[pso-fail]`)
+  and suggests Microsoft's shader compiler:
+  `protontricks <the game's id> d3dcompiler_47` **(untested)**. The `[wine]`
+  line now also says which Direct3D 12 and which shader compiler the prefix
+  has.
+- A problem report (**Report a problem**) works there too; since 1.2.0 it is
+  saved on your Linux Desktop (not inside Proton's prefix), and the launcher
+  finds the package in your Linux Downloads. In an issue, say which Proton or
+  Wine build you used and which ones you tried.
 
 ## Low frame rate
 

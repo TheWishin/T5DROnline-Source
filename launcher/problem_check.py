@@ -15,6 +15,8 @@ What it looks for (each only where the evidence is):
   two_cores        the processor has 2 cores (i3-3240, i5-4210M: under ~20 frames per second in fights)
   gpu_tier1        the newest game log names a graphics card with resource binding tier 1 (old GT 730 and alike)
   wine             the launcher runs under Wine / Proton (ntdll's wine_get_version)
+  wine_graphics    under Wine / Proton the newest game log shows Direct3D 12 or the shader compiler failing (the
+                   dark blue window, GitHub #26)
 
 Nothing here changes anything, nothing is sent anywhere, and it imports no tkinter: the texts are English
 templates marked N_() with their values; the window translates them.
@@ -59,6 +61,9 @@ RE_UNPACK_STEP = re.compile(r"pkg_extract|unpack", re.I)
 RE_DIALOG = re.compile(r"^\[(?:DIALOG|cellMsgDialog)\].*?(corrupt|damaged|beschädigt)", re.I)
 RE_GPU = re.compile(r"^\[gpu\] adapter: (.+?) \(vendor [0-9A-Fa-f]+, .*?resource binding tier (\d+)")
 RE_WINE_LOG = re.compile(r"^\[wine\] (Wine [^\r\n]*?)(?: --|$)")
+# The game's own lines when Direct3D 12 or the HLSL compiler fails (patched ps3recomp: boot_main.cpp, rsx_live_draw.c)
+RE_WINE_GFX = re.compile(r"^\[rsx\] live-draw init FAILED|^\[display\] present shader compile failed|^\[pso-fail\] "
+                         r"|^\[gpu\] FATAL \(exit code 13\)")
 
 
 class Finding:
@@ -289,7 +294,28 @@ def check_pc(facts, out_dir=None):
                "not suit the game: try another one (Proton Experimental, proton-cachyos-slr). See \"Linux and "
                "Steam Deck\" in the help."),
             N_("This PC: {wine}."), {"wine": wine}, help="linux-and-steam-deck-wine-proton", kind="hint"))
+        out += check_wine_graphics(out_dir)
     return out
+
+
+def check_wine_graphics(out_dir):
+    """Under Wine / Proton: the newest game log says the game's Direct3D 12 renderer did not start, its shaders did
+    not compile or Direct3D 12 is missing. The dark blue window of GitHub #26 is the game window before Direct3D 12
+    draws into it: the renderer did not start."""
+    path = _newest(os.path.join(out_dir, "logs", "game-*.log")) if out_dir else None
+    if not path:
+        return []
+    for ln in _read(path, 8 << 20).splitlines():
+        if RE_WINE_GFX.search(ln):
+            return [Finding(
+                "wine_graphics", N_("The game's graphics did not start under Wine or Proton"),
+                N_("Try another Proton build first (in Steam: the game's Properties > Compatibility: Proton "
+                   "Experimental, GE-Proton or proton-cachyos). If that does not help, install Microsoft's shader "
+                   "compiler into the game's prefix: protontricks <the game's Steam id> d3dcompiler_47 (plain Wine: "
+                   "winetricks d3dcompiler_47). Plain Wine also needs vkd3d-proton for Direct3D 12. See \"Linux and "
+                   "Steam Deck\" in the help."),
+                N_("Game log: {line}"), {"line": ln.strip()[:200]}, help="linux-and-steam-deck-wine-proton")]
+    return []
 
 
 def check_firewall(out_dir, fw=None):

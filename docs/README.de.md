@@ -35,6 +35,16 @@ nicht mit Alt+F4.
   Online-Reiter des Launchers anmelden (oder als Gast spielen), Gegner finden,
   und das Spiel startet direkt im Kampf. Siehe "Online".
 
+## Optional: der Launcher OpenRecomp-FGC
+
+Neben dem T5DR-Launcher im Release-Zip gibt es einen zweiten, freiwilligen
+Launcher: [OpenRecomp-FGC](https://github.com/TheWishin/OpenRecomp-FGC/releases).
+Er startet Tekken 5 DR und Tekken 4 in einem Fenster, mit neuer Online-Seite
+(Spielertabelle, Chat auf jeder Seite, Ranked-Karte), sortierten Einstellungen
+und einer einfacheren Bauen-Seite. Der T5DR-Launcher funktioniert weiter, und
+beide können dieselbe T5DR-Installation benutzen. Online immer nur in einem
+Launcher zur selben Zeit. Community für beide: der OpenRecomp-FGC-Discord.
+
 ## Stand (2026-10-21)
 
 Getestet auf einem Entwicklungs-PC (Windows 11, Ryzen 9 mit 16 Kernen, RTX 3090).

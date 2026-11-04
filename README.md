@@ -37,6 +37,16 @@ and Français (**Settings** -> **Language**).
   play as a guest) in the launcher's Online tab, find an opponent, and the game
   starts directly in the fight. See "Online".
 
+## Optional: the OpenRecomp-FGC launcher
+
+Besides the T5DR launcher in the release zip there is a second, optional
+launcher: [OpenRecomp-FGC](https://github.com/TheWishin/OpenRecomp-FGC/releases).
+It runs Tekken 5 DR and Tekken 4 in one window, with a new Online page (player
+table, chat on every page, ranked card), grouped settings and a simpler Build
+page. The T5DR launcher keeps working, and both can use the same T5DR install.
+Be online in one launcher at a time. Community for both:
+the OpenRecomp-FGC Discord.
+
 ## Status (2026-10-21)
 
 Tested on one development PC (Windows 11, 16-core Ryzen 9, RTX 3090). Online play was

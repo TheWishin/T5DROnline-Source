@@ -4,6 +4,7 @@
  */
 #include "../platform/t5_win.h"
 #include "../platform/t5_game.h"
+#include "../platform/t5_addr.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include "ppu_recomp.h"
@@ -15,8 +16,8 @@
 extern "C" uint8_t* vm_base;
 
 namespace {
-constexpr uint32_t kEvaluate = 0x000EF7BC;
-constexpr uint32_t kFighter[2] = { 0x10090040, 0x10090910 };
+const uint32_t kEvaluate = T5A(0x000EF7BC);
+const uint32_t kFighter[2] = { T5A(0x10090040), T5A(0x10090910) };
 constexpr uint32_t kRole = 0x148;
 constexpr uint32_t kGuestLimit = 0x80000000;
 rb::GuestFn original = nullptr;

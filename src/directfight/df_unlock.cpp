@@ -62,6 +62,7 @@
 #include "sys_ppu_thread.h"
 #include "../rollback/rb_detour.h"
 #include "df.h"
+#include "../platform/t5_addr.h"   /* T5A(): this program's address of a US address (EU Online) */
 
 namespace rb { void calltrace_install(); }   /* rb_detour.cpp: T5_RB_CALLTRACE (diagnostics) */
 extern "C" int t5_replay_unlocks_open(void);  /* src/netplay/replay.cpp: a playback's recorded answer, -1 = no playback */
@@ -69,10 +70,10 @@ extern "C" int t5_replay_unlocks_open(void);  /* src/netplay/replay.cpp: a playb
 namespace unlock {
 namespace {
 
-constexpr uint32_t kFnCheck      = 0x002A732C;   /* (unlock byte & r3) != 0 */
+const uint32_t kFnCheck      = T5A(0x002A732C);   /* (unlock byte & r3) != 0 */
 constexpr uint32_t kFlagStages   = 0x10;         /* the Tekken 5 stages offered */
 constexpr uint32_t kFlagJinpachi = 0x20;
-constexpr uint32_t kUnlockByte   = 0x106849AA;   /* SYS-DATA +0x4A in the save image at 0x10684960 */
+const uint32_t kUnlockByte   = T5A(0x106849AA);   /* SYS-DATA +0x4A in the save image at 0x10684960 */
 /* Tracing only (T5_UNLOCK_TRACE): answering "bought" here makes the shop show EQUIPPED and equip
  * nothing (its equip path searches the list itself), so the setting changes the prices instead.
  * The customization data of each side (VS custom data, 0x106C9934 + side * 0x1F4) starts with
@@ -80,14 +81,14 @@ constexpr uint32_t kUnlockByte   = 0x106849AA;   /* SYS-DATA +0x4A in the save i
  * byte, in the order bought), +0x40 4 u16 the parts worn (HEAD, FACE, BODY up, BODY down; -1
  * none), +0x48 3 u32 bought colours (one bit per colour of COLOR1..3), +0x54 3 u8 the colours
  * worn. Checked by buying with Fight Money poked in (runs shop6/shop9). */
-constexpr uint32_t kFnPartOwned  = 0x0029E754;   /* (side, costume, item id): a part bought */
-constexpr uint32_t kFnColorOwned = 0x0029E7F4;   /* (side, costume, colour category, colour): a colour bought */
+const uint32_t kFnPartOwned  = T5A(0x0029E754);   /* (side, costume, item id): a part bought */
+const uint32_t kFnColorOwned = T5A(0x0029E7F4);   /* (side, costume, colour category, colour): a colour bought */
 /* The price of an item, (character, costume, category, index) -> Fight Money: 0x152A18 picks one
  * of two by category and tail-calls it (the lifted code runs a tail call only after the function
  * returned, from its caller's trampoline), so the two are hooked: parts (HEAD..BODY down) from the per-character table *(0x10076724)[c] of
  * {item id, price}, colours (COLOR1..3). */
-constexpr uint32_t kFnPricePart  = 0x00152918;   /* body of 0x1528F0 (the lifter split it after the prologue) */
-constexpr uint32_t kFnPriceColor = 0x001522C8;
+const uint32_t kFnPricePart  = T5A(0x00152918);   /* body of 0x1528F0 (the lifter split it after the prologue) */
+const uint32_t kFnPriceColor = T5A(0x001522C8);
 
 enum class Mode { Save, Fixed };
 Mode g_mode = Mode::Save;
@@ -265,23 +266,24 @@ void t5_select_trace(void)
     static uint32_t frame = 0, last[9] = { ~0u, ~0u, ~0u, ~0u, ~0u, ~0u, ~0u, ~0u, ~0u };
     frame++;
     for (int p = 0; p < 2; p++) {
-        const uint32_t r = 0x10093F58u + (uint32_t)p * 0x78u;
+        const uint32_t r = T5A(0x10093F58u) + (uint32_t)p * 0x78u;
         const uint32_t v[3] = { df::rd32(r), df::rd8(r + 0x20), df::rd32(r + 0x0C) };
         if (v[0] != last[p * 3] || v[1] != last[p * 3 + 1] || v[2] != last[p * 3 + 2])
             df::note("select trace %u: P%d cell %u state %02X model 0x%X", frame, p + 1, v[0], v[1], v[2]);
         for (int i = 0; i < 3; i++) last[p * 3 + i] = v[i];
     }
     for (int p = 0; p < 2; p++) {
-        const uint32_t w = df::rd32(0x1009007Cu + (uint32_t)p * 0x8D0u);
+        const uint32_t w = df::rd32(T5A(0x1009007Cu) + (uint32_t)p * 0x8D0u);
         if (w != last[6 + p]) df::note("select trace %u: P%d fighter word 0x%08X", frame, p + 1, w);
         last[6 + p] = w;
     }
-    const uint32_t ss = df::rd32(0x1008F070u);
+    const uint32_t ss = df::rd32(T5A(0x1008F070u));
     if (ss != last[8]) df::note("select trace %u: state word %u", frame, ss);
     last[8] = ss;
     if (getenv("T5_SELECT_SCAN")) {   /* (diagnostics) words of the fight block that become 0x0001xxxx */
         static std::vector<uint32_t> prev;
-        const uint32_t a0 = 0x1008E000u, n = 0x17000u / 4;
+        const t5game::Range32 blk = t5game::region(0x1008E000u, 0x17000u);   /* the fight-state block (t5_addr.h) */
+        const uint32_t a0 = blk.addr, n = blk.len / 4;
         if (prev.size() != n) prev.assign(n, 0);
         for (uint32_t i = 0; i < n; i++) {
             const uint32_t v = df::rd32(a0 + i * 4);

@@ -202,6 +202,9 @@ def detour_targets():
         if os.path.basename(p) == "rb_detour.cpp":
             continue
         t = strip_comments(read(p))
+        # Hook slots are indexed by the canonical US address; EU translation
+        # happens only when the runtime installs the detour.
+        t = re.sub(r"\bT5(?:A|_US)\(\s*(0x[0-9A-Fa-f]+u?)\s*\)", r"\1", t)
         consts = {m.group(1): int(m.group(2), 16) for m in re.finditer(r"\b(k\w+)\s*=\s*0x([0-9A-Fa-f]+)", t)}
         arrays = {m.group(1): [int(h, 16) for h in re.findall(r"0x([0-9A-Fa-f]+)", m.group(2))]
                   for m in re.finditer(r"\b(k\w+)\s*\[\s*\]\s*=\s*\{(.*?)\};", t, flags=re.S)}

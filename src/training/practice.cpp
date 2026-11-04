@@ -52,6 +52,7 @@
 #include "rsx_overlay.h"    /* ps3recomp patch 0045: the menu is drawn into training.cpp's list */
 #include "training_logic.h"
 #include "practice_logic.h"
+#include "../platform/t5_addr.h"   /* T5A(): this program's address of a US address (EU Online) */
 
 extern "C" int t5_df_offline_practice(void);
 
@@ -66,19 +67,19 @@ using practice::Settings;
 using practice::Restart;
 
 /* ---- guest memory (NPUB30009 v01.00) ------------------------------------------ */
-constexpr uint32_t kPhase    = 0x1008F070;   /* 17 = the fight runs */
-constexpr uint32_t kGameType = 0x1008EBAC;   /* 10 = Practice */
+const uint32_t kPhase    = T5A(0x1008F070);   /* 17 = the fight runs */
+const uint32_t kGameType = T5A(0x1008EBAC);   /* 10 = Practice */
 constexpr uint32_t kGtPractice = 10;
-constexpr uint32_t kRunning  = 0x1008F083;   /* u8: 1 while the fight runs, 0 while the pause menu is open (and in its first frame) */
-constexpr uint32_t kDummySetting = 0x1008EFF0;   /* low byte (0x1008EFF3): the Practice menu's TRAINING DUMMY (Dummy::setting) */
+const uint32_t kRunning  = T5A(0x1008F083);   /* u8: 1 while the fight runs, 0 while the pause menu is open (and in its first frame) */
+const uint32_t kDummySetting = T5A(0x1008EFF0);   /* low byte (0x1008EFF3): the Practice menu's TRAINING DUMMY (Dummy::setting) */
 /* ... and where the menu puts it when it closes (traced: both 9 after "backward roll", both 10 after
  * CONTROLLER, then the dummy plays P2's pad): the dummy acts on these, the menu shows the one above */
-constexpr uint32_t kDummyApplied[2] = { 0x1008EC60, 0x1008EC64 };   /* low bytes 0x1008EC63, 0x1008EC67 */
-constexpr uint32_t kFighter[2] = { 0x10090030, 0x10090900 };
-constexpr uint32_t kRoundState = 0x1009322C;   /* the round's state machine (read for the log: 17 in Practice, rewritten every frame) */
+const uint32_t kDummyApplied[2] = { T5A(0x1008EC60), T5A(0x1008EC64) };   /* low bytes 0x1008EC63, 0x1008EC67 */
+const uint32_t kFighter[2] = { T5A(0x10090030), T5A(0x10090900) };
+const uint32_t kRoundState = T5A(0x1009322C);   /* the round's state machine (read for the log: 17 in Practice, rewritten every frame) */
 /* the dummy's character, for its recordings' file: the fighter objects (df_costume.cpp kTocFighters), +0x40 the
  * item character index 0..34 (set by the game mode's set-up; read once the fight runs) */
-constexpr uint32_t kTocFighters = 0x0046EE20;
+const uint32_t kTocFighters = T5A(0x0046EE20);
 constexpr uint32_t kFighterItemChar = 0x40;
 
 inline uint32_t rd32(uint32_t a) { uint32_t v; memcpy(&v, vm_base + a, 4); return _byteswap_ulong(v); }

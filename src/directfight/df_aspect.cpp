@@ -24,6 +24,7 @@
 #include "sys_ppu_thread.h"
 #include "../rollback/rb_detour.h"
 #include "df.h"
+#include "../platform/t5_addr.h"   /* T5A(): this program's address of a US address (EU Online) */
 
 #if defined(_WIN32)
 extern "C" void rsx_live_draw_set_3d_crop(float k);   /* ps3recomp patch 0107, rsx_live_draw.c */
@@ -31,9 +32,9 @@ extern "C" void rsx_live_draw_set_3d_crop(float k);   /* ps3recomp patch 0107, r
 
 namespace {
 
-constexpr uint32_t kFnCameraSetup = 0x000816D4;   /* writes the camera's aspect (+0x1E4) from the display's wide flag */
-constexpr uint32_t kFnSetMode = 0x00080F10;      /* set-mode(r3 = 0/2 -> 4:3, else 16:9): camera aspect, the 4:3 / 16:9 camera constants, the draw library's mode (0x15C5FC) */
-constexpr uint32_t kCameraPtr = 0x0046984C;       /* TOC 0x470540 - 0x6CF4: the camera object */
+const uint32_t kFnCameraSetup = T5A(0x000816D4);   /* writes the camera's aspect (+0x1E4) from the display's wide flag */
+const uint32_t kFnSetMode = T5A(0x00080F10);      /* set-mode(r3 = 0/2 -> 4:3, else 16:9): camera aspect, the 4:3 / 16:9 camera constants, the draw library's mode (0x15C5FC) */
+const uint32_t kCameraPtr = T5A(0x0046984C);       /* TOC 0x470540 - 0x6CF4: the camera object */
 constexpr uint32_t kCameraAspect = 0x1E4;
 
 rb::GuestFn o_setup = nullptr, o_mode = nullptr;

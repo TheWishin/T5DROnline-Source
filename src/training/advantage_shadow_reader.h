@@ -15,6 +15,7 @@
 #include <stdint.h>
 #include <string.h>
 #include "advantage_shadow_logic.h"
+#include "../platform/t5_addr.h"   /* T5A(): this program's address of a US address (EU Online) */
 
 namespace training { namespace shadow {
 
@@ -94,7 +95,7 @@ inline bool scalars(const MemoryAccess& mem, uint32_t base, unsigned player,
      * the notes' apparent P2 block 0x10090900. No EU/US shift is applied.
      * AnimFrame is outside the block; HitboxActive differs from known +0x214.
      * The exact supplied MovePtr word is independently contradicted above. */
-    const uint32_t character_address[2] = { 0x100947B3u, 0x1009482Bu };
+    const uint32_t character_address[2] = { T5A(0x100947B3u), T5A(0x1009482Bu) };
     if (!field(mem, base, -0x1C, frame, sizeof frame) ||
         !field(mem, base, 0xC0, length, sizeof length) ||
         !field(mem, base, 0x144, &active, 1) ||

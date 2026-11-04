@@ -1,0 +1,50 @@
+diff --git a/runtime/syscalls/lv2_register.c b/runtime/syscalls/lv2_register.c
+--- a/runtime/syscalls/lv2_register.c
++++ b/runtime/syscalls/lv2_register.c
+@@ -289,6 +289,7 @@ typedef struct {
+     uint32_t tid;            /* thread id (unique across all groups) */
+     uint32_t group_id;       /* parent group */
+     uint32_t index;          /* slot within the group */
++    uint32_t spu_num;        /* the number sys_spu_thread_initialize was given (0..255) */
+     int32_t  exit_status;
+     uint32_t entry_point;    /* initial SPU image entry (informational) */
+     /* Args block passed via sys_spu_thread_initialize (.args_ea) and
+@@ -635,7 +636,10 @@ static int64_t sys_spu_thread_initialize_handler(ppu_context* ctx)
+     uint32_t attr_ea    = (uint32_t)ctx->gpr[7];
+     uint32_t args_ea    = (uint32_t)ctx->gpr[8];
+ 
+-    if (thread_num >= 8) LV2_RET(ctx, CELL_EINVAL);
++    /* spu_num is the kernel's thread-map number, 0..255 (lv2 keeps a 256-entry map), not the slot:
++     * the European "Online" edition of Tekken 5 DR passes 0xFF for its one sound-core thread.
++     * Numbers 0..7 keep their own slot as before; a higher one takes the lowest free slot. */
++    if (thread_num >= 256) LV2_RET(ctx, CELL_EINVAL);
+     if (!attr_ea || !args_ea || !img_ea || !out_tid_ea) LV2_RET(ctx, CELL_EFAULT);
+     if (vm_read_be32(attr_ea + 4) > 0x80) LV2_RET(ctx, CELL_EINVAL);           /* name_len */
+     if (vm_read_be32(attr_ea + 8) & ~0x3u) LV2_RET(ctx, CELL_EINVAL);          /* option */
+@@ -670,12 +674,24 @@ static int64_t sys_spu_thread_initialize_handler(ppu_context* ctx)
+ 
+     spu_group_t* g = spu_find_group(group_id);
+     if (!g) LV2_RET(ctx, CELL_ESRCH);
+-    if (g->state != SPU_GROUP_STATE_NOT_INITIALIZED || (g->init_mask & (1u << thread_num)))
+-        LV2_RET(ctx, CELL_EBUSY);
++    const uint32_t spu_num = thread_num;
++    if (g->state != SPU_GROUP_STATE_NOT_INITIALIZED) LV2_RET(ctx, CELL_EBUSY);
++    if (spu_num >= 8) {
++        for (uint32_t i = 0; i < 8; i++) {
++            if (!(g->init_mask & (1u << i))) continue;
++            const uint32_t idx = g->thread_indices[i];
++            if (idx < MAX_SPU_THREADS && s_spu_threads[idx].spu_num == spu_num) LV2_RET(ctx, CELL_EBUSY);
++        }
++        thread_num = 0;
++        while (thread_num < 8 && (g->init_mask & (1u << thread_num))) thread_num++;
++        if (thread_num >= 8 || thread_num >= g->num_threads) LV2_RET(ctx, CELL_EBUSY);
++    }
++    if (g->init_mask & (1u << thread_num)) LV2_RET(ctx, CELL_EBUSY);
+     spu_thread_t* t = spu_alloc_thread();
+     if (!t) LV2_RET(ctx, CELL_ENOMEM);
+     t->group_id    = group_id;
+     t->index       = thread_num;
++    t->spu_num     = spu_num;
+     t->entry_point = entry;
+     t->img_ea      = img_ea;
+     t->nsegs       = nsegs;

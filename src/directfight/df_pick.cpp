@@ -29,6 +29,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "df.h"
+#include "../platform/t5_addr.h"   /* T5A(): this program's address of a US address (EU Online) */
 
 /* src/netplay/local_pad.cpp: this PC's player's controller -- online the one pressed last, on any port
  * (docs/NETPLAY.md "Which controller plays online") -- in cellPad_sample_local's layout, host-endian
@@ -58,7 +59,7 @@ uint16_t pick_read_local_pad()
 }
 
 /* ---- the name plates (VS custom data, docs/DIRECTFIGHT.md "Names and ranks") -- */
-constexpr uint32_t kTocCustomData = 0x0046ECD0;
+const uint32_t kTocCustomData = T5A(0x0046ECD0);
 constexpr uint32_t kCustomStride  = 0x1F4;
 constexpr uint32_t kCustomRank    = 0x11C;
 constexpr uint32_t kCustomName    = 0x134;

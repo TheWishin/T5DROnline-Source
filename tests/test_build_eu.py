@@ -25,7 +25,9 @@ class ProgramTable(unittest.TestCase):
 
     def test_both_programs(self):
         bg = self.bg
-        self.assertEqual(list(bg.PROGRAMS), [bg.ELF_SHA1, EU_SHA1])         # the US one first (it plays online)
+        # the US one first (it plays online), then EU v01.00 and (1.2.1) the EU Online v02.01 / v02.00 programs
+        self.assertEqual(list(bg.PROGRAMS)[:2], [bg.ELF_SHA1, EU_SHA1])
+        self.assertEqual(len(bg.PROGRAMS), 4)
         self.assertEqual(bg.TITLE_IDS, ("NPUB30009", "NPEA00019"))
         for sha, p in bg.PROGRAMS.items():
             self.assertRegex(sha, r"^[0-9a-f]{40}$")
@@ -33,7 +35,7 @@ class ProgramTable(unittest.TestCase):
                       "spu_extra", "pgo", "online"):
                 self.assertIn(k, p, (sha, k))
             int(p["code_end"], 16)
-            self.assertEqual(p["version"], "01.00")
+            self.assertEqual(p["version"], "01.00" if "sfo" not in p else p["sfo"]["VERSION"])
             for cid in p["content_ids"]:
                 self.assertIn(p["title_id"], cid)
             name, funcs = p["spu_extra"].split("=")
@@ -55,9 +57,9 @@ class ProgramTable(unittest.TestCase):
         self.assertIs(bg.program_of(content_id=bg.CONTENT_ID), bg.US_PROGRAM)
         self.assertIs(bg.program_of(title_id="NPEA00019"), bg.PROGRAMS[EU_SHA1])
         self.assertIsNone(bg.program_of(content_id="UP0000-BLUS00000_00-0000000000000000"))
-        # the European "Online" edition is a known other version, not a supported program
-        self.assertIsNone(bg.program_of(content_id="UP0700-NPEA00019_00-TEKKEN5DRO000000"))
-        self.assertIn("UP0700-NPEA00019_00-TEKKEN5DRO000000", bg.OTHER_VERSIONS)
+        # the European "Online" edition: a supported program since 1.2.1 (test_build_eu_online.py)
+        self.assertEqual(bg.program_of(content_id="UP0700-NPEA00019_00-TEKKEN5DRO000000")["key"], "eu_online200")
+        self.assertNotIn("UP0700-NPEA00019_00-TEKKEN5DRO000000", bg.OTHER_VERSIONS)
 
 
 class EuSteps(unittest.TestCase):
@@ -119,18 +121,19 @@ class EuSteps(unittest.TestCase):
         _, run = self.decrypt_to(b"another EU build")
         with run, self.assertRaises(self.bg.BuildError) as cm:
             self.bg.step_decrypt(self.args(rap=rap))
-        self.assertIn("different version", str(cm.exception))
+        self.assertIn("not one the port knows", str(cm.exception))
         self.assertIn("NPEA00019 v01.00", str(cm.exception))                # names what is supported
         self.assertFalse(os.path.exists(self.bg.P.elf))
 
-    def test_decrypt_names_the_european_online_edition(self):
-        # VERSION 02.00 / APP_VER 01.00 and its own program: the version message before any decrypting
+    def test_decrypt_takes_the_european_online_edition(self):
+        # VERSION 02.00 / APP_VER 01.00 and its own program: decrypted since 1.2.1 (test_build_eu_online.py)
         rap = self.stage("NPEA00019", "UP0700-NPEA00019_00-TEKKEN5DRO000000",
                          {"TITLE": "T5 ONLINE", "TITLE_ID": "NPEA00019", "APP_VER": "01.00", "VERSION": "02.00"})
-        with mock.patch.object(self.bg, "run", lambda *a, **k: self.fail("must not decrypt")), \
-                self.assertRaises(self.bg.BuildError) as cm:
+        calls, run = self.decrypt_to(b"another EU build")
+        with run, self.assertRaises(self.bg.BuildError) as cm:
             self.bg.step_decrypt(self.args(rap=rap))
-        self.assertIn("version 02.00 (Online) of the game", str(cm.exception))
+        self.assertEqual(calls, ["unself.py"])                              # it got as far as decrypting
+        self.assertIn("not one the port knows", str(cm.exception))         # (the fake program is no real one)
 
     def eu_pkg(self):
         pkg = os.path.join(self.tmp.name, "eu.pkg")
@@ -302,11 +305,12 @@ class LauncherLines(unittest.TestCase):
             "  program content ID: UP0700-NPEA00019_00-TEKKEN5DRO000000\nERROR: This package is version 02.00\n")
         with mock.patch.object(self.pc.report, "last_build_failed", lambda d: True):
             found = self.pc.check_build(out)
-        self.assertEqual([f.key for f in found], ["package_version"])
+        self.assertEqual([f.key for f in found], ["eu_online_refused"])
         title, seen, fix = found[0].text()
         self.assertIn("02.00", title)
-        self.assertIn("NPEA00019", fix)
-        self.assertIn("599,050,576", fix)
+        self.assertIn("European Online edition", seen)
+        self.assertIn("press BUILD GAME", fix)
+        self.assertNotIn("599,050,576", fix)  # do not suggest replacing it with EU v01.00
         # the European 01.00 package itself is no version problem
         mkput(os.path.join(out, "build.log"), "[decrypt]\n  PARAM.SFO: T5 / NPEA00019 / version 01.00\n"
             f"  program content ID: {EU_CID}\nERROR: something else\n")

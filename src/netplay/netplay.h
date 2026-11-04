@@ -197,6 +197,7 @@ struct LineInfo {
     char path[16] = {};        /* T5_NET_PATH: direct | lan | relay | "" */
 };
 LineInfo line_info();
+bool cross_program();                            /* the peer is another program (US vs EU Online, HELLO bits 16-19) */
 
 /* While on, the local player's sample is exactly `buttons` (direct-fight menu
  * driving during lockstep; see t5_netplay_inject). */

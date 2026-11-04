@@ -1,0 +1,12 @@
+#pragma once
+#include "__t5_std.h"
+
+/* Declaration-only surface used by the replay viewer command parser. */
+namespace std {
+class istringstream {
+public:
+    explicit istringstream(const string&);
+    istringstream& operator>>(string&);
+    explicit operator bool() const;
+};
+}

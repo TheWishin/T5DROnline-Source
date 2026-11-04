@@ -29,16 +29,29 @@
  *   clang-cl /std:c++17 /EHsc /O1 /Zi /fsanitize=fuzzer,address /DT5_LIBFUZZER tests/c/netplay_fuzz.cpp
  *            /I src/netplay ws2_32.lib  &&  netplay_fuzz.exe -max_total_time=600
  */
+#define NOMINMAX
 #include <cstdio>
+#include <vector>
+#include "../../src/platform/t5_sock.h"
+/* Capture outgoing HELLO bytes without opening or sending through a socket. */
+static std::vector<unsigned char> g_sent;
+static int capture_sendto(SOCKET, const char* bytes, int size, int, const sockaddr*, int)
+{
+    g_sent.assign(bytes, bytes + size);
+    return size;
+}
+#define sendto capture_sendto
 /* netplay's log lines (fprintf(stderr, ...)) go to NUL; the real stderr stays for AddressSanitizer */
 static FILE* g_np_log = nullptr;
 #undef stderr
 #define stderr (g_np_log ? g_np_log : __acrt_iob_func(2))
 #include "../../src/netplay/netplay_core.cpp"
+#undef sendto
 /* the replay recorder netplay_core.cpp calls (docs/REPLAYS.md): off here (no T5_REPLAY_DIR), no zlib */
 #include "../../src/netplay/replay.cpp"
 unsigned char* rp_zlib_compress(const unsigned char*, int, int* n) { *n = 0; return nullptr; }
 unsigned char* rp_zlib_decompress(const unsigned char*, int, int* n) { *n = 0; return nullptr; }
+bool rp_zlib_decompress_into(const unsigned char*, int, unsigned char*, int) { return false; }
 #undef stderr
 #define stderr (__acrt_iob_func(2))
 
@@ -301,6 +314,43 @@ static void check_join_delay_is_clamped()
     CHECK(s.delay == 2, "the host's delay 2 was taken as %d", s.delay);
 }
 
+static void check_program_and_rollback_cost_hello()
+{
+    State& s = S();
+    reset(Mode::Join, false);
+    s.rb_offer = true; s.rb_delay = 2; s.rb_feel = feel::kSmooth;
+    s.sock = 0;   /* stand-in: capture_sendto above never touches Winsock */
+    g_sent.clear();
+    send_hello_locked();
+    s.sock = T5S_INVALID;
+    CHECK(g_sent.size() == sizeof(Hdr) + sizeof(HelloExt) + sizeof(HelloCost),
+          "rollback HELLO must retain its cost extension");
+    HelloExt sent{}; HelloCost cost{};
+    memcpy(&sent, g_sent.data() + sizeof(Hdr), sizeof sent);
+    memcpy(&cost, g_sent.data() + sizeof(Hdr) + sizeof sent, sizeof cost);
+    CHECK(((sent.flags >> kHelloProgramShift) & kHelloProgramMask) == own_program(),
+          "HELLO must also identify our program");
+    CHECK((sent.flags & (kHelloRollback | kHelloRbCost)) == (kHelloRollback | kHelloRbCost) &&
+          ((sent.flags >> 8) & 0xFF) == 2 && cost.feel == feel::kSmooth,
+          "program bits must preserve rollback offer, delay and feel");
+
+    struct { HelloExt x; HelloCost c; } peer = {
+        { 0, 0, (3u << kHelloProgramShift) | kHelloRollback | kHelloRbCost | (4u << 8) },
+        { feel::kResponsive, 6, 9000, 1000, 2000 }
+    };
+    reset(Mode::Join, true);
+    feed(packet(PKT_HELLO, &peer, sizeof peer, true), A);
+    CHECK(s.peer_program == 3 && cross_program(), "EU Online peer must select cross-program hashing");
+    CHECK(s.rb_peer && s.peer_rb_delay == 4 && s.peer_cost_known &&
+          !memcmp(&s.peer_cost, &peer.c, sizeof peer.c), "EU HELLO must also retain the rollback cost");
+
+    reset(Mode::Join, true);
+    HelloExt legacy{ 0, 0, kHelloRollback };
+    feed(packet(PKT_HELLO, &legacy, sizeof legacy, true), A);
+    CHECK(s.peer_program == 1 && !cross_program() && s.rb_peer && !s.peer_cost_known,
+          "legacy US HELLO must still work without program bits or rollback cost");
+}
+
 static std::vector<uint8_t> costume_piece(const std::vector<uint8_t>& table, uint32_t hash, uint32_t k, bool keyed,
                                           uint16_t ack_mask = 0, uint32_t ack_hash = 0)
 {
@@ -520,6 +570,7 @@ int main(int argc, char** argv)
     check_wrong_tags_change_nothing();
     check_replays_do_not_move_the_session();
     check_join_delay_is_clamped();
+    check_program_and_rollback_cost_hello();
     check_costume_tables();
     check_loading_and_bye_reasons();
     check_vrr_budget_excludes_online_frames();

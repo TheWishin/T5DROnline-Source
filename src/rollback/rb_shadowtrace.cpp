@@ -18,6 +18,7 @@
 #include "rb.h"
 #include "rb_detour.h"
 #include "rb_state.h"
+#include "../platform/t5_game.h"   /* us_only: this tracer knows US addresses only */
 
 extern "C" uint8_t* vm_base;
 
@@ -115,6 +116,7 @@ void shadowtrace_install()
     const char* e = getenv("T5_RB_SHADOW_TRACE");
     if (!e || *e != '1') return;
     done = true;
+    if (!t5game::us_only("shadow trace (T5_RB_SHADOW_TRACE)")) return;
     g_log = fopen("rb_shadow.log", "w");
     if (!detour(0x15A3A0u, h_fit, &g_orig)) { note("shadow trace: 0x15A3A0 not detourable"); return; }
     note("shadow trace: the shadow box fit 0x15A3A0 -> rb_shadow.log");

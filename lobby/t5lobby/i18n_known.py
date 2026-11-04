@@ -304,6 +304,13 @@ BUILD_TOOL = (
     N_("This package is version {version} of the game (program content ID {id}). The port supports only version "
        "{supported}: {game}, content ID {cid}, {size} bytes. This version cannot be used, whatever the license "
        "(.rap)."),
+    # 1.2.1: the refusals name the edition the player has and every edition the port builds (docs/EU.md)
+    N_("This package is {edition} (program content ID {id}). The port cannot build this edition, whatever "
+       "the license (.rap): it is another build of the game. The port builds: {supported}."),
+    N_("This package is version {version} of the game (program content ID {id}). The port cannot build this "
+       "version, whatever the license (.rap). The port builds: {supported}."),
+    N_("This copy's program is not one the port knows: \"{title}\" version {version}, content ID {id} (program "
+       "SHA-1 {sha}...). The port builds: {supported}."),
     N_("The license (.rap) does not belong to this package. Use the .rap whose name matches the package's content "
        "ID ({id})."),
     N_("Decrypting the game program failed (see the log above). Tick \"Redo every step\" and press BUILD GAME "

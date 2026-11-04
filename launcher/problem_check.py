@@ -48,8 +48,10 @@ RAP_NAME = "UP0700-NPUB30009_00-UPDATE0000010000.rap"
 # 1.1.9: the European release, version 01.00, builds too (tools/build_game.py PROGRAMS; it plays offline)
 EU_PKG_SIZE = "599,050,576"
 EU_RAP_NAME = "EP9000-NPEA00019_00-0000000000000000.rap"
-OTHER_PROGRAMS = {"UP0700-NPUB30009_00-0000000000000000": "01.01",     # (tools/build_game.py OTHER_VERSIONS)
-                  "UP0700-NPEA00019_00-TEKKEN5DRO000000": "02.00"}     # the European "Online" edition
+OTHER_PROGRAMS = {"UP0700-NPUB30009_00-0000000000000000": "01.01"}     # (tools/build_game.py OTHER_VERSIONS)
+# 1.2.1: the European "Online" edition builds (1.2.0 refused it: "This copy is a different version of the game: ...
+# version 01.00, content ID EP9000-NPEA00019_00-TEKKENRETAIL0000 ... supports only ... NPEA00019 v01.00")
+EU_ONLINE_PROGRAMS = {"UP0700-NPEA00019_00-TEKKEN5DRO000000": "02.00", "EP9000-NPEA00019_00-TEKKENRETAIL0000": "02.01"}
 
 RE_SFO = re.compile(r"PARAM\.SFO: .*? / (\S+) / version (\S+)")
 RE_VERSION_FAIL = re.compile(r"This (?:package|copy) is (?:a different )?version (\d\d\.\d\d)"
@@ -111,9 +113,22 @@ def check_build(out_dir):
         ver = m.group(2)
     for m in RE_VERSION_FAIL.finditer(text):
         ver = m.group(1) or m.group(2) or ver
+    eu_online = None
     for pid in RE_PROGRAM_ID.findall(text):
         if pid in OTHER_PROGRAMS:
             ver = OTHER_PROGRAMS[pid]
+        if pid in EU_ONLINE_PROGRAMS:
+            eu_online = EU_ONLINE_PROGRAMS[pid]
+    if eu_online and RE_VERSION_FAIL.search(text):
+        # an earlier version's refusal of a package this version builds
+        out.append(Finding(
+            "eu_online_refused", N_("Your package is the European Online edition (version {version})"),
+            N_("Earlier versions of the launcher did not build it. This one does: choose the package and its license "
+               "on the Build tab and press BUILD GAME. It plays offline, and online against other European Online "
+               "games."),
+            N_("build.log: an earlier build refused the European Online edition (version {version})."),
+            {"version": eu_online}, kind="hint"))
+        return out
     if ver and ver != SUPPORTED_VERSION:
         out.append(Finding(
             "package_version", N_("Your game package is version {version}"),
@@ -151,11 +166,20 @@ def check_edition(out_dir):
     """1.1.9: a game built from the European release (build stamp "title": NPEA00019) plays offline only for now."""
     try:
         with open(os.path.join(out_dir, "build", "t5dr_build.json"), encoding="utf-8") as f:
-            title = json.load(f).get("title")
+            stamp = json.load(f)
+        title, version = stamp.get("title"), stamp.get("version", "")
     except (OSError, ValueError, AttributeError):
         return []
     if not title or title == "NPUB30009":
         return []
+    if str(version).startswith("02."):
+        return [Finding(
+            "eu_online", N_("Your game is the European Online edition"),
+            N_("The European Online edition ({title_id} version {version}) plays its offline modes, and online "
+               "against players who have the European Online edition too. European and US games do not play each "
+               "other online."),
+            N_("Build stamp: the game is {title_id} version {version}."), {"title_id": title, "version": version},
+            kind="hint")]
     return [Finding(
         "eu_offline", N_("Your game is the European version: offline only for now"),
         N_("The European version ({title_id}) plays its offline modes. Online play for it comes in a later update; "

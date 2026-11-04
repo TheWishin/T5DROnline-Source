@@ -31,6 +31,7 @@
 
 #include "sys_ppu_thread.h"     /* ppu_context */
 #include "lv2_syscall_table.h"  /* g_lv2_syscalls */
+#include "../platform/t5_addr.h"   /* T5A(): this program's address of a US address (EU Online) */
 namespace rb {   /* src/rollback/rb_hooks.cpp (diagnostics: T5_DF_GUARD) */
 uint32_t guest_of_host(uintptr_t host_pc, uint32_t* off);
 std::string guest_backtrace(int max);
@@ -62,10 +63,10 @@ typedef int64_t (*df_lv2_fn)(ppu_context*);
 namespace df {
 
 /* ---- guest addresses (NPUB30009 v01.00) ---------------------------------- */
-constexpr uint32_t kTOC          = 0x470540;
-constexpr uint32_t kFrameSemPtr  = 0x106D4A30;   /* graphics object + 0x30: per-frame semaphore id */
-constexpr uint32_t kFrameClock   = 0x106D4D88;   /* u64 frame clock */
-constexpr uint32_t kVtModeMgr    = 0x10050054;   /* tcb_mode_manager_t vtable (heap object found by scan) */
+const uint32_t kTOC          = T5A(0x470540);
+const uint32_t kFrameSemPtr  = T5A(0x106D4A30);   /* graphics object + 0x30: per-frame semaphore id */
+const uint32_t kFrameClock   = T5A(0x106D4D88);   /* u64 frame clock */
+const uint32_t kVtModeMgr    = T5A(0x10050054);   /* tcb_mode_manager_t vtable (heap object found by scan) */
 constexpr uint32_t kModeReq      = 0x58;         /* mode manager + 0x58: {cur, next (0xE = none), prev}, param at +0x64 */
 constexpr uint32_t kModeNone     = 0xE;
 constexpr uint32_t kHeapBase     = 0x40000000, kHeapLen = 0x05F00000;
@@ -187,7 +188,7 @@ std::vector<std::pair<uint32_t, uint32_t>> g_watch;   /* addr, last value */
 /* T5_DF_STARTVS=N: N frames after the title mode starts, call the game's own
  * "start game type" routine func_0004E9DC(4 = VS BATTLE, 3 = both players) */
 int g_startvs = -1; uint32_t g_title_frame = UINT32_MAX; bool g_startvs_done = false;
-constexpr uint32_t kFnStartGame = 0x0004E9DC;
+const uint32_t kFnStartGame = T5A(0x0004E9DC);
 /* T5_DF_SHOT=f1,f2,...: frame-exact screenshots through the live renderer's LD_SURF_DUMP_GATE.
  * An entry "+n" is n frames after FIGHT START of the first match (the frame
  * numbers from boot differ with loading times; counted from the fight start
@@ -603,7 +604,7 @@ void on_frame(ppu_context* ctx)
             g_startvs_done = true;
             note("frame %u: calling start-game(4 VS, 3) from the title mode", f);
             ppu_guest_call_ct(kFnStartGame, kTOC, 4, 3, 0, 0, 0, 0, 0, 0);
-            note("frame %u: start-game returned; game type now %u, mode next=%u", f, rd32(0x1008EBAC), rd32(g_mgr + kModeReq + 4));
+            note("frame %u: start-game returned; game type now %u, mode next=%u", f, rd32(T5A(0x1008EBAC)), rd32(g_mgr + kModeReq + 4));
         }
     }
     shot(f);

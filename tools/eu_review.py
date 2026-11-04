@@ -19,14 +19,16 @@ import sys
 import addr_map
 
 EU_CONTENT_ID = "UP0700-NPEA00019_00-TEKKEN5DRO000000"
-PROGRAMS = {"us": "be80165b84e30b6334baa6d6331b9db4ffd5a6a4",
-            "eu": "a26bc6e037e5a8faf40250849acfa8a40d027fff"}
+# v02.01 (EP9000 ... TEKKENRETAIL0000, licence by .rap) is the v02.00 program with three bytes changed (docs/EU.md)
+EU_CONTENT_IDS = (EU_CONTENT_ID, "EP9000-NPEA00019_00-TEKKENRETAIL0000")
+PROGRAMS = {"us": ("be80165b84e30b6334baa6d6331b9db4ffd5a6a4",),
+            "eu": ("a26bc6e037e5a8faf40250849acfa8a40d027fff", "ff07efe07be23a30e37601049f4e849ddc2cff02")}
 
 
 def checked_program(path, region):
     path = addr_map.outside_repository(path)
     digest = hashlib.sha1(path.read_bytes()).hexdigest()
-    if digest != PROGRAMS[region]:
+    if digest not in PROGRAMS[region]:
         raise ValueError(f"{region}: decrypted program SHA-1 does not match docs/EU.md; stop")
     return path
 
@@ -50,7 +52,7 @@ def extract(a):
     package = addr_map.outside_repository(a.package)
     deps = addr_map.outside_repository(a.deps)
     scratch = addr_map.outside_repository(a.scratch)
-    if package_id(package) != EU_CONTENT_ID:
+    if package_id(package) not in EU_CONTENT_IDS:
         raise ValueError("package content ID is not the documented EU Online edition")
     env = dict(os.environ)
     keys = a.keys or env.get("T5DR_KEYS")
@@ -59,9 +61,9 @@ def extract(a):
     scratch.mkdir(parents=True, exist_ok=False)
     for name in ("PARAM.SFO", "EBOOT.BIN"):
         run_tool(deps, "pkg_extract", [package, scratch / "package", "--only", name], scratch, env)
-    print("Extracted privately. Verify PARAM.SFO: TITLE_ID NPEA00019, VERSION 02.00, APP_VER 01.00.")
-    print("STOP: tools/unself.py requires a RAP and has no free-licence path. The owner must decrypt locally")
-    print("with a verified free-licence method, then use compare. Do not invent a RAP or copy any file here.")
+    print("Extracted privately. Verify PARAM.SFO: TITLE_ID NPEA00019, VERSION 02.00 or 02.01, APP_VER 01.00.")
+    print("Decrypt privately with tools/unself.py: v02.01 with its .rap; v02.00 (free licence) needs NP_KLIC_FREE")
+    print("in the local keys file. Then use compare. Do not copy any game file into this repository.")
 
 
 def source_inventory(directory, source_root=None):

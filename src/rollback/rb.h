@@ -4,6 +4,7 @@
 #include "../platform/t5_win.h"
 #include <stdint.h>
 #include <string>
+#include "../platform/t5_addr.h"   /* T5A(): this program's address of a US address (EU Online) */
 
 struct ppu_context;
 
@@ -12,8 +13,8 @@ namespace rb {
 enum class Mode { Off, Measure, Test, Net };   /* Net: T5_RB_MODE=net, the rollback netplay loop (rb_net.cpp) */
 
 /* guest addresses (NPUB30009 v01.00; see np's t5_hooks.cpp) */
-constexpr uint32_t kFrameSemPtr = 0x106D4A30;   /* graphics object + 0x30: per-frame semaphore id */
-constexpr uint32_t kFrameClock  = 0x106D4D88;   /* u64 frame clock, +8 vblank count */
+inline const uint32_t kFrameSemPtr = T5A(0x106D4A30);   /* graphics object + 0x30: per-frame semaphore id */
+inline const uint32_t kFrameClock  = T5A(0x106D4D88);   /* u64 frame clock, +8 vblank count */
 
 struct PadInput {
     uint16_t buttons;

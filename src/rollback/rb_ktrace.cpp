@@ -39,6 +39,7 @@
 #include "lv2_syscall_table.h"
 #include "rb.h"
 #include "rb_detour.h"
+#include "../platform/t5_game.h"   /* us_only: this tracer knows US addresses only */
 
 extern "C" uint8_t* vm_base;
 extern "C" void ps3_indirect_call_direct(ppu_context* ctx, uint32_t target);
@@ -257,6 +258,7 @@ void ktrace_install()
     done = true;
     const char* e = getenv("T5_RB_KTRACE");
     if (!e || !*e || *e == '0') return;
+    if (!t5game::us_only("kernel-object tracer (T5_RB_KTRACE)")) return;
     g_level = atoi(e);
     if (g_level < 1) g_level = 1;
     InitializeCriticalSection(&g_kt_cs);

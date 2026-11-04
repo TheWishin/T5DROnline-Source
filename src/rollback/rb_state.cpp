@@ -11,6 +11,7 @@
 
 #include "rb.h"
 #include "rb_state.h"
+#include "../platform/t5_addr.h"   /* T5A(): this program's address of a US address (EU Online) */
 
 extern "C" uint8_t* vm_base;
 extern "C" int cellGcm_pump_hold(int on, unsigned timeout_ms);   /* ps3recomp patch 0029 */
@@ -53,7 +54,7 @@ const Range kExclude[] = {
      * docs/ROLLBACK.md section 26). Neither saved nor restored now; the write
      * pointer in CellGcmContextData is kept across restores (kKeepWords). */
     { 0x40100000u, 0x00400000u },
-    { 0x10114000u, 0x00058000u },   /* sound core mix/output area (bnusCore) */
+    { T5REG(0x10114000u, 0x00058000u) },   /* sound core mix/output area (bnusCore) */
     { 0x40000000u, 0x00100000u },   /* first heap chunk: sound system voice slots, requests, shared areas (sound threads) */
     { 0x45F00000u, 0x00100000u },   /* decoder / streaming */
     /* The NU::File request manager: its file device (0x10750488) with the
@@ -71,7 +72,7 @@ const Range kExclude[] = {
      * pure virtual -> abort), file handles were never closed (fds 4, 5, 6),
      * reads and closes failed for want of a slot (docs/ROLLBACK.md section 32).
      * Not saved, not restored: the file system is not the match. */
-    { 0x10750000u, 0x00002000u },
+    { T5REG(0x10750000u, 0x00002000u) },
 };
 const size_t kExcludeN = sizeof kExclude / sizeof kExclude[0];
 /* Bytes inside pages that otherwise stay in the state which a restore leaves
@@ -89,15 +90,15 @@ const Range kKeepLive[] = {
      * writes +0x42C/+0x480/+0x494. A restore gave the thread back a handle it
      * had closed and lost the one it held (write-fault trace w1). The rest of
      * the two pages stays in the state. */
-    { 0x106CECD0u, 0x000005B8u },
+    { T5REG(0x106CECD0u, 0x000005B8u) },
     /* The graphics object's frame counter (0x106D4A00 + 0x28C): the present (0x34B9D8) stores it into label 0xFD
      * and puts a semaphore ACQUIRE of counter + 1 into the GCM ring, which the FIFO walker waits for since ps3recomp
      * patch 0085. The ring is not in the state and keeps every frame's acquire; a restored counter made the
      * re-simulated frames put acquires of values the label had already passed, and the walker waited for each
      * (GCM_SEMA_ACQUIRE_MS, 200 ms). Kept live it only ever counts up, live or re-simulated, as the ring does.
      * The main thread is its only writer; not in either hash. */
-    { 0x106D4C8Cu, 0x00000004u },
-    { 0x10752000u, 0x00000040u },   /* the file manager's node pool, its last 0x34 bytes (the page's other words are the main thread's lwmutexes and draw handshake) */
+    { T5REG(0x106D4C8Cu, 0x00000004u) },
+    { T5REG(0x10752000u, 0x00000040u) },   /* the file manager's node pool, its last 0x34 bytes (the page's other words are the main thread's lwmutexes and draw handshake) */
 };
 /* ...and the walker takes that label as a count (patch 0085, cellGcm_set_sema_acquire_geq): an ACQUIRE of v is
  * satisfied by any count at or past v. A re-simulated frame runs its present without waiting for a flip, so the
@@ -106,8 +107,8 @@ const Range kKeepLive[] = {
 struct SemaCount { SemaCount() { cellGcm_set_sema_acquire_geq(1); } } g_sema_count;
 const Range kHashExclude[] = {
     { 0x0FEF0000u, 0x00010000u },   /* main thread stack: only the present chain's locals live there at the boundary */
-    { 0x10532000u, 0x00001000u },   /* engine bookkeeping: request counters, vblank copies (follow the draw phase) */
-    { 0x10750000u, 0x00003000u },   /* NU::File::RequestManager object and request list (requests issued by the draw) */
+    { T5REG(0x10532000u, 0x00001000u) },   /* engine bookkeeping: request counters, vblank copies (follow the draw phase) */
+    { T5REG(0x10750000u, 0x00003000u) },   /* NU::File::RequestManager object and request list (requests issued by the draw) */
     { 0x400CA000u, 0x00011000u },   /* per-frame handoff ring written by the main thread (slot state follows the consumer) */
     { 0x40100000u, 0x00400000u },   /* GCM command buffer ring (cellGcmInit: begin 0x40100000, end 0x40500000) */
     { 0x43D00000u, 0x00340000u },   /* draw lists, buffers A (0x43D00000) and B (0x43EA0000), with their link pages */
@@ -189,17 +190,17 @@ void state_add_hash_exclude(uint32_t ea, uint32_t len) { g_hash_exclude_dyn.push
  * out of the hash (still restored with their page). */
 struct Mask { uint32_t ea, len; };
 static const Mask kMask[] = {
-    { 0x106D4D90u, 0x18 },   /* vblank counter (vblank handler) + the copies present takes */
-    { 0x106D4520u, 0xF0 },   /* render duration / GCM timestamp statistics */
-    { 0x105320C4u, 0x04 },   /* vblank counter copies kept by side threads */
-    { 0x10624720u, 0x30 },   /* frame duration statistics (microseconds, vblank counts) */
-    { 0x1074F9F8u, 0x08 },   /* a timebase (mftb) stamp taken every frame */
+    { T5REG(0x106D4D90u, 0x18) },   /* vblank counter (vblank handler) + the copies present takes */
+    { T5REG(0x106D4520u, 0xF0) },   /* render duration / GCM timestamp statistics */
+    { T5REG(0x105320C4u, 0x04) },   /* vblank counter copies kept by side threads */
+    { T5REG(0x10624720u, 0x30) },   /* frame duration statistics (microseconds, vblank counts) */
+    { T5REG(0x1074F9F8u, 0x08) },   /* a timebase (mftb) stamp taken every frame */
     { 0x0F800008u, 0x04 },   /* CellGcmContextData.current: the FIFO write pointer */
-    { 0x106D4A44u, 0x04 },   /* graphics object: flip/present pending flag (render handshake) */
-    { 0x106D4BE0u, 0x10 },   /* vblank callback list lock: owner is the ticker thread at times */
-    { 0x106CF0F8u, 0x10 },   /* the music stream object's +0x428..+0x437 (bnusCoreUpdateThread advances them; kKeepLive now) */
-    { 0x1062E454u, 0x08 },   /* engine statistics (two floats following the frame time) */
-    { 0x10053800u, 0x100 },  /* 15 objects' double-buffer index (1/2): follows the flip, not the sim */
+    { T5REG(0x106D4A44u, 0x04) },   /* graphics object: flip/present pending flag (render handshake) */
+    { T5REG(0x106D4BE0u, 0x10) },   /* vblank callback list lock: owner is the ticker thread at times */
+    { T5REG(0x106CF0F8u, 0x10) },   /* the music stream object's +0x428..+0x437 (bnusCoreUpdateThread advances them; kKeepLive now) */
+    { T5REG(0x1062E454u, 0x08) },   /* engine statistics (two floats following the frame time) */
+    { T5REG(0x10053800u, 0x100) },  /* 15 objects' double-buffer index (1/2): follows the flip, not the sim */
     { 0x40049210u, 0x04 },   /* double-buffer selector (0x10/0x20): follows the flip */
 };
 static std::vector<Mask> g_mask_dyn;
@@ -243,9 +244,9 @@ uint64_t state_hash() { return g_hash; }
 
 /* the netplay desync check's regions and skips (t5_hooks.cpp), kept in sync by hand */
 static const Range kGame[] = {
-    { 0x10099F24u, 0x70 }, { 0x104CCDFCu, 0x40 }, { 0x106D4D88u, 0x8 }, { 0x10095168u, 0x9C0 }, { 0x10053578u, 0x4 },
-    { 0x10076920u, 0x4 }, { 0x1074F218u, 0x10C }, { 0x1008E000u, 0x4000 }, { 0x10099600u, 0x600 }, { 0x100A0900u, 0x200 },
-    { 0x100A3B00u, 0x300 },
+    { T5REG(0x10099F24u, 0x70) }, { T5REG(0x104CCDFCu, 0x40) }, { T5REG(0x106D4D88u, 0x8) }, { T5REG(0x10095168u, 0x9C0) }, { T5REG(0x10053578u, 0x4) },
+    { T5REG(0x10076920u, 0x4) }, { T5REG(0x1074F218u, 0x10C) }, { T5REG(0x1008E000u, 0xB80) }, { T5REG(0x1008EB80u, 0x550) }, { T5REG(0x1008F0D0u, 0x2F30) }, { T5REG(0x10099600u, 0x600) }, { T5REG(0x100A0900u, 0x200) },
+    { T5REG(0x100A3B00u, 0x300) },
 };
 static const Range kGameSkip[] = {
     /* the C library rand() word (0x369228's state, from the TOC): consumed by a
@@ -254,33 +255,33 @@ static const Range kGameSkip[] = {
      * be part of the deterministic fight -- the netplay runs stayed in sync
      * while it diverged, and it was the only word behind every stage-specific
      * mismatch of the draw-cut test (docs/ROLLBACK.md section 12) */
-    { 0x1074F218u, 4 },
+    { T5REG(0x1074F218u, 4) },
     /* the stage id word, re-rolled from that rand() at the second round's
      * intro (frame 5726 of every l0/k150 run: 0x13 on one peer, 0x1A on the
      * other, nothing else differing for the rest of the match) */
-    { 0x1008F088u, 4 },
+    { T5REG(0x1008F088u, 4) },
     /* set at a match intro, different per peer, the fight unchanged (runs
      * m50c, m0c): +0x830 of each fighter block (a pointer into 0x10670000)
      * and a unit vector at 0x100A0A10 */
-    { 0x10090030u, 4 }, { 0x10090900u, 4 }, { 0x100A0A00u, 0x80 },
+    { T5REG(0x10090030u, 4) }, { T5REG(0x10090900u, 4) }, { T5REG(0x100A0A00u, 0x80) },
     /* the same pointer in the third and fourth 0x8D0 block, and twenty heap
      * pointers at 0x10091AB8: pool addresses the animation update takes at a
      * match intro; they differ in plain lockstep too (rollback10 e1lock) */
-    { 0x100911D0u, 4 }, { 0x10091AA0u, 4 }, { 0x10091AB8u, 0x50 },
+    { T5REG(0x100911D0u, 4) }, { T5REG(0x10091AA0u, 4) }, { T5REG(0x10091AB8u, 0x50) },
     /* (0x1008F0C4, the scene's LCG, is hashed since desync hunt 2 -- t5_hooks.cpp) */
-    { 0x1008F0D0u, 4 }, { 0x1008FF00u, 0xC }, { 0x1008FFB0u, 0xC }, { 0x1008FFF0u, 0xC },
-    { 0x100901B4u, 4 }, { 0x100901E0u, 4 }, { 0x10090314u, 4 }, { 0x10090870u, 8 },
-    { 0x10090A84u, 4 }, { 0x10090AB0u, 4 }, { 0x10090BE4u, 4 }, { 0x10091140u, 8 },
+    { T5REG(0x1008F0D0u, 4) }, { T5REG(0x1008FF00u, 0xC) }, { T5REG(0x1008FFB0u, 0xC) }, { T5REG(0x1008FFF0u, 0xC) },
+    { T5REG(0x100901B4u, 4) }, { T5REG(0x100901E0u, 4) }, { T5REG(0x10090314u, 4) }, { T5REG(0x10090870u, 8) },
+    { T5REG(0x10090A84u, 4) }, { T5REG(0x10090AB0u, 4) }, { T5REG(0x10090BE4u, 4) }, { T5REG(0x10091140u, 8) },
     /* camera state, different between two PCs for 100 frames about 20 s into a
      * match (fight-polish) and for 21 frames from a KO camera (cross-cpu; in
      * lockstep too, more often under rollback); the fight unchanged
      * (t5_hooks.cpp kDefaultHashSkip) */
-    { 0x10099730u, 0x1F0 }, { 0x10099920u, 0x1F0 }, { 0x10090708u, 8 }, { 0x10090FD8u, 8 },
+    { T5REG(0x10099730u, 0x1F0) }, { T5REG(0x10099920u, 0x1F0) }, { T5REG(0x10090708u, 8) }, { T5REG(0x10090FD8u, 8) },
     /* the renderer's current projection record (type, near, far, aspect,
      * off-centre frustum): written only by the projection setters in render
      * passes -- in a fight last by the stage-27 shadow pass -- and read by no
      * game code (access trace; t5_hooks.cpp kDefaultHashSkip) */
-    { 0x100996B4u, 0x24 },
+    { T5REG(0x100996B4u, 0x24) },
     /* (the fighters' side flags 0x10090202/03 and 0x10090AD2/D3, decided from
      * the camera words above, stay in: they are gameplay -- t5_hooks.cpp) */
 };
@@ -584,17 +585,17 @@ static void job_pages_forget()
 static void job_gate()
 {
     if (!g_job_lines && !g_render_drop) return;
-    uint32_t ph; memcpy(&ph, vm_base + 0x1008F070u, 4);
-    const bool fight = _byteswap_ulong(ph) == 17 && vm_base[0x1008EBD5u] == 0 && !g_job_spent;
+    uint32_t ph; memcpy(&ph, vm_base + T5A(0x1008F070u), 4);
+    const bool fight = _byteswap_ulong(ph) == 17 && vm_base[T5A(0x1008EBD5u)] == 0 && !g_job_spent;
     if (fight == g_job_active) return;
     if (fight) { if (g_job_lines) spurs_job_put_reset(); g_job_active = true; }
     else {
         const uint32_t n = state_job_pages();
         job_pages_forget(); g_job_active = false;
-        if (vm_base[0x1008EBD5u] != 0) g_job_spent = true;   /* decided (a round end only pauses it) */
+        if (vm_base[T5A(0x1008EBD5u)] != 0) g_job_spent = true;   /* decided (a round end only pauses it) */
         static int notes = 0;
         if (notes++ < 8) note("state: the fight is over (phase %u, decided %u): the %u job-filled pages are state again until the next barrier",
-                              _byteswap_ulong(ph), vm_base[0x1008EBD5u], n);
+                              _byteswap_ulong(ph), vm_base[T5A(0x1008EBD5u)], n);
     }
 }
 void state_drop_logs()

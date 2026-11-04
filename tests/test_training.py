@@ -143,7 +143,7 @@ class ReadOnlyTest(unittest.TestCase):
                    # shadow_read_memory: read-only full-span checks are also covered by
                    # test_training_advantage_shadow.SourceContracts.
                    r"^const\s+uintptr_t\s+base\s*=\s*\(uintptr_t\)vm_base$",
-                   r"^fwrite\(\s*vm_base\s*\+\s*0x[0-9A-Fa-f]+u?\s*,\s*1\s*,\s*(0x[0-9A-Fa-f]+|\d+)\s*,\s*g_cfg\.trace\s*\)$",
+                   r"^fwrite\(\s*vm_base\s*\+\s*T5_US\(0x[0-9A-Fa-f]+u?\)\s*,\s*1\s*,\s*(0x[0-9A-Fa-f]+|\d+)\s*,\s*g_cfg\.trace\s*\)$",
                    # T5_TRAINING_TRACE_RANGES: page by page, uncommitted pages as zeros (trace_range)
                    r"^const\s+bool\s+ok\s*=\s*VirtualQuery\(\s*vm_base\s*\+\s*a\s*,\s*&mi\s*,\s*sizeof\s+mi\s*\)",
                    r"^fwrite\(\s*ok\s*\?\s*\(const void\*\)\(vm_base\s*\+\s*a\)\s*:\s*\(const void\*\)zero\s*,\s*1\s*,"

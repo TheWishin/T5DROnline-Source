@@ -49,6 +49,7 @@
 #include "rsx_overlay.h"    /* ps3recomp patch 0045 */
 #include "training_logic.h"
 #include "advantage_shadow_reader.h"
+#include "../platform/t5_addr.h"   /* T5A(): this program's address of a US address (EU Online) */
 
 extern "C" void rsx_live_draw_sync(void);       /* patch 0067: drain a handed-off present before uncovering */
 extern "C" int t5_netplay_enabled(void);       /* src/netplay/t5_hooks.cpp */
@@ -65,9 +66,9 @@ namespace {
 using namespace training;
 
 /* ---- guest memory, read only (NPUB30009 v01.00) -------------------------- */
-constexpr uint32_t kPhase    = 0x1008F070;   /* fight phase: 17 = the fight runs (round intros included) */
-constexpr uint32_t kGameType = 0x1008EBAC;   /* battle config +0: 0 arcade, 1 ghost, 2 demo, 4 VS, 9 survival, 10 practice */
-constexpr uint32_t kFighter[2] = { 0x10090030, 0x10090900 };
+const uint32_t kPhase    = T5A(0x1008F070);   /* fight phase: 17 = the fight runs (round intros included) */
+const uint32_t kGameType = T5A(0x1008EBAC);   /* battle config +0: 0 arcade, 1 ghost, 2 demo, 4 VS, 9 survival, 10 practice */
+const uint32_t kFighter[2] = { T5A(0x10090030), T5A(0x10090900) };
 constexpr uint32_t kGtPractice = 10, kGtDemo = 2;
 
 inline uint32_t rd32(uint32_t a) { uint32_t v; memcpy(&v, vm_base + a, 4); return _byteswap_ulong(v); }
@@ -167,7 +168,7 @@ void init()
       g_cfg.online_game = (nm && *nm && !g_cfg.local_net) || (ctl && *ctl);
       const char* replay = getenv("T5_REPLAY_FILE");
       g_cfg.adv_offline = !(nm && *nm) && !(ctl && *ctl) && !(replay && *replay); }
-    if (const char* f = getenv("T5_TRAINING_TRACE"); f && *f) {
+    if (const char* f = getenv("T5_TRAINING_TRACE"); f && *f && t5game::us_only("training trace (T5_TRAINING_TRACE)")) {
         g_cfg.trace = fopen(f, "wb");
         parse_trace_ranges(getenv("T5_TRAINING_TRACE_RANGES"));
     }
@@ -516,10 +517,11 @@ void trace_frame()
     const uint32_t k = n;
     struct { uint32_t magic, n; } h = { 0x54524331u, n++ };
     fwrite(&h, sizeof h, 1, g_cfg.trace);
-    fwrite(vm_base + 0x1008E000u, 1, 0x4000, g_cfg.trace);
-    fwrite(vm_base + 0x104CCDF0u, 1, 0x60, g_cfg.trace);
-    fwrite(vm_base + 0x10099F00u, 1, 0x200, g_cfg.trace);
-    fwrite(vm_base + 0x106D4D88u, 1, 8, g_cfg.trace);
+    /* (a developer tool of the US program: us_only above) */
+    fwrite(vm_base + T5_US(0x1008E000u), 1, 0x4000, g_cfg.trace);
+    fwrite(vm_base + T5_US(0x104CCDF0u), 1, 0x60, g_cfg.trace);
+    fwrite(vm_base + T5_US(0x10099F00u), 1, 0x200, g_cfg.trace);
+    fwrite(vm_base + T5_US(0x106D4D88u), 1, 8, g_cfg.trace);
     for (int i = 0; i < g_trace_nextra; i++) {
         const TraceRange& r = g_trace_extra[i];
         if (k % r.every == 0) trace_range(r.base, r.len);

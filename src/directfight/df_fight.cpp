@@ -53,6 +53,7 @@
 #include "../replay/blob.h"
 #include "../netplay/match_score.h"   /* a decided match's score: the fighters' round counts */
 #include "../netplay/match_rules.h"   /* agreed simulation rules (train=, life=, auto_skip_after_round=, auto_skip_intro=) */
+#include "../platform/t5_addr.h"   /* T5A(): this program's address of a US address (EU Online) */
 
 extern "C" void t5_netplay_start(void);
 extern "C" int  t5_netplay_lockstep_active(void);
@@ -89,18 +90,18 @@ namespace df {
 bool drives(int p) { return !(netplay_on() && t5_netplay_lockstep_active()) || p == t5_netplay_local_slot(); }
 
 /* ---- guest addresses (NPUB30009 v01.00) ---------------------------------- */
-constexpr uint32_t kFnStartGame  = 0x0004E9DC;   /* (game_type, player_mask) -> config + select mode */
-constexpr uint32_t kConfig       = 0x1008EBAC;   /* battle config: +0 game type (4 = VS) */
-constexpr uint32_t kRoundsToWin  = 0x1008EBD4;   /* u8 */
-constexpr uint32_t kLifeP1       = 0x1008EBF4;   /* u32: P1's health handicap in percent (100 after the select's bar) */
-constexpr uint32_t kLifeP2       = 0x1008EBF8;   /* u32: P2's; the game mode's set-up scales both fighters' health by them */
-constexpr uint32_t kMatchOver    = 0x1008EBD5;   /* u8: non-zero once the match is decided */
-constexpr uint32_t kWinsP1       = np::MatchScore::kRoundWinsP1;   /* u8: rounds P1 won (fighter block +0xA1) */
-constexpr uint32_t kWinsP2       = np::MatchScore::kRoundWinsP2;   /* u8: rounds P2 won */
-constexpr uint32_t kWinnerIdx    = 0x1008EBD6;   /* u8: 0 = P1, 1 = P2, set together with kMatchOver (seen in the dry run) */
-constexpr uint32_t kSelectState  = 0x1008F070;   /* select mode: 1,2,3 (choosing), 4 (stage confirmed), 5 (leaving); fight phases after */
-constexpr uint32_t kStageId      = 0x1008F088;   /* chosen stage, written at the stage confirm, read by the game-mode loader */
-constexpr uint32_t kRecord       = 0x10093F58;   /* per-player select records, 0x78 apart */
+const uint32_t kFnStartGame  = T5A(0x0004E9DC);   /* (game_type, player_mask) -> config + select mode */
+const uint32_t kConfig       = T5A(0x1008EBAC);   /* battle config: +0 game type (4 = VS) */
+const uint32_t kRoundsToWin  = T5A(0x1008EBD4);   /* u8 */
+const uint32_t kLifeP1       = T5A(0x1008EBF4);   /* u32: P1's health handicap in percent (100 after the select's bar) */
+const uint32_t kLifeP2       = T5A(0x1008EBF8);   /* u32: P2's; the game mode's set-up scales both fighters' health by them */
+const uint32_t kMatchOver    = T5A(0x1008EBD5);   /* u8: non-zero once the match is decided */
+const uint32_t kWinsP1       = np::MatchScore::kRoundWinsP1;   /* u8: rounds P1 won (fighter block +0xA1) */
+const uint32_t kWinsP2       = np::MatchScore::kRoundWinsP2;   /* u8: rounds P2 won */
+const uint32_t kWinnerIdx    = T5A(0x1008EBD6);   /* u8: 0 = P1, 1 = P2, set together with kMatchOver (seen in the dry run) */
+const uint32_t kSelectState  = T5A(0x1008F070);   /* select mode: 1,2,3 (choosing), 4 (stage confirmed), 5 (leaving); fight phases after */
+const uint32_t kStageId      = T5A(0x1008F088);   /* chosen stage, written at the stage confirm, read by the game-mode loader */
+const uint32_t kRecord       = T5A(0x10093F58);   /* per-player select records, 0x78 apart */
 constexpr uint32_t kRecordStride = 0x78;
 constexpr uint32_t kRecCell      = 0x00;         /* cursor cell */
 constexpr uint32_t kRecFace      = 0x08;         /* portrait id under the cursor */
@@ -314,7 +315,7 @@ bool parse_fight(const char* s0, Fight& out)
  * 34-36 all show the Dark Lord badge). Nothing in a fight reads them, and they
  * are outside the netplay state hash; both PCs write the same values anyway
  * (the lobby's P1/P2 names and tiers), at the same frame in lockstep. */
-constexpr uint32_t kTocCustomData = 0x0046ECD0;
+const uint32_t kTocCustomData = T5A(0x0046ECD0);
 constexpr uint32_t kCustomStride  = 0x1F4;
 constexpr uint32_t kCustomRank    = 0x11C;
 constexpr uint32_t kCustomName    = 0x134;
@@ -497,7 +498,7 @@ CtlCmd g_cmd;                   /* the pending "fight" (g_pending_cmd) */
 bool g_cmd_rematch = false;
 bool g_reset_titles = true;     /* T5_DF_RESET=0: a new opponent starts from the select screen as it is */
 uint32_t g_stage_wait = 30;     /* T5_DF_STAGE_WAIT: frames from both fighters confirmed to the first stage confirm (was 90) */
-constexpr uint32_t kFnModeRequest = 0x0025DA54; /* (mode, param): the mode manager's request */
+const uint32_t kFnModeRequest = T5A(0x0025DA54); /* (mode, param): the mode manager's request */
 
 /* per-player press scheduling: a press is `buttons` held for kHold frames then
  * released for kGap frames before the next one */
@@ -788,9 +789,9 @@ void start_rematch(uint32_t f)
  * it found no difference after fights). Also, the copy is taken and put back
  * only once the reader has nothing queued (reader_idle), so both games run
  * start VS from a title whose loads are done. */
-constexpr uint32_t kReader = 0x1009FE28u, kReaderPool = 0x1009FF68u, kReaderPoolEnd = 0x100A0968u;
-constexpr uint32_t kReaderData = 0x1009FE20u, kReaderDataEnd = 0x100A0988u;
-constexpr uint32_t kDecoderSemPtr = 0x1054AD58u, kAsyncSemPtr = 0x106CD858u;   /* the other loader threads' semaphore ids */
+const uint32_t kReader = T5A(0x1009FE28u), kReaderPool = T5A(0x1009FF68u), kReaderPoolEnd = T5A(0x100A0968u);
+const uint32_t kReaderData = T5A(0x1009FE20u), kReaderDataEnd = T5A(0x100A0988u);
+const uint32_t kDecoderSemPtr = T5A(0x1054AD58u), kAsyncSemPtr = T5A(0x106CD858u);   /* the other loader threads' semaphore ids */
 extern "C" int32_t t5_sem_count(uint32_t id);   /* src/netplay/t5_hooks.cpp: a kernel semaphore's count, -1 none */
 bool reader_idle() { return rd32(kReader + 8) == 0 && rd32(kReader + 0x14) == 0; }
 bool g_reader_guard = true;      /* T5_DF_READER_GUARD=0: the reader's data copied like the rest, no wait for it (old) */
@@ -1525,7 +1526,7 @@ std::string fighter_words()
 {
     std::string o;
     for (int p = 0; p < 2; p++) {
-        const uint32_t w = rd32(0x1009007Cu + (uint32_t)p * 0x8D0u);
+        const uint32_t w = rd32(T5A(0x1009007Cu) + (uint32_t)p * 0x8D0u);
         char b[64];
         snprintf(b, sizeof b, "%sP%d plays 0x%X%s", p ? ", " : "", p + 1, w, g_cfg.chr[p] == 19 ? " (Mokujin's copy)" : "");
         o += b;
@@ -2126,11 +2127,13 @@ void fight_init()
     {
         if (const char* r = getenv("T5_DF_READER_GUARD")) g_reader_guard = *r != '0';
         const char* spec = getenv("T5_DF_FRESH_RANGES");
-        if (!spec || !*spec) spec = "1008E000:17000";   /* the fight-state block 0x1008E000..0x100A5000 (reset-fix: leftovers beyond the four hashed areas) */
+        bool dflt = false;   /* the default is a US range: this program's counterpart (t5_addr.h) */
+        if (!spec || !*spec) { spec = "1008E000:17000"; dflt = true; }   /* the fight-state block 0x1008E000..0x100A5000 (reset-fix: leftovers beyond the four hashed areas) */
         for (const char* p = spec; *p;) {
             char* e;
-            const uint32_t a = (uint32_t)strtoul(p, &e, 16); if (e == p || *e != ':') break; p = e + 1;
-            const uint32_t l = (uint32_t)strtoul(p, &e, 16); if (e == p) break; p = e;
+            uint32_t a = (uint32_t)strtoul(p, &e, 16); if (e == p || *e != ':') break; p = e + 1;
+            uint32_t l = (uint32_t)strtoul(p, &e, 16); if (e == p) break; p = e;
+            if (dflt) { const t5game::Range32 m = t5game::region(a, l); a = m.addr; l = m.len; }
             /* never the async reader's own data (live I/O state, see kReaderData): an area over it is split
              * (T5_DF_READER_GUARD=0: the old way, for comparisons) */
             const uint32_t end = a + l;

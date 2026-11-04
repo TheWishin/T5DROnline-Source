@@ -48,6 +48,7 @@ class RestRuntimeIntegration(unittest.TestCase):
                                 "0101-macos-fps-slow-frames.patch", "0102-macos-pad-file2.patch",
                                 "0103-vrr-pacing.patch", "0104-low-end.patch", "0105-warmup-hidden.patch",
                                 "0106-kernel-edge.patch", "0107-picture-format.patch",
+                                "0108-spu-thread-num.patch",
                                 "0109-picture-copy-scissor.patch"])
         low = source("patches/ps3recomp/0104-low-end.patch")
         self.assertIn("#define PPU_VMX_SOFT2 0", low)

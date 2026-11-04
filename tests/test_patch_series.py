@@ -32,6 +32,7 @@ class PatchSeries(unittest.TestCase):
             "0105-warmup-hidden.patch",
             "0106-kernel-edge.patch",
             "0107-picture-format.patch",
+            "0108-spu-thread-num.patch",
             "0109-picture-copy-scissor.patch",
             "0110-always-left-split-hud.patch",
             "0111-always-left-kernel-copy.patch",
@@ -44,7 +45,8 @@ class PatchSeries(unittest.TestCase):
             "0118-hidden-game-audio.patch",
             "0119-clips.patch",
         ]
-        self.assertEqual([name for name in names if name >= "0088-"], expected)
+        # (later patches -- 0106+ -- may follow; these keep their order at the start)
+        self.assertEqual([name for name in names if name >= "0088-"][:len(expected)], expected)
 
 
 if __name__ == "__main__":

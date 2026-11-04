@@ -66,7 +66,7 @@ class IntegrationTest(unittest.TestCase):
         slots = (Path(ROOT) / "src/rollback/hook_slots.txt").read_text(encoding="utf-8")
         self.assertRegex(slots, r"(?m)^000EF7BC\b")
         runtime = (Path(ROOT) / "src/netplay/throw_break.cpp").read_text(encoding="utf-8")
-        self.assertIn("constexpr uint32_t kEvaluate = 0x000EF7BC;", runtime)
+        self.assertIn("const uint32_t kEvaluate = T5A(0x000EF7BC);", runtime)
         self.assertIn("if (enabled && !installed)", runtime)
         self.assertIn("abort();", runtime)
         self.assertIn('t5game::hooks_ok("online throw breaks")', runtime)

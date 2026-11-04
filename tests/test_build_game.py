@@ -343,7 +343,7 @@ class Steps(unittest.TestCase):
             put(self.bg.P.elf, b"not the supported version")
             return "content id UP0000-OTHER0000_00-0000000000000000, license type 2\n"
         with mock.patch.object(self.bg, "run", fake_run):
-            self.assertBuildError(lambda: self.bg.step_decrypt(self.args(rap=rap)), "different version")
+            self.assertBuildError(lambda: self.bg.step_decrypt(self.args(rap=rap)), "not one the port knows")
         self.assertFalse(os.path.exists(self.bg.P.elf))      # the wrong program is not kept
 
     def fake_pkg(self, size=None):
@@ -372,7 +372,7 @@ class Steps(unittest.TestCase):
             return ""
         with mock.patch.object(self.bg, "run", fake_run):
             self.assertBuildError(lambda: self.bg.step_decrypt(self.args(rap=rap, pkg=self.fake_pkg())),
-                                  "different version")       # the fake program is not the pinned one
+                                  "not one the port knows")       # the fake program is not the pinned one
         self.assertEqual(calls, ["pkg_extract.py", "pkg_extract.py", "unself.py"])
 
     def test_decrypt_names_an_incomplete_package(self):
@@ -392,7 +392,7 @@ class Steps(unittest.TestCase):
         rap = self.stage_package(self.bg.TITLE_ID)
         put(os.path.join(self.bg.P.pkg_dir, "USRDIR", "EBOOT.BIN"), b"\x7fELF" + bytes(0x2000))
         with mock.patch.object(self.bg, "run", lambda *a, **k: self.fail("must not decrypt")):
-            self.assertBuildError(lambda: self.bg.step_decrypt(self.args(rap=rap)), "different version")
+            self.assertBuildError(lambda: self.bg.step_decrypt(self.args(rap=rap)), "not one the port knows")
         self.assertFalse(os.path.exists(self.bg.P.elf))
 
     def test_sha1(self):
@@ -413,15 +413,15 @@ class Steps(unittest.TestCase):
                                  "UP0700-NPUB30009_00-0000000000000000")
         with mock.patch.object(self.bg, "run", lambda *a, **k: self.fail("must not decrypt")):
             self.assertBuildError(lambda: self.bg.step_decrypt(self.args(rap=rap)),
-                                  "This package is version 01.01 of the game (program content ID "
-                                  "UP0700-NPUB30009_00-0000000000000000). The port supports only version 01.00")
+                                  "This package is Tekken 5: Dark Resurrection, US PSN, version 01.01 (NPUB30009, not "
+                                  "the Online edition) (program content ID UP0700-NPUB30009_00-0000000000000000). The port cannot build this edition")
 
     def test_decrypt_knows_the_v0101_program(self):
         # PARAM.SFO without APP_VER, but the program is the one of v01.01: the version message, not the .rap one
         rap = self.stage_version({"TITLE": "T5", "TITLE_ID": self.bg.TITLE_ID, "VERSION": "01.00"},
                                  "UP0700-NPUB30009_00-0000000000000000")
         with mock.patch.object(self.bg, "run", lambda *a, **k: self.fail("must not decrypt")):
-            self.assertBuildError(lambda: self.bg.step_decrypt(self.args(rap=rap)), "version 01.01 of the game")
+            self.assertBuildError(lambda: self.bg.step_decrypt(self.args(rap=rap)), "US PSN, version 01.01")
 
     def test_wrong_rap_names_the_programs_content_id(self):
         cid = "UP0700-NPUB30009_00-0000000000010000"
@@ -648,9 +648,26 @@ class PackageFacts(unittest.TestCase):
     def test_facts(self):
         bg = self.core.build_game
         p = self.pkg("ok", {"TITLE": "T5", "TITLE_ID": bg.TITLE_ID, "VERSION": "01.00"}, bg.CONTENT_ID)
-        self.assertEqual(bg.package_facts(p), {"title": "T5", "title_id": bg.TITLE_ID, "version": "01.00",
-                                               "program": bg.CONTENT_ID})
+        facts = bg.package_facts(p)
+        self.assertEqual(facts.pop("sfo"), {"TITLE": "T5", "TITLE_ID": bg.TITLE_ID, "VERSION": "01.00"})
+        self.assertEqual(facts, {"title": "T5", "title_id": bg.TITLE_ID, "version": "01.00", "program": bg.CONTENT_ID})
         self.assertEqual(self.core.describe_pkg(p)[:2], (True, "ok"))
+
+    def test_eu_online_editions_are_named_and_green(self):
+        # 1.2.1: by the program's own content ID (1.2.0 compared them with EU v01.00 and warned "most likely refuse")
+        for cid, ver in (("EP9000-NPEA00019_00-TEKKENRETAIL0000", "02.01"), ("UP0700-NPEA00019_00-TEKKEN5DRO000000", "02.00")):
+            sfo = {"TITLE": "TEKKEN™5 DARK RESURRECTION ONLINE", "TITLE_ID": "NPEA00019", "VERSION": ver,
+                   "APP_VER": "01.00"}
+            p = self.pkg("euo" + ver, sfo, cid, cid=cid)
+            ok, level, text = self.core.describe_pkg(p)
+            self.assertEqual((ok, level), (True, "ok"), text)
+            self.assertIn("the European Online edition", text)
+            # a v02.00 PARAM.SFO with the v02.01 program: the version the build will refuse
+            if ver == "02.01":
+                bad = self.pkg("euo-mixed", dict(sfo, VERSION="02.00"), cid, cid=cid)
+                ok, level, text = self.core.describe_pkg(bad)
+                self.assertEqual((ok, level), (False, "error"), text)
+                self.assertIn("version 02.00 of the game", text)
 
     def test_v0101_is_red(self):
         bg = self.core.build_game

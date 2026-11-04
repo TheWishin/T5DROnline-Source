@@ -601,10 +601,8 @@ MESSAGES = {
     "Package (.pkg)": "パッケージ (.pkg)",
     "License (.rap)": "ライセンス (.rap)",
     "Browse…": "参照…",
-    "Supported: Tekken 5: Dark Resurrection Online, PS3 PSN (US), NPUB30009 version 01.00 (online and offline), "
-    "and TEKKEN 5 DARK RESURRECTION, PS3 PSN (Europe), NPEA00019 version 01.00 (offline only for now) -- the "
-    "package file and the license (.rap) from your own account. Nothing leaves this PC.":
-        "対応：Tekken 5: Dark Resurrection Online、PS3 PSN（北米）、NPUB30009 バージョン 01.00（オンラインとオフライン）、および TEKKEN 5 DARK RESURRECTION、PS3 PSN（欧州）、NPEA00019 バージョン 01.00（現在はオフラインのみ） -- 自分のアカウントのパッケージファイルとライセンス（.rap）。このPCの外には何も送られません。",
+    "Supported: Tekken 5: Dark Resurrection Online, PS3 PSN (US), NPUB30009 version 01.00 (online and offline); Tekken 5: Dark Resurrection Online, PS3 PSN (Europe), NPEA00019 version 02.00 or 02.01 (offline, and online against other European Online games); TEKKEN 5 DARK RESURRECTION, PS3 PSN (Europe), NPEA00019 version 01.00 (offline only) -- the package file and the license (.rap) from your own account. Nothing leaves this PC.":
+        "対応：Tekken 5: Dark Resurrection Online、PS3 PSN（北米）、NPUB30009 バージョン 01.00（オンラインとオフライン）；Tekken 5: Dark Resurrection Online、PS3 PSN（欧州）、NPEA00019 バージョン 02.00 または 02.01（オフライン、および他の欧州オンライン版とのオンライン）；TEKKEN 5 DARK RESURRECTION、PS3 PSN（欧州）、NPEA00019 バージョン 01.00（オフラインのみ） -- 自分のアカウントのパッケージファイルとライセンス（.rap）。このPCの外には何も送られません。",
     "Build tools on this PC": "このPCのビルドツール",
     "Needed": "必要",
     "Found": "検出",
@@ -1159,6 +1157,19 @@ MESSAGES = {
     "{supported}.":
         "このコピーは別バージョンのゲームです：「{title}」バージョン {version}、コンテンツID {id}（プログラム SHA-1 "
         "{sha}...）。この移植版が対応しているのは {game}、コンテンツID {supported} だけです。",
+    # 1.2.1: the build names the edition and every edition it builds (tools/build_game.py, docs/EU.md)
+    "This package is {edition} (program content ID {id}). The port cannot build this edition, whatever "
+    "the license (.rap): it is another build of the game. The port builds: {supported}.":
+        "このパッケージは {edition} です（プログラムのコンテンツID "
+        "{id}）。ライセンス（.rap）に関係なく、この移植版はこのエディションをビルドできません：ゲームの別のビルドです。ビルドできるもの：{supported}。",
+    "This package is version {version} of the game (program content ID {id}). The port cannot build this "
+    "version, whatever the license (.rap). The port builds: {supported}.":
+        "このパッケージはゲームのバージョン {version} です（プログラムのコンテンツID "
+        "{id}）。ライセンス（.rap）に関係なく、この移植版はこのバージョンをビルドできません。ビルドできるもの：{supported}。",
+    "This copy's program is not one the port knows: \"{title}\" version {version}, content ID {id} (program "
+    "SHA-1 {sha}...). The port builds: {supported}.":
+        "このコピーのプログラムはこの移植版の知らないものです：「{title}」バージョン {version}、コンテンツID {id}（プログラム SHA-1 "
+        "{sha}...）。ビルドできるもの：{supported}。",
     # 1.1.5: the package's version, read before the build (tools/build_game.py, launcher/core.py)
     "This package is version {version} of the game (program content ID {id}). The port supports only version "
     "{supported}: {game}, content ID {cid}, {size} bytes. This version cannot be used, whatever the license "
@@ -1862,6 +1873,20 @@ MESSAGES = {
         "欧州版（{title_id}）はオフラインのモードで遊べます。欧州版のオンライン対戦は今後のアップデートで対応します。それまではオンライン対戦に北米版（NPUB30009）が必要です。欧州版と北米版がオンラインで対戦することはありません。",
     "Build stamp: the game is {title_id}.":
         "ビルドスタンプ：ゲームは {title_id} です。",
+    "{id}  ({size} bytes) -- the European Online edition: it plays offline, and online against other European Online games.":
+        "{id}  （{size} バイト） -- 欧州オンライン版：オフラインで遊べ、他の欧州オンライン版とオンライン対戦できます。",
+    "Your package is the European Online edition (version {version})":
+        "パッケージは欧州オンライン版です（バージョン {version}）",
+    "Earlier versions of the launcher did not build it. This one does: choose the package and its license on the Build tab and press BUILD GAME. It plays offline, and online against other European Online games.":
+        "以前のランチャーはこれをビルドしませんでした。このバージョンはビルドできます：Build タブでパッケージとそのライセンスを選び、BUILD GAME を押してください。オフラインで遊べ、他の欧州オンライン版とオンライン対戦できます。",
+    "build.log: an earlier build refused the European Online edition (version {version}).":
+        "build.log：以前のビルドが欧州オンライン版（バージョン {version}）を拒否しました。",
+    "Your game is the European Online edition":
+        "ゲームは欧州オンライン版です",
+    "The European Online edition ({title_id} version {version}) plays its offline modes, and online against players who have the European Online edition too. European and US games do not play each other online.":
+        "欧州オンライン版（{title_id} バージョン {version}）はオフラインモードで遊べ、同じく欧州オンライン版を持つプレイヤーとオンライン対戦できます。欧州版と北米版はオンラインで対戦しません。",
+    "Build stamp: the game is {title_id} version {version}.":
+        "ビルドスタンプ：ゲームは {title_id} バージョン {version} です。",
     "This Mac build has no online play. For a test match: tools/build_game.py --macos-online (docs/MACOS_ONLINE_TEST.md).":
         "この Mac 版ビルドにはオンライン対戦がありません。テスト対戦には: tools/build_game.py --macos-online (docs/MACOS_ONLINE_TEST.md)。",
     "Cannot read the build's identity: {error}": "ビルドの識別情報を読み込めません：{error}",

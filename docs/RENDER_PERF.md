@@ -3849,3 +3849,155 @@ Patch 0103 adds an opt-in presentation pacing experiment; its default is off. Se
 [VRR_STALL_PROFILE_1.2.0.md](VRR_STALL_PROFILE_1.2.0.md) for the source-only profile of the supplied
 rare game-thread stalls. The target remains 60000/1001 Hz. Neither flat displayed intervals, unchanged input
 latency, compilation nor pair determinism has been demonstrated by this source-only work.
+
+## 1.2.1: old PCs -- SPU registers in host registers, VMX float math four lanes at a time (patches 0113, 0114, branch `perf-121`)
+
+Owner: "weak PC means OLD PC -- it's static recomp." Target: 2010-2012 PCs (2 cores / 4 threads like an i3-2100 /
+i3-3240, 4 cores without SMT like an i5-2500), the oldest Direct3D 12 cards (feature level 11_0), 4 GB RAM. What
+those PCs need is in [WEAK_PC.md "Old PCs"](WEAK_PC.md#old-pcs-121); this section is the CPU work.
+
+### Where an old PC's processor time goes (1.2.0)
+
+1.2.0 built for the x86-64 baseline (no AVX2/FMA3: every 2010-2012 CPU), 2 cores / 4 threads of the 7950X by affinity
+(`0xF000`), Lili vs Asuka on stage 30 (the pool), `fight_bench.py --polite`, CPU per fight frame per thread (thread table)
+and the main thread's own profile (`tools/thread_profile.py`, linker map):
+
+| thread | CPU ms per frame | where |
+|---|---|---|
+| SPU sound core (`spu`) | 4.4-4.7 (26-28 %) | 8 lifted blocks ~78 %: FFT butterflies (`B1E8` 25 %, `A868` 15 %, `AF58` 10.5 %, `85D8` 9.4 % ...); DMA 6 %; the trampolines between blocks ~2 % |
+| game thread (`main`) | 4.0-4.5 | flat lifted code; the matrix functions `0x36A8F4` / `0x36AFB8` / `0x36A9E0` ~20 % -- mostly their inlined `vmaddfp` (16 a function), each lane a software fused multiply-add on a CPU without FMA3: 4,667 instructions for a 65-line guest function (2,284 with FMA) |
+| translation (`ticker`) | 2.0-2.2 | `sink_end_impl` 14 %, FIFO walk 14 %, guest texture hashing 11 %, span dispatch 10 % (and 8 % `QueryPerformanceCounter`: the bench's own per-draw frame-log timers, `PS3_FRAMELOG`) |
+| skinning (`spurs-chain` + `spurs-job`, and the game thread's help) | 2.5-2.9 | lifted SPU jobs |
+| vertex worker, draw thread, pad sampler, renderer | 1.8 / 1.4 / 0.9 / 0.7 | |
+
+### Patch 0113: SPU registers in C locals (`tools/spu_regpromo.py`, `spu_lifter.py --regpromo`)
+
+The SPU lifter wrote every register access as `ctx->gpr[N]`. A local-store store (`spu_ls_write128`) goes through
+a byte pointer, which the compiler must assume can alias the register file, so the lifted SPU code kept every value
+in memory. Like the PPU lifter's patch 0066, the SPU lifter now keeps the registers a function uses in C locals:
+loaded at entry, written back before every exit (`{ ctx->pc = ...; g_spu_trampoline_fn = ...; return; }`, also behind
+an `if`; `SPU_RET`), before every barrier (calls of lifted functions, channels, DMA, stops, halts, indirect branches,
+any line it does not recognise -- those run unchanged on `ctx->gpr`, and every local is loaded again after them) and at
+the body's end. A function with more barriers than one per eight plain lines stays as it was. Sound core: 710 of
+1,026 functions promoted; skinning jobs 44 + 46 of 92 each.
+
+Second, under `SPU_NEAR_FLOAT` (the sound core) each float operation first flushes denormal operands to +0. A register
+that holds the result of `fa/fs/fm/fma/fms/fnms` is never denormal and never -0 (their results are flushed; the exact
+path for exponent-255 values makes neither -- `tests/c/spu_clean_float_test.c`: 120 M random and special operations,
+0 such lanes), so the lifter marks such operands known-clean (`spu_fa_k(a, b, 1, 0)`) and the flush is left out:
+known-clean = written by one of those operations earlier in the same straight line of code, forgotten at labels,
+barriers and other writes. Without `SPU_NEAR_FLOAT` the `_k` forms are the plain operations.
+
+The same operations in the same order on the same values: only where a value sits between them changes.
+`--regpromo off` gives the 1.2.0 lift byte for byte. `build_game.py` records the SPU lifter in the SPU step's stamp,
+so a BUILD GAME after the update lifts the sound core and the jobs again (~1 min).
+
+**Proof.** `tools/spu_regpromo_diff.py` runs every function of an image as lifted with `--regpromo off` and with it
+side by side on random inputs (registers mixing floats of every class, small integers and local-store addresses; a
+random 256 KB local store) and compares the whole register file, pc, the pending trampoline, status, host depth, the
+local store and a trace: every other lifted function and every runtime routine (`spu_drain_call`, `spu_stop`,
+channels, halts ...) is a stub that hashes the whole register file at the call and then changes registers by that
+hash, so a stale write-back or a missing reload shows up. Sound core, all 710 promoted functions, near float: 212,471
+cases compared, **0 differ**; exact float the same. Skinning jobs: 0 differ with near or exact float; with
+`SPU_FAST_FLOAT` (their real build: host IEEE) only NaN payloads differ -- which input NaN an x86 add returns
+depends on the operand order the compiler picks, in the old lift as much as in the new (a NaN never reaches the
+vertices drawn). Mutations -- a dropped write-back, a dropped reload, a wrong known-clean mark -- are caught.
+`tests/test_spu_regpromo.py` runs the tool on lifted-style functions in CI.
+
+**Cost.** The hottest block (`B1E8`, an FFT butterfly loop) in a microbenchmark: 36 -> 29 ns per iteration with the
+locals, 24.4 with the known-clean operands (same output hash). In the game less: 33 promoted registers do not fit 16
+XMM registers (the compiler spills to the stack where the old code kept them in `ctx`), and the functions are entered
+for a few iterations at a time. Paired runs (below): sound core -7 %, skinning -10 %.
+
+### Patch 0114: vaddfp, vsubfp, vmaddfp, vnmsubfp four lanes at a time (`runtime/ppu/ppu_vmx.h`)
+
+The VMX float helpers were per-lane loops: big-endian load, VSCR[NJ] flush, the operation, NaN rules, flush, store,
+four times -- on a CPU without FMA3 each `vmaddfp` lane a software fused multiply-add (`ppu_fmaf_soft`: double
+product, TwoSum, round to odd). Now x86-64 does each as one vector sequence with the same IEEE operations per lane:
+`addps/subps` for `addss/subss`; `vfmadd213ps` for `vfmadd213ss` with FMA; without FMA `ppu_fmaf_soft`'s steps in two
+f64x2 halves (SSE2); the flushes and NaN rules as bit masks. The scalar loops stay as `*_scalar` (the definition);
+`PPU_VMX_SCALAR` keeps them, non-x86 hosts use them. Patch 0104's experimental `PPU_VMX_SOFT2` stays inside the scalar
+form.
+
+**Proof.** `tests/c/vmx_vec_test.c` (`tests/test_vmx_vec.py`) compares the vector forms with the scalar loops bit for
+bit, built for the baseline and for x86-64-v3: every pair/triple of 32 special values (zeros, denormals, min/max
+normal, Inf, quiet/signalling NaNs, ulp neighbours) in all lanes, 4 M random cases per op and VSCR[NJ] setting
+(ordinary, tiny, huge, cancelling, and products just off a halfway point of the addend -- where rounding twice
+differs from rounding to odd), aliased destinations: 32 M cases, **0 differ** in both builds. With the round to odd
+removed the test fails. Game state is unchanged by construction: CODE_VERSION stays, old and new builds play each
+other (pairs below).
+
+**Cost.** `vmaddfp` alone: 9.9 -> 8.5 ns (baseline), 2.9 -> 2.2 ns (v3). `func_0036A8F4` in the baseline build:
+4,667 -> 2,819 instructions. Re-simulation benchmark (`T5_RB_MODE=test`: the same fight frames re-run from a restored
+state in every build, the game thread's cycles per re-simulated frame; stage 30, 3 reps, builds side by side on the
+least loaded processors): **0.955** of 1.2.0 (per rep 0.990 / 0.948 / 0.927); patch 0113 alone 1.006 (it does not
+touch the game thread).
+
+### Measured
+
+The PC was busy with other agents' games and builds the whole time (11-31 of its 32 logical processors), so the
+frame rate of a CPU-bound stand-in moved by +-30 % from run to run; the per-thread processor time and the
+re-simulation cycles carry the comparison.
+
+**Processor time per fight frame**, baseline builds, 2 cores / 4 threads (`0xF000`), stage 30, interleaved runs at 60
+fps (the CPU per frame of each thread, `fight_bench.py`):
+
+| thread | 1.2.0 | + 0113 |
+|---|---|---|
+| SPU sound core | 4.41 / 4.58 ms | 4.06 / 4.30 (**-7 %**) |
+| skinning (`spurs-job` + `spurs-chain`) | 2.90 / 2.79 | 2.51 / 2.55 (**-10 %**) |
+| game thread, cycles per frame (median, `PS3_GAME_THREAD_LOG`) | 4.14 / 4.53 | 4.31 / 4.26 |
+
+0113 against 0113 + 0114 in the next two rounds (loads 13-19 processors): game thread 4.93 / 4.61 -> 4.28 / 4.43 ms --
+too loaded to read a few percent from; the re-simulation benchmark below is the number for 0114.
+
+**The game thread on identical work** (re-simulation benchmark): baseline 1.2.1 / 1.2.0 = **0.955**, x86-64-v3 0.953
+(per rep 0.966 / 0.934 / 0.960; 129 paired rollbacks, median 0.955).
+
+**Same game.** `tools/rollback_net_test.py`, one whole match each, a 1.2.1 baseline game with the software paths of a
+CPU without FMA3 (`PS3_FP_SOFT_FMA=1 PS3_CRT_FMA3=0`) against the others:
+
+| pair | network | frames compared | mismatching | result hash (both PCs) |
+|---|---|---|---|---|
+| rollback: 1.2.0 v3 host / 1.2.1 baseline joiner, Asuka vs Lili, stage 20 | RTT 150 +-5, 3 % loss | 4,199 (581 / 559 rollbacks) | **0** | d9bf6acdd78b964c |
+| lockstep: 1.2.1 v3 host / 1.2.0 baseline joiner, stage 25 | RTT 30 +-2, 1 % | 6,599 | **0** | b85823a1491f975b |
+| rollback: 1.2.1 v3 / 1.2.1 baseline, Law vs Yoshimitsu, stage 30 | RTT 120 +-8, 2 % | 3,599 (468 / 451) | **0** | 1fbff83296ca69de |
+
+All six replays the pairs recorded play back identical with the 1.2.1 v3 build (`tools/replay_play.py`: every recorded
+hash and result), and the two recorded by 1.2.0 games also with the 1.2.1 baseline build on the software paths.
+
+**Old-PC stand-ins** (a local script around `fight_bench.py`): baseline builds with the software paths of a
+CPU without FMA3 (`PS3_FP_SOFT_FMA=1 PS3_CRT_FMA3=0`), the tier-1 path forced (`RSX_TIER1_PATH=1`),
+`tools/slow_core.py` taking 60 % of the game's processors, two heavy slots, interleaved; runs with at most 12 other
+processors busy (the others in the notes: 1.2.0 47.2 / 47.5 fps and 1.2.1 41.1 fps under 12.6-31 busy -- the load, not
+the build):
+
+| stand-in | build / settings | fps | game CPU per frame (all threads) | sound core / game thread / translation |
+|---|---|---|---|---|
+| 2 cores / 4 threads, Kazuya vs Jin, stage 25 | 1.2.0, defaults | 59.40 | 19.4 ms | 5.32 / 4.35 / 1.77 ms |
+| | 1.2.1, defaults | 59.45, 58.94 | **18.0, 18.6** | 4.62, 5.06 / 3.98, 4.13 / 1.99, 1.93 |
+| | 1.2.1, Old PC settings | 59.95, 59.48 | **16.0, 16.4** | 4.27, 4.33 / 3.79, 3.85 / 1.64, 1.45 |
+| 4 cores / 4 threads, Lili vs Asuka, stage 30 | 1.2.0, defaults | 52.3 (one 0.7 s stall) | 15.4 | 4.36 / 3.56 / 1.58 |
+| | 1.2.1, defaults | 59.7 | 15.0 | 3.81 / 3.60 / 1.68 |
+
+At 60 % taken these stand-ins mostly hold 60 fps either way: the change shows as headroom -- 4-7 % less processor
+time a frame at the defaults, 15-18 % less with the Old PC settings (fewer draws to translate and to skin for the
+effects). A real 2-core PC two to three times slower per core than this one is CPU-bound, and there that is
+roughly the frame rate it gains.
+
+**Memory**: the game in a fight 0.80-0.84 GB working set, 1.1 GB committed (2 cores / 4 threads, Native).
+
+### Not done
+
+- **The old graphics card itself** (GitHub #12's Fermi GT 730, resource binding tier 1: 32-37 ms of GPU a fight
+  frame). Every GPU here is tier 3, so nothing here can measure it; see WEAK_PC.md "Old PCs" for what is known and
+  what a tier-1 player's log would settle.
+- **No SSE4.1** (Core 2 before Penryn, Phenom II, Athlon II, Llano, Bobcat): the scalar fallbacks of the SPU helpers
+  exist and give the same bits, but the sound core on them needs ~2-3x its time (the reason 1.0 compiled the runtime
+  with `-msse4.1`: 9-12 ms per 5.33 ms audio tick before it) -- such a PC could not keep the sound going; a second
+  runtime build for them was not made. The game says so at its start (exit code 14) and Check my problem before a build.
+- **PGO** for the new lift: the shipped profile's SPU entries no longer match the promoted functions (the compiler
+  treats them as unprofiled); retrain with `tools/pgo_train.py` when the release is integrated. All numbers above are
+  with the stale profile, as a release built now would be.
+- An AVX (no AVX2) build level for Sandy/Ivy Bridge: four double lanes would halve the software FMA's work; 1.1.7
+  found v2+AVX worth nothing for the scalar code, not measured for 0114's vector code.

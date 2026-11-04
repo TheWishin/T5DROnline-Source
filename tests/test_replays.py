@@ -570,13 +570,25 @@ class GameCodeTest(unittest.TestCase):
     def test_native_replay_reader_preserves_legacy_reset_policy(self):
         inputs = [[NEUTRAL], [NEUTRAL]]
         matches = [{"start": 0, "end": 0, "p1": 9, "p2": 33, "stage": 20, "winner": None}]
-        for version in range(1, 8):
+        for version in range(1, 9):
             with self.subTest(version=version):
                 path = os.path.join(self.tmp, "reset-policy-" + str(version) + replays.EXT)
                 make_file(path, inputs, matches, version=version)
                 code, output = self.run_exe("read", path)
                 self.assertEqual(code, 0, output)
                 self.assertEqual(self.lines(output, "SOFTRESET"), [str(int(version >= 7))])
+                self.assertEqual(self.lines(output, "THROWBREAK"), [f"{int(version >= 8)} DELAY 1"])
+
+    def test_native_throw_rule_uses_recorded_simulation_delay(self):
+        inputs = [[NEUTRAL], [NEUTRAL]]
+        matches = [{"start": 0, "end": 0, "p1": 9, "p2": 33, "stage": 20, "winner": None}]
+        for rollback, rb_delay, expected in ((False, 2, 8), (True, 2, 2), (True, -1, 8)):
+            with self.subTest(rollback=rollback, rb_delay=rb_delay):
+                path = os.path.join(self.tmp, "simulation-delay" + replays.EXT)
+                make_file(path, inputs, matches, version=8, delay=8, rb_delay=rb_delay, rollback=rollback)
+                code, output = self.run_exe("read", path)
+                self.assertEqual(code, 0, output)
+                self.assertEqual(self.lines(output, "THROWBREAK"), [f"1 DELAY {expected}"])
 
     def test_start_capsule_round_index_and_wrong_build_fallback(self):
         folder = tempfile.mkdtemp(dir=self.tmp)
@@ -668,12 +680,12 @@ class GameCodeTest(unittest.TestCase):
         self.assertEqual(len(self.lines(out, "BARRIER")), 3)
         # format 3: match 1's custom costume blocks (P1 a pattern, P2 none), match 2 without any
         blocks = bytes((i * 13 + 1) & 0xFF for i in range(0x108)) + bytes(0x108)
-        self.assertEqual(p["version"], 7)
+        self.assertEqual(p["version"], 8)
         self.assertEqual(p["matches"][0]["costumes"], [blocks[:0x108].hex(), blocks[0x108:].hex()])
         # format 5: match 2 is a training fight with P1 at 70 % health (match 1: no rules)
         self.assertEqual((p["matches"][0]["training"], p["matches"][0]["life"]), (False, [100, 100]))
         self.assertEqual((p["matches"][1]["training"], p["matches"][1]["life"]), (True, [70, 100]))
-        # Current recordings use format 7 even when automatic skipping stays off.
+        # Current recordings use format 8 even when automatic skipping stays off.
         self.assertFalse(any(m["auto_skip_after_round"] for m in p["matches"]))
         self.assertNotIn("training", m1)
         self.assertEqual((m2["training"], m2["life"]), (True, [70, 100]))
@@ -700,7 +712,7 @@ class GameCodeTest(unittest.TestCase):
                          "the rules stay in a copy")
 
     def test_enabled_skip_keeps_guarded_file_and_live_rematch_together(self):
-        """Current reset filtering uses format 7 / SESSION3, rejecting old readers before any MATCH."""
+        """Current throw timing uses format 8 / SESSION4, rejecting old readers before any MATCH."""
         if os.path.join(ROOT, "lobby") not in sys.path:
             sys.path.append(os.path.join(ROOT, "lobby"))
         from t5lobby import spectate
@@ -712,7 +724,7 @@ class GameCodeTest(unittest.TestCase):
         self.assertEqual(code, 0, out)
         path = self.lines(out, "FILE")[0]
         payload, header = replays.read_payload(path), replays.read_header(path)
-        self.assertEqual((payload["version"], header["format"]), (7, 7))
+        self.assertEqual((payload["version"], header["format"]), (8, 8))
         self.assertFalse(payload["matches"][0]["auto_skip_after_round"])
         self.assertTrue(payload["matches"][1]["auto_skip_after_round"])
         self.assertTrue(header["matches"][1]["auto_skip_after_round"])
@@ -721,7 +733,7 @@ class GameCodeTest(unittest.TestCase):
         parser = spectate.LiveParser()
         self.assertEqual(parser.feed(raw), raw)
         self.assertTrue(parser.ready and parser.ended)
-        self.assertEqual(parser.session["version"], 3)
+        self.assertEqual(parser.session["version"], 4)
         self.assertFalse(parser.matches[0]["auto_skip_after_round"])
         self.assertTrue(parser.matches[1]["auto_skip_after_round"])
         offset, match_indices = len(spectate.MAGIC), []
@@ -736,7 +748,7 @@ class GameCodeTest(unittest.TestCase):
         self.assertEqual(match_indices, [])
         next_kind, _ = struct.unpack_from("<BI", raw, offset + 5)
         self.assertEqual(next_kind, spectate.R_SESSION)
-        self.assertEqual(struct.unpack_from("<I", raw, offset + 10)[0], 3)
+        self.assertEqual(struct.unpack_from("<I", raw, offset + 10)[0], 4)
         for source in (path, live):
             code, out = self.run_exe("read", source)
             self.assertEqual(code, 0, out)
@@ -837,7 +849,7 @@ class GameCodeTest(unittest.TestCase):
         self.assertEqual(code, 0, out)
         path = self.lines(out, "FILE")[0]
         p = replays.read_payload(path)
-        self.assertEqual((p["version"], p["select_mix"], p["unlocks"]), (7, True, "open"))
+        self.assertEqual((p["version"], p["select_mix"], p["unlocks"]), (8, True, "open"))
         self.assertEqual(replays.read_header(path)["unlocks"], "open")
         code, out = self.run_exe("read", path)
         self.assertEqual(code, 0, out)

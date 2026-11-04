@@ -60,7 +60,8 @@ def parse_match(b, session_version=1):
     """A MATCH record's payload -> dict (the fields the launcher shows). The match is the replay binary's of this
     build: after the names, u32 costume flags and -- bit 0 -- both sides' custom costume blocks, then the
     format 5 rules word. SESSION 2 assigns that word's bit 1 to agreed automatic skips (format 6);
-    SESSION 3 also enables the deterministic soft-reset filter (format 7). SESSION 1 never enables
+    SESSION 3 also enables the deterministic soft-reset filter (format 7); SESSION 4 enables
+    throw-break window compensation by recorded input delay (format 8). SESSION 1 never enables
     automatic skips. Older SESSION 1 streams without a rules word still read as no rules."""
     if len(b) < 4 + 24 + 48 + 8 + 4:
         raise LiveError("short match record")
@@ -93,6 +94,7 @@ def parse_match(b, session_version=1):
             "training": bool(rules & 1), "auto_skip_after_round": session_version >= 2 and bool(rules & 2),
             "auto_skip_intro": session_version >= 3 and bool(rules & 4),
             "soft_reset_guard": session_version >= 3,
+            "throw_break_rule": session_version >= 4,
             "life": [((rules >> 8) & 0xFF) or 100, ((rules >> 16) & 0xFF) or 100]}
 
 
@@ -172,7 +174,7 @@ class LiveParser:
             if len(b) < 32:
                 raise LiveError("short session record")
             ver, flags, slot, delay, rb_delay, seed, mseed, every = struct.unpack_from("<8I", b, 0)
-            if ver not in (1, 2, 3):
+            if ver not in (1, 2, 3, 4):
                 raise LiveError("unsupported live session version")
             previous = self.session["version"] if self.session is not None else 1
             if ver < previous:
@@ -187,7 +189,7 @@ class LiveParser:
             created, _ = _str(b, i)
             self.session = {"version": ver, "rollback": bool(flags & 1), "slot": slot, "delay": delay,
                             "hash_every": every, "build": build, "created": created,
-                            "soft_reset_guard": ver >= 3}
+                            "soft_reset_guard": ver >= 3, "throw_break_rule": ver >= 4}
             self.rules_guard_pending = False
         elif t == R_INPUTS:
             first, cnt = struct.unpack_from("<2I", b, 0)
@@ -208,6 +210,7 @@ class LiveParser:
                 # keeping the input policy established when this fight began.
                 previous = self.matches[k]
                 m["soft_reset_guard"] = previous["soft_reset_guard"]
+                m["throw_break_rule"] = previous["throw_break_rule"]
                 m["auto_skip_after_round"] = previous["auto_skip_after_round"]
                 m["auto_skip_intro"] = previous.get("auto_skip_intro", False)
                 self.matches[k] = m

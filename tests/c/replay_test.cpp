@@ -133,6 +133,7 @@ static int do_read(const char* file, int argc, char** argv, bool map)
 {
     if (!rp::play_load(file)) { printf("ERROR %s\n", rp::play_error()); return 2; }
     printf("SOFTRESET %d\n", rp::play_soft_reset_guard() ? 1 : 0);
+    printf("THROWBREAK %d DELAY %d\n", rp::play_throw_break_rule() ? 1 : 0, rp::play_input_delay());
     printf("FLAGS select_mix %d unlocks_open %d\n", rp::play_select_mix() ? 1 : 0, t5_replay_unlocks_open());
     printf("SLOT %d DELAY %d ROLLBACK %d SEED %08x MATCHSEED %08x\n", rp::play_slot(), rp::play_delay(),
            rp::play_rollback() ? 1 : 0, rp::play_session_seed(), rp::play_match_seed());

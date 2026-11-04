@@ -79,7 +79,7 @@ def split(path):
 
 
 COSTUME_BLOCK = 0x108          # src/directfight/costume_logic.h kBlock (format 3)
-MAX_VERSION = 7               # format 7: guarded START+SELECT; format 6 adds agreed automatic skips
+MAX_VERSION = 8               # format 8: throw-break timing compensated by recorded input delay
 
 
 def _payload_version(b):
@@ -129,7 +129,7 @@ def read_payload(path):
     version = _payload_version(b)
     r = _R(b)
     r.i = 4
-    out = {"version": r.u32(), "soft_reset_guard": version >= 7}
+    out = {"version": r.u32(), "soft_reset_guard": version >= 7, "throw_break_rule": version >= 8}
     hf = r.u32()
     out["rollback"] = bool(hf & 1)
     # format 4: bit 1 the select screen's generator mixes the match number (older: one seed per session),

@@ -219,6 +219,8 @@ void keyread_tick()
 
 } // namespace
 
+extern "C" void t5_training_trace_frame(void);
+
 void test_on_frame(ppu_context* ctx)
 {
     (void)ctx;
@@ -332,6 +334,13 @@ void test_on_frame(ppu_context* ctx)
     if (g_trace_on && g_trace_state == 3) { trace_stop("resim frame"); g_trace_state = 4; }
     if (g_trace_on && g_trace_state == 0 && f == g_start + 30) { g_trace_state = 1; }
     if (g_resim_left == 0) {
+        /* Research trace of offline scripted fights. Only read the live boundary;
+         * do not run training/practice helpers or trace re-simulated frames. */
+        static const bool training_trace = [] {
+            const char* path = getenv("T5_TRAINING_TRACE");
+            return path && *path;
+        }();
+        if (training_trace) t5_training_trace_frame();
         /* uninterrupted run: record */
         g_hist_hash[f % kHist] = state_hash(); g_hist_game[f % kHist] = state_game_hash(); g_hist_tag[f % kHist] = f + 1;
         if (f > g_start + 1) { g_cyc_normal += dcyc; g_cyc_normal_n++; }

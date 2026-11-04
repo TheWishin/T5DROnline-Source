@@ -126,9 +126,13 @@ void play_mark_unverified(uint32_t playback_frame);
  * Spectators: T5_REPLAY_FILE=<that file, growing> plays it like a replay; the
  * frame waits for the data (a buffer of T5_REPLAY_LIVE_BUFFER frames, default 120),
  * hashes and results are compared when the recorded ones come. */
-/* Formats 1..6 retain their original START/SELECT semantics. New recordings
- * use format 7 / SESSION 3; a live match retains its policy across upgrades. */
+/* Formats 1..6 retain their original START/SELECT semantics. A live match
+ * retains its policy across upgrades. */
 bool play_soft_reset_guard();
+/* Format 8 / SESSION 4 keeps the online throw-break rule and its actual simulation
+ * delay. Playback delivers already-delayed inputs, so its delivery delay is not this value. */
+bool play_throw_break_rule();
+int play_input_delay();
 bool play_live();                                   /* the playback reads a live stream */
 /* The hooks' local exit poll (SELECT / window close), also used inside live
  * input and sync-point waits. It must end playback before returning true. */

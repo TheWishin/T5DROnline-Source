@@ -2371,3 +2371,11 @@ reasons, give_up() and the stall clock (a mutation of the clock's restart fails 
   to start the game's own next battle. START cannot pause a direct-fight online
   match; see [No pause online](#no-pause-online-branch-online-no-pause-112)
   for the synchronized skip exceptions.
+
+## Throw-break timing
+
+New sessions extend the throw victim's timed input-command endpoint by the
+agreed input-delay frames. The start and the game's own button and buffering
+checks stay in place. Both PCs apply the rule during lockstep and rollback;
+new replays use their recorded delay, while older recordings keep their old
+timing. See [the RAM evidence, implementation and acceptance runs](THROW_BREAK.md).

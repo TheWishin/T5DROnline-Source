@@ -88,7 +88,16 @@ ly, rx, ry, then P2) of one byte per frame, each XORed with the frame before, so
 run of zeros. The JSON line is a view of the binary (format 4 adds `"unlocks": "open"|"closed"`); the
 game reads only the binary. `launcher/replays.py` reads both (`read_header`, `read_payload`).
 
-**Format 7 (1.2.0 integrated).** All new native recordings use format 7, including when automatic
+**Format 8 (throw-break timing).** All new native recordings use format 8 and guarded SESSION 4.
+The binary layout remains the same as format 7. The game applies the deterministic online throw-break
+rule using the recorded session's actual input delay: rollback delay when known, otherwise the header's
+lockstep delay. Playback inputs already include that delay; the playback's own delivery delay must not be
+used as the compensation. Formats 1–7 and SESSION 1–3 keep their original throw timing. A live match keeps
+the policy captured at its first MATCH record, even when a later SESSION upgrade precedes its result.
+Older readers reject format 8 / SESSION 4 before simulating it. Strict upgrades to SESSION 4 require the
+same version guard as earlier upgrades; repeated SESSION 4 delay updates carry no new guard.
+
+**Format 7 (1.2.0 integrated).** Format 7 recordings introduced a policy version even when automatic
 round skipping is disabled. Its layout matches format 6, but it selects the new deterministic START+SELECT
 soft-reset guard. SELECT takes priority when the combined inputs could reach the game's reset chord;
 START is removed symmetrically after the ordinary skip decision. Native readers of older formats reject
@@ -98,7 +107,7 @@ Format 7 also assigns bit 2 of the per-match rules word: the fighters' intros sk
 (`auto_skip_intro`, docs/NETPLAY.md "Automatic skips"); a playback writes `auto_skip_intro=1` back onto the
 fight line. Readers clear the bit in formats 5 and 6 (no released build wrote format 6 or 7 before it).
 
-New live streams use guarded SESSION 3 from the first session record, with the same payload layout as
+Format 7 live streams use guarded SESSION 3 from the first session record, with the same payload layout as
 SESSION 2. The guard makes older native spectators refuse before unsupported input rules can run.
 Legacy SESSION 1/2 keeps the historical reset policy. Strict guarded upgrades 1->2, 1->3 and 2->3 are
 accepted; downgrade, same-version guard and unguarded upgrade are rejected. A match keeps the policy it

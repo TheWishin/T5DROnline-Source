@@ -91,7 +91,7 @@ class Source(unittest.TestCase):
 
     def test_replay_keeps_the_rules(self):
         rp = read("src/netplay/replay.cpp")
-        self.assertIn("constexpr uint32_t kVersion = 7;", rp)
+        self.assertIn("constexpr uint32_t kVersion = 8;", rp)
         self.assertIn("put32(b, m.ft.rules);", rp)
         self.assertIn("if (ver >= 5) m.ft.rules = r.u32();", rp)
         self.assertIn('*line += " train=1";', rp)
@@ -112,8 +112,8 @@ class Source(unittest.TestCase):
 
     def test_live_spectators_explicitly_version_skip_rules(self):
         rp = read("src/netplay/replay.cpp")
-        self.assertIn("put32(b, rules_version(d) >= 7 ? 3u : rules_version(d) >= 6 ? 2u : 1u);", rp)
-        self.assertIn("if (version < 1 || version > 3) return false;", rp)
+        self.assertIn("put32(b, rules_version(d) - 4);", rp)
+        self.assertIn("if (version < 1 || version > 4) return false;", rp)
         self.assertIn("const uint32_t match_version = version + 4;", rp)
         self.assertIn("p.live_match_version = match_version;", rp)
         self.assertIn("get_match(r, p.live_match_version)", rp)

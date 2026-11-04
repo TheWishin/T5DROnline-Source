@@ -61,6 +61,12 @@ n fight frames, see "Cost"), `T5_TRAINING_TRACE=<file>` (research: the fight
 block of every live frame, see below; `T5_TRAINING_TRACE_RANGES=addr:len[:every],...`
 adds more guest ranges, hex, every n frames).
 
+`T5_TRAINING_TRACE` also works with offline `T5_RB_MODE=test` scripted
+fights: it records uninterrupted test boundaries, without running the
+practice helpers or recording re-simulated frames. The binary layout is the
+same. [Throw-break research](THROW_BREAK.md) describes an offline probe and
+the distinction between the training block base and the engine fighter pointer.
+
 For advantage diagnostics, set `T5_TRAINING_DIAG=<file>` before starting the
 game (PowerShell: `$env:T5_TRAINING_DIAG = 'training-diag.txt'`). It is off by
 default; the text file is overwritten at startup. During tracked moves in

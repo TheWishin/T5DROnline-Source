@@ -528,6 +528,18 @@ void trace_frame()
 
 } // namespace
 
+/* rb_test owns the offline scripted frame boundary, bypassing the usual
+ * training callback. Expose its read-only RAM trace without overlay tracking,
+ * practice helpers, input handling or guest writes. The record layout stays
+ * identical to the normal live-frame trace. */
+extern "C" void t5_training_trace_frame(void)
+{
+    const char* path = getenv("T5_TRAINING_TRACE");
+    if (!path || !*path) return;
+    if (!g_init) init();
+    if (g_cfg.trace) trace_frame();
+}
+
 /* The direct-fight driver calls this during its boot initialisation, before
  * the first picture can be presented, and whenever its readiness changes.
  * Keep this independent of training init and guest memory: the very first

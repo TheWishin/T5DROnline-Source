@@ -33,6 +33,19 @@ static void directions_do_not_block() {
     CHECK(!m.tick(back,true,L)); CHECK(!m.tick(back|punch,true,L+1)); CHECK(!m.tick(back,true,L+2));
     CHECK(m.tick(back|kConfirm,true,L+3)); CHECK(m.pending().action=="accept");
 }
+static void second_vote_after_a_loading_frame() {
+    Menu m; CHECK(m.update(prompt(),100,"launch","session"));
+    CHECK(!m.tick(0,true,100+L)); // the question was read, released and armed
+    Prompt opponent=prompt(2); opponent.opp_state="accept";
+    CHECK(m.update(opponent,110+L,"launch","session"));
+    CHECK(!m.locked(110+L)); // opponent's answer is still the same question
+    /* The dedicated runtime UI reader delivers a Cross tap that began and
+     * ended during a 193 ms loading frame. It must count as the second vote. */
+    CHECK(m.tick(kConfirm,true,293+L));
+    CHECK(m.pending().action=="accept");
+    CHECK(!m.tick(0,true,294+L));
+    CHECK(!m.tick(kConfirm,true,295+L)); // one outstanding answer, even if pressed again
+}
 static void countdown() {
     Menu m; Prompt p=prompt(); CHECK(m.update(p,1000,"launch","session"));
     CHECK(m.countdown(1000)==9000); CHECK(m.countdown(5000)==5000); CHECK(m.countdown(10000)==0);
@@ -86,5 +99,5 @@ static void parsing() {
     std::string unicode=good; unicode.replace(unicode.find("Ready?"),6,"\\uD83D\\uDE00");
     CHECK(parse_prompt(unicode,p)); CHECK(p.title=="\xf0\x9f\x98\x80");
 }
-int main() { decisions(); directions_do_not_block(); countdown(); identities_expiry_focus(); contexts(); parsing();
+int main() { decisions(); directions_do_not_block(); second_vote_after_a_loading_frame(); countdown(); identities_expiry_focus(); contexts(); parsing();
     std::printf("PASS %u checks\n",checks); }

@@ -1,7 +1,7 @@
-"""Patch 0089 regressions; fake host input and a headless overlay, no game/server.
+"""Rematch runtime regressions; fake host input and a headless overlay, no game/server.
 
-These tests are source only during the mirror task. Maintainer execution may
-compile a tiny standalone C harness (never the game) when CC is configured.
+Source checks always run. Optional C harnesses exercise overlay composition
+and the prepared runtime's actual pad sampler with a fake clock.
 """
 import os
 from pathlib import Path
@@ -14,6 +14,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 PATCH = ROOT / "patches/ps3recomp/0089-ingame-rematch-overlay.patch"
 BASE = ROOT / "patches/ps3recomp/0045-training-overlay.patch"
+TAP_PATCH = ROOT / "patches/ps3recomp/0116-ui-pad-tap-latch.patch"
 
 
 def added_files(patch):
@@ -142,7 +143,7 @@ class RematchRuntimePatch(unittest.TestCase):
         self.assertIn("L\"Malgun Gothic\"", source)
         self.assertIn("g_native_cache[512]", source)
 
-    def test_ui_pad_does_not_consume_a_gameplay_latch(self):
+    def test_ui_pad_has_a_reader_independent_of_gameplay(self):
         patch = PATCH.read_text(encoding="utf-8")
         source = added_files(patch)["libs/input/cellPad.c"]
         # The header also declares this API. Inspect the implementation's body,
@@ -151,24 +152,38 @@ class RematchRuntimePatch(unittest.TestCase):
             r"(?ms)^s32 cellPad_peek_local\([^;{}]*\)\s*\{(.*?)^\}", source)
         self.assertEqual(len(functions), 1, "expected one cellPad_peek_local definition")
         function = functions[0]
-        self.assertIn("padh_sample(port_no, &st, padh_min_interval_us())", function)
-        self.assertNotIn("padh_read(", function)
+        # Apply the follow-up's call-site hunk to the original API. The old
+        # current-only peek loses a complete press during a long live frame.
+        patch = TAP_PATCH.read_text(encoding="utf-8")
+        removed = "padh_sample(port_no, &st, padh_min_interval_us());"
+        added = "padh_read(port_no, PADH_READER_UI, &st, padh_min_interval_us());"
+        self.assertIn("-    " + removed, patch)
+        self.assertIn("+    " + added, patch)
+        self.assertIn(removed, function)
+        function = function.replace(removed, added)
+        self.assertIn(added, function)
+        self.assertNotIn("PADH_READER_GAME", function)
+        self.assertNotIn("PADH_READER_LOCAL", function)
         self.assertNotIn("cellPad_sample_local(", function)
         self.assertNotIn("pad_poll_backend(", function)
+        self.assertIn("PADH_READER_UI    = 2", patch)
+        self.assertIn("PADH_READERS      = 3", patch)
 
     def test_hunk_counts(self):
-        lines = PATCH.read_text(encoding="utf-8").splitlines()
-        for i, line in enumerate(lines):
-            match = re.match(r"@@ -\d+,(\d+) \+\d+,(\d+) @@", line)
-            if not match:
-                continue
-            hunk = []
-            for item in lines[i + 1:]:
-                if item.startswith(("diff --git ", "@@ ")):
-                    break
-                hunk.append(item)
-            self.assertEqual(int(match[1]), sum(s.startswith((" ", "-")) for s in hunk))
-            self.assertEqual(int(match[2]), sum(s.startswith((" ", "+")) for s in hunk))
+        for path in (PATCH, TAP_PATCH):
+            with self.subTest(patch=path.name):
+                lines = path.read_text(encoding="utf-8").splitlines()
+                for i, line in enumerate(lines):
+                    match = re.match(r"@@ -\d+,(\d+) \+\d+,(\d+) @@", line)
+                    if not match:
+                        continue
+                    hunk = []
+                    for item in lines[i + 1:]:
+                        if item.startswith(("diff --git ", "@@ ")):
+                            break
+                        hunk.append(item)
+                    self.assertEqual(int(match[1]), sum(s.startswith((" ", "-")) for s in hunk))
+                    self.assertEqual(int(match[2]), sum(s.startswith((" ", "+")) for s in hunk))
 
     def test_headless_layer_behavior(self):
         compiler = os.environ.get("CC")
@@ -188,6 +203,35 @@ class RematchRuntimePatch(unittest.TestCase):
             command += ["-lgdi32", "-luser32"] if os.name == "nt" else ["-pthread", "-lm"]
             subprocess.run(command, check=True, capture_output=True, text=True)
             subprocess.run([str(exe)], check=True, capture_output=True, text=True)
+
+
+class RematchTapRuntime(unittest.TestCase):
+    """Compile the real runtime's sampler/delivery with explicit fake-clock samples."""
+
+    def test_press_during_a_long_frame_and_reader_independence(self):
+        if os.name != "nt":
+            self.skipTest("the runtime's pad layer is Windows only")
+        from test_ps_hid import find_ps3recomp, find_vcvars
+        tree = find_ps3recomp()
+        vcvars = find_vcvars()
+        compiler = shutil.which("clang-cl") or r"C:\Program Files\LLVM\bin\clang-cl.exe"
+        if not tree or not vcvars or not os.path.isfile(compiler):
+            self.skipTest("requires the patched runtime, clang-cl and Visual Studio build tools")
+        header = Path(tree, "libs/input/pad_host.h").read_text(encoding="utf-8")
+        self.assertIn("PADH_READER_UI", header, "prepare the runtime through patch 0116")
+        with tempfile.TemporaryDirectory() as directory:
+            executable = os.path.join(directory, "rematch_ui_tap_test.exe")
+            source = ROOT / "tests/c/rematch_ui_tap_test.c"
+            includes = " ".join(f'/I "{Path(tree, *p)}"' for p in
+                                (("libs", "input"), ("libs",), ("runtime",), ("include",)))
+            command = (f'"{vcvars}" >nul 2>&1 && "{compiler}" /nologo /O1 /W0 {includes} '
+                       f'"{source}" /Fe:"{executable}" /Fo:"{directory}/rematch_ui_tap_test.obj"')
+            build = subprocess.run(f'cmd /s /c "{command}"', capture_output=True, text=True, timeout=120)
+            self.assertEqual(build.returncode, 0, build.stdout + build.stderr)
+            result = subprocess.run([executable, os.path.join(directory, "pad.txt")],
+                                    capture_output=True, text=True, timeout=15, cwd=directory)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertRegex(result.stdout, r"PASS \d+ checks")
 
 
 if __name__ == "__main__":

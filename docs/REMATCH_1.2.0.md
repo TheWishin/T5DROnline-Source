@@ -66,7 +66,8 @@ The game (`src/directfight/df_ui.cpp`, `ui_logic.h`): a worker thread reads `ui.
 revision counts), prepares the glyphs, writes the answer (`ui_action.json`) and a heartbeat (`ui_ready.json`: the
 revision it shows). The main thread, at the live frame boundary only (never in a re-simulated frame or a replay),
 peeks the local player's controller (`t5_local_player_pad_ui`: the port pressed last; patch 0089's
-`cellPad_peek_local` does not consume the press) and draws the overlay layer 1 (the question wins over the training
+`cellPad_peek_local` uses its own tap reader, patch 0116, so a short press survives a loading frame without
+consuming either gameplay reader's presses) and draws the overlay layer 1 (the question wins over the training
 overlay while shown). Nothing of it touches guest memory, the exchanged inputs or the netplay session: both games
 simulate the same, whatever the players press during the question. The game logs `in-game question shown: rematch
 for match ...` and `in-game question answered: accept|decline (match ...)`.

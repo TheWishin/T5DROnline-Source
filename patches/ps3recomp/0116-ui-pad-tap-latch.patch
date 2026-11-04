@@ -1,0 +1,40 @@
+diff --git a/libs/input/pad_host.h b/libs/input/pad_host.h
+--- a/libs/input/pad_host.h
++++ b/libs/input/pad_host.h
+@@ -63,7 +63,8 @@
+ enum {
+     PADH_READER_GAME  = 0,  /* cellPadGetData: the title */
+     PADH_READER_LOCAL = 1,  /* cellPad_sample_local: netplay's local input, once per frame */
+-    PADH_READERS      = 2
++    PADH_READER_UI    = 2,  /* cellPad_peek_local: host menus, independent of gameplay */
++    PADH_READERS      = 3
+ };
+ 
+ /* Load controls.ini, enumerate devices, start the hot-plug thread.
+diff --git a/libs/input/cellPad.c b/libs/input/cellPad.c
+--- a/libs/input/cellPad.c
++++ b/libs/input/cellPad.c
+@@ -1304,9 +1304,11 @@
+ #endif
+ }
+ 
+-/* Host-only UI input: padh_sample returns current mapped buttons, unlike
+- * padh_read it never consumes PADH_READER_GAME or PADH_READER_LOCAL's tap
+- * latch. The menu's release-to-arm/edge state is owned by its caller. */
++/* Host-only UI input: its own tap latch retains presses across a loading
++ * frame (for example, leaving the win pose while the rematch question is up).
++ * It never consumes PADH_READER_GAME or PADH_READER_LOCAL's latch. As for
++ * those readers, old presses expire; the menu owns release-to-arm, the new
++ * question's input lock and edge detection. */
+ s32 cellPad_peek_local(u32 port_no, CellPadData* out)
+ {
+     if (!out || port_no >= CELL_PAD_MAX_PORT_NUM)
+@@ -1314,7 +1316,7 @@
+     memset(out, 0, sizeof *out);
+ #if PAD_BACKEND_XINPUT
+     PadHostPort st;
+-    padh_sample(port_no, &st, padh_min_interval_us());
++    padh_read(port_no, PADH_READER_UI, &st, padh_min_interval_us());
+     if (!st.connected) return CELL_OK;
+     const u16 b = st.buttons;
+     out->len = CELL_PAD_LEN_CHANGE_DEFAULT;

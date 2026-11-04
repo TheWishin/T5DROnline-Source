@@ -10,6 +10,8 @@ What it looks for (each only where the evidence is):
                    game's own "data is corrupted" message box
   unpack_memory    the last build ran out of memory while unpacking (MemoryError in build.log; GitHub #24)
   firewall         Windows Firewall blocks t5dr.exe (lobby/t5lobby/fwcheck.py, read-only)
+  old_cpu          the processor lacks SSE4.1 (Core 2 before Penryn, Phenom II / Athlon II, Llano, Bobcat): the runtime
+                   is built for it and stops at its start (src/platform/cpu_check.cpp, exit code 14) -- 1.2.1
   two_cores        the processor has 2 cores (i3-3240, i5-4210M: under ~20 frames per second in fights)
   gpu_tier1        the newest game log names a graphics card with resource binding tier 1 (old GT 730 and alike)
   wine             the launcher runs under Wine / Proton (ntdll's wine_get_version)
@@ -233,17 +235,35 @@ def wine_version():
         return "Wine"
 
 
+def cpu_features():
+    """{"sse41": bool} from Windows (IsProcessorFeaturePresent 37), or {} when it cannot say."""
+    if os.name != "nt":
+        return {}
+    try:
+        import ctypes
+        return {"sse41": bool(ctypes.windll.kernel32.IsProcessorFeaturePresent(37))}
+    except (OSError, AttributeError):
+        return {}
+
+
 def system_facts():
-    """What check_pc needs from this PC: physical cores, logical processors, Wine."""
+    """What check_pc needs from this PC: physical cores, logical processors, Wine, SSE4.1."""
     try:
         cores = report._physical_cores()
     except Exception:       # noqa: BLE001 -- a fact we cannot read is a fact we do not use
         cores = None
-    return {"cores": cores, "logical": os.cpu_count(), "wine": wine_version()}
+    return dict({"cores": cores, "logical": os.cpu_count(), "wine": wine_version()}, **cpu_features())
 
 
 def check_pc(facts, out_dir=None):
     out = []
+    if facts.get("sse41") is False:
+        out.append(Finding(
+            "old_cpu", N_("Your processor is too old for the game"),
+            N_("The game needs a processor with SSE4.1: Intel Core 2 from 2008 on (E7000, E8000, Q8000, Q9000) or any "
+               "Core i3/i5/i7, AMD FX, A-series from 2012 or Ryzen. This one does not have it, so the game stops at "
+               "its start."),
+            N_("This PC: no SSE4.1."), help="this-processor-is-too-old-or-build-the-game-again"))
     cores = facts.get("cores")
     if cores and cores <= 2:
         out.append(Finding(

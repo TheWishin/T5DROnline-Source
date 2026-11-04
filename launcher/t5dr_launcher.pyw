@@ -283,6 +283,34 @@ class App(tk.Tk):
         self.after(600, self.refresh_rank_art)
         if not self.readonly:
             self.after(800, self._controls_first_start)
+            self.after(500, self._old_pc_check)
+
+    def _old_pc_check(self, show=True):
+        """1.2.1: on an old PC with untouched graphics settings, the Old PC settings once (core.apply_old_pc) -> the
+        sentence that says so (also on the Play tab when show), or None."""
+        if self.readonly:
+            return None
+        reasons = core.apply_old_pc(self.settings)
+        if not reasons:
+            return None
+        text = core.old_pc_text(reasons)
+        core.log("old PC settings chosen: " + "; ".join(r[0].format(**r[1]) for r in reasons))
+        self._refresh_graphics_vars()
+        self.save_settings()
+        if show and hasattr(self, "run_var") and not (self.game and self.game.running()):
+            self.run_var.set(text)
+        return text
+
+    def _refresh_graphics_vars(self):
+        """Settings -> Graphics shows the settings as they are now (after a preset)."""
+        if hasattr(self, "internal_res_var"):
+            self.internal_res_var.set(self.settings.internal_res_choice())
+        if hasattr(self, "stage_blur_var"):
+            self.stage_blur_var.set(self.settings["stage_blur"])
+        for key, var in getattr(self, "graphics_vars", {}).items():
+            var.set(self.settings[key])
+        if hasattr(self, "internal_res_warn"):
+            self._internal_res_changed(save=False)
 
     def _controls_first_start(self):
         first_start.show_controls_hint(
@@ -737,11 +765,19 @@ class App(tk.Tk):
                    command=lambda: self._graphics_preset(core.LOWEST_PRESET)).pack(side="left", padx=(0, 8))
         ttk.Button(row, text=t("Default"),
                    command=lambda: self._graphics_preset(core.DEFAULT_PRESET)).pack(side="left")
+        row = ttk.Frame(gx)          # (a row of its own: three buttons in one were too wide in some languages)
+        row.pack(anchor="w", pady=(4, 0))
+        ttk.Button(row, text=t("Old PC"),
+                   command=lambda: self._graphics_preset(core.OLD_PC_PRESET)).pack(side="left")
         ttk.Label(gx, style="Muted.TLabel", wraplength=300, justify="left", text=t(
             "Lowest: Internal resolution Lowest; stage blur / glow and shadows off. Effects stay on: the hit "
             "effects show what happens in a fight. Default puts them back. Only your picture changes: online, "
             "both players can choose differently.")).pack(
             anchor="w", pady=(4, 0))
+        ttk.Label(gx, style="Muted.TLabel", wraplength=300, justify="left", text=t(
+            "Old PC: like Lowest, and the effects off too -- for a 2-core processor or a graphics card from before "
+            "~2013. The launcher chooses it by itself once on such a PC, as long as you have not changed these "
+            "settings.")).pack(anchor="w", pady=(4, 0))
 
         # Power saving (PS3_LAPTOP, core.POWER_SAVING; docs/RENDER_PERF.md "Laptops, handhelds and 8-core APUs"):
         # less CPU around the same game, so a laptop or handheld keeps its clock and its 60 fps.
@@ -1485,12 +1521,8 @@ class App(tk.Tk):
         if self.readonly:
             return
         core.apply_preset(self.settings, preset)
-        self.internal_res_var.set(self.settings.internal_res_choice())
-        if hasattr(self, "stage_blur_var"):
-            self.stage_blur_var.set(self.settings["stage_blur"])
-        for key, var in getattr(self, "graphics_vars", {}).items():
-            var.set(self.settings[key])
-        self._internal_res_changed(save=False)
+        self.settings["old_pc"] = "done"     # a preset chosen by hand: the Old PC settings never come by themselves
+        self._refresh_graphics_vars()
         self.save_settings()
 
     def _discord_ready(self):
@@ -1925,6 +1957,9 @@ class App(tk.Tk):
             speed = core.speed_hint(lines)
             if speed:
                 notes.append(speed)
+        old_pc = self._old_pc_check(show=False)     # the game log may name an old graphics card now
+        if old_pc:
+            notes.append(old_pc)
         if not self.settings["clock_hint_shown"]:
             clock = core.clock_hint(lines)
             if clock:

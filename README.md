@@ -82,11 +82,16 @@ tested between two real PCs over the internet (AMD/60 Hz vs Intel/240 Hz).
 
 ## Requirements
 
-**Minimum requirements:** Windows 10 or 11 (64-bit), a 4-core CPU from about
-2014 on (Intel Core i5/i7 4th gen, AMD Ryzen or newer; AVX2 recommended), a
-DirectX 12-capable graphics card (feature level 11_0) and 8 GB RAM. The CPU
-matters most: the game's main work runs on one core, so one fast core helps
-more than many cores or a strong graphics card.
+**Minimum requirements:** Windows 10 or 11 (64-bit), a processor with SSE4.1
+(Intel Core 2 from 2008, any Core i3/i5/i7; AMD FX, A-series from 2012, Ryzen),
+a DirectX 12 graphics card (feature level 11_0: NVIDIA GeForce GTX 400 / GT 600
+and newer, AMD Radeon HD 7000 and newer, Intel HD 4400 and newer) and 4 GB RAM.
+For 60 fps in fights: a 4-core processor from about 2011 on (an Intel Core
+i5-2500 with a GeForce GT 730 plays at 55-60). A 2-core processor (Core
+i3-2100 / i3-3240) plays with the **Old PC** settings, which the launcher picks
+by itself there (see [Old PCs](docs/WEAK_PC.md#old-pcs-121)). The CPU matters
+most: the game's main work runs on one core, so one fast core helps more than
+many cores or a strong graphics card.
 
 In detail:
 
@@ -95,15 +100,20 @@ In detail:
   download. Windows "N" editions: the movies stay black without the Media
   Feature Pack; the rest works.
 - A graphics card with Direct3D 12 (feature level 11_0 or higher) and a
-  current driver. That is about: NVIDIA GeForce GTX 600 or newer, AMD Radeon
-  HD 7000 or newer, Intel graphics of 6th-gen Core (2015) or newer. Tested on
-  an NVIDIA RTX 3090 and on Windows' software renderer (WARP) only. Laptops
-  with two graphics chips use the fast one by default.
+  current driver. That is about: NVIDIA GeForce GTX 400 / GT 600 or newer
+  (Fermi cards such as the old GT 730 run, slowly: about 20-35 fps), AMD
+  Radeon HD 7000 or newer, Intel HD 4400 (2013) or newer -- Intel HD 4000 and
+  older have no DirectX 12 driver. Tested on an NVIDIA RTX 3090, the Radeon
+  graphics of a Ryzen 7950X and Windows' software renderer (WARP); players
+  play on GT 730s. Laptops with two graphics chips use the fast one by default.
 - A 64-bit Intel or AMD processor with SSE4.1: Intel Core 2 (2008) or newer,
-  AMD FX, A-series or Ryzen (2011) or newer. That starts the game; for full
-  speed see the minimum above. AVX2 is not needed. With AVX2
+  AMD FX, A-series or Ryzen (2011) or newer. Older ones (Core 2 Quad Q6600,
+  Phenom II, Athlon II) cannot run it: the game says so when it starts, and
+  **Check my problem** says it before a build. AVX2 is not needed. With AVX2
   (Intel 4th-gen Core / AMD Ryzen and newer) the build makes faster code; the
-  launcher decides this by itself. Only tested on a CPU with AVX2.
+  launcher decides this by itself.
+- 4 GB RAM: the game uses about 0.8 GB (1.1 GB committed) in a fight; BUILD
+  GAME runs as many compile jobs as the free memory allows.
 - Speed: fights held 60 fps with 4 CPU threads in our tests (fast desktop
   cores); online against a far-away player (rollback, 150 ms) about 50 fps.
   A PC a little too slow for 60 fps runs fights at about 45-55 fps since 1.1.3.

@@ -106,6 +106,7 @@ DEFAULTS = {
     "stage_blur": "off",       # on | off (PS3_STAGE_BLUR=0): the blur / glow some stages put on the picture
     "shadows": "on",           # on | off (PS3_SHADOWS=0): the fighters' and the stage's shadows (GRAPHICS)
     "effects": "on",           # on | off (PS3_EFFECTS=0): hit sparks, flames, smoke, mist, waterfalls (GRAPHICS)
+    "old_pc": "auto",          # auto: on an old PC with untouched graphics the Old PC settings are put in once (apply_old_pc) | done
     "input_delay": "auto",     # online input delay: auto (by ping) | 0 | 1 | 2 frames, T5_RB_NET_DELAY
     "training": "frames",      # training overlay in Practice: off | inputs | frames (inputs + frame data), T5_TRAINING
     "training_all": False,     # ... also in the other offline modes (T5_TRAINING_ALL=1)
@@ -1559,12 +1560,90 @@ def apply_preset(settings, preset):
 
 
 def preset_in_use(settings):
-    """'lowest' or 'default' when the graphics settings are exactly that preset's, else None."""
-    for name, preset in (("lowest", LOWEST_PRESET), ("default", DEFAULT_PRESET)):
+    """'lowest', 'old_pc' or 'default' when the graphics settings are exactly that preset's, else None."""
+    for name, preset in (("lowest", LOWEST_PRESET), ("old_pc", OLD_PC_PRESET), ("default", DEFAULT_PRESET)):
         if all(settings.get(k) == v for k, v in preset.items() if k != "internal_res_set") and \
                 (name != "default" or not settings.get("internal_res_set")):
             return name
     return None
+
+
+# Old PCs (1.2.1, owner: "weak PC means OLD PC"; docs/WEAK_PC.md "Old PCs"): a processor with 2 cores (an i3-2100 /
+# i3-3240 / i5-4210M class: 2-core mode in the game) or a graphics card with D3D12 resource binding tier 1 (the Fermi
+# GT 730 and alike, as the newest game log names it) gets the Old PC settings while the graphics are as the launcher
+# ships them: the launcher puts the Old PC settings in once (apply_old_pc: at its start, and after a game, when the
+# game log first names the card) and says so -- Internal resolution Lowest, no stage blur, no shadows and no effects
+# (fewer draws for the processor to translate and for the card to draw; GitHub #12's PC: 24 -> 34 fps with shadows
+# and effects off). Settings -> Graphics -> Default puts the normal look back, and it is never put in again
+# (old_pc "done"). Picture only: online both players may differ.
+OLD_PC_PRESET = {"internal_res": "lowest", "internal_res_set": True, "stage_blur": "off", "shadows": "off",
+                 "effects": "off"}
+GPU_TIER = re.compile(r"^\[gpu\] adapter: (.+?) \(vendor [0-9A-Fa-f]+, .*?resource binding tier (\d+)")
+
+
+def physical_cores():
+    """This PC's processor cores (not logical processors), or None (problem_report._physical_cores)."""
+    try:
+        import problem_report
+        return problem_report._physical_cores()
+    except Exception:       # noqa: BLE001 -- a fact we cannot read is a fact we do not use
+        return None
+
+
+def last_gpu_tier(out_dir, logs=None):
+    """(adapter name, resource binding tier) from the newest game log that names them, or None."""
+    paths = logs if logs is not None else sorted(glob.glob(os.path.join(out_dir, "logs", "game-*.log")),
+                                                 reverse=True)[:5]
+    for path in paths:
+        try:
+            with open(path, encoding="utf-8", errors="replace") as f:
+                for n, line in enumerate(f):
+                    if n > 3000:
+                        break
+                    m = GPU_TIER.match(line)
+                    if m:
+                        return m.group(1), int(m.group(2))
+        except OSError:
+            continue
+    return None
+
+
+def old_pc_reasons(out_dir, cores=None, gpu=None):
+    """[(N_ text, values)] why this PC counts as an old PC; [] when it does not. cores / gpu: for tests (gpu =
+    (name, tier) or False for none)."""
+    out = []
+    cores = physical_cores() if cores is None else cores
+    if cores and cores <= 2:
+        out.append((N_("a processor with {cores} cores"), {"cores": cores}))
+    gpu = last_gpu_tier(out_dir) if gpu is None else gpu
+    if gpu and gpu[1] <= 1:
+        out.append((N_("an old graphics card ({name}: resource binding tier 1)"), {"name": gpu[0]}))
+    return out
+
+
+def apply_old_pc(settings, reasons=None):
+    """Once per launcher.json: on an old PC (old_pc_reasons) whose graphics settings are still the defaults, put the
+    Old PC settings in (OLD_PC_PRESET). -> the reasons when it did (the caller says so and saves), else None. A PC
+    that is not old stays undecided (a game log may name an old card later); graphics already changed: done."""
+    if settings.get("old_pc") != "auto":
+        return None
+    if settings.get("internal_res_set") or preset_in_use(settings) != "default":
+        settings["old_pc"] = "done"
+        return None
+    reasons = old_pc_reasons(settings.out_dir) if reasons is None else reasons
+    if not reasons:
+        return None
+    apply_preset(settings, OLD_PC_PRESET)
+    settings["old_pc"] = "done"
+    return reasons
+
+
+def old_pc_text(reasons):
+    """The launcher's sentence when it put the Old PC settings in (Settings and the Play tab)."""
+    why = ", ".join(t(text, **values) for text, values in reasons)
+    return t("This PC looks like an old PC ({why}), so the launcher chose the Old PC settings: Internal resolution "
+             "Lowest, no stage blur, no shadows and no effects. Settings -> Graphics -> Default puts the normal look "
+             "back.", why=why)
 
 
 # Training overlay (docs/TRAINING.md): the game draws, over its picture, the last inputs of each

@@ -36,6 +36,78 @@ at the end can be pasted to players as it is.
   cores / 8 threads: CPU per frame 6.3 -> 4.6 ms (median), online with
   rollback 9-11 -> 6-6.7 ms (docs/RENDER_PERF.md "The game thread's own
   time").
+- **1.2.1, old PCs** ([below](#old-pcs-121)): what the game needs and why, the
+  **Old PC settings** the launcher picks by itself on 2 cores or an old graphics
+  card, and less processor work on every PC from before 2013 (no AVX2/FMA3):
+  the SPU sound core and the skinning keep their registers in host registers
+  (patch 0113), the game thread's vector float math runs four lanes at a time
+  (patch 0114) -- the same results bit for bit.
+
+## Old PCs (1.2.1)
+
+The owner: *"weak PC means OLD PC. T4 should run on old specs, and T5DR too -- it's static recomp."* The target is a
+PC from 2010-2012: a processor with 2 cores / 4 threads (Intel Core i3-2100, i3-3240) or 4 cores without
+Hyper-Threading (Core i5-2500), the oldest graphics cards with Direct3D 12 at feature level 11_0 (NVIDIA Kepler GT
+630/730, AMD GCN 1 HD 7000), 4 GB RAM.
+
+### What the game needs, and why
+
+| requirement | what needs it | old PCs it leaves out | can it go? |
+|---|---|---|---|
+| Windows 10 or 11, 64-bit | Direct3D 12 (the renderer) | Windows 7 / 8.1 | no: Direct3D 12 exists only on Windows 10 and newer (a Direct3D 11 renderer is not planned) |
+| a 64-bit processor with **SSE4.1** | the runtime is compiled with `-msse4.1`: the SPU sound core's byte shuffles, blends and float ops (`spu_helpers.h`) | Intel Core 2 before "Penryn" (E6000, Q6000 -- 2006/2007), AMD Phenom II, Athlon II, the A-series "Llano" (2011), E-series "Bobcat" | not usefully: the scalar fallbacks exist and give the same bits, but on them the sound core needs 2-3x its time -- 1.0 needed 9-12 ms of each 5.33 ms audio tick before SSE4.1 -- so such a PC would lose its sound. The game says so at its start (exit code 14, `src/platform/cpu_check.cpp`) and since 1.2.1 **Check my problem** says it before a build. Every Intel Core i3/i5/i7 and every AMD FX / A-series from 2012 / Ryzen has SSE4.1 |
+| CMPXCHG16B (`-mcx16`) | the runtime's atomics | none: Windows 8.1 and newer need it themselves | -- |
+| AVX, AVX2, FMA3 | nothing. With AVX2 + FMA + BMI2 + MOVBE the build makes x86-64-v3 code (faster); without it the x86-64 baseline (every 2010-2012 CPU) | -- | -- |
+| Direct3D 12, feature level 11_0 | the renderer | Intel HD 2000-4000 (Sandy and Ivy Bridge graphics: Intel never shipped a Direct3D 12 driver for them), AMD HD 5000/6000 (TeraScale), NVIDIA before Fermi | no (no driver to talk to); Intel HD 4200-4600 (Haswell) have Direct3D 12 but players saw device losses on HD 4400 (TROUBLESHOOTING "Intel HD 4400") |
+| resource binding tier 1 | supported since 1.1.5 (patch 0081's tier-1 path) | -- | -- |
+| RAM | the game: 0.8 GB working set, 1.1 GB committed in a fight (measured below); BUILD GAME: the lift ~0.6 GB, each compile job 0.3-0.6 GB (the number of jobs follows the free memory) | -- | 4 GB is enough |
+
+### The Old PC settings
+
+Launcher -> Settings -> Graphics -> **Old PC**: Internal resolution Lowest, no stage blur, no shadows, no effects.
+Fewer draws for the processor to translate and for the card to draw (GitHub #12's PC: 24 -> 34 fps with shadows and
+effects off). On an old PC -- a processor with 2 cores or fewer, or a graphics card with resource binding tier 1 as the
+newest game log names it -- the launcher chooses them **by itself, once**, while the graphics settings are still as it
+ships them, and says so on the Play tab; **Default** puts the normal look back, and then it never chooses them again.
+Picture only: online both players may differ. (The owner's "Lowest" keeps the effects on; "Old PC" is the stronger
+step.) The game's own 2-core mode (1.1.5) switches on by itself on 2 cores.
+
+### Measured
+
+On this PC (Ryzen 9 7950X) by stand-ins -- the game on 2 cores / 4 threads or 4 cores, `tools/slow_core.py` taking 60 %
+of them, the software paths of a CPU without FMA3, the tier-1 path forced (RENDER_PERF.md "1.2.1: old PCs"):
+
+| stand-in | 1.2.0 | 1.2.1 | 1.2.1 with the Old PC settings |
+|---|---|---|---|
+| 2 cores / 4 threads: fps; processor time a frame | 59.4; 19.4 ms | 59.0-59.5; 18.0-18.6 ms | 59.5-60.0; 16.0-16.4 ms |
+| 4 cores / 4 threads, the pool stage | 52.3 (a stall); 15.4 ms | 59.7; 15.0 ms | -- |
+
+The stand-ins hold ~60 either way, so the gain shows as processor time: 4-7 % less a frame, 15-18 % less with the Old
+PC settings -- on a real 2-core PC that is about the frame rate it gains. Real players: an i5-2500 (4 cores, 3.3 GHz)
+with a Kepler GT 730 plays fights at 55-60 fps (1.1.5 log); GitHub #12's i3-3240 with a Fermi GT 730 at 20-34 fps,
+bound by the card at the defaults and by its 2 cores with lighter settings. Memory: the game 0.8 GB working set, 1.1
+GB committed in a fight.
+
+### The old graphics card (GitHub #12)
+
+The i3-3240 + Fermi GT 730 (resource binding tier 1) logs said game 17-22 ms, "render translation" 27 ms and GPU
+32-37 ms a fight frame at 0.5x. What that was, and what changed since:
+
+- **"Translation 27 ms" was 20 ms of waiting for the GPU** (one frame in flight, 1.1.4); the translation's own work
+  was ~6.6 ms on his 2 cores against 3.5 on the i5-2500 (twice the per-core load: 2 cores + Hyper-Threading). Since
+  1.1.5 a dedicated card has two frames in flight, so the wait overlaps the next frame (patch 0075: +7-13 % with a GPU
+  slower than the game, measured with `RSX_TEST_SLOW_GPU`).
+- **The GPU's 32-37 ms are per draw, not per pixel**: 16x the pixels (0.5x -> 2x) cost only 22 % of the frame rate.
+  ~830 draws a fight frame; his 1.1.6 warm-up log (`build/issue12`, local) has `[gpu-pass]` lines only from menus and
+  4-second warm-up fights (30-100 draws a frame): 1280 x 720 passes at 50-65 us a draw and the present (one full-screen
+  copy) at 1.2 ms -- consistent with a card of ~14 GB/s memory (the DDR3 GT 730) that is simply slow. Shadows and
+  effects off cut the draws by ~40 % (his 24 -> 34 fps): the **Old PC settings** do that by themselves now.
+- What nothing here can measure (every GPU here is tier 3): whether tier-1 descriptor emulation or the per-draw
+  constants read from system memory over PCIe (`[gpu-pass]` "read from system memory per frame": 4.3 MB of vertex
+  constants in a fight) dominate on such a card. Patch 0081 already trims the binding work on tier 1 (`[gpu] tier-1
+  binding path: on`). **What would settle it:** one fight's game log from that PC with 1.2.1 at the defaults and one
+  with the Old PC settings (the `[gpu-pass]` lines are on by default on tier 1), plus the same fight with
+  `RSX_TIER1_PATH=0` under Extra settings.
 
 ## How a fight frame is built
 

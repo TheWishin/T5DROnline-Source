@@ -947,10 +947,31 @@ def stamp_program(stamp):
     return next((l.split("=", 1)[1] for l in lines if l.startswith("program=")), "us")
 
 
+def spu_lifter_id():
+    """The SPU lifter as the SPU step's stamp records it (1.2.1, ps3recomp patch 0113: register promotion changed its
+    output): a new lifter lifts the sound core and the jobs again. "" when the checkout has no lifter yet."""
+    parts = [sha1(os.path.join(P.tools, n)) for n in ("spu_lifter.py", "spu_regpromo.py")
+             if os.path.exists(os.path.join(P.tools, n))]
+    return hashlib.sha1(":".join(parts).encode()).hexdigest()[:16] if parts else ""
+
+
+def stamp_lifter(stamp):
+    """The lifter id an SPU stamp records ("" for a stamp from before 1.2.1)."""
+    try:
+        with open(stamp) as f:
+            lines = f.read().split()
+    except OSError:
+        return ""
+    return next((l.split("=", 1)[1] for l in lines if l.startswith("lifter=")), "")
+
+
 def spu_stamp_text(extra):
-    """The SPU step's stamp: the core's lift arguments, and for another program than the US one its key."""
+    """The SPU step's stamp: the core's lift arguments, the SPU lifter (spu_lifter_id) and for another program than
+    the US one its key."""
     prog = need_program()
-    return extra + "\n" + ("" if prog is US_PROGRAM else "program=" + prog["key"] + "\n")
+    lid = spu_lifter_id()
+    return (extra + "\n" + ("lifter=" + lid + "\n" if lid else "")
+            + ("" if prog is US_PROGRAM else "program=" + prog["key"] + "\n"))
 
 
 def step_spu(a):
@@ -964,13 +985,16 @@ def step_spu(a):
     if os.path.exists(stamp):
         with open(stamp) as f:
             core_args_ok = f.read().split()[:1] == [extra] and stamp_program(stamp) == need_program()["key"]
+    lifter_new = os.path.exists(stamp) and stamp_lifter(stamp) != spu_lifter_id()
+    core_args_ok = core_args_ok and not lifter_new
     if core_done and jobs_done and core_args_ok and not a.force:
         print("  already done")
         return
     if core_done and not core_args_ok and not a.force and stamp_program(stamp) != need_program()["key"]:
         core_done = False                # another program's sound core (1.1.9): extracted and lifted afresh below
     if core_done and not core_args_ok and not a.force:
-        print("  the sound core's lift arguments changed: lifting it again")
+        print("  the SPU lifter changed: lifting the sound core and the jobs again" if lifter_new else
+              "  the sound core's lift arguments changed: lifting it again")
         run([PY, os.path.join(P.tools, "build_spu_workloads.py"), "--images", os.path.join(P.spu, "images"),
              "--lifted", os.path.join(P.spu, "lifted"), "--out", os.path.join(P.spu, "spu_workloads.c"),
              "--register-fn", "t5dr_spu_register_all", "--constructor", "--title", "t5dr", "--eboot", P.elf,
@@ -997,7 +1021,7 @@ def step_spu(a):
     # The SPURS jobs (vertex skinning + the chain's signal job) are raw images
     # in the ELF's data segment, not SPU ELFs; they need their own extractor.
     run([PY, os.path.join(ROOT, "tools", "lift_spu_jobs.py"), "--elf", P.elf, "--spu", P.spu, "--ps3recomp", P.deps]
-        + (["--relift"] if a.force else []))
+        + (["--relift"] if a.force or lifter_new else []))
 
 
 def find_vcvars():

@@ -1,0 +1,269 @@
+diff --git a/tools/spu_lifter.py b/tools/spu_lifter.py
+--- a/tools/spu_lifter.py
++++ b/tools/spu_lifter.py
+@@ -44,6 +44,10 @@
+ """
+ 
+ import argparse
++import os as _os_rp
++import sys as _sys_rp
++_sys_rp.path.insert(0, _os_rp.path.dirname(_os_rp.path.abspath(__file__)))
++import spu_regpromo  # noqa: E402
+ import json
+ import os
+ import re
+@@ -1068,9 +1072,16 @@
+     def emit_source(self,header_name: str) -> str:
+         lines = [SOURCE_PREAMBLE.format(header_name=header_name), ""]
+         weak = "__attribute__((weak)) " if getattr(self, "weak_emit", False) else ""
++        promoted = 0
+         for f in self.functions:
+             lines.append(f"void {weak}{f.name}(spu_context* ctx) {{")
+-            for b in f.body_lines:
++            body = f.body_lines
++            if getattr(self, "regpromo", False) and not self.trace:
++                pb = spu_regpromo.promote(body)
++                if pb is not None:
++                    body = pb
++                    promoted += 1
++            for b in body:
+                 lines.append(b if b.endswith(":") else f"    {b}")
+             lines.append("}")
+             lines.append("")
+@@ -1094,6 +1105,7 @@
+                 lines.append("}")
+             lines.append("")
+ 
++        self.promoted = promoted
+         lines.append("/* Function table */")
+         lines.append("typedef struct { uint32_t addr; void (*func)(spu_context*); const char* name; } spu_func_entry;")
+         lines.append("static const spu_func_entry spu_function_table[] = {")
+@@ -1184,6 +1196,10 @@
+                         "dispatch table at 0x1BD8, `br` into a fallthrough chain, "
+                         "dispatched blocks later -- classified as a return, which "
+                         "silently skipped every job-command handler).")
++    p.add_argument("--regpromo", choices=("on", "off"), default="on",
++                   help="SPU registers in C locals between barriers (tools/spu_regpromo.py, "
++                        "ps3recomp patch 0113); off = every access through ctx->gpr (the same "
++                        "results, slower)")
+     args = p.parse_args()
+ 
+     if args.auto_functions:
+@@ -1298,6 +1314,7 @@
+     insns = disassemble_spu(data, base)
+ 
+     lifter = SPULifter(trace=args.trace, prefix=args.symbol_prefix)
++    lifter.regpromo = args.regpromo == "on"
+     lifter.bi_r0_jump = compute_bi_r0_jumps(insns, bounds)
+     if lifter.bi_r0_jump:
+         print(f"  {len(lifter.bi_r0_jump)} `bi $r0` computed-jump site(s) "
+@@ -1341,7 +1358,8 @@
+ 
+     print(f"Wrote {hp}")
+     print(f"Wrote {sp}")
+-    print(f"  {len(lifter.functions)} function(s) lifted")
++    print(f"  {len(lifter.functions)} function(s) lifted"
++          + (f", {lifter.promoted} with registers in locals (--regpromo)" if lifter.regpromo else ""))
+     print(f"  {len(lifter.call_targets)} call target(s)")
+     if lifter.unsupported:
+         total = sum(lifter.unsupported.values())
+diff --git a/tools/spu_regpromo.py b/tools/spu_regpromo.py
+new file mode 100644
+--- /dev/null
++++ b/tools/spu_regpromo.py
+@@ -0,0 +1,133 @@
++"""SPU register promotion for the lifted C (spu_lifter.py --regpromo, the default).
++
++The lifter writes every SPU register access as ctx->gpr[N]. A local-store store
++(spu_ls_write128) goes through a byte pointer, which the compiler must assume can
++alias the register file, so it reloads and re-stores ctx->gpr around every one:
++in the sound core's FFT loops about a fifth of the time (patch 0113,
++docs/RENDER_PERF.md "SPU registers in host registers").
++
++promote(body) rewrites one lifted function:
++
++  * every register the function names lives in a C local `u128 sN`, loaded from
++    ctx at entry;
++  * a line that only computes on registers and the local store (pure helpers,
++    spu_ls_read128/spu_ls_write128, `if (..) goto loc_X;`, labels, nops) uses the
++    locals;
++  * an exit `{ ctx->pc = ..; g_spu_trampoline_fn = ..; return; }` (also behind an
++    `if`), SPU_RET / SPU_RET_REG first writes back the registers the function
++    writes;
++  * every other line (calls of lifted functions, channel and DMA operations,
++    stops, halts, indirect branches, anything not recognised) is a barrier: the
++    written registers go back to ctx before it, the line runs unchanged on
++    ctx->gpr, and every local is loaded again after it;
++  * a write-back also ends the body, for a function that falls off its end.
++
++The operations and their order do not change; only where a register value sits
++between them. A register the function only reads is never written back; one it
++writes is written back at every exit and barrier, whether or not this path wrote
++it (then it still holds the value loaded at entry: the same bits).
++
++Near-float operands (clean_floats): fa/fs/fm/fma/fms/fnms under SPU_NEAR_FLOAT
++first flush denormal operands to +0 (spu__nf_daz). A register that holds the
++result of such an operation never is denormal or -0 (their results are flushed,
++the exact path's too; tests/c/spu_clean_float_test.c), so that flush is the
++identity and the lifter marks the operand known-clean: spu_fa_k(a, b, 1, 0).
++Known-clean = written by one of those six operations earlier in the same straight
++line of code: forgotten at every label, barrier and other write of the register.
++Without SPU_NEAR_FLOAT the _k forms are the plain operations (spu_helpers.h).
++"""
++import re
++
++_GPR = re.compile(r"ctx->gpr\[(\d+)\]")
++_LS = re.compile(r"\bspu_ls_(?:read|write)128\(ctx,")
++_GOTO = re.compile(r"^if \((.*)\) goto loc_[0-9A-F]+;$")
++_EXIT = re.compile(r"^(if \((?P<cond>.*)\) )?\{ ctx->pc = 0x[0-9A-Fa-f]+u?; g_spu_trampoline_fn = [A-Za-z_0-9]+; return; \}$")
++_RET = re.compile(r"^SPU_RET(?:_REG)?\(ctx(?:, \d+)?\);$")
++_FLOAT = re.compile(r"^s(\d+) = (spu_f(?:a|s|m|ma|ms|nms))\(((?:s\d+, )*s\d+)\);$")
++_WRITE = re.compile(r"\bs(\d+) = ")
++_FLOAT_ARITY = {"spu_fa": 2, "spu_fs": 2, "spu_fm": 2, "spu_fma": 3, "spu_fms": 3, "spu_fnms": 3}
++
++
++def _pure(code):
++    """A line that only uses registers, pure helpers and the local store."""
++    if code.endswith(":") or code == "/* nop */;" or code == "/* branch hint (ignored) */;":
++        return True
++    rest = _LS.sub("LS(", _GPR.sub("R", code))
++    if "ctx" in rest or "return" in rest or "{" in rest or "}" in rest or "g_spu" in rest:
++        return False
++    if "goto" in rest:
++        return bool(_GOTO.match(code))
++    if "spu_func_" in rest or "extern" in rest or "fprintf" in rest:
++        return False
++    # one statement: an assignment to a register or a local-store write
++    return rest.count(";") == 1 and (re.match(r"^R = [^;]*;$", rest) is not None or
++                                     re.match(r"^LS\([^;]*\);$", rest) is not None)
++
++
++def _sub(code):
++    return _GPR.sub(lambda m: "s" + m.group(1), code)
++
++
++def promote(body, clean_floats=True, min_pure=4, max_barrier_ratio=8):
++    """Return the promoted body (a new list of lines) or None to keep the function as it is."""
++    kinds = []
++    for b in body:
++        code = b.strip()
++        if _pure(code):
++            kinds.append("pure")
++        elif _EXIT.match(code) and "ctx" not in _GPR.sub("R", (_EXIT.match(code).group("cond") or "")):
++            kinds.append("exit")
++        elif _RET.match(code):
++            kinds.append("ret")
++        else:
++            kinds.append("barrier")
++    regs = sorted({int(n) for b in body for n in _GPR.findall(b)})
++    if not regs:
++        return None
++    n_pure = sum(1 for b, k in zip(body, kinds) if k == "pure" and not b.strip().endswith(":")
++                 and not b.strip().startswith("/*"))
++    n_bar = kinds.count("barrier")
++    if n_pure < min_pure or n_pure < max_barrier_ratio * n_bar:
++        return None
++    written = sorted({int(n) for b, k in zip(body, kinds) if k == "pure"
++                      for n in re.findall(r"ctx->gpr\[(\d+)\] =", b)})
++    wb = " ".join("ctx->gpr[%d] = s%d;" % (n, n) for n in written)
++    reload = " ".join("s%d = ctx->gpr[%d];" % (n, n) for n in regs)
++    out = ["u128 " + ", ".join("s%d = ctx->gpr[%d]" % (n, n) for n in regs) + ";"]
++    clean = set()
++    for b, k in zip(body, kinds):
++        code = b.strip()
++        if k == "pure":
++            if code.endswith(":"):
++                clean = set()
++                out.append(b)
++                continue
++            line = _sub(code)
++            m = _FLOAT.match(line) if clean_floats else None
++            if m:
++                dst, op, args = m.group(1), m.group(2), m.group(3).split(", ")
++                if len(args) == _FLOAT_ARITY[op]:
++                    ks = ["1" if a[1:] in clean else "0" for a in args]
++                    line = "s%s = %s_k(%s, %s);" % (dst, op, ", ".join(args), ", ".join(ks))
++                    clean.add(dst)
++                    out.append(line)
++                    continue
++            for d in _WRITE.findall(line):
++                clean.discard(d)
++            out.append(line)
++        elif k == "exit":
++            m = _EXIT.match(code)
++            tail = code[code.index("{ ctx->pc"):]
++            pre = "if (%s) " % _sub(m.group("cond")) if m.group("cond") is not None else ""
++            out.append(pre + "{ " + (wb + " " if wb else "") + tail[2:])
++        elif k == "ret":
++            out.append(("{ %s } " % wb if wb else "") + code)
++        else:
++            if wb:
++                out.append("{ %s }" % wb)
++            out.append(code)
++            out.append("{ %s }" % reload)
++            clean = set()
++    if wb:
++        out.append("{ %s }" % wb)
++    return out
+diff --git a/runtime/spu/spu_helpers.h b/runtime/spu/spu_helpers.h
+--- a/runtime/spu/spu_helpers.h
++++ b/runtime/spu/spu_helpers.h
+@@ -1106,6 +1106,41 @@
+ SPU__SX_INLINE u128 spu_fma(u128 a, u128 b, u128 c)  { return spu__nf_fma(a, b, c, 0, 0); }            /* a*b + c */
+ SPU__SX_INLINE u128 spu_fms(u128 a, u128 b, u128 c)  { return spu__nf_fma(a, b, c, 0, 0x80000000u); }  /* a*b - c */
+ SPU__SX_INLINE u128 spu_fnms(u128 a, u128 b, u128 c) { return spu__nf_fma(a, b, c, 0x80000000u, 0); }  /* c - a*b */
++/* Patch 0113: the same operations with operands the lifter knows to be the result of
++ * one of them (tools/spu_regpromo.py, "known-clean"): such a value is never denormal and
++ * never -0 -- the fast path flushes both to +0, the exact path makes neither
++ * (tests/c/spu_clean_float_test.c) -- so spu__nf_daz is the identity on it and is left
++ * out. ka/kb/kc are constants 0/1; the result is the plain operation's, bit for bit. */
++#define SPU__NFK_DAZ(x, k) ((k) ? _mm_castsi128_ps(x) : spu__nf_daz(x))
++SPU__SX_INLINE u128 spu__nfk_fa(u128 a, u128 b, uint32_t negb, int ka, int kb) {
++    const __m128i x = spu__sx_ld(a), y = _mm_xor_si128(spu__sx_ld(b), _mm_set1_epi32((int)negb));
++    int bad;
++    __m128i r = spu__nf_out(_mm_add_ps(SPU__NFK_DAZ(x, ka), SPU__NFK_DAZ(y, kb)), &bad);
++    if (__builtin_expect(bad, 0)) r = spu__nf_fa_slow(a, b, negb);
++    return spu__sx_st(r);
++}
++SPU__SX_INLINE u128 spu__nfk_fm(u128 a, u128 b, int ka, int kb) {
++    const __m128i x = spu__sx_ld(a), y = spu__sx_ld(b);
++    int bad;
++    __m128i r = spu__nf_out(_mm_mul_ps(SPU__NFK_DAZ(x, ka), SPU__NFK_DAZ(y, kb)), &bad);
++    if (__builtin_expect(bad, 0)) r = spu__nf_fm_slow(a, b);
++    return spu__sx_st(r);
++}
++SPU__SX_INLINE u128 spu__nfk_fma(u128 a, u128 b, u128 c, uint32_t negp, uint32_t negc, int ka, int kb, int kc) {
++    const __m128i x = _mm_xor_si128(spu__sx_ld(a), _mm_set1_epi32((int)negp)), y = spu__sx_ld(b);
++    const __m128i z = _mm_xor_si128(spu__sx_ld(c), _mm_set1_epi32((int)negc));
++    int bad;
++    const __m128 p = _mm_mul_ps(SPU__NFK_DAZ(x, ka), SPU__NFK_DAZ(y, kb));
++    __m128i r = spu__nf_out(_mm_add_ps(p, SPU__NFK_DAZ(z, kc)), &bad);
++    if (__builtin_expect(bad, 0)) r = spu__nf_fma_slow(a, b, c, negp, negc);
++    return spu__sx_st(r);
++}
++#define spu_fa_k(a, b, ka, kb)          spu__nfk_fa(a, b, 0, ka, kb)
++#define spu_fs_k(a, b, ka, kb)          spu__nfk_fa(a, b, 0x80000000u, ka, kb)
++#define spu_fm_k(a, b, ka, kb)          spu__nfk_fm(a, b, ka, kb)
++#define spu_fma_k(a, b, c, ka, kb, kc)  spu__nfk_fma(a, b, c, 0, 0, ka, kb, kc)
++#define spu_fms_k(a, b, c, ka, kb, kc)  spu__nfk_fma(a, b, c, 0, 0x80000000u, ka, kb, kc)
++#define spu_fnms_k(a, b, c, ka, kb, kc) spu__nfk_fma(a, b, c, 0x80000000u, 0, ka, kb, kc)
+ #endif
+ #else
+ static inline u128 spu_fa(u128 a, u128 b) { return spu__fa_s(a, b); }
+@@ -1114,6 +1149,16 @@
+ static inline u128 spu_fma(u128 a, u128 b, u128 c)  { return spu__fma_s(a, b, c); }
+ static inline u128 spu_fms(u128 a, u128 b, u128 c)  { return spu__fms_s(a, b, c); }
+ static inline u128 spu_fnms(u128 a, u128 b, u128 c) { return spu__fnms_s(a, b, c); }
++#endif
++/* Patch 0113: the known-clean forms (tools/spu_regpromo.py) are the plain operations in
++ * every mode but SPU_NEAR_FLOAT's SSE path above. */
++#ifndef spu_fa_k
++#define spu_fa_k(a, b, ka, kb)          spu_fa(a, b)
++#define spu_fs_k(a, b, ka, kb)          spu_fs(a, b)
++#define spu_fm_k(a, b, ka, kb)          spu_fm(a, b)
++#define spu_fma_k(a, b, c, ka, kb, kc)  spu_fma(a, b, c)
++#define spu_fms_k(a, b, c, ka, kb, kc)  spu_fms(a, b, c)
++#define spu_fnms_k(a, b, c, ka, kb, kc) spu_fnms(a, b, c)
+ #endif
+ /* The exact path alone, for tests that check the fast path against it. */
+ SPU__SF_V2(spu_fa_ref, spu__fa_lane(x, y))

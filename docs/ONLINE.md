@@ -790,9 +790,16 @@ server still opens an upgraded database (tested), so going back to an older rele
 (1.1.9; code: `server/lobby.py` `h_challenge`, `client.py` `send_challenge`, the launcher's `tk_challenges.py`; server
 feature flag `challenges2`.)
 
+- **Challenge from the list.** Double-click an available opponent, select one and press Enter, or use the accent
+  **Challenge** button. Each uses the current input delay. A pending opponent's highlighted row shows
+  **Challenge sent**, the remaining time and **Cancel**; click Cancel to withdraw it. The row returns to its normal
+  status when the challenge is accepted, declined, cancelled, expired or withdrawn. Use **Profile** for the selected
+  player's profile; double-clicking a leaderboard entry still opens its profile.
 - **Several at once.** A player can have up to five open challenges, to different players (a second one to the same
-  player is refused), at least 0.7 s apart. Under the player list "Your open challenges" lists them, each with its input
-  delay and a Cancel button. The **first one accepted wins**: the match starts and the server withdraws all the other
+  player is refused), at least 0.7 s apart. Each pending row has a countdown and Cancel. Under the player list,
+  "Your open challenges" shows the selected pending player's input delay and a keyboard-accessible Cancel button
+  (or the first pending player when none is selected). The **first one accepted wins**: the match starts and the
+  server withdraws all the other
   challenges of both players (`challenge_update` state `withdrawn`). Both sides get a line in the lobby chat for sending,
   taking back, a no, the end after 30 s and the withdrawal.
 - **Input delay.** From 1.2.0 the challenger picks Auto or 0 through 8 frames in the box left of Challenge when the

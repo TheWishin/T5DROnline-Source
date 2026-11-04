@@ -1,7 +1,8 @@
 """Challenges and the lists around them (1.1.9, players' wishes; docs/ONLINE.md "Challenges").
 
-* Your open challenges: under the player list, each with its input delay and a Cancel button; the player's row is
-  in the accent colour. Sending, taking back, a no, the end after 30 s, and the automatic withdrawal all write a short line
+* Your open challenges: each player's row shows the countdown and Cancel; under the list, the selected challenge
+  has its input delay and a keyboard-accessible Cancel button. Sending, taking back, a no, the end after 30 s,
+  and the automatic withdrawal all write a short line
   in the chat -- on both sides.
 * Several challenges at once (a 1.1.9 server: up to five, to different players): the first one accepted starts the
   match and the server withdraws the others; both sides of each see it.
@@ -16,6 +17,7 @@
   sortable by its heading.
 """
 import math
+import time
 import tkinter as tk
 from tkinter import ttk
 
@@ -71,9 +73,12 @@ def delay_text(d):
 class ChallengesUI:
     def __init__(self, tab):
         self.tab = tab
-        self.out = {}          # challenge id -> {"pid", "name", "delay"}: this player's open challenges
+        self.out = {}          # challenge id -> {pid, name, delay, first_to, deadline}: open challenges
         self.incoming = {}     # challenge id -> the challenger's name (for the chat line when it ends)
         self.ended = {}        # challenge id -> its end state, when that came before the reply to the challenge
+        self.sending = set()   # player ids whose send request has not replied yet
+        self._generation = 0  # a reply from a previous login must not recreate pending rows
+        self._clock_sig = None
         cfg = tab.cfg
         self.delay = cfg.get("challenge_delay") if cfg.get("challenge_delay") in DELAY_CHOICES else "auto"
         s = cfg.get("players_sort")
@@ -86,6 +91,7 @@ class ChallengesUI:
         self.delay_cb = None
         self.box = None         # the open challenges under the player list
         self.rows = None
+        self._open_sig = None
         self._auto_for = None   # the auto value the box shows (for the selected player)
 
     @property
@@ -120,14 +126,14 @@ class ChallengesUI:
         return self.delay_cb
 
     def build_open(self, parent, row, px):
-        """Your open challenges (under the player list): a line each with Cancel; hidden while there are none."""
+        """One pending detail with a keyboard Cancel button; all pending players stay marked in the list."""
         self.box = ttk.Frame(parent, style="CardBody.TFrame")
-        self.box.grid(row=row, column=0, sticky="we", pady=(px(6), 0))
-        self.box.columnconfigure(0, weight=1)
-        ttk.Label(self.box, text=t("Your open challenges").upper(), style="Card.Caps.TLabel").grid(
-            row=0, column=0, sticky="w")
+        self.box.grid(row=row, column=0, sticky="we", pady=(px(3), 0))
+        self.box.columnconfigure(1, weight=1)
+        self.open_heading = ttk.Label(self.box, text=t("Your open challenges").upper(), style="Card.Caps.TLabel")
+        self.open_heading.grid(row=0, column=0, sticky="w", padx=(0, px(6)))
         self.rows = ttk.Frame(self.box, style="CardBody.TFrame")
-        self.rows.grid(row=1, column=0, sticky="we")
+        self.rows.grid(row=0, column=1, sticky="we")
         self.rows.columnconfigure(0, weight=1)
         self.box.grid_remove()
         return self.box
@@ -162,6 +168,7 @@ class ChallengesUI:
             ms = (getattr(self.tab, "_list_rtt", {}) or {}).get(sel[0], (None, False))[0]
         self._auto_for = auto_delay(ms, extended=self.delay_choices() == DELAY_CHOICES)
         self._fill_delay()                         # equal pings can still have different supported choices
+        self._show_open()
 
     def refresh(self):
         """After a login / logout and every change of the tab's buttons: the delay box only where it counts."""
@@ -179,19 +186,31 @@ class ChallengesUI:
     def _show_open(self):
         if self.rows is None:
             return
+        selection = self.tab.tv_players.selection()
+        pending = self.for_player(selection[0]) if selection else None
+        if pending is None:
+            pending = next(iter(self.out.items()), None)
+        signature = (tuple(self.out), pending[0] if pending else None)
+        if signature == self._open_sig:
+            return                                # preserve focus on the keyboard Cancel button
+        self._open_sig = signature
         for w in self.rows.winfo_children():
             w.destroy()
-        px = self._px
-        for i, (cid, c) in enumerate(self.out.items()):
+        if len(self.out) > 1:
+            self.open_heading.configure(text=t("Your open challenges").upper() + f" ({len(self.out)})")
+            self.open_heading.grid()
+        else:
+            self.open_heading.grid_remove()
+        for i, (cid, c) in enumerate([pending] if pending is not None else []):
             text = c["name"]
             d = delay_text(c.get("delay"))
             if d:
                 text += "  --  " + t("input delay {delay}", delay=d)
             if c.get("first_to"):
                 text += "  --  " + t("FT{wins}", wins=c["first_to"])
-            ttk.Label(self.rows, text=text, style="Card.TLabel").grid(row=i, column=0, sticky="w", pady=(px(3), 0))
+            ttk.Label(self.rows, text=text, style="Card.TLabel").grid(row=i, column=0, sticky="w")
             ttk.Button(self.rows, text=t("Cancel"), style="Card.Small.TButton",
-                       command=lambda cid=cid: self.cancel(cid)).grid(row=i, column=1, sticky="e", pady=(px(3), 0))
+                       command=lambda cid=cid: self.cancel(cid)).grid(row=i, column=1, sticky="e")
         if self.out:
             self.box.grid()
         else:
@@ -202,18 +221,36 @@ class ChallengesUI:
         tab = self.tab
         sel = tab.tv_players.selection()
         me = (tab.client.me or {}) if tab.client else {}
-        if not sel or sel[0] == AWAY or sel[0] == me.get("id"):
+        if not tab.client or not sel or sel[0] == AWAY or sel[0] == me.get("id"):
             tab.status(t("Select an opponent in the list first."))
             return
         pid = sel[0]
-        if any(c["pid"] == pid for c in self.out.values()):
+        if pid in self.sending or self.for_player(pid) is not None:
             tab.status(t("You challenged that player already: your open challenges are under the list."))
             return
         name = self._name_of(pid)
         choice = self.effective_delay()
         delay = None if choice == "auto" or not self.multi_ok() else int(choice)
         first_to = getattr(getattr(tab, "casual", None), "first_to", 1)
-        tab.call(tab.client.send_challenge, pid, delay, first_to, then=lambda r: self._sent(r, pid, name))
+        client, generation = tab.client, self._generation
+        # The protocol's challenge lifetime is 30 seconds. Count from the request,
+        # rather than adding the reply's round trip to the time shown in the row.
+        deadline = time.monotonic() + 30.0
+        self.sending.add(pid)
+
+        def current():
+            return self.client is client and self._generation == generation
+
+        def sent(reply):
+            if current():
+                self.sending.discard(pid)
+                self._sent(reply, pid, name, deadline=deadline)
+
+        def failed():
+            if current():
+                self.sending.discard(pid)
+
+        tab.call(client.send_challenge, pid, delay, first_to, then=sent, fail=failed)
 
     def _name_of(self, pid):
         for p in (getattr(self.tab, "_last_lobby", None) or {}).get("players", []):
@@ -221,7 +258,7 @@ class ChallengesUI:
                 return p.get("name") or "?"
         return "?"
 
-    def _sent(self, r, pid, name):
+    def _sent(self, r, pid, name, deadline=None):
         cid = r.get("challenge") if isinstance(r, dict) else r
         name = ((r.get("to") or {}).get("name") if isinstance(r, dict) else None) or name
         delay = r.get("delay") if isinstance(r, dict) else None
@@ -234,7 +271,8 @@ class ChallengesUI:
             self._ended_out(state, name)
             return
         self.out[cid] = {"pid": pid, "name": name, "delay": delay,
-                         "first_to": r.get("first_to") if isinstance(r, dict) else None}
+                         "first_to": r.get("first_to") if isinstance(r, dict) else None,
+                         "deadline": deadline if deadline is not None else time.monotonic() + 30.0}
         self._show_open()
         self.tab.relist()
 
@@ -278,7 +316,39 @@ class ChallengesUI:
         self.out.clear()
         self.incoming.clear()
         self.ended.clear()
+        self.sending.clear()
+        self._generation += 1
+        self._clock_sig = None
         self._show_open()
+
+    def for_player(self, pid):
+        """(challenge id, pending info) for a player's row, or None."""
+        return next(((cid, c) for cid, c in self.out.items() if c["pid"] == pid), None)
+
+    @staticmethod
+    def seconds_left(challenge):
+        return max(0, math.ceil(challenge["deadline"] - time.monotonic()))
+
+    def pending_text(self, pid):
+        return t("Challenge sent") + " -" if self.for_player(pid) is not None else ""
+
+    def pending_clock(self, pid):
+        pending = self.for_player(pid)
+        if pending is None:
+            return ""
+        seconds = self.seconds_left(pending[1])
+        return f"{seconds // 60}:{seconds % 60:02d} -"
+
+    def tick(self):
+        """Use the tab's existing poll; only a changed second needs a list update.
+
+        At zero keep the row pending until the server's terminal event arrives.
+        """
+        signature = tuple((cid, self.seconds_left(c)) for cid, c in self.out.items())
+        if signature != self._clock_sig:
+            self._clock_sig = signature
+            if signature:
+                self.tab.relist()
 
     def challenged_ids(self):
         return {c["pid"] for c in self.out.values()}

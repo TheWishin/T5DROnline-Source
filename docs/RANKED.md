@@ -191,7 +191,7 @@ you noticeably, and the top names stay rare.
 - **Leaderboard** order: rating minus twice the deviation (a few matches are
   needed to climb), accounts with at least one ranked match.
 
-Profile (double-click a player): rank, rating +/- RD, provisional/placement,
+Profile (select a player and choose Profile, or double-click a leaderboard entry): rank, rating +/- RD, provisional/placement,
 record, highest rank, leaderboard place, characters (games and wins each, the
 most played is the "main"), matches without result caused in the last 24 h,
 and the match history (when, result, opponent, both characters, score, rating

@@ -58,8 +58,8 @@ class CasualUI:
         row = ttk.Frame(parent, style="CardBody.TFrame")
         line = ttk.Frame(row, style="CardBody.TFrame")      # caption, side, stage; the checkbox on a line below
         line.pack(side="top", anchor="w")
-        ttk.Label(line, text=t("Challenges, invites, rooms:"), style="Card.Small.TLabel").pack(side="left",
-                                                                                                padx=(0, px(6)))
+        self.caption = ttk.Label(line, text=t("Challenges, invites, rooms:"), style="Card.Small.TLabel")
+        self.caption.pack(side="left", padx=(0, px(6)))
         self.side_cb = ttk.Combobox(line, textvariable=self.side_var, values=[t(x[1]) for x in SIDES],
                                     state="readonly", width=11, style="Card.TCombobox")
         self.side_cb.pack(side="left")

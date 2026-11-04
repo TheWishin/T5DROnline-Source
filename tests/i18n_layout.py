@@ -643,18 +643,21 @@ class Walk:
         self.screen("online lobby")
         # 1.1.9: five open challenges (the longest names, the delay), the input delay box with Auto's number for the
         # selected player, the players that cannot be played below their own line, sorted by each heading
-        tab.chal.out = {f"c{i}": {"pid": "p4", "name": n, "delay": {"frames": 4, "auto": i % 2 == 0}}
+        tab.chal.out = {f"c{i}": {"pid": "p4", "name": n, "delay": {"frames": 4, "auto": i % 2 == 0},
+                                "deadline": time.monotonic() + 27}
                         for i, n in enumerate(_LONG[:5])}
         tab.chal._show_open()
         tab.tv_players.selection_set("p3")
         tab.chal._auto_for = 4
         tab.chal._fill_delay()
+        tab.relist()
         self.screen("online lobby, open challenges")
         for key in ("name", "rank", "status", "ping"):
             tab.chal._sort_players(key)
             self.screen(f"online lobby, sorted by {key}")
         tab.chal.out.clear()
         tab.chal._show_open()
+        tab.relist()
         tab.tv_players.selection_remove(*tab.tv_players.selection())
         # the character select grid over the tab (tk_charsel.py), the player's main starred
         if getattr(tab, "charsel", None) is not None:

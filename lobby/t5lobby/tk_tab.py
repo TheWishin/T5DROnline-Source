@@ -79,6 +79,7 @@ from .match_driver import MatchDriver, fps_from_logs, game_files, game_supports_
     game_supports_auto_skip_intro
 from .proto import DEFAULT_PORT, LobbyError
 from . import theme, tk_casual, tk_challenges, tk_rooms, tk_rules, tk_spectate, tk_tour, tk_views, tklist, winfront
+from . import tk_forget, tk_search
 from .tk_private_chat import PrivateChat
 from .ranks import record_label as _record
 
@@ -320,6 +321,9 @@ class OnlineTab:
         self.chal = tk_challenges.ChallengesUI(self)   # open challenges, input delay, list order (docs/ONLINE.md)
         self._bar_t = -1e9               # when the question bar's buttons last changed (pad clock): BAR_ARM_S
         self.tours = tk_tour.TourController(self)    # tournaments: the page, the calls (docs/TOURNAMENTS.md)
+        self.search = tk_search.SearchOptions(self)  # search options, area, language (docs/ONLINE.md)
+        self.forget = tk_forget.ForgetUI(self)       # "Remove my data" (docs/ONLINE.md)
+        self._cfg_removed = False                     # online.json was removed there: not written again until a login
         self.fw_check = fwcheck.check    # the read-only firewall check (tests replace it)
         self.fw_status = None            # fwcheck.Status of the last check (None: not checked yet)
         self.fw_seen = None              # what a match showed: "udp" (no UDP to the server) / "no_peer" (nothing arrived)
@@ -345,6 +349,8 @@ class OnlineTab:
         return {}
 
     def _save_cfg(self):
+        if getattr(self, "_cfg_removed", False):
+            return                       # "Remove my data" took online.json away: nothing is written before a login
         self.cfg["server"] = self.server_var.get().strip()
         self.cfg["name"] = self.name_var.get().strip()
         self.cfg["char"] = self._char_key()
@@ -807,6 +813,9 @@ class OnlineTab:
         if c.perf_fps is None:
             out = getattr(self.app.settings, "out_dir", os.getcwd())
             c.perf_fps = fps_from_logs(os.path.join(out, "logs"))
+        # Wi-Fi, area, language: sent after the login to a server with search options (tk_search.py)
+        self.search.refresh_wifi()
+        c.netinfo = self.search.client_netinfo()
         return c
 
     def _game_can_pick(self):
@@ -890,6 +899,7 @@ class OnlineTab:
             self._relogin_at = None
             w, me = r
             self.client = client
+            self._cfg_removed = False                # (a login after "Remove my data": online.json again)
             # Later account actions must still refer to the server that accepted this login.
             self.server_var.set(server)
             self.pw_var.set("")
@@ -1235,7 +1245,39 @@ class OnlineTab:
         strict = mode == "ranked" and bool(self.strict_var.get())
         args = (self._char_key(), True) if strict else (self._char_key(),)
         fn = c.ranked_match if mode == "ranked" else c.quick_match
-        self.call(fn, *args, then=lambda _r: self.status(self._searching_text(mode, strict)))
+        opts = tk_search.options(self.cfg) if c.has_feature("mm_filters") else None    # (search options)
+        on = tk_search.summary(self.cfg) if opts else ""
+        self.call(lambda: fn(*args, options=opts),
+                  then=lambda _r: self.status(self._searching_text(mode, strict) +
+                                              (" " + t("Search options: {options}.", options=on) if on else "")))
+
+    def do_search_options(self):
+        self.search.open()
+
+    def search_options_changed(self):
+        """The line under the search buttons (tk_views) says which search options are on."""
+        self.view.search_options_shown(tk_search.summary(self.cfg))
+
+    def do_forget(self):
+        self.forget.open()
+
+    def account_removed(self):
+        """The server removed this player's account ("Remove my data"): out of the lobby, the saved login gone."""
+        c, server_key = self.client, self._server_key()
+        self._relogin_at = None
+        self.spec.stop()
+        self.client = None
+        self._remember_session(None, None, server_key=server_key)
+        if self.driver is not None:
+            self.driver.close()
+            self.driver = None
+        if c:
+            threading.Thread(target=c.close, daemon=True).start()
+        self.pw_var.set("")
+        self._reset_lobby_view()
+        self.me_var.set(t("Not connected. Your account was removed from the server."))
+        self._set_account_view(False)
+        self._set_actions()
 
     @staticmethod
     def _searching_text(mode, strict):
@@ -2352,6 +2394,9 @@ class OnlineTab:
             # another version: that is what matters (no challenge either way), not what they are doing
             same = self.client.compatible(p) if self.client else p["build"] == mine
             status = _word(STATUS_TEXT, p["status"]) if same else t("other version")
+            where = tk_search.where_text(p)      # area and language ("EU de"), from a server with search options
+            if where:
+                status += "  " + where
             # (1.1.5: the best relay both measured, as the server estimates it; measured in a match: no "~")
             ms, measured = _list_ping(self.client, p, me)
             rtt_of[p["id"]] = (ms, measured)
@@ -2378,7 +2423,8 @@ class OnlineTab:
             same = self.client.compatible(r) if self.client else r["build"] == mine
             state = " ".join([_word(ROOM_STATE_TEXT, r["status"])] + self.rooms_ui.list_state(r)
                              + ([t("(other version)")] if not same else [])
-                             + ([t("ranked")] if r["ranked"] else []))
+                             + ([t("ranked")] if r["ranked"] else [])
+                             + ([tk_search.where_text(r)] if tk_search.where_text(r) else []))
             # the lock: nobody can join it now -- or only with its password / invite code
             closed = r["status"] != "open" or not same or bool(r.get("private"))
             ms, measured = rtt_of.get(r["owner"].get("id"), (None, False))

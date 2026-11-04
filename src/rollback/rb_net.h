@@ -105,4 +105,8 @@ bool     offered_by_env();
  * logs go; the next session's start() takes over at its frame again. */
 void     session_reset();
 
+/* The connection line (src/netplay/net_line.cpp, main thread): rollbacks since the loop started and the deepest
+ * one since the last call (the call resets it); false while the loop does not run. */
+bool     line_stats(uint32_t* rollbacks, uint32_t* deepest);
+
 } } // namespace rb::net

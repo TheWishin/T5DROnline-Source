@@ -108,6 +108,8 @@ DEFAULTS = {
     "effects": "on",           # on | off (PS3_EFFECTS=0): hit sparks, flames, smoke, mist, waterfalls (GRAPHICS)
     "old_pc": "auto",          # auto: on an old PC with untouched graphics the Old PC settings are put in once (apply_old_pc) | done
     "input_delay": "auto",     # online input delay: auto (by ping) | 0 | 1 | 2 frames, T5_RB_NET_DELAY
+    "online_feel": "balanced", # how Auto picks the delay: responsive | balanced | smooth, T5_RB_NET_FEEL (ONLINE_FEELS)
+    "net_line": False,         # the connection line in online matches (ping, delay, rollbacks; F3 in the game), T5_NET_LINE
     "training": "frames",      # training overlay in Practice: off | inputs | frames (inputs + frame data), T5_TRAINING
     "training_all": False,     # ... also in the other offline modes (T5_TRAINING_ALL=1)
     "training_online": False,  # ... also online, this PC's own inputs only (T5_TRAINING_ONLINE=1)
@@ -220,6 +222,10 @@ class Settings(dict):
         for key, (_name, _env, modes, default) in GRAPHICS.items():
             if not isinstance(self[key], str) or self[key] not in modes:
                 self[key] = default
+        if not isinstance(self["online_feel"], str) or self["online_feel"] not in ONLINE_FEELS:
+            self["online_feel"] = "balanced"
+        if not isinstance(self["net_line"], bool):
+            self["net_line"] = False
         if not isinstance(self["training"], str) or self["training"] not in TRAINING_MODES:
             self["training"] = "frames"
         if not isinstance(self["training_pos"], str) or self["training_pos"] not in TRAINING_POS:
@@ -362,6 +368,12 @@ class Settings(dict):
             env["PS3_FULLSCREEN"] = "1"
         if self["input_delay"] in INPUT_DELAYS:
             env["T5_RB_NET_DELAY"] = self["input_delay"]
+        env["T5_RB_NET_FEEL"] = self["online_feel"] if self["online_feel"] in ONLINE_FEELS else "balanced"
+        if self["net_line"]:
+            env["T5_NET_LINE"] = "1"
+        # what a rollback costs on this PC, measured in its online matches and kept for the next game (the host adds
+        # a frame of delay when the slower PC cannot re-simulate the expected depth: docs/NETPLAY.md "Online feel")
+        env["T5_RB_COST_FILE"] = os.path.join(self.out_dir, "rb_cost.txt")
         if self["replays"]:
             # every online session is recorded (src/netplay/replay.cpp); offline games and a replay being
             # watched record nothing
@@ -1919,6 +1931,13 @@ INPUT_DELAYS = {         # English; t(label) where it is shown
     "0": "0",
     "1": "1",
     "2": "2",
+}
+# Online feel (docs/NETPLAY.md "Online feel and rollback capacity"): how Auto weighs input delay against rollbacks,
+# T5_RB_NET_FEEL. Both players' choices meet in the middle (two different ones = Balanced).
+ONLINE_FEELS = {         # English; t(label) where it is shown
+    "responsive": N_("Responsive"),
+    "balanced": N_("Balanced"),
+    "smooth": N_("Smooth"),
 }
 
 DISPLAY_MODES = [        # English; t(label) where it is shown

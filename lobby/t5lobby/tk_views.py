@@ -32,6 +32,7 @@ from .i18n import N_, t
 from .lag import describe_event as describe_lag, lagged
 from .rank_art import ART
 from .theme import C
+from . import tk_search
 
 FOLD = ("▲", "▼")        # the fold button: up (fold the cards away), down (bring them back)
 
@@ -725,9 +726,25 @@ class OnlineView:
         self.casual_row = row
         for w in (f, row, tab.strict_check):
             w.bind("<Configure>", lambda _e: self.place_casual_row(), add="+")
+        # search options (tk_search.py): highest ping, Wi-Fi, 60 fps; your area and language
+        opts = self.body(f)
+        opts.grid(row=5, column=0, columnspan=2, sticky="w", pady=(px(6), 0))
+        ttk.Button(opts, text=t("Search options..."), style="Card.Small.TButton",
+                   command=tab.do_search_options).pack(side="left")
+        self.search_opts_label = ttk.Label(opts, text="", style="Card.Small.TLabel")
+        self.search_opts_label.pack(side="left", padx=(px(8), 0))
+        self.search_options_shown(tk_search.summary(tab.cfg))
         self.wrap(ttk.Label(f, textvariable=tab.hint_var, style="Card.Faint.TLabel", justify="left"),
-                  card, 40).grid(row=5, column=0, columnspan=2, sticky="w", pady=(px(6), 0))
+                  card, 40).grid(row=6, column=0, columnspan=2, sticky="w", pady=(px(6), 0))
         return f
+
+    def search_options_shown(self, text):
+        label = getattr(self, "search_opts_label", None)
+        if label is not None:
+            try:
+                label.configure(text=text)
+            except tk.TclError:
+                pass
 
     def place_casual_row(self):
         """The side / stage row (tk_casual.py) right of "Strict" when both fit in the card's width, else below it.
@@ -993,7 +1010,9 @@ class OnlineView:
         tab.b_passwd = ttk.Button(acc, text=t("Change password..."), style="Small.TButton", command=tab.do_passwd)
         tab.b_codes = ttk.Button(acc, text=t("New recovery codes..."), style="Small.TButton",
                                  command=tab.do_new_codes)
-        for b in (tab.b_blocked, tab.b_passwd, tab.b_codes):
+        # "Remove my data" (tk_forget.py): the account on the server and / or the online data on this PC
+        tab.b_forget = ttk.Button(acc, text=t("Remove my data..."), style="Small.TButton", command=tab.do_forget)
+        for b in (tab.b_blocked, tab.b_passwd, tab.b_codes, tab.b_forget):
             b.pack(side="left", padx=(0, px(6)))
         peer_tools = ttk.Frame(page)
         peer_tools.grid(row=1, column=0, sticky="we", pady=(0, px(6)))

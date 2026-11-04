@@ -1,0 +1,67 @@
+diff --git a/libs/video/rsx_overlay.c b/libs/video/rsx_overlay.c
+--- a/libs/video/rsx_overlay.c
++++ b/libs/video/rsx_overlay.c
+@@ -399,7 +399,8 @@
+ 
+ static ovl_list g_build;            /* the producer's list being built */
+ static ovl_list g_pub;              /* the newest published list */
+-static ovl_list g_layers[2];        /* training (0), post-result menu (1) */
++#define OVL_LAYERS 3
++static ovl_list g_layers[OVL_LAYERS]; /* training (0), post-result menu (1), status line (2, patch 0115) */
+ static unsigned g_build_layer;
+ static int g_ready;                /* protected by g_lock, as is g_pub */
+ static volatile long g_pub_items;   /* items in g_pub (read without the lock as a hint) */
+@@ -493,7 +494,20 @@
+     g_pub.ntext = active->ntext;
+     memcpy(g_pub.items, active->items, sizeof(ovl_item) * active->n);
+     memcpy(g_pub.text, active->text, active->ntext);
+-    g_pub_items = (long)active->n;
++    /* Patch 0115: the status layer (the netplay connection line) is drawn over
++     * whichever of the two is shown, as far as the list has room. */
++    const ovl_list* st = &g_layers[2];
++    if (st->n && g_pub.n + st->n <= OVL_MAX_ITEMS && g_pub.ntext + st->ntext <= OVL_MAX_TEXT) {
++        for (uint32_t i = 0; i < st->n; i++) {
++            ovl_item it = st->items[i];
++            if (it.kind == 1) it.text += g_pub.ntext;
++            g_pub.items[g_pub.n + i] = it;
++        }
++        memcpy(g_pub.text + g_pub.ntext, st->text, st->ntext);
++        g_pub.n += st->n;
++        g_pub.ntext += st->ntext;
++    }
++    g_pub_items = (long)g_pub.n;
+ }
+ 
+ void rsx_overlay_begin(void)
+@@ -503,7 +517,7 @@
+ 
+ void rsx_overlay_begin_layer(unsigned layer)
+ {
+-    if (layer >= 2) { g_building = 0; return; }
++    if (layer >= OVL_LAYERS) { g_building = 0; return; }
+     g_build_layer = layer;
+     g_build.n = 0;
+     g_build.ntext = 0;
+@@ -541,7 +555,7 @@
+ 
+ void rsx_overlay_clear_layer(unsigned layer)
+ {
+-    if (layer >= 2) return;
++    if (layer >= OVL_LAYERS) return;
+     if (g_building && g_build_layer == layer) g_building = 0;
+     OVL_LOCK();
+     g_layers[layer].n = g_layers[layer].ntext = 0;
+diff --git a/libs/video/rsx_overlay.h b/libs/video/rsx_overlay.h
+--- a/libs/video/rsx_overlay.h
++++ b/libs/video/rsx_overlay.h
+@@ -61,7 +61,9 @@
+ void  rsx_overlay_begin(void);
+ /* Patch 0089: one host producer, separate published layers. Layer 1 (menu)
+  * wins while nonempty; legacy calls own layer 0 (training). A clear only
+- * clears its own layer. Invalid layers do nothing. */
++ * clears its own layer. Invalid layers do nothing.
++ * Patch 0115: layer 2 (status: the netplay connection line) is drawn on top
++ * of whichever of layers 0 / 1 is shown. */
+ void  rsx_overlay_begin_layer(unsigned layer);
+ void  rsx_overlay_clear_layer(unsigned layer);
+ /* Actual renderer readiness, not just a compiled-in API. Unsupported

@@ -18,6 +18,8 @@ relays.json:
          "port": 7781,                        its relay port (default 7781)
          "secret_file": "relay-usw.secret",   the secret shared with that node (relative: next to relays.json;
                                               default: T5L_RELAY_SECRET_FILE)
+         "area": "na",                        optional: where it is (na sa eu af as oc); players nearest to it get
+                                              that area in the lobby list (mmfilters.py)
          "enabled": true}                     false: not offered for new matches (maintenance); running
       ]                                       sessions on it go on
     }
@@ -32,6 +34,7 @@ import socket
 import time
 
 from .. import proto, relayctl
+from .mmfilters import AREAS
 
 log = logging.getLogger("t5lobby.relays")
 
@@ -44,8 +47,9 @@ _ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,15}$")
 class RelayNodeRef:
     """One relay node as the central server knows it."""
 
-    def __init__(self, rid, name, host, port, secret, enabled=True):
+    def __init__(self, rid, name, host, port, secret, enabled=True, area=""):
         self.id = rid
+        self.area = area               # mmfilters.AREAS, "" = not given
         self.name = name
         self.host = host
         self.port = port
@@ -74,8 +78,8 @@ class RelayNodeRef:
         return (self.ip, self.port) if self.ip else None
 
     def same(self, other):
-        return (self.id, self.name, self.host, self.port, self.secret, self.enabled) == \
-               (other.id, other.name, other.host, other.port, other.secret, other.enabled)
+        return (self.id, self.name, self.host, self.port, self.secret, self.enabled, self.area) == \
+               (other.id, other.name, other.host, other.port, other.secret, other.enabled, getattr(other, "area", ""))
 
     def public(self):
         return {"id": self.id, "name": self.name, "host": self.ip, "port": self.port}
@@ -203,7 +207,10 @@ def parse(text, base_dir, default_secret_file=""):
         if not os.path.isabs(sf) and base_dir:
             sf = os.path.join(base_dir, sf)
         secret = relayctl.load_secret(sf)
-        n = RelayNodeRef(rid, name, host, port, secret, enabled=e.get("enabled", True) is not False)
+        area = str(e.get("area") or "").strip().lower()
+        if area and area not in AREAS:
+            raise ValueError(f"relays.json {rid}: area {area!r} -- one of {', '.join(AREAS)}")
+        n = RelayNodeRef(rid, name, host, port, secret, enabled=e.get("enabled", True) is not False, area=area)
         n.secret_path = sf
         out.append(n)
     return out

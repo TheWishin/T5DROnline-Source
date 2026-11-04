@@ -161,6 +161,8 @@ class Room:
         self.rematch_policy = "both_confirm"
         self.auto_skip_after_round = False
         self.mode = mode                # line (the existing single table) | tables (independent pairs)
+        self.area = ""                  # where its players are, and their language (mmfilters.py; "" = not given)
+        self.lang = ""
         self.tables = [RoomTable(self, n + 1) for n in range(size // 2)] if mode == "tables" else []
 
     @property
@@ -197,6 +199,10 @@ class Room:
                 "watch": table.watch and not self.private} for table in self.tables])
         if self.lock is not None:
             d.update(private=True, lock=self.lock)
+        if self.area:
+            d["area"] = self.area
+        if self.lang:
+            d["lang"] = self.lang
         if self.training:
             d["training"] = True        # (older launchers ignore it; they cannot join: _room_training_check)
         elif not self.ranked:
@@ -420,6 +426,7 @@ class RoomsMixin:
         rematch_policy, auto_skip = self._rematch_room_options(conn, msg, ranked, size, mode)
         if mode == "tables" and (ranked or training):
             raise LobbyError(proto.E_NOT_ALLOWED, "simultaneous room tables are casual and cannot be training rooms")
+        area, lang = self._room_tags(conn, msg, p)                  # (mmfilters.py)
         first_to = proto.casual_first_to(msg.get("first_to", 1))
         if ranked or training or not {"sets", "casual_sets"}.issubset(conn.caps):
             first_to = 1
@@ -446,6 +453,7 @@ class RoomsMixin:
                 self._check_filtered_text(name, "room", p)
         r = Room(p, name, ranked, size, rotation, first_to, mode)
         r.hidden = hidden
+        r.area, r.lang = area, lang
         r.training = training
         r.rematch_policy, r.auto_skip_after_round = rematch_policy, auto_skip
         code = None

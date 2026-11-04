@@ -27,6 +27,8 @@ install for players or for whoever runs the server.
 - [Sides and stages by choice](#sides-and-stages-by-choice) (casual: P1 / P2, the stage, Swap sides on a rematch)
 - [Discord Rich Presence](#discord-rich-presence)
 - [Chime and taskbar flash](#chime-and-taskbar-flash)
+- [Search options, areas and languages](#search-options-areas-and-languages) (highest ping, no Wi-Fi, steady 60 fps)
+- [Remove my data](#remove-my-data) (the account on the server, the online data on this PC)
 - Tournaments: their own page, [TOURNAMENTS.md](TOURNAMENTS.md)
 - [Protocol reference](#protocol-reference)
 - [Security and abuse protection](#security-and-abuse-protection)
@@ -1004,6 +1006,68 @@ receive their original chat and roster shape. New clients connected to older ser
 mention autocomplete or notifications. Storage uses numbered migration 2 (`accounts.badge`); see
 [DEPLOY_1.2.0.md](DEPLOY_1.2.0.md).
 
+## Search options, areas and languages
+
+Branch `netext` (server `lobby/t5lobby/server/mmfilters.py`, launcher `lobby/t5lobby/tk_search.py`,
+`lobby/t5lobby/netinfo.py`). The server announces the feature `mm_filters` in its welcome; a launcher without it
+never sends any of this, and an older server ignores the new fields (no client cap is needed: the 32-cap budget of
+hello stays as it is).
+
+**Search options** (Online tab, *Search options...* under the Ranked / Quick buttons; kept in `online.json`):
+
+| Option | Queue field | The pair is refused when |
+|---|---|---|
+| Highest ping 60 / 100 / 150 ms (default Any) | `max_ping` | the server's ping estimate of the pair (`_est_ping`: a measured ping of the last days, else the best relay both measured) is above it |
+| No opponents on Wi-Fi | `no_wifi` | the opponent's launcher said it plays over Wi-Fi |
+| Only opponents whose PC keeps 60 fps | `steady` | the opponent's PC ran its last match below `T5L_STEADY_FPS` (default 57; the `perf` report every launcher sends) |
+
+Both players' options must accept the pair (A's highest ping also protects B). Unknown counts in favour of the
+opponent: a launcher that does not say whether it is on Wi-Fi (an older one, a VPN adapter, Linux), or a PC that has
+not played a match yet, is never left out. The usual ping window (T5L_PING_START, widening while both wait) still
+applies on top; with options on, the wait can be longer and the searching line says which options are on. Ranked
+keeps its rules (rating window, strict, cooldown, same address); the options only narrow who can be found.
+
+**Wi-Fi**: the launcher asks Windows which adapter the default route uses (`GetBestInterface` towards a public
+address, nothing is sent) and its type (`GetAdaptersAddresses`, `IF_TYPE_IEEE80211`). It is sent once after each
+login (`netinfo`) and is never shown to anybody: it is only used for the option.
+
+**Area and language**: `netinfo {wifi, area, lang}`. Area = the player's choice in Search options (North / South
+America, Europe, Africa, Asia, Oceania) or Auto: the area of the relay with the smallest round trip when that is at
+most 100 ms -- this server's own (`T5L_AREA`, default `eu`) or a regional relay's `"area"` in relays.json
+(docs/HOSTING.md). Language = the launcher's language unless the player picked another one (the seven launcher
+languages and a few more). The lobby list shows both after the player's status ("in lobby  EU de"), and a room
+carries its host's (`room_create` may name others: `area`, `lang`).
+
+## Remove my data
+
+Branch `netext` (server `lobby/t5lobby/server/forget.py` + `store.Store.forget_account`, launcher
+`lobby/t5lobby/tk_forget.py`; feature `forget_me`). Online tab -> Profile -> *Remove my data...*: one window with two
+parts, each ticked or not.
+
+*The account* (accounts only; logged in). The password is asked again even with a saved login (failed attempts
+count like a password change), the server first answers a dry run (how many matches, sets, friends), then the player
+confirms a second time. Refused while the player is in a match, a queue, a room, a running set, or a tournament
+that is not over (signed up, checked in, playing, organizing). What the server does, in one transaction:
+
+| Data | What happens |
+|---|---|
+| account row (name, password hash, rating, rank, record, badge, bans) | deleted; the id is never given again |
+| remembered logins, recovery codes | deleted |
+| friends, friend requests (both ways), blocks and mutes (both ways), tournament host role | deleted |
+| matches and sets | kept for the other player's history: this side's name becomes "deleted player", its account link is removed |
+| private reports | the reporter's and the reported name become "deleted player" |
+| finished tournaments | the entrant name and the organizer name become "deleted player" |
+
+Every connection of the account ends (online friends get their list without it), the launcher forgets the saved
+login. The name can be registered again by anybody, without the old history. What the server already wrote to its
+log stays until the log rotates (docs/HOSTING.md). A guest has nothing on the server but match records under the
+name it played with (which any guest may use): the window says so and offers the local part only.
+
+*This PC*: the Online tab's settings and saved logins (`online.json`), the replay files of the replay folder (only
+`*.t5replay`, never the folder: it may be one the player chose), the game's `*.log` files in `<out>/logs`, the save
+the game uses online (`<out>/gamedata-online`) and `rb_cost.txt` -- each listed with its size, removed only after the
+same two confirmations. The game build, the offline save and `launcher.json` stay.
+
 ## Protocol reference
 
 ### Control channel
@@ -1033,11 +1097,13 @@ Client to server:
 | `ping` | | `pong {time}` (keepalive; silent clients are dropped after 90 s) |
 | `udp_rtt` | `ms` | the client's UDP ping to the server (lobby list, matchmaking) |
 | `relay_rtt` | `rtts {id: ms}` (`relays` cap) | none: the client's UDP round trips to the regional relays; one it could not reach is left out (and never chosen for its matches) |
+| `netinfo` | `wifi` (true / false / null), `area` (`auto`, `na`, `sa`, `eu`, `af`, `as`, `oc`), `lang` (`de`, `pt-BR` ...) (feature `mm_filters`) | `netinfo {area, lang}`: the lobby list's `area` / `lang` of this player ([Search options](#search-options-areas-and-languages)); Wi-Fi is never shown |
+| `forget_me` | `password`, `dry_run` (feature `forget_me`) | dry run: `forget_me {counts}`; else `forgotten {counts, name}` and the connection ends ([Remove my data](#remove-my-data)) |
 | `lobby` | | `lobby_state` now |
 | `leaderboard` | `limit` | `leaderboard {rows}` |
 | `stats` | (feature `stats`, 1.1.5) | `stats {made, accounts, players, matches, ranked, matches_24h, players_24h, fighters [{char, ranked [games, wins, draws], casual [...]}]}`: counted matches only (a mirror match counts one win and one loss), computed at most every 5 minutes for everybody (`STATS_SECONDS`), read-only |
 | `chat` | `text` (200 chars) | `chat` to everyone |
-| `queue` / `unqueue` | `mode: quick\|ranked`, `char`, `strict` (ranked) | `queued {mode, strict}` |
+| `queue` / `unqueue` | `mode: quick\|ranked`, `char`, `strict` (ranked), `max_ping` (60 / 100 / 150), `no_wifi`, `steady` (feature `mm_filters`) | `queued {mode, strict, filters?}` |
 | `room_create` | `name`, `ranked`; with `casual_sets`: `first_to` (integer 1, 2, 3, 5 or 10; default 1, casual only); with `private_rooms`: `size` (2..`T5L_ROOM_MAX_SIZE`), `rotation: winner\|queue`, `private: password\|code`, `password`, `hidden`; with `room_tables`: `mode: line\|tables` (default `line`; tables are casual, not training) | `room {room, code}` (`code`: the invite code, to the host only) |
 | `room_join` | `room`; `password` (a locked room); or `code` (the room id optional) | `room {room}`; a classic room's two members start a ready check; a community room schedules its next eligible pair(s). Table rooms require `room_tables`, including for invited joins. Wrong: `auth_failed` "wrong room password" / "no room has that invite code"; too many: `rate_limited` with `retry` |
 | `room_leave` / `rematch` | (`rematch` without `match`: Ready again; in a community room: back in line) | `room {room}` |

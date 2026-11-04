@@ -70,6 +70,8 @@ DEV_ONLY = {
     "mode is guest, account, register, session or resume",
     # rooms (lobby/t5lobby/server/rooms.py): fields the launcher always sends right
     "rotation is winner or queue", "private is password or code", "lock is password, code or none",
+    # search options (lobby/t5lobby/server/mmfilters.py): values the launcher always sends right
+    "area is auto or one of X", "lang is a language code such as en, de or pt-BR", "max_ping is one of X or null",
 }
 
 
@@ -417,6 +419,10 @@ class MessageCoverageTests(German):
         rooms = os.path.join(ROOT, "lobby", "t5lobby", "server", "rooms.py")         # (rooms: private, community)
         found += [(f"rooms.py:{ln}", s, src) for ln, s, src in calls_in(rooms, {"LobbyError"}, 1)]
         found += [(f"rooms.py:{ln}", s, src) for ln, s, src in calls_in(rooms, set(), 0, keyword="msg")]
+        for module in ("mmfilters.py", "forget.py"):                                 # (search options, Remove my data)
+            path = os.path.join(ROOT, "lobby", "t5lobby", "server", module)
+            found += [(f"{module}:{ln}", s, src) for ln, s, src in calls_in(path, {"LobbyError"}, 1)]
+            found += [(f"{module}:{ln}", s, src) for ln, s, src in calls_in(path, set(), 0, keyword="msg")]
         found = [f for f in found if not (f[1] is None)]
         self.assertGreater(len(found), 80)
         # (the "msg" of a reply that repeats a LobbyError's own msg is a variable: skipped above)

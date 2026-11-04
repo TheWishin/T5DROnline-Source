@@ -38,6 +38,7 @@ class PatchSeries(unittest.TestCase):
             "0112-always-left-copy-any-unit.patch",
             "0113-spu-regpromo.patch",
             "0114-vmx-four-lanes.patch",
+            "0115-overlay-status-layer.patch",
         ]
         self.assertEqual([name for name in names if name >= "0088-"], expected)
 

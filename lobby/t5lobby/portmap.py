@@ -57,15 +57,45 @@ class PortMapError(Exception):
 
 
 # ----------------------------------------------------------------------------- local network facts
+def _proc_route_gateway(path):
+    """The default route's gateway from a Linux routing table file (/proc/net/route), or None."""
+    with open(path) as f:
+        for line in f.readlines()[1:]:
+            p = line.split()
+            if len(p) > 3 and p[1] == "00000000" and int(p[3], 16) & 2:
+                return socket.inet_ntoa(struct.pack("<I", int(p[2], 16)))
+    return None
+
+
+def _under_wine():
+    """True when this Windows program runs under Wine / Proton (ntdll exports wine_get_version only there)."""
+    if os.name != "nt":
+        return False
+    try:
+        import ctypes
+        return hasattr(ctypes.WinDLL("ntdll"), "wine_get_version")
+    except OSError:
+        return False
+
+
+# Wine's drive Z: is the Linux root ("/"), also under Proton.
+WINE_PROC_ROUTE = r"Z:\proc\net\route"
+
+
 def default_gateway():
     """IPv4 address of the default gateway, or None."""
+    if os.name == "nt" and _under_wine():
+        # Wine's route.exe may be missing or print another table than Windows' (not checked: no Linux PC here);
+        # the Linux kernel's own table is right there, the one a Linux build reads
+        try:
+            gw = _proc_route_gateway(WINE_PROC_ROUTE)
+            if gw:
+                return gw
+        except (OSError, ValueError):
+            pass
     try:
         if sys.platform.startswith("linux"):
-            with open("/proc/net/route") as f:
-                for line in f.readlines()[1:]:
-                    p = line.split()
-                    if len(p) > 2 and p[1] == "00000000" and int(p[3], 16) & 2:
-                        return socket.inet_ntoa(struct.pack("<I", int(p[2], 16)))
+            return _proc_route_gateway("/proc/net/route")
         elif os.name == "nt":
             # route.exe writes the console (OEM) code page: umlauts on a German Windows are not
             # UTF-8 (PYTHONUTF8=1) and not always cp1252 either; only digits and dots are parsed.

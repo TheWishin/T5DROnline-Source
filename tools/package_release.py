@@ -106,7 +106,8 @@ OUR_FILES = [
 # tests/test_release_tools.py ZipDocs; README.de.md's developer list links CI.md and RELEASE.md too)
 OUR_OPTIONAL_FILES = ["CHANGELOG.md", "docs/TROUBLESHOOTING.md", "docs/README.de.md", "docs/ONLINE.md",
                       "docs/RANKED.md", "docs/controls.ini", "docs/HOSTING.md", "docs/TRAINING.md", "docs/REPLAYS.md",
-                      "docs/SPECTATE.md", "docs/TOURNAMENTS.md", "docs/WEAK_PC.md", "docs/RELEASE.md", "docs/CI.md"]
+                      "docs/SPECTATE.md", "docs/TOURNAMENTS.md", "docs/WEAK_PC.md", "docs/RELEASE.md", "docs/CI.md",
+                      "docs/LINUX_STEAM_DECK.md"]
 # lobby/t5lobby/*.py is the client side (Online tab, match driver). lobby/t5lobby/server/ ships too:
 # the Online tab's "Host for friends" runs a lobby server from the zip (lobby/run.py host); the
 # Windows deploy scripts stay in the repository: script files in a game download get flagged

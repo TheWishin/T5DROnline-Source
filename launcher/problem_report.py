@@ -184,6 +184,12 @@ class Scrubber:
                 login = ""
             user_names = {login, os.environ.get("USERNAME", ""),
                           os.path.basename(os.path.expanduser("~").rstrip("\\/"))}
+            # Under Wine / Proton the Windows user is "steamuser" or alike; the person's own name is the Linux
+            # one: in WINEHOMEDIR (\??\Z:\home\<name>) and in paths like Z:\home\<name>\Games\T5DR. (Unset on Windows.)
+            wine_home = os.environ.get("WINEHOMEDIR", "")
+            if wine_home:
+                user_names |= {os.environ.get("USER", ""), os.environ.get("LOGNAME", ""),
+                               ntpath.basename(wine_home.rstrip("\\/"))}
         if pc_names is None:
             pc_names = {os.environ.get("COMPUTERNAME", "")}
         self._name_res = []
@@ -418,6 +424,31 @@ def windows_version():
     if edition.endswith("N"):
         text += f", edition {edition} (\"N\": Media Foundation is an optional feature)"
     return text
+
+
+def wine_text():
+    """'Wine 10.0 Proton: GE-Proton10-11 on Linux 6.17 -- d3d12: ..., d3dcompiler_47: ...' under Wine / Proton,
+    else None: windows_version() then only says which Windows the prefix pretends to be."""
+    if os.name != "nt":
+        return None
+    try:
+        import run_game          # tools/ (the launcher puts it on sys.path)
+    except ImportError:
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools"))
+        try:
+            import run_game
+        except ImportError:
+            return None
+    try:
+        info = run_game.under_wine()
+    except Exception:       # noqa: BLE001 -- a fact we cannot read is a fact we leave out
+        return None
+    if not info:
+        return None
+    note = run_game.wine_note(info)[len("[wine] "):]
+    head, _, rest = note.partition(" -- ")
+    dlls = rest.partition(" -- ")[2]
+    return head + (f" -- {dlls}" if dlls else "")
 
 
 def _physical_cores():
@@ -898,6 +929,9 @@ def system_text(ctx, now=None, game_log=None):
           f"Launcher Python: {platform.python_version()} ({platform.architecture()[0]})", ""]
     L += ["== This PC ==", f"Windows: {windows_version()}", f"Processor: {cpu_info()}", f"Memory: {memory_info()}",
           f"Windows graphics settings: {graphics_settings_info()}"]
+    wine = wine_text()
+    if wine:
+        L.insert(len(L) - 3, f"Wine / Proton: {wine}")      # right after the (pretended) Windows version
     gpus = gpu_info()
     for g in gpus or [("?", "?", "?", None)]:
         L.append(f"Graphics: {g[0]}, driver {g[1]} ({g[2]})" + (f", {_gb(g[3])} video memory" if g[3] else ""))

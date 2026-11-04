@@ -620,6 +620,7 @@ def candidate_roots():
         od = os.environ.get(var)
         if od:
             roots += [os.path.join(od, d) for d in ("Desktop", "Documents", "Dokumente", "Downloads")]
+    roots += wine_host_dirs()
     roots.append(ROOT)
     seen, out = set(), []
     for r in roots:
@@ -2014,8 +2015,26 @@ def reveal_file(path):
         open_path(os.path.dirname(path))
 
 
+def wine_host_dirs():
+    """Under Wine / Proton: the Linux Downloads, Desktop and Documents and the Linux home (Windows paths through
+    Wine's Z: drive), where a Linux player keeps the package; [] on Windows. Proton's own C:\\users\\steamuser
+    folders are not where anybody saves anything."""
+    if not run_game.under_wine():
+        return []
+    home = run_game.wine_home()
+    if not home:
+        return []
+    dirs = run_game.wine_user_dirs(home)
+    return [dirs[k] for k in ("DOWNLOAD", "DESKTOP", "DOCUMENTS") if k in dirs] + [home]
+
+
 def desktop_dir():
-    """The Desktop folder (also when OneDrive or the player moved it), else the home folder."""
+    """The Desktop folder (also when OneDrive or the player moved it), else the home folder. Under Wine / Proton
+    the Linux Desktop (else the Linux home): the prefix's Desktop is hidden inside steamapps/compatdata."""
+    if run_game.under_wine():
+        home = run_game.wine_home()
+        if home:
+            return run_game.wine_user_dirs(home).get("DESKTOP", home)
     d = known_folder(KNOWN_FOLDERS["Desktop"])
     if d and os.path.isdir(d):
         return d

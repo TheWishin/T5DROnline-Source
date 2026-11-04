@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class HiddenAudioTest(unittest.TestCase):
     def test_hidden_boot_park_restore_and_permanent_mute(self):
-        patch = (ROOT / "patches/ps3recomp/0116-hidden-game-audio.patch").read_text(encoding="utf-8")
+        patch = (ROOT / "patches/ps3recomp/0118-hidden-game-audio.patch").read_text(encoding="utf-8")
         block = "\n".join(line[1:] for line in patch.splitlines() if
                           line.startswith((" ", "+")) and not line.startswith("+++"))
         source = r'''

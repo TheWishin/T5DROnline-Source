@@ -914,6 +914,42 @@ class Store:
         self._drop_orphans()
         return True
 
+    FORGOTTEN_NAME = "deleted player"
+
+    def forget_account(self, aid):
+        """"Remove my data" (docs/ONLINE.md "Remove my data", server/forget.py): the account goes, and with it its
+        remembered logins, recovery codes, blocks, mutes, friends and friend requests (both ways). What other players'
+        history needs stays without a name: matches and sets keep their result under "deleted player" with no account,
+        private reports lose the reporter's and the reported name, a finished tournament keeps its bracket under
+        "deleted player". Account ids are never given again (MAX_ID_KEY). -> {what: rows} or None (no such account).
+        The server writes it as one transaction (defer_commits)."""
+        row = self.account_by_id(aid)
+        if row is None:
+            return None
+        name, anon = row["name"], self.FORGOTTEN_NAME
+        n = {}
+        n["matches"] = sum(self._x(f"UPDATE matches SET {s}_name = ?, {s}_account = NULL WHERE {s}_account = ?",
+                                   (anon, aid)).rowcount for s in ("p1", "p2"))
+        n["sets"] = sum(self._x(f"UPDATE sets SET {s}_name = ?, {s}_account = NULL WHERE {s}_account = ?",
+                                (anon, aid)).rowcount for s in ("p1", "p2"))
+        n["reports"] = self._x("UPDATE private_reports SET reporter_name = ?, reporter_account = NULL "
+                               "WHERE reporter_account = ?", (anon, aid)).rowcount
+        n["reports"] += self._x("UPDATE private_reports SET peer_name = ? WHERE peer_name = ? COLLATE NOCASE",
+                                (anon, name)).rowcount
+        n["friends"] = self._x("SELECT COUNT(*) FROM friends WHERE account_id = ?", (aid,)).fetchone()[0]
+        have = {r[0] for r in self._x("SELECT name FROM sqlite_master WHERE type = 'table'")}
+        if "tour_entrants" in have:
+            n["tournaments"] = self._x("UPDATE tour_entrants SET name = ? WHERE account_id = ?", (anon, aid)).rowcount
+        if "tournaments" in have:
+            n["tournaments"] = n.get("tournaments", 0) + self._x(
+                "UPDATE tournaments SET organizer_name = ? WHERE organizer_id = ?", (anon, aid)).rowcount
+        if "tour_hosts" in have:
+            self._x("DELETE FROM tour_hosts WHERE account_id = ?", (aid,))
+        self._note_account_ids()
+        self._x("DELETE FROM accounts WHERE id = ?", (aid,))
+        self._drop_orphans()
+        return n
+
     def _drop_orphans(self):
         """Remembered logins, recovery codes, blocks, friends and friend requests of accounts that no longer
         exist."""

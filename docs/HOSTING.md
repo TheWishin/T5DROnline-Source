@@ -464,7 +464,9 @@ on the lobby server, *PC* on the PC that holds the repository (the way the lobby
    `T5L_RELAY_CENTRAL`), makes the secret `/etc/t5lobby/relay.secret` (mode 0640; an existing one is
    kept), opens SSH and UDP 7781 in ufw, and installs, starts and health-checks the systemd service
    `t5lobby` running `python3 -m t5lobby.server.relaynode`. At the end it prints the entry for the
-   central server's `relays.json`. `--dry-run` shows every step first.
+   central server's `relays.json`. `--dry-run` shows every step first. Add `"area": "na"` (one of `na sa eu
+   af as oc`) to the entry: players whose nearest server it is get that area in the lobby list (docs/ONLINE.md
+   "Search options, areas and languages"); the central server's own area is `T5L_AREA` (default `eu`).
 4. **Check the node**: `sudo t5lobby-admin status` shows `relay node usw`, `0/100 sessions` and
    `central   last request never` (until step 6).
 5. **Central server, the first time only**: add the setting, then update the central server to

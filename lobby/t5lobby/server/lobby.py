@@ -60,6 +60,8 @@ from .ratelimit import BanList, KeyedBuckets, TokenBucket
 from .releases import ReleaseCache
 from .relays import MAIN as RELAY_MAIN, MAX_RELAYS, RelayPool
 from .matchrules import MatchRulesMixin
+from .mmfilters import MatchFiltersMixin
+from .forget import ForgetMixin
 from .private_chat import PrivateChatMixin
 from .rematch import RematchMixin, VOTE_GRACE
 from .rooms import Room, RoomsMixin  # noqa: F401 -- (Room: lobby.Room for tools and tests)
@@ -98,6 +100,7 @@ FEATURES += ["private_chat", "mutes"]
 FEATURES.append("input_delay8")        # 1.2.0: only pairs announcing this cap use the new challenge delays
 FEATURES += ["badges", "mentions", "casual_sets", "room_tables"]
 FEATURES.append(COMPAT_CAP)
+FEATURES += ["mm_filters", "forget_me"]  # 1.3: search options + area / language (mmfilters.py), "Remove my data" (forget.py)
 CHALLENGES_OPEN = 5                    # a player's open challenges at once (1.1.9; before: one)
 CHALLENGE_GAP_S = 0.7                  # ... sent at most this often (before: one every 2 s)
 CHALLENGE_DELAYS = tuple(range(9))     # challenge input delays (frames; None = auto); above 2 needs both clients' cap
@@ -218,6 +221,11 @@ class Player:
         self.spec_ranked = False        # ... in ranked matches too
         self.watching = None            # the spectating.Stream this player watches
         self.life = 100                 # health handicap in casual matches, percent (set_life; matchrules.py)
+        self.area = ""                  # where the player is: mmfilters.AREAS ("" = not known), shown in the lobby list
+        self.area_choice = "auto"       # ... the player's choice (netinfo), auto = the nearest relay's area
+        self.lang = ""                  # the language the player speaks (netinfo; the launcher's language)
+        self.wifi = None                # True / False / None: this PC plays over Wi-Fi (netinfo; never shown)
+        self.filters = {}               # search options of the current queue (mmfilters._read_filters)
         if account:
             self.rating = glicko.Rating(account["rating"], account["rd"], account["vol"])
             self.record = [account["wins"], account["losses"], account["draws"]]
@@ -240,6 +248,10 @@ class Player:
              "compat_group": self.compat_group, "region": self.region}
         if self.life != 100:
             d["life"] = self.life       # (the health handicap: shown to everybody; older launchers ignore it)
+        if self.area:
+            d["area"] = self.area       # (mmfilters.py; older launchers ignore both)
+        if self.lang:
+            d["lang"] = self.lang
         if "input_delay8" in getattr(self.conn, "caps", ()):
             d["input_delay8"] = True    # the challenge picker must know the selected opponent can use its choices
         if self.relay_shown:
@@ -612,7 +624,8 @@ class Conn:
 
 # =============================================================================== server
 
-class LobbyServer(PrivateChatMixin, SpectateMixin, RoomsMixin, CasualMixin, MatchRulesMixin, RematchMixin):
+class LobbyServer(PrivateChatMixin, SpectateMixin, RoomsMixin, CasualMixin, MatchRulesMixin, RematchMixin,
+                  MatchFiltersMixin, ForgetMixin):
     def __init__(self, cfg=None):
         self.cfg = cfg or Config.from_env()
         self.build_groups = BuildGroups(self.cfg.compat_groups)
@@ -1009,6 +1022,8 @@ class LobbyServer(PrivateChatMixin, SpectateMixin, RoomsMixin, CasualMixin, Matc
                        "challenge", "challenge_cancel", "block", "unblock", "leave_set",
                        "friend_add", "friend_answer", "friend_cancel", "friend_remove", "invite", "invite_answer",
                        "invite_cancel", "private_mute", "mute"))
+    STATE = STATE | {"netinfo"}          # (mmfilters.py)
+    HEAVY = HEAVY | {"forget_me"}        # a password check (forget.py)
 
     async def dispatch(self, conn, line):
         """Handle one line; False closes the connection."""
@@ -1477,6 +1492,7 @@ class LobbyServer(PrivateChatMixin, SpectateMixin, RoomsMixin, CasualMixin, Matc
             if shown is None or abs(ms - shown) > max(5.0, 0.2 * shown):
                 p.rtt_shown = ms              # the lobby list only when it changed noticeably
                 self.dirty = True
+            self._update_area(p)
 
     async def h_relay_rtt(self, conn, msg):
         """The client's UDP round trips (ms) to the regional relays the server listed: {"rtts": {id: ms}}. A relay
@@ -1490,6 +1506,7 @@ class LobbyServer(PrivateChatMixin, SpectateMixin, RoomsMixin, CasualMixin, Matc
                 out[rid] = float(ms)
         conn.player.relay_rtt = out
         self._show_relay_rtts(conn.player)
+        self._update_area(conn.player)
 
     def _relays_changed(self):
         """relays.json changed: clients that know the regional relays get the new list (and measure it again)."""
@@ -1500,6 +1517,7 @@ class LobbyServer(PrivateChatMixin, SpectateMixin, RoomsMixin, CasualMixin, Matc
         for p in self.players.values():
             p.relay_rtt = {k: v for k, v in p.relay_rtt.items() if k in self.relays.nodes}
             self._show_relay_rtts(p)
+            self._update_area(p)
 
     def _spawn(self, coro):
         t = asyncio.ensure_future(coro)
@@ -1695,9 +1713,14 @@ class LobbyServer(PrivateChatMixin, SpectateMixin, RoomsMixin, CasualMixin, Matc
         if "char" in msg:
             self._set_char(p, msg["char"])
         p.strict = bool(msg.get("strict")) and mode == "ranked"
+        p.filters = self._read_filters(msg)          # search options (mmfilters.py; an older launcher sends none)
         self._leave_queue(p)
         self._enqueue(p, mode, time.monotonic())
-        return {"t": "queued", "mode": mode, "strict": p.strict}
+        reply = {"t": "queued", "mode": mode, "strict": p.strict}
+        if any(p.filters.values()):
+            reply["filters"] = dict(p.filters)
+            log.info("%s searches %s with options: %s", p.name, mode, self._filters_text(p.filters))
+        return reply
 
     DRAIN_TEXT = "the server restarts for an update in a moment; running matches finish first. Try again in a minute"
 
@@ -1872,6 +1895,8 @@ class LobbyServer(PrivateChatMixin, SpectateMixin, RoomsMixin, CasualMixin, Matc
                     limit = min(self._ping_limit(wa, mode), self._ping_limit(wb, mode))
                     if ping > limit:
                         continue
+                    if not self._filters_ok(a, b, ping):
+                        continue                         # either player's search options (mmfilters.py)
                     if mode == "ranked":
                         if not self.cfg.ranked_same_ip and self._same_address(a, b):
                             continue                     # one household / one PC: never a ranked pair (alt farming)

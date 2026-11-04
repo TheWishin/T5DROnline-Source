@@ -181,6 +181,9 @@ class Config:
     # PC speed (docs/RANKED.md "Slow PCs"): lockstep plays at the slower PC's speed
     min_fps: float = 40.0           # T5L_MIN_FPS: a PC whose last match ran slower stays out of ranked (0 = off)
     warn_fps: float = 55.0          # T5L_WARN_FPS: below this both players are warned at match found (0 = off)
+    # search options and areas (docs/ONLINE.md "Search options, areas and languages", mmfilters.py)
+    steady_fps: float = 57.0        # T5L_STEADY_FPS: "only opponents at a steady 60 fps": their last match at least this
+    area: str = "eu"                # T5L_AREA: this server's own relay's area (na sa eu af as oc); players near it get it
     # hosting and operations (docs/HOSTING.md)
     log_file: str = ""              # T5L_LOG_FILE: also log to this file, rotated (stderr is always used if open)
     log_max_mb: int = 10            # T5L_LOG_MAX_MB: rotate the log file at this size ...

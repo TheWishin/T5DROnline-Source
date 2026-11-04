@@ -209,6 +209,14 @@ SERVER = (
     N_("the health handicap needs a newer launcher; update it"),
     N_("life is 30 to 100 in steps of 10"),
     N_("life is 30 to 150 in steps of 10"),      # 1.1.7: up to 150 % (the cap life150)
+    # Remove my data (server/forget.py)
+    N_("guests have no account on the server: there is nothing to remove"),
+    N_("too many requests; wait a minute"),
+    N_("this account no longer exists"),
+    N_("you are {status}: finish or leave it first"),
+    N_("you are in a set: finish or leave it first"),
+    N_("you take part in a tournament that is not over: leave it (or let it end) first"),
+    N_("this account was removed"),
 )
 
 # lobby/t5lobby/server/tournaments.py: errors answering a tournament request (docs/TOURNAMENTS.md)
@@ -278,6 +286,7 @@ CLIENT = (
     N_("this server has no private rooms"),     # (client.py create_room: a new launcher, an older server)
     N_("this server has no training rooms"),    # (client.py create_room / set_life: an older server)
     N_("this server has no health handicap"),
+    N_("this server cannot remove accounts yet; ask its host"),    # (client.py forget_me: an older server)
 )
 
 # tools/build_game.py: the sentence after "ERROR:" in the build log, shown in the Build tab

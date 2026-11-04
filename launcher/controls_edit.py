@@ -386,7 +386,8 @@ RECIPES = (
            {KEYS1: _spec("numpad"), KEYS2: _spec("numpad")}),
 )
 # Keys the game window itself uses: never a game button (the Controls screen says so and waits for another).
-GAME_KEYS = {"ESC": N_("Esc (leaves the game)"), "F11": N_("F11 (fullscreen)"), "F2": N_("F2 (training overlay)")}
+GAME_KEYS = {"ESC": N_("Esc (leaves the game)"), "F11": N_("F11 (fullscreen)"), "F2": N_("F2 (training overlay)"),
+             "F3": N_("F3 (connection line)")}
 RECIPE_BY_ID = {r.id: r for r in RECIPES}
 
 

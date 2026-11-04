@@ -1329,6 +1329,10 @@ class LobbyClient(TourCalls, SpectateClientMixin):
         self._kicked = False
         if self.perf_fps:
             await self._safe(self._send({"t": "perf", "fps": self.perf_fps}))
+        ni = getattr(self, "netinfo", None)
+        if ni and "mm_filters" in ((self.welcome or {}).get("features") or ()):
+            # Wi-Fi, area, language for the search options (docs/ONLINE.md "Search options, areas and languages")
+            await self._safe(self._send(dict({"t": "netinfo"}, **ni)))
         await self._measure_server()
         if self._server_relays():
             self._measure_relays_soon()
@@ -1445,13 +1449,28 @@ class LobbyClient(TourCalls, SpectateClientMixin):
         if self.me is not None and self.connected:
             self._fire({"t": "perf", "fps": fps})
 
-    def quick_match(self, char=None):
+    def has_feature(self, name):
+        return name in ((self.welcome or {}).get("features") or ())
+
+    def _search_options(self, msg, options):
+        """Search options (docs/ONLINE.md "Search options, areas and languages"): only to a server that has them."""
+        if options and self.has_feature("mm_filters"):
+            mp = options.get("max_ping")
+            if mp in (60, 100, 150):
+                msg["max_ping"] = mp
+            if options.get("no_wifi"):
+                msg["no_wifi"] = True
+            if options.get("steady"):
+                msg["steady"] = True
+        return msg
+
+    def quick_match(self, char=None, options=None):
         msg = {"t": "queue", "mode": "quick"}
         if char:
             msg["char"] = char
-        return self._call(msg)
+        return self._call(self._search_options(msg, options))
 
-    def ranked_match(self, char=None, strict=False):
+    def ranked_match(self, char=None, strict=False, options=None):
         """Queue for a ranked match. strict=True: only opponents within the server's strict range
         (150 rating points) -- the wait can be long."""
         msg = {"t": "queue", "mode": "ranked"}
@@ -1459,7 +1478,34 @@ class LobbyClient(TourCalls, SpectateClientMixin):
             msg["char"] = char
         if strict:
             msg["strict"] = True
+        return self._call(self._search_options(msg, options))
+
+    def send_netinfo(self, wifi=None, area="auto", lang=""):
+        """This PC's network kind, the player's area and language (mm_filters servers; else nothing is sent).
+        -> the server's answer {area, lang} or None."""
+        if not self.has_feature("mm_filters"):
+            return None
+        msg = {"t": "netinfo", "wifi": wifi if isinstance(wifi, bool) else None, "area": area or "auto"}
+        if lang:
+            msg["lang"] = lang
         return self._call(msg)
+
+    def forget_me(self, password, dry_run=False):
+        """Remove my data (docs/ONLINE.md "Remove my data"): dry_run -> {counts} of what would go; else the account
+        is removed and the server closes the connection. Raises LobbyError (wrong password, busy, not supported)."""
+        self._need_secure()
+        if not self.has_feature("forget_me"):
+            raise LobbyError(proto.E_NOT_ALLOWED, "this server cannot remove accounts yet; ask its host")
+        msg = {"t": "forget_me", "password": password}
+        if dry_run:
+            msg["dry_run"] = True
+            return self._call(msg)
+        try:
+            r = self._call(msg)
+        except ConnectionError:
+            r = {"t": "forgotten"}       # (the connection closes right after the answer)
+        self.session = None
+        return r
 
     # ---------------------------------------------------------------- friends and invites (docs/ONLINE.md "Friends and invites")
     def has_friends(self):

@@ -912,6 +912,24 @@ class App(tk.Tk):
         ttk.Label(net, style="Muted.TLabel", wraplength=300, justify="left", text=t(
             "Frames. Auto: 1 up to about 60 ms ping, 2 above. 0/1/2 count only when your opponent "
             "picked the same, otherwise Auto. Ranked matches always use 2.")).pack(anchor="w", pady=(4, 0))
+        # Online feel (T5_RB_NET_FEEL, docs/NETPLAY.md "Online feel and rollback capacity"): how Auto picks
+        self.online_feel_var = tk.StringVar(value=self.settings["online_feel"]
+                                            if self.settings["online_feel"] in core.ONLINE_FEELS else "balanced")
+        row = ttk.Frame(net)
+        row.pack(anchor="w", pady=(8, 0))
+        ttk.Label(row, text=t("Online feel:")).pack(side="left", padx=(0, 10))
+        for key, label in core.ONLINE_FEELS.items():
+            ttk.Radiobutton(row, text=t(label), value=key, variable=self.online_feel_var,
+                            command=self.save_settings).pack(side="left", padx=(0, 14))
+        ttk.Label(net, style="Muted.TLabel", wraplength=300, justify="left", text=t(
+            "For Auto. Responsive: the least delay. Balanced: one frame more when a PC cannot keep up with its "
+            "rollbacks. Smooth: more delay, fewer and smaller rollbacks. Different choices meet at Balanced.")).pack(
+            anchor="w", pady=(2, 0))
+        self.net_line_var = tk.BooleanVar(value=bool(self.settings.get("net_line", False)))
+        ttk.Checkbutton(net, text=t("Show the connection line in online matches (ping, delay, rollbacks; F3 in "
+                                    "the game)"), variable=self.net_line_var,
+                        style=self.wrap_style("TCheckbutton", 500), command=self.save_settings).pack(
+            anchor="w", pady=(8, 0))
         # docs/NETPLAY.md "Getting a direct connection": a forwarded game port lets the opponent's punches in
         self.router_ports_var = tk.BooleanVar(value=bool(self.settings.get("router_ports", True)))
         ttk.Checkbutton(net, text=t("Open the game's port on my router during online matches (UPnP / NAT-PMP / PCP)"),
@@ -1717,6 +1735,9 @@ class App(tk.Tk):
             self.settings["auto_skip_offline"] = bool(self.auto_skip_var.get())
         if hasattr(self, "router_ports_var"):
             self.settings["router_ports"] = bool(self.router_ports_var.get())
+        if hasattr(self, "online_feel_var"):
+            self.settings["online_feel"] = self.online_feel_var.get()
+            self.settings["net_line"] = bool(self.net_line_var.get())
         if hasattr(self, "screen_side_var"):
             self.settings["screen_side"] = self.screen_side_var.get()
             self.settings["always_left"] = self.settings["screen_side"] == "left"

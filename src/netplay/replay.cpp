@@ -8,7 +8,7 @@
  *            game needs to play the session back; the JSON is only a view of it
  *
  * Binary, little-endian:
- *   "T5RP" u32 version (7; formats 1..6 keep their original START/SELECT semantics)
+ *   "T5RP" u32 version (8; formats 1..7 keep their original throw-break timing)
  *   u32 flags (bit 0: rollback; format 4: bit 1 the select screen's random generator is pinned
  *       to the session's seed mixed with the match number -- older files: one seed per session --
  *       bit 2 Jinpachi and the random cell were offered, T5_NET_UNLOCKS=open),
@@ -58,13 +58,14 @@ unsigned char* rp_zlib_decompress(const unsigned char* data, int len, int* out_l
 namespace rp {
 namespace {
 
-constexpr uint32_t kVersion = 7;   /* 2: the last frame the recording game ran (after the hash interval);
+constexpr uint32_t kVersion = 8;   /* 2: the last frame the recording game ran (after the hash interval);
                                     3: each match's custom costume blocks;
                                     4: header flags bit 1 (select seed per match) and bit 2 (unlocks open);
                                     5: each match's rules word (online training, the health handicap);
                                     6: rules bit 1 automatic after-round skips;
                                     7: filter cross-pad START/SELECT soft reset; old readers must reject;
-                                       rules bit 2 automatic intro skips (1.2.0, never in format 5/6) */
+                                       rules bit 2 automatic intro skips (1.2.0, never in format 5/6);
+                                    8: online throw-break window compensation by recorded input delay */
 constexpr uint32_t kFlagRollback = 1, kFlagSelectMix = 2, kFlagUnlocksOpen = 4;
 constexpr uint32_t kCostumeBlock = 0x108;
 constexpr int kMaxDelay = 30;      /* netplay_core.cpp kMaxDelay: the input delay a session can have */
@@ -74,6 +75,7 @@ struct Match {
     uint32_t start = 0, end = 0, frames = 0, hash_frame = 0, desync = 0;
     Fight ft;
     bool soft_reset_guard = false;  /* playback policy captured when this match was decoded */
+    bool throw_break_rule = false;  /* format 8: retained across later live SESSION upgrades */
     bool have_result = false, have_hash = false, complete = false;
     int winner = -1, score[2] = { 0, 0 };
     uint64_t hash = 0;
@@ -252,6 +254,7 @@ Match get_match(Reader& r, uint32_t ver)
 {
     Match m;
     m.soft_reset_guard = ver >= 7;
+    m.throw_break_rule = ver >= 8;
     m.start = r.u32(); m.end = r.u32(); m.frames = r.u32(); m.hash_frame = r.u32(); m.desync = r.u32();
     const uint32_t fl = r.u32();
     m.have_result = fl & 1; m.have_hash = (fl & 2) != 0; m.complete = (fl & 4) != 0;
@@ -507,7 +510,7 @@ void write_store(const std::shared_ptr<Store>& st, uint32_t seq)
 /* ---- the live stream ---------------------------------------------------------
  * <T5_REPLAY_LIVE> (a spectator's game reads it while it grows, docs/SPECTATE.md):
  *   "T5LIVE 1", newline, then records: u8 type, u32 payload length, payload (little-endian)
- *   SESSION  u32 version 1 (format 5), 2 (format 6), or 3 (format 7), flags (bit 0 rollback,
+ *   SESSION  u32 version 1 (format 5), 2 (format 6), 3 (format 7), or 4 (format 8), flags (bit 0 rollback,
  *            bits 1 and 2 as in the replay's header); a version guard precedes each strict upgrade,
  *            slot, delay, rollback delay, session seed,
  *            match seed, hash interval; str build, created (again when the rollback delay is
@@ -543,7 +546,7 @@ void live_rec(std::vector<uint8_t>& out, uint8_t type, const std::vector<uint8_t
 std::vector<uint8_t> session_payload(const Data& d)
 {
     std::vector<uint8_t> b;
-    put32(b, rules_version(d) >= 7 ? 3u : rules_version(d) >= 6 ? 2u : 1u); put32(b, header_flags(d));
+    put32(b, rules_version(d) - 4); put32(b, header_flags(d));
     put32(b, (uint32_t)d.slot); put32(b, (uint32_t)d.delay); put32(b, (uint32_t)d.rb_delay);
     put32(b, d.session_seed); put32(b, d.match_seed); put32(b, d.hash_every);
     putstr(b, d.build); putstr(b, d.created);
@@ -723,7 +726,7 @@ struct Play {
     uint32_t waiting_fight = 0;                /* missing first/next fight requested by the driver (1-based) */
     bool (*quit_poll)() = nullptr;              /* local controls, including inside input / barrier waits */
     bool session_new = false;                  /* the SESSION came after the netplay core was set up: tell it */
-    uint32_t live_match_version = 5;             /* SESSION v1/v2/v3 carry format 5/6/7 policy */
+    uint32_t live_match_version = 5;             /* SESSION v1..v4 carry format 5..8 policy */
     bool live_rules_guard = false;
     intptr_t lh = -1;                          /* t5p_* file handle */
     std::vector<uint8_t> lbuf;                 /* bytes read, not yet a whole record */
@@ -784,7 +787,7 @@ bool live_record(Play& p, uint8_t type, const uint8_t* b, uint32_t n)
     switch (type) {
     case L_SESSION: {
         const uint32_t version = r.u32();
-        if (version < 1 || version > 3) return false;
+        if (version < 1 || version > 4) return false;
         const uint32_t match_version = version + 4;
         if (match_version > p.live_match_version && !p.live_rules_guard) return false;
         if (p.live_rules_guard && match_version <= p.live_match_version) return false;
@@ -863,6 +866,7 @@ bool live_record(Play& p, uint8_t type, const uint8_t* b, uint32_t n)
             /* A result for an older match can follow a SESSION upgrade. Keep that
              * fight's original input policy rather than changing it retroactively. */
             m.soft_reset_guard = d.matches[k].soft_reset_guard;
+            m.throw_break_rule = d.matches[k].throw_break_rule;
             m.ft.rules = d.matches[k].ft.rules;
             d.matches[k] = m;
         }
@@ -1385,6 +1389,21 @@ bool play_soft_reset_guard()
     const size_t index = p.begun ? (size_t)p.begun - 1 : 0;
     if (index < p.d.matches.size()) return p.d.matches[index].soft_reset_guard;
     return p.d.version >= 7;
+}
+
+bool play_throw_break_rule()
+{
+    const Play& p = P();
+    if (!p.on) return true;
+    const size_t index = p.begun ? (size_t)p.begun - 1 : 0;
+    if (index < p.d.matches.size()) return p.d.matches[index].throw_break_rule;
+    return p.d.version >= 8;
+}
+
+int play_input_delay()
+{
+    const Data& d = P().d;
+    return d.rollback && d.rb_delay >= 0 ? d.rb_delay : d.delay;
 }
 
 void play_set_quit_poll(bool (*quit)()) { P().quit_poll = quit; }

@@ -400,7 +400,7 @@ def patch_digest(d=None):
 
 # Bump when a change to the steps below changes what ends up in t5dr.exe (lifter
 # arguments, SPU handling, compile flags); messages and the like do not count.
-CODE_VERSION = 11  # 2: sound core lifted with SPU_CORE_EXTRA_FUNCS; 3: sound core with SPU_NEAR_FLOAT;
+CODE_VERSION = 12  # 2: sound core lifted with SPU_CORE_EXTRA_FUNCS; 3: sound core with SPU_NEAR_FLOAT;
                    # 4 (1.1.3): lifted code compiled with the PGO profile (tools/gamedll/t5dr_lifted.proftext);
                    # 5 (1.1.4 work): lifted PPU code with register promotion (ps3recomp patch 0066), compiled with
                    # -fno-finite-loops (build_game_dll.py);
@@ -416,6 +416,8 @@ CODE_VERSION = 11  # 2: sound core lifted with SPU_CORE_EXTRA_FUNCS; 3: sound co
                    # training shadow diagnostics require a rebuild of the previous integrated draft (9).
                    # 11 (1.2.0 integrated): online START+SELECT suppression changes simulated pad input;
                    # both peers must rebuild and use the same reset policy (src/netplay/no_pause.h).
+                   # 12: online throw-break windows end input-delay frames later (src/netplay/throw_break.h);
+                   # both peers and new replay recordings use the same deterministic timing rule.
 
 # Guest functions src/ detours: a macOS online build lifts them with hook slots (step_lift).
 HOOK_SLOTS = os.path.join(ROOT, "src", "rollback", "hook_slots.txt")

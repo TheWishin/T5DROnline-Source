@@ -113,9 +113,10 @@ class Source(unittest.TestCase):
         self.assertEqual(len(handovers), 2, "the places that hand a frame's inputs to the game changed")
         for pos in handovers:
             before = src[max(0, pos - 400):pos]
-            # (the training rule may follow it: match_rules.h -- it writes the game state, never an input)
+            # State rules may follow it; neither changes the pad input verdict.
             self.assertRegex(before, r"no_pause_rule\((run|f), in, [^)]*\);[^\n]*\n\s*"
-                                     r"(training_rule\((run|f), in, [^)]*\);[^\n]*\n\s*)?$",
+                                     r"(training_rule\((run|f), in, [^)]*\);[^\n]*\n\s*)?"
+                                     r"(throw_break_rule\(\);\s*)?$",
                              "no rule before: " + before[-200:])
         self.assertIn("np::NoPauseRule", src)
 

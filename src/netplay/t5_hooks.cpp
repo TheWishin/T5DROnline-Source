@@ -83,6 +83,9 @@
 #include "netplay.h"
 #include "replay.h"       /* replays: recording and playback (docs/REPLAYS.md) */
 #include "no_pause.h"     /* no pause online: the rule (docs/NETPLAY.md "No pause online") */
+
+extern "C" void t5_throw_break_install(void);
+extern "C" void t5_throw_break_frame(bool enabled, int delay);
 #include "match_score.h"  /* a decided match's score: the fighters' round counts (docs/NETPLAY.md "Match result") */
 #include "match_rules.h"  /* online training and the health handicap (docs/NETPLAY.md "Online training ...") */
 #include "../directfight/df_ui.h"  /* host-only rematch prompt; never a re-simulated frame */
@@ -731,6 +734,16 @@ void no_pause_report(uint32_t f, const char* what)
  * no-pause rule. The health handicap needs nothing here: the driver writes it into the battle config before the
  * game mode's set-up reads it (df_fight.cpp). */
 constexpr uint32_t kFighter0 = 0x10090030, kFighterStride = 0x8D0;   /* the fighter blocks (training_logic.h) */
+
+/* The command evaluator sees this frame's agreed session delay, including on a
+ * restored boundary. Old recordings retain their original acceptance windows. */
+void throw_break_rule()
+{
+    const bool fighting = np::enabled() && t5_df_game_mode() != 0 &&
+        rd32(0x1008F070u) == 17 && rd32(kRoundState) == 5 && !rd8(kMatchOver);
+    const int delay = np::replaying() ? rp::play_input_delay() : np::delay();
+    t5_throw_break_frame(fighting && rp::play_throw_break_rule(), delay);
+}
 constexpr uint32_t kFtHealth = 0x6BC, kFtHealthMax = 0x6C0;          /* 16.16 fixed point */
 constexpr uint32_t kRoundTimer = 0x1008F054;                         /* frames left in the round */
 np::TrainingRule g_train;
@@ -1677,6 +1690,10 @@ void offline_frame(ppu_context* ctx)
 
 void on_frame_start(ppu_context* ctx)
 {
+    /* A persistent host can leave online play for menus or offline play. Never
+     * carry the preceding frame's throw policy across that boundary. */
+    t5_throw_break_frame(false, 0);
+    t5_throw_break_install();
     /* One raw UI sample at the live host boundary, including result/idle. The
      * rollback branch below re-enters this function: it must never read a pad
      * or publish an action. UI snapshots and actions never enter g_cur[]. */
@@ -1899,6 +1916,7 @@ void on_frame_start(ppu_context* ctx)
         if (np::replaying()) rp::play_inputs(run, in);   /* (a sync point may have renumbered the frames: the recorded frame's inputs) */
         no_pause_rule(run, in, run >= f);   /* (memory: the state at run's boundary, restored if it is re-simulated) */
         training_rule(run, in, run >= f);   /* (after the inputs are final for this run, like the no-pause rule) */
+        throw_break_rule();
         g_cur[0] = in[0];
         g_cur[1] = in[1];
         keyread_tick();
@@ -1990,6 +2008,7 @@ void on_frame_start(ppu_context* ctx)
     np::begin_frame(f, h, in, g_directfight && intro_input_now());
     no_pause_rule(f, in, true);
     training_rule(f, in, true);
+    throw_break_rule();
     g_cur[0] = in[0];
     g_cur[1] = in[1];
     keyread_tick();

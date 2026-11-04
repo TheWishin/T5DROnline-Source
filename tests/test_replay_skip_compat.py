@@ -91,8 +91,18 @@ class ReplayRules(unittest.TestCase):
                 self.write(version)
                 self.assertFalse(replays.read_payload(self.path)["soft_reset_guard"])
 
+    def test_throw_timing_only_changes_in_format_eight_and_survives_scrubbing(self):
+        for version in range(1, 9):
+            with self.subTest(version=version):
+                self.write(version)
+                self.assertEqual(replays.read_payload(self.path)["throw_break_rule"], version >= 8)
+                clean = replays.strip_names(self.path)
+                with open(self.path, "wb") as output:
+                    output.write(clean)
+                self.assertEqual(replays.read_payload(self.path)["throw_break_rule"], version >= 8)
+
     def test_future_or_invalid_versions_are_not_silently_decoded(self):
-        for version in (0, 8):
+        for version in (0, 9):
             self.write(version)
             with self.assertRaises(replays.ReplayError):
                 replays.read_payload(self.path)
@@ -130,7 +140,7 @@ class LiveRules(unittest.TestCase):
         self.assertEqual(struct.unpack_from("<I", raw, offset + 1)[0], (1 << 24) + 1)
 
     def test_modern_sessions_keep_rules_through_fragmented_records_and_costumes(self):
-        for version, costumes in ((2, False), (2, True), (3, False), (3, True)):
+        for version, costumes in ((2, False), (2, True), (3, False), (3, True), (4, False), (4, True)):
             with self.subTest(version=version, costumes=costumes):
                 parser = spectate.LiveParser()
                 raw = stream(version, 3 | (80 << 8) | (120 << 16), costumes)
@@ -144,9 +154,10 @@ class LiveRules(unittest.TestCase):
                 self.assertEqual(match["life"], [80, 120])
                 self.assertEqual(match["costumes"] is not None, costumes)
                 self.assertEqual(match["soft_reset_guard"], version >= 3)
+                self.assertEqual(match["throw_break_rule"], version >= 4)
 
     def test_guarded_session_upgrades_record_reset_policy_per_match(self):
-        for older, newer in ((1, 2), (1, 3), (2, 3)):
+        for older, newer in ((1, 2), (1, 3), (2, 3), (1, 4), (2, 4), (3, 4)):
             with self.subTest(older=older, newer=newer):
                 parser = spectate.LiveParser()
                 parser.feed(stream(older, 0))
@@ -155,6 +166,8 @@ class LiveRules(unittest.TestCase):
                 self.assertTrue(parser.ready)
                 self.assertEqual([m["soft_reset_guard"] for m in parser.matches],
                                  [older >= 3, newer >= 3])
+                self.assertEqual([m["throw_break_rule"] for m in parser.matches],
+                                 [older >= 4, newer >= 4])
                 self.assertFalse(parser.matches[-1]["auto_skip_after_round"])
 
     def test_result_after_session_upgrade_keeps_original_input_policy(self):
@@ -190,6 +203,27 @@ class LiveRules(unittest.TestCase):
         self.assertTrue(parser.ready)
         self.assertTrue(all(match["soft_reset_guard"] for match in parser.matches))
 
+    def test_throw_policy_survives_result_after_session_four_upgrade(self):
+        parser = spectate.LiveParser()
+        parser.feed(stream(3, 0))
+        parser.feed(stream(4, 0, result=True)[len(spectate.MAGIC):])
+        self.assertIsNone(parser.bad)
+        self.assertFalse(parser.matches[0]["throw_break_rule"])
+        self.assertTrue(parser.matches[0]["have_result"])
+        parser.feed(stream(4, 0, index=1, guarded=False)[len(spectate.MAGIC):])
+        self.assertIsNone(parser.bad)
+        self.assertTrue(parser.matches[1]["throw_break_rule"])
+
+    def test_session_four_upgrade_requires_guard_and_cannot_downgrade(self):
+        for older, newer, guarded in ((1, 4, False), (2, 4, False), (3, 4, False),
+                                      (4, 4, True), (4, 3, True), (4, 1, False)):
+            with self.subTest(older=older, newer=newer, guarded=guarded):
+                parser = spectate.LiveParser()
+                parser.feed(stream(older, 0))
+                parser.feed(stream(newer, 0, index=1, guarded=guarded)[len(spectate.MAGIC):])
+                self.assertIsNotNone(parser.bad)
+                self.assertEqual(len(parser.matches), 1)
+
     def test_session_one_defaults_skip_off_with_or_without_legacy_rule_word(self):
         for rules in (None, 2):
             parser = spectate.LiveParser()
@@ -198,7 +232,7 @@ class LiveRules(unittest.TestCase):
             self.assertFalse(parser.matches[0]["auto_skip_after_round"])
 
     def test_unknown_session_is_rejected_before_match_publication(self):
-        for version in (0, 4):
+        for version in (0, 5):
             parser = spectate.LiveParser()
             parser.feed(stream(version))
             self.assertFalse(parser.ready)
@@ -206,7 +240,7 @@ class LiveRules(unittest.TestCase):
             self.assertEqual(parser.matches, [])
 
     def test_modern_sessions_require_explicit_match_rules(self):
-        for version in (2, 3):
+        for version in (2, 3, 4):
             with self.subTest(version=version):
                 parser = spectate.LiveParser()
                 parser.feed(stream(version, None))

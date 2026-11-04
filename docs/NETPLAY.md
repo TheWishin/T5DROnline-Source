@@ -321,9 +321,12 @@ both players chose and every value the lobby sends (ranked, far matches, a chall
 were. The pick still travels in PING / INPUT as `rbd` from the host's match start, so both PCs use the same delay
 from the same frame: nothing the game simulates changes, only which delay the two agree on.
 
-**Rollback capacity.** In every online fight the rollback loop measures this PC: the main thread's CPU time for a
-live fight frame without the rollbacks in it (L: the game's frame and the snapshot), the restore (R) and the wall
-time of a re-simulated frame (S). Once 30 rollbacks and 600 live fight frames are in (at a session's end: 10 and
+**Rollback capacity.** In every online fight the rollback loop measures this PC: the wall time of a live fight
+frame's busy part (L: from the boundary that hands the game its frame until the frame is translated and waits for its
+tick -- the moment the early snapshot is taken; without early rollbacks, `T5_RB_NET_EARLY=0`, the main thread's CPU
+time between two live boundaries without the rollbacks in it, which counts the flip wait's poll too), the restore
+(R) and the wall time of a re-simulated frame (S). A rollback, the game's frame and its translation run one after the
+other, so they must fit into a frame together. Once 30 rollbacks and 600 live fight frames are in (at a session's end: 10 and
 300) the netplay core keeps them -- halfway between the old value and the new one -- and writes them to
 `T5_RB_COST_FILE` (the launcher: `<out>/rb_cost.txt`), so the next game starts with them. The capacity is the
 deepest rollback the PC can run inside one frame and still keep 60 fps:

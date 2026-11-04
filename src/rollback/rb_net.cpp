@@ -256,6 +256,11 @@ struct CostAcc {
     double live_ms = 0; uint32_t live_n = 0;
     double restore_ms = 0, resim_ms = 0; uint32_t rb_n = 0, resim_n = 0;
     double last_rms = 0;                 /* the current rollback's restore */
+    /* The live frame's busy part as wall time: from the boundary that handed the game its frame to the moment the
+     * frame is translated and waits for its tick (early_commit's first call). The CPU measure above counts the
+     * flip wait's poll as busy (rollback mode polls it), so it is only the fallback without early rollbacks. */
+    bool out_live = false;
+    double wall_ms = 0; uint32_t wall_n = 0;
 } g_cost;
 /* the connection line (line_stats) */
 uint32_t g_line_rollbacks = 0, g_line_deepest = 0;
@@ -330,8 +335,10 @@ double ft_pct(const uint32_t* h, double q)
 void cost_flush(bool session_end)
 {
     const uint32_t need_rb = session_end ? 10 : 30, need_live = session_end ? 300 : 600;
-    if (g_cost.rb_n >= need_rb && g_cost.live_n >= need_live && g_cost.resim_n)
-        np::rb_cost_note(g_cost.live_ms / g_cost.live_n, g_cost.restore_ms / g_cost.rb_n, g_cost.resim_ms / g_cost.resim_n);
+    const bool wall = g_cost.wall_n >= need_live;
+    if (g_cost.rb_n >= need_rb && (wall || g_cost.live_n >= need_live) && g_cost.resim_n)
+        np::rb_cost_note(wall ? g_cost.wall_ms / g_cost.wall_n : g_cost.live_ms / g_cost.live_n,
+                         g_cost.restore_ms / g_cost.rb_n, g_cost.resim_ms / g_cost.resim_n);
     else if (!session_end)
         return;   /* keep collecting */
     g_cost = CostAcc();
@@ -799,6 +806,7 @@ uint32_t on_boundary(uint32_t f, bool scene_flag, np::PadInput out[2])
     const uint32_t run = boundary(f, scene_flag, out);
     set_sim_frame(run);   /* the sound side keys its per-frame start log on it (rb_sound.cpp) */
     QueryPerformanceCounter(&g_t_bnd_out); g_t_bnd_out_ok = true;
+    g_cost.out_live = !g_resim;   /* the game now runs a live frame (rollback cost: early_commit measures it) */
     if (was_resim) {
         g_st.rs_commit_ms += g_bnd_cms;
         /* the rest of a boundary inside the re-simulation (the last one also
@@ -1109,6 +1117,11 @@ void early_commit()
     const uint32_t f = g_next_f;
     if (!f || g_early_committed == f) return;
     g_early_committed = f;
+    if (g_cost.out_live && g_t_bnd_out_ok) {   /* rollback cost: the live frame's busy part, wall time */
+        g_cost.out_live = false;
+        const double ms = ms_since(g_t_bnd_out);
+        if (ms > 0 && ms < 100 && fighting_now()) { g_cost.wall_ms += ms; g_cost.wall_n++; }
+    }
     double cms = 0;
     state_commit(f, nullptr, &cms);
     g_st.early_commit_ms += cms;

@@ -68,6 +68,7 @@ class Measure(unittest.TestCase):
         self.assertIn("np::rb_cost_note(", rb)
         self.assertIn("if (g_cost.prev_ok && fighting_now())", rb)
         self.assertIn("cost_flush(true);", rb)
+        self.assertIn("g_cost.wall_ms += ms; g_cost.wall_n++;", rb)      # the live frame as wall time (early_commit)
         self.assertIn("bool line_stats(uint32_t* rollbacks, uint32_t* deepest)", rb)
 
 

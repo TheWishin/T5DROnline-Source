@@ -2635,6 +2635,24 @@ MESSAGES = {
         "Predeterminado",
     "Lowest: Internal resolution Lowest; stage blur / glow and shadows off. Effects stay on: the hit effects show what happens in a fight. Default puts them back. Only your picture changes: online, both players can choose differently.":
         "Mínimo: resolución interna Mínima; desenfoque / brillo de escenarios y sombras desactivados. Los efectos siguen activados: los efectos de golpe muestran lo que pasa en el combate. Predeterminado los restablece. Solo cambia tu imagen: en línea, cada jugador puede elegir lo suyo.",
+    # ---- 1.2.1: launcher/problem_check.py old_cpu
+    "Your processor is too old for the game":
+        "Tu procesador es demasiado antiguo para el juego",
+    "The game needs a processor with SSE4.1: Intel Core 2 from 2008 on (E7000, E8000, Q8000, Q9000) or any Core i3/i5/i7, AMD FX, A-series from 2012 or Ryzen. This one does not have it, so the game stops at its start.":
+        "El juego necesita un procesador con SSE4.1: Intel Core 2 desde 2008 (E7000, E8000, Q8000, Q9000) o cualquier Core i3/i5/i7, AMD FX, serie A desde 2012 o Ryzen. Este no lo tiene, así que el juego se detiene al iniciar.",
+    "This PC: no SSE4.1.":
+        "Este PC: sin SSE4.1.",
+    # ---- 1.2.1: Old PC settings (launcher/core.py OLD_PC_PRESET)
+    "a processor with {cores} cores":
+        "un procesador de {cores} núcleos",
+    "an old graphics card ({name}: resource binding tier 1)":
+        "una tarjeta gráfica antigua ({name}: resource binding tier 1)",
+    "This PC looks like an old PC ({why}), so the launcher chose the Old PC settings: Internal resolution Lowest, no stage blur, no shadows and no effects. Settings -> Graphics -> Default puts the normal look back.":
+        "Este PC parece un PC antiguo ({why}), así que el launcher eligió los ajustes para PC antiguo: resolución interna Mínima, sin desenfoque de escenario, sin sombras y sin efectos. Ajustes -> Gráficos -> Predeterminado devuelve el aspecto normal.",
+    "Old PC":
+        "PC antiguo",
+    "Old PC: like Lowest, and the effects off too -- for a 2-core processor or a graphics card from before ~2013. The launcher chooses it by itself once on such a PC, as long as you have not changed these settings.":
+        "PC antiguo: como Mínima y además sin efectos -- para un procesador de 2 núcleos o una tarjeta gráfica anterior a ~2013. El launcher lo elige solo una vez en un PC así, mientras no hayas cambiado estos ajustes.",
     # ---- lobby/t5lobby/tk_casual.py
     "Any side": "Cualquier lado",
     "P1 (left)": "P1 (izquierda)",

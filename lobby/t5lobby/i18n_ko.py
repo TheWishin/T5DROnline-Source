@@ -2566,6 +2566,24 @@ MESSAGES = {
         "기본",
     "Lowest: Internal resolution Lowest; stage blur / glow and shadows off. Effects stay on: the hit effects show what happens in a fight. Default puts them back. Only your picture changes: online, both players can choose differently.":
         "최저: 내부 해상도 최저, 스테이지 블러 / 빛 번짐과 그림자 끄기. 이펙트는 켜진 채로 둡니다(타격 이펙트로 대전 상황을 알 수 있음). '기본'으로 되돌립니다. 내 화면만 바뀌므로 온라인에서 두 플레이어가 서로 다르게 골라도 됩니다.",
+    # ---- 1.2.1: launcher/problem_check.py old_cpu
+    "Your processor is too old for the game":
+        "프로세서가 너무 오래되어 게임을 실행할 수 없습니다",
+    "The game needs a processor with SSE4.1: Intel Core 2 from 2008 on (E7000, E8000, Q8000, Q9000) or any Core i3/i5/i7, AMD FX, A-series from 2012 or Ryzen. This one does not have it, so the game stops at its start.":
+        "이 게임에는 SSE4.1을 지원하는 프로세서가 필요합니다: 2008년 이후의 Intel Core 2(E7000, E8000, Q8000, Q9000) 또는 모든 Core i3/i5/i7, AMD FX, 2012년 이후의 A 시리즈, Ryzen. 이 프로세서는 지원하지 않으므로 게임이 시작할 때 멈춥니다.",
+    "This PC: no SSE4.1.":
+        "이 PC: SSE4.1 없음.",
+    # ---- 1.2.1: Old PC settings (launcher/core.py OLD_PC_PRESET)
+    "a processor with {cores} cores":
+        "{cores}코어 프로세서",
+    "an old graphics card ({name}: resource binding tier 1)":
+        "오래된 그래픽 카드({name}: resource binding tier 1)",
+    "This PC looks like an old PC ({why}), so the launcher chose the Old PC settings: Internal resolution Lowest, no stage blur, no shadows and no effects. Settings -> Graphics -> Default puts the normal look back.":
+        "이 PC는 오래된 PC로 보입니다({why}). 그래서 런처가 오래된 PC용 설정을 골랐습니다: 내부 해상도 최저, 스테이지 블러 없음, 그림자 없음, 이펙트 없음. 설정 -> 그래픽 -> 기본값으로 원래 화면을 되돌릴 수 있습니다.",
+    "Old PC":
+        "오래된 PC",
+    "Old PC: like Lowest, and the effects off too -- for a 2-core processor or a graphics card from before ~2013. The launcher chooses it by itself once on such a PC, as long as you have not changed these settings.":
+        "오래된 PC: 최저와 같고 이펙트도 끕니다 -- 2코어 프로세서나 2013년쯤 이전의 그래픽 카드용. 이 설정을 바꾸지 않았다면 그런 PC에서 런처가 한 번 자동으로 고릅니다.",
     # ---- lobby/t5lobby/tk_casual.py
     "Any side": "아무 쪽이나",
     "P1 (left)": "P1 (왼쪽)",

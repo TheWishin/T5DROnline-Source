@@ -2598,6 +2598,24 @@ MESSAGES = {
         "標準",
     "Lowest: Internal resolution Lowest; stage blur / glow and shadows off. Effects stay on: the hit effects show what happens in a fight. Default puts them back. Only your picture changes: online, both players can choose differently.":
         "最低：内部解像度を「最低」にし、ステージのぼかし / 光彩と影をオフにします。エフェクトはオンのままです（ヒットエフェクトで対戦の状況がわかります）。「標準」で元に戻ります。変わるのは自分の画面だけなので、オンラインでも各プレイヤーが別々に選べます。",
+    # ---- 1.2.1: launcher/problem_check.py old_cpu
+    "Your processor is too old for the game":
+        "プロセッサーが古すぎてゲームを動かせません",
+    "The game needs a processor with SSE4.1: Intel Core 2 from 2008 on (E7000, E8000, Q8000, Q9000) or any Core i3/i5/i7, AMD FX, A-series from 2012 or Ryzen. This one does not have it, so the game stops at its start.":
+        "このゲームには SSE4.1 対応のプロセッサーが必要です: 2008 年以降の Intel Core 2（E7000、E8000、Q8000、Q9000）またはすべての Core i3/i5/i7、AMD FX、2012 年以降の A シリーズ、Ryzen。このプロセッサーは対応していないため、ゲームは起動時に止まります。",
+    "This PC: no SSE4.1.":
+        "この PC: SSE4.1 なし。",
+    # ---- 1.2.1: Old PC settings (launcher/core.py OLD_PC_PRESET)
+    "a processor with {cores} cores":
+        "{cores} コアのプロセッサー",
+    "an old graphics card ({name}: resource binding tier 1)":
+        "古いグラフィックカード（{name}: resource binding tier 1）",
+    "This PC looks like an old PC ({why}), so the launcher chose the Old PC settings: Internal resolution Lowest, no stage blur, no shadows and no effects. Settings -> Graphics -> Default puts the normal look back.":
+        "この PC は古い PC のようです（{why}）。そのためランチャーは古い PC 向けの設定を選びました: 内部解像度「最低」、ステージのぼかしなし、影なし、エフェクトなし。設定 -> グラフィック -> 「デフォルト」で通常の見た目に戻ります。",
+    "Old PC":
+        "古い PC",
+    "Old PC: like Lowest, and the effects off too -- for a 2-core processor or a graphics card from before ~2013. The launcher chooses it by itself once on such a PC, as long as you have not changed these settings.":
+        "古い PC: 「最低」と同じで、さらにエフェクトもオフ -- 2 コアのプロセッサーや 2013 年ごろより前のグラフィックカード向け。この設定を変えていなければ、そのような PC ではランチャーが一度だけ自動で選びます。",
     # ---- lobby/t5lobby/tk_casual.py
     "Any side": "どちらでも",
     "P1 (left)": "P1（左）",

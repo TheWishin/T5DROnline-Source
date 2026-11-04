@@ -117,6 +117,13 @@ class PcTest(Base):
         self.assertEqual(found[0].text()[1], "This PC: 2 cores, 4 logical processors.")
         self.assertEqual(found[1].text()[1], "This PC: Wine 9.0.")
 
+    def test_processor_without_sse41(self):
+        found = pc.check(self.out, {"cores": 2, "logical": 2, "wine": None, "sse41": False}, no_fw)
+        self.assertEqual([(f.key, f.kind) for f in found], [("old_cpu", "problem"), ("two_cores", "hint")])
+        self.assertEqual(found[0].text()[1], "This PC: no SSE4.1.")
+        self.assertEqual(pc.help_url(found[0]).split("#")[1], "this-processor-is-too-old-or-build-the-game-again")
+        self.assertEqual(self.keys(facts=dict(FOUR, sse41=True)), [])
+
     def test_wine_from_the_game_log(self):
         self.game_log("[wine] Wine 9.0 (Proton) Proton: GE-Proton10-4 on Linux -- RSX_VERTEX_THREADS=0 PS3_LWM_FAST=0\n")
         self.assertEqual(self.keys(), ["wine"])
@@ -136,7 +143,9 @@ class PcTest(Base):
 
     def test_facts_of_this_pc(self):
         f = pc.system_facts()
-        self.assertEqual(set(f), {"cores", "logical", "wine"})
+        self.assertEqual(set(f) - {"sse41"}, {"cores", "logical", "wine"})
+        if os.name == "nt":
+            self.assertTrue(f["sse41"])                 # (no PC that runs these tests lacks it)
         self.assertIsNone(f["wine"])                    # (the tests run on Windows itself)
 
     def test_command_line(self):

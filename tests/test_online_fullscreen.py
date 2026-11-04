@@ -14,7 +14,7 @@ from helpers import ROOT
 sys.path.insert(0, os.path.join(ROOT, "launcher"))
 import core
 
-PATCH = Path(ROOT, "patches", "ps3recomp", "0116-online-borderless.patch")
+PATCH = Path(ROOT, "patches", "ps3recomp", "0117-online-borderless.patch")
 
 
 class LauncherFullscreen(unittest.TestCase):

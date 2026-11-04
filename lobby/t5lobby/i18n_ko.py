@@ -1819,7 +1819,8 @@ MESSAGES = {
     "Passwords are only sent to servers on this PC / your network, or over an encrypted "
     "(TLS) connection.":
         "비밀번호는 이 PC나 내 네트워크의 서버, 또는 암호화된(TLS) 연결로만 보냅니다.",
-    "Double-click a player in the lobby or the leaderboard.": "로비나 순위표에서 플레이어를 더블클릭하세요.",
+    "Select a player and choose Profile, or double-click a player in the leaderboard.":
+        "플레이어를 고르고 프로필을 누르거나, 순위표에서 플레이어를 더블클릭하세요.",
     "{name} (guest, casual matches only)": "{name} (게스트, 일반 매치만)",
     "{record} this session": "이번 세션 {record}",
     "rating {rating}": "레이팅 {rating}",
@@ -1890,6 +1891,7 @@ MESSAGES = {
     "Select a room first.": "먼저 방을 고르세요.",
     "Select an opponent in the list first.": "먼저 목록에서 상대를 고르세요.",
     "Challenge sent.": "도전을 보냈습니다.",
+    "Challenge sent": "도전을 보냈습니다",
     "Blocked players": "차단한 플레이어",
     "You are never matched with these players (ranked, quick matches, rooms, challenges, "
     "rematches). They are not told. Accounts stay blocked; a guest is blocked until you "

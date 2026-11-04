@@ -43,6 +43,7 @@ hidden = tuple(sys.argv[4:])
 sys.path.insert(0, str(root / "tests"))
 try:
     import tkinter as tk
+    from tkinter import ttk
 except ImportError:
     print("TK_UNAVAILABLE")
     raise SystemExit(77)
@@ -73,7 +74,7 @@ def load():
 screen = layout.Walk.screen
 def observe(walk, name, top=None):
     screen(walk, name, top)
-    if name == "online lobby":
+    if name in ("online lobby", "online lobby, open challenges"):
         tab = walk.app.online
         assert tab.strict_check.winfo_manager() == "grid"
         assert tab.view.casual_row.winfo_manager() == "grid"
@@ -81,14 +82,15 @@ def observe(walk, name, top=None):
         assert tab.tv_rooms.get_children(), "the real lobby has no room rows"
         if os.environ.get("T5_LAYOUT_VERIFY_GEOMETRY") == "1":
             app, view = walk.app, tab.view
+            # Stress the displayed layout with every outgoing challenge in the
+            # fixture, while retaining the same upper controls as the normal lobby.
+            column_sizes = {col: {key: tab.tv_players.column(col, key) for key in ("width", "minwidth")}
+                            for col in ("#0", *tab.tv_players["columns"])}
+            pending = dict(tab.chal.out)
             players, rooms, chat_card = tab.tv_players.master.master, tab.tv_rooms.master.master, tab.chat_log.master
             page = players.master
             app.attributes("-alpha", 0.0)
             height = min(walk.px(840), 1000)
-            if scale == 150:
-                # The existing compact-display control frees list rows on a
-                # short high-DPI screen; exercise that actual production action.
-                view.toggle_top(True)
             # Tk keeps a window within the screen (wm maxsize defaults to it). GitHub's
             # Windows runners have a 1024x768 screen, so 1400x840 came out 1024x749
             # there and the lists lost their rows: the sizes below are the ones under
@@ -105,6 +107,8 @@ def observe(walk, name, top=None):
                 view._apply_wraps()
                 app.update()
                 assert int(players.grid_info()["columnspan"]) == 1, players.grid_info()
+                assert tab.nb.winfo_height() > view.stage_card.winfo_height(), (
+                    width, tab.nb.winfo_height(), view.stage_card.winfo_height())
                 for card in (players, rooms, chat_card):
                     assert card.winfo_ismapped(), (width, card)
                     assert card.winfo_y() + card.winfo_height() <= page.winfo_height() + 2, (
@@ -133,6 +137,24 @@ def observe(walk, name, top=None):
                 mute_box = tab.tv_players.bbox("p2", "mute")
                 assert mute_box and mute_box[0] + mute_box[2] <= tab.tv_players.winfo_width(), (
                     width, mute_box, tab.tv_players.winfo_width())
+                if pending:
+                    pid = next(iter(tab.chal.out.values()))["pid"]
+                    tab.tv_players.see(pid)
+                    app.update_idletasks()
+                    status_box = tab.tv_players.bbox(pid, "status")
+                    clock_box = tab.tv_players.bbox(pid, "ping")
+                    cancel_box = tab.tv_players.bbox(pid, "mute")
+                    status_font = tkfont.Font(root=tab.tv_players, font=ttk.Style(tab.tv_players).lookup(
+                        "Lobby.Treeview", "font"))
+                    assert status_box and status_font.measure(tab.tv_players.set(pid, "status")) <= status_box[2], (
+                        language, scale, width, status_box, tab.tv_players.set(pid, "status"))
+                    assert clock_box and status_font.measure(tab.tv_players.set(pid, "ping")) <= clock_box[2], (
+                        language, scale, width, clock_box, tab.tv_players.set(pid, "ping"))
+                    assert cancel_box and cancel_box[0] + cancel_box[2] <= tab.tv_players.winfo_width(), (
+                        language, scale, width, cancel_box, tab.tv_players.winfo_width())
+            tab.tv_players.see("p2")
+            app.update_idletasks()
+            mute_box = tab.tv_players.bbox("p2", "mute")
             clicked = []
             with mock.patch.object(tab, "toggle_mute", side_effect=clicked.append):
                 tab.tv_players.event_generate("<Button-1>", x=mute_box[0] + mute_box[2] // 2,
@@ -141,6 +163,11 @@ def observe(walk, name, top=None):
             assert clicked == ["Rival_Long_Name"], clicked
             app.withdraw()
             app.update()
+            # Geometry above deliberately squeezes the columns. Subsequent
+            # withdrawn-window snapshots measure the original natural layout.
+            for col, sizes in column_sizes.items():
+                tab.tv_players.column(col, **sizes)
+            tab.view.refresh()
 
     if name == "online lobby, sorted by ping":
         # Skip the optional fixture that writes stand-in fighter PNGs; continue
@@ -220,13 +247,14 @@ class LobbyLayoutEntry(unittest.TestCase):
         self.assertIn(f"real Tk Walk.run lobby layout passed: {language} {scale}", result.stdout)
 
     def test_lobby_resizes_without_losing_chat_or_player_rows(self):
-        for scale in (100, 150):
-            with self.subTest(scale=scale):
-                self.run_layout("de", scale, geometry=True)
+        for language in ("en", "de", "es", "fr", "pt-BR", "ja", "ko"):
+            for scale in (100, 125, 150):
+                with self.subTest(language=language, scale=scale):
+                    self.run_layout(language, scale, geometry=True)
 
     def test_all_languages_and_scales(self):
         for language in ("en", "de", "es", "fr", "pt-BR", "ja", "ko"):
-            for scale in (100, 133, 150):
+            for scale in (100, 125, 133, 150):
                 if (language, scale) in NAMED_LAYOUTS.values():
                     continue
                 with self.subTest(language=language, scale=scale):

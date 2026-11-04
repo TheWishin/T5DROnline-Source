@@ -411,7 +411,8 @@ class OnlineTab:
         # (empty: the cards say "game N" from the server's set info by themselves).
         self.set_var = tk.StringVar(value="")
         self.chat_var = tk.StringVar()
-        self.prof_title = tk.StringVar(value=t("Double-click a player in the lobby or the leaderboard."))
+        self.prof_title = tk.StringVar(value=t("Select a player and choose Profile, or double-click a player in the "
+                                              "leaderboard."))
         self.prof_text = tk.StringVar(value="")
         self.status_var = tk.StringVar(value="")
         self.notice_var = tk.StringVar(value="")          # a message from the server's admin, until it ends
@@ -968,6 +969,7 @@ class OnlineTab:
                          "random). The character here is used when you do not pick in time.")
             if w.get("motd"):
                 hint = w["motd"]
+                self.chat_line(hint)           # still reachable when short displays hide the play hint
             self.hint_var.set((t("Encrypted connection (TLS).") + " " if client.tls else "") + hint)
             self.status(t("In the lobby.") + (" " + t("(logged in with your saved login)")
                                               if mode == "session" else ""))
@@ -1373,12 +1375,40 @@ class OnlineTab:
         self.rooms_ui.join_selected()         # (a locked room asks for its password or code: tk_rooms.py)
 
     def do_challenge(self):
-        self.chal.send()                      # (several at once, with the chosen input delay: tk_challenges.py)
+        if str(self.actions["challenge"].cget("state")) == "normal":
+            self.chal.send()                  # same delay and guards for the button, double-click and Enter
+
+    def on_player_activate(self, event):
+        """Challenge the actual clicked row, or the keyboard selection, with the current delay."""
+        tv = self.tv_players
+        if getattr(event, "keysym", None) in ("Return", "KP_Enter"):
+            selected = tv.selection()
+            pid = selected[0] if selected else None
+        else:
+            if tv.identify_region(event.x, event.y) not in ("cell", "tree"):
+                return "break"
+            # Mute / Cancel has its own single-click action, even on a double-click.
+            columns = tuple(tv["columns"])
+            if tv.identify_column(event.x) == "#" + str(columns.index("mute") + 1):
+                return "break"
+            pid = tv.identify_row(event.y)
+        c = self.client
+        me = c.me if c else None
+        player = next((p for p in c.players if p.get("id") == pid), None) if c else None
+        if (not player or pid == tk_challenges.AWAY or pid == (me or {}).get("id")
+                or not self.chal.playable(player, me, c.build.build_id, compatible_build=c.compatible(player))):
+            return "break"
+        tv.selection_set(pid)
+        tv.focus(pid)
+        self.chal.selection_changed()
+        self.do_challenge()
+        return "break"
 
     def relist(self):
         """The player list again from the last lobby state (a new order, a challenge sent or ended)."""
         if getattr(self, "_last_lobby", None) and self.client:
             self._fill_lists(self._last_lobby)
+            self.view.refresh()
 
     def do_blocked(self):
         """The block list, with Unblock."""
@@ -1409,7 +1439,7 @@ class OnlineTab:
         self.call(c.mute, name, muted, then=done)
 
     def on_player_mute_click(self, event):
-        """The mute cell acts directly; selecting a player's other cells stays unchanged."""
+        """The action cell mutes chat, or cancels this player's pending challenge."""
         tv = self.tv_players
         if tv.identify_region(event.x, event.y) != "cell":
             return
@@ -1417,6 +1447,10 @@ class OnlineTab:
         if "mute" not in columns or tv.identify_column(event.x) != "#" + str(columns.index("mute") + 1):
             return
         player_id = tv.identify_row(event.y)
+        pending = self.chal.for_player(player_id)
+        if pending is not None:
+            self.chal.cancel(pending[0])
+            return "break"
         c = self.client
         player = next((p for p in c.players if p.get("id") == player_id), None) if c else None
         if player is not None:
@@ -1660,6 +1694,9 @@ class OnlineTab:
             self.friends_note_var.set(t("No friends yet. Add one by account name: they become your friend when they "
                                         "accept."))
         self._set_friend_actions()
+        fit_ranks = getattr(self.view, "fit_rank_columns", None)
+        if fit_ranks is not None:
+            fit_ranks()
 
     def _selected_friend(self):
         sel = self.tv_friends.selection() if hasattr(self, "tv_friends") else ()
@@ -2055,6 +2092,9 @@ class OnlineTab:
                                     tags=(h["result"],) if h.get("result") in ("won", "lost") else ())
             if getattr(self, "history", None) is not None:
                 self.history.shown(p)                      # results coloured, replays on this PC (tk_history.py)
+            fit_history = getattr(self.view, "fit_history_columns", None)
+            if fit_history is not None:
+                fit_history()
         self.call(self.client.profile, name, 20, then=done)
 
     # ------------------------------------------------------------------ server events
@@ -2515,6 +2555,10 @@ class OnlineTab:
             if p["id"] in challenged:
                 tags += ("challenged",)            # (your open challenge: the accent colour, tk_challenges.py)
             mute = "" if me and p["id"] == me["id"] else t("Unmute") if self._is_muted(p["name"]) else t("Mute")
+            if p["id"] in challenged:
+                status = self.chal.pending_text(p["id"])
+                ping = self.chal.pending_clock(p["id"])
+                mute = t("Cancel")
             entries.append((p["id"], (name, rank_text(p, plates), rating, _record(rec), main, status, ping, mute),
                             self.view.player_image(ms, p), tags, p, ms))
         self._list_rtt = rtt_of

@@ -1840,8 +1840,8 @@ MESSAGES = {
     "Passwords are only sent to servers on this PC / your network, or over an encrypted "
     "(TLS) connection.":
         "パスワードは、このPC・自分のネットワーク上のサーバーか、暗号化（TLS）接続でのみ送信されます。",
-    "Double-click a player in the lobby or the leaderboard.":
-        "ロビーかランキングでプレイヤーをダブルクリックしてください。",
+    "Select a player and choose Profile, or double-click a player in the leaderboard.":
+        "プレイヤーを選んで「プロフィール」を押すか、ランキングでプレイヤーをダブルクリックしてください。",
     "{name} (guest, casual matches only)": "{name}（ゲスト、カジュアル対戦のみ）",
     "{record} this session": "このセッション {record}",
     "rating {rating}": "レート {rating}",
@@ -1912,6 +1912,7 @@ MESSAGES = {
     "Select a room first.": "先にルームを選んでください。",
     "Select an opponent in the list first.": "先にリストから対戦相手を選んでください。",
     "Challenge sent.": "対戦を申し込みました。",
+    "Challenge sent": "対戦を申し込みました",
     "Blocked players": "ブロックしたプレイヤー",
     "You are never matched with these players (ranked, quick matches, rooms, challenges, "
     "rematches). They are not told. Accounts stay blocked; a guest is blocked until you "

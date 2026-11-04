@@ -1874,8 +1874,8 @@ MESSAGES = {
     "(TLS) connection.":
         "Les mots de passe ne sont envoyés qu'aux serveurs sur ce PC ou ton réseau, ou via une connexion chiffrée "
         "(TLS).",
-    "Double-click a player in the lobby or the leaderboard.":
-        "Double-clique sur un joueur dans le lobby ou le classement.",
+    "Select a player and choose Profile, or double-click a player in the leaderboard.":
+        "Sélectionne un joueur puis Profil, ou double-clique sur un joueur dans le classement.",
     "{name} (guest, casual matches only)": "{name} (invité, matchs amicaux seulement)",
     "{record} this session": "{record} cette session",
     "rating {rating}": "cote {rating}",
@@ -1949,6 +1949,7 @@ MESSAGES = {
     "Select a room first.": "Choisis d'abord un salon.",
     "Select an opponent in the list first.": "Choisis d'abord un adversaire dans la liste.",
     "Challenge sent.": "Défi envoyé.",
+    "Challenge sent": "Défi envoyé",
     "Blocked players": "Joueurs bloqués",
     "You are never matched with these players (ranked, quick matches, rooms, challenges, "
     "rematches). They are not told. Accounts stay blocked; a guest is blocked until you "

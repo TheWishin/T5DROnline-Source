@@ -42,6 +42,7 @@ def controller():
     tab.relist = Mock()
     tab.rooms_ui = SimpleNamespace(refresh=Mock())
     tab.private_chat = SimpleNamespace(refresh=Mock())
+    tab.chal = SimpleNamespace(for_player=lambda _pid: None)
     tab._save_cfg = Mock()
     tab._server_key = lambda: "server-a"
     tab.cfg = {"guest_mutes": {"server-b": ["Other"]}}

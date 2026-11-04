@@ -316,7 +316,7 @@ class OnlineView:
         tv.tag_configure("closed", foreground=C["muted"])
         tv.tag_configure("away", foreground=C["faint"])         # (the players you cannot play now, tk_challenges.py)
         tv.tag_configure("sep", foreground=C["muted"], font=self.th.fonts["bold"])
-        tv.tag_configure("challenged", foreground=C["accent"])
+        tv.tag_configure("challenged", foreground=C["accent_hi"], background=C["note_bg"])
         if empty:
             lab = ttk.Label(frame, text=empty, style="Card.Faint.TLabel", justify="center", anchor="center",
                             wraplength=self.px(360))
@@ -350,7 +350,7 @@ class OnlineView:
     # ------------------------------------------------------------------ build
     def _build(self):
         tab, px = self.tab, self.px
-        self.box = ttk.Frame(tab.parent, padding=(px(14), px(14), px(14), px(8)))   # (launcher/tab_look.MARGIN)
+        self.box = ttk.Frame(tab.parent, padding=(px(14), px(8), px(14), px(8)))   # (launcher/tab_look.MARGIN)
         self.box.bind("<Destroy>", self._on_destroy, add="+")
         self.box.pack(fill="both", expand=True)
         self.box.columnconfigure(0, weight=1)
@@ -372,15 +372,29 @@ class OnlineView:
                 return
             self._compact = on
             px = self.px
-            self.box.configure(padding=(px(14), px(8 if on else 14), px(14), px(8)))
+            self.box.configure(padding=(px(14), px(4 if on else 8), px(14), px(8)))
             nb = getattr(self.tab, "nb", None)
             if nb is not None:
-                nb.grid_configure(pady=(px(6 if on else 10), 0))
+                nb.grid_configure(pady=(px(4 if on else 6), 0))
                 for page in nb.tabs():
-                    nb.nametowidget(page).configure(padding=(0, px(6 if on else 10), 0, 0))
+                    nb.nametowidget(page).configure(padding=(0, px(4 if on else 6), 0, 0))
             for card in (getattr(self.tab, "me_row", None), getattr(self, "stage_card", None)):
                 if card is not None:
-                    card.configure(padding=px(12 if on else 16))
+                    card.configure(padding=px(6 if on else 10))
+            # Descriptive copy and the repeated main-fighter caption yield to
+            # the lists on short displays; every action and picker stays shown.
+            for label in (self.me_main, self.me_stats, self.ranked_sub, self.quick_sub, self.search_opts_label,
+                          self.play_hint):
+                if on:
+                    label.grid_remove()
+                else:
+                    label.grid()
+            casual = self.tab.casual
+            if on:
+                casual.caption.pack_forget()
+            else:
+                casual.caption.pack(side="left", padx=(0, px(6)), before=casual.side_cb)
+            self.place_casual_row()
         except tk.TclError:
             pass
 
@@ -600,14 +614,14 @@ class OnlineView:
         self._build_profile(scr)
         self._build_stage(scr)
         nb = ttk.Notebook(scr)
-        nb.grid(row=1, column=0, columnspan=2, sticky="nsew", pady=(px(10), 0))
+        nb.grid(row=1, column=0, columnspan=2, sticky="nsew", pady=(px(6), 0))
         tab.nb = nb
-        lobby = ttk.Frame(nb, padding=(0, px(10), 0, 0))
-        board = ttk.Frame(nb, padding=(0, px(10), 0, 0))
-        prof = ttk.Frame(nb, padding=(0, px(10), 0, 0))
-        friends = ttk.Frame(nb, padding=(0, px(10), 0, 0))
-        tours = ttk.Frame(nb, padding=(0, px(10), 0, 0))
-        stats = ttk.Frame(nb, padding=(0, px(10), 0, 0))
+        lobby = ttk.Frame(nb, padding=(0, px(6), 0, 0))
+        board = ttk.Frame(nb, padding=(0, px(6), 0, 0))
+        prof = ttk.Frame(nb, padding=(0, px(6), 0, 0))
+        friends = ttk.Frame(nb, padding=(0, px(6), 0, 0))
+        tours = ttk.Frame(nb, padding=(0, px(6), 0, 0))
+        stats = ttk.Frame(nb, padding=(0, px(6), 0, 0))
         nb.add(lobby, text=t("Lobby"))
         nb.add(board, text=t("Leaderboard"))
         nb.add(stats, text=t("Stats"))              # (next to the leaderboard: the community's numbers)
@@ -629,15 +643,15 @@ class OnlineView:
 
     def _build_profile(self, scr):
         tab, px = self.tab, self.px
-        card = self.card(scr, pad=16)
+        card = self.card(scr, pad=10)
         card.grid(row=0, column=0, sticky="nsew", padx=(0, px(12)))
         card.columnconfigure(1, weight=1)
         card.rowconfigure(5, weight=1)
         # the player's hero: the main fighter's portrait (a drawn placeholder until the launcher has one), the
         # name, the rank plate with the rank, the numbers
-        self.me_portrait = theme.Portrait(card)
+        self.me_portrait = theme.Portrait(card, side=56)
         self.me_portrait.grid(row=0, column=0, rowspan=6, sticky="nw", padx=(0, px(12)))
-        self.me_name = ttk.Label(card, text="", style="Card.H2.TLabel")
+        self.me_name = ttk.Label(card, text="", style="Card.H3.TLabel")
         self.me_name.grid(row=0, column=1, sticky="w")
         rank = self.body(card)
         rank.grid(row=1, column=1, sticky="w", pady=(px(2), 0))
@@ -645,29 +659,29 @@ class OnlineView:
         self.me_badge.pack(side="left", padx=(0, px(6)))
         self.me_rank = ttk.Label(rank, text="", style="Card.Bold.TLabel")
         self.me_rank.pack(side="left")
-        self.me_stats = ttk.Label(card, text="", style="Card.Muted.TLabel")
+        self.me_stats = ttk.Label(card, text="", style="Card.Small.TLabel")
         self.me_stats.grid(row=2, column=1, sticky="w", pady=(px(2), 0))
         self.me_conn = ttk.Label(card, text="", style="Card.Faint.TLabel")
-        self.me_conn.grid(row=3, column=1, sticky="w", pady=(px(8), 0))
+        self.me_conn.grid(row=3, column=1, sticky="w", pady=(px(2), 0))
         self.me_main = ttk.Label(card, text="", style="Card.Faint.TLabel")
         self.me_main.grid(row=4, column=1, sticky="w")
         row = self.body(card)
-        row.grid(row=6, column=0, columnspan=2, sticky="we", pady=(px(10), 0))
+        row.grid(row=6, column=0, columnspan=2, sticky="we", pady=(px(4), 0))
         tab.b_myprofile = ttk.Button(row, text=t("My profile"), style="Card.Small.TButton",
                                      command=lambda: tab.show_profile(None))
         tab.b_myprofile.pack(side="left")
         tab.b_logout = ttk.Button(row, text=t("Log out"), style="Card.Small.TButton", command=tab.do_logout)
         tab.b_logout.pack(side="left", padx=(px(6), 0))
         tab.private_chat.inbox = tab.private_chat.button(card, tab.private_chat.show, "Private messages")
-        tab.private_chat.inbox.grid(row=7, column=0, columnspan=2, sticky="w", pady=(px(6), 0))
+        tab.private_chat.inbox.grid(row=7, column=0, columnspan=2, sticky="w", pady=(px(2), 0))
         tab.me_row = card
 
     def _build_stage(self, scr):
         px = self.px
-        card = self.card(scr, pad=16)
+        card = self.card(scr, pad=10)
         card.grid(row=0, column=1, sticky="nsew")
         card.columnconfigure(0, weight=1)
-        card.rowconfigure(0, weight=1, minsize=px(182))
+        card.rowconfigure(0, weight=1)
         self.stage_card = card
         self.st_play = self._build_play(card)
         self.st_search = self._build_search(card)
@@ -684,7 +698,7 @@ class OnlineView:
         f.columnconfigure(0, weight=1, uniform="hero")
         f.columnconfigure(1, weight=1, uniform="hero")
         top = self.body(f)
-        top.grid(row=0, column=0, columnspan=3, sticky="we", pady=(0, px(10)))
+        top.grid(row=0, column=0, columnspan=3, sticky="we", pady=(0, px(6)))
         top.columnconfigure(0, weight=1)
         ttk.Label(top, text=t("Find an opponent online").upper(), style="Card.Caps.TLabel").grid(
             row=0, column=0, sticky="w")
@@ -702,18 +716,18 @@ class OnlineView:
         self.lock_label = ttk.Label(top, text=t("Locked for this ranked set"), style="Card.Faint.TLabel")
         tab.actions = {}
         tab.action_text = {}
-        b = ttk.Button(f, text=t("Ranked match"), style="Card.Hero.TButton", state="disabled",
+        b = ttk.Button(f, text=t("Ranked match"), style="Card.Accent.TButton", state="disabled",
                        command=lambda: tab.do_queue("ranked"))
         b.grid(row=1, column=0, sticky="we", padx=(0, px(6)))
         tab.actions["ranked"], tab.action_text["ranked"] = b, t("Ranked match")
-        b = ttk.Button(f, text=t("Quick match"), style="Card.HeroAlt.TButton", state="disabled",
+        b = ttk.Button(f, text=t("Quick match"), style="Card.TButton", state="disabled",
                        command=lambda: tab.do_queue("quick"))
         b.grid(row=1, column=1, sticky="we", padx=(px(6), 0))
         tab.actions["quick"], tab.action_text["quick"] = b, t("Quick match")
         self.ranked_sub = ttk.Label(f, text="", style="Card.Small.TLabel")
-        self.ranked_sub.grid(row=2, column=0, sticky="w", pady=(px(5), 0))
+        self.ranked_sub.grid(row=2, column=0, sticky="w", pady=(px(3), 0))
         self.quick_sub = ttk.Label(f, text=t("Casual: the lowest ping first"), style="Card.Small.TLabel")
-        self.quick_sub.grid(row=2, column=1, sticky="w", padx=(px(6), 0), pady=(px(5), 0))
+        self.quick_sub.grid(row=2, column=1, sticky="w", padx=(px(6), 0), pady=(px(3), 0))
         tab.strict_check = ttk.Checkbutton(f, text=t("Strict (ranked: +-150 rating)"), variable=tab.strict_var,
                                            command=tab._save_cfg, style="Card.TCheckbutton")
         tab.strict_check.grid(row=3, column=0, sticky="w", pady=(px(6), 0))
@@ -731,10 +745,11 @@ class OnlineView:
         ttk.Button(f, text=t("Search options..."), style="Card.Small.TButton",
                    command=tab.do_search_options).grid(row=1, column=2, sticky="nsew", padx=(px(8), 0))
         self.search_opts_label = ttk.Label(f, text="", style="Card.Small.TLabel")
-        self.search_opts_label.grid(row=2, column=2, sticky="w", padx=(px(8), 0), pady=(px(5), 0))
+        self.search_opts_label.grid(row=2, column=2, sticky="w", padx=(px(8), 0), pady=(px(3), 0))
         self.search_options_shown(tk_search.summary(tab.cfg))
-        self.wrap(ttk.Label(f, textvariable=tab.hint_var, style="Card.Faint.TLabel", justify="left"),
-                  card, 40).grid(row=5, column=0, columnspan=3, sticky="w", pady=(px(6), 0))
+        self.play_hint = self.wrap(ttk.Label(f, textvariable=tab.hint_var, style="Card.Faint.TLabel", justify="left"),
+                                   card, 40)
+        self.play_hint.grid(row=5, column=0, columnspan=3, sticky="w", pady=(px(6), 0))
         return f
 
     def search_options_shown(self, text):
@@ -754,6 +769,9 @@ class OnlineView:
         try:
             if row.winfo_manager() != "grid":
                 return
+            gap = self.px(4 if getattr(self, "_compact", False) else 6)
+            row.grid_configure(pady=(gap, 0))
+            strict.grid_configure(pady=(gap, 0))
             f = row.master
             below = strict.winfo_reqwidth() + row.winfo_reqwidth() + self.px(16) > max(f.winfo_width(),
                                                                                        f.winfo_reqwidth())
@@ -868,8 +886,8 @@ class OnlineView:
     def _build_lobby_page(self, page):
         tab, px = self.tab, self.px
         page.columnconfigure(0, weight=3)
-        page.columnconfigure(1, weight=2)
-        page.rowconfigure(0, weight=3)
+        page.columnconfigure(1, weight=2, minsize=px(120))
+        page.rowconfigure(0, weight=5)
         page.rowconfigure(1, weight=1)
         pc = self.card(page, pad=12)
         pc.configure(padding=(0, px(6)))
@@ -880,7 +898,7 @@ class OnlineView:
         head, tools = self.section_head(pc, t("Players online").upper(), self.players_count)
         head.grid(row=0, column=0, sticky="we", pady=(0, px(6)))
         tab.chal.build_tools(tools, px)            # the challenge's input delay (tk_challenges.py)
-        b = ttk.Button(tools, text=t("Challenge"), style="Card.Small.TButton", state="disabled",
+        b = ttk.Button(tools, text=t("Challenge"), style="Card.Accent.TButton", state="disabled",
                        command=tab.do_challenge)
         b.pack(side="left")
         tab.actions["challenge"], tab.action_text["challenge"] = b, t("Challenge")
@@ -899,12 +917,13 @@ class OnlineView:
         record_width = max(px(60), heading_font.measure(tab.tv_players.heading("record", "text")) + px(12))
         tab.tv_players.column("record", width=record_width, minwidth=record_width, stretch=False)
         self._player_record_font, self._player_record_min = body_font, record_width
-        mute_width = max(px(70), heading_font.measure(t("Mute").upper()) + px(12),
-                         *(body_font.measure(label) + px(8) for label in (t("Mute"), t("Unmute"))))
+        self._player_mute_min = max(px(70), heading_font.measure(t("Mute").upper()) + px(12))
+        mute_width = max(self._player_mute_min, body_font.measure(t("Mute")) + px(8),
+                         body_font.measure(t("Cancel")) + px(8))
         tab.tv_players.column("mute", width=mute_width, minwidth=mute_width)
         tab.tv_players.bind("<Button-1>", tab.on_player_mute_click, add="+")
-        tab.tv_players.bind("<Double-1>", lambda _e: tab._profile_of_selected())
-        tab.tv_players.bind("<Return>", lambda _e: tab._profile_of_selected())
+        tab.tv_players.bind("<Double-1>", tab.on_player_activate)
+        tab.tv_players.bind("<Return>", tab.on_player_activate)
         tab.tv_players.bind("<<TreeviewSelect>>", lambda _e: tab.chal.selection_changed(), add="+")
         tab.chal.bind_player_sort(tab.tv_players)  # sorted by a heading's click (tk_challenges.py)
         tab.chal.build_open(pc, 2, px)             # your open challenges, under the list
@@ -961,7 +980,7 @@ class OnlineView:
         ce.grid(row=0, column=0, sticky="we")
         ce.bind("<Return>", lambda _e: tab.do_chat())
         ce.bind("<Tab>", tab.complete_mention)
-        ttk.Button(row, text=t("Send"), style="Card.TButton", command=tab.do_chat).grid(row=0, column=1,
+        ttk.Button(row, text=t("Send"), style="Card.Small.TButton", command=tab.do_chat).grid(row=0, column=1,
                                                                                         padx=(px(6), 0))
         self.mention_hint = ttk.Label(cc, text="", style="Card.Muted.TLabel", wraplength=px(120))
         self.mention_hint.grid(row=3, column=0, sticky="w", pady=(px(4), 0))
@@ -1027,7 +1046,8 @@ class OnlineView:
         card.rowconfigure(2, weight=1)
         self.prof_badge = theme.Badge(card, size=40)
         self.prof_badge.grid(row=0, column=0, rowspan=2, sticky="nw", padx=(0, px(12)))
-        ttk.Label(card, textvariable=tab.prof_title, style="Card.H2.TLabel").grid(row=0, column=1, sticky="w")
+        self.wrap(ttk.Label(card, textvariable=tab.prof_title, style="Card.H2.TLabel", justify="left"),
+                  card, 100).grid(row=0, column=1, sticky="w")
         # the facts in two columns (half the lines each): the match history below keeps more of the height
         facts = self.body(card)
         facts.grid(row=1, column=1, sticky="w", pady=(px(2), px(4)))
@@ -1480,6 +1500,25 @@ class OnlineView:
             return "result"
         return "play"
 
+    def fit_rank_columns(self):
+        """Allow the translated placement rank to exceed the nominal column width."""
+        for tree in (self.tab.tv_players, self.tab.tv_friends):
+            width = max([0] + [self._player_record_font.measure(tree.set(row, "rank")) + self.px(8)
+                               for row in tree.get_children()])
+            if width > self.px(168) and width > int(tree.column("rank", "minwidth")):
+                tree.column("rank", width=max(width, int(tree.column("rank", "width"))),
+                            minwidth=max(width, int(tree.column("rank", "minwidth"))))
+
+    def fit_history_columns(self):
+        """Keep translated match-history reasons readable at fractional display scales."""
+        history = self.tab.tv_hist
+        status_width = max([self.px(50)] + [
+            self._player_record_font.measure(history.set(row, "status")) + self.px(8)
+            for row in history.get_children()])
+        if status_width > int(history.column("status", "minwidth")):
+            history.column("status", minwidth=status_width,
+                           width=max(status_width, int(history.column("status", "width"))))
+
     def refresh(self):
         try:
             if not self.box.winfo_exists():
@@ -1493,10 +1532,24 @@ class OnlineView:
             for row in tv.get_children()])
         if record_width > int(tv.column("record", "minwidth")):
             tv.column("record", width=max(record_width, int(tv.column("record", "width"))), minwidth=record_width)
-        edition_width = max([0] + [self._player_record_font.measure(tv.set(row, "status")) + self.px(8)
-                                  for row in tv.get_children() if "edition" in tv.item(row, "tags")])
-        if edition_width > int(tv.column("status", "minwidth")):
-            tv.column("status", width=max(edition_width, int(tv.column("status", "width"))), minwidth=edition_width)
+        mute_width = max([self._player_mute_min] + [
+            self._player_record_font.measure(tv.set(row, "mute")) + self.px(8) for row in tv.get_children()])
+        old_mute_min = int(tv.column("mute", "minwidth"))
+        if mute_width != old_mute_min:
+            width = mute_width if mute_width < old_mute_min else max(mute_width, int(tv.column("mute", "width")))
+            tv.column("mute", width=width, minwidth=mute_width)
+        # Current status text (including pending challenges) stays readable in
+        # every translation. Release extra width as soon as that text disappears.
+        status_width = max([self.px(50)] + [
+            self._player_record_font.measure(tv.set(row, "status")) + self.px(8)
+            for row in tv.get_children()])
+        old_status_min = int(tv.column("status", "minwidth"))
+        if status_width != old_status_min:
+            width = max(status_width, self.px(110)) if status_width < old_status_min else max(
+                status_width, int(tv.column("status", "width")))
+            tv.column("status", width=width, minwidth=status_width)
+        self.fit_rank_columns()
+        self.fit_history_columns()
         self._update_profile()
         self._update_profile_mute()
         self._update_play()
@@ -1533,6 +1586,7 @@ class OnlineView:
     def tick(self):
         """Every poll of the tab (10 a second): keep the animation running while one is showing."""
         self._ensure_anim()
+        self.tab.chal.tick()
 
     # --- profile card
     def _update_profile(self):

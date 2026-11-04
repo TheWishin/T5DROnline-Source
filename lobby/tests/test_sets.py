@@ -732,9 +732,8 @@ class TkSetTest(tkt.TkBase if tk is not None else unittest.TestCase):
         self.pump(lambda: self.bar_button("Rematch Rival") is not None)              # a rematch = a new set
         self.assertEqual(str(tab.char_cb.cget("state")), "readonly")
 
-    def test_the_window_comes_forward_only_when_the_set_is_over(self):
-        """Between two games the set goes on by itself (a countdown): no window comes forward then. At the
-        set's end the game waits for a choice: it does, once."""
+    def test_the_window_stays_behind_the_running_game_through_the_set(self):
+        """The next-game countdown and the set result never activate the launcher while the game lives."""
         import json
         tab = self.tab
 
@@ -753,10 +752,9 @@ class TkSetTest(tkt.TkBase if tk is not None else unittest.TestCase):
         self.assertFalse(tab.view.game_waits())
         game_won(2)
         self.pump(lambda: "You won the set 2-0" in tab.status_var.get())
-        self.pump(lambda: len(self.fronted) == 1)
         for _ in range(5):
             tab._poll()
-        self.assertEqual(self.fronted, [tab.parent])        # once
+        self.assertEqual(self.fronted, [])
 
     def test_leave_set_button(self):
         tab = self.tab

@@ -40,6 +40,7 @@ class PatchSeries(unittest.TestCase):
             "0114-vmx-four-lanes.patch",
             "0115-overlay-status-layer.patch",
             "0116-ui-pad-tap-latch.patch",
+            "0117-online-borderless.patch",
         ]
         self.assertEqual([name for name in names if name >= "0088-"], expected)
 

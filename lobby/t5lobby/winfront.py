@@ -1,10 +1,10 @@
-"""Bring the launcher's window forward: once, when a match is over and the game waits for the player.
+"""Explicit window handoff helpers and a read-only foreground check.
 
 After a match the game stays open at character select with its pads held neutral (the persistent game,
 docs/DIRECTFIGHT.md): it waits for the launcher's next command, so nothing moves in it. Players took that
-for a hang. The Online tab therefore brings its window to the front at that moment -- the result card
-with Rematch / Next game / Leave -- and when the opponent asks for a rematch. Never during a fight, and
-not when a ranked set's next game starts by itself (tk_tab.OnlineTab._come_forward decides).
+for a hang. That older automatic handoff must not run while the online game lives: rematches now ask
+in the game itself, and a queued result/question can outlive that prompt. OnlineTab._come_forward only
+uses the launcher handoff after the game has closed; results remain available as embedded cards.
 
 Windows only lets the foreground program (here: the game, which the launcher started) hand the
 foreground to another window. The launcher's thread joins the foreground thread's input for the moment of
@@ -21,7 +21,7 @@ import ctypes
 import os
 import tkinter as tk
 
-from . import padnav
+from . import notify, padnav
 
 SW_RESTORE = 9
 
@@ -62,8 +62,7 @@ def _raise_hwnd(hwnd):
                                 ("IsIconic", ctypes.c_int, [ctypes.c_void_p]),
                                 ("ShowWindow", ctypes.c_int, [ctypes.c_void_p, ctypes.c_int]),
                                 ("BringWindowToTop", ctypes.c_int, [ctypes.c_void_p]),
-                                ("SetForegroundWindow", ctypes.c_int, [ctypes.c_void_p]),
-                                ("FlashWindow", ctypes.c_int, [ctypes.c_void_p, ctypes.c_int])):
+                                ("SetForegroundWindow", ctypes.c_int, [ctypes.c_void_p])):
             fn = getattr(user32, name)
             fn.restype = res
             fn.argtypes = args
@@ -83,7 +82,7 @@ def _raise_hwnd(hwnd):
                 user32.AttachThreadInput(me, other, 0)
         if user32.GetForegroundWindow() == hwnd:
             return True
-        user32.FlashWindow(hwnd, 1)          # Windows said no: at least the taskbar button asks for attention
+        notify.flash_window(hwnd)           # taskbar only, never the window caption
         return False
     except (AttributeError, OSError):
         return False
@@ -117,3 +116,23 @@ def raise_game_window(pid):
     """The game's window (process `pid`) to the front. -> True when it is the foreground window afterwards."""
     hwnd = find_process_window(pid)
     return bool(hwnd) and _raise_hwnd(hwnd)
+
+
+def process_in_front(pid):
+    """Whether the foreground window belongs to the game process (read-only, including owned windows)."""
+    if os.name != "nt" or not pid:
+        return False
+    try:
+        user32 = ctypes.WinDLL("user32")
+        user32.GetForegroundWindow.restype = ctypes.c_void_p
+        user32.GetForegroundWindow.argtypes = []
+        user32.GetWindowThreadProcessId.restype = ctypes.c_ulong
+        user32.GetWindowThreadProcessId.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ulong)]
+        hwnd = user32.GetForegroundWindow()
+        if not hwnd:
+            return False
+        foreground_pid = ctypes.c_ulong()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(foreground_pid))
+        return foreground_pid.value == pid
+    except (AttributeError, OSError):
+        return False

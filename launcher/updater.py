@@ -1421,7 +1421,16 @@ class Updater:
         why = busy_reason(self.app)
         if why:
             self.err.set(translate_message(why))
-        w.after(50, lambda: (w.lift(), self.b_update.focus_set()))
+        w.after(50, lambda: self._focus_offer(w))
+
+    def _focus_offer(self, window):
+        """The offer's delayed focus must not interrupt a game started since the offer was drawn."""
+        try:
+            if self.win is window and not busy_reason(self.app):
+                window.lift()
+                self.b_update.focus_set()
+        except Exception:     # noqa: BLE001 -- a closed window or unavailable busy check stays unfocused
+            pass
 
     def _open_page(self, url):
         if url_allowed(url, "page"):

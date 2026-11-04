@@ -13,7 +13,8 @@ room. Most of us play while alt-tabbing"). The tab calls Notifier.notify() for t
     mention     public chat mentions this player (server-resolved player IDs, 1.2.0)
 
 Only when the player is not looking: another program is in front, the launcher is minimized, or its Online tab is
-not the one shown (tk_tab.OnlineTab._notify_away). Settings "Sound and taskbar flash ..." (launcher.json "notify",
+not the one shown (tk_tab.OnlineTab._notify_away). The player's foreground game counts as looking: no sound or
+flash interrupts its match, in-game rematch question or next set game. Settings "Sound and taskbar flash ..." (launcher.json "notify",
 on by default) switches it off. Ordinary chat and lobby updates do not ring. At most once per event: a key (the match
 id, the challenge id, the invite id, ...) is told once; the news of a room (join / turn) comes from RoomWatch,
 which compares one `room` message with the one before. Events that come close together (a join and the match it
@@ -31,8 +32,8 @@ launcher's settings folder as CUSTOM_WAV_NAME; plain PCM WAV, at most CUSTOM_MAX
 that is gone or no longer fits rings the chime and says so in launcher.log) or none (the taskbar still flashes).
 winsound cannot play a memory image asynchronously, so a daemon thread plays it
 (the Tk thread never waits); if Windows refuses, the system sound "SystemAsterisk" plays instead. The taskbar button
-flashes with FlashWindowEx (FLASHW_TRAY | FLASHW_TIMERNOFG): until the window comes to the front, which also ends
-it when winfront brings the launcher forward by itself.
+flashes with FlashWindowEx (FLASHW_TRAY | FLASHW_TIMERNOFG): until the window comes to the front. It never
+activates a window. The Online tab checks foreground again before flashing.
 
 T5_NOTIFY=0 in the environment turns the real sound and flash off (the tests; the hooks of a test are its own).
 """

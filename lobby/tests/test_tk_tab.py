@@ -218,10 +218,8 @@ class TkTabTest(TkBase):
             out += self.texts_under(w)
         return out
 
-    def test_after_the_match_the_window_comes_forward_once(self):
-        """The game waits at character select after a match (pads neutral, for the launcher's next command):
-        the launcher comes forward with the result card, which says so -- once, never during the match;
-        the opponent's rematch question brings it forward again."""
+    def test_after_the_match_the_launcher_stays_behind_the_running_game(self):
+        """Result cards and rematch offers update without activating the launcher while the game lives."""
         tab = self.tab
         tab.server_var.set(self.s.addr)
         tab.do_login("guest")
@@ -243,16 +241,17 @@ class TkTabTest(TkBase):
         self.other.report_result(slot, [3, 1] if slot == 0 else [1, 3])
         self.pump(lambda: tab.last_result is not None)
         self.root.update()
-        self.assertEqual(self.fronted, [tab.parent])                          # once
+        self.assertEqual(self.fronted, [])
         self.assertTrue(tab.view.game_waits())
         self.assertIn("The game waits here for your next match: Rematch, Next game or Leave.",
                       self.texts_under(tab.view.bar_visual))
         for _ in range(5):
             tab._poll()
-        self.assertEqual(len(self.fronted), 1)                                # still once
+        self.assertEqual(self.fronted, [])
         ev = expect(self.other, "match_result")
         self.other.rematch(ev["match"], True)                                 # the opponent asks: a decision
-        self.pump(lambda: len(self.fronted) == 2)
+        self.pump(lambda: "wants a rematch" in tab.bar_text.get())
+        self.assertEqual(self.fronted, [])
 
     def test_the_game_comes_forward_when_its_match_starts_and_the_launcher_is_in_front(self):
         tab = self.tab

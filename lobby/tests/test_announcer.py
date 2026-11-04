@@ -2,6 +2,7 @@
 data -- no game file is needed or used: a fake program with the data table, a fake T55DATA1.BIN holding a made-up
 sound bank whose "line" is a tone coded as PlayStation ADPCM here. Nothing makes a sound: winsound is a fake."""
 import io
+import hashlib
 import os
 import shutil
 import struct
@@ -148,6 +149,59 @@ class VoiceTests(unittest.TestCase):
     def known(self):
         return mock.patch.multiple(A, SAMPLE_SIZE=self.size, SAMPLE_SHA256=self.sha)
 
+    def challenger_known(self, line):
+        return mock.patch.multiple(A, NEW_CHALLENGER_SIZE=len(line),
+                                   NEW_CHALLENGER_SHA256=hashlib.sha256(line).hexdigest())
+
+    def test_owner_confirmed_challenger_fingerprint(self):
+        self.assertEqual((A.ENTRY, A.BANK_ID, A.BANK_COUNT), (11, 2, 21))
+        self.assertEqual((A.NEW_CHALLENGER_SAMPLE, A.NEW_CHALLENGER_RATE, A.NEW_CHALLENGER_SIZE), (20, 18000, 12352))
+        self.assertEqual(A.NEW_CHALLENGER_SHA256,
+                         "0ffd929779ec929dd85a14a5221b2f50552cdf8b38c75a782226ca29e35d4754")
+
+    def test_each_line_has_its_own_sample_and_cache(self):
+        challenger = adpcm_encode(tone(1400, 660))
+        fake_install(self.dir, bank({A.SAMPLE: self.line, A.NEW_CHALLENGER_SAMPLE: challenger}))
+        with self.known(), self.challenger_known(challenger), mock.patch.object(A, "voice_from", wraps=A.voice_from) as vf:
+            for _ in range(2):
+                self.assertEqual(A.next_battle_wav(self.dir), A.wav_bytes(A.adpcm_decode(self.line), A.SAMPLE_RATE))
+                self.assertEqual(A.new_challenger_wav(self.dir), A.wav_bytes(A.adpcm_decode(challenger),
+                                                                          A.NEW_CHALLENGER_RATE))
+            self.assertEqual(vf.call_count, 2)
+
+    def test_challenger_requires_the_pinned_rate_size_and_hash(self):
+        challenger = adpcm_encode(tone(1400, 660))
+        cases = {"right": bank({A.NEW_CHALLENGER_SAMPLE: challenger}),
+                 "wrong hash": bank({A.NEW_CHALLENGER_SAMPLE: adpcm_encode(tone(1400, 330))}),
+                 "wrong size": bank({A.NEW_CHALLENGER_SAMPLE: challenger[:-16]}),
+                 "wrong rate": bank({A.NEW_CHALLENGER_SAMPLE: challenger}, rate=22050),
+                 "wrong index": bank({A.SAMPLE: challenger}),
+                 "wrong bank": bank({A.NEW_CHALLENGER_SAMPLE: challenger}, bank_id=3),
+                 "wrong count": bank({A.NEW_CHALLENGER_SAMPLE: challenger}, count=20),
+                 "cut off": bank({A.NEW_CHALLENGER_SAMPLE: challenger})[:0x30]}
+        for name, content in cases.items():
+            with self.subTest(name=name):
+                folder = os.path.join(self.dir, name)
+                fake_install(folder, content)
+                with self.challenger_known(challenger):
+                    wav = A.new_challenger_wav(folder)
+                if name == "right":
+                    self.assertEqual(wav, A.wav_bytes(A.adpcm_decode(challenger), A.NEW_CHALLENGER_RATE))
+                else:
+                    self.assertIsNone(wav)
+
+    def test_challenger_without_supported_game_or_fingerprint(self):
+        self.assertIsNone(A.new_challenger_wav(None))
+        self.assertIsNone(A.new_challenger_wav(self.dir))
+        fake_install(self.dir, bank({A.NEW_CHALLENGER_SAMPLE: self.line}))
+        self.assertIsNone(A.new_challenger_wav(self.dir))  # real pinned fingerprint refuses the made-up sound
+        A._cached.cache_clear()
+        with open(os.path.join(self.dir, "game", "EBOOT.elf"), "r+b") as f:
+            f.seek(0x18)
+            f.write(struct.pack(">Q", 0x457898))          # European program
+        with self.challenger_known(self.line):
+            self.assertIsNone(A.new_challenger_wav(self.dir))
+
     def test_reads_the_line_from_the_game_files(self):
         fake_install(self.dir, bank({A.SAMPLE: self.line, 0: adpcm_encode(tone(560, 220))}))
         with self.known():
@@ -251,12 +305,12 @@ class NotifierVoiceTests(unittest.TestCase):
     def setUp(self):
         self.clock = 100.0
 
-    def test_match_challenge_and_tournament_say_the_line(self):
+    def test_match_found_and_tournament_say_next_battle(self):
         n = self.notifier(lambda: self.voiced.append(1) or True)
-        for kind in (notify.MATCH, notify.CHALLENGE, notify.TOUR):
+        for kind in (notify.MATCH, notify.CHALLENGE, notify.INVITE, notify.TOUR):
             self.clock += 10
             self.assertTrue(n.notify(kind, kind))
-        self.assertEqual((len(self.voiced), len(self.played)), (3, 0))
+        self.assertEqual((len(self.voiced), len(self.played)), (2, 2))
 
     def test_other_kinds_chime(self):
         n = self.notifier(lambda: self.voiced.append(1) or True)

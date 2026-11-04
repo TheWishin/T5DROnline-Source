@@ -21,6 +21,7 @@ import tempfile
 from . import proto
 from .buildid import BuildInfo
 from .client import LobbyClient
+from .editions import edition_note
 from .handover import read_result_file
 
 
@@ -77,8 +78,9 @@ def main(argv=None):
         if a.list:
             for p in snap.get("players", []):
                 same = "" if c.compatible(p) else "  [other build]"
-                region = p.get("region", "?")
-                print(f"  {p['name']:<16} [{region}] {p['status']:<8} {p['rating']:>5}  {p['rtt'] or '-':>6} ms{same}")
+                edition = edition_note(p, c.me)
+                status = p["status"] + (" · " + edition if edition else "")
+                print(f"  {p['name']:<16} {status:<8} {p['rating']:>5}  {p['rtt'] or '-':>6} ms{same}")
             for r in snap.get("rooms", []):
                 print(f"  room {r['id']}  {r['name']!r} by {r['owner']['name']}  {r['status']}")
             return 0

@@ -42,7 +42,7 @@ class LauncherIntegration(unittest.TestCase):
                   "SCREEN_SIDES", "VSYNC_MODES", "POWER_SAVING", "STAGE_BLUR_MODES",
                   "ON_OFF_MODES", "GRAPHICS", "TRAINING_MODES", "TRAINING_POS", "PRACTICE_DUMMY",
                   "DISPLAY_MODES", "TRUE_43", "TRUE_43_ONLINE", "PICTURE_FORMATS", "WINDOW_SIZE_MIN", "WINDOW_SIZE_MAX",
-                  "MATCH_SOUNDS", "ONLINE_FEELS"}
+                  "MATCH_SOUNDS", "ONLINE_FEELS", "CHALLENGE_SOUNDS"}
         namespace = {"N_": lambda text: text, "SETTINGS_FILE": "unused", "json": json}
         for node in tree.body:
             if (isinstance(node, ast.Assign) and any(

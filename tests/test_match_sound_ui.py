@@ -64,7 +64,7 @@ class MatchSoundUITests(unittest.TestCase):
         cls.launcher = load_launcher()
 
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory(dir=ROOT)
+        self.temp = tempfile.TemporaryDirectory(dir=os.path.join(ROOT, "build"))
         self.addCleanup(self.temp.cleanup)
         self.settings = core.Settings(os.path.join(self.temp.name, "settings ü", "launcher.json"))
         self.settings["out"] = os.path.join(self.temp.name, "native")
@@ -139,13 +139,68 @@ class MatchSoundUITests(unittest.TestCase):
         self.app.match_sound_var.set("announcer")
         with mock.patch.object(notify, "preview_match_sound", return_value="no_game") as preview:
             self.app._preview_match_sound()
-        preview.assert_called_once_with("announcer", self.settings.out_dir, self.settings.settings_dir)
+        preview.assert_called_once_with("announcer", self.settings.out_dir, self.settings.settings_dir, challenge=False)
         self.assertIn("BUILD GAME", self.app.match_sound_hint.options["text"])
         self.app._match_sound_set("custom")                       # chosen earlier, the file deleted since
         self.app._match_sound_status()
         self.assertEqual(self.app.match_sound_hint.options["text"],
                          "Your WAV file is gone. The beep is used instead.")
         self.assertEqual(self.app.match_sound_play.options["state"], "normal")
+
+    def challenge_controls(self):
+        self.app.challenge_sound_var = Var(self.settings["notify_challenge_sound"])
+        self.app._challenge_sound_last = self.settings["notify_challenge_sound"]
+        self.app.challenge_sound_hint = Widget()
+        self.app.challenge_sound_play = Widget()
+
+    def test_challenge_defaults_to_new_challenger_and_previews_separately(self):
+        self.challenge_controls()
+        self.assertEqual(self.app.challenge_sound_var.get(), "announcer")
+        self.assertEqual(list(core.CHALLENGE_SOUNDS.items()), [
+            ("announcer", "New challenger (default)"), ("chime", "Chime"),
+            ("custom", "Your own WAV file"), ("off", "Off")])
+        with mock.patch.object(notify, "preview_match_sound", return_value="no_game") as preview:
+            self.app._preview_match_sound(True)
+        preview.assert_called_once_with("announcer", self.settings.out_dir, self.settings.settings_dir, challenge=True)
+        self.assertEqual(self.app.challenge_sound_hint.options["text"],
+                         "The announcer needs your built game (BUILD GAME): until then the chime plays.")
+        self.assertEqual(self.app.match_sound_hint.options, {})
+
+    def test_challenge_wav_and_choice_are_saved_separately(self):
+        self.challenge_controls()
+        match = make_wav(0.2)
+        challenge = make_wav(0.4)
+        with self.pick(self.file("match.wav", match)):
+            self.app._choose_match_sound()
+        self.app.challenge_sound_var.set("custom")
+        with self.pick(self.file("invite.wav", challenge)):
+            self.app._match_sound_changed(True)
+        self.settings.save()
+        loaded = core.Settings(self.settings.path)
+        self.assertEqual((loaded["notify_sound"], loaded["notify_challenge_sound"]), ("custom", "custom"))
+        self.assertEqual(loaded["notify_challenge_sound_name"], "invite.wav")
+        self.assertEqual(notify.custom_wav(loaded.settings_dir)[0], match)
+        self.assertEqual(notify.custom_wav(loaded.settings_dir, challenge=True)[0], challenge)
+        with mock.patch.object(notify, "preview_match_sound", return_value="") as preview:
+            self.app._preview_match_sound(True)
+        preview.assert_called_once_with("custom", loaded.out_dir, loaded.settings_dir, challenge=True)
+        self.app._match_sound_set("off", True)
+        self.app._match_sound_status(challenge=True)
+        self.assertEqual(self.app.challenge_sound_play.options["state"], "disabled")
+        self.assertEqual(self.settings["notify_sound"], "custom")
+
+    def test_challenge_cancel_and_invalid_wav(self):
+        self.challenge_controls()
+        self.app._match_sound_set("off", True)
+        self.app.challenge_sound_var.set("custom")
+        with self.pick(""):
+            self.app._match_sound_changed(True)
+        self.assertEqual(self.app.challenge_sound_var.get(), "off")
+        with self.pick(self.file("broken.wav", b"not WAV")):
+            self.app._choose_match_sound(True)
+        self.assertEqual(self.settings["notify_challenge_sound"], "chime")
+        self.assertIn("The chime is used instead.", self.app.challenge_sound_hint.options["text"])
+        self.assertEqual(self.settings["notify_sound"], "announcer")
 
 
 if __name__ == "__main__":

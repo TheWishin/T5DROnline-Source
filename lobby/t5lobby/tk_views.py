@@ -1493,6 +1493,10 @@ class OnlineView:
             for row in tv.get_children()])
         if record_width > int(tv.column("record", "minwidth")):
             tv.column("record", width=max(record_width, int(tv.column("record", "width"))), minwidth=record_width)
+        edition_width = max([0] + [self._player_record_font.measure(tv.set(row, "status")) + self.px(8)
+                                  for row in tv.get_children() if "edition" in tv.item(row, "tags")])
+        if edition_width > int(tv.column("status", "minwidth")):
+            tv.column("status", width=max(edition_width, int(tv.column("status", "width"))), minwidth=edition_width)
         self._update_profile()
         self._update_profile_mute()
         self._update_play()

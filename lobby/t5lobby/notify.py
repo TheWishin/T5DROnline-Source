@@ -20,9 +20,11 @@ which compares one `room` message with the one before. Events that come close to
 starts, a turn and its first countdown tick) make one chime: nothing is played within COALESCE_S of the last one.
 
 The sound is made here, from nothing: two soft bell tones in a 16-bit mono WAV that is built in memory (chime_wav),
-no game audio and no file anywhere. For a match, a challenge and a tournament set (VOICE_KINDS) the game's own
-announcer says "Get ready for the next battle!" instead (1.2.0, Settings "... the game's announcer", on by default):
-announcer.py reads that line from the player's own unpacked game when it is needed; without it (before BUILD GAME,
+no game audio and no file anywhere. A found match and a tournament set (VOICE_KINDS) use the game's own
+announcer by default: "Get ready for the next battle!". Challenges and invites use their own
+"Sound for a challenge" setting (notify_challenge_sound): New challenger (default, "A new challenger!"), chime,
+own WAV or off. Their custom WAV is stored separately as CHALLENGE_WAV_NAME.
+announcer.py reads each pinned line from the player's own unpacked game when it is needed; without it (before BUILD GAME,
 a European program, other data) the chime plays. Settings "Sound when a match is found" (launcher.json "notify_sound",
 1.2.0) picks that sound: the announcer (default), the beep (the chime), a WAV file of the player's own (copied into the
 launcher's settings folder as CUSTOM_WAV_NAME; plain PCM WAV, at most CUSTOM_MAX_S seconds and CUSTOM_MAX_BYTES; a file
@@ -52,7 +54,8 @@ except ImportError:                      # not Windows
 
 MATCH, JOIN, TURN, INVITE, TOUR, REMATCH = "match", "join", "turn", "invite", "tour", "rematch"
 CHALLENGE = "challenge"
-VOICE_KINDS = (MATCH, CHALLENGE, TOUR)     # the announcer's "Get ready for the next battle!" instead of the chime
+VOICE_KINDS = (MATCH, TOUR)              # found matches and tournament sets use the match sound setting
+CHALLENGE_KINDS = (CHALLENGE, INVITE)
 
 COALESCE_S = 3.0          # a second notification this soon after one that went out makes no second chime
 SEEN_MAX = 128            # keys of events told so far (a long session must not grow without end)
@@ -152,7 +155,10 @@ def play_voice(out_dir):
 # ---------------------------------------------------------------------- the sound for a found match (Settings)
 ANNOUNCER, BEEP, CUSTOM, OFF = "announcer", "beep", "custom", "off"
 MATCH_SOUNDS = (ANNOUNCER, BEEP, CUSTOM, OFF)      # launcher.json "notify_sound"; ANNOUNCER is the default
+CHIME = "chime"
+CHALLENGE_SOUNDS = (ANNOUNCER, CHIME, CUSTOM, OFF)  # ANNOUNCER = "A new challenger!", the default
 CUSTOM_WAV_NAME = "match_sound.wav"                # the player's WAV, copied next to launcher.json
+CHALLENGE_WAV_NAME = "challenge_sound.wav"
 CUSTOM_MAX_BYTES = 2 * 1024 * 1024
 CUSTOM_MAX_S = 5.0
 CUSTOM_MIN_RATE, CUSTOM_MAX_RATE = 8000, 192000
@@ -171,6 +177,17 @@ def match_sound_choice(settings):
             return choice
         if settings.get("notify_voice") is False:
             return BEEP
+    except AttributeError:
+        pass
+    return ANNOUNCER
+
+
+def challenge_sound_choice(settings):
+    """Independent of the match sound and legacy notify_voice; missing/invalid means "A new challenger!"."""
+    try:
+        choice = settings.get("notify_challenge_sound")
+        if choice in CHALLENGE_SOUNDS:
+            return choice
     except AttributeError:
         pass
     return ANNOUNCER
@@ -199,11 +216,12 @@ def check_wav(data):
     return None
 
 
-def custom_wav_path(folder):
-    return os.path.join(folder, CUSTOM_WAV_NAME) if folder else None
+def custom_wav_path(folder, *, challenge=False):
+    name = CHALLENGE_WAV_NAME if challenge else CUSTOM_WAV_NAME
+    return os.path.join(folder, name) if folder else None
 
 
-def install_custom_wav(src, folder):
+def install_custom_wav(src, folder, *, challenge=False):
     """Copy the player's WAV `src` into `folder` (the launcher's settings folder) as CUSTOM_WAV_NAME, after
     check_wav. -> None when it is in place, else the reason (WAV_*); the copy there before stays when refused."""
     try:
@@ -216,7 +234,7 @@ def install_custom_wav(src, folder):
     problem = check_wav(data)
     if problem:
         return problem
-    dest = custom_wav_path(folder)
+    dest = custom_wav_path(folder, challenge=challenge)
     if not dest:
         return WAV_UNREADABLE
     tmp = dest + ".tmp"
@@ -234,10 +252,10 @@ def install_custom_wav(src, folder):
     return None
 
 
-def custom_wav(folder):
+def custom_wav(folder, *, challenge=False):
     """(WAV bytes, None) of the player's copied sound, or (None, reason): gone, damaged, or larger / longer than
     allowed (somebody replaced the file)."""
-    path = custom_wav_path(folder)
+    path = custom_wav_path(folder, challenge=challenge)
     if not path or not os.path.isfile(path):
         return None, WAV_MISSING
     try:
@@ -249,61 +267,63 @@ def custom_wav(folder):
     return (None, problem) if problem else (data, None)
 
 
-def match_sound_wav(choice, out_dir=None, folder=None):
-    """What a found match rings: (WAV bytes, or None for silence; note). note: "" as chosen; "no_game" the announcer
+def match_sound_wav(choice, out_dir=None, folder=None, *, challenge=False):
+    """What a found match/tournament set or (challenge=True) challenge/invite rings: (WAV bytes, or None for silence;
+    note). note: "" as chosen; "no_game" the announcer
     without the player's unpacked game (the chime instead); a WAV_* reason for the custom sound (the chime
     instead)."""
     if choice == OFF:
         return None, ""
     if choice == CUSTOM:
-        wav, problem = custom_wav(folder)
+        wav, problem = custom_wav(folder, challenge=challenge)
         return (wav, "") if wav else (chime_wav(), problem)
     if choice == ANNOUNCER:
         try:
             from . import announcer
-            wav = announcer.next_battle_wav(out_dir)
+            wav = announcer.new_challenger_wav(out_dir) if challenge else announcer.next_battle_wav(out_dir)
         except Exception:             # noqa: BLE001 -- whatever the files hold, the chime still rings
             wav = None
         return (wav, "") if wav else (chime_wav(), "no_game")
     return chime_wav(), ""
 
 
-def _match_sound_now(choice, out_dir, folder, log):
+def _match_sound_now(choice, out_dir, folder, log, challenge=False):
     """Runs on its own thread: the chosen sound (match_sound_wav); a line in the log when the chime stands in for
     the player's own WAV."""
     try:
-        wav, note = match_sound_wav(choice, out_dir, folder)
+        wav, note = match_sound_wav(choice, out_dir, folder, challenge=challenge)
     except Exception:                 # noqa: BLE001 -- the chime is the fallback
         wav, note = chime_wav(), "error"
     if note and note != "no_game" and log is not None:
         try:
-            log(f"notify: the custom match sound cannot be played ({note}), the beep instead")
+            kind = "challenge" if challenge else "match"
+            log(f"notify: the custom {kind} sound cannot be played ({note}), the chime instead")
         except Exception:             # noqa: BLE001 -- the log is best effort
             pass
     if wav:
         _play_now(wav)
 
 
-def play_match_sound(choice, out_dir=None, folder=None, log=None):
-    """Start the sound chosen for a found match (MATCH_SOUNDS) and return at once: the files are read and the sound
-    plays on a daemon thread. -> True when it was handled (OFF too: nothing to play), False when no sound can be
-    made here (not Windows, T5_NOTIFY=0, no thread)."""
+def play_match_sound(choice, out_dir=None, folder=None, log=None, *, challenge=False):
+    """Start the sound chosen for a match/tournament set or (challenge=True) challenge/invite and return at once:
+    the files are read and the sound plays on a daemon thread. -> True when it was handled (OFF too: nothing to play),
+    False when no sound can be made here (not Windows, T5_NOTIFY=0, no thread)."""
     if choice == OFF:
         return True
     if winsound is None or os.name != "nt" or _off():
         return False
     try:
-        threading.Thread(target=_match_sound_now, args=(choice, out_dir, folder, log), daemon=True,
+        threading.Thread(target=_match_sound_now, args=(choice, out_dir, folder, log, challenge), daemon=True,
                          name="notify-match-sound").start()
         return True
     except (RuntimeError, OSError, MemoryError):
         return False
 
 
-def preview_match_sound(choice, out_dir=None, folder=None):
-    """Settings' Play button: the sound a found match would ring now, started at once (a daemon thread plays it;
-    nothing with T5_NOTIFY=0). -> its note (match_sound_wav): why the beep stands in, or ""."""
-    wav, note = match_sound_wav(choice, out_dir, folder)
+def preview_match_sound(choice, out_dir=None, folder=None, *, challenge=False):
+    """Settings' Play button: the sound a match or (challenge=True) challenge would ring now, started on a daemon thread;
+    nothing with T5_NOTIFY=0. -> its note (match_sound_wav): why the chime stands in, or ""."""
+    wav, note = match_sound_wav(choice, out_dir, folder, challenge=challenge)
     if wav and winsound is not None and os.name == "nt" and not _off():
         try:
             threading.Thread(target=_play_now, args=(wav,), daemon=True, name="notify-preview").start()
@@ -345,16 +365,18 @@ class Notifier:
         voice()     for VOICE_KINDS instead of play(): start the sound chosen for a found match (must not wait)
                     -> True when that was handled (started, or "Off" chosen); None, an answer of False or an
                     error -> play()
+        challenge() for CHALLENGE_KINDS: the separately chosen challenge/invite sound, with the same fallback
         flash()     flash the taskbar button
         log(text)   one line for launcher.log (optional)
     """
 
     def __init__(self, enabled=None, away=None, play=play_chime, flash=None, log=None, clock=time.monotonic,
-                 voice=None):
+                 voice=None, challenge=None):
         self.enabled = enabled or (lambda: True)
         self.away = away or (lambda: True)
         self.play = play
         self.voice = voice
+        self.challenge = challenge
         self.flash = flash or (lambda: False)
         self.log = log
         self.clock = clock
@@ -362,13 +384,14 @@ class Notifier:
         self._last = None             # when the last chime went out
 
     def _sound(self, kind):
-        """The sound hook for `kind`: the announcer for VOICE_KINDS when there is a voice hook, else the chime."""
-        if kind not in VOICE_KINDS or self.voice is None:
+        """Match and challenge/invite choices have separate hooks; other events keep the chime."""
+        hook = self.voice if kind in VOICE_KINDS else self.challenge if kind in CHALLENGE_KINDS else None
+        if hook is None:
             return self.play
 
         def voice_or_chime():
             try:
-                started = self.voice()
+                started = hook()
             except Exception:         # noqa: BLE001 -- the chime is the fallback
                 started = False
             if not started:

@@ -131,7 +131,9 @@ DEFAULTS = {
     "notify": True,            # online: a chime + the taskbar button flashes when a match is found / someone joins the room (lobby/t5lobby/notify.py)
     "notify_voice": True,      # (1.2.0 test builds; kept = notify_sound is "announcer", for an older launcher)
     "notify_sound_name": "",   # the file name the player chose for "custom" (shown in Settings; the copy: match_sound.wav)
-    "notify_sound": "announcer",  # a match, a challenge, a tournament set: announcer | beep | custom | off (notify.MATCH_SOUNDS;
+    "notify_challenge_sound": "announcer",  # challenges and invites: announcer ("A new challenger!") | chime | custom | off
+    "notify_challenge_sound_name": "",  # separate copy: challenge_sound.wav
+    "notify_sound": "announcer",  # a found match or tournament set: announcer | beep | custom | off (notify.MATCH_SOUNDS;
                                # announcer = the game's own line, lobby/t5lobby/announcer.py; custom = match_sound.wav here)
     "background": False,       # start minimized without focus (testing)
     "extra_env": "",           # NAME=VALUE lines
@@ -247,6 +249,10 @@ class Settings(dict):
         self["notify_voice"] = self["notify_sound"] == "announcer"
         if not isinstance(self["notify_sound_name"], str):
             self["notify_sound_name"] = ""
+        if not isinstance(self["notify_challenge_sound"], str) or self["notify_challenge_sound"] not in CHALLENGE_SOUNDS:
+            self["notify_challenge_sound"] = "announcer"
+        if not isinstance(self["notify_challenge_sound_name"], str):
+            self["notify_challenge_sound_name"] = ""
         if not isinstance(self["picture"], str) or self["picture"] not in PICTURE_FORMATS:
             self["picture"] = "fit"
         if not isinstance(self["display"], str) or self["display"] not in dict(DISPLAY_MODES):
@@ -1696,7 +1702,7 @@ PRACTICE_DUMMY = {       # English; t(label) where it is shown -- the dummy's be
     "wavedash": N_("Wavedashes"),
 }
 # Settings "Sound when a match is found" (launcher.json "notify_sound"; the keys are t5lobby.notify.MATCH_SOUNDS):
-# a found match, a challenge, a tournament set. The other lobby notifications keep the beep.
+# A found match or tournament set. Challenges and invites have their own choice; other events keep the chime.
 MATCH_SOUNDS = {
     "announcer": N_("Announcer (\"Get ready for the next battle\")"),
     "beep": N_("Beep"),
@@ -1704,8 +1710,18 @@ MATCH_SOUNDS = {
     "off": N_("Off"),
 }
 MATCH_SOUND_HELP = N_(
-    "For a found match, a challenge and a tournament set when you are in another window. The announcer is read "
+    "For a found match or tournament set when you are in another window. The announcer is read "
     "from your own game (after BUILD GAME); without it the beep plays. Your own sound: a WAV file of at most "
+    "5 seconds and 2 MB, copied into the launcher's folder.")
+CHALLENGE_SOUNDS = {
+    "announcer": N_("New challenger (default)"),
+    "chime": N_("Chime"),
+    "custom": MATCH_SOUNDS["custom"],
+    "off": MATCH_SOUNDS["off"],
+}
+CHALLENGE_SOUND_HELP = N_(
+    "For an incoming challenge or invite when you are in another window. The announcer is read "
+    "from your own game (after BUILD GAME); without it the chime plays. Your own sound: a WAV file of at most "
     "5 seconds and 2 MB, copied into the launcher's folder.")
 # why a chosen WAV file is not used (t5lobby.notify.WAV_*)
 MATCH_SOUND_PROBLEMS = {

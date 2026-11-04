@@ -2298,6 +2298,8 @@ class OnlineTab:
         """Is the player probably not looking at this tab: another program in front (a launcher dialog counts), the
         launcher minimized, or another tab of it shown? A window that was never shown (tests) has no taskbar button."""
         try:
+            if self.game_in_front():
+                return False
             if self.parent.winfo_toplevel().state() == "withdrawn":
                 return False
             return not (self.launcher_in_front() and self._tab_viewable())
@@ -2328,6 +2330,8 @@ class OnlineTab:
                                        log=_launcher_log, challenge=True)
 
     def _notify_flash(self):
+        if self.game_in_front():
+            return False
         return notify.flash_window(padnav.toplevel_hwnd(self.parent.winfo_toplevel()))
 
     def _notify_event(self, ev):
@@ -2369,17 +2373,21 @@ class OnlineTab:
     def _notify_driver(self, note):
         """The opponent's rematch question (the driver's note)."""
         try:
-            if note.get("kind") == "rematch_offer":
+            if note.get("kind") == "rematch_offer" and not self.game_in_front():
                 self.notifier.notify(notify.REMATCH, note.get("match"))
         except Exception:                       # noqa: BLE001 -- a chime must never break the tab
             pass
 
     def _come_forward(self, key):
-        """The match is over and the game waits (pads neutral, at character select) for what comes next:
-        show this tab and bring the launcher's window to the front -- once per match end or question
-        (`key`). Never while a match is being played, and not while a ranked set's next game starts by
-        itself. (Players took the waiting game for a hang: build/e2e, GitHub report on 1.0.0.)"""
+        """Show a decision once, only after the game has closed.
+
+        Driver notes are queued: an old rematch_offer/fallback can arrive after match_start has cleared
+        the in-game prompt, while the last sampled game state still says over/neutral. Neither that
+        state nor the prompt flags may authorize taking focus from a running online game.
+        """
         if key == self._fronted or self.set_bar is not None:
+            return
+        if self.game_in_front() or any(game.running() for game in self._focus_games()):
             return
         drv = self.driver
         if key[0] != "ask" and (bool(getattr(drv, "ingame_ui_active", False))
@@ -2447,7 +2455,7 @@ class OnlineTab:
             return
         self._game_fronted = key
         try:
-            if self.app.settings.get("background") or not self.launcher_in_front():
+            if self.game_in_front() or self.app.settings.get("background") or not self.launcher_in_front():
                 return
             game = getattr(self.app, "game", None)
             proc = getattr(game, "proc", None)
@@ -2455,6 +2463,20 @@ class OnlineTab:
                 self.bring_game_forward(proc.pid)
         except Exception:                           # noqa: BLE001 -- a window that cannot come forward is no error
             pass
+
+    def _focus_games(self):
+        """Game handles owned by the launcher/driver, including between two matches."""
+        games = []
+        for owner in (getattr(self, "app", None), getattr(self, "driver", None)):
+            game = getattr(owner, "game", None)
+            if game is not None and game not in games:
+                games.append(game)
+        return games
+
+    def game_in_front(self):
+        """Read the foreground process; never raise/restore a window to find it."""
+        return any(winfront.process_in_front(getattr(getattr(game, "proc", None), "pid", None))
+                   for game in self._focus_games())
 
     def launcher_in_front(self):
         """Is the launcher's window the foreground window? (Tk thread; tests replace it.)"""

@@ -1281,6 +1281,11 @@ class GameRun:
             backup_saves_once(self.out, "free-items")
         costume_env(self.out, env_over)
         cmd, env, cwd = run_game.game_command(self.out, env_over)
+        # Exclusive DXGI fullscreen may minimize on any focus loss. Online games keep their window
+        # across results/rematches, so use borderless even with an inherited exclusive override.
+        if (env.get("T5_CTL_DIR") or str(env.get("T5_NET_MODE", "")).lower() in ("host", "join")) and \
+                str(env.get("PS3_FULLSCREEN", "")).lower() in ("exclusive", "2"):
+            env["PS3_FULLSCREEN"] = "1"
         self._playback = env.get("T5_NET_MODE") == "replay"
         if not os.path.exists(cmd[0]):
             raise FileNotFoundError(t("t5dr.exe is not built yet"))

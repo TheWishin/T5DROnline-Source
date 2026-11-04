@@ -2059,7 +2059,7 @@ class App(tk.Tk):
         """The game's own message boxes (core.DialogScan): the runtime answers them by itself, so the player would see
         nothing but a still or black screen. Each new one goes to the Play tab, the status line and launcher.log; one
         after which the game stops ("The installed game data is corrupted. Ending game.") also brings the launcher
-        forward with a message box."""
+        forward with a message box once the game has stopped."""
         g = self.game
         count, shown = getattr(g, "dialog_count", 0), getattr(g, "dialogs", ())    # (tests' stand-in games: none)
         if count <= self._dialogs_seen or not shown:
@@ -2073,6 +2073,11 @@ class App(tk.Tk):
         if fatal and not self.readonly and not self._dialog_box:
             self._dialog_box = True
             def show(msg=self._dialog_text):
+                # The log can report a fatal dialog before the game's window closes. Check when this
+                # callback runs too: a newly started game must not lose focus to an older game's error.
+                if g.running() or (self.game is not None and self.game.running()):
+                    self.after(150, show)
+                    return
                 try:
                     from t5lobby import winfront
                     winfront.raise_window(self)

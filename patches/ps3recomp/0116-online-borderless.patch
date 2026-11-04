@@ -1,0 +1,35 @@
+diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
+--- a/libs/video/rsx_live_draw.c
++++ b/libs/video/rsx_live_draw.c
+@@ -10616,6 +10616,22 @@
+     return label;
+ }
+ 
++/* Online sessions keep the same window through results, rematches and sets.
++ * DXGI exclusive mode can minimize it on ANY focus loss, including an OS
++ * notification. Use the existing borderless path for a launcher-managed
++ * process (also while waiting for its next session) and direct host/join.
++ * Never restore/activate a window in response to focus loss: Alt+Tab is
++ * still the player's choice. Offline exclusive mode remains available. */
++static int ld_exclusive_requested(const char* fullscreen)
++{
++    const char* ctl = getenv("T5_CTL_DIR");
++    const char* mode = getenv("T5_NET_MODE");
++    const int online = (ctl && ctl[0]) ||
++        (mode && (_stricmp(mode, "host") == 0 || _stricmp(mode, "join") == 0));
++    return !online && fullscreen &&
++        (_stricmp(fullscreen, "exclusive") == 0 || strcmp(fullscreen, "2") == 0);
++}
++
+ static void ld_display_config(void)
+ {
+     const char* e;
+@@ -10628,7 +10644,7 @@
+     e = getenv("PS3_VSYNC");
+     g_ldp.vsync = !(e && e[0] == '0');
+     e = getenv("PS3_FULLSCREEN");
+-    g_ldp.exclusive_cfg = e && (_stricmp(e, "exclusive") == 0 || strcmp(e, "2") == 0);
++    g_ldp.exclusive_cfg = ld_exclusive_requested(e);
+     if (g_ldp.exclusive_cfg && !getenv("PS3_WINDOW_BACKGROUND"))
+         g_ldp.fs_request = 1;
+     e = getenv("PS3_PRESENT_FILTER");

@@ -39,6 +39,7 @@ class PatchSeries(unittest.TestCase):
             "0113-spu-regpromo.patch",
             "0114-vmx-four-lanes.patch",
             "0115-overlay-status-layer.patch",
+            "0116-online-borderless.patch",
         ]
         self.assertEqual([name for name in names if name >= "0088-"], expected)
 

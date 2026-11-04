@@ -58,6 +58,13 @@ updated lobby server; on an older server they simply do not appear.
   PC. Nothing is removed before you confirm twice. Needs the updated server.
 
 ### Launcher and help
+- **A challenge or an invite now plays the announcer's "A new challenger!"** (from your own game files; the chime when
+  they are missing). A found match still plays "Get ready for the next battle!". New setting **Sound for a challenge**.
+- The game edition is no longer shown as **[US]** after every player's name (players read it as where someone lives);
+  only a player with another edition than yours is marked ("EU edition").
+- **Beside the new launcher:** if the game is started from OpenRecomp-FGC while this launcher is searching, the search
+  stops (you stay logged in); the Online tab says when OpenRecomp-FGC is open (you can be online in one launcher at a
+  time), and the search line says how many other players are searching with a different build.
 - **Report a problem sends the report straight to the developer** with one click (**Send to the developer**); you can
   still save the zip. Your logs are cleaned as before; no game files, keys or passwords are sent. Needs the updated
   server; on an older one only Save is offered.

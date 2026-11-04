@@ -352,6 +352,7 @@ std::string g_ctl_match;         /* the command's match id of the fight being se
 std::string g_ctl_error;         /* why the last session ended by itself; cleared by the next command */
 bool g_after_match = false;      /* the session has played a match (state "result" while it waits) */
 bool g_pending_cmd = false;      /* a "fight" waiting to be set up (persistent game) */
+bool g_practice_requested = false; /* offline queue warm-up; never a netplay/replay match */
 
 /* The match is played over netplay: always with T5_NET_MODE; in a persistent
  * game only while a session is set up. */
@@ -382,6 +383,8 @@ void ctl_report(uint32_t f)
     else if (st == "title" || st == "reset" || st == "leave") c = g_pending_cmd ? "connecting" : (g_ctl_error.empty() ? "idle" : "error");
     else if (st == "select" || st == "stage" || st == "pick" || st == "pick_wait") c = "connecting";
     else if (st == "loading") c = "loading";
+    else if (st == "practice") c = "practice";
+    else if (st == "practice_loading") c = "loading";
     else if (st == "fight") c = "fight";
     else if (st == "over") c = "result";
     else c = !g_ctl_error.empty() ? "error" : (g_session && g_after_match) ? "result" : "idle";
@@ -452,7 +455,7 @@ bool read_fight_file(Fight& out)
  * select screen. Leave: out of a fight whose session ended (persistent game). */
 /* Pick / PickWait: the in-game select (this PC's player picks on the select
  * screen, then the peer's pick is awaited; Select drives the peer's side). */
-enum class Ph { Boot, Title, Select, Stage, WaitGame, Fight, Over, Neutral, Reset, Leave, Pick, PickWait };
+enum class Ph { Boot, Title, Select, Stage, WaitGame, Fight, Over, Neutral, Reset, Leave, Pick, PickWait, PracticeLoad, Offline };
 Ph g_ph = Ph::Boot;
 /* Presentation only: the renderer reads this host atomic, never the guest's
  * mode manager. Arm it during static registration, before the first picture.
@@ -859,7 +862,7 @@ void fresh_restore(uint32_t f)
 void go_reset(uint32_t f)
 {
     hold_pads(f, "the session ended");
-    if (g_ph == Ph::Fight || g_ph == Ph::WaitGame || (g_ph == Ph::Stage && mode_cur() == kModeGame)) {
+    if (((g_ph == Ph::Offline || g_ph == Ph::PracticeLoad) && mode_cur() == kModeGame) || g_ph == Ph::Fight || g_ph == Ph::WaitGame || (g_ph == Ph::Stage && mode_cur() == kModeGame)) {
         set_phase(Ph::Leave, "leave", f);
         return;
     }
@@ -897,12 +900,28 @@ void persistent_frame(uint32_t f)
     }
     if (c.cmd == "idle") {
         g_pending_cmd = false;
+        g_practice_requested = false;
         g_ctl_error.clear();
         if (g_session) end_session(f, "idle", false);
         else { go_reset(f); ctl_report(f); }
         return;
     }
+    if (c.cmd == "practice") {
+        /* T5_QUEUEPLAY: capability marker for the launcher. Practice is local:
+         * no session env, socket, replay ordinal or online match is started. */
+        note("T5_QUEUEPLAY: offline Practice requested");
+        if (g_ph == Ph::Offline && !g_session) { ctl_report(f); return; }
+        g_pending_cmd = false;
+        g_practice_requested = true;
+        g_cmd_ms = GetTickCount64(); g_cmd_frame = f;
+        g_ctl_error.clear(); g_ctl_match.clear();
+        if (g_session) end_session(f, "Practice", false);
+        else go_reset(f);
+        ctl_report(f);
+        return;
+    }
     if (c.cmd != "fight") { note("control command %u: '%s' unknown, ignored", c.seq, c.cmd.c_str()); return; }
+    g_practice_requested = false;
     g_cmd = c;
     g_pending_cmd = true;
     g_cmd_ms = GetTickCount64();
@@ -960,7 +979,7 @@ void select_restart(uint32_t f)
 {
     const uint32_t mgr = mode_manager();
     g_restart_obj = mgr ? rd32(mgr + kMgrModeObj) : 0;
-    gcall(kFnStartGame, 4, 3);
+    gcall(kFnStartGame, g_practice_requested ? 10 : 4, g_practice_requested ? 1 : 3);
     if (g_restart_inplace || !mgr || mode_cur() != kModeSelect || mode_next() != kModeNone) {
         note("frame %u: select screen restart in place (func_0004E9DC(4, 3) at the select screen; no fight since the title%s)",
              f, g_restart_inplace ? "; T5_DF_SELECT_RESTART=inplace" : "; the mode manager is busy");
@@ -973,11 +992,28 @@ void select_restart(uint32_t f)
          "mode manager; no fight since the title)", f, g_restart_obj);
 }
 
+void begin_practice(uint32_t f)
+{
+    g_practice_requested = false;
+    /* Practice is not the previous session's decided match. In particular a
+     * command racing its select -> game transition must take Reset's normal
+     * Leave path, rather than treating Practice as that match's win pose. */
+    g_result_done = false;
+    g_after_match = false;
+    g_over_clear = false; g_over_wait = false;
+    g_fresh = false;
+    hold_pads(f, "Practice selection");
+    set_phase(Ph::PracticeLoad, "practice_loading", f);
+}
+
 /* A reset has a fresh select screen: the pending "fight" (a new session)
  * starts on it, else the game waits there. */
 void reset_done(uint32_t f)
 {
-    if (g_pending_cmd && !g_cmd_rematch) start_session_fight(f);
+    if (g_practice_requested) {
+        /* The rebuilt select is Practice's native player/dummy select. */
+        begin_practice(f);
+    } else if (g_pending_cmd && !g_cmd_rematch) start_session_fight(f);
     else set_phase(Ph::Neutral, "neutral", f);
 }
 
@@ -1027,6 +1063,7 @@ bool g_sl_dumped = false;
 void select_load_check(uint32_t f)
 {
     const bool loading = g_ctl && ((g_ph == Ph::Select && !(mode_cur() == kModeSelect && rd32(kSelectState) >= 3)) ||
+                                   (g_ph == Ph::PracticeLoad && mode_cur() == kModeSelect && rd32(kSelectState) < 3) ||
                                    pick_screen_wait());
     const uint32_t busy = rd32(kReader + 8), q = rd32(kReader + 0x14);
     const int32_t tokens = t5_sem_count(rd32(kReader + 4));
@@ -1069,7 +1106,8 @@ void stuck_check(uint32_t f)
      * 1, every loader parked: reset_cycle_test F10, F12 under heavy load) held
      * the game there for good -- counted from the command, as a reset. */
     const bool neutral_wait = g_ph == Ph::Neutral && g_pending_cmd;
-    const bool waiting = g_ph == Ph::Leave || g_ph == Ph::Reset || (g_ph == Ph::Title && g_fresh_taken) || neutral_wait;
+    const bool waiting = g_ph == Ph::Leave || g_ph == Ph::Reset || g_ph == Ph::PracticeLoad ||
+                         (g_ph == Ph::Title && g_fresh_taken) || neutral_wait;
     if (!g_ctl || !g_stuck_s || !waiting) return;
     const ULONGLONG since = neutral_wait && g_cmd_ms > g_ph_ms ? g_cmd_ms : g_ph_ms;
     const uint32_t since_f = neutral_wait && g_cmd_ms > g_ph_ms ? g_cmd_frame : g_ph_frame;
@@ -1586,12 +1624,14 @@ void fight_on_frame(uint32_t f)
             /* the boot state is taken (at boot) and put back (after a reset) at
              * the same point: the title settled, right before start VS */
             fresh_take(f);
-            note("frame %u: start VS battle (func_0004E9DC(4, 3)) from the title mode", f);
-            gcall(kFnStartGame, 4, 3);
+            note("frame %u: start %s from the settled title", f, g_practice_requested ? "Practice" : "VS battle");
+            gcall(kFnStartGame, g_practice_requested ? 10 : 4, g_practice_requested ? 1 : 3);
             g_fresh = true;
             g_game_seen = false;
             if (g_ctl) {
-                if (g_pending_cmd && !g_cmd_rematch) start_session_fight(f);
+                if (g_practice_requested) {
+                    begin_practice(f);
+                } else if (g_pending_cmd && !g_cmd_rematch) start_session_fight(f);
                 else set_phase(Ph::Neutral, "neutral", f);
             } else if (!g_cfg.valid && !read_fight_file(g_cfg)) {
                 set_phase(Ph::Neutral, "neutral", f);
@@ -1812,6 +1852,7 @@ void fight_on_frame(uint32_t f)
         break;
     case Ph::Neutral:
         if (g_ctl) {
+            if (g_practice_requested) { go_reset(f); break; }
             if (!g_pending_cmd) break;
             if (g_cmd_rematch) { if (select_live()) start_rematch(f); }
             else if (g_fresh || !g_reset_titles) { if (select_live()) start_session_fight(f); }
@@ -1822,6 +1863,26 @@ void fight_on_frame(uint32_t f)
             if (mode == kModeSelect) begin_select(f);
             else note("frame %u: fight requested but the game is in mode %u", f, mode);
         }
+        break;
+    case Ph::PracticeLoad:
+        /* Use the game's Practice select flow (P1 selects player, dummy and
+         * stage). No VS setup, simulation rules or replay bookkeeping here.
+         * Release as soon as the fight loads, so Cross never leaks into play. */
+        if (mode == kModeGame) {
+            if (rd32(kConfig) == 10 && rd32(kSelectState) == 17) {
+                for (int p = 0; p < 2; ++p) { g_press[p].active = false; inject(p, false, 0); }
+                g_held = false; g_fresh = false;
+                note("frame %u: offline Practice ready: type=10 phase=17 (local pads, no session)", f);
+                set_phase(Ph::Offline, "practice", f);
+            }
+        } else if (mode == kModeSelect && mode_next() == kModeNone &&
+                   f >= g_ph_frame + 30 && (f - g_ph_frame) % 30 == 0 && press_idle(0)) {
+            press(0, B_CROSS, f);
+        }
+        break;
+    case Ph::Offline:
+        /* Free local play. An accepted match is handled by persistent_frame
+         * above, which leaves through select -> title -> fresh_restore. */
         break;
     case Ph::Reset:
         /* Towards a fresh select screen, whatever the last opponent left
@@ -1856,7 +1917,7 @@ void fight_on_frame(uint32_t f)
             if (g_mode_asked && !g_game_seen) {             /* the select restart is under way */
                 /* a new select mode (the manager built it) going through its set-up */
                 if (sel < 3 && (g_restart_inplace || rd32(mode_manager() + kMgrModeObj) != g_restart_obj)) g_restart_low = true;
-                if (g_restart_low && select_live()) {
+                if (g_restart_low && (g_practice_requested ? (rd32(kConfig) == 10 && sel >= 3 && rd8(rec(0) + kRecState) == 3) : select_live())) {
                     note("frame %u: select screen restarted (%u in this game)", f, ++g_restarts);
                     g_fresh = true;
                     reset_done(f);
@@ -1870,7 +1931,7 @@ void fight_on_frame(uint32_t f)
                     g_mode_asked = true;
                     gcall(kFnModeRequest, kModeTitle, 0);
                     note("frame %u: to the title for a fresh select screen (mode request 1)", f);
-                } else if (g_fresh) {                       /* entered from the title, untouched: wait for its records */
+                } else if (g_fresh && !g_practice_requested) { /* Practice needs its own select config */
                     if (select_live()) {
                         note("frame %u: the select screen is fresh already (no fight since the title)", f);
                         reset_done(f);
@@ -1923,6 +1984,12 @@ bool fight_configured() { return g_configured; }
 
 /* tests (T5_NET_SCRIPT_FIGHT): the scripted fight input applies only in a fight */
 extern "C" int t5_df_in_fight(void) { return df::g_ph == df::Ph::Fight ? 1 : 0; }
+
+/* Host policy only: permits local pads/tools before a persistent netplay
+ * session, and becomes false before any reset or session setup is performed. */
+extern "C" int t5_df_offline_practice(void) {
+    return df::g_ctl && !df::g_session && df::g_ph == df::Ph::Offline && !df::g_pending_cmd;
+}
 /* Host-only presentation query: safe on a renderer thread, including boot. */
 extern "C" int t5_df_boot_cover(void) { return df::g_boot_cover.load(std::memory_order_relaxed); }
 /* the fight's rules (match_rules.h MatchRules::pack), latched at FIGHT START: the training rule in t5_hooks.cpp */

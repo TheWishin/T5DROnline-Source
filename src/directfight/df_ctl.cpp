@@ -12,8 +12,10 @@
  *              "T5_NET_RESULT_FILE": "...", "T5_HUD_NAMES": "A|B", "T5_HUD_RANKS": "11,3"}}
  *     {"seq": 4, "cmd": "idle"}     end the session (frees the UDP port), back to the select screen
  *     {"seq": 5, "cmd": "quit"}     exit
+ *     {"seq": 6, "cmd": "practice"} offline Practice before/during search;
+ *                                  state "practice" means live local play
  *   <dir>/state.json  game -> launcher, replaced atomically on every change
- *     {"ctl": 1, "seq": <last command taken>, "state": "boot|idle|connecting|loading|fight|result|error",
+ *     {"ctl": 1, "seq": <last command taken>, "state": "boot|idle|practice|connecting|loading|fight|result|error",
  *      "match": ..., "error": ..., "session": n, "frame": f}
  *
  * A "fight" sets up netplay from its env exactly as if those variables had been

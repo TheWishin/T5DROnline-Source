@@ -436,12 +436,13 @@ class OnlineTab:
         me = self.client.me if self.client and self.client.connected else None
         st = (me or {}).get("status")
         guest = (me or {}).get("guest", True)
+        preparing = bool(getattr(self.driver, "_practice_wait", None))
         busy = self.match is not None or (self.driver is not None and self.driver.ticket is not None) or \
-            self.set_bar is not None          # between two games of a ranked set: the next one comes by itself
+            self.set_bar is not None or preparing
         on = {
             "quick": me and st == "idle" and not busy,
             "ranked": me and st == "idle" and not busy and not guest,
-            "cancel": me and st == "queue",
+            "cancel": me and (st == "queue" or preparing),
             "room": me and st == "idle" and not busy,
             "join": me and st == "idle" and not busy,
             "leave": me and st == "room" and not busy,
@@ -1309,9 +1310,24 @@ class OnlineTab:
         fn = c.ranked_match if mode == "ranked" else c.quick_match
         opts = tk_search.options(self.cfg) if c.has_feature("mm_filters") else None    # (search options)
         on = tk_search.summary(self.cfg) if opts else ""
-        self.call(lambda: fn(*args, options=opts),
-                  then=lambda _r: self._queue_status(self._searching_text(mode, strict) +
-                                                     (" " + t("Search options: {options}.", options=on) if on else "")))
+        def search():
+            if self.client is not c or self._closed:
+                return
+            self.call(lambda: fn(*args, options=opts),
+                      then=lambda _r: self._queue_status(self._searching_text(mode, strict) +
+                                                         (" " + t("Search options: {options}.", options=on) if on else "")))
+        if self.driver is not None:
+            self.driver.start_queueplay(self._char_key(), search)
+        else:
+            search()
+        self._set_actions()
+
+    def do_cancel_queue(self):
+        if self.driver is not None:
+            self.driver.cancel_queueplay_search()
+        if self.client is not None:
+            self.call(self.client.cancel_queue)
+        self._set_actions()
 
     def do_search_options(self):
         self.search.open()
@@ -2252,6 +2268,17 @@ class OnlineTab:
             self._save_cfg()
         if k == "status":
             self.status(n["text"])
+            self._set_actions()
+        elif k == "challenger_vote":
+            if self.match is not None and self.match.get("match") == n.get("match"):
+                self.ready_sent = bool(n.get("accept"))
+                self.show_bar(t("waiting for the opponent...") if self.ready_sent else self.bar_text.get(), [])
+        elif k == "challenger_vote_rejected":
+            if (self.match is not None and self.match.get("match") == n.get("match")
+                    and self.ready_deadline is not None and time.monotonic() < self.ready_deadline):
+                self.ready_sent = False
+                self.show_bar(self._ready_text(), [(t("Accept"), lambda: self._ready(True), "cross"),
+                                                   (t("Decline"), lambda: self._ready(False), "circle")])
         elif k == "firewall_suspect":
             self._fw_saw(n.get("reason") or "no_peer")    # the game heard nothing at all from its opponent
         elif k == "game_state":
@@ -2560,9 +2587,14 @@ class OnlineTab:
         m = self.match
         if not m:
             return
+        drv = self.driver
+        if drv is not None and getattr(drv, "_challenger", None) is not None:
+            if not drv.challenger_ready(accept):
+                return
+        else:
+            self.call(self.client.ready, accept, m["match"])
         self.ready_sent = bool(accept)
         self.show_bar(self.bar_text.get() + (" -- " + t("waiting for the opponent...") if accept else ""), [])
-        self.call(self.client.ready, accept, m["match"])
 
     def _show_lag(self, ev):
         """After a match: ping X should mean Y frames behind, it was Z -- and a way out when it was worse."""

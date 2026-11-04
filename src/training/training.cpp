@@ -54,6 +54,7 @@ extern "C" void rsx_live_draw_sync(void);       /* patch 0067: drain a handed-of
 extern "C" int t5_netplay_enabled(void);       /* src/netplay/t5_hooks.cpp */
 extern "C" int t5_netplay_local_slot(void);
 extern "C" int t5_df_boot_cover(void);         /* host-only presentation state; no guest access */
+extern "C" int t5_df_offline_practice(void);   /* persistent game's local Practice, before any online reset */
 extern "C" int t5_practice_on(void);                                   /* practice.cpp: the practice tools */
 extern "C" int t5_practice_status(char* out, unsigned n, int de);      /* ... their status line ("" = none) */
 extern "C" int t5_practice_menu_open(void);                            /* ... the practice menu is open (1.2.1) */
@@ -627,7 +628,7 @@ static bool frame_body()
      * the netplay subsystem. Shadow-eligible launches always take this query;
      * launches which skip it are independently excluded by shadow_allowed. */
     const bool netplay = !g_cfg.local_net && !g_cfg.online_game && t5_netplay_enabled() != 0;
-    const bool online = !g_cfg.local_net && (g_cfg.online_game || netplay);
+    const bool online = !g_cfg.local_net && !t5_df_offline_practice() && (g_cfg.online_game || netplay);
     const bool fight = phase == 17 && gt != kGtDemo;
     if (!fight) {
         shadow_reset("outside-fight");

@@ -2930,3 +2930,10 @@ MESSAGES = {
     "For an incoming challenge or invite when you are in another window. The announcer is read from your own game (after BUILD GAME); without it the chime plays. Your own sound: a WAV file of at most 5 seconds and 2 MB, copied into the launcher's folder.": "Pour un défi ou une invitation reçue quand tu es dans une autre fenêtre. L'annonceur est lu dans ton propre jeu (après BUILD GAME) ; sans lui, le carillon retentit. Ton propre son : un fichier WAV de 5 secondes et 2 Mo au plus, copié dans le dossier du launcher.",
     "For a found match or tournament set when you are in another window. The announcer is read from your own game (after BUILD GAME); without it the beep plays. Your own sound: a WAV file of at most 5 seconds and 2 MB, copied into the launcher's folder.": "Pour un match trouvé ou un set de tournoi quand tu es dans une autre fenêtre. L'annonceur est lu dans ton propre jeu (après BUILD GAME) ; sans lui, c'est le bip. Ton propre son : un fichier WAV de 5 secondes et 2 Mo au plus, copié dans le dossier du launcher.",
 }
+
+# Practice while searching.
+MESSAGES.update({
+    "NEW CHALLENGER": "NOUVEAU CHALLENGER",
+    "Starting Practice before searching...": "Démarrage de la pratique avant la recherche...",
+    "Practice could not start; search was not started.": "Impossible de démarrer la pratique ; la recherche n’a pas commencé.",
+})

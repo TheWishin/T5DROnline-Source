@@ -745,6 +745,44 @@ a persistent game runs on its real clock (no effect on the fight state seen).
 A peer must run the same build (the build id check makes sure): the end of the
 loading is a sync point only from this build on.
 
+## Practice while searching (queueplay)
+
+Quick and ranked searches in a queueplay-capable persistent game first send
+`{"seq": N, "cmd": "practice"}`. The launcher joins the queue only after
+`state.json` acknowledges that sequence with `state: "practice"`. This means
+the native Practice game is loaded (game type 10, fight phase 17), not merely
+that the command was read. Older runtimes keep their existing search flow.
+
+The settled title still supplies the boot-state copy. The driver then starts
+the game's own Practice mode and confirms its native player/dummy/stage
+selection with P1's Cross. This initial version uses the game's initial
+Practice cursors; the optional `T5_FIGHT` in a `practice` command is reserved
+and does not select the offline fighters. The online match still uses its
+normal agreed fight line. Practice runs freely with local pads, START and the
+offline Practice tools; it creates no online session or replay frames.
+
+A found opponent leaves Practice running. The launcher publishes a
+`kind: "challenger"` prompt over the existing generation/session-bound
+`T5_UI_DIR` channel. `df_ui.cpp` draws NEW CHALLENGER through the existing
+`rsx_overlay` layer (runtime patches 0045/0089/0115); no renderer fork or
+external art is needed. Cross/A accepts, Circle/B declines, with at most a
+15-second countdown. The existing release/700 ms arming rule prevents a
+held attack from accepting. Offline gameplay pads are suppressed while the
+panel is visible and until the answering button releases. An expired offer
+never accepts itself. An unhealthy/unavailable overlay falls back to the
+launcher's ready bar. Decline, timeout and search cancellation leave the
+offline process open.
+
+Only the lobby's authorized `match_start` sends `fight`. It clears the local
+Practice policy before leaving the fight, and reuses the existing
+leave -> select -> title -> boot-state restore -> VS select -> session path
+described below. The Practice game never increments the session's match or
+replay ordinal. The online keyread/START policy is restored by session setup.
+Repeated searches and commands do not add a second title visit after a fight.
+
+The local proof tool, required zero-mismatch/replay criteria and exact
+rollback/lockstep runs are in [QUEUEPLAY_PROOF.md](QUEUEPLAY_PROOF.md).
+
 ## After a session ends (reset-fix, 2026-10-17)
 
 Release dry run of 0.1.6 (persistent game, rollback, a PC loaded by other

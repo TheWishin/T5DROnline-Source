@@ -30,6 +30,7 @@ class StaleUIExpiryTest(unittest.TestCase):
         self.driver._ui_labels = {}
         self.driver._ui_was_active = False
         self.driver._rq = None
+        self.driver._challenger = None
         self.driver.match_ev = {"opponent": {"name": "Bob"}}
         self.driver.session_ticket = None
         self.driver.rematch_sent, self.driver.rematch_declined = set(), set()

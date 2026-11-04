@@ -88,6 +88,11 @@ class PracticeMenuGateTest(unittest.TestCase):
     def test_menu_shown_only_in_practice(self):
         self.assertRegex(self.src, r"int t5_practice_menu_open\(void\)\s*\{\s*return g_cfg\.on && g_in_practice && "
                                    r"g_menu\.open\(\) \? 1 : 0;")
+        # The persistent game's Practice is local until the fight/reset command;
+        # genuine online play still goes through the online restrictions.
+        self.assertRegex(self.training,
+                         r"const bool online = !g_cfg\.local_net && !t5_df_offline_practice\(\) && "
+                         r"\(g_cfg\.online_game \|\| netplay\);")
         # training.cpp draws it only offline, in Practice
         self.assertRegex(self.training, r"const bool menu = !online && gt == kGtPractice && t5_practice_menu_open\(\);")
         draw = self.src.split("void t5_practice_menu_draw(void)")[1]

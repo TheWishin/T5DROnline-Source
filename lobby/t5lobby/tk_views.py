@@ -788,7 +788,7 @@ class OnlineView:
         self.search_time.pack(anchor="e")
         ttk.Label(clock, text=t("Searching for").upper(), style="Card.Caps.TLabel").pack(anchor="e")
         b = ttk.Button(f, text=t("Stop searching"), style="Card.TButton", state="disabled",
-                       command=lambda: tab.call(tab.client.cancel_queue))
+                       command=tab.do_cancel_queue)
         b.grid(row=4, column=1, sticky="w", pady=(px(12), 0))
         tab.actions["cancel"], tab.action_text["cancel"] = b, t("Stop searching")
         return f
@@ -1474,7 +1474,7 @@ class OnlineView:
         if tab.spec.active:
             return "watch"
         me = tab.client.me or {}
-        if me.get("status") == "queue":
+        if me.get("status") == "queue" or getattr(drv, "_practice_wait", None):
             return "search"
         if self.result_info is not None and not self.result_dismissed:
             return "result"

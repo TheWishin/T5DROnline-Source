@@ -172,11 +172,19 @@ class PracticeGateTest(unittest.TestCase):
 
     def test_called_only_offline(self):
         calls = [ln.strip() for ln in self.hooks.splitlines() if "t5_practice_pads(" in ln and "extern" not in ln]
-        self.assertEqual(calls, ["t5_practice_pads(&m0, &m1);"])
-        body = self.hooks.split("void keyread_tick()")[1].split("\n}\n")[0]
-        self.assertRegex(body, r"if \(g_offline\) \{[^}]*t5_practice_pads\(&m0, &m1\);")
-        # online the ring is written in the same order as before
-        self.assertRegex(body, r"gcall\(kFnPortMask, 0\);\s*if \(!g_offline\) wr16\(kRing \+ slot, m0\);")
+        self.assertEqual(calls, ["t5_practice_pads(&m0, &m1);"] * 2)
+        body = code_only(self.hooks.split("void keyread_tick()")[1].split("\n}\n")[0])
+        self.assertIn("const bool offline_practice = g_persistent && !np::enabled() && t5_df_offline_practice();", body)
+        self.assertRegex(body, r"if \(g_offline \|\| offline_practice\) \{[^}]*t5_practice_pads\(&m0, &m1\);")
+        # A persistent game may clear its Practice menu/recorder during reset,
+        # after the offline-Practice query is false and before any session opens.
+        cleanup = body.split("else if (g_persistent && !np::enabled())")[1].split("}")[0]
+        self.assertEqual(cleanup.count("t5_practice_pads(&m0, &m1);"), 1)
+        self.assertNotIn("wr16(", cleanup)
+        # Genuine online input keeps the original P1-store/P2-read order.
+        online_store = body.index("if (!g_offline && !offline_practice) wr16(kRing + slot, m0);")
+        self.assertLess(body.index("gcall(kFnPortMask, 0)"), online_store)
+        self.assertLess(online_store, body.index("gcall(kFnPortMask, 1)"))
 
     def test_gate(self):
         gate = re.search(r"bool allowed\(\)\s*\{(.*?)\n\}", self.src, re.S)
@@ -184,6 +192,7 @@ class PracticeGateTest(unittest.TestCase):
         for need in ("g_cfg.on", "g_cfg.offline", "t5_netplay_enabled() == 0", "rd32(kGameType) == kGtPractice",
                      "rd32(kPhase) == 17"):
             self.assertIn(need, gate.group(1))
+        self.assertIn("(!(ctl && *ctl) || t5_df_offline_practice())", gate.group(1))
         body = self.src.split("void t5_practice_pads(")[1]
         first = body.split("if (!allowed())")[0]
         self.assertNotRegex(first, r"\*p[12]\s*=|\bput\w*\(", "nothing changes before the gate")

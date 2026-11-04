@@ -2834,3 +2834,10 @@ MESSAGES = {
     "For an incoming challenge or invite when you are in another window. The announcer is read from your own game (after BUILD GAME); without it the chime plays. Your own sound: a WAV file of at most 5 seconds and 2 MB, copied into the launcher's folder.": "다른 창을 보고 있을 때 도전이나 초대를 받으면 울립니다. 아나운서 음성은 내 게임(BUILD GAME 이후)에서 읽으며, 없으면 차임이 울립니다. 내 사운드: 최대 5초, 2MB의 WAV 파일이며 런처 폴더에 복사됩니다.",
     "For a found match or tournament set when you are in another window. The announcer is read from your own game (after BUILD GAME); without it the beep plays. Your own sound: a WAV file of at most 5 seconds and 2 MB, copied into the launcher's folder.": "다른 창을 보고 있을 때 매치를 찾거나 토너먼트 세트가 준비되면 울립니다. 아나운서 음성은 내 게임(BUILD GAME 이후)에서 읽으며, 없으면 비프음이 납니다. 내 사운드: 최대 5초, 2MB의 WAV 파일이며 런처 폴더에 복사됩니다.",
 }
+
+# Practice while searching.
+MESSAGES.update({
+    "NEW CHALLENGER": "새로운 도전자",
+    "Starting Practice before searching...": "검색 전에 연습 모드를 시작하는 중...",
+    "Practice could not start; search was not started.": "연습 모드를 시작하지 못해 검색을 시작하지 않았습니다.",
+})

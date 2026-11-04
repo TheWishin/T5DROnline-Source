@@ -96,7 +96,7 @@ class DriverSourceTest(unittest.TestCase):
         m = re.search(r"void select_restart\(uint32_t f\)\s*\{(.*?)\n\}", self.src, re.S)
         self.assertIsNotNone(m, "select_restart() not found")
         body = m.group(1)
-        self.assertIn("gcall(kFnStartGame, 4, 3)", body)
+        self.assertIn("gcall(kFnStartGame, g_practice_requested ? 10 : 4, g_practice_requested ? 1 : 3)", body)
         self.assertIn("wr32(mgr + kMgrNext, kModeSelect)", body)
         self.assertIn("wr32(mgr + kMgrParam, 0)", body)
 

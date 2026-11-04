@@ -2857,3 +2857,10 @@ MESSAGES.update({
 })
 
 MESSAGES['This replay command is unavailable at the current frame.'] = '?? ?????? ? ???? ??? ??? ? ????.'
+
+# Practice while searching.
+MESSAGES.update({
+    "NEW CHALLENGER": "새로운 도전자",
+    "Starting Practice before searching...": "검색 전에 연습 모드를 시작하는 중...",
+    "Practice could not start; search was not started.": "연습 모드를 시작하지 못해 검색을 시작하지 않았습니다.",
+})

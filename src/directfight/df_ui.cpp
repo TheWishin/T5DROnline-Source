@@ -1,4 +1,4 @@
-/* The in-game question after a casual match (docs/REMATCH_1.2.0.md): host state only. A worker owns all UI file
+/* The in-game challenger and question after a casual match (docs/REMATCH_1.2.0.md): host state only. A worker owns all UI file
  * traffic; the LIVE frame boundary copies its snapshot, peeks the local player's controller and publishes an
  * rsx_overlay layer. It never changes guest, input or netplay state: the presses it reads are peeked, never
  * consumed, and the question is only shown and answered on this PC (the launcher sends the vote to the lobby). */
@@ -77,6 +77,8 @@ struct Host {
     std::thread worker;
     /* live thread owns these */
     ui::Menu menu;
+    ui::OfflineCapture capture;
+    std::atomic<bool> block_offline{false};
     bool shown=false;
     uint64_t supported_rev=0; bool supported_ok=false;
     uint64_t drawn_sig=~0ull;
@@ -209,6 +211,8 @@ void draw(Host& h,uint64_t now) {
     const bool locked=h.menu.locked(now), waiting=h.menu.waiting();
     const uint64_t sig=(p.rev<<20)^((uint64_t)seconds<<10)^((uint64_t)bar_step<<2)^(locked?2u:0u)^(waiting?1u:0u);
     if(h.shown&&sig==h.drawn_sig) return;                    /* nothing on screen changed */
+    const bool challenger=p.kind=="challenger";
+    const uint32_t accent=challenger?RSX_OVL_RGBA(110,200,255,255):RSX_OVL_RGBA(255,214,72,255);
     rsx_overlay_begin_layer(1);
     if(p.kind=="notice") {
         /* Final match notices use the runtime overlay, never a separate native window.
@@ -217,9 +221,10 @@ void draw(Host& h,uint64_t now) {
         line(p.body,184,338,2.0f,RSX_OVL_RGBA(245,245,245,255),912);
         rsx_overlay_end(); h.shown=true; h.drawn_sig=sig; return;
     }
+    if(challenger) rsx_overlay_rect(0,0,1280,720,RSX_OVL_RGBA(0,0,0,72));
     rsx_overlay_rect(kPanelX,kPanelY,kPanelW,kPanelH,RSX_OVL_RGBA(8,10,18,248));
-    rsx_overlay_rect(kPanelX,kPanelY,kPanelW,4,RSX_OVL_RGBA(255,214,72,255));
-    line(p.title,kLeft,kPanelY+20,3.0f,RSX_OVL_RGBA(255,214,72,255),kTextW-90);
+    rsx_overlay_rect(kPanelX,kPanelY,kPanelW,4,accent);
+    line(p.title,kLeft,kPanelY+20,3.0f,accent,kTextW-90);
     if(p.countdown_ms) {
         char timer[16]; snprintf(timer,sizeof timer,"%u",seconds);
         rsx_overlay_text(kPanelX+kPanelW-30,kPanelY+16,4.0f,seconds<=3?RSX_OVL_RGBA(255,110,110,255):
@@ -231,7 +236,7 @@ void draw(Host& h,uint64_t now) {
     if(p.countdown_ms&&p.total_ms) {
         rsx_overlay_rect(kLeft,kPanelY+172,kTextW,8,RSX_OVL_RGBA(55,58,72,255));
         rsx_overlay_rect(kLeft,kPanelY+172,kTextW*(float)bar_step/140.0f,8,
-                         seconds<=3?RSX_OVL_RGBA(255,110,110,255):RSX_OVL_RGBA(255,214,72,255));
+                         seconds<=3?RSX_OVL_RGBA(255,110,110,255):accent);
     }
     const float hy=kPanelY+206;
     const bool can_confirm=*p.mapped(ui::kConfirm)!=0, can_cancel=*p.mapped(ui::kCancel)!=0;
@@ -253,7 +258,7 @@ void ui_tick() {
     ++h.live;
     if(!capable) {
         /* (the launcher sees no fresh "ready" for this revision and asks in its own window instead) */
-        h.ready=false; h.menu.tick(0,false,now);
+        h.ready=false; h.menu.tick(0,false,now); h.capture.reset(); h.block_offline=false;
         if(h.shown) rsx_overlay_clear_layer(1);
         h.shown=false; h.drawn_sig=~0ull; return;
     }
@@ -261,8 +266,9 @@ void ui_tick() {
      * switch (or none) makes a held button count only after it was let go. */
     HostPadData pad{};
     bool fresh=true;
-    if(h.menu.visible(now)) fresh=t5_local_player_pad_ui(&pad)==0;
+    if(h.menu.visible(now)||h.capture.held()) fresh=t5_local_player_pad_ui(&pad)==0;
     const uint16_t buttons=fresh?(uint16_t)((pad.button[2]&255)|((pad.button[3]&255)<<8)):0;
+    h.block_offline=h.capture.tick(h.menu.visible(now)&&p.kind=="challenger",buttons,fresh);
     if(h.menu.visible(now)&&p.prompt!=h.logged_prompt) {
         h.logged_prompt=p.prompt;
         note("in-game question shown: %s for match %s (%llu ms, buttons %s)",p.kind.c_str(),p.match.c_str(),
@@ -275,9 +281,10 @@ void ui_tick() {
     draw(h,now);
     h.rendered=h.menu.prompt().rev; h.ready=true;
 }
+bool ui_blocks_offline_pad() { return host().block_offline.load(std::memory_order_relaxed); }
 void ui_invalidate() {
     Host& h=host(); if(!h.enabled) return;
-    h.menu.invalidate(); h.ready=false;
+    h.menu.invalidate(); h.ready=false; h.capture.reset(); h.block_offline=false;
     if(h.shown) rsx_overlay_clear_layer(1);
     h.shown=false; h.drawn_sig=~0ull;
 }

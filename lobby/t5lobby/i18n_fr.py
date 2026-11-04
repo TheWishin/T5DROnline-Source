@@ -2952,3 +2952,10 @@ MESSAGES.update({
 })
 
 MESSAGES['This replay command is unavailable at the current frame.'] = 'Cette commande de replay est indisponible ? l?image actuelle.'
+
+# Practice while searching.
+MESSAGES.update({
+    "NEW CHALLENGER": "NOUVEAU CHALLENGER",
+    "Starting Practice before searching...": "Démarrage de la pratique avant la recherche...",
+    "Practice could not start; search was not started.": "Impossible de démarrer la pratique ; la recherche n’a pas commencé.",
+})

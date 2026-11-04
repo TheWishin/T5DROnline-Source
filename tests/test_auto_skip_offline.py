@@ -58,7 +58,9 @@ class GameSide(unittest.TestCase):
         m = re.search(r"void keyread_tick\(\)\n\{(.*?)\n\}", src, re.S)
         self.assertTrue(m)
         body = m.group(1)
-        branch = re.search(r"if \(g_offline\) \{(.*?)\n    \}", body, re.S)
+        self.assertIn(
+            "const bool offline_practice = g_persistent && !np::enabled() && t5_df_offline_practice();", body)
+        branch = re.search(r"if \(g_offline \|\| offline_practice\) \{(.*?)\n    \}", body, re.S)
         self.assertTrue(branch)
         self.assertIn("offline_auto_skip(m0, m1);", branch.group(1))
         self.assertEqual(body.count("offline_auto_skip("), 1)

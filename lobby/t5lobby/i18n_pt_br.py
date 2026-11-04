@@ -2911,3 +2911,10 @@ MESSAGES.update({
 })
 
 MESSAGES['This replay command is unavailable at the current frame.'] = 'Este comando do replay n?o est? dispon?vel no quadro atual.'
+
+# Practice while searching.
+MESSAGES.update({
+    "NEW CHALLENGER": "NOVO DESAFIANTE",
+    "Starting Practice before searching...": "Iniciando o treino antes da busca...",
+    "Practice could not start; search was not started.": "Não foi possível iniciar o treino; a busca não foi iniciada.",
+})

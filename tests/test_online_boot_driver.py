@@ -64,8 +64,12 @@ class OnlineBootDriverTest(unittest.TestCase):
         title = re.search(r"case Ph::Title:(.*?)case Ph::Select:", self.src, re.S).group(1)
         self.assertIn("mode_next() != kModeNone", title)
         self.assertIn("f >= g_title_seen + 30", title)
+        # Queueplay selects native Practice (10, 1); online VS keeps (4, 3).
+        # Both modes must wait for the same title/save/reader barriers.
+        start = "gcall(kFnStartGame, g_practice_requested ? 10 : 4, g_practice_requested ? 1 : 3)"
+        self.assertIn(start, title)
         for check in ("autosave_running()", "!reader_idle()", "fresh_restore(f)", "fresh_take(f)"):
-            self.assertLess(title.index(check), title.index("gcall(kFnStartGame, 4, 3)"))
+            self.assertLess(title.index(check), title.index(start))
         wait = re.search(r"case Ph::WaitGame:(.*?)case Ph::Fight:", self.src, re.S).group(1)
         self.assertIn("rd32(kSelectState) < 7", wait)
         self.assertLess(wait.index("rd32(kSelectState) < 7"), wait.index("t5_netplay_start()"))

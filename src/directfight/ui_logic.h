@@ -141,6 +141,20 @@ public:
 };
 inline bool parse_prompt(const std::string& text, Prompt& out) { Prompt p; if(!Reader(text).parse(p)) return false; out=p; return true; }
 
+/* Offline challenger buttons belong to the question. Keep the game neutral until
+ * the answering button is released, including when the launcher hides the prompt. */
+class OfflineCapture {
+    bool held_ = false;
+public:
+    bool held() const { return held_; }
+    void reset() { held_ = false; }
+    bool tick(bool challenger, uint16_t buttons, bool fresh) {
+        if (challenger) held_ = true;
+        else if (fresh && !buttons) held_ = false;
+        return held_;
+    }
+};
+
 class Menu {
     Prompt p_; Action pending_; uint64_t seq_=0, start_ms_=0; bool armed_=false, focused_=false;
     uint16_t previous_=0;

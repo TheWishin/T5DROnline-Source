@@ -55,6 +55,11 @@ poll() a few times a second and shows the notes it gets back:
     {"t": "driver", "kind": "rematch_offer", "match": id, "opponent": name, "timeout": s}
     {"t": "driver", "kind": "set_next", "match": id, "set": {...}}         a ranked set goes on by itself
     {"t": "driver", "kind": "game_closed"}
+
+Queueplay-capable persistent builds start Practice through start_queueplay before the queue request is
+sent. The native Practice-ready state releases that request from poll. match_found preserves Practice
+and offers a 15-second challenger question through IngameUI; ready votes go to the lobby, and only its
+match_start sends the normal fight command. Decline, timeout and queue cancellation leave Practice open.
 """
 import functools
 import json
@@ -85,6 +90,7 @@ def game_files(out):
 PICK_MARKER = b"T5_DF_PICK"     # a game build with the in-game select (src/directfight, docs/DIRECTFIGHT.md)
 RULES_MARKER = b"T5_DF_RULES"   # a game build with training rooms and the health handicap (src/netplay/match_rules.h)
 INGAME_UI_MARKER = b"T5_INGAME_REMATCH"
+QUEUEPLAY_MARKER = b"T5_QUEUEPLAY"
 AUTO_SKIP_MARKER = b"T5_AUTO_SKIP_AFTER_ROUND"
 AUTO_SKIP_INTRO_MARKER = b"auto_skip_intro="   # 1.2.0: a game build that skips the intros by the fight line's rule
 LIFE150_MARKER = b'"life_max": 150'   # 1.1.7: a game build that plays a health handicap up to 150 % (df_fight.cpp status)
@@ -386,6 +392,10 @@ def game_supports_ingame_ui(paths):
     return _has_marker(paths, INGAME_UI_MARKER)
 
 
+def game_supports_queueplay(paths):
+    return _has_marker(paths, QUEUEPLAY_MARKER)
+
+
 game_supports_ingame_rematch = game_supports_ingame_ui
 
 
@@ -452,7 +462,7 @@ def _scan_for(paths, marker):
 class MatchDriver:
     def __init__(self, client, launch, workdir, table=None, mode="auto", game_files=(), extra_env=None,
                  ask_manual=True, auto_rematch=0, fight_env=True, async_calls=False, input_delay=None,
-                 always_left=None, ingame_rematch=None, screen_side=None):
+                 always_left=None, ingame_rematch=None, screen_side=None, queueplay=None):
         """client: LobbyClient. launch(env) -> game handle (.running(), .stop(), .proc, .log_path) or
         None. workdir: where result files and the control channel live. mode: auto | process |
         persistent. game_files: binaries to check for the control channel (mode auto).
@@ -478,6 +488,10 @@ class MatchDriver:
         if mode == "auto":
             mode = "persistent" if game_supports_control(game_files) else "process"
         self.mode = mode
+        self.queueplay = game_supports_queueplay(game_files) if queueplay is None else bool(queueplay)
+        self._practice_wait = None    # command sequence, deadline, search callback (owned by poll/UI thread)
+        self._practicing = False
+        self._challenger = None       # local ready question; the lobby still authorizes every match
         self.extra_env = dict(extra_env or {})
         self.ingame_rematch = ingame_rematch_wanted() if ingame_rematch is None else bool(ingame_rematch)
         self._auto_skip_supported = game_supports_auto_skip(game_files)
@@ -557,6 +571,9 @@ class MatchDriver:
 
     def stop_game(self):
         self._return = None
+        self._practice_wait = None
+        self._practicing = False
+        self._challenger = None
         if self.ui is not None:
             self.ui.close()
             self.ui = None
@@ -680,9 +697,14 @@ class MatchDriver:
         self._rq_event(ev)
         if kind == "match_found":
             self._hold_until = None
-            if not ev.get("keep"):
+            if self._practicing and (ev.get("blind") or ev.get("ready_check")):
+                self._offer_challenger(ev)
+            elif not ev.get("keep"):
                 self._release_game()
         elif kind == "match_start":
+            self._end_challenger()
+            self._practice_wait = None
+            self._practicing = False
             if ev.get("ticket") is not None or ev.get("continue"):
                 self._start(ev)
         elif kind == "match_result":
@@ -711,7 +733,14 @@ class MatchDriver:
                 self._queue_return(ev, opponent_left=self._opponent_left(ev))
         elif kind == "disconnected":
             self.ticket = None
+            self._practice_wait = None
+            self._end_challenger()
             self._queue_return(ev)
+        elif kind == "match_cancel":
+            self._end_challenger()
+        elif kind == "match_reveal":
+            if self._challenger is not None and self.ui is not None:
+                self.ui.update(actions=[], countdown=None)
 
     @staticmethod
     def _opponent_left(ev):
@@ -758,6 +787,110 @@ class MatchDriver:
     def _watch_return(self):
         if self._return is not None and time.monotonic() >= self._return[1]:
             self._finish_return(self._return[0])
+
+    def start_queueplay(self, fighter, ready):
+        """Start Practice before joining a queue. Old builds keep their existing launcher flow.
+
+        ready is called by poll only after the game reports actual Practice, never just a command ACK.
+        A failed boot leaves the search stopped; retrying is an explicit new search action.
+        """
+        if self.mode != "persistent" or not self.queueplay:
+            ready()
+            return
+        if self.ticket is not None:
+            return
+        # A new search replaces the previous match's delayed return notice, including
+        # when Practice can reuse the same game and stop_game is not called.
+        self._cancel_return()
+        self._end_challenger()
+        self._rq_end(fallback=False)
+        self._hold_until = None
+        # The UI channel is fixed at process boot. A game started with rematch UI off must be replaced
+        # before it can show a challenger; attaching files alone cannot add its generation/session.
+        booting = not self.game_running() or self.ui is None
+        if booting:
+            self.stop_game()
+            self.session = "queueplay"
+            self.ctl = Control(os.path.join(self.workdir, "ctl"))
+            self.ui = IngameUI(os.path.join(self.workdir, "ui"), self.session)
+            self.result_path = os.path.join(self.workdir, "result-queueplay.json")
+            self.fight_path = os.path.join(self.workdir, "fight-queueplay.txt")
+            self.status_path = os.path.join(self.workdir, "status-queueplay.json")
+        selected = self.table.fighter(fighter) or self.table.fighter("jin")
+        fid = selected["id"] if selected else 9
+        practice_env = {"T5_FIGHT": f"{fid},33,20,3", "T5_DF_STATUS_FILE": self.status_path}
+        seq = self.ctl.send("practice", env=practice_env)
+        self.ctl_wait = None
+        self._practicing = False
+        self._practice_wait = (seq, time.monotonic() + CTL_ACK_BOOT_SECONDS, ready)
+        self.released = True
+        if booting:
+            env = dict(self.extra_env, T5_CTL_DIR=self.ctl.dir, T5_QUEUEPLAY="1")
+            env.update(self.ui.environment())
+            self.game = self.launch(env)
+            self.glog = GameLog(getattr(self.game, "log_path", None))
+        self.status(t("Starting Practice before searching..."))
+
+    def cancel_queueplay_search(self):
+        """Cancel a search that is still waiting for Practice; leave the offline game running."""
+        self._practice_wait = None
+
+    def _watch_practice(self):
+        waiting = self._practice_wait
+        if waiting is None:
+            return
+        state = self.ctl.state() if self.ctl is not None else None
+        if (self.game_running() and isinstance(state, dict) and type(state.get("seq")) is int
+                and state["seq"] >= waiting[0] and state.get("state") == "practice"):
+            self._practice_wait = None
+            self._practicing = True
+            waiting[2]()
+        elif not self.game_running() or time.monotonic() >= waiting[1] or (state or {}).get("state") == "error":
+            self._practice_wait = None
+            self.status(t("Practice could not start; search was not started."))
+
+    def _offer_challenger(self, ev):
+        self._end_challenger()
+        if self.ui is None or not self.game_running():
+            return
+        seconds = min(15.0, _ui_seconds(ev.get("ready_timeout", 15)) or 15.0)
+        self._challenger = {"match": ev["match"], "ends": time.monotonic() + seconds,
+                            "offered_at": time.monotonic(), "fallback": False, "sent": False}
+        self.ui.offer(ev["match"], "challenger", ["accept", "decline"], seconds,
+                      {"title": t("NEW CHALLENGER"), "body": t("Opponent found"),
+                       "confirm": t("Accept"), "cancel": t("Decline"),
+                       "waiting": t("waiting for the opponent..."),
+                       **{k: self._ui_labels[k] for k in ("key_confirm", "key_cancel") if k in self._ui_labels}},
+                      countdown=seconds)
+
+    def _end_challenger(self):
+        if self._challenger is not None and self.ui is not None:
+            self.ui.hide()
+        self._challenger = None
+        self._ui_was_active = False
+
+    def challenger_ready(self, accept, action=None):
+        """Reserve one vote from either UI, so the pad and launcher cannot submit it twice."""
+        q = self._challenger
+        if q is None or q["sent"] or time.monotonic() >= q["ends"]:
+            return False
+        q["sent"] = True
+        if self.ui is not None:
+            self.ui.update(actions=[])
+            if accept:
+                self.ui.waiting()
+        args = (bool(accept), q["match"])
+        # Both interfaces share the reservation and completion path. Launcher votes use sequence 0
+        # (not a game action); complete(0) cannot acknowledge an outstanding real pad sequence.
+        call_args = (self._ui_completions, self.ui, action["seq"] if action else 0,
+                     action["prompt"] if action else self.ui.document["prompt"],
+                     "accept" if accept else "decline", self.notes, self.client.ready, args, q["match"])
+        if self.async_calls:
+            threading.Thread(target=_ingame_call, args=call_args, daemon=True).start()
+        else:
+            _ingame_call(*call_args)
+        self.note("challenger_vote", match=q["match"], accept=bool(accept))
+        return True
 
     def _release_game(self):
         """A new opponent: the old game session cannot be reused in process mode."""
@@ -1037,16 +1170,16 @@ class MatchDriver:
     @property
     def ingame_ui_active(self):
         """The game shows the rematch question (the launcher stays behind it)."""
-        q = self._rq
+        q = self._challenger or self._rq
         return bool(q is not None and not q.get("fallback") and self.game_running() and self.ui is not None
                     and self.ui.active)
 
     @property
     def ingame_ui_pending(self):
         """A question was handed to the game a moment ago and it has not said yet that it shows it."""
-        q = self._rq
+        q = self._challenger or self._rq
         return bool(q is not None and not q.get("fallback") and self.game_running() and self.ui is not None
-                    and self.ui.healthy and not self.ui.active
+                    and (self._challenger is not None or self.ui.healthy) and not self.ui.active
                     and time.monotonic() - q["offered_at"] < HEALTH_SECONDS)
 
     def ingame_labels(self, labels):
@@ -1241,6 +1374,13 @@ class MatchDriver:
         if channel is None:
             return
         sequence, name, mid = action["seq"], action["action"], action["match"]
+        challenger = self._challenger
+        if challenger is not None:
+            valid = (challenger["match"] == mid and action.get("prompt") == channel.document.get("prompt")
+                     and mid == channel.document.get("match") and channel.active and name in ("accept", "decline"))
+            if not valid or not self.challenger_ready(name == "accept", action):
+                channel.complete(sequence, False)
+            return
         if (q is None or q["match"] != mid or action.get("prompt") != channel.document.get("prompt")
                 or mid != channel.document.get("match") or not channel.active or name not in self._rq_actions(q)
                 or (name == "accept" and mid in self.rematch_sent) or mid in self.rematch_declined):
@@ -1270,11 +1410,20 @@ class MatchDriver:
             return
         while True:
             try:
-                old_channel, sequence, prompt, name, success = self._ui_completions.get_nowait()
+                old_channel, sequence, prompt, name, success, completion_match = self._ui_completions.get_nowait()
             except queue.Empty:
                 break
-            failed_match = (old_channel.pending or {}).get("match")
+            failed_match = completion_match or (old_channel.pending or {}).get("match")
             old_channel.complete(sequence, success)
+            challenger = self._challenger
+            same_challenger = (challenger is not None and challenger["match"] == failed_match
+                               and old_channel is channel and prompt == channel.document.get("prompt"))
+            if success and name == "decline" and same_challenger:
+                channel.hide()
+            if not success and same_challenger and time.monotonic() < challenger["ends"]:
+                challenger["sent"] = False
+                channel.update({"status": ""}, actions=["accept", "decline"])
+                self.note("challenger_vote_rejected", match=challenger["match"])
             q = self._rq
             if not success and q is not None and q["match"] == failed_match and old_channel is channel:
                 # the lobby refused the vote (the window just closed, the opponent left): no rematch
@@ -1286,6 +1435,23 @@ class MatchDriver:
                 break
             if kind == "action":
                 self._dispatch_ingame_ui(value)
+        challenger = self._challenger
+        if challenger is not None:
+            now = time.monotonic()
+            active = self.ingame_ui_active
+            if active and not self._ui_was_active:
+                self.note("ingame_ui_ready", match=challenger["match"])
+            if not challenger["fallback"] and not active and (
+                    not self.game_running() or (self._ui_was_active and not channel.healthy)
+                    or now - challenger["offered_at"] >= HEALTH_SECONDS):
+                challenger["fallback"] = True
+                channel.hide()
+                self.note("ingame_ui_fallback", match=challenger["match"])
+            self._ui_was_active = active
+            if now >= challenger["ends"]:
+                # No implicit accept. The lobby owns ready_timeout and the cancellation verdict.
+                channel.hide()
+            return
         q = self._rq
         if q is None:
             return
@@ -1351,6 +1517,7 @@ class MatchDriver:
     # ------------------------------------------------------------------ polling
     def poll(self):
         """Call a few times a second. Returns the notes for the UI (list of dicts)."""
+        self._watch_practice()
         self._watch_ctl()
         self._watch_ingame_ui()
         self._watch_return()
@@ -1656,7 +1823,7 @@ def _ui_seconds(value):
     return min(120.0, seconds) if 0 < seconds <= 300 else None
 
 
-def _ingame_call(completions, channel, sequence, prompt, action, notes, fn, args):
+def _ingame_call(completions, channel, sequence, prompt, action, notes, fn, args, match_id=None):
     success = False
     try:
         fn(*args)
@@ -1664,7 +1831,7 @@ def _ingame_call(completions, channel, sequence, prompt, action, notes, fn, args
     except Exception as error:   # noqa: BLE001 -- rejected requests must be acknowledged too
         notes.put({"t": "driver", "kind": "status", "text": proto.scrub_addresses(
             t("Lobby: {message}", message=translate_message(getattr(error, "msg", "") or str(error))))})
-    completions.put((channel, sequence, prompt, action, success))
+    completions.put((channel, sequence, prompt, action, success, match_id))
 
 
 def _call_now(notes, fn, *args):

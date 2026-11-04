@@ -109,6 +109,7 @@ extern "C" void cellGcm_skip_ticks(int n);
 extern "C" int cellAtrac_rb_live_rings(uint32_t* ea, uint32_t* size, int cap);
 namespace rb { void rand_install(); void tls_rand_reseed(uint32_t tls_base, uint32_t seed, bool streams); }   /* rb_rand.cpp: the TLS random generator */
 
+extern "C" int t5_df_offline_practice(void);   /* persistent game: free offline play, no pending match */
 extern "C" int t5_df_in_fight(void);   /* src/directfight/df_fight.cpp (T5_NET_SCRIPT_FIGHT) */
 extern "C" void t5_df_frame_tick(ppu_context* ctx);   /* src/directfight/df_hooks.cpp: its frame hook, when no wait runs it */
 extern "C" int t5_df_game_mode(void);  /* src/directfight/df_fight.cpp: the game's mode manager is in the game mode */
@@ -892,12 +893,19 @@ void keyread_tick()
     if (rd32(kRingResetFlag)) gcall(kFnRingReset);
     const uint32_t slot = (rd32(kRingWriteIdx) & 15) * 2;
     uint16_t m0 = (uint16_t)gcall(kFnPortMask, 0);
-    if (!g_offline) wr16(kRing + slot, m0);
+    const bool offline_practice = g_persistent && !np::enabled() && t5_df_offline_practice();
+    if (!g_offline && !offline_practice) wr16(kRing + slot, m0);
     uint16_t m1 = (uint16_t)gcall(kFnPortMask, 1);
-    if (g_offline) {   /* offline only (never netplay, a replay or spectating): the practice tools, in Practice */
+    if (g_offline || offline_practice) {   /* never netplay, a replay or spectating */
+        if (offline_practice && df::ui_blocks_offline_pad()) m0 = m1 = 0;
         t5_practice_pads(&m0, &m1);
         offline_auto_skip(m0, m1);   /* T5_AUTO_SKIP_OFFLINE: START in the after-round parts */
+        if (offline_practice && df::ui_blocks_offline_pad()) m0 = m1 = 0;
         wr16(kRing + slot, m0);
+    } else if (g_persistent && !np::enabled()) {
+        /* Leave the host Practice menu/recording/delay state before resetting.
+         * Its allowed() gate is already false, so no scripted play can run. */
+        t5_practice_pads(&m0, &m1);
     }
     wr16(kRing + 0x20 + slot, m1);
     gcall(kFnRingAdvance);                       /* 0x12071C: write index++ */
@@ -2077,6 +2085,22 @@ void on_frame_start(ppu_context* ctx)
         if (!g_offline_seeded && g_main_tls) offline_seed();
         if (g_offline_fixed && ctx->thread_id == (g_main_tid != ~0ull ? g_main_tid : 1)) offline_pin();
         offline_frame(ctx);
+        return;
+    }
+    /* Practice before an opponent uses the same parked keyread thread as the
+     * next session. Its raw pads and menu are strictly local; no frame/hash is
+     * recorded or exchanged, and no per-session seed is installed. A fight
+     * command disables the query before the persistent reset begins. */
+    if (g_persistent && !np::enabled() && t5_df_offline_practice()) {
+        if (ctx->thread_id == (g_main_tid != ~0ull ? g_main_tid : 1)) {
+            np::set_no_start(false);   /* START belongs to offline Practice */
+            if (g_active.load()) {
+                g_cur[0] = np::poll_now(0);
+                g_cur[1] = np::poll_now(1);
+            }
+        }
+        offline_frame(ctx);
+        g_idle = g_active.load();
         return;
     }
     bool fresh_start = false, resume = false;

@@ -80,6 +80,30 @@ static void contexts() {
     CHECK(m.update(p,10,"launch","session")); CHECK(!m.tick(0,true,10+L)); CHECK(!m.tick(kConfirm,true,11+L));
     CHECK(!m.tick(0,true,12+L)); CHECK(m.tick(kCancel,true,13+L)); // server owns auto start, UI may only decline
 }
+static void challenger() {
+    Menu m; Prompt p=prompt(); p.kind="challenger";
+    p.remaining_ms=p.countdown_ms=p.total_ms=15000;
+    CHECK(m.update(p,100,"launch","session"));
+    CHECK(m.visible(100)&&m.countdown(100)==15000);
+    // A held Practice kick cannot accept the arriving offer.
+    CHECK(!m.tick(kConfirm,true,100+L)); CHECK(!m.tick(kConfirm,true,101+L));
+    CHECK(!m.tick(0,true,102+L)); CHECK(m.tick(kConfirm,true,103+L));
+    CHECK(m.pending().action=="accept");
+    CHECK(m.countdown(14100)==1000); CHECK(!m.visible(15100));
+    CHECK(!m.tick(kCancel,true,15101));
+    Menu decline; CHECK(decline.update(p,0,"launch","session"));
+    CHECK(!decline.tick(0,true,L)); CHECK(decline.tick(kCancel,true,L+1));
+    CHECK(decline.pending().action=="decline");
+    OfflineCapture capture;
+    CHECK(!capture.tick(false,kConfirm,true)); // no prompt: ordinary Practice input
+    CHECK(capture.tick(true,kConfirm,true));
+    CHECK(capture.tick(true,0,true)); // still neutral while the question is shown
+    CHECK(capture.tick(false,kConfirm,true)); // hidden while accept is held
+    CHECK(capture.tick(false,0,false)); // unplug/switch cannot release a held edge
+    CHECK(!capture.tick(false,0,true));
+    CHECK(!capture.tick(false,kConfirm,true)); // next Practice press is available
+    CHECK(capture.tick(true,0,true)); capture.reset(); CHECK(!capture.held());
+}
 static void parsing() {
     const std::string good=R"({"v":1,"generation":"launch","session":"session","rev":1,"prompt":"offer","match":"match","kind":"rematch","allowed":["accept","decline"],"remaining_ms":2000,"countdown_ms":1500,"total_ms":2000,"title":"Ready?","opponent":"Bob: deciding","opp_state":"deciding","status":"","key_confirm":"Z","key_cancel":"X","ack_seq":0,"ack_status":""})";
     Prompt p; CHECK(parse_prompt(good,p)); CHECK(p.title=="Ready?"&&p.permits("accept"));
@@ -108,5 +132,5 @@ static void terminal_notice() {
     CHECK(!m.tick(0,true,2002)); CHECK(!m.tick(kCancel,true,2003)); CHECK(!m.pending().seq);
     CHECK(m.prompt().body==p.body);
 }
-int main() { decisions(); directions_do_not_block(); second_vote_after_a_loading_frame(); countdown(); identities_expiry_focus(); contexts(); parsing(); terminal_notice();
+int main() { decisions(); directions_do_not_block(); second_vote_after_a_loading_frame(); countdown(); identities_expiry_focus(); contexts(); challenger(); parsing(); terminal_notice();
     std::printf("PASS %u checks\n",checks); }

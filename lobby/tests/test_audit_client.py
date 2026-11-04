@@ -9,7 +9,7 @@ from unittest import mock
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from t5lobby.ingame_ui import IngameUI
-from t5lobby.match_driver import MatchDriver, _Continued
+from t5lobby.match_driver import CLOSE_SECONDS, MatchDriver, _Continued
 
 
 class StaleUIExpiryTest(unittest.TestCase):
@@ -30,10 +30,13 @@ class StaleUIExpiryTest(unittest.TestCase):
         self.driver._ui_labels = {}
         self.driver._ui_was_active = False
         self.driver._rq = None
+        self.driver._return = None
+        self.driver._challenger = None
         self.driver.match_ev = {"opponent": {"name": "Bob"}}
         self.driver.session_ticket = None
         self.driver.rematch_sent, self.driver.rematch_declined = set(), set()
         self.driver.mode = "persistent"
+        self.driver.ingame_rematch = True
         self.driver._set_over = mock.Mock()
 
     def offer(self, mid):
@@ -68,7 +71,7 @@ class StaleUIExpiryTest(unittest.TestCase):
         self.driver.ui.ready_at = self.now
         self.driver._watch_ingame_ui()                     # "time is up" for a moment
         self.driver._set_over.assert_not_called()
-        self.now += 3.1
+        self.now += CLOSE_SECONDS + 0.1
         self.driver.ui.ready_at = self.now
         self.driver._watch_ingame_ui()
         self.driver._set_over.assert_called_once_with()

@@ -102,7 +102,8 @@ class DriverSourceTest(unittest.TestCase):
         wait = title.index("!reader_idle()")
         self.assertLess(wait, title.index("fresh_restore(f)"))
         self.assertLess(wait, title.index("fresh_take(f)"))
-        self.assertLess(wait, title.index("gcall(kFnStartGame, 4, 3)"))
+        self.assertLess(wait, title.index(
+            "gcall(kFnStartGame, g_practice_requested ? 10 : 4, g_practice_requested ? 1 : 3)"))
 
     def test_the_backstop_never_waits_on_a_slow_load(self):
         body = re.search(r"void select_load_check\(uint32_t f\)\s*\{(.*?)\n\}", self.src, re.S).group(1)

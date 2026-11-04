@@ -58,6 +58,7 @@ class RematchFocusTest(unittest.TestCase):
         tab.show_bar = mock.Mock()
         tab.hide_bar = mock.Mock()
         tab.status = mock.Mock()
+        tab._set_actions = mock.Mock()
         self.play = mock.Mock()
         self.flash = mock.Mock()
         tab.notifier = notify.Notifier(enabled=lambda: True, away=tab._notify_away,

@@ -53,6 +53,8 @@
 #include "training_logic.h"
 #include "practice_logic.h"
 
+extern "C" int t5_df_offline_practice(void);
+
 extern "C" int t5_netplay_enabled(void);       /* src/netplay/t5_hooks.cpp */
 extern "C" int t5_training_display_get(void);   /* training.cpp: the overlay's mode (0 off, 1 inputs, 2 frame data) */
 extern "C" void t5_training_display_set(int mode);
@@ -223,7 +225,7 @@ void init()
     const char* nm = getenv("T5_NET_MODE");
     const char* ctl = getenv("T5_CTL_DIR");
     const char* rp = getenv("T5_REPLAY_FILE");
-    g_cfg.offline = !(nm && *nm) && !(ctl && *ctl) && !(rp && *rp);
+    g_cfg.offline = (!(nm && *nm) || (ctl && *ctl)) && !(rp && *rp);
     if (const char* d = getenv("T5_PRACTICE_DUMMY")) practice::dummy_from_key(d, &g_cfg.dummy0);
     if (const char* m = getenv("T5_PRACTICE_MENU"); m && *m == '0') g_cfg.menu = false;
     if (const char* d = getenv("T5_PRACTICE_DIR")) g_cfg.dir = strcmp(d, "-") ? d : "";
@@ -321,7 +323,9 @@ void say(const char* s) { snprintf(g_msg, sizeof g_msg, "%s", s); g_msg_until = 
 
 bool allowed()
 {
-    return g_cfg.on && g_cfg.offline && t5_netplay_enabled() == 0 && rd32(kGameType) == kGtPractice && rd32(kPhase) == 17;
+    const char* ctl = getenv("T5_CTL_DIR");
+    return g_cfg.on && g_cfg.offline && (!(ctl && *ctl) || t5_df_offline_practice()) &&
+        t5_netplay_enabled() == 0 && rd32(kGameType) == kGtPractice && rd32(kPhase) == 17;
 }
 
 void note_place(const char* what)

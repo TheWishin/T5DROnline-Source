@@ -817,13 +817,14 @@ static void test_recorder()
     CHECK(r.state() == Recorder::State::Looping);
     r.toggle_play(true);
     CHECK(r.state() == Recorder::State::Idle);
-    /* slots: 5, wrapping both ways; changing the slot stops a playback */
+    /* slots: 8 (1.3.0; 5 before), wrapping both ways; changing the slot stops a playback */
+    CHECK_EQ(Recorder::kSlots, 8);
     r.toggle_play(true);
     r.select(1);
     CHECK(r.state() == Recorder::State::Idle);
     CHECK_EQ(r.slot(), 1);
     r.select(-2);
-    CHECK_EQ(r.slot(), 4);
+    CHECK_EQ(r.slot(), Recorder::kSlots - 1);
     r.select(1);
     CHECK_EQ(r.slot(), 0);
     CHECK_EQ(r.length(1), 0);

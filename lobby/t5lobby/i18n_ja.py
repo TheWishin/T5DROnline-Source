@@ -708,12 +708,18 @@ MESSAGES = {
     "Crouches": "しゃがむ",
     "Walks forward and back": "前後に歩く",
     "Sidesteps": "横移動する",
-    "In Practice, hold SELECT and press: 3 round start; f+3 / b+3 the dummy against the wall in front "
-    "of / behind you; df+3 / db+3 you against the wall in front of / behind you. 1 records the dummy "
-    "(you play it), 2 plays the recording once, 4 in a loop; tap up / down for slot 1-5, forward / "
-    "back for what the dummy does.":
-        "Practice で SELECT を押しながら：3 でラウンド開始位置、f+3 / b+3 でダミーを前 / 後ろの壁際へ、df+3 / db+3 で自分を前 / 後ろの壁際へ。1 "
-        "でダミーを記録（自分で操作）、2 で記録を1回再生、4 でループ再生。上 / 下を軽く押してスロット1-5、前 / 後ろでダミーの動きを切り替え。",
+    "Dashes in": "前ダッシュする",
+    "Backdashes": "バックダッシュする",
+    "Backdash cancels": "バックダッシュキャンセル",
+    "Wavedashes": "風神ステップ",
+    "In Practice, START opens the practice menu: the dummy's behaviour and counter-attack, recordings (8 "
+    "slots per character, kept for next time), restart position, input delay. Hold SELECT and press: 3 "
+    "restart; f+3 / b+3 the dummy against the wall in front of / behind you; df+3 / db+3 you against the "
+    "wall; START remembers the position. 1 records the dummy (you play it), 2 plays once, 4 in a loop; "
+    "tap up / down for the slot.":
+        "Practice では START でトレーニングメニューを開きます：ダミーの動きと反撃、記録（キャラごとに8スロット、次回も保存）、開始位置、入力遅延。SELECT を押しながら：3 "
+        "でやり直し、f+3 / b+3 でダミーを前 / 後ろの壁際へ、df+3 / db+3 で自分を壁際へ、START で位置を記憶。1 でダミーを記録（自分で操作）、2 で1回再生、4 でループ再生。上 "
+        "/ 下を軽く押してスロットを選択。",
     "Also online (only your own inputs, no frame data)": "オンラインでも表示（自分の入力のみ、フレームデータなし）",
     "In Practice: your last inputs with how many frames each was held, and after each exchange the "
     "startup of the move and who can act first (+3, -12). F2 in the game switches it.":

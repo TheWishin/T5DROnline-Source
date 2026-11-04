@@ -704,12 +704,18 @@ MESSAGES = {
     "Crouches": "앉기",
     "Walks forward and back": "앞뒤로 걷기",
     "Sidesteps": "횡이동",
-    "In Practice, hold SELECT and press: 3 round start; f+3 / b+3 the dummy against the wall in front "
-    "of / behind you; df+3 / db+3 you against the wall in front of / behind you. 1 records the dummy "
-    "(you play it), 2 plays the recording once, 4 in a loop; tap up / down for slot 1-5, forward / "
-    "back for what the dummy does.":
-        "Practice에서 SELECT를 누른 채: 3 라운드 시작 위치; f+3 / b+3 더미를 앞 / 뒤 벽으로; df+3 / db+3 나를 앞 / 뒤 벽으로. 1 더미 녹화 "
-        "(직접 조작), 2 녹화를 한 번 재생, 4 반복 재생; 위 / 아래를 짧게 눌러 슬롯 1-5, 앞 / 뒤로 더미 동작 변경.",
+    "Dashes in": "앞 대시",
+    "Backdashes": "백대시",
+    "Backdash cancels": "백대시 캔슬",
+    "Wavedashes": "초풍 스텝",
+    "In Practice, START opens the practice menu: the dummy's behaviour and counter-attack, recordings (8 "
+    "slots per character, kept for next time), restart position, input delay. Hold SELECT and press: 3 "
+    "restart; f+3 / b+3 the dummy against the wall in front of / behind you; df+3 / db+3 you against the "
+    "wall; START remembers the position. 1 records the dummy (you play it), 2 plays once, 4 in a loop; "
+    "tap up / down for the slot.":
+        "Practice에서 START로 연습 메뉴를 엽니다: 더미의 동작과 반격, 녹화(캐릭터마다 8슬롯, 다음에도 유지), 시작 위치, 입력 지연. SELECT를 누른 채: 3 다시 "
+        "시작; f+3 / b+3 더미를 앞 / 뒤 벽으로; df+3 / db+3 나를 벽으로; START로 위치 기억. 1 더미 녹화(직접 조작), 2 한 번 재생, 4 반복 재생; 위 "
+        "/ 아래를 짧게 눌러 슬롯 선택.",
     "Also online (only your own inputs, no frame data)": "온라인에서도 (내 입력만, 프레임 데이터 없음)",
     "In Practice: your last inputs with how many frames each was held, and after each exchange the "
     "startup of the move and who can act first (+3, -12). F2 in the game switches it.":

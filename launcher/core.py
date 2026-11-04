@@ -113,7 +113,7 @@ DEFAULTS = {
     "training_pos": "top",     # where the training display sits: top | bottom (T5_TRAINING_POS)
     "practice": True,          # practice tools in Practice (offline): SELECT combos, dummy, recordings, T5_PRACTICE
     "auto_skip_offline": False, # offline: the game skips replays and round endings itself (T5_AUTO_SKIP_OFFLINE)
-    "practice_dummy": "game",  # the dummy's behaviour at the start: game | block | crouch | walk | step, T5_PRACTICE_DUMMY
+    "practice_dummy": "game",  # the dummy's behaviour at the start (PRACTICE_DUMMY keys), T5_PRACTICE_DUMMY
     "always_left": False,      # as P2 in a casual match this PC shows the fight mirrored, you on the left (T5_ALWAYS_LEFT=1)
     "screen_side": "dealt",    # dealt | left | right; old always_left settings migrate on load
     "router_ports": True,      # online: forward the game's port on the router for a match (PCP / NAT-PMP / UPnP)
@@ -380,6 +380,8 @@ class Settings(dict):
         env["T5_PRACTICE"] = "1" if self["practice"] else "0"
         if self["practice"]:
             env["T5_PRACTICE_DUMMY"] = self["practice_dummy"] if self["practice_dummy"] in PRACTICE_DUMMY else "game"
+            # the practice menu's settings and the recordings per character (1.3.0)
+            env["T5_PRACTICE_DIR"] = os.path.join(self.out_dir, "practice")
             env.setdefault("T5_TRAINING_LANG", i18n.resolve(self["language"]) if I18N else "en")
         # Explicit dealt also clears a previous side in the persistent online game.
         side = self.get("screen_side", "dealt")
@@ -1592,6 +1594,10 @@ PRACTICE_DUMMY = {       # English; t(label) where it is shown -- the dummy's be
     "crouch": N_("Crouches"),
     "walk": N_("Walks forward and back"),
     "step": N_("Sidesteps"),
+    "dash": N_("Dashes in"),
+    "backdash": N_("Backdashes"),
+    "kbd": N_("Backdash cancels"),
+    "wavedash": N_("Wavedashes"),
 }
 # Settings "Sound when a match is found" (launcher.json "notify_sound"; the keys are t5lobby.notify.MATCH_SOUNDS):
 # a found match, a challenge, a tournament set. The other lobby notifications keep the beep.
@@ -1626,9 +1632,10 @@ ALWAYS_LEFT_HELP = N_(
     "Quick matches stay as they are. Offline: Versus fights show the P2 side.")
 
 PRACTICE_HELP = N_(
-    "In Practice, hold SELECT and press: 3 round start; f+3 / b+3 the dummy against the wall in front of / "
-    "behind you; df+3 / db+3 you against the wall in front of / behind you. 1 records the dummy (you play it), "
-    "2 plays the recording once, 4 in a loop; tap up / down for slot 1-5, forward / back for what the dummy does.")
+    "In Practice, START opens the practice menu: the dummy's behaviour and counter-attack, recordings (8 slots per "
+    "character, kept for next time), restart position, input delay. Hold SELECT and press: 3 restart; f+3 / b+3 "
+    "the dummy against the wall in front of / behind you; df+3 / db+3 you against the wall; START remembers the "
+    "position. 1 records the dummy (you play it), 2 plays once, 4 in a loop; tap up / down for the slot.")
 
 
 def internal_res_for_screen(width, height):

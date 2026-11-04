@@ -721,14 +721,20 @@ MESSAGES = {
     "Crouches": "Se agacha",
     "Walks forward and back": "Camina adelante y atrás",
     "Sidesteps": "Hace pasos laterales",
-    "In Practice, hold SELECT and press: 3 round start; f+3 / b+3 the dummy against the wall in front "
-    "of / behind you; df+3 / db+3 you against the wall in front of / behind you. 1 records the dummy "
-    "(you play it), 2 plays the recording once, 4 in a loop; tap up / down for slot 1-5, forward / "
-    "back for what the dummy does.":
-        "En Practice, mantén SELECT y pulsa: 3 inicio de ronda; f+3 / b+3 el dummy contra la pared "
-        "delante / detrás de ti; df+3 / db+3 tú contra la pared delante / detrás de ti. 1 graba al dummy "
-        "(lo controlas tú), 2 reproduce la grabación una vez, 4 en bucle; toca arriba / abajo para el "
-        "espacio 1-5, adelante / atrás para lo que hace el dummy.",
+    "Dashes in": "Hace dash hacia delante",
+    "Backdashes": "Hace backdash",
+    "Backdash cancels": "Cancela backdashes",
+    "Wavedashes": "Hace wavedash",
+    "In Practice, START opens the practice menu: the dummy's behaviour and counter-attack, recordings (8 "
+    "slots per character, kept for next time), restart position, input delay. Hold SELECT and press: 3 "
+    "restart; f+3 / b+3 the dummy against the wall in front of / behind you; df+3 / db+3 you against the "
+    "wall; START remembers the position. 1 records the dummy (you play it), 2 plays once, 4 in a loop; "
+    "tap up / down for the slot.":
+        "En Practice, START abre el menú de práctica: comportamiento y contraataque del dummy, grabaciones (8 "
+        "espacios por personaje, se guardan), posición de reinicio, retraso de entrada. Mantén SELECT y "
+        "pulsa: 3 reinicio; f+3 / b+3 el dummy contra la pared delante / detrás de ti; df+3 / db+3 tú contra "
+        "la pared; START recuerda la posición. 1 graba al dummy (lo controlas tú), 2 reproduce una vez, 4 en "
+        "bucle; toca arriba / abajo para el espacio.",
     "Also online (only your own inputs, no frame data)": "También online (solo tus inputs, sin datos de frames)",
     "In Practice: your last inputs with how many frames each was held, and after each exchange the "
     "startup of the move and who can act first (+3, -12). F2 in the game switches it.":

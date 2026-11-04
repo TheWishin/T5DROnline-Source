@@ -93,7 +93,7 @@ combo never makes P1 attack, walk or open the menu.
 
 | Combo | What it does |
 |---|---|
-| SELECT + 3 | both fighters back to where the fight started |
+| SELECT + 3 | both fighters back to where the fight started (1.3.0: to the menu's RESTART AT) |
 | SELECT + f+3 | the dummy against the wall in front of you, you right in front of it |
 | SELECT + b+3 | the dummy against the wall behind you, you in front of it (you switch sides) |
 | SELECT + df+3 | you against the wall in front of you, the dummy in front of you (you switch sides) |
@@ -101,8 +101,9 @@ combo never makes P1 attack, walk or open the menu.
 | SELECT + 1 | record the dummy in the current slot: your pad plays the dummy, your own fighter stands; again: stop (at most 20 s) |
 | SELECT + 2 | play the current slot once; again: stop |
 | SELECT + 4 | play the current slot again and again; again: stop |
-| SELECT, tap up / down | the next / previous slot (5 slots) |
-| SELECT, tap forward / back | what the dummy does: as set in the game's Practice menu, blocks after the first hit, crouches, walks forward and back, sidesteps |
+| SELECT, tap up / down | the next / previous slot (8 slots since 1.3.0, 5 before) |
+| SELECT + START | remember both fighters' places: the restart goes there (1.3.0) |
+| SELECT, tap forward / back | what the dummy does: as set in the game's Practice menu, blocks after the first hit, crouches, walks forward and back, sidesteps (1.3.0: and the movement loops, see "Practice menu") |
 
 The resets (SELECT + 3 and the four wall resets) happen when both fighters
 stand (1.2.0, player report "after a launcher the opponent keeps flying /
@@ -121,11 +122,11 @@ use the dummy's new side. P1 stands still. Each frame is stored relative to
 the dummy's facing, so playback keeps forward/back on either side, including
 after a side switch during playback. SELECT shortcuts still use P1's side.
 
-The slots live only in memory while the game runs; they are not saved to a
-file. Issue #30 corrected recording directions that had used P1's side
+Before 1.3.0 the slots lived only in memory while the game ran; since 1.3.0
+they are kept per dummy character on disk (see "Practice menu"). Issue #30 corrected recording directions that had used P1's side
 instead of the dummy's. Existing slots already described the dummy's executed
 forward/back motion and need no automatic flip. Restarting for an update
-clears them, so re-record afterwards; there is no saved format to migrate.
+cleared them; the files written since 1.3.0 already store the dummy's own forward/back.
 
 The overlay shows what changed for two seconds under the frame data (`SLOT 2
 (3.4s)  DUMMY: CROUCH`), and `REC 1  2.5s` / `PLAY 1  1.2/3.4s` /
@@ -135,8 +136,69 @@ Off.
 Launcher: **Settings -> Practice tools** (German: *Trainingswerkzeuge*):
 SELECT combos on or off (default on), the dummy's behaviour at the start, a
 short help text. Environment: `T5_PRACTICE=1`, `T5_PRACTICE_DUMMY=game|block|
-crouch|walk|step`, `T5_PRACTICE_LOG=<file>` (one line per action and the
+crouch|walk|step|dash|backdash|kbd|wavedash`, `T5_PRACTICE_MENU`, `T5_PRACTICE_DIR` (see "Practice menu"), `T5_PRACTICE_LOG=<file>` (one line per action and the
 places of both fighters; `tools/practice_check.py` reads it).
+
+## Practice menu (1.3.0)
+
+In offline **Practice**, **START** opens the practice menu over the fight
+(the game's own pause menu -- command list, the game's dummy settings, exit --
+is one item in it: GAME'S PAUSE MENU). The fight goes on behind the menu with
+both fighters standing still. Up / down choose a line, left / right (or 3)
+change it, 3 does an action, 4 or START close the menu. The keyboard works
+through its usual keys (whatever is bound to START, the directions, 3 and 4).
+The menu texts are English, like the overlay.
+
+| Section | Line | Values |
+|---|---|---|
+| DUMMY | BEHAVIOUR | as set in the game menu, block after the first hit, crouch, walk forward and back, sidestep, **dash in, backdash, backdash cancel, wavedash** (movement loops: the inputs a player enters, on CONTROLLER; a wavedash is a crouch dash for the fighters that have one, the rest crouch or walk) |
+| | COUNTER-ATTACK | off, after a block, after a hit, after a block or hit: the dummy plays a recording at the first frame it can act again |
+| | COUNTER EVERY | every time, every 2nd ... 5th time |
+| | COUNTER WITH | a random recorded slot, or slot 1-8 |
+| RECORDING | SLOT | 1-8 with its length |
+| | RECORD / PLAY ONCE / PLAY IN A LOOP | as SELECT+1 / 2 / 4; record starts once the pad is let go |
+| | PLAYBACK | this slot, or a random recorded slot (each play, each pass of a loop) |
+| | DELETE THIS SLOT | press 3 twice |
+| RESTART | RESTART AT | round start, remembered position, the dummy at the wall ahead / behind, you at the wall ahead / behind -- where SELECT+3 and RESTART NOW go |
+| | SIDES | as started, switched (you where the dummy stood and the other way round) |
+| | DUMMY FACING | facing you, back turned |
+| | REMEMBER THIS POSITION | both fighters' places now (also SELECT+START); the restart goes there |
+| | RESTART NOW | as SELECT+3 |
+| SETTINGS | INPUT DELAY (YOU) | 0-6 frames: your inputs reach the game that much later, as an online match with that delay plays |
+| | TRAINING DISPLAY | off, inputs, inputs + frame data (as F2) |
+| | GAME'S PAUSE MENU | the game's own menu (one START tap once the pad is let go) |
+
+**Kept for next time** (`T5_PRACTICE_DIR`, the launcher passes
+`<build folder>\practice`): `settings.txt` (everything above but the dummy's
+behaviour, which the launcher's *Practice tools* setting starts with, and the
+remembered position, which belongs to one fight) and `charNN.txt` per dummy
+character (NN = the game's item character index of the dummy: the fighter
+object +0x40, as the costume code reads it): its eight slots, text, one hex mask
+per frame as the dummy sees it. A slot is saved when its recording stops or is
+deleted; a fight with another dummy character loads that character's slots.
+`T5_PRACTICE_DIR=-` keeps nothing. `T5_PRACTICE_MENU=0` gives START back to
+the game (the SELECT combos stay).
+
+How the new parts work (`src/training/practice_logic.h`, unit tested in
+`tests/c/practice_test.cpp`):
+
+- **Counter-attack**: a stun starts when the dummy cannot act while P1 attacks
+  (P1's +0x15C 1..0xFFFF) or loses health; it is a hit when health went or the
+  reaction is a hit reaction (+0x15C >= 0x10000), else a block. The first frame
+  the dummy can act again (`acts()`, the tracker's own rule) starts the slot,
+  on CONTROLLER for its length; the guard before it is the behaviour's (e.g.
+  the game menu's *guard against all attacks*, or *block after the first hit*).
+- **Input delay**: P1's mask goes through a ring of 8 before the game's input
+  ring; the SELECT combos and the menu read the pad itself.
+- **Back turned**: the game keeps each fighter's facing (see "Facing" below),
+  so the dummy is not turned; two frames after the restart P1 is put behind
+  the dummy's back, as far away as the restart had them, and turned with the
+  tap the resets already use. The dummy turns around by itself when it starts
+  a move or is hit, as in the game.
+- **Switched sides**: the restart's two places swapped; both then face away and
+  get the facing tap.
+- Not done: a move list in the menu (it needs the game's command catalog found
+  in memory) -- the game's own command list is one menu item away.
 
 ### Offline Practice only
 

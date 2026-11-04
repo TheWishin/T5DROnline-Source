@@ -56,6 +56,8 @@ extern "C" int t5_netplay_local_slot(void);
 extern "C" int t5_df_boot_cover(void);         /* host-only presentation state; no guest access */
 extern "C" int t5_practice_on(void);                                   /* practice.cpp: the practice tools */
 extern "C" int t5_practice_status(char* out, unsigned n, int de);      /* ... their status line ("" = none) */
+extern "C" int t5_practice_menu_open(void);                            /* ... the practice menu is open (1.3.0) */
+extern "C" void t5_practice_menu_draw(void);                           /* ... drawn into this list, on top */
 
 namespace {
 
@@ -411,6 +413,7 @@ void publish(int mode, bool show_p1, bool show_p2, bool frames, const char* stat
         if (frames && mode == kFrames) draw_results(640.0f, lay.results_y);
     }
     if (status[0]) draw_status(status, lay.status_y);
+    t5_practice_menu_draw();     /* offline Practice: the practice menu while it is open (host state only) */
     rsx_overlay_end();
     g_shown = true;
 }
@@ -709,7 +712,23 @@ static bool frame_body()
     /* the practice tools' status line (practice.cpp; offline Practice only) */
     char status[96] = "";
     if (!online && gt == kGtPractice) t5_practice_status(status, sizeof status, g_cfg.de ? 1 : 0);
-    if (show || status[0]) publish(show ? mode : kOff, p1, p2, frames, status);
+    const bool menu = !online && gt == kGtPractice && t5_practice_menu_open();
+    if (show || status[0] || menu) publish(show ? mode : kOff, p1, p2, frames, status);
     else hide();
     return true;
+}
+
+/* practice.cpp's menu, TRAINING DISPLAY: this session's mode (as F2; host state only) */
+extern "C" int t5_training_display_get(void)
+{
+    if (!g_init) init();
+    return g_f2_mode >= 0 ? g_f2_mode : g_cfg.mode;
+}
+extern "C" void t5_training_display_set(int mode)
+{
+    if (!g_init) init();
+    if (mode < kOff || mode > kFrames) return;
+    g_f2_mode = mode;
+    if (mode != kOff) rsx_overlay_prepare();
+    fprintf(stderr, "[training] practice menu: %s\n", mode == kOff ? "off" : mode == kInputs ? "inputs" : "inputs and frame data");
 }

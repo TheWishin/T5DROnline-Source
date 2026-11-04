@@ -144,11 +144,15 @@ def first_game(d):
     d.shot("03-menu-dash")
     d.close()
     g.wait(3)
+    d.open()
+    d.change("BEHAVIOUR", 1)                 # backdash: the dummy goes away again
+    d.close()
+    g.wait(3)
     # a recording from the menu: RECORD, then the pad plays the dummy (forward, a jab), SELECT+1 stops
     d.sel()                                  # back to the round start
     g.wait(1)
     d.open()
-    d.change("BEHAVIOUR", -4)                # block after the first hit
+    d.change("BEHAVIOUR", -5)                # block after the first hit
     d.do("RECORD")                           # the menu closes; recording starts once the pad is let go
     g.wait(0.5)
     g.hold("RIGHT")
@@ -279,6 +283,17 @@ def check_first(lines):
             good(dmin < d0 - 600, f"the dummy dashed in: distance {d0:.0f} -> {dmin:.0f}")
         else:
             good(False, "no places after DASH IN")
+    i1 = next((i for i, ln in enumerate(lines) if "menu BEHAVIOUR: BACKDASH" in ln), None)
+    if i1 is not None:
+        after = [xyz(p) for p in places(lines[i1:i1 + 400]) if p[1] == "places:"][:8]
+        if after:
+            d0 = math.hypot(after[0][0] - after[0][3], after[0][1] - after[0][4])
+            dmax = max(math.hypot(a[0] - a[3], a[1] - a[4]) for a in after)
+            good(dmax > d0 + 600, f"the dummy backdashed away: distance {d0:.0f} -> {dmax:.0f}")
+        else:
+            good(False, "no places after BACKDASH")
+    else:
+        good(False, "BEHAVIOUR: BACKDASH not chosen")
     good(any(re.search(r" record slot 1$", ln) for ln in lines), "RECORD from the menu: slot 1 records")
     saved = [ln for ln in lines if re.search(r" slots saved for character \d+: [1-8] recorded$", ln)]
     good(saved, "the recording saved for the dummy's character" + (f" ({saved[0].split(' ', 1)[1]})" if saved else ""))

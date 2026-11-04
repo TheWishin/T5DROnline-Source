@@ -396,7 +396,7 @@ public:
         } else hold_ = 0;
         const uint16_t go = (uint16_t)(press | rep);
         prev_ = in;
-        if (press & (kStart | kCircle)) { open_ = false; e.ev = Ev::Close; return e; }
+        if (press & (uint16_t)(kStart | (uint16_t)kCircle)) { open_ = false; e.ev = Ev::Close; return e; }
         if (go & kUp) { cur_ = (cur_ + I_COUNT - 1) % I_COUNT; e.ev = Ev::Moved; e.item = cur_; return e; }
         if (go & kDown) { cur_ = (cur_ + 1) % I_COUNT; e.ev = Ev::Moved; e.item = cur_; return e; }
         if (!is_action(cur_) && (go & (kLeft | kRight))) {

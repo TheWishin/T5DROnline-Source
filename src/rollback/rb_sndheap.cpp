@@ -39,14 +39,15 @@
 #include "sys_ppu_thread.h"
 #include "rb.h"
 #include "rb_detour.h"
+#include "../platform/t5_addr.h"   /* T5A(): this program's address of a US address (EU Online) */
 
 extern "C" uint8_t* vm_base;
 
 namespace rb {
 
 namespace {
-constexpr uint32_t kMalloc = 0x3AB2C8, kFree = 0x3AAA40;     /* the C library heap */
-constexpr uint32_t kLibLo = 0x326000, kLibHi = 0x34B000;     /* the sound library and its core (bnus*): callers seen 0x32938C..0x34A944 */
+const uint32_t kMalloc = T5A(0x3AB2C8), kFree = T5A(0x3AAA40);     /* the C library heap */
+const uint32_t kLibLo = T5A(0x326000), kLibHi = T5A(0x34B000);    /* the sound library and its core (bnus*): callers seen 0x32938C..0x34A944 */
 constexpr uint32_t kPoolBase = 0x7F000000u, kPoolSize = 0x00800000u;
 constexpr uint32_t kAlign = 16;                              /* what the C library hands out */
 

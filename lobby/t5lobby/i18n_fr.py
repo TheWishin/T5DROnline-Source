@@ -575,10 +575,8 @@ MESSAGES = {
     "Package (.pkg)": "Paquet (.pkg)",
     "License (.rap)": "Licence (.rap)",
     "Browse…": "Parcourir…",
-    "Supported: Tekken 5: Dark Resurrection Online, PS3 PSN (US), NPUB30009 version 01.00 (online and offline), "
-    "and TEKKEN 5 DARK RESURRECTION, PS3 PSN (Europe), NPEA00019 version 01.00 (offline only for now) -- the "
-    "package file and the license (.rap) from your own account. Nothing leaves this PC.":
-        "Pris en charge : Tekken 5: Dark Resurrection Online, PS3 PSN (US), NPUB30009 version 01.00 (en ligne et hors ligne), et TEKKEN 5 DARK RESURRECTION, PS3 PSN (Europe), NPEA00019 version 01.00 (hors ligne uniquement pour l'instant) -- le fichier du paquet et la licence (.rap) de ton propre compte. Rien ne quitte ce PC.",
+    "Supported: Tekken 5: Dark Resurrection Online, PS3 PSN (US), NPUB30009 version 01.00 (online and offline); Tekken 5: Dark Resurrection Online, PS3 PSN (Europe), NPEA00019 version 02.00 or 02.01 (offline, and online against other European Online games); TEKKEN 5 DARK RESURRECTION, PS3 PSN (Europe), NPEA00019 version 01.00 (offline only) -- the package file and the license (.rap) from your own account. Nothing leaves this PC.":
+        "Pris en charge : Tekken 5: Dark Resurrection Online, PS3 PSN (US), NPUB30009 version 01.00 (en ligne et hors ligne) ; Tekken 5: Dark Resurrection Online, PS3 PSN (Europe), NPEA00019 version 02.00 ou 02.01 (hors ligne, et en ligne contre d'autres éditions Online européennes) ; TEKKEN 5 DARK RESURRECTION, PS3 PSN (Europe), NPEA00019 version 01.00 (hors ligne uniquement) -- le fichier du paquet et la licence (.rap) de ton propre compte. Rien ne quitte ce PC.",
     "Build tools on this PC": "Outils de compilation sur ce PC",
     "Needed": "Requis",
     "Found": "Trouvé",
@@ -1141,6 +1139,20 @@ MESSAGES = {
     "{supported}.":
         "Cette copie est une autre version du jeu : « {title} » version {version}, content ID {id} (SHA-1 du "
         "programme {sha}...). Le portage ne prend en charge que {game}, content ID {supported}.",
+    # 1.2.1: the build names the edition and every edition it builds (tools/build_game.py, docs/EU.md)
+    "This package is {edition} (program content ID {id}). The port cannot build this edition, whatever "
+    "the license (.rap): it is another build of the game. The port builds: {supported}.":
+        "Ce paquet est {edition} (content ID du programme {id}). Le portage ne peut pas compiler cette "
+        "édition, quelle que soit la licence (.rap) : c'est une autre compilation du jeu. Le portage compile "
+        ": {supported}.",
+    "This package is version {version} of the game (program content ID {id}). The port cannot build this "
+    "version, whatever the license (.rap). The port builds: {supported}.":
+        "Ce paquet est la version {version} du jeu (content ID du programme {id}). Le portage ne peut pas "
+        "compiler cette version, quelle que soit la licence (.rap). Le portage compile : {supported}.",
+    "This copy's program is not one the port knows: \"{title}\" version {version}, content ID {id} (program "
+    "SHA-1 {sha}...). The port builds: {supported}.":
+        "Le portage ne connaît pas le programme de cette copie : « {title} » version {version}, content ID "
+        "{id} (SHA-1 du programme {sha}...). Le portage compile : {supported}.",
     # 1.1.5: the package's version, read before the build (tools/build_game.py, launcher/core.py)
     "This package is version {version} of the game (program content ID {id}). The port supports only version "
     "{supported}: {game}, content ID {cid}, {size} bytes. This version cannot be used, whatever the license "
@@ -1849,6 +1861,20 @@ MESSAGES = {
         "La version européenne ({title_id}) joue ses modes hors ligne. Le jeu en ligne pour elle arrivera dans une prochaine mise à jour ; d'ici là le jeu en ligne demande la version US (NPUB30009). Les jeux européens et US ne jouent jamais l'un contre l'autre en ligne.",
     "Build stamp: the game is {title_id}.":
         "Tampon du build : le jeu est {title_id}.",
+    "{id}  ({size} bytes) -- the European Online edition: it plays offline, and online against other European Online games.":
+        "{id}  ({size} octets) -- l'édition Online européenne : elle se joue hors ligne, et en ligne contre d'autres éditions Online européennes.",
+    "Your package is the European Online edition (version {version})":
+        "Ton paquet est l'édition Online européenne (version {version})",
+    "Earlier versions of the launcher did not build it. This one does: choose the package and its license on the Build tab and press BUILD GAME. It plays offline, and online against other European Online games.":
+        "Les versions précédentes du launcher ne la compilaient pas. Celle-ci le fait : choisis le paquet et sa licence dans l'onglet Build et appuie sur BUILD GAME. Elle se joue hors ligne, et en ligne contre d'autres éditions Online européennes.",
+    "build.log: an earlier build refused the European Online edition (version {version}).":
+        "build.log : une compilation précédente a refusé l'édition Online européenne (version {version}).",
+    "Your game is the European Online edition":
+        "Ton jeu est l'édition Online européenne",
+    "The European Online edition ({title_id} version {version}) plays its offline modes, and online against players who have the European Online edition too. European and US games do not play each other online.":
+        "L'édition Online européenne ({title_id} version {version}) joue ses modes hors ligne, et en ligne contre les joueurs qui ont aussi l'édition Online européenne. Les jeux européens et américains ne jouent pas les uns contre les autres en ligne.",
+    "Build stamp: the game is {title_id} version {version}.":
+        "Tampon de compilation : le jeu est {title_id} version {version}.",
     "This Mac build has no online play. For a test match: tools/build_game.py --macos-online (docs/MACOS_ONLINE_TEST.md).":
         "Cette version Mac n'a pas de jeu en ligne. Pour un match de test : tools/build_game.py --macos-online (docs/MACOS_ONLINE_TEST.md).",
     "Cannot read the build's identity: {error}": "Impossible de lire l'identité de la build : {error}",

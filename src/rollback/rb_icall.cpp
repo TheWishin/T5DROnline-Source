@@ -29,6 +29,7 @@
 #include "ppu_recomp.h"
 #include "rb.h"
 #include "rb_detour.h"
+#include "../platform/t5_addr.h"   /* T5A(): this program's address of a US address (EU Online) */
 
 extern "C" uint8_t* vm_base;
 
@@ -50,11 +51,11 @@ namespace {
  * writers they and the stage/effect draws call. All return 0 to their
  * callers when live, so the stub returns 0 too. */
 const uint32_t kDrawCut[] = {
-    0x00387324, 0x003872A8,                                         /* model draw (vtable +0x34 of the model object) */
-    0x00355C70, 0x00355B34, 0x003559E4, 0x00357F88,                 /* 16-byte packet moves / packet header */
-    0x00389788, 0x00389820, 0x003898D0, 0x00389A88, 0x00389A0C,     /* packet builders */
-    0x00389AA0, 0x0038988C, 0x00397AF8, 0x00354160, 0x00353E68,     /* packet builders, draw-list append */
-    0x00158D6C, 0x001EC6FC, 0x0009DC04, 0x00264220,                 /* stage / effect / shadow draw passes (vtable targets; gameplay hash unchanged without them) */
+    T5A(0x00387324), T5A(0x003872A8),                                         /* model draw (vtable +0x34 of the model object) */
+    T5A(0x00355C70), T5A(0x00355B34), T5A(0x003559E4), T5A(0x00357F88),                 /* 16-byte packet moves / packet header */
+    T5A(0x00389788), T5A(0x00389820), T5A(0x003898D0), T5A(0x00389A88), T5A(0x00389A0C),     /* packet builders */
+    T5A(0x00389AA0), T5A(0x0038988C), T5A(0x00397AF8), T5A(0x00354160), T5A(0x00353E68),     /* packet builders, draw-list append */
+    T5A(0x00158D6C), T5A(0x001EC6FC), T5A(0x0009DC04), T5A(0x00264220),                 /* stage / effect / shadow draw passes (vtable targets; gameplay hash unchanged without them) */
     /* Not 0x001357A0 (1.1.9): it also advances the HUD's health bars -- the orange part that drains after a hit.
      * Cut, a rollback put that animation back to the restored frame and the re-simulated frames did not move it
      * on, so with an unsteady ping the drain stalled and stepped back (HP bars flickering). Running it costs
@@ -70,8 +71,8 @@ const uint32_t kDrawCut[] = {
  * from 1.5 + 0.7-8 ms to ~0.3 ms (run d2, docs/ROLLBACK.md section 10).
  * T5_RB_CUT2=addr,... overrides, T5_RB_CUT2=none disables. */
 const uint32_t kDrawCut2[] = {
-    0x00392498, 0x00392334, 0x003552E0, 0x00397B54, 0x00385DBC, 0x0032659C, 0x00359A08, 0x0035E998, 0x0035933C,
-    0x00389914, 0x00389B28, 0x00355B78, 0x00385814, 0x0039229C, 0x00364CDC, 0x0036432C, 0x00362FDC, 0x0035ACEC,
+    T5A(0x00392498), T5A(0x00392334), T5A(0x003552E0), T5A(0x00397B54), T5A(0x00385DBC), T5A(0x0032659C), T5A(0x00359A08), T5A(0x0035E998), T5A(0x0035933C),
+    T5A(0x00389914), T5A(0x00389B28), T5A(0x00355B78), T5A(0x00385814), T5A(0x0039229C), T5A(0x00364CDC), T5A(0x0036432C), T5A(0x00362FDC), T5A(0x0035ACEC),
 };
 /* Open-addressed set of guest targets; read on the hot path, written at setup. */
 constexpr uint32_t kSetN = 1024;
@@ -92,7 +93,7 @@ uint64_t g_tm_tid = 0;                       /* T5_RB_ICALL_TID: time this guest
  * fight's state is put back afterwards: the draw can no longer touch it, on
  * either peer, so re-simulating without the draw reproduces it. Nested cut
  * targets share the outermost swap. T5_RB_RANDSHIELD=0 disables it. */
-constexpr uint32_t kRandState = 0x1074F218u, kRandLen = 0x10Cu;
+const uint32_t kRandState = T5A(0x1074F218u), kRandLen = 0x10Cu;
 bool g_shield = false, g_shield_init = false;   /* T5_RB_RANDSHIELD=1: swap the rand() state around the cut targets on live frames (not needed: the draw does not call rand(), see rb_state.cpp kGameSkip) */
 uint8_t g_shield_priv[kRandLen];
 int g_shield_depth = 0;
@@ -249,14 +250,14 @@ const uint32_t kDetourCut[] = {
      * still ended normally, whatever frame the end falls in (cutting both broke
      * that pairing when the cut switched on or off between the two calls). The
      * pair was ~14 % of a re-simulated frame. */
-    0x0031F778,
+    T5A(0x0031F778),
     /* 0x2AAD50: the effects' draw (called by 0x2ABC04 / 0x2AB498, which ignore
      * its r3): NU packet calls, the render pass above, 0x15AD9C / 0x15B01C.
      * A whole function (stdu -0x190 ... addi r1,400; blr), unlike the tails
      * below. ~13 % of a re-simulated frame; test run d5: 0 gameplay-hash
      * mismatches in 1 404 re-simulated boundaries; pairs RC1/RC2 at RTT 150
      * in sync, displayed-frame p99 24 vs 26 ms without it. */
-    0x002AAD50,
+    T5A(0x002AAD50),
     /* Frame-time branch (docs/ROLLBACK.md section 33). The stack profile of
      * cut re-simulated frames (test mode, 6-frame rollbacks, T5_RB_CUT_TAIL=0,
      * run p1 against prof6b) still had a fifth of the game's time in model
@@ -276,7 +277,7 @@ const uint32_t kDetourCut[] = {
      * Tried and left out: 0x1118E0 (particles), 0x158CBC, 0x2AB46C (effects):
      * together they changed gameplay words 0x100996B4.. after a round change
      * and one run aborted (c2, c5). */
-    0x001549D4, 0x00154898, 0x000A25A8, 0x0035D894,
+    T5A(0x001549D4), T5A(0x00154898), T5A(0x000A25A8), T5A(0x0035D894),
 };
 /* Tried and left out: 0x1549FC / 0x1548C0 (model render calls) and, on their
  * own, 0x15AD9C / 0x15B01C: they are function TAILS the function finder split
@@ -294,7 +295,7 @@ int g_dcut_n = 0;
  * result-screen records at 0x1008E690..0x1008E6C0 (in the gameplay hash;
  * test runs d1/d2: 2 mismatching re-simulated frames ~860 frames after the
  * KO, 0 in ~1400 fighting frames), so those frames re-simulate with it. */
-constexpr uint32_t kPhaseWord = 0x1008F070u, kMatchOver = 0x1008EBD5u;
+const uint32_t kPhaseWord = T5A(0x1008F070u), kMatchOver = T5A(0x1008EBD5u);
 inline bool fighting() { uint32_t v; memcpy(&v, vm_base + kPhaseWord, 4); return _byteswap_ulong(v) == 17 && vm_base[kMatchOver] == 0; }
 template <int I> void dcut_hook(ppu_context* ctx)
 {

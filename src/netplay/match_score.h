@@ -30,12 +30,13 @@
  */
 #pragma once
 #include <stdint.h>
+#include "../platform/t5_addr.h"   /* T5A(): this program's address of a US address (EU Online) */
 
 namespace np {
 
 struct MatchScore {
-    static constexpr uint32_t kRoundWinsP1 = 0x100900D1;   /* u8: P1's fighter block 0x10090030 + 0xA1 */
-    static constexpr uint32_t kRoundWinsP2 = 0x100909A1;   /* u8: P2's fighter block 0x10090900 + 0xA1 */
+    static inline const uint32_t kRoundWinsP1 = T5A(0x100900D1);   /* u8: P1's fighter block 0x10090030 + 0xA1 */
+    static inline const uint32_t kRoundWinsP2 = T5A(0x100909A1);   /* u8: P2's fighter block 0x10090900 + 0xA1 */
 
     unsigned p1 = 0, p2 = 0;
     bool counted = false;        /* the fighters' round counts (false: made up from the decided byte) */

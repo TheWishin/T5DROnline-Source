@@ -67,6 +67,7 @@
 #include "replay.h"
 #include "replay_paths.h"
 #include "match_rule_agreement.h"
+#include "../platform/t5_game.h"   /* which program this game is (HELLO bits 16-19: US / EU Online) */
 
 /* libs/input/cellPad.c (patch 0009): the local input for a PS3 port, host-endian (HostPadData: netplay.h). */
 extern "C" int32_t cellPad_sample_local(uint32_t port_no, HostPadData* out);
@@ -139,6 +140,10 @@ constexpr uint32_t kCostumeMax   = 10240;   /* a table, at most (src/directfight
 constexpr uint32_t kCostumeChunk = 1024;    /* a piece: at most 10, one bit each in ack_mask */
 constexpr uint32_t kHelloRollback = 1u;
 constexpr uint32_t kHelloMatchRules = 2u;  /* optional v4 extension; old peers ignore it */
+/* HELLO flags bits 16-19 (1.2.1): the sender's program (t5game::Game: 1 US, 3 EU Online; 0 = not said, an older game,
+ * which is the US one). Two different programs play only with the cross-program state hash (t5_hooks.cpp). */
+constexpr uint32_t kHelloProgramShift = 16, kHelloProgramMask = 0xFu;
+uint32_t own_program() { const int g = (int)t5game::game(); return g == (int)t5game::Game::Unread ? 1u : (uint32_t)g; }
 constexpr int      kRbAuto = 0xFF;    /* T5_RB_NET_DELAY=auto: the input delay follows the measured round trip */
 #pragma pack(pop)
 
@@ -234,6 +239,7 @@ struct Session {
     uint32_t seed = 0;                 /* T5_NET_SEED (the host's wins), 0 = use the session id */
     bool rb_peer = false;              /* the peer's HELLO offered rollback */
     bool peer_match_rules = false, peer_match_rules_known = false;
+    uint32_t peer_program = 0;         /* the peer's HELLO bits 16-19 (0: an older game = the US program) */
     MatchRuleAgreement match_rules;
     ULONGLONG rules_sent_ms = 0, rules_started_ms = 0;
     /* Rollback input delay (docs/NETPLAY.md "Input delay"): each player's setting
@@ -668,6 +674,7 @@ void send_hello_locked(const sockaddr_in* to = nullptr)
 {
     State& s = S();
     struct { Hdr h; HelloExt x; } p = { make_hdr(PKT_HELLO), { s.build, s.seed, kHelloMatchRules |
+        (own_program() << kHelloProgramShift) |
         (s.rb_offer ? (kHelloRollback | ((uint32_t)(s.rb_delay & 0xFF) << 8)) : 0u) } };
     send_to(&p, sizeof p, to);
     s.last_hello_ms = GetTickCount64();
@@ -1042,6 +1049,7 @@ void forget_peer_locked()
     s.rb_peer = false;
     s.peer_match_rules = false;
     s.peer_match_rules_known = false;
+    s.peer_program = 0;
     s.match_rules = MatchRuleAgreement();
     s.rules_started_ms = s.rules_sent_ms = 0;
     s.cos_acked = 0; s.cos_peer_has_ours = false;           /* a new process: our table again, its own anew */
@@ -1180,6 +1188,14 @@ void handle_packet(const uint8_t* p, int n, const sockaddr_in& from)
         }
         s.peer_match_rules = (x.flags & kHelloMatchRules) != 0;
         s.peer_match_rules_known = true;
+        {
+            const uint32_t pp = (x.flags >> kHelloProgramShift) & kHelloProgramMask;
+            const uint32_t peer = pp ? pp : 1u;
+            if (peer != s.peer_program && peer != own_program())
+                note("the opponent's game is another program than this one (%u, ours %u): the state hash compares the "
+                     "fight in the US program's layout (docs/EU.md \"Cross-play\")", peer, own_program());
+            s.peer_program = peer;
+        }
         s.rb_peer = (x.flags & kHelloRollback) != 0;
         if (s.rb_peer) s.peer_rb_delay = (int)((x.flags >> 8) & 0xFF);
         if (s.mode == Mode::Host) {
@@ -2357,6 +2373,7 @@ void rb_set_lead(int lead) { State& s = S(); std::lock_guard<std::mutex> lk(s.mu
 int  rb_peer_lead() { State& s = S(); std::lock_guard<std::mutex> lk(s.mu); return s.peer_lead; }
 uint32_t rb_mismatches() { State& s = S(); std::lock_guard<std::mutex> lk(s.mu); return s.mismatches; }
 uint32_t rb_peer_ack() { State& s = S(); std::lock_guard<std::mutex> lk(s.mu); return s.peer_ack; }
+bool cross_program() { State& s = S(); std::lock_guard<std::mutex> lk(s.mu); return s.peer_program && s.peer_program != own_program(); }
 
 void set_local_inject(bool on, uint16_t buttons) { g_local_inject = buttons; g_local_inject_on = on; }
 

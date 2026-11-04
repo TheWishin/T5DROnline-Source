@@ -24,6 +24,16 @@ FOUR = {"cores": 4, "logical": 8, "wine": None}
 SFO_0101 = "  PARAM.SFO: TEKKEN 5: DARK RESURRECTION ONLINE / NPUB30009 / version 01.01\n"
 
 
+def pc_tr(lang, s, **v):
+    from t5lobby import i18n
+    old = i18n.language() if hasattr(i18n, "language") else "en"
+    i18n.set_language(lang)
+    try:
+        return i18n.t(s, **v)
+    finally:
+        i18n.set_language(old)
+
+
 def no_fw(exe):
     return types.SimpleNamespace(state="allowed", blocked=[])
 
@@ -70,6 +80,37 @@ class BuildTest(Base):
         self.assertEqual(self.keys(), ["package_version"])
         self.build_log("  program content ID: UP0700-NPUB30009_00-0000000000000000 (its license: ...)\nERROR: x")
         self.assertEqual(self.keys(), ["package_version"])
+
+    # a player's T5DR 1.2.0 log (release launcher, forwarded by the owner 2026-11-04): BUILD GAME with the EU Online
+    # v02.01 package refused after 1 s
+    LOG_120_EU_ONLINE = (
+        "== Decrypt the game program ==\n"
+        "  package content ID: EP9000-NPEA00019_00-TEKKENRETAIL0000\n"
+        "  PARAM.SFO: TEKKEN\u21225 DARK RESURRECTION ONLINE / NPEA00019 / version 01.00 (VERSION 02.01)\n"
+        "  program content ID: EP9000-NPEA00019_00-TEKKENRETAIL0000 (its license: "
+        "EP9000-NPEA00019_00-TEKKENRETAIL0000.rap)\n"
+        'ERROR: This copy is a different version of the game: "TEKKEN\u21225 DARK RESURRECTION ONLINE" version 01.00, '
+        "content ID EP9000-NPEA00019_00-TEKKENRETAIL0000 (program SHA-1 ff07efe07be2...). The port supports only "
+        "Tekken 5: Dark Resurrection (PS3, EU PSN, NPEA00019 v01.00), content ID EP9000-NPEA00019_00-0000000000000000.")
+
+    def test_the_1_2_0_refusal_of_the_eu_online_edition(self):
+        self.build_log(self.LOG_120_EU_ONLINE)
+        found = pc.check(self.out, FOUR, no_fw)
+        self.assertEqual([f.key for f in found], ["eu_online_refused"])     # not "version 01.00", not a wrong package
+        title, seen, fix = found[0].text()
+        self.assertEqual(title, "Your package is the European Online edition (version 02.01)")
+        self.assertIn("press BUILD GAME", fix)
+        self.assertIn("online against other European Online games", fix)
+        de = found[0].text(lambda s, **v: pc_tr("de", s, **v))
+        self.assertNotEqual(de[0], title)
+
+    def test_eu_online_game_hint(self):
+        os.makedirs(os.path.join(self.out, "build"))
+        with open(os.path.join(self.out, "build", "t5dr_build.json"), "w") as f:
+            f.write('{"title": "NPEA00019", "version": "02.01"}')
+        found = pc.check(self.out, FOUR, no_fw)
+        self.assertEqual([f.key for f in found], ["eu_online"])
+        self.assertIn("NPEA00019 version 02.01", found[0].text()[1] + found[0].text()[2])
 
     def test_a_build_that_went_well_says_nothing(self):
         self.build_log(SFO_0101.replace("01.01", "01.00") + "MemoryError (an old attempt)", code=0)

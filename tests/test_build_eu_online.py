@@ -1,8 +1,8 @@
-"""1.2.0 experiment: tools/build_game.py with the European Online edition (NPEA00019 v02.00 / v02.01) -- without the
-game. Off by default: both packages are named and refused before anything is decrypted, the program table is the
-1.1.9 one. With the opt-in (T5DR_EU_ONLINE=1, --eu-online): both programs are accepted, v02.01 with its .rap, v02.00
-with its free license and no .rap; the later steps follow the program (code end, sound core, offline stamp); a US or
-EU v01.00 build still needs its .rap (docs/EU.md "EU Online")."""
+"""tools/build_game.py with the European Online edition (NPEA00019 v02.00 / v02.01) -- without the game. Since 1.2.1
+both programs are accepted without an opt-in (1.2.0's T5DR_EU_ONLINE=1 / --eu-online changes nothing now): v02.01
+with its .rap, v02.00 with its free license and no .rap; the later steps follow the program (code end, sound core,
+the stamp); a US or EU v01.00 build still needs its .rap. The refusals name the edition the player has and what the
+port builds (a 1.2.0 player's log: "version 01.00" for a v02.01 package, "supports only ... v01.00") (docs/EU.md)."""
 import argparse
 import io
 import json
@@ -38,38 +38,38 @@ def load_build_game(opt_in):
 
 
 class Defaults(unittest.TestCase):
-    def tearDown(self):
-        self.assertNotIn("T5DR_EU_ONLINE", os.environ, "a test left the opt-in on for the tests after it")
+    def test_accepted_without_an_opt_in(self):
+        for opt_in in (False, True):
+            bg = load_build_game(opt_in)
+            self.assertEqual(list(bg.PROGRAMS), [bg.ELF_SHA1, EU_SHA1, E201_SHA1, E200_SHA1])   # the US one first
+            for sha, cid, ver in ((E201_SHA1, E201_CID, "02.01"), (E200_SHA1, E200_CID, "02.00")):
+                p = bg.PROGRAMS[sha]
+                self.assertIs(bg.program_of(content_id=cid), p)
+                self.assertNotIn(cid, bg.OTHER_VERSIONS)
+                self.assertIn(cid, bg.ALL_CONTENT_IDS)
+                self.assertEqual((p["version"], p["sfo"]["VERSION"], p["sfo"]["APP_VER"]), (ver, ver, "01.00"))
+                self.assertEqual((p["online"], p["pgo"], p["code_end"]), (True, False, "0x3D7884"))
+                self.assertNotIn("experimental", p)
+                self.assertEqual(len(p["spu_extra"].split("=")[1].split(",")), 13)
+            # title ID alone still means the EU v01.00 game (the first NPEA00019 entry)
+            self.assertIs(bg.program_of(title_id="NPEA00019"), bg.PROGRAMS[EU_SHA1])
+            self.assertIs(bg.US_PROGRAM, bg.PROGRAMS[bg.ELF_SHA1])
+            self.assertEqual(list(bg.OTHER_VERSIONS), ["UP0700-NPUB30009_00-0000000000000000"])
+        os.environ.pop("T5DR_EU_ONLINE", None)
 
-    def test_off_by_default(self):
+    def test_supported_text_names_every_edition_and_what_it_does(self):
         bg = load_build_game(False)
-        self.assertEqual(list(bg.PROGRAMS), [bg.ELF_SHA1, EU_SHA1])            # the 1.1.9 table
-        for cid in (E200_CID, E201_CID):
-            self.assertIn(cid, bg.OTHER_VERSIONS)
-            self.assertIsNone(bg.program_of(content_id=cid))
-            self.assertNotIn(cid, bg.ALL_CONTENT_IDS)
-        self.assertEqual(bg.OTHER_VERSIONS[E201_CID], "02.01 (Online)")
-        self.assertNotIn("v02.0", bg.SUPPORTED_TEXT)
+        t = bg.SUPPORTED_TEXT
+        self.assertIn("US PSN (NPUB30009 v01.00): online and offline", t)
+        self.assertIn("European PSN (NPEA00019 v02.00 or v02.01): offline, and online against other European Online", t)
+        self.assertIn("European PSN (NPEA00019 v01.00): offline only", t)
+        self.assertNotIn("01.01", t)
 
-    def test_opt_in_table(self):
-        bg = load_build_game(True)
-        self.assertEqual(list(bg.PROGRAMS)[:2], [bg.ELF_SHA1, EU_SHA1])         # the US one stays first
-        for sha, cid, ver in ((E201_SHA1, E201_CID, "02.01"), (E200_SHA1, E200_CID, "02.00")):
-            p = bg.PROGRAMS[sha]
-            self.assertIs(bg.program_of(content_id=cid), p)
-            self.assertNotIn(cid, bg.OTHER_VERSIONS)
-            self.assertEqual((p["version"], p["sfo"]["VERSION"], p["sfo"]["APP_VER"]), (ver, ver, "01.00"))
-            self.assertEqual((p["online"], p["pgo"], p["experimental"], p["code_end"]), (False, False, True, "0x3D7884"))
-            self.assertEqual(len(p["spu_extra"].split("=")[1].split(",")), 13)
-        # title ID alone still means the EU v01.00 game (the first NPEA00019 entry)
-        self.assertIs(bg.program_of(title_id="NPEA00019"), bg.PROGRAMS[EU_SHA1])
-        self.assertIs(bg.US_PROGRAM, bg.PROGRAMS[bg.ELF_SHA1])
-
-    def test_flag_enables_it(self):
+    def test_flag_is_kept_for_scripts(self):
         bg = load_build_game(False)
         with mock.patch.dict(os.environ, {}, clear=False):
             bg.enable_eu_online()
-            self.assertEqual(os.environ.get("T5DR_EU_ONLINE"), "1")             # the tools it starts see it too
+            self.assertEqual(os.environ.get("T5DR_EU_ONLINE"), "1")
         self.assertIn(E201_SHA1, bg.PROGRAMS)
 
     def test_sfo_version_text(self):
@@ -80,8 +80,6 @@ class Defaults(unittest.TestCase):
         us = bg.US_PROGRAM
         self.assertTrue(bg.sfo_matches({"VERSION": "01.00"}, us))
         self.assertFalse(bg.sfo_matches({"VERSION": "01.00", "APP_VER": "01.01"}, us))
-        with mock.patch.dict(os.environ, {}, clear=False):
-            bg.enable_eu_online()
         e = bg.PROGRAMS[E201_SHA1]
         self.assertTrue(bg.sfo_matches({"VERSION": "02.01", "APP_VER": "01.00"}, e))
         self.assertFalse(bg.sfo_matches({"VERSION": "02.00", "APP_VER": "01.00"}, e))
@@ -157,8 +155,7 @@ class Steps(unittest.TestCase):
         self.assertIs(self.bg.built_program(), self.bg.PROGRAMS[E201_SHA1])
         out = self.out.getvalue()
         self.assertIn("version 01.00 (VERSION 02.01)", out)
-        self.assertIn("accepted as an experiment", out)
-        self.assertIn("it plays offline", out)
+        self.assertIn("it plays offline, and online against other European Online games", out)
 
     def test_v0201_needs_its_rap(self):
         self.stage(E201_CID, self.SFO201)
@@ -182,8 +179,8 @@ class Steps(unittest.TestCase):
         with mock.patch.object(self.bg, "run", lambda *a, **k: self.fail("must not decrypt")), \
                 self.assertRaises(self.bg.BuildError) as cm:
             self.bg.step_decrypt(self.args(rap=rap))
-        self.assertIn("version 02.00 of the game", str(cm.exception))
-        self.assertIn("supports only version 02.01", str(cm.exception))
+        self.assertIn("This package is version 02.00 of the game (program content ID " + E201_CID, str(cm.exception))
+        self.assertIn("The port builds: ", str(cm.exception))
 
     def test_us_still_needs_its_rap(self):
         self.stage(self.bg.CONTENT_ID, {"TITLE": "T5", "TITLE_ID": "NPUB30009", "VERSION": "01.00"})
@@ -193,7 +190,7 @@ class Steps(unittest.TestCase):
         self.assertIn("Choose your license file", str(cm.exception))
 
     def test_us_free_self_is_not_a_reason_to_skip_the_rap(self):
-        # only the experimental programs may come without one
+        # only EU Online v02.00 may come without one
         self.stage(self.bg.CONTENT_ID, {"TITLE": "T5", "TITLE_ID": "NPUB30009", "VERSION": "01.00"}, free=True)
         _, run = self.decrypt_to(b"US program")
         with run, self.assertRaises(self.bg.BuildError) as cm:
@@ -236,43 +233,51 @@ class Steps(unittest.TestCase):
         self.assertEqual(dll[dll.index("--profile") + 1], "none")
         with open(self.bg.P.stamp) as f:
             stamp = json.load(f)
-        self.assertEqual((stamp["title"], stamp["elf_sha1"], stamp["version"], stamp["online"]),
-                         ("NPEA00019", E201_SHA1, "02.01", False))
+        self.assertEqual((stamp["title"], stamp["elf_sha1"], stamp["version"], stamp.get("online", True)),
+                         ("NPEA00019", E201_SHA1, "02.01", True))
 
 
 class StepsWithoutOptIn(Steps):
-    """The same packages without the opt-in: refused before decrypting, as in 1.1.9."""
+    """No opt-in (1.2.1: the default) -- the same as with 1.2.0's opt-in still set by a script."""
     opt_in = False
 
-    def test_v0201_with_its_rap(self):
-        rap = self.stage(E201_CID, self.SFO201)
-        with mock.patch.object(self.bg, "run", lambda *a, **k: self.fail("must not decrypt")), \
-                self.assertRaises(self.bg.BuildError) as cm:
-            self.bg.step_decrypt(self.args(rap=rap))
-        self.assertIn("version 02.01 (Online) of the game", str(cm.exception))
 
-    def test_v0201_needs_its_rap(self):
-        self.stage(E201_CID, self.SFO201)
-        with self.assertRaises(self.bg.BuildError) as cm:
-            self.bg.step_decrypt(self.args())
-        self.assertIn("Choose your license file", str(cm.exception))   # the 1.1.9 order: the .rap first
+class PlayerLog120(unittest.TestCase):
+    """A player's 1.2.0 build (launcher.log, release launcher): the EU Online v02.01 package was refused after 1 s with
+    the message OLD below. The same package (its PARAM.SFO as the player's: the title with the trademark sign,
+    VERSION 02.01, APP_VER 01.00, its .rap) builds now; another program of that content ID is named for what it is."""
+    SFO = {"TITLE": "TEKKEN\u21225 DARK RESURRECTION ONLINE", "TITLE_ID": "NPEA00019", "VERSION": "02.01",
+           "APP_VER": "01.00"}
+    OLD = ('This copy is a different version of the game: "TEKKEN\u21225 DARK RESURRECTION ONLINE" version 01.00, content '
+           'ID EP9000-NPEA00019_00-TEKKENRETAIL0000 (program SHA-1 ff07efe07be2...). The port supports only Tekken 5: '
+           'Dark Resurrection (PS3, EU PSN, NPEA00019 v01.00), content ID EP9000-NPEA00019_00-0000000000000000.')
 
-    def test_v0200_free_license_without_rap(self):
-        self.stage(E200_CID, self.SFO200, free=True)
-        with self.assertRaises(self.bg.BuildError) as cm:
-            self.bg.step_decrypt(self.args())
-        self.assertIn("Choose your license file", str(cm.exception))
+    def setUp(self):
+        self.t = StepsWithoutOptIn("test_v0201_with_its_rap")
+        self.t.setUp()
+        self.addCleanup(self.t.doCleanups)
 
-    def test_wrong_sfo_version_refused(self):
-        rap = self.stage(E201_CID, self.SFO200)
-        with mock.patch.object(self.bg, "run", lambda *a, **k: self.fail("must not decrypt")), \
-                self.assertRaises(self.bg.BuildError) as cm:
-            self.bg.step_decrypt(self.args(rap=rap))
-        self.assertIn("(Online) of the game", str(cm.exception))
+    def test_the_package_builds_now(self):
+        rap = self.t.stage(E201_CID, self.SFO)
+        calls, run = self.t.decrypt_to(b"EU201 program")
+        with run:
+            self.t.bg.step_decrypt(self.t.args(rap=rap))
+        self.assertIs(self.t.bg.built_program(), self.t.bg.PROGRAMS[E201_SHA1])
+        out = self.t.out.getvalue()
+        self.assertIn("program OK: SHA-1 " + E201_SHA1 + " (NPEA00019 v02.01, EU)", out)
+        self.assertNotIn("different version", out)
 
-    def test_steps_follow_the_program(self):
-        mkput(self.bg.P.elf, b"EU201 program")
-        self.assertIsNone(self.bg.built_program())                    # not a program this build knows
+    def test_another_program_of_that_content_id_is_named_for_what_it_is(self):
+        rap = self.t.stage(E201_CID, self.SFO)
+        calls, run = self.t.decrypt_to(b"some other program")
+        with run, self.assertRaises(self.t.bg.BuildError) as cm:
+            self.t.bg.step_decrypt(self.t.args(rap=rap))
+        msg = str(cm.exception)
+        self.assertNotEqual(msg, self.OLD)
+        self.assertIn("This copy's program is not one the port knows", msg)
+        self.assertIn("version 01.00 (VERSION 02.01)", msg)          # both numbers, not "01.00" alone
+        self.assertNotIn("supports only", msg)
+        self.assertIn("European PSN (NPEA00019 v02.00 or v02.01): offline, and online", msg)
 
 
 class SoundCoreThread(unittest.TestCase):

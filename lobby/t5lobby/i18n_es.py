@@ -572,10 +572,8 @@ MESSAGES = {
     "Package (.pkg)": "Paquete (.pkg)",
     "License (.rap)": "Licencia (.rap)",
     "Browse…": "Examinar…",
-    "Supported: Tekken 5: Dark Resurrection Online, PS3 PSN (US), NPUB30009 version 01.00 (online and offline), "
-    "and TEKKEN 5 DARK RESURRECTION, PS3 PSN (Europe), NPEA00019 version 01.00 (offline only for now) -- the "
-    "package file and the license (.rap) from your own account. Nothing leaves this PC.":
-        "Compatible: Tekken 5: Dark Resurrection Online, PS3 PSN (EE. UU.), NPUB30009 versión 01.00 (en línea y sin conexión), y TEKKEN 5 DARK RESURRECTION, PS3 PSN (Europa), NPEA00019 versión 01.00 (por ahora solo sin conexión) -- el archivo del paquete y la licencia (.rap) de tu propia cuenta. Nada sale de esta PC.",
+    "Supported: Tekken 5: Dark Resurrection Online, PS3 PSN (US), NPUB30009 version 01.00 (online and offline); Tekken 5: Dark Resurrection Online, PS3 PSN (Europe), NPEA00019 version 02.00 or 02.01 (offline, and online against other European Online games); TEKKEN 5 DARK RESURRECTION, PS3 PSN (Europe), NPEA00019 version 01.00 (offline only) -- the package file and the license (.rap) from your own account. Nothing leaves this PC.":
+        "Compatible: Tekken 5: Dark Resurrection Online, PS3 PSN (EE. UU.), NPUB30009 versión 01.00 (en línea y sin conexión); Tekken 5: Dark Resurrection Online, PS3 PSN (Europa), NPEA00019 versión 02.00 o 02.01 (sin conexión, y en línea contra otras ediciones Online europeas); TEKKEN 5 DARK RESURRECTION, PS3 PSN (Europa), NPEA00019 versión 01.00 (solo sin conexión) -- el archivo del paquete y la licencia (.rap) de tu propia cuenta. Nada sale de esta PC.",
     "Build tools on this PC": "Herramientas de compilación en esta PC",
     "Needed": "Necesario",
     "Found": "Encontrado",
@@ -1137,6 +1135,19 @@ MESSAGES = {
     "{supported}.":
         "Esta copia es otra versión del juego: “{title}” versión {version}, content ID {id} (SHA-1 del programa "
         "{sha}...). El port solo admite {game}, content ID {supported}.",
+    # 1.2.1: the build names the edition and every edition it builds (tools/build_game.py, docs/EU.md)
+    "This package is {edition} (program content ID {id}). The port cannot build this edition, whatever "
+    "the license (.rap): it is another build of the game. The port builds: {supported}.":
+        "Este paquete es {edition} (content ID del programa {id}). El port no puede compilar esta edición, "
+        "sea cual sea la licencia (.rap): es otra compilación del juego. El port compila: {supported}.",
+    "This package is version {version} of the game (program content ID {id}). The port cannot build this "
+    "version, whatever the license (.rap). The port builds: {supported}.":
+        "Este paquete es la versión {version} del juego (content ID del programa {id}). El port no puede "
+        "compilar esta versión, sea cual sea la licencia (.rap). El port compila: {supported}.",
+    "This copy's program is not one the port knows: \"{title}\" version {version}, content ID {id} (program "
+    "SHA-1 {sha}...). The port builds: {supported}.":
+        "El port no conoce el programa de esta copia: “{title}” versión {version}, content ID {id} (SHA-1 del "
+        "programa {sha}...). El port compila: {supported}.",
     # 1.1.5: the package's version, read before the build (tools/build_game.py, launcher/core.py)
     "This package is version {version} of the game (program content ID {id}). The port supports only version "
     "{supported}: {game}, content ID {cid}, {size} bytes. This version cannot be used, whatever the license "
@@ -1837,6 +1848,20 @@ MESSAGES = {
         "La versión europea ({title_id}) juega sus modos sin conexión. El juego en línea para ella llegará en una actualización posterior; hasta entonces el juego en línea necesita la versión de EE. UU. (NPUB30009). Los juegos europeos y de EE. UU. nunca juegan entre sí en línea.",
     "Build stamp: the game is {title_id}.":
         "Sello de la compilación: el juego es {title_id}.",
+    "{id}  ({size} bytes) -- the European Online edition: it plays offline, and online against other European Online games.":
+        "{id}  ({size} bytes) -- la edición Online europea: se juega sin conexión, y en línea contra otras ediciones Online europeas.",
+    "Your package is the European Online edition (version {version})":
+        "Tu paquete es la edición Online europea (versión {version})",
+    "Earlier versions of the launcher did not build it. This one does: choose the package and its license on the Build tab and press BUILD GAME. It plays offline, and online against other European Online games.":
+        "Las versiones anteriores del launcher no la compilaban. Esta sí: elige el paquete y su licencia en la pestaña Build y pulsa BUILD GAME. Se juega sin conexión, y en línea contra otras ediciones Online europeas.",
+    "build.log: an earlier build refused the European Online edition (version {version}).":
+        "build.log: una compilación anterior rechazó la edición Online europea (versión {version}).",
+    "Your game is the European Online edition":
+        "Tu juego es la edición Online europea",
+    "The European Online edition ({title_id} version {version}) plays its offline modes, and online against players who have the European Online edition too. European and US games do not play each other online.":
+        "La edición Online europea ({title_id} versión {version}) juega sus modos sin conexión, y en línea contra jugadores que también tienen la edición Online europea. Los juegos europeos y los de EE. UU. no juegan entre sí en línea.",
+    "Build stamp: the game is {title_id} version {version}.":
+        "Sello de compilación: el juego es {title_id} versión {version}.",
     "This Mac build has no online play. For a test match: tools/build_game.py --macos-online (docs/MACOS_ONLINE_TEST.md).":
         "Esta compilación para Mac no tiene juego en línea. Para una partida de prueba: tools/build_game.py --macos-online (docs/MACOS_ONLINE_TEST.md).",
     "Cannot read the build's identity: {error}": "No se puede leer la identidad de la build: {error}",

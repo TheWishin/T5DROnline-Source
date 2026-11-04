@@ -33,13 +33,14 @@
 #include "ppu_recomp.h"     /* ppu_context, vm_base */
 #include "netplay.h"
 #include "always_left.h"
+#include "../platform/t5_addr.h"   /* T5A(): this program's address of a US address (EU Online) */
 
 extern "C" void rsx_live_draw_set_always_left(int on);   /* ps3recomp patch 0086 (libs/video/rsx_live_draw.c) */
 extern "C" int32_t cellPadGetData(uint32_t port, void* data_guest);   /* ps3recomp libs/input/cellPad.c */
 
 namespace {
 
-constexpr uint32_t kPhase = 0x1008F070u, kGameType = 0x1008EBACu;
+const uint32_t kPhase = T5A(0x1008F070u), kGameType = T5A(0x1008EBACu);
 
 std::atomic<bool> g_active{ false };
 std::atomic<uint32_t> g_mirrored_port{ 1 };
@@ -74,7 +75,7 @@ inline uint32_t rd32(uint32_t a) { uint32_t v; memcpy(&v, vm_base + a, 4); retur
 inline uint16_t rd16(uint32_t a) { uint16_t v; memcpy(&v, vm_base + a, 2); return _byteswap_ushort(v); }
 inline void wr16(uint32_t a, uint16_t x) { x = _byteswap_ushort(x); memcpy(vm_base + a, &x, 2); }
 inline float rdf(uint32_t a) { const uint32_t u = rd32(a); float f; memcpy(&f, &u, 4); return f; }
-constexpr uint32_t kFighter[2] = { 0x10090030u, 0x10090900u };   /* +0x10 x, +0x18 z (training_logic.h) */
+const uint32_t kFighter[2] = { T5A(0x10090030u), T5A(0x10090900u) };   /* +0x10 x, +0x18 z (training_logic.h) */
 
 al::Net net_mode()
 {

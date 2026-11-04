@@ -453,9 +453,16 @@ def describe_pkg(path, out_dir=None):
     facts = _package_facts(path, peek_keys_path(out_dir))
     # 1.1.9: the US release (NPUB30009) and the European one (NPEA00019), each version 01.00 (build_game.PROGRAMS)
     if facts and facts["title_id"] in build_game.TITLE_IDS:
-        want = build_game.program_of(title_id=facts["title_id"])
-        ver, prog = facts["version"], facts["program"]
-        ver = build_game.OTHER_VERSIONS.get(prog, ver) if ver in ("?", want["version"]) else ver
+        prog = facts["program"]
+        # (by the program's own content ID first: NPEA00019 is the EU v01.00 game and the EU Online edition)
+        want = build_game.program_of(content_id=prog, title_id=facts["title_id"])
+        ver = facts["version"]
+        if prog in build_game.OTHER_VERSIONS:
+            ver = build_game.OTHER_VERSIONS[prog]
+        elif facts.get("sfo") is not None and not build_game.sfo_matches(facts["sfo"], want):
+            ver = facts["sfo"].get("VERSION", ver) if want.get("sfo") else ver
+        else:
+            ver = "?"
         if ver not in ("?", want["version"]):
             return False, "error", t("{id}  ({size} bytes) -- version {version} of the game. The port supports only "
                                      "version {supported}; the build will refuse this package.", id=cid,
@@ -465,6 +472,9 @@ def describe_pkg(path, out_dir=None):
                                    "one ({supported}). The build will most likely refuse it.", id=cid,
                                    size=f"{size:,}", program=prog, supported=want["content_ids"][0])
     prog = build_game.program_of(content_id=cid)
+    if prog and prog["key"].startswith("eu_online"):
+        return True, "ok", t("{id}  ({size} bytes) -- the European Online edition: it plays offline, and online "
+                             "against other European Online games.", id=cid, size=f"{size:,}")
     if prog and not prog["online"]:
         return True, "ok", t("{id}  ({size} bytes) -- the European version: it plays offline only for now. Online play "
                              "for it comes in a later update.",

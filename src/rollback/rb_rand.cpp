@@ -72,6 +72,7 @@
 #include "ppu_recomp.h"
 #include "rb.h"
 #include "rb_detour.h"
+#include "../platform/t5_addr.h"   /* T5A(): this program's address of a US address (EU Online) */
 
 extern "C" uint32_t t5_df_mode_cur(void);    /* src/directfight/df_fight.cpp: the mode manager's current / next mode */
 extern "C" uint32_t t5_df_mode_next(void);
@@ -79,9 +80,9 @@ extern "C" uint32_t t5_df_mode_next(void);
 namespace rb {
 
 namespace {
-constexpr uint32_t kRand = 0x369228u;        /* C library rand(): traced only */
-constexpr uint32_t kTlsRand = 0x3AFC3Cu;     /* the TLS generator */
-constexpr uint32_t kSceneTask = 0x10BD8u;    /* the scene task's update: menus, game mode, fight */
+const uint32_t kRand = T5A(0x369228u);        /* C library rand(): traced only */
+const uint32_t kTlsRand = T5A(0x3AFC3Cu);     /* the TLS generator */
+const uint32_t kSceneTask = T5A(0x10BD8u);    /* the scene task's update: menus, game mode, fight */
 constexpr uint32_t kTlsSeeded = 0x10094u, kTlsLast = 0x10098u, kTlsTable = 0x1009Cu;
 constexpr uint32_t kA = 0x19660Du, kC = 0x3C6EF35Fu;
 
@@ -200,7 +201,7 @@ void trace_tls(ppu_context* ctx, bool priv)
         std::string c = guest_backtrace(24);
         if (chains[c]++ == 0 && trace_log())
             fprintf(g_log, "TLS rng chain (frame %u, mode %u->%u, phase %u%s): %s\n", sim_frame(), t5_df_mode_cur(), t5_df_mode_next(),
-                    _byteswap_ulong(*(const uint32_t*)(vm_base + 0x1008F070u)), priv ? ", private" : "", c.c_str());
+                    _byteswap_ulong(*(const uint32_t*)(vm_base + T5A(0x1008F070u))), priv ? ", private" : "", c.c_str());
     }
     trace_dump_locked();
 }
@@ -225,7 +226,7 @@ void h_scene(ppu_context* ctx)
  * 0x100A0990 / 0x100A3B10 / 0x100A3B90 apart from ~1,000-2,000 frames into the
  * fight, no rollback near). The task now steps a private copy: the scene's
  * word is swapped out while it runs. */
-constexpr uint32_t kSoundTask = 0xA9140u, kSceneLcg = 0x1008F0C4u;
+const uint32_t kSoundTask = T5A(0xA9140u), kSceneLcg = T5A(0x1008F0C4u);
 GuestFn o_sound_task = nullptr;
 uint32_t g_sound_lcg = 0;
 bool g_sound_lcg_init = false;
@@ -263,11 +264,11 @@ void h_tls_rand(ppu_context* ctx)
 /* T5_RAND_TRACE=4: every draw of the 48-bit-style LCG 0xE859C (state * 0xDEECE66D
  * + 0xB; the scene's generator at 0x1008F0D0 and any other state word), with
  * the frame, the state before and the caller chain (rb_lcg.log) */
-constexpr uint32_t kLcg3 = 0xE859Cu;
+const uint32_t kLcg3 = T5A(0xE859Cu);
 GuestFn o_lcg3 = nullptr;
 /* the actor each enclosing fight function was called for (r3), logged with a draw */
-constexpr uint32_t kCtxFns[] = { 0x15A40u, 0x1958Cu, 0x19944u, 0xFD094u, 0xEF688u, 0x14618u, 0xF4690u, 0xF1A74u,
-                                 0xE9284u, 0xDB2A4u, 0xEF7BCu, 0xF0594u, 0x39964u, 0x17768u };
+const uint32_t kCtxFns[] = { T5A(0x15A40u), T5A(0x1958Cu), T5A(0x19944u), T5A(0xFD094u), T5A(0xEF688u), T5A(0x14618u), T5A(0xF4690u), T5A(0xF1A74u),
+                                 T5A(0xE9284u), T5A(0xDB2A4u), T5A(0xEF7BCu), T5A(0xF0594u), T5A(0x39964u), T5A(0x17768u) };
 constexpr int kCtxN = (int)(sizeof kCtxFns / sizeof kCtxFns[0]);
 GuestFn o_ctx[kCtxN];
 struct CtxE { uint32_t fn, r3; };
@@ -305,7 +306,7 @@ GuestFn o_res = nullptr, o_react = nullptr;
 void h_res(ppu_context* ctx)
 {
     if (g_lcg_log) {
-        const uint32_t pf = gr32(0x4686ECu), pc = gr32(0x4686E4u), pl = gr32(0x4686E8u), pm = gr32(0x4686F0u);
+        const uint32_t pf = gr32(T5A(0x4686ECu)), pc = gr32(T5A(0x4686E4u)), pl = gr32(T5A(0x4686E8u)), pm = gr32(T5A(0x4686F0u));
         fprintf(g_lcg_log, "%u RES flag %08X ctr %08X p1 %08X p2 %08X mode %08X\n", sim_frame(), pf ? gr32(pf) : 0, pc ? gr32(pc) : 0,
                 pl ? gr32(pl) : 0, pl ? gr32(pl + 4) : 0, pm ? gr32(pm + 0x28) : 0);
     }
@@ -335,7 +336,7 @@ void rand_install()
     { const char* e = getenv("T5_RAND_TRACE"); g_trace = (e && *e >= '1' && *e <= '4') ? *e - '0' : 0; }
     if (g_trace == 4) { note("LCG 0x%06X: draws traced (rb_lcg.log): %s", kLcg3, detour(kLcg3, h_lcg3, &o_lcg3) ? "yes" : "not detourable");
                       g_lcg_log = fopen("rb_lcg.log", "w");
-                      note("  0x17744 %d, 0xF1A28 %d", detour(0x17744u, h_res, &o_res), detour(0xF1A28u, h_react, &o_react));
+                      note("  0x17744 %d, 0xF1A28 %d", detour(T5A(0x17744u), h_res, &o_res), detour(T5A(0xF1A28u), h_react, &o_react));
                       install_ctx(std::make_integer_sequence<int, kCtxN>{}); g_trace = 0; }
     if (g_trace) note("rand(): calls traced (T5_RAND_TRACE=%d): %s", g_trace, detour(kRand, h_rand, &o_rand) ? "yes" : "not detourable");
     if (!g_on && !g_trace) return;

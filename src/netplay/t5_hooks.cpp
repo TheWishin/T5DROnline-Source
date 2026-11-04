@@ -67,7 +67,8 @@
  */
 #define WIN32_LEAN_AND_MEAN
 #include "../platform/t5_win.h"
-#include "../platform/t5_game.h"   /* hooks_ok: only for NPUB30009 v01.00 */
+#include "../platform/t5_game.h"   /* hooks_ok: the US program and EU Online */
+#include "../platform/t5_addr.h"   /* T5A(): this program's address of a US address */
 #if defined(_WIN32)
 #include <bcrypt.h>
 #endif
@@ -156,36 +157,36 @@ extern np_lv2_fn g_lv2_syscalls[];                   /* lv2_syscall_table { hand
 namespace {
 
 /* ---- guest addresses (NPUB30009 v01.00) ---------------------------------- */
-constexpr uint32_t kKeyreadSemPtr = 0x104CB5C0;  /* u32 semaphore id */
-constexpr uint32_t kKeyreadQuit   = 0x104CCDF4;  /* keyread object + 0x1814: thread exit flag */
-constexpr uint32_t kFrameSemPtr   = 0x106D4A30;  /* graphics object + 0x30: per-frame semaphore id */
-constexpr uint32_t kKeyreadObj    = 0x104CB5E0;  /* keyread thread's object (arg) */
-constexpr uint32_t kRingResetFlag = 0x104CCDF8;
-constexpr uint32_t kRing          = 0x104CCDFC;  /* u16 P1[16], u16 P2[16] */
-constexpr uint32_t kRingWriteIdx  = 0x104CCE3C;
-constexpr uint32_t kRingReadIdx   = 0x104CCE40;
-constexpr uint32_t kFrameClock    = 0x106D4D88;  /* u64 read by the pad repeat logic; +8: vblank count */
-constexpr uint32_t kTOC           = 0x470540;    /* main TOC (r2) */
-constexpr uint32_t kMatchOver     = 0x1008EBD5;  /* u8: 0 during a match, set when it is decided */
-constexpr uint32_t kWinsP1        = np::MatchScore::kRoundWinsP1;  /* u8: rounds won by P1 in this match (match_score.h) */
-constexpr uint32_t kWinsP2        = np::MatchScore::kRoundWinsP2;  /* u8: rounds won by P2 */
-constexpr uint32_t kWinnerIdx     = 0x1008EBD6;  /* u8: 0 = P1, 1 = P2, set together with kMatchOver (seen in the dry run) */
-constexpr uint32_t kFnTickCounter = 0x09A204;
-constexpr uint32_t kFnPadUpdate   = 0x08F3A4;
-constexpr uint32_t kFnRingReset   = 0x120764;
-constexpr uint32_t kFnPortMask    = 0x08F6F0;
-constexpr uint32_t kFnRingAdvance = 0x12071C;
-constexpr uint32_t kFnTickTail    = 0x13F91C;
-constexpr uint32_t kFnMtSeed      = 0x066784;    /* init_genrand(s): Mersenne Twister, state 0x10095168 */
-constexpr uint32_t kFnSrand       = 0x36921C;    /* srand(s): the C library rand() (0x369228), state 0x1074F218 */
-constexpr uint32_t kConfig        = 0x1008EBAC;  /* battle config: +0 game type (4 = VS BATTLE) */
-constexpr uint32_t kRoundsToWin   = 0x1008EBD4;  /* battle config +0x28: rounds to win (u8) */
+const uint32_t kKeyreadSemPtr = T5A(0x104CB5C0);  /* u32 semaphore id */
+const uint32_t kKeyreadQuit   = T5A(0x104CCDF4);  /* keyread object + 0x1814: thread exit flag */
+const uint32_t kFrameSemPtr   = T5A(0x106D4A30);  /* graphics object + 0x30: per-frame semaphore id */
+const uint32_t kKeyreadObj    = T5A(0x104CB5E0);  /* keyread thread's object (arg) */
+const uint32_t kRingResetFlag = T5A(0x104CCDF8);
+const uint32_t kRing          = T5A(0x104CCDFC);  /* u16 P1[16], u16 P2[16] */
+const uint32_t kRingWriteIdx  = T5A(0x104CCE3C);
+const uint32_t kRingReadIdx   = T5A(0x104CCE40);
+const uint32_t kFrameClock    = T5A(0x106D4D88);  /* u64 read by the pad repeat logic; +8: vblank count */
+const uint32_t kTOC           = T5A(0x470540);    /* main TOC (r2) */
+const uint32_t kMatchOver     = T5A(0x1008EBD5);  /* u8: 0 during a match, set when it is decided */
+const uint32_t kWinsP1        = np::MatchScore::kRoundWinsP1;  /* u8: rounds won by P1 in this match (match_score.h) */
+const uint32_t kWinsP2        = np::MatchScore::kRoundWinsP2;  /* u8: rounds won by P2 */
+const uint32_t kWinnerIdx     = T5A(0x1008EBD6);  /* u8: 0 = P1, 1 = P2, set together with kMatchOver (seen in the dry run) */
+const uint32_t kFnTickCounter = T5A(0x09A204);
+const uint32_t kFnPadUpdate   = T5A(0x08F3A4);
+const uint32_t kFnRingReset   = T5A(0x120764);
+const uint32_t kFnPortMask    = T5A(0x08F6F0);
+const uint32_t kFnRingAdvance = T5A(0x12071C);
+const uint32_t kFnTickTail    = T5A(0x13F91C);
+const uint32_t kFnMtSeed      = T5A(0x066784);    /* init_genrand(s): Mersenne Twister, state 0x10095168 */
+const uint32_t kFnSrand       = T5A(0x36921C);    /* srand(s): the C library rand() (0x369228), state 0x1074F218 */
+const uint32_t kConfig        = T5A(0x1008EBAC);  /* battle config: +0 game type (4 = VS BATTLE) */
+const uint32_t kRoundsToWin   = T5A(0x1008EBD4);  /* battle config +0x28: rounds to win (u8) */
 /* The lwmutex the main thread holds across its per-frame wait (it guards the
  * frame clock 0x106D4D88; the keyread tick takes it too). sys_lwmutex_t as the
  * runtime models it: owner (guest tid) at +0, recursion count at +0xC. */
-constexpr uint32_t kFrameLwm      = 0x106D4D00;
-constexpr uint32_t kFnLwmLock     = 0x3C6F00;    /* sysPrxForUser import stubs: sys_lwmutex_lock(lwm, timeout) */
-constexpr uint32_t kFnLwmUnlock   = 0x3C6F20;    /*                             sys_lwmutex_unlock(lwm) */
+const uint32_t kFrameLwm      = T5A(0x106D4D00);
+const uint32_t kFnLwmLock     = T5A(0x3C6F00);    /* sysPrxForUser import stubs: sys_lwmutex_lock(lwm, timeout) */
+const uint32_t kFnLwmUnlock   = T5A(0x3C6F20);    /*                             sys_lwmutex_unlock(lwm) */
 
 constexpr uint32_t NID_cellPadInit    = 0x1CF98800;
 constexpr uint32_t NID_cellPadGetInfo = 0x3AAAD464;
@@ -223,6 +224,14 @@ std::vector<Range> parse_ranges(const char* spec)
         while (*p == ',' || *p == ' ') p++;
     }
     return r;
+}
+
+/* The default ranges below are US addresses: this program's counterparts (t5_addr.h). Ranges given in the
+ * environment (T5_NET_HASH...) are the running program's own addresses. */
+std::vector<Range> program_ranges(std::vector<Range> v)
+{
+    for (Range& r : v) { const t5game::Range32 m = t5game::region(r.addr, r.len); r.addr = m.addr; r.len = m.len; }
+    return v;
 }
 
 /* ---- state ----------------------------------------------------------------- */
@@ -274,7 +283,7 @@ bool g_await_load = false;  /* direct fight: the end of the fight's loading is s
  * played met a fresh one, in rollback and in lockstep, on main too (reset-fix
  * runs ff_asu_main, ff_asu6, ff_asu6ls: 1,641-4,128 mismatching frames). From
  * the end of the loading the intros run a fixed 28 frames on both PCs. */
-bool fight_loaded_now() { const uint32_t p = rd32(0x1008F070u); return p >= 11 && p <= 17; }
+bool fight_loaded_now() { const uint32_t p = rd32(T5A(0x1008F070u)); return p >= 11 && p <= 17; }
 bool g_idle = false;      /* ticks are ours (keyread parked) but no lockstep runs: between two sessions */
 /* In-game select (docs/DIRECTFIGHT.md "Character select in the game"): between
  * two matches of a session the lockstep pauses -- each player picks on the
@@ -341,7 +350,10 @@ const char* kDefaultHash =
     "10053578:4,"       /* ... and its index */
     "10076920:4,"       /* the LCG at 0x1621D0 */
     "1074F218:10C,"     /* C library rand() state and its two lagged generators */
-    "1008E000:4000,"    /* round state and both fighters (0x8D0-byte blocks from ~0x1008F800) */
+    /* round state and both fighters (0x8D0-byte blocks from ~0x1008F800), 0x1008E000..0x10092000 in the three
+     * parts that moved by different amounts in the EU Online program (t5_addr.h; one FNV over the bytes in order,
+     * so the US hash is the one of the whole block) */
+    "1008E000:B80,1008EB80:550,1008F0D0:2F30,"
     "10099600:600,"     /* fight state next to the pad blocks */
     "100A0900:200,"
     "100A3B00:300";
@@ -409,6 +421,18 @@ const char* kDefaultHashSkip =
      * stayed identical (docs/NETPLAY.md "Stage 27: the shadow box at the
      * fight's start"). */
     "100996B4:24";
+/* Cross-play (docs/EU.md "Cross-play"): a US game against an EU Online one hashes the same variables in the same
+ * order in both programs -- the default regions in the US program's layout, each one mapped as a whole to the other
+ * program (t5_addr.h spans: one shift per region), without the fight-state block's first 0xB80 bytes (twenty small
+ * objects laid out differently in EU Online) and without the words that hold an address (their values differ by
+ * the program's layout, not by the fight). Used only when the HELLO says the peer is another program. */
+const char* kCrossHash =
+    "10099F24:70,104CCDFC:40,106D4D88:8,10095168:9C0,10053578:4,10076920:4,1074F218:10C,"
+    "1008EB80:550,1008F0D0:2F30,10099600:600,100A0900:200,100A3B00:300";
+const char* kCrossHashSkip = "";   /* added to kDefaultHashSkip: the address words of the regions above */
+bool g_hash_from_env = false;      /* T5_NET_HASH given: the ranges are this program's own, never switched */
+int g_hash_cross = 0;              /* the ranges in use: 0 this program's own, 1 the cross-program ones */
+
 /* The fighters' side flags stay IN the hash: +0x1C2/+0x1C3 of the blocks at
  * 0x10090040 and 0x10090910 (bytes 0x10090202/03, 0x10090AD2/D3), written by
  * 0x808D8 from the camera-projected screen x above (+0x6C8, left out): which
@@ -519,6 +543,16 @@ uint64_t state_hash(std::string* parts = nullptr)
 {
     uint64_t h = 1469598103934665603ull;
     static std::vector<uint8_t> buf;
+    if (!g_hash_from_env && (int)np::cross_program() != g_hash_cross) {
+        g_hash_cross = np::cross_program() ? 1 : 0;
+        g_hash_ranges = program_ranges(parse_ranges(g_hash_cross ? kCrossHash : kDefaultHash));
+        if (!getenv("T5_NET_HASH_SKIP")) g_hash_skip = program_ranges(parse_ranges(kDefaultHashSkip));
+        if (g_hash_cross) {
+            std::vector<Range> x = program_ranges(parse_ranges(kCrossHashSkip));
+            g_hash_skip.insert(g_hash_skip.end(), x.begin(), x.end());
+        }
+        np::note("state hash: %s", g_hash_cross ? "cross-program (the US program's layout, docs/EU.md)" : "this program's own");
+    }
     for (const Range& r : g_hash_ranges) {
         buf.assign(vm_base + r.addr, vm_base + r.addr + r.len);
         for (const Range& k : g_hash_skip) {   /* blank the noisy words */
@@ -605,11 +639,11 @@ void dump_memory(uint32_t f)
  * is a fixed value on both sides instead (rb_net.cpp does the same); a
  * difference that lasts reaches the fight, where every frame is compared. */
 constexpr uint64_t kIntroHash = 0x4F52544E49ull;   /* "INTRO" */
-bool intro_phase_now() { return rd32(0x1008F070u) <= 12; }
+bool intro_phase_now() { return rd32(T5A(0x1008F070u)) <= 12; }
 /* the boundaries that take no input: phase 7..12, or anything up to 12 while
  * the game mode runs (its first frames: 0, 2) -- not the select screens (the
  * driver's presses), see rb_net.cpp intro_phase */
-bool intro_input_now() { const uint32_t p = rd32(0x1008F070u); return p <= 12 && (p >= 7 || t5_df_game_mode()); }
+bool intro_input_now() { const uint32_t p = rd32(T5A(0x1008F070u)); return p <= 12 && (p >= 7 || t5_df_game_mode()); }
 
 /* ---- No pause online (docs/NETPLAY.md "No pause online") ---------------------
  * START opens the game's pause menu in a VS fight (RETURN TO GAME PLAY, COMMAND
@@ -631,7 +665,7 @@ bool g_directfight = false;    /* T5_FIGHT / T5_FIGHT_FILE / persistent game / r
 /* The round's state (u32; build/nopause probes p7, s1760, s1900: 2 before round 1, 4 READY/FIGHT, 5
  * fighting, 6 the KO frame, 8 KO slow motion, 9 the replay -- START skips it --, 0xC to the next
  * round, while the fight phase word stays 17) */
-constexpr uint32_t kRoundState = 0x1009322C;
+const uint32_t kRoundState = T5A(0x1009322C);
 np::NoPauseRule g_np_rule;
 uint32_t g_np_cut[2], g_np_kept; /* this match: live frames whose START was taken out (per player), kept */
 uint32_t g_np_skip;              /* ... and live frames the rule pressed START in (both players had, in a skip part) */
@@ -647,7 +681,7 @@ void no_pause_reset() { g_np_rule.reset(); g_np_live = UINT32_MAX; training_rese
 
 np::NoPauseRule::State np_state_now()
 {
-    return { t5_df_game_mode() != 0, rd32(0x1008F070u), rd8(kMatchOver) != 0, t5_df_mode_next(), rd32(kRoundState) };
+    return { t5_df_game_mode() != 0, rd32(T5A(0x1008F070u)), rd8(kMatchOver) != 0, t5_df_mode_next(), rd32(kRoundState) };
 }
 
 /* in[] = frame f's inputs, game memory = the state at f's boundary. live: the
@@ -729,9 +763,9 @@ void no_pause_report(uint32_t f, const char* what)
  * every frame that runs (live, re-simulated, played back), after its inputs are final for that run, like the
  * no-pause rule. The health handicap needs nothing here: the driver writes it into the battle config before the
  * game mode's set-up reads it (df_fight.cpp). */
-constexpr uint32_t kFighter0 = 0x10090030, kFighterStride = 0x8D0;   /* the fighter blocks (training_logic.h) */
+const uint32_t kFighter0 = T5A(0x10090030), kFighterStride = 0x8D0;   /* the fighter blocks (training_logic.h) */
 constexpr uint32_t kFtHealth = 0x6BC, kFtHealthMax = 0x6C0;          /* 16.16 fixed point */
-constexpr uint32_t kRoundTimer = 0x1008F054;                         /* frames left in the round */
+const uint32_t kRoundTimer = T5A(0x1008F054);                         /* frames left in the round */
 np::TrainingRule g_train;
 uint32_t g_train_refills[2], g_train_saves[2], g_train_noted = 0;
 
@@ -1043,8 +1077,8 @@ double drain_wait(uint32_t f)
  * 0x35C014, the geometry thread parked, the draw manager idle).
  * NU::Draw::RequestManager (thread 4, object 0x1074BE80) is idle at the
  * boundary by construction (0x357714 waits for it); it is only counted. */
-constexpr uint32_t kGeomMgr = 0x10742880u;   /* +8 busy count, +0x50 wake semaphore id */
-constexpr uint32_t kDrawMgr = 0x1074BE80u;   /* +0x98 wake counter (value u64 at +0xA8): 1 = working through its list */
+const uint32_t kGeomMgr = T5A(0x10742880u);   /* +8 busy count, +0x50 wake semaphore id */
+const uint32_t kDrawMgr = T5A(0x1074BE80u);   /* +0x98 wake counter (value u64 at +0xA8): 1 = working through its list */
 bool g_side_drain = true;                    /* T5_RB_SIDE_DRAIN=0: count only, do not wait */
 std::atomic<uint32_t> g_geom_sem{ 0 };
 uint64_t g_sd_geom = 0, g_sd_draw = 0, g_sd_us = 0, g_sd_max_us = 0, g_sd_frames = 0;
@@ -1360,7 +1394,7 @@ void apply_rounds()
 void skip_frames(uint32_t d)
 {
     wr64(kFrameClock, rd64(kFrameClock) + d);
-    for (uint32_t a : { 0x1008EB9Cu, 0x1008F07Cu, 0x1009442Cu }) wr32(a, rd32(a) + d);
+    for (uint32_t a : { T5A(0x1008EB9Cu), T5A(0x1008F07Cu), T5A(0x1009442Cu) }) wr32(a, rd32(a) + d);
 }
 
 /* The game's per-frame counters and input ring the same on both PCs (a fresh
@@ -1368,7 +1402,7 @@ void skip_frames(uint32_t d)
 void equal_counters()
 {
     wr64(kFrameClock, 0x10000);
-    for (uint32_t a : { 0x1008EB9Cu, 0x1008F07Cu, 0x1009442Cu }) wr32(a, 0x10000);
+    for (uint32_t a : { T5A(0x1008EB9Cu), T5A(0x1008F07Cu), T5A(0x1009442Cu) }) wr32(a, 0x10000);
     wr32(kRingResetFlag, 1);
 }
 
@@ -1472,7 +1506,7 @@ void reseed(uint32_t seed)
     gcall(kFnMtSeed, seed);
     gcall(kFnSrand, seed ^ 0x5A5A5A5Au);
     rb::tls_rand_reseed(g_main_tls, seed ^ 0x3C6EF35Fu, true);   /* and the private streams (stage 27's crowd timers) */
-    wr32(0x1008F0C4u, seed ^ 0x00003039u);   /* the scene's LCG (x -> 5x + 3, rb_rand.cpp) */
+    wr32(T5A(0x1008F0C4u), seed ^ 0x00003039u);   /* the scene's LCG (x -> 5x + 3, rb_rand.cpp) */
 }
 
 /* ---- replays: what happens at a sync point (docs/REPLAYS.md) -----------------
@@ -1495,7 +1529,7 @@ void sync_counters()
     uint64_t clock; uint32_t c[3];
     if (!rp::play_barrier_state(np::barriers() - 1, &clock, c)) return;
     wr64(kFrameClock, clock);
-    wr32(0x1008EB9Cu, c[0]); wr32(0x1008F07Cu, c[1]); wr32(0x1009442Cu, c[2]);
+    wr32(T5A(0x1008EB9Cu), c[0]); wr32(T5A(0x1008F07Cu), c[1]); wr32(T5A(0x1009442Cu), c[2]);
 }
 void sync_record(uint32_t kind, uint32_t f, uint32_t nf, uint32_t seed)
 {
@@ -1505,7 +1539,7 @@ void sync_record(uint32_t kind, uint32_t f, uint32_t nf, uint32_t seed)
     b.has_state = kind != rp::kPause;
     if (b.has_state) {
         b.clock = rd64(kFrameClock);
-        b.c[0] = rd32(0x1008EB9Cu); b.c[1] = rd32(0x1008F07Cu); b.c[2] = rd32(0x1009442Cu);
+        b.c[0] = rd32(T5A(0x1008EB9Cu)); b.c[1] = rd32(T5A(0x1008F07Cu)); b.c[2] = rd32(T5A(0x1009442Cu));
     }
     rp::rec_barrier(b);
 }
@@ -1647,8 +1681,12 @@ extern "C" volatile int g_lat_log_on;
 void offline_frame(ppu_context* ctx)
 {
     if (g_offline_gave_up) return;
+    static const bool no_takeover = getenv("T5_TEST_NO_TAKEOVER") != nullptr;   /* TEMP bisect */
+    static const uint32_t takeover_at = getenv("T5_TEST_TAKEOVER_AT") ? (uint32_t)atoi(getenv("T5_TEST_TAKEOVER_AT")) : 0;
+    if (no_takeover) return;
     if (!g_active) {
         g_boot_frames++;
+        if (g_boot_frames < takeover_at) return;
         if (!rd32(kKeyreadSemPtr)) return;
         if (!g_swallow.load()) {
             g_swallow = true;
@@ -1670,7 +1708,7 @@ void offline_frame(ppu_context* ctx)
                  "T5_LATE_INPUT=0 leaves it to the game's keyread thread)", g_boot_frames);
     }
     if (ctx->thread_id != g_main_tid) return;
-    if (g_lat_log_on) lat_log_('B', "%u", rd32(0x1008EB9Cu));   /* PS3_LATENCY_LOG: the pads are read now */
+    if (g_lat_log_on) lat_log_('B', "%u", rd32(T5A(0x1008EB9Cu)));   /* PS3_LATENCY_LOG: the pads are read now */
     keyread_tick();
 }
 
@@ -2254,7 +2292,8 @@ void h_cellPadInit(ppu_context* ctx)
     rb::sndheap_install();
     rb::net::offer();   /* rollback in the HELLO unless T5_RB_MODE=off (rb_net.cpp offered_by_env) */
     const char* hs = getenv("T5_NET_HASH");
-    g_hash_ranges = parse_ranges(hs ? hs : kDefaultHash);
+    g_hash_ranges = hs ? parse_ranges(hs) : program_ranges(parse_ranges(kDefaultHash));
+    g_hash_from_env = hs != nullptr;
     { const char* dd = getenv("T5_NET_DESYNC_DUMP"); const int n = dd ? atoi(dd) : 0;
       g_desync_dump = n >= 1; if (n > 1) g_desync_dump_max = (uint32_t)n; }
     InitializeCriticalSection(&g_result_cs);
@@ -2262,7 +2301,7 @@ void h_cellPadInit(ppu_context* ctx)
     { const char* t = getenv("T5_NET_TAKEOVER_TEST"); g_takeover_test = t && *t == '1'; }
     if (!g_on_lost_idle) np::set_stuck_handler(stuck_handler);
     const char* hk = getenv("T5_NET_HASH_SKIP");
-    g_hash_skip = parse_ranges(hk ? hk : (hs ? "" : kDefaultHashSkip));
+    g_hash_skip = hk ? parse_ranges(hk) : hs ? std::vector<Range>() : program_ranges(parse_ranges(kDefaultHashSkip));
     if (const char* p = getenv("T5_NET_PAGEHASH")) {
         std::vector<Range> pr = parse_ranges(p);
         if (!pr.empty()) {

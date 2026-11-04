@@ -181,6 +181,7 @@ void     rb_set_lead(int lead);
 int      rb_peer_lead();
 uint32_t rb_mismatches();
 uint32_t rb_peer_ack();                          /* the peer has our inputs for frames < this */
+bool cross_program();                            /* the peer is another program (US vs EU Online, HELLO bits 16-19) */
 
 /* While on, the local player's sample is exactly `buttons` (direct-fight menu
  * driving during lockstep; see t5_netplay_inject). */

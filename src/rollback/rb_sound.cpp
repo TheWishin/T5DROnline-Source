@@ -69,14 +69,15 @@
 #include "sys_ppu_thread.h"
 #include "rb.h"
 #include "rb_detour.h"
+#include "../platform/t5_addr.h"   /* T5A(): this program's address of a US address (EU Online) */
 
 extern "C" uint8_t* vm_base;
 
 namespace rb {
 
 namespace {
-constexpr uint32_t kGamePlaySE = 0x000AC594;   /* game sound manager: play(group, id, ch, flags, pos, handle_out) */
-constexpr uint32_t kLibTick    = 0x0032819C;   /* sound library: per-frame update of the 192 tracks */
+const uint32_t kGamePlaySE = T5A(0x000AC594);   /* game sound manager: play(group, id, ch, flags, pos, handle_out) */
+const uint32_t kLibTick    = T5A(0x0032819C);   /* sound library: per-frame update of the 192 tracks */
 GuestFn o_play = nullptr, o_tick = nullptr;
 SoundMode g_mode = SoundMode::Skip;
 bool g_installed = false, g_trace_on = false;
@@ -179,16 +180,16 @@ void h_play(ppu_context* ctx)
 enum class Kind { Stop, Query, Event };
 struct ApiFn { uint32_t addr; int nargs; Kind kind; const char* name; };
 const ApiFn kApi[] = {
-    { 0x00328CC4, 1, Kind::Stop,  "stop group" },        /* from 0xACABC / 0xAD1C8 (round transitions, throws) */
-    { 0x00328D68, 1, Kind::Stop,  "stop handle" },       /* from 0xAC798 */
-    { 0x00326C34, 1, Kind::Query, "status of handle" },  /* from 0xAC83C */
-    { 0x003349B0, 2, Kind::Event, "stream event" },      /* from 0xAAF44 (music) */
-    { 0x00334628, 2, Kind::Event, "stream event" },      /* from 0xAAE74 */
-    { 0x0033465C, 1, Kind::Event, "stream event" },      /* from 0xA9C18 / 0xAAE74 (r3 only) */
-    { 0x003271DC, 2, Kind::Event, "bank event" },        /* from 0xAA4C0 */
-    { 0x00329158, 1, Kind::Event, "bank event" },        /* from 0xAA344 / 0xAADE0 (r3 only: r4 is whatever the last call left) */
-    { 0x00331E20, 1, Kind::Event, "bank event" },        /* from 0xA99F0 / 0xA9CC4 (r3, r5 = 0) */
-    { 0x003270E0, 1, Kind::Event, "bank event" },        /* from 0xA99F0 / 0xA9CC4 (r3 and f1) */
+    { T5A(0x00328CC4), 1, Kind::Stop,  "stop group" },        /* from 0xACABC / 0xAD1C8 (round transitions, throws) */
+    { T5A(0x00328D68), 1, Kind::Stop,  "stop handle" },       /* from 0xAC798 */
+    { T5A(0x00326C34), 1, Kind::Query, "status of handle" },  /* from 0xAC83C */
+    { T5A(0x003349B0), 2, Kind::Event, "stream event" },      /* from 0xAAF44 (music) */
+    { T5A(0x00334628), 2, Kind::Event, "stream event" },      /* from 0xAAE74 */
+    { T5A(0x0033465C), 1, Kind::Event, "stream event" },      /* from 0xA9C18 / 0xAAE74 (r3 only) */
+    { T5A(0x003271DC), 2, Kind::Event, "bank event" },        /* from 0xAA4C0 */
+    { T5A(0x00329158), 1, Kind::Event, "bank event" },        /* from 0xAA344 / 0xAADE0 (r3 only: r4 is whatever the last call left) */
+    { T5A(0x00331E20), 1, Kind::Event, "bank event" },        /* from 0xA99F0 / 0xA9CC4 (r3, r5 = 0) */
+    { T5A(0x003270E0), 1, Kind::Event, "bank event" },        /* from 0xA99F0 / 0xA9CC4 (r3 and f1) */
 };
 constexpr int kApiN = (int)(sizeof kApi / sizeof kApi[0]);
 GuestFn o_api[kApiN];

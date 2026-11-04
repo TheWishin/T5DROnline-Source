@@ -14,6 +14,7 @@
 #include "rb_detour.h"   /* shadowtrace_boundary (diagnostics) */
 #include "../netplay/replay.h"   /* a replay plays back with the loop it was recorded with */
 #include "../netplay/replay_paths.h"
+#include "../platform/t5_addr.h"   /* T5A(): this program's address of a US address (EU Online) */
 
 extern "C" uint8_t* vm_base;
 extern "C" void lat_log_(char kind, const char* fmt, ...);   /* ps3recomp patch 0034: PS3_LATENCY_LOG */
@@ -31,7 +32,7 @@ extern "C" void cellGcm_display_margin_min_ms(double ms);   /* ps3recomp patch 0
 namespace rb { namespace net {
 
 namespace {
-constexpr uint32_t kMinVblanks = 0x106D4D98;  /* present pacing: min vblanks per frame (u64) */
+const uint32_t kMinVblanks = T5A(0x106D4D98);  /* present pacing: min vblanks per frame (u64) */
 bool g_enabled = false, g_active = false, g_verbose = false, g_skipsound = true;   /* T5_RB_NET_SKIPSOUND=0 keeps the sound update in re-simulated frames */
 bool g_offered = false, g_timesync = true;
 uint32_t g_start = 0, g_maxpred = 8;
@@ -56,7 +57,7 @@ uint32_t g_start = 0, g_maxpred = 8;
 uint32_t g_warmup = 420;
 uint32_t g_saved_minvb[2] = { 0, 1 };   /* the present's min vblanks (u64) before start() zeroed it */
 uint32_t g_started_at = 0;
-constexpr uint32_t kPhaseWord = 0x1008F070u;
+const uint32_t kPhaseWord = T5A(0x1008F070u);
 uint32_t g_phase_lock = 0, g_lock_until = 0, g_last_phase = 0xFFFFFFFFu, g_phase_changes = 0;
 uint32_t g_load_lock = 60;       /* T5_RB_NET_LOAD_LOCK: lockstep frames after a load completed (loader drain waited) */
 uint32_t g_loads = 0;
@@ -102,7 +103,7 @@ bool intro_at(uint32_t b) { return g_intro_rule && g_phase_tag[b % 4096] == b + 
  * them: the abort in NU::File::RequestManager at a match end under a choppy
  * opponent (docs/ROLLBACK.md section 30, "what is left"), 2 in 6 match ends
  * with fight_flow_test --stutter 60 --mash. T5_RB_NET_POSTMATCH=0: off. */
-constexpr uint32_t kDecidedByte = 0x1008EBD5u;
+const uint32_t kDecidedByte = T5A(0x1008EBD5u);
 constexpr uint16_t kStartBit = 0x0008u;          /* START in PadInput::buttons (DIGITAL1 low byte) */
 bool g_post_rule = true;
 uint32_t g_post_tag[4096], g_post_start[4096];   /* boundary f: post-match since g_post_start (0 = not) */
@@ -281,7 +282,7 @@ void ft_add(double ms, bool fight)
     if (fight) g_ft_fight[b]++;   /* the match being fought (phase 17, not decided): no loads, no intro */
 }
 /* the match is being fought: direct fight's game mode, phase 17, not decided */
-constexpr uint32_t kPhaseWordF = 0x1008F070u, kDecidedByteF = 0x1008EBD5u;
+const uint32_t kPhaseWordF = T5A(0x1008F070u), kDecidedByteF = T5A(0x1008EBD5u);
 bool fighting_now() { return rd32(kPhaseWordF) == 17 && vm_base[kDecidedByteF] == 0 && (!g_intro_rule || t5_df_game_mode()); }
 /* re-simulation timing (Stats::rs_*) */
 LARGE_INTEGER g_t_bnd_out;   /* when the last boundary handed the game its frame */
@@ -511,7 +512,7 @@ void start(uint32_t f)
     QueryPerformanceCounter(&g_t_window);
     ktrace_note("session: the rollback loop starts at frame %u", f);
     if (ktrace_on()) {   /* the sound library's allocator callbacks (diagnostics) */
-        const uint32_t tbl[] = { 0x10088F0Cu, 0x10088F10u, 0x10088F88u, 0x10088F8Cu };
+        const uint32_t tbl[] = { T5A(0x10088F0Cu), T5A(0x10088F10u), T5A(0x10088F88u), T5A(0x10088F8Cu) };
         for (uint32_t a : tbl) { const uint32_t opd = rd32(a); ktrace_note("sound allocator slot %08X -> OPD %08X -> code %08X", a, opd, opd ? rd32(opd) : 0); }
     }
     note("rbnet: rollback loop takes over at frame %u (delay %d, max prediction %u frames, peer inputs known for < %u)",
@@ -679,7 +680,7 @@ static uint32_t scan_mispredictions(uint32_t f, uint32_t rc)
  * after the KO (docs/ROLLBACK.md section 30). The count is saved with every
  * boundary -- after the loaders were drained (t5_hooks.cpp), so the reader
  * has posted whatever it will post -- and put back with the memory. */
-constexpr uint32_t kReaderDoneSemId = 0x1009FE2Cu;   /* u32: the completion semaphore's id */
+const uint32_t kReaderDoneSemId = T5A(0x1009FE2Cu);   /* u32: the completion semaphore's id */
 int32_t  g_rsem_val[kHist];
 uint32_t g_rsem_id[kHist], g_rsem_tag[kHist];
 void reader_sem_save(uint32_t f)

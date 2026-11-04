@@ -290,8 +290,13 @@ class Game:
         self.proc = None
         self.starts = 0
 
+    def vfs(self):
+        """--vfs2: the joiner's game files (another program: a European Online game against a US one, docs/EU.md)"""
+        return os.path.abspath(getattr(self.a, "vfs2", None) if self.role == "join" and getattr(self.a, "vfs2", None)
+                               else self.a.vfs)
+
     def base_env(self):
-        vfs = os.path.abspath(self.a.vfs)
+        vfs = self.vfs()
         env = dict(os.environ)
         env.update({
             "PS3_VFS_ROOT": vfs.replace("\\", "/"), "PS3_HDD0_ROOT": os.path.join(vfs, "dev_hdd0").replace("\\", "/"),
@@ -317,7 +322,7 @@ class Game:
         env["T5_NET_LOG"] = os.path.join(self.dir, f"frames{self.starts}.log")
         self.log_path = os.path.join(self.dir, f"game{self.starts}.log")
         lf = open(self.log_path, "w")
-        vfs = os.path.abspath(self.a.vfs)
+        vfs = self.vfs()
         exe = self.a.exe2 if self.role == "join" and self.a.exe2 else self.a.exe
         flags = 0x00004000 if getattr(self.a, "below_normal", False) and os.name == "nt" else 0   # BELOW_NORMAL_PRIORITY_CLASS
         gd = self.a.gamedata1 if self.role == "host" else self.a.gamedata2
@@ -474,6 +479,7 @@ def main():
     ap.add_argument("--env2", action="append", default=[], help="NAME=VALUE for the joiner's game only")
     ap.add_argument("--exe2", help="the joiner's t5dr.exe (another build, t5dr_game.dll beside it; "
                                    "tools/cross_build_test.py --flow persistent)")
+    ap.add_argument("--vfs2", help="the joiner's game files (default --vfs): a European Online game (docs/EU.md)")
     ap.add_argument("--cpus1", default="", help="host's CPUs: N logical processors or 0xMASK (+ PS3_CPUS)")
     ap.add_argument("--cpus2", default="", help="joiner's CPUs: N logical processors or 0xMASK (+ PS3_CPUS)")
     ap.add_argument("--hitch2", default="", help="MS[:MIN:MAX] -- the joiner's main thread stalls (T5_TEST_HITCH)")

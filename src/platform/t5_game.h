@@ -37,7 +37,9 @@ enum class Game : int {
     Unread = 0,   /* no ELF readable at argv[1]: treated as the US program (the old behaviour) */
     US     = 1,   /* NPUB30009 v01.00, US PSN: what src/ is written for */
     EU     = 2,   /* NPEA00019 v01.00, EU PSN (EP9000-NPEA00019_00-0000000000000000) */
-    EU_ONLINE = 3,/* NPEA00019 "Online" (UP0700-NPEA00019_00-TEKKEN5DRO000000, PARAM.SFO VERSION 02.00): not built */
+    EU_ONLINE = 3,/* NPEA00019 "Online", PARAM.SFO VERSION 02.00 (UP0700-NPEA00019_00-TEKKEN5DRO000000) or 02.01
+                     (EP9000-NPEA00019_00-TEKKENRETAIL0000): one program but for three bytes; its addresses are in
+                     t5_addr.h */
     Other  = 4,   /* any other PPU ELF */
 };
 
@@ -48,7 +50,7 @@ inline const Known* known_programs()
     static const Known k[] = {
         { Game::US,        0x447690u, 5294536u, "NPUB30009 v01.00 (US)" },
         { Game::EU,        0x356980u, 4168760u, "NPEA00019 v01.00 (EU)" },
-        { Game::EU_ONLINE, 0x457898u, 5363592u, "NPEA00019 v02.00 Online (EU)" },
+        { Game::EU_ONLINE, 0x457898u, 5363592u, "NPEA00019 v02.00/v02.01 Online (EU)" },
         { Game::Other, 0, 0, nullptr },
     };
     return k;
@@ -104,14 +106,32 @@ inline const char* game_name()
     return n;
 }
 
-/* May the modules that know the US program's addresses touch this one? Says
- * once on stderr which modules stay off when the answer is no. */
+/* May the modules that know the game's addresses touch this program? The US program (and a test harness without
+ * an ELF) and, since 1.2.1, the EU Online edition, whose addresses t5_addr.h translates. Says once on stderr which
+ * modules stay off when the answer is no. */
 inline bool hooks_ok(const char* module)
 {
     const Game g = game();
     if (g == Game::US || g == Game::Unread) return true;
-    fprintf(stderr, "[t5] %s: off -- this game is %s; it knows only the addresses of NPUB30009 v01.00 (US). "
-                    "The game runs on its own: offline modes only (docs/EU.md)\n", module, game_name());
+    if (g == Game::EU_ONLINE) {
+        fprintf(stderr, "[t5] %s: on -- this game is %s, its addresses from src/platform/t5_addr.h\n", module,
+                game_name());
+        return true;
+    }
+    fprintf(stderr, "[t5] %s: off -- this game is %s; src/ knows only the addresses of NPUB30009 v01.00 (US) and "
+                    "NPEA00019 v02.00/v02.01 (EU Online). The game runs on its own: offline modes only (docs/EU.md)\n",
+            module, game_name());
+    return false;
+}
+
+/* For the modules whose addresses are known for the US program only (developer tools, the training overlay and
+ * practice tools): true for the US program and a test harness, false (once on stderr) for every other. */
+inline bool us_only(const char* module)
+{
+    const Game g = game();
+    if (g == Game::US || g == Game::Unread) return true;
+    fprintf(stderr, "[t5] %s: off -- this game is %s; this module knows the addresses of NPUB30009 v01.00 (US) "
+                    "only (docs/EU.md)\n", module, game_name());
     return false;
 }
 

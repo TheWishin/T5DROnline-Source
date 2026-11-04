@@ -43,6 +43,7 @@
 #include <vector>
 #include "df.h"
 #include "costume_logic.h"
+#include "../platform/t5_addr.h"   /* T5A(): this program's address of a US address (EU Online) */
 
 extern "C" const char* t5_env(const char* key);
 extern "C" int  t5_netplay_local_slot(void);
@@ -57,17 +58,17 @@ namespace df {
 
 namespace {
 
-constexpr uint32_t kTocCustomData = 0x0046ECD0;   /* -> the VS custom data, 0x1F4 per side */
+const uint32_t kTocCustomData = T5A(0x0046ECD0);   /* -> the VS custom data, 0x1F4 per side */
 constexpr uint32_t kCustomStride  = 0x1F4;
-constexpr uint32_t kTocFighters   = 0x0046EE20;   /* -> the two fighter objects (0x2A77B0: +0x40 the item character index) */
+const uint32_t kTocFighters   = T5A(0x0046EE20);   /* -> the two fighter objects (0x2A77B0: +0x40 the item character index) */
 constexpr uint32_t kFighterItemChar = 0x40;
-constexpr uint32_t kItemTables    = 0x10076724;   /* price tables per item character: {s32 id, s32 price} ..., id < 0 ends */
+const uint32_t kItemTables    = T5A(0x10076724);   /* price tables per item character: {s32 id, s32 price} ..., id < 0 ends */
 /* What each costume can wear (costume_logic.h, "What each costume can wear"): the item shop's pack, T55DATA1.BIN entry
  * kItemPackEntry of the game's data table, read from the game's own file; the models of each item character. */
-constexpr uint32_t kDataToc       = 0x10053FB0;   /* {sector, stored, size, sum, flag, key, ptr} x 2,345, big-endian */
+const uint32_t kDataToc       = T5A(0x10053FB0);   /* {sector, stored, size, sum, flag, key, ptr} x 2,345, big-endian */
 constexpr uint32_t kDataTocLen    = 2345;
 constexpr uint32_t kItemPackEntry = 208;          /* the shop's resource 0x25 (0x152014) */
-constexpr uint32_t kCharModels    = 0x10052F04;   /* per item character {u32 the models, u16 count, u16, u32} (0x58FD0) */
+const uint32_t kCharModels    = T5A(0x10052F04);   /* per item character {u32 the models, u16 count, u16, u32} (0x58FD0) */
 constexpr const char* kDataFile   = "/dev_hdd0/game/NPUB30009/USRDIR/T55DATA1.BIN";
 
 bool in_data(uint32_t a, uint32_t len) { return a >= 0x10000000u && a + len <= 0x10760000u && a + len > a; }

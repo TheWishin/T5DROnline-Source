@@ -30,6 +30,7 @@
 #include "lv2_syscall_table.h"  /* g_lv2_syscalls */
 #include "rb.h"
 #include "rb_net.h"
+#include "../platform/t5_addr.h"   /* T5A(): this program's address of a US address (EU Online) */
 
 /* From the lifted output (ppu_recomp.h cannot be included next to the runtime's
  * ppu_context.h: both define the struct, identically). */
@@ -66,7 +67,7 @@ typedef int64_t (*rb_lv2_fn)(ppu_context*);
 namespace rb {
 
 /* ---- guest addresses (NPUB30009 v01.00; see np's t5_hooks.cpp) ---------- */
-constexpr uint32_t kTOC         = 0x470540;
+const uint32_t kTOC         = T5A(0x470540);
 
 constexpr uint32_t NID_cellPadInit    = 0x1CF98800;
 constexpr uint32_t NID_cellPadGetInfo = 0x3AAAD464;
@@ -76,8 +77,8 @@ constexpr uint32_t NID_cellGcmSetFlip        = 0xDC09357E;
 constexpr uint32_t NID_cellGcmGetFlipStatus  = 0x72A577CE;
 constexpr uint32_t NID_cellGcmResetFlipStatus = 0xB2E761D4;
 constexpr uint32_t NID_cellGcmSetWaitFlip     = 0x983FB9AA;
-constexpr uint32_t kKeyreadSemPtr = 0x104CB5C0;   /* u32 semaphore id of the keyread thread */
-constexpr uint32_t kKeyreadQuitFlag = 0x104CCDF4;
+const uint32_t kKeyreadSemPtr = T5A(0x104CB5C0);   /* u32 semaphore id of the keyread thread */
+const uint32_t kKeyreadQuitFlag = T5A(0x104CCDF4);
 constexpr int SC_SEM_POST = 94;
 constexpr int SC_SEM_WAIT = 92;
 std::atomic<bool> g_bypass{ false };
@@ -387,7 +388,7 @@ void set_sim_frame(uint32_t f) { g_sim_frame = f; sound_begin_frame(f, g_bypass.
 uint32_t sim_frame() { return g_sim_frame.load(std::memory_order_relaxed); }
 void set_bypass(bool on) { g_bypass = on; }
 bool bypass_on() { return g_bypass.load(std::memory_order_relaxed); }
-constexpr uint32_t kSoundEnablePtrSlot = 0x470540u - 0x61E8u;   /* TOC slot -> pointer to the word */
+const uint32_t kSoundEnablePtrSlot = T5A(0x470540u - 0x61E8u);   /* TOC slot -> pointer to the word */
 uint32_t g_sound_word = 0, g_sound_saved = 0;
 bool g_sound_skipped = false;
 uint32_t sound_word() { if (!g_sound_word) g_sound_word = rd32(kSoundEnablePtrSlot); return g_sound_word; }
@@ -438,6 +439,8 @@ struct Register {
         if (!m || !*m) return;
         if (!strcmp(m, "lockstep") || !strcmp(m, "off")) return;
         if (!t5game::hooks_ok("rollback")) return;   /* the EU release: not its addresses (t5_game.h) */
+        /* the research modes (rb_test.cpp, rb_measure.cpp) know the US addresses only */
+        if ((!strcmp(m, "test") || !strcmp(m, "measure")) && !t5game::us_only("rollback test/measure modes")) return;
         /* The rollback state needs the guest memory reserved with write
          * watch, which the runtime decides in main() from PS3_VM_WRITE_WATCH:
          * whenever this side will offer rollback (or a test mode runs), it is

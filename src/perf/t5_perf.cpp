@@ -27,6 +27,7 @@
 
 #include "sys_ppu_thread.h"     /* ppu_context */
 #include "lv2_syscall_table.h"  /* g_lv2_syscalls */
+#include "../platform/t5_addr.h"   /* T5A(): this program's address of a US address (EU Online) */
 
 extern "C" {
 extern uint8_t* vm_base;
@@ -42,8 +43,8 @@ extern "C" int __llvm_profile_write_file(void);   /* clang_rt.profile */
 namespace {
 
 constexpr uint32_t NID_cellGcmSetFlip = 0xDC09357E;
-constexpr uint32_t kFrameSemPtr = 0x106D4A30;
-constexpr uint32_t kScenePtr = 0x10532DF0;
+const uint32_t kFrameSemPtr = T5A(0x106D4A30);
+const uint32_t kScenePtr = T5A(0x10532DF0);
 constexpr int SC_SEM_WAIT = 92;
 constexpr uint32_t NID_cellGcmSetWaitFlip = 0x983FB9AA, NID_cellGcmSetWaitFlipUnsafe = 0xDF6476BD;
 /* main-thread blocking, by kind, accumulated in QPC ticks since the last flip */
@@ -196,7 +197,7 @@ void h_cellGcmSetFlip(ppu_context* ctx)
          * frames of two runs with the same scripted input */
         fprintf(g_out, "f %llu e %.3f t %.2f dt %.3f cyc %.2f busy %.3f sem %.3f%s sim %u scene %08X\n",
                 (unsigned long long)g_frames, epoch_s, qpc_ms(now.QuadPart - g_t0.QuadPart), dt,
-                (double)(cyc - g_cyc_last) / 1e6, busy, sem, w, rd32(0x1008EB9Cu), scene ? rd32(scene) : 0);
+                (double)(cyc - g_cyc_last) / 1e6, busy, sem, w, rd32(T5A(0x1008EB9Cu)), scene ? rd32(scene) : 0);
         g_win_dt.push_back(dt); g_win_busy.push_back(busy);
         if ((g_frames % 300) == 0) { summary(); fflush(g_out); }
         g_last = now;

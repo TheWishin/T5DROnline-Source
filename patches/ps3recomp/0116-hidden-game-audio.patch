@@ -1,0 +1,22 @@
+diff --git a/libs/audio/cellAudio.c b/libs/audio/cellAudio.c
+--- a/libs/audio/cellAudio.c
++++ b/libs/audio/cellAudio.c
+@@ -936,2 +936,17 @@
+     { static int mute = -1; if (mute < 0) mute = getenv("PS3_AUDIO_MUTE") ? 1 : 0;
+-      if (mute) memset(s_mix_buffer, 0, sizeof(s_mix_buffer)); }
++      int hidden = 0;
++#ifdef _WIN32
++      /* Launcher-owned games remain silent while booting hidden, minimized for
++       * tools, or parked between opponents. Visibility is checked per audio
++       * block so restoring the same persistent window also restores its sound.
++       * Permanent PS3_AUDIO_MUTE still wins (shader warm-up must never sound). */
++      static int mute_hidden = -1;
++      extern void* rsx_null_backend_get_hwnd(void);
++      if (mute_hidden < 0) {
++          const char* value = getenv("PS3_AUDIO_MUTE_HIDDEN");
++          mute_hidden = value && value[0] == '1';
++      }
++      HWND window = (HWND)rsx_null_backend_get_hwnd();
++      hidden = mute_hidden && (!window || !IsWindowVisible(window) || IsIconic(window));
++#endif
++      if (mute || hidden) memset(s_mix_buffer, 0, sizeof(s_mix_buffer)); }

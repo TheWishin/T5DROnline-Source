@@ -2277,7 +2277,10 @@ class OnlineTab:
                           [(t("Rematch"), lambda: self._rematch(True), "cross"),
                            (t("No thanks"), lambda: self._rematch(False), "circle")] + more)
         elif k == "ingame_ui_fallback":
-            self._come_forward(("ingame_fallback", n.get("match")))
+            if not n.get("returning"):
+                self._come_forward(("ingame_fallback", n.get("match")))
+        elif k == "return_to_lobby":
+            self._return_to_lobby(n.get("match"))
         elif k == "ingame_vote":
             # answered in the game: the launcher's own question is answered too
             self.view.rematch_sent(bool(n.get("accept")))
@@ -2382,6 +2385,8 @@ class OnlineTab:
         if key == self._fronted or self.set_bar is not None:
             return
         drv = self.driver
+        if bool(getattr(drv, "returning_to_lobby", False)):
+            return
         if key[0] != "ask" and (bool(getattr(drv, "ingame_ui_active", False))
                                 or bool(getattr(drv, "ingame_ui_pending", False))):
             # A game with a healthy handshake gets at most three seconds to acknowledge this prompt;
@@ -2396,10 +2401,37 @@ class OnlineTab:
                 nb.select(self.parent)              # the launcher's Online tab, with the result card
         except tk.TclError:
             pass
+
         try:
             self.bring_forward(self.parent)
         except Exception:                           # noqa: BLE001 -- a window that cannot come forward is no error
             pass
+
+    def _return_to_lobby(self, mid):
+        """Hide the finished game; restore focus only if the player was looking at that game."""
+        game = getattr(self.driver, "game", None)
+        proc = getattr(game, "proc", None)
+        was_foreground = bool(proc and winfront.game_in_front(proc.pid))
+        if proc:
+            if not winfront.hide_game_window(proc.pid) and game.running():
+                # An unhideable window must not leave an audible orphan behind the lobby.
+                self.driver.stop_game()
+            elif self.driver.mode == "process":
+                self.driver.stop_game()
+        self.set_bar = None
+        self._game_fronted = None
+        self._fronted = ("return", mid)
+        try:
+            nb = self.parent.master
+            if isinstance(nb, ttk.Notebook):
+                nb.select(self.parent)
+        except tk.TclError:
+            pass
+        if was_foreground:
+            try:
+                self.bring_forward(self.parent)
+            except Exception:                       # noqa: BLE001 -- focus policy is best effort
+                pass
 
     def _offer_ingame_ui(self, ev):
         """The rematch question in the game (docs/REMATCH_1.2.0.md): the driver hands the server-permitted question to
@@ -2447,12 +2479,14 @@ class OnlineTab:
             return
         self._game_fronted = key
         try:
-            if self.app.settings.get("background") or not self.launcher_in_front():
+            if self.app.settings.get("background"):
                 return
             game = getattr(self.app, "game", None)
             proc = getattr(game, "proc", None)
             if proc is not None and game.running():
-                self.bring_game_forward(proc.pid)
+                winfront.show_game_window(proc.pid)
+                if self.launcher_in_front():
+                    self.bring_game_forward(proc.pid)
         except Exception:                           # noqa: BLE001 -- a window that cannot come forward is no error
             pass
 

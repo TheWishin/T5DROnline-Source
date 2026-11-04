@@ -9,6 +9,7 @@ import time
 import unittest
 from contextlib import redirect_stdout
 from unittest import mock
+from types import SimpleNamespace
 
 from helpers import ROOT
 
@@ -68,7 +69,7 @@ class Skip(unittest.TestCase):
         import t5lobby.match_driver as md
         argv = ["shader_warmup.py", "--out", self.out]
         with redirect_stdout(io.StringIO()) as out, mock.patch.object(sys, "argv", argv), \
-                mock.patch.object(w.subprocess, "Popen", FakeProc), mock.patch.object(w, "play", play), \
+                mock.patch.object(w.process_owner, "popen", FakeProc), mock.patch.object(w, "play", play), \
                 mock.patch.object(md, "Control", FakeControl), mock.patch.object(w.sys, "platform", "win32"):
             rc = w.main()
         return rc, out.getvalue()
@@ -168,6 +169,7 @@ class Button(ti.Base if ti else unittest.TestCase):
                 asked.append(1)
                 return True
         self.assertEqual(app.skip_btn.winfo_manager(), "")
+
         app.build, app.cur_step = Build(), "compile"
         app.skip_warmup()
         self.assertEqual(asked, [])                                        # only in the Shaders step
@@ -179,6 +181,38 @@ class Button(ti.Base if ti else unittest.TestCase):
         self.assertEqual(str(app.skip_btn.cget("state")), "disabled")
         app._show_skip_btn(False)
         self.assertEqual(app.skip_btn.winfo_manager(), "")
+
+@unittest.skipIf(ti is None or ti.tk is None, "no tkinter")
+class BackgroundStatus(unittest.TestCase):
+    def test_resumed_background_worker_restores_status_and_skip(self):
+        mod = ti.load_launcher()
+        app = SimpleNamespace(_warmup_out=None, build=None, status=mock.Mock(), _show_skip_btn=mock.Mock())
+        with mock.patch.object(core.warmup, "running_out", return_value="resumed"), \
+                mock.patch.object(core.warmup, "controller") as controller:
+            controller.return_value.running.return_value = True
+            mod.App._poll_warmup(app)
+        self.assertEqual(app._warmup_out, "resumed")
+        app._show_skip_btn.assert_called_once_with(True)
+
+    def test_background_status_and_skip_survive_build_completion(self):
+        mod = ti.load_launcher()
+        controller = mock.Mock()
+        controller.running.return_value = True
+        app = SimpleNamespace(_warmup_out="output", build=None, status=mock.Mock(),
+                              skip_btn=mock.Mock(), _show_skip_btn=mock.Mock())
+        with mock.patch.object(core.warmup, "controller", return_value=controller), \
+                mock.patch.object(mod, "t", side_effect=lambda text: text):
+            mod.App._poll_warmup(app)
+            app.status.set.assert_called_once_with("Preparing shaders... (Skip)")
+            mod.App.skip_warmup(app)
+            controller.skip.assert_called_once()
+            app.skip_btn.configure.assert_called_once_with(state="disabled", text="Skipping…")
+            controller.running.return_value = False
+            mod.App._poll_warmup(app)
+        self.assertIsNone(app._warmup_out)
+        app._show_skip_btn.assert_called_once_with(False)
+        self.assertEqual(app.status.set.call_args.args, ("Build finished.",))
+
 
 
 if __name__ == "__main__":

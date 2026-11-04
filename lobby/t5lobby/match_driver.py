@@ -116,7 +116,10 @@ FALLBACK_NOTHING_SECONDS = 15
 FALLBACK_WAIT_SECONDS = 20.0
 # how long a game may take to take a control command (persistent mode): a running one, a booting one
 VOTE_GRACE_SECONDS = 2.0      # after the countdown, a yes still on its way: the lobby's late verdict counts
-CLOSE_SECONDS = 3.0           # the in-game question says why there is no rematch this long, then the launcher takes over
+CLOSE_SECONDS = 4.0           # the in-game question says why there is no rematch this long, then the launcher takes over
+RETURN_SECONDS = 4.0          # leave the final notice readable before hiding the game
+OPPONENT_LEFT = N_("Your opponent left the match -- back to the lobby")
+MATCH_ENDED = N_("Match over -- back to the lobby")
 CTL_ACK_SECONDS = 10.0
 CTL_ACK_BOOT_SECONDS = 90.0
 # ... and a running one whose last netplay session has not ended yet: it may stand at a frame waiting for an opponent
@@ -523,6 +526,7 @@ class MatchDriver:
         self.ctl_wait = None         # (seq, sent at, booting) of a control command the game has not taken yet
         self.released = False        # persistent game: "idle" sent since its last "fight" (its session is let go)
         self._hold_until = None      # a decided casual set's rematch window: the session is kept until then
+        self._return = None          # (match, deadline, English notice) before returning to Online
         self.ctl_alive_seen = None   # when the game's last session was last seen still running while a command waited
         self.ctl_failures = 0        # persistent games that died or did not answer
         self.need_session = None     # persistent game, a new session: its netplay session number (lines before it
@@ -552,6 +556,7 @@ class MatchDriver:
                 and self.glog.session_lost == 0 and not self.glog.build_mismatch)
 
     def stop_game(self):
+        self._return = None
         if self.ui is not None:
             self.ui.close()
             self.ui = None
@@ -670,6 +675,8 @@ class MatchDriver:
     # ------------------------------------------------------------------ lobby events
     def on_event(self, ev):
         kind = ev.get("t")
+        if kind in ("match_found", "match_start"):
+            self._cancel_return()
         self._rq_event(ev)
         if kind == "match_found":
             self._hold_until = None
@@ -688,6 +695,10 @@ class MatchDriver:
                     self.rematch(ev["match"], True)
             elif ev.get("state") == "declined":
                 self.status(t("Your opponent does not want a rematch."))
+                if self._rq is None:
+                    self._queue_return(ev)
+            elif ev.get("state") == "expired" and self._rq is None:
+                self._queue_return(ev)
         elif kind == "set_end":
             # A decided casual set (1.2.0: every challenge/room game is one, FT1 by default) still has its rematch
             # window: the running games keep the session for it, as before casual sets (a match found without
@@ -697,8 +708,56 @@ class MatchDriver:
                 self._hold_until = time.monotonic() + window + 3     # then let it go (poll), like _set_over
             else:
                 self._set_over()
+                self._queue_return(ev, opponent_left=self._opponent_left(ev))
         elif kind == "disconnected":
             self.ticket = None
+            self._queue_return(ev)
+
+    @staticmethod
+    def _opponent_left(ev):
+        """Use the server's relative blame when supplied; our own quit is not the opponent's."""
+        if ev.get("blame") == "you" or ev.get("by") == "you":
+            return False
+        return (ev.get("by") == "opponent" or ev.get("blame") == "opponent"
+                or ev.get("status") == "forfeit" or ev.get("reason") in (
+                    "quit", "early_quit", "early_quit_repeat", "disconnect", "disconnect_repeat", "connection",
+                    "left", "leave", "forfeit", "no_return", "peer_quit", "peer_timeout", "peer_lost",
+                    "peer_stalled", "peer_restarted", "both_left"))
+
+    @property
+    def returning_to_lobby(self):
+        return self._return is not None
+
+    def _cancel_return(self):
+        if self._return is not None and self.ui is not None:
+            self.ui.hide()
+        self._return = None
+
+    def _queue_return(self, ev, opponent_left=False):
+        if not self.game_running():
+            return
+        mid = ev.get("match") or (self.last or {}).get("match") or self.session or "ended"
+        text = OPPONENT_LEFT if opponent_left else MATCH_ENDED
+        # A set_end often precedes its match_result. Do not restart its clock or replace
+        # the more specific opponent-left notice when that second event arrives.
+        if self._return is not None:
+            if self._return[2] == OPPONENT_LEFT or not opponent_left:
+                return
+        self._rq_end(fallback=False, new_match=True)
+        self._hold_until = None
+        self._return = (mid, time.monotonic() + RETURN_SECONDS, text)
+        self.status(t(text))
+        if self.ui is not None:
+            self.ui.offer(mid, "notice", [], RETURN_SECONDS + 0.5, {"body": text})
+
+    def _finish_return(self, mid):
+        self._cancel_return()
+        self._set_over()
+        self.note("return_to_lobby", match=mid)
+
+    def _watch_return(self):
+        if self._return is not None and time.monotonic() >= self._return[1]:
+            self._finish_return(self._return[0])
 
     def _release_game(self):
         """A new opponent: the old game session cannot be reused in process mode."""
@@ -796,8 +855,8 @@ class MatchDriver:
         else:
             self.stop_game()
             self.session = mid
-            if self.ingame_rematch:
-                self.ui = IngameUI(os.path.join(self.workdir, "ui"), mid)
+            # Final notices use the same host overlay even when rematch questions are disabled.
+            self.ui = IngameUI(os.path.join(self.workdir, "ui"), mid)
             self.df_status, self.df_base = None, 0           # a new game counts its fights from 1
             fmid = proto.file_safe(mid)               # (the client already refuses other ids; a file name stays one)
             self.result_path = os.path.join(self.workdir, f"result-{fmid}{'-relay' if again else ''}.json")
@@ -923,7 +982,7 @@ class MatchDriver:
                 self._discard_result("unreported")
             self.ticket = None
         s = ev.get("set") or {}
-        if (s.get("rated") or s.get("casual")) and s.get("next"):
+        if (s.get("rated") or s.get("casual")) and s.get("next") and not self._opponent_left(ev):
             # A ranked set goes on by itself (no vote): say whether this game can play the next one as it runs.
             fn = getattr(self.client, "set_next", None)
             if fn is not None:
@@ -938,8 +997,15 @@ class MatchDriver:
             if ev.get("reason") is None and ev.get("rematch_window") and self.connected_game():
                 self.rematch(ev["match"], True)
             else:
-                self._release_game()
-        self.offer_ingame_ui(ev, self._ui_labels)
+                self._set_over()
+        if self._opponent_left(ev):
+            self._queue_return(ev, opponent_left=True)
+        elif not s.get("next") and not ev.get("rematch_window"):
+            self._queue_return(ev)
+        else:
+            self.offer_ingame_ui(ev, self._ui_labels)
+            if ev.get("rematch_window") and self._rq is None:
+                self._hold_until = time.monotonic() + float(ev["rematch_window"])
 
     def rematch(self, match_id=None, accept=True, swap=False):
         """Offer / accept (or decline) a rematch against the last opponent (swap: P1 and P2 the other way round).
@@ -961,11 +1027,11 @@ class MatchDriver:
         q = self._rq if self._rq is not None and self._rq["match"] == mid else None
         if q is not None:
             self._rq_vote(q, accept)
-        if not accept and self.mode == "process":
+        if not accept:
             if q is not None and not q.get("fallback"):
                 q["stop_after"] = True              # (closed once the game has said so)
             else:
-                self.stop_game()
+                self._queue_return(self.last or {})
 
     # ------------------------------------------------------------- the rematch question in the game
     @property
@@ -1000,7 +1066,7 @@ class MatchDriver:
         if kind != "match_result":
             return self.ingame_ui_active
         rule = ev.get("rematch_ui")
-        if (self.ui is None or not self.game_running() or not isinstance(rule, dict) or type(rule.get("v")) is not int
+        if (not self.ingame_rematch or self.ui is None or not self.game_running() or not isinstance(rule, dict) or type(rule.get("v")) is not int
                 or rule["v"] != 1 or rule.get("kind", "rematch") != "rematch" or ev.get("ranked")
                 or (ev.get("set") or {}).get("rated") or not ev.get("rematch_window")
                 or rule.get("policy") not in ("both_confirm", "auto_unless_declined")
@@ -1117,7 +1183,7 @@ class MatchDriver:
         """Say why there is no rematch, for a moment, then give the player back to the launcher (the lobby)."""
         if q["closing"] is not None or q is not self._rq:
             return
-        q["closing"] = time.monotonic() + (CLOSE_SECONDS if why != "declined" else CLOSE_SECONDS / 2)
+        q["closing"] = time.monotonic() + CLOSE_SECONDS
         q["why"] = why
         if self.ui is not None and not q.get("fallback"):
             self.ui.update(self._rq_texts(q), [], seconds=q["closing"] - time.monotonic() + 0.5, countdown=None)
@@ -1226,8 +1292,9 @@ class MatchDriver:
         now = time.monotonic()
         if q["closing"] is not None:
             if now >= q["closing"]:
-                self._rq_end()
-                self._set_over()
+                self._rq_end(fallback=False, new_match=True)
+                self.note("ingame_ui_fallback", match=q["match"], returning=True)
+                self._finish_return(q["match"])
             return
         active = self.ingame_ui_active
         if active and not self._ui_was_active:
@@ -1286,10 +1353,13 @@ class MatchDriver:
         """Call a few times a second. Returns the notes for the UI (list of dicts)."""
         self._watch_ctl()
         self._watch_ingame_ui()
+        self._watch_return()
         self._watch_state()
         if self._hold_until is not None and time.monotonic() > self._hold_until:
             self._hold_until = None
             self._set_over()
+            if self._rq is None:
+                self._queue_return(self.last or {})
         t = self.ticket
         if t is not None and not self.reported:
             self._watch_playing(t)

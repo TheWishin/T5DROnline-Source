@@ -1355,9 +1355,31 @@ class App(tk.Tk):
 
     def skip_warmup(self):
         """Skip warm-up (the Shaders step): tools/shader_warmup.py ends, the build finishes as built."""
-        if self.build and self.cur_step == "shaders" and self.build.skip_warmup():
+        skipped = False
+        if self.build and self.cur_step == "shaders":
+            skipped = self.build.skip_warmup()
+        elif getattr(self, "_warmup_out", None):
+            skipped = core.warmup.controller(self._warmup_out).skip()
+        if skipped:
             self.skip_btn.configure(state="disabled", text=t("Skipping…"))
             core.log("build: shader warm-up skipped by the player")
+
+    def _poll_warmup(self):
+        out = getattr(self, "_warmup_out", None)
+        if out is None:
+            out = core.warmup.running_out()
+            if out is None:
+                return
+            self._warmup_out = out
+            if not self.build:
+                self._show_skip_btn(True)
+        if core.warmup.controller(out).running():
+            self.status.set(t("Preparing shaders... (Skip)"))
+        else:
+            self._warmup_out = None
+            if not self.build:
+                self._show_skip_btn(False)
+                self.status.set(t("Build finished."))
 
     def _show_skip_btn(self, show):
         try:
@@ -1445,7 +1467,8 @@ class App(tk.Tk):
             self.progress["value"] = 1000
             self.detail.set(t("Done in {elapsed}. Open the Play tab.", elapsed=core.clock(el)))
             self.status.set(t("Build finished."))
-            core.warmup.start(self.build.out)
+            if core.warmup.start(self.build.out):
+                self._warmup_out = self.build.out
             self.refresh_rank_art()          # (the game is unpacked now: its rank plates for the Online tab)
         else:
             if self.cur_step and self.step_state.get(self.cur_step) == "running":
@@ -1464,6 +1487,9 @@ class App(tk.Tk):
         set_big_state(self.build_btn, True)
         self.cancel_btn.configure(state="disabled")
         self._show_skip_btn(False)
+        if getattr(self, "_warmup_out", None):
+            self._show_skip_btn(True)
+            self._poll_warmup()
         self.refresh_game_state()
 
     # ------------------------------------------------------------------ play
@@ -2030,6 +2056,7 @@ class App(tk.Tk):
 
     # ------------------------------------------------------------------ loop
     def _tick(self):
+        self._poll_warmup()
         if self.build:
             self._drain_build()
         if self.game:
@@ -2114,6 +2141,8 @@ class App(tk.Tk):
         self.save_settings()
         self.nb.unbind("<<NotebookTabChanged>>")          # (destroying the tabs would fire it with none selected)
         self.online.on_close()
+        if self.game:
+            self.game.stop()
         self.destroy()
 
 

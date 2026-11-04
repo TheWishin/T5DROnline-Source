@@ -2833,4 +2833,7 @@ MESSAGES = {
     "The announcer needs your built game (BUILD GAME): until then the chime plays.": "아나운서 음성에는 빌드한 게임이 필요합니다 (BUILD GAME). 그때까지는 차임이 울립니다.",
     "For an incoming challenge or invite when you are in another window. The announcer is read from your own game (after BUILD GAME); without it the chime plays. Your own sound: a WAV file of at most 5 seconds and 2 MB, copied into the launcher's folder.": "다른 창을 보고 있을 때 도전이나 초대를 받으면 울립니다. 아나운서 음성은 내 게임(BUILD GAME 이후)에서 읽으며, 없으면 차임이 울립니다. 내 사운드: 최대 5초, 2MB의 WAV 파일이며 런처 폴더에 복사됩니다.",
     "For a found match or tournament set when you are in another window. The announcer is read from your own game (after BUILD GAME); without it the beep plays. Your own sound: a WAV file of at most 5 seconds and 2 MB, copied into the launcher's folder.": "다른 창을 보고 있을 때 매치를 찾거나 토너먼트 세트가 준비되면 울립니다. 아나운서 음성은 내 게임(BUILD GAME 이후)에서 읽으며, 없으면 비프음이 납니다. 내 사운드: 최대 5초, 2MB의 WAV 파일이며 런처 폴더에 복사됩니다.",
+    'Video clips': '??? ??',
+    'Keep the last 30 seconds': '?? 30? ??',
+    'Ctrl+F10 or hold SELECT + R3 for 1 second to save an MP4 in Videos/T5DR Online. Includes game sound only. Disabled while power saving is on. Windows only.': 'Ctrl+F10? ???? SELECT + R3? 1? ?? ??? ???/T5DR Online? MP4? ?????. ?? ??? ?????. ?? ????? ???????. Windows ?????.',
 }

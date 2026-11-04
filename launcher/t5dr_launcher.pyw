@@ -808,6 +808,17 @@ class App(tk.Tk):
         self.power_hint.pack(anchor="w", pady=(4, 0))
         self._power_saving_changed(save=False)
 
+        cp = ttk.LabelFrame(left, text="  " + t("Video clips") + "  ", padding=(12, 6))
+        cp.pack(fill="x", pady=(6, 0))
+        self.clips_var = tk.BooleanVar(value=self.settings["clips"])
+        ttk.Checkbutton(cp, text=t("Keep the last 30 seconds"), variable=self.clips_var,
+                        style=self.wrap_style("TCheckbutton", 300),
+                        command=self.save_settings).pack(anchor="w")
+        ttk.Label(cp, style="Muted.TLabel", wraplength=300, justify="left", text=t(
+            "Ctrl+F10 or hold SELECT + R3 for 1 second to save an MP4 in Videos/T5DR Online. "
+            "Includes game sound only. Disabled while power saving is on. Windows only.")).pack(
+            anchor="w", pady=(4, 0))
+
         # Training overlay (T5_TRAINING*, core.TRAINING_MODES, docs/TRAINING.md): inputs and frame data
         # drawn over the picture in Practice; it only reads the game, so it never changes a match.
         tr = ttk.LabelFrame(left, text="  " + t("Training overlay") + "  ", padding=(12, 6))
@@ -1776,6 +1787,8 @@ class App(tk.Tk):
             self.settings["picture"] = self.picture_var.get()
         if hasattr(self, "power_var"):
             self.settings["power_saving"] = self.power_var.get()
+        if hasattr(self, "clips_var"):
+            self.settings["clips"] = bool(self.clips_var.get())
         self.settings["internal_res"] = self.internal_res_var.get()
         self.settings["vsync"] = self.vsync_var.get()
         if hasattr(self, "stage_blur_var"):

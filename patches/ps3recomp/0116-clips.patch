@@ -1,0 +1,859 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index c656bf6f..4b1d838e 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -62,6 +62,8 @@ list(APPEND HLE_SOURCES ${AT3_SOURCES})
+ # cellVdec's H.264 decoder: Media Foundation on Windows (C++/COM), a stub that
+ # reports "unavailable" elsewhere. It links mfplat/mfuuid itself (#pragma).
+ list(APPEND HLE_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/libs/codec/mf_h264.cpp")
++# Patch 0116: host-side instant replay (Windows MF; stubs elsewhere).
++list(APPEND HLE_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/libs/video/rsx_clips.cpp")
+ 
+ # Runtime core (syscalls, PPU, SPU, memory)
+ file(GLOB_RECURSE RUNTIME_SOURCES CONFIGURE_DEPENDS
+diff --git a/libs/audio/cellAudio.c b/libs/audio/cellAudio.c
+index 5f595740..8f6bd105 100644
+--- a/libs/audio/cellAudio.c
++++ b/libs/audio/cellAudio.c
+@@ -14,6 +14,7 @@
+ 
+ #include "../../runtime/memory/vm.h"   /* vm_commit */
+ #include "cellAudio.h"
++#include "../video/rsx_clips.h"
+ #include "../../runtime/ppu/ppu_memory.h"   /* vm_base, vm_read64, vm_write32 */
+ #include "../../runtime/platform/host_sched.h"   /* mixer thread priority */
+ #include <stdio.h>
+@@ -931,6 +932,10 @@ static int s_mix_had_sound;
+ 
+ static void audio_submit_mix(void)
+ {
++    /* Patch 0116: capture our own final stereo mix before host mute. No endpoint
++     * loopback, guest writes, allocation or encoder work on the mixer thread. */
++    if (rsx_clips_enabled())
++        rsx_clips_audio(s_mix_buffer, CELL_AUDIO_BLOCK_SAMPLES, rsx_clips_clock());
+     { int nz = 0;
+       for (u32 i = 0; i < CELL_AUDIO_BLOCK_SAMPLES * 2; i++) if (s_mix_buffer[i] != 0.0f) { nz = 1; break; }
+       s_mix_had_sound = nz; }
+diff --git a/libs/input/pad_host_win32.c b/libs/input/pad_host_win32.c
+index 2c7ed2c0..8cabd34f 100644
+--- a/libs/input/pad_host_win32.c
++++ b/libs/input/pad_host_win32.c
+@@ -2163,6 +2163,7 @@ static DWORD WINAPI hotplug_main(LPVOID arg)
+  * -----------------------------------------------------------------------*/
+ 
+ static INIT_ONCE g_init_once = INIT_ONCE_STATIC_INIT;
++static volatile LONG g_cached_ready;
+ static void sampler_start(void);
+ 
+ static BOOL CALLBACK init_cb(PINIT_ONCE once, PVOID param, PVOID* ctx)
+@@ -2208,7 +2209,11 @@ static BOOL CALLBACK init_cb(PINIT_ONCE once, PVOID param, PVOID* ctx)
+     return TRUE;
+ }
+ 
+-void padh_init(void) { InitOnceExecuteOnce(&g_init_once, init_cb, NULL, NULL); }
++void padh_init(void)
++{
++    InitOnceExecuteOnce(&g_init_once, init_cb, NULL, NULL);
++    InterlockedExchange(&g_cached_ready, 1);
++}
+ 
+ void padh_shutdown(void)
+ {
+@@ -2523,6 +2528,21 @@ static void sample_locked(u32 port, PortState* ps, LONGLONG t0)
+     { double c = qpc_to_us(ps->t_end - t0); ps->cost_sum += c; if (c > ps->cost_max) ps->cost_max = c; }
+ }
+ 
++/* A capture shortcut must not poll a device or take a lock the game can
++ * wait behind. Return no input if the sampler/guest has not read this port
++ * in the last 100 ms (for example while loading), or a sample is in flight. */
++int padh_peek_cached(u32 port, PadHostPort* out)
++{
++    memset(out, 0, sizeof *out);
++    if (port >= PADH_MAX_PORTS || !InterlockedCompareExchange(&g_cached_ready, 0, 0)) return 0;
++    PortState* ps = &g_port[port];
++    if (!TryAcquireSRWLockShared(&ps->lock)) return -1;
++    int recent = ps->have && qpc_now() - ps->t_end < qpc_from_us(100000);
++    if (recent) *out = ps->last;
++    ReleaseSRWLockShared(&ps->lock);
++    return recent;
++}
++
+ int padh_sample(u32 port, PadHostPort* out, u32 min_interval_us)
+ {
+     padh_init();
+diff --git a/libs/input/pad_host.h b/libs/input/pad_host.h
+index c1a40e81..c3837ce6 100644
+--- a/libs/input/pad_host.h
++++ b/libs/input/pad_host.h
+@@ -79,6 +79,11 @@ int  padh_port_connected(u32 port);
+  * (returns 0 then); returns 1 when a new sample was taken. */
+ int  padh_sample(u32 port, PadHostPort* out, u32 min_interval_us);
+ 
++/* Patch 0116: nonblocking copy of a recent cached sample for host capture
++ * controls. No init, device I/O, tap consumption or input-state mutation.
++ * Returns 1 for recent data, 0 for no data, -1 while the cache is busy. */
++int  padh_peek_cached(u32 port, PadHostPort* out);
++
+ /* A read by `reader`: like padh_sample, plus the presses the tap latch holds
+  * for that reader (out->tapped), which are then cleared. If nothing new was
+  * sampled since this reader's last read, it gets that read's data again
+diff --git a/libs/video/rsx_d3d12_backend.c b/libs/video/rsx_d3d12_backend.c
+index add34dcf..abb87727 100644
+--- a/libs/video/rsx_d3d12_backend.c
++++ b/libs/video/rsx_d3d12_backend.c
+@@ -21,6 +21,9 @@
+ #include "rsx_primitives.h"
+ #include "rsx_vertex_fetch.h"
+ #include "rsx_texture_layout.h"
++#include "rsx_clips.h"
++#include "../input/cellPad.h"
++#include "../input/pad_host.h"
+ #include <stdio.h>
+ #include <string.h>
+ #include <stdlib.h>
+@@ -3776,6 +3779,192 @@ static void guest_fb_present(u32 fi)
+ }
+ 
+ 
++/* Patch 0116: present-only capture. These readbacks have their OWN monotonic
++ * fence; their lifetime must not depend on the renderer's recycled frame fence.
++ * Nothing here waits for the capture GPU copy or touches guest memory/input.
++ * Original RGBA is passed to the worker; resizing/colour conversion/encoding
++ * and disk access are all outside the renderer. At 4K three slots total 95 MiB.
++ */
++#define CLIP_READBACKS 3
++typedef struct ClipReadback {
++    ID3D12Resource* resource;
++    UINT64 pending;
++    long long time;
++    volatile LONG held; /* mapped view owned by the encoder worker */
++} ClipReadback;
++static ClipReadback s_clip_readbacks[CLIP_READBACKS];
++static ID3D12Fence* s_clip_fence;
++static UINT64 s_clip_sequence;
++static long long s_clip_last;
++static u32 s_clip_pitch, s_clip_width, s_clip_height;
++static int s_clip_failed;
++
++static void clips_controls(long long now)
++{
++    static int key_was_down;
++    static long long held[CELL_PAD_MAX_PORT_NUM];
++    static int fired[CELL_PAD_MAX_PORT_NUM];
++    int down = GetForegroundWindow() == s_d3d.hwnd &&
++               (GetAsyncKeyState(VK_CONTROL) & 0x8000) &&
++               (GetAsyncKeyState(VK_F10) & 0x8000);
++    if (down && !key_was_down) rsx_clips_request_save();
++    key_was_down = down;
++    for (u32 p = 0; p < CELL_PAD_MAX_PORT_NUM; ++p) {
++        PadHostPort pad;
++        const u16 chord = CELL_PAD_CTRL_SELECT | CELL_PAD_CTRL_R3;
++        /* Cached peek performs no device I/O and never waits for input locks. */
++        int sampled = padh_peek_cached(p, &pad);
++        if (sampled < 0) continue; /* skip a contended sample without resetting a held chord */
++        int pressed = sampled && pad.connected && (pad.buttons & chord) == chord;
++        if (!pressed) { held[p] = 0; fired[p] = 0; }
++        else if (!held[p]) held[p] = now;
++        else if (!fired[p] && now - held[p] >= 10000000LL) {
++            fired[p] = 1;
++            rsx_clips_request_save();
++        }
++    }
++}
++
++/* Executed by the worker after conversion, or immediately by the renderer
++ * when the bounded worker queue rejects a frame. Resource release at shutdown
++ * happens only after rsx_clips_shutdown has joined and returned every view. */
++static void clips_unmap(void* context)
++{
++    ClipReadback* slot = (ClipReadback*)context;
++    D3D12_RANGE written = {0, 0};
++    slot->resource->lpVtbl->Unmap(slot->resource, 0, &written);
++    InterlockedExchange(&slot->held, 0);
++}
++
++static void clips_collect(void)
++{
++    if (!s_clip_fence) return;
++    UINT64 done = s_clip_fence->lpVtbl->GetCompletedValue(s_clip_fence);
++    if (done == UINT64_MAX) {
++        if (!s_clip_failed) fprintf(stderr, "[clips] GPU readback disabled: device removed\n");
++        s_clip_failed = 1;
++        return;
++    }
++    /* Process in capture order when a slow encoder causes more than one slot
++     * to become ready. Never Map an unfinished copy (Map itself does not wait). */
++    for (int n = 0; n < CLIP_READBACKS; ++n) {
++        int oldest = -1;
++        for (int i = 0; i < CLIP_READBACKS; ++i)
++            if (s_clip_readbacks[i].pending &&
++                (oldest < 0 || s_clip_readbacks[i].pending < s_clip_readbacks[oldest].pending))
++                oldest = i;
++        if (oldest < 0 || s_clip_readbacks[oldest].pending > done) break;
++        void* mapped = NULL;
++        D3D12_RANGE range = {0, (SIZE_T)s_clip_pitch * s_clip_height};
++        ID3D12Resource* r = s_clip_readbacks[oldest].resource;
++        if (SUCCEEDED(r->lpVtbl->Map(r, 0, &range, &mapped)) && mapped) {
++            ClipReadback* slot = &s_clip_readbacks[oldest];
++            InterlockedExchange(&slot->held, 1);
++            slot->pending = 0;
++            /* Transfer the mapped GPU readback view; no CPU pixel copy on the
++             * render thread. A rejected transfer remains ours to unmap. */
++            if (!rsx_clips_video(mapped, s_clip_width, s_clip_height, s_clip_pitch,
++                                 slot->time, clips_unmap, slot))
++                clips_unmap(slot);
++        } else {
++            s_clip_readbacks[oldest].pending = 0;
++        }
++    }
++}
++
++/* Records the copy with the source in PRESENT, restores PRESENT, and returns
++ * the slot whose fence is signalled after this command list executes. */
++static int clips_record(u32 fi)
++{
++    if (!s_present_this_frame || !rsx_clips_enabled()) return -1;
++    long long now = rsx_clips_clock();
++    clips_controls(now);
++    clips_collect();
++    if (s_clip_failed || !s_d3d.width || !s_d3d.height ||
++        s_d3d.width > 3840 || s_d3d.height > 2160 || now - s_clip_last < 333333LL) return -1;
++    /* The backend currently fixes swapchain dimensions for its lifetime. Fail
++     * closed if that changes, rather than mapping/copying an undersized slot. */
++    if (s_clip_fence && (s_clip_width != s_d3d.width || s_clip_height != s_d3d.height)) {
++        s_clip_failed = 1;
++        fprintf(stderr, "[clips] GPU readback disabled: swapchain size changed\n");
++        return -1;
++    }
++    if (!s_clip_fence) {
++        HRESULT hr = s_d3d.device->lpVtbl->CreateFence(s_d3d.device, 0, D3D12_FENCE_FLAG_NONE,
++                        &IID_ID3D12Fence, (void**)&s_clip_fence);
++        if (FAILED(hr)) {
++            fprintf(stderr, "[clips] GPU fence failed 0x%08lX\n", (unsigned long)hr);
++            s_clip_failed = 1; return -1;
++        }
++        s_clip_width = s_d3d.width; s_clip_height = s_d3d.height;
++        s_clip_pitch = (s_d3d.width * 4 + 255) & ~255u;
++    }
++    for (int i = 0; i < CLIP_READBACKS; ++i) {
++        if (s_clip_readbacks[i].pending ||
++            InterlockedCompareExchange(&s_clip_readbacks[i].held, 0, 0)) continue;
++        if (!s_clip_readbacks[i].resource) {
++            D3D12_HEAP_PROPERTIES hp = {0}; hp.Type = D3D12_HEAP_TYPE_READBACK;
++            D3D12_RESOURCE_DESC desc = {0};
++            desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
++            desc.Width = (UINT64)s_clip_pitch * s_d3d.height;
++            desc.Height = 1; desc.DepthOrArraySize = 1; desc.MipLevels = 1;
++            desc.SampleDesc.Count = 1; desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
++            HRESULT hr = s_d3d.device->lpVtbl->CreateCommittedResource(s_d3d.device,
++                &hp, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COPY_DEST,
++                NULL, &IID_ID3D12Resource, (void**)&s_clip_readbacks[i].resource);
++            if (FAILED(hr)) {
++                fprintf(stderr, "[clips] GPU readback allocation failed 0x%08lX\n", (unsigned long)hr);
++                s_clip_failed = 1; return -1;
++            }
++        }
++        D3D12_RESOURCE_BARRIER b = {0};
++        b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
++        b.Transition.pResource = s_d3d.render_targets[fi];
++        b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
++        b.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
++        b.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
++        s_d3d.cmd_list->lpVtbl->ResourceBarrier(s_d3d.cmd_list, 1, &b);
++        D3D12_TEXTURE_COPY_LOCATION dst = {0}, src = {0};
++        dst.pResource = s_clip_readbacks[i].resource;
++        dst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
++        dst.PlacedFootprint.Footprint.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
++        dst.PlacedFootprint.Footprint.Width = s_d3d.width;
++        dst.PlacedFootprint.Footprint.Height = s_d3d.height;
++        dst.PlacedFootprint.Footprint.Depth = 1;
++        dst.PlacedFootprint.Footprint.RowPitch = s_clip_pitch;
++        src.pResource = s_d3d.render_targets[fi];
++        src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
++        s_d3d.cmd_list->lpVtbl->CopyTextureRegion(s_d3d.cmd_list, &dst, 0, 0, 0, &src, NULL);
++        b.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
++        b.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
++        s_d3d.cmd_list->lpVtbl->ResourceBarrier(s_d3d.cmd_list, 1, &b);
++        s_clip_readbacks[i].pending = ++s_clip_sequence;
++        s_clip_readbacks[i].time = now;
++        /* Advance a stable 30 Hz deadline: anchoring each deadline at now
++         * would turn tiny 60 Hz jitter into systematic 20 Hz capture. */
++        s_clip_last = s_clip_last ? s_clip_last + 333333LL : now;
++        if (now - s_clip_last > 333333LL) s_clip_last = now;
++        return i;
++    }
++    return -1; /* GPU or worker busy: drop rather than stall the game. */
++}
++
++static void clips_release(void)
++{
++    /* Called only after the renderer's normal shutdown GPU drain. */
++    rsx_clips_shutdown();
++    for (int i = 0; i < CLIP_READBACKS; ++i) {
++        if (s_clip_readbacks[i].resource)
++            s_clip_readbacks[i].resource->lpVtbl->Release(s_clip_readbacks[i].resource);
++        memset(&s_clip_readbacks[i], 0, sizeof s_clip_readbacks[i]);
++    }
++    if (s_clip_fence) s_clip_fence->lpVtbl->Release(s_clip_fence);
++    s_clip_fence = NULL;
++    s_clip_sequence = 0; s_clip_last = 0; s_clip_failed = 0;
++    s_clip_pitch = s_clip_width = s_clip_height = 0;
++}
++
++
+ static void render_frame(void)
+ {
+     double _rf0 = perf_on() ? perf_now() : 0.0;
+@@ -4920,10 +5109,17 @@ skip_dump_consider: ;
+         s_d3d.cmd_list->lpVtbl->ResourceBarrier(s_d3d.cmd_list, 1, &barrier);
+     }
+ 
++    int clip_slot = clips_record(fi);
++
+     /* Close and execute */
+     s_d3d.cmd_list->lpVtbl->Close(s_d3d.cmd_list);
+     ID3D12CommandList* cmd_lists[] = {(ID3D12CommandList*)s_d3d.cmd_list};
+     s_d3d.cmd_queue->lpVtbl->ExecuteCommandLists(s_d3d.cmd_queue, 1, cmd_lists);
++    if (clip_slot >= 0 && FAILED(s_d3d.cmd_queue->lpVtbl->Signal(
++            s_d3d.cmd_queue, s_clip_fence, s_clip_readbacks[clip_slot].pending))) {
++        fprintf(stderr, "[clips] GPU capture signal failed\n");
++        s_clip_failed = 1;
++    }
+ 
+     /* D3D12_IQ=1: drain the debug layer's message queue after submitting the
+      * frame. The legacy (is_vp=0) DrawInstanced path silently produced ZERO
+@@ -6662,6 +6858,7 @@ void rsx_d3d12_backend_shutdown(void)
+     if (!s_d3d.initialized) return;
+ 
+     wait_for_gpu();
++    clips_release();
+ 
+     /* Release D3D12 resources */
+     if (s_d3d.vertex_buffer) {
+diff --git a/libs/video/rsx_clips.cpp b/libs/video/rsx_clips.cpp
+new file mode 100644
+--- /dev/null
++++ b/libs/video/rsx_clips.cpp
+@@ -0,0 +1,432 @@
++/* Patch 0116: bounded, host-only instant replay. No guest memory, input writes,
++ * loopback capture, network, or work on the game thread. All MF/IO is on the
++ * low-priority worker. Two-second standalone MP4s make every eviction decodable.
++ */
++#include "rsx_clips.h"
++#ifdef _WIN32
++#define WIN32_LEAN_AND_MEAN
++#define NOMINMAX
++#include <windows.h>
++#include <mfapi.h>
++#include <mfidl.h>
++#include <mfreadwrite.h>
++#include <mftransform.h>
++#include <cstdint>
++#include <mferror.h>
++#include <strmif.h>
++#include <codecapi.h>
++#include <shlobj.h>
++#include <wrl/client.h>
++#include <atomic>
++#include <algorithm>
++#include <array>
++#include <cmath>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <memory>
++#include <mutex>
++#include <thread>
++#include <vector>
++#include <string>
++#include "../../runtime/platform/host_sched.h"
++#include "rsx_clips_ring.h"
++#pragma comment(lib, "mfplat.lib")
++#pragma comment(lib, "mfreadwrite.lib")
++#pragma comment(lib, "mfuuid.lib")
++#pragma comment(lib, "ole32.lib")
++#pragma comment(lib, "shell32.lib")
++using Microsoft::WRL::ComPtr;
++namespace {
++constexpr unsigned W=1280, H=720, FPS=30, MAX_W=3840, MAX_H=2160;
++constexpr long long SECOND=10000000, FRAME=SECOND/FPS;
++constexpr size_t SEGMENT_CAP=8*1024*1024, RING_CAP=64*1024*1024;
++struct Failure { HRESULT hr; };
++void check(HRESULT hr) { if (FAILED(hr)) throw Failure{hr}; }
++
++/* IStream instead of an unbounded HGLOBAL: even a broken encoder cannot grow
++ * the current segment past 8 MiB. Capacity and seek overflow checked before IO. */
++class MemoryStream final : public IStream {
++    std::atomic<ULONG> refs{1};
++    ULONGLONG pos=0;
++public:
++    std::vector<unsigned char> data;
++    MemoryStream() { data.reserve(SEGMENT_CAP); }
++    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID id, void** out) override {
++        if (!out) return E_POINTER;
++        *out=nullptr;
++        if (id==IID_IUnknown || id==IID_ISequentialStream || id==IID_IStream) {
++            *out=static_cast<IStream*>(this); AddRef(); return S_OK;
++        }
++        return E_NOINTERFACE;
++    }
++    ULONG STDMETHODCALLTYPE AddRef() override { return ++refs; }
++    ULONG STDMETHODCALLTYPE Release() override { ULONG r=--refs; if(!r) delete this; return r; }
++    HRESULT STDMETHODCALLTYPE Read(void* dst, ULONG n, ULONG* got) override {
++        ULONG count=pos<data.size()?static_cast<ULONG>(std::min<ULONGLONG>(n,data.size()-pos)):0;
++        if(count) memcpy(dst,data.data()+pos,count);
++        pos+=count; if(got)*got=count; return count==n?S_OK:S_FALSE;
++    }
++    HRESULT STDMETHODCALLTYPE Write(const void* src, ULONG n, ULONG* put) override {
++        if(put)*put=0;
++        if(pos>SEGMENT_CAP || n>SEGMENT_CAP-pos) return STG_E_MEDIUMFULL;
++        try { if(pos+n>data.size()) data.resize(static_cast<size_t>(pos+n)); }
++        catch(...) { return E_OUTOFMEMORY; }
++        if(n) memcpy(data.data()+pos,src,n);
++        pos+=n; if(put)*put=n; return S_OK;
++    }
++    HRESULT STDMETHODCALLTYPE Seek(LARGE_INTEGER d, DWORD origin, ULARGE_INTEGER* result) override {
++        LONGLONG base=origin==STREAM_SEEK_SET?0:origin==STREAM_SEEK_CUR?pos:origin==STREAM_SEEK_END?data.size():-1;
++        if(base<0 || d.QuadPart < -base || d.QuadPart > static_cast<LONGLONG>(SEGMENT_CAP)-base) return STG_E_INVALIDFUNCTION;
++        pos=base+d.QuadPart; if(result) result->QuadPart=pos; return S_OK;
++    }
++    HRESULT STDMETHODCALLTYPE SetSize(ULARGE_INTEGER n) override {
++        if(n.QuadPart>SEGMENT_CAP)return STG_E_MEDIUMFULL;
++        try {data.resize(static_cast<size_t>(n.QuadPart));} catch(...) {return E_OUTOFMEMORY;} return S_OK;
++    }
++    HRESULT STDMETHODCALLTYPE CopyTo(IStream* dst, ULARGE_INTEGER n, ULARGE_INTEGER* rd, ULARGE_INTEGER* wr) override {
++        ULONG count=pos<data.size()?static_cast<ULONG>(std::min<ULONGLONG>(n.QuadPart,data.size()-pos)):0, put=0;
++        HRESULT hr=dst->Write(count?data.data()+pos:nullptr,count,&put); pos+=put;
++        if(rd)rd->QuadPart=put; if(wr)wr->QuadPart=put; return hr;
++    }
++    HRESULT STDMETHODCALLTYPE Commit(DWORD) override {return S_OK;}
++    HRESULT STDMETHODCALLTYPE Revert() override {return E_NOTIMPL;}
++    HRESULT STDMETHODCALLTYPE LockRegion(ULARGE_INTEGER,ULARGE_INTEGER,DWORD) override {return STG_E_INVALIDFUNCTION;}
++    HRESULT STDMETHODCALLTYPE UnlockRegion(ULARGE_INTEGER,ULARGE_INTEGER,DWORD) override {return STG_E_INVALIDFUNCTION;}
++    HRESULT STDMETHODCALLTYPE Stat(STATSTG* s,DWORD) override {
++        if(!s)return E_POINTER; memset(s,0,sizeof(*s));s->type=STGTY_STREAM;s->cbSize.QuadPart=data.size();s->grfMode=STGM_READWRITE;return S_OK;
++    }
++    HRESULT STDMETHODCALLTYPE Clone(IStream**) override {return E_NOTIMPL;}
++};
++ComPtr<IMFAttributes> writer_attributes(bool hardware) {
++    ComPtr<IMFAttributes> a; check(MFCreateAttributes(&a,4));
++    check(a->SetGUID(MF_TRANSCODE_CONTAINERTYPE,MFTranscodeContainerType_MPEG4));
++    check(a->SetUINT32(MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS,hardware));
++    check(a->SetUINT32(MF_SINK_WRITER_DISABLE_THROTTLING,TRUE));
++    return a;
++}
++ComPtr<IMFMediaType> video_type(GUID subtype) {
++    ComPtr<IMFMediaType> t;check(MFCreateMediaType(&t));
++    check(t->SetGUID(MF_MT_MAJOR_TYPE,MFMediaType_Video));check(t->SetGUID(MF_MT_SUBTYPE,subtype));
++    check(MFSetAttributeSize(t.Get(),MF_MT_FRAME_SIZE,W,H));
++    check(MFSetAttributeRatio(t.Get(),MF_MT_FRAME_RATE,FPS,1));
++    check(MFSetAttributeRatio(t.Get(),MF_MT_PIXEL_ASPECT_RATIO,1,1));
++    check(t->SetUINT32(MF_MT_INTERLACE_MODE,MFVideoInterlace_Progressive));
++    check(t->SetUINT32(MF_MT_YUV_MATRIX,MFVideoTransferMatrix_BT709));
++    check(t->SetUINT32(MF_MT_VIDEO_NOMINAL_RANGE,MFNominalRange_16_235));
++    return t;
++}
++ComPtr<IMFMediaType> audio_type(bool aac) {
++    ComPtr<IMFMediaType> t;check(MFCreateMediaType(&t));
++    check(t->SetGUID(MF_MT_MAJOR_TYPE,MFMediaType_Audio));
++    check(t->SetGUID(MF_MT_SUBTYPE,aac?MFAudioFormat_AAC:MFAudioFormat_PCM));
++    check(t->SetUINT32(MF_MT_AUDIO_NUM_CHANNELS,2));
++    check(t->SetUINT32(MF_MT_AUDIO_SAMPLES_PER_SECOND,48000));
++    check(t->SetUINT32(MF_MT_AUDIO_BITS_PER_SAMPLE,16));
++    check(t->SetUINT32(MF_MT_AUDIO_AVG_BYTES_PER_SECOND,aac?20000:48000*4));
++    if(aac) {check(t->SetUINT32(MF_MT_AAC_PAYLOAD_TYPE,0));check(t->SetUINT32(MF_MT_AAC_AUDIO_PROFILE_LEVEL_INDICATION,0x29));}
++    else check(t->SetUINT32(MF_MT_AUDIO_BLOCK_ALIGNMENT,4));
++    return t;
++}
++void sample(IMFSinkWriter* writer,DWORD stream,const void* bytes,DWORD size,long long time,long long duration) {
++    ComPtr<IMFSample>s;ComPtr<IMFMediaBuffer>b;
++    check(MFCreateSample(&s));check(MFCreateMemoryBuffer(size,&b));BYTE* p=nullptr;
++    check(b->Lock(&p,nullptr,nullptr));memcpy(p,bytes,size);check(b->Unlock());check(b->SetCurrentLength(size));
++    check(s->AddBuffer(b.Get()));check(s->SetSampleTime(time));check(s->SetSampleDuration(duration));
++    check(writer->WriteSample(stream,s.Get()));
++}
++class Encoder {
++public:
++    ComPtr<MemoryStream> mem;
++    ComPtr<IMFByteStream> bs;
++    ComPtr<IMFSinkWriter> writer;
++    DWORD video=0,audio=0;
++    long long start=0,end=0,audio_frames=0;
++    explicit Encoder(long long now,bool hardware):start(now) {
++        mem.Attach(new MemoryStream);
++        check(MFCreateMFByteStreamOnStream(mem.Get(),&bs));
++        auto attr=writer_attributes(hardware);
++        check(MFCreateSinkWriterFromURL(nullptr,bs.Get(),attr.Get(),&writer));
++        auto v=video_type(MFVideoFormat_H264);check(v->SetUINT32(MF_MT_AVG_BITRATE,4000000));
++        check(v->SetUINT32(MF_MT_MPEG2_PROFILE,77));check(writer->AddStream(v.Get(),&video));
++        auto a=audio_type(true);check(writer->AddStream(a.Get(),&audio));
++        auto vi=video_type(MFVideoFormat_NV12);auto ai=audio_type(false);
++        check(writer->SetInputMediaType(video,vi.Get(),nullptr));check(writer->SetInputMediaType(audio,ai.Get(),nullptr));
++        /* No B pictures avoids reorder latency; a fresh encoder starts every
++         * segment with an IDR. Optional codec controls vary by hardware. */
++        ComPtr<ICodecAPI> codec;
++        if(SUCCEEDED(writer->GetServiceForStream(video,GUID_NULL,IID_PPV_ARGS(&codec)))) {
++            VARIANT value;VariantInit(&value);value.vt=VT_UI4;value.ulVal=0;
++            codec->SetValue(&CODECAPI_AVEncMPVDefaultBPictureCount,&value);
++        }
++        check(writer->BeginWriting());
++        static bool logged=false;
++        if(!logged) {
++            ComPtr<IMFTransform> transform;ComPtr<IMFAttributes> attrs;UINT32 async=0,hw_url=0;
++            if(SUCCEEDED(writer->GetServiceForStream(video,GUID_NULL,IID_PPV_ARGS(&transform))) && SUCCEEDED(transform->GetAttributes(&attrs))) {
++                attrs->GetUINT32(MF_TRANSFORM_ASYNC,&async);
++                attrs->GetStringLength(MFT_ENUM_HARDWARE_URL_Attribute,&hw_url);
++            }
++            fprintf(stderr,"[clips] H.264 720p30 encoder ready (hardware transforms %s, asynchronous MFT %u, hardware identity %s)\n",hardware?"enabled":"disabled",async,hw_url?"reported":"unreported");
++            logged=true;
++        }
++    }
++    clips::Segment finish() {
++        check(writer->Finalize());writer.Reset();bs.Reset();
++        mem->data.shrink_to_fit();
++        clips::Segment s;s.start=start;s.end=end;s.bytes=std::move(mem->data);mem.Reset();return s;
++    }
++};
++
++/* Nearest-neighbour resize on the encoding worker, preserving aspect in a
++ * 720p letterbox. RGBA swapchain -> limited-range BT.709 NV12; no CPU conversion
++ * or MF work on the producer. NV12 also works with hardware H.264 MFTs. */
++void to_nv12(const unsigned char* rgba,unsigned sw,unsigned sh,std::vector<unsigned char>& out,unsigned pitch=0) {
++    if(!pitch)pitch=sw*4;
++    out.resize(W*H*3/2);memset(out.data(),16,W*H);memset(out.data()+W*H,128,W*H/2);
++    unsigned dw=W,dh=static_cast<unsigned>((static_cast<uint64_t>(sh)*W)/sw)&~1u;
++    if(dh>H){dh=H;dw=static_cast<unsigned>((static_cast<uint64_t>(sw)*H)/sh)&~1u;}
++    dw=std::max(dw,2u);dh=std::max(dh,2u);unsigned ox=((W-dw)/2)&~1u,oy=((H-dh)/2)&~1u;
++    for(unsigned y=0;y<dh;y+=2)for(unsigned x=0;x<dw;x+=2) {
++        int rsum=0,gsum=0,bsum=0;
++        for(unsigned j=0;j<2;j++)for(unsigned i=0;i<2;i++) {
++            unsigned sy=static_cast<uint64_t>(y+j)*sh/dh,sx=static_cast<uint64_t>(x+i)*sw/dw;
++            const auto* p=rgba+static_cast<size_t>(sy)*pitch+sx*4;int r=p[0],g=p[1],b=p[2];
++            out[(oy+y+j)*W+ox+x+i]=static_cast<unsigned char>(16+((47*r+157*g+16*b+128)>>8));
++            rsum+=r;gsum+=g;bsum+=b;
++        }
++        int r=rsum/4,g=gsum/4,b=bsum/4;size_t uv=W*H+(oy+y)/2*W+ox+x;
++        out[uv]=static_cast<unsigned char>(128+((-26*r-87*g+112*b+128)>>8));
++        out[uv+1]=static_cast<unsigned char>(128+((112*r-102*g-10*b+128)>>8));
++    }
++}
++
++/* Compressed remux: never decode/re-encode on save. Each MP4 supplies its own
++ * sequence header and starts on a keyframe. MF retains AAC decoder configuration. */
++void remux(const clips::Ring& ring,const wchar_t* path) {
++    ComPtr<IMFSinkWriter> out;auto attrs=writer_attributes(false);
++    check(MFCreateSinkWriterFromURL(path,nullptr,attrs.Get(),&out));
++    bool begun=false;DWORD dest[2]={0,0};long long origin=ring.segments().front().start;
++    for(const auto& seg:ring.segments()) {
++        ComPtr<MemoryStream> mem;mem.Attach(new MemoryStream);mem->data=seg.bytes;
++        ComPtr<IMFByteStream> bs;check(MFCreateMFByteStreamOnStream(mem.Get(),&bs));
++        ComPtr<IMFSourceReader> reader;check(MFCreateSourceReaderFromByteStream(bs.Get(),nullptr,&reader));
++        ComPtr<IMFMediaType> types[2];DWORD source[2]={static_cast<DWORD>(MF_SOURCE_READER_FIRST_VIDEO_STREAM),static_cast<DWORD>(MF_SOURCE_READER_FIRST_AUDIO_STREAM)};
++        for(unsigned i=0;i<2;i++) check(reader->GetNativeMediaType(source[i],0,&types[i]));
++        if(!begun) {
++            for(unsigned i=0;i<2;i++){check(out->AddStream(types[i].Get(),&dest[i]));check(out->SetInputMediaType(dest[i],types[i].Get(),nullptr));}
++            check(out->BeginWriting());begun=true;
++        }
++        for(unsigned i=0;i<2;i++) {
++            check(reader->SetCurrentMediaType(source[i],nullptr,types[i].Get()));
++            for(;;) {
++                DWORD actual=0,flags=0;LONGLONG t=0;ComPtr<IMFSample>s;
++                check(reader->ReadSample(source[i],0,&actual,&flags,&t,&s));
++                if(flags&MF_SOURCE_READERF_ERROR)throw Failure{E_FAIL};
++                if(s) {
++                    const LONGLONG offset=seg.start-origin;
++                    check(s->SetSampleTime(std::max<LONGLONG>(0,t)+offset));
++                    UINT64 dts=0;
++                    if(SUCCEEDED(s->GetUINT64(MFSampleExtension_DecodeTimestamp,&dts)))
++                        check(s->SetUINT64(MFSampleExtension_DecodeTimestamp,dts+offset));
++                    check(out->WriteSample(dest[i],s.Get()));
++                }
++                if(flags&MF_SOURCE_READERF_ENDOFSTREAM)break;
++            }
++        }
++    }
++    check(out->Finalize());
++}
++
++struct AudioPacket {long long time=0;unsigned frames=0;std::array<float,4096> pcm;};
++/* A borrowed mapped readback, never a full-frame CPU copy. The renderer will
++ * not recycle the resource until the worker invokes release. Move-only RAII
++ * returns a view even if conversion/encoding throws. */
++struct FrameData {
++    const unsigned char* pixels=nullptr;
++    unsigned w=0,h=0,pitch=0;
++    long long time=0;
++    void (*release)(void*)=nullptr;
++    void* context=nullptr;
++    FrameData()=default;
++    FrameData(const FrameData&)=delete;
++    FrameData& operator=(const FrameData&)=delete;
++    FrameData(FrameData&& other) noexcept {swap(other);}
++    FrameData& operator=(FrameData&& other) noexcept {
++        if(this!=&other){reset();swap(other);}return *this;
++    }
++    ~FrameData(){reset();}
++    void swap(FrameData& other) noexcept {
++        std::swap(pixels,other.pixels);std::swap(w,other.w);std::swap(h,other.h);
++        std::swap(pitch,other.pitch);std::swap(time,other.time);
++        std::swap(release,other.release);std::swap(context,other.context);
++    }
++    void reset() noexcept {
++        auto callback=release;release=nullptr;pixels=nullptr;
++        if(callback)callback(context);
++        context=nullptr;
++    }
++};
++std::atomic<bool> active{false},ready{false},stop{false},save{false};
++std::once_flag init_once;
++std::thread worker;
++HANDLE wake=nullptr;
++SRWLOCK video_lock=SRWLOCK_INIT,audio_lock=SRWLOCK_INIT;
++FrameData pending;
++bool have_frame=false;
++std::array<AudioPacket,64> audio_packets;
++unsigned audio_head=0,audio_count=0;
++
++void audio_until(Encoder& enc,long long until) {
++    long long target=(until-enc.start)*48000/SECOND;
++    if(target<=enc.audio_frames)return;
++    /* A long capture stall starts a fresh segment rather than allocating an
++     * unbounded silence block. Caller limits every segment to two seconds. */
++    target=std::min(target,static_cast<long long>(48000*3));
++    std::vector<short> pcm(static_cast<size_t>(target-enc.audio_frames)*2,0);
++    AcquireSRWLockExclusive(&audio_lock);
++    for(unsigned n=0;n<audio_count;n++) {
++        const auto& a=audio_packets[(audio_head+n)%audio_packets.size()];
++        long long at=(a.time-enc.start)*48000/SECOND;
++        long long lo=std::max(enc.audio_frames,at),hi=std::min(target,at+a.frames);
++        for(long long f=lo;f<hi;f++)for(unsigned c=0;c<2;c++) {
++            float v=a.pcm[static_cast<size_t>(f-at)*2+c];
++            if(!std::isfinite(v))v=0;
++            pcm[static_cast<size_t>(f-enc.audio_frames)*2+c]=static_cast<short>(std::max(-1.f,std::min(1.f,v))*32767.f);
++        }
++    }
++    while(audio_count) {
++        const auto& a=audio_packets[audio_head];
++        if(a.time+static_cast<long long>(a.frames)*SECOND/48000>until)break;
++        audio_head=(audio_head+1)%audio_packets.size();--audio_count;
++    }
++    ReleaseSRWLockExclusive(&audio_lock);
++    long long duration=(target-enc.audio_frames)*SECOND/48000;
++    sample(enc.writer.Get(),enc.audio,pcm.data(),static_cast<DWORD>(pcm.size()*sizeof(short)),enc.audio_frames*SECOND/48000,duration);
++    enc.audio_frames=target;
++}
++std::wstring clip_path() {
++    PWSTR folder=nullptr;check(SHGetKnownFolderPath(FOLDERID_Videos,KF_FLAG_CREATE,nullptr,&folder));
++    std::wstring dir(folder);CoTaskMemFree(folder);dir+=L"\\T5DR Online";
++    if(!CreateDirectoryW(dir.c_str(),nullptr)&&GetLastError()!=ERROR_ALREADY_EXISTS)throw Failure{HRESULT_FROM_WIN32(GetLastError())};
++    SYSTEMTIME now;GetLocalTime(&now);static unsigned counter=0;wchar_t name[128];
++    swprintf_s(name,L"\\T5DR-%04u%02u%02u-%02u%02u%02u-%03u-%lu-%u",now.wYear,now.wMonth,now.wDay,now.wHour,now.wMinute,now.wSecond,now.wMilliseconds,GetCurrentProcessId(),++counter);
++    return dir+name;
++}
++void save_ring(const clips::Ring& ring) {
++    if(ring.segments().empty()){fprintf(stderr,"[clips] no frames buffered yet\n");return;}
++    if(rsx_clips_clock()-ring.segments().back().end>2*SECOND) {
++        fprintf(stderr,"[clips] capture stalled; no recent frames to save\n");return;
++    }
++    auto base=clip_path(),temp=base+L".partial.mp4",final=base+L".mp4";
++    try {
++        remux(ring,temp.c_str());
++        if(!MoveFileW(temp.c_str(),final.c_str()))throw Failure{HRESULT_FROM_WIN32(GetLastError())};
++        fprintf(stderr,"[clips] saved %.2f s MP4 in Videos\\T5DR Online\n",(ring.segments().back().end-ring.segments().front().start)/double(SECOND));
++    } catch(...) {DeleteFileW(temp.c_str());throw;}
++}
++void run() {
++    SetThreadPriority(GetCurrentThread(),THREAD_PRIORITY_BELOW_NORMAL);
++    HRESULT co=CoInitializeEx(nullptr,COINIT_MULTITHREADED);bool mf=false;
++    try {
++        check(co);check(MFStartup(MF_VERSION,MFSTARTUP_LITE));mf=true;
++        FrameData frame;
++        auto seconds=getenv("PS3_CLIPS_SECONDS");int horizon=seconds?atoi(seconds):30;horizon=std::max(5,std::min(120,horizon));
++        bool hardware=!(getenv("PS3_CLIPS_SOFTWARE")&&atoi(getenv("PS3_CLIPS_SOFTWARE")));
++        clips::Ring ring(RING_CAP,horizon*SECOND);std::unique_ptr<Encoder> enc;
++        std::vector<unsigned char> nv12;ready=true;
++        while(!stop) {
++            if(host_sched_laptop())break; /* Auto can discover an iGPU after startup. */
++            WaitForSingleObject(wake,100);
++            if(stop)break;
++            AcquireSRWLockExclusive(&video_lock);
++            bool got=have_frame;
++            if(got){std::swap(frame,pending);have_frame=false;}
++            ReleaseSRWLockExclusive(&video_lock);
++            if(got) {
++                to_nv12(frame.pixels,frame.w,frame.h,nv12,frame.pitch);
++                frame.reset(); // release the readback before any blocking MF work
++                if(enc && (frame.time-enc->start>=2*SECOND || frame.time<enc->end-FRAME)) {
++                    // The next capture can precede the prior nominal frame end
++                    // under 60 Hz jitter. Never encode duplicate audio at the cut.
++                    if(frame.time>=enc->start)enc->end=std::min(enc->end,frame.time);
++                    audio_until(*enc,enc->end);ring.push(enc->finish());enc.reset();
++                }
++                if(!enc) {
++                    try {enc=std::make_unique<Encoder>(frame.time,hardware);}
++                    catch(const Failure&) {
++                        if(!hardware)throw;
++                        hardware=false;fprintf(stderr,"[clips] hardware path unavailable; retry software H.264\n");
++                        enc=std::make_unique<Encoder>(frame.time,false);
++                    }
++                }
++                sample(enc->writer.Get(),enc->video,nv12.data(),static_cast<DWORD>(nv12.size()),frame.time-enc->start,FRAME);
++                enc->end=frame.time+FRAME;audio_until(*enc,frame.time);
++            }
++            if(save.exchange(false)) {
++                if(enc){audio_until(*enc,enc->end);ring.push(enc->finish());enc.reset();}
++                ring.expire(rsx_clips_clock());
++                try {save_ring(ring);}catch(const Failure& f){fprintf(stderr,"[clips] save failed 0x%08lx\n",static_cast<unsigned long>(f.hr));}
++            }
++        }
++        ready=false;
++    }catch(const Failure& f){fprintf(stderr,"[clips] disabled: Media Foundation/capture error 0x%08lx\n",static_cast<unsigned long>(f.hr));}
++    catch(...){fprintf(stderr,"[clips] disabled: capture allocation/worker error\n");}
++    ready=false;active=false;
++    AcquireSRWLockExclusive(&video_lock);
++    pending.reset();have_frame=false;
++    ReleaseSRWLockExclusive(&video_lock);
++    if(mf)MFShutdown();if(SUCCEEDED(co))CoUninitialize();
++}
++void initialize() {
++    const char* enabled=getenv("PS3_CLIPS");
++    if(!enabled || strcmp(enabled,"1") || host_sched_laptop())return;
++    /* Delay-loaded MF imports: Windows N and Wine without MF must still boot. */
++    if(getenv("PS3_TEST_NO_MEDIA_FOUNDATION"))return;
++    for(const wchar_t* dll:{L"mfplat.dll",L"mfreadwrite.dll"}) {
++        HMODULE mod=LoadLibraryExW(dll,nullptr,LOAD_LIBRARY_SEARCH_SYSTEM32);if(!mod)return;
++    }
++    wake=CreateEventW(nullptr,FALSE,FALSE,nullptr);if(!wake)return;
++    try {atexit(rsx_clips_shutdown);active=true;worker=std::thread(run);}
++    catch(...){active=false;CloseHandle(wake);wake=nullptr;}
++}
++} // namespace
++extern "C" int rsx_clips_enabled(void) { std::call_once(init_once,initialize);return active.load() && !host_sched_laptop(); }
++extern "C" long long rsx_clips_clock(void) {
++    LARGE_INTEGER t,f;QueryPerformanceCounter(&t);QueryPerformanceFrequency(&f);
++    return t.QuadPart/f.QuadPart*SECOND+(t.QuadPart%f.QuadPart)*SECOND/f.QuadPart;
++}
++extern "C" int rsx_clips_video(const void* rgba,unsigned w,unsigned h,unsigned pitch,long long time,
++                                void (*release)(void*),void* context) {
++    if(!ready || !rgba || !release || !w || !h || w>MAX_W || h>MAX_H || pitch<w*4)return 0;
++    if(!TryAcquireSRWLockExclusive(&video_lock))return 0;
++    // Recheck under lock so a producer cannot publish after worker teardown.
++    if(!ready || have_frame){ReleaseSRWLockExclusive(&video_lock);return 0;}
++    pending.pixels=static_cast<const unsigned char*>(rgba);pending.w=w;pending.h=h;
++    pending.pitch=pitch;pending.time=time;pending.release=release;pending.context=context;
++    have_frame=true;
++    ReleaseSRWLockExclusive(&video_lock);SetEvent(wake);return 1;
++}
++extern "C" void rsx_clips_audio(const float* stereo,unsigned frames,long long time) {
++    if(!ready || !stereo || !frames || frames>2048)return;
++    if(!TryAcquireSRWLockExclusive(&audio_lock))return;
++    if(audio_count==audio_packets.size()){audio_head=(audio_head+1)%audio_packets.size();--audio_count;}
++    auto& a=audio_packets[(audio_head+audio_count)%audio_packets.size()];a.time=time;a.frames=frames;
++    memcpy(a.pcm.data(),stereo,frames*2*sizeof(float));++audio_count;
++    ReleaseSRWLockExclusive(&audio_lock);
++}
++extern "C" void rsx_clips_request_save(void) {if(active){save=true;SetEvent(wake);}}
++extern "C" void rsx_clips_shutdown(void) {
++    stop=true;ready=false;active=false;
++    if(wake)SetEvent(wake);
++    if(worker.joinable())worker.join();
++    if(wake){CloseHandle(wake);wake=nullptr;}
++}
++#else
++extern "C" int rsx_clips_enabled(void){return 0;}
++extern "C" long long rsx_clips_clock(void){return 0;}
++extern "C" int rsx_clips_video(const void*,unsigned,unsigned,unsigned,long long,void (*)(void*),void*){return 0;}
++extern "C" void rsx_clips_audio(const float*,unsigned,long long){}
++extern "C" void rsx_clips_request_save(void){}
++extern "C" void rsx_clips_shutdown(void){}
++#endif
+diff --git a/libs/video/rsx_clips.h b/libs/video/rsx_clips.h
+new file mode 100644
+--- /dev/null
++++ b/libs/video/rsx_clips.h
+@@ -0,0 +1,22 @@
++#ifndef RSX_CLIPS_H
++#define RSX_CLIPS_H
++#ifdef __cplusplus
++extern "C" {
++#endif
++/* Patch 0116: host-only capture. Producers never wait for encoder or disk.
++ * RGBA8 present copy; stereo float 48 kHz own-mixer samples before output mute.
++ * Both timestamps use the same monotonic 100 ns clock, at block/frame start. */
++int rsx_clips_enabled(void);
++long long rsx_clips_clock(void);
++/* On success owns the mapped view until release(context); rejection leaves it
++ * with the caller. Release also runs on worker failure / shutdown. */
++int rsx_clips_video(const void* rgba, unsigned width, unsigned height,
++                    unsigned pitch, long long time100ns,
++                    void (*release)(void*), void* context);
++void rsx_clips_audio(const float* stereo, unsigned frames, long long time100ns);
++void rsx_clips_request_save(void);
++void rsx_clips_shutdown(void);
++#ifdef __cplusplus
++}
++#endif
++#endif
+diff --git a/libs/video/rsx_clips_ring.h b/libs/video/rsx_clips_ring.h
+new file mode 100644
+--- /dev/null
++++ b/libs/video/rsx_clips_ring.h
+@@ -0,0 +1,58 @@
++/* Patch 0116: bounded independently decodable MP4 segments. */
++#ifndef PS3RECOMP_RSX_CLIPS_RING_H
++#define PS3RECOMP_RSX_CLIPS_RING_H
++#include <cstddef>
++#include <deque>
++#include <utility>
++#include <vector>
++namespace clips {
++struct Segment {
++    std::vector<unsigned char> bytes;
++    long long start = 0;
++    long long end = 0;
++};
++class Ring {
++public:
++    Ring(std::size_t byte_limit, long long duration100ns)
++        : limit_(byte_limit), duration_(duration100ns) {}
++    bool push(Segment&& segment) {
++        // Validate before mutation. Nonnegative timestamps make subtraction
++        // overflow-free, including near the signed clock limit.
++        if (!limit_ || duration_ <= 0 || segment.bytes.empty() ||
++            segment.bytes.capacity() > limit_ || segment.start < 0 ||
++            segment.end <= segment.start || segment.end - segment.start > duration_)
++            return false;
++        if (!segments_.empty() && (segment.start < segments_.back().start ||
++                                   segment.end < segments_.back().end)) return false;
++        const long long oldest = segment.end > duration_ ? segment.end - duration_ : 0;
++        while (!segments_.empty() && (segments_.size() >= 512 ||
++                                     segments_.front().start < oldest ||
++                                     bytes_ > limit_ - segment.bytes.capacity())) {
++            bytes_ -= segments_.front().bytes.capacity();
++            segments_.pop_front();
++        }
++        segments_.push_back(std::move(segment));
++        bytes_ += segments_.back().bytes.capacity();
++        return true;
++    }
++    // Age out footage even while the GPU is stalled or capture has stopped.
++    void expire(long long now) {
++        if (now < 0 || duration_ <= 0) return;
++        const long long oldest = now > duration_ ? now - duration_ : 0;
++        while (!segments_.empty() && segments_.front().start < oldest) {
++            bytes_ -= segments_.front().bytes.capacity();
++            segments_.pop_front();
++        }
++    }
++    const std::deque<Segment>& segments() const { return segments_; }
++    // Charge allocated vector capacity, not just compressed payload length.
++    std::size_t bytes() const { return bytes_; }
++    void clear() { segments_.clear(); bytes_ = 0; }
++private:
++    std::size_t limit_;
++    long long duration_;
++    std::size_t bytes_ = 0;
++    std::deque<Segment> segments_;
++};
++} // namespace clips
++#endif

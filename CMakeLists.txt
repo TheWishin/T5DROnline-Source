@@ -389,7 +389,7 @@ if(WIN32)
     # Windows "N" editions have no Media Foundation (mfplat.dll) until the Media
     # Feature Pack is installed: loaded on first use, so the exe still starts
     # there and only the movies are skipped (ps3recomp patch 0031, mf_h264.cpp).
-    target_link_options(t5dr PRIVATE /DELAYLOAD:mfplat.dll)
+    target_link_options(t5dr PRIVATE /DELAYLOAD:mfplat.dll /DELAYLOAD:mfreadwrite.dll)
     target_link_libraries(t5dr PRIVATE delayimp)
     # Patch 0088: host overlay rasterizes installed Unicode glyphs with GDI.
     target_link_libraries(t5dr PRIVATE ws2_32 bcrypt xinput ole32 winmm d3d12 dxgi dxguid d3dcompiler gdi32)

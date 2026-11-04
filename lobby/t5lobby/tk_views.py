@@ -1149,6 +1149,9 @@ class OnlineView:
             row=0, column=1, sticky="w")
         self.note_frame = note
         tab.notice_var.trace_add("write", lambda *_: self._show_notice())
+        self.coexist_label = self.wrap(ttk.Label(box, textvariable=tab.coexist_var,
+                                                style="Note.TLabel", justify="left"), box, 40)
+        tab.coexist_var.trace_add("write", lambda *_: self._show_coexist())
         # the firewall hint (tk_tab.fw_hint_text): one line, "How to fix" (the TROUBLESHOOTING section), Dismiss
         fw = self.card(box, "Note.TFrame", 6)
         fw.columnconfigure(1, weight=1)
@@ -1273,6 +1276,12 @@ class OnlineView:
             self.note_frame.grid(row=2, column=0, sticky="we", pady=(self.px(8), 0))
         else:
             self.note_frame.grid_forget()
+
+    def _show_coexist(self):
+        if self.tab.coexist_var.get():
+            self.coexist_label.grid(row=5, column=0, sticky="we", pady=(self.px(8), 0))
+        else:
+            self.coexist_label.grid_forget()
 
     def _show_fw_hint(self):
         if self.tab.fw_hint_var.get():

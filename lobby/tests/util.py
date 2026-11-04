@@ -17,6 +17,8 @@ os.environ["T5_NOTIFY"] = "0"
 os.environ["T5_PORTMAP"] = "0"
 # The Online tab's firewall hint does not read this PC's Windows Firewall (test_firewall.py feeds the check its data).
 os.environ.setdefault("T5_FW_CHECK", "0")
+# Coexistence tests inject process/lock checks; other UI tests ignore real launchers on this PC.
+os.environ["T5_COEXIST_CHECK"] = "0"
 # Every test player is on this PC: game sockets (the lobby client's, t5lobby/nat.py bind_ip, and the tests'
 # stand-ins for the game) bind 127.0.0.1, not every interface -- no Windows Firewall prompt
 # (docs/NETPLAY.md "Bind address"). An explicit T5_NET_BIND wins.

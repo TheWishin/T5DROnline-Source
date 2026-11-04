@@ -52,6 +52,7 @@ for _p in (TOOLS, LAUNCHER, LOBBY):
 os.environ["T5_PAD_NAV"] = "0"              # the tab never reads this PC's controllers
 os.environ["T5_NOTIFY"] = "0"               # ... and never chimes or flashes the taskbar on it
 os.environ.setdefault("T5DR_NO_UPDATE_CHECK", "1")
+os.environ.setdefault("T5_COEXIST_CHECK", "0")   # (1.2.1) several launchers and their games on one PC: never "the game runs in another launcher"
 
 import core                                  # noqa: E402  launcher/core.py
 import build_game                            # noqa: E402

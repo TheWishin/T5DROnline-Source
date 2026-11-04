@@ -10,6 +10,12 @@ Same keys and groups as i18n_de.py; tests/test_i18n.py and tools/i18n_extract.py
 """
 
 MESSAGES = {
+    "OpenRecomp-FGC is open: you can be online in one launcher at a time.":
+        "OpenRecomp-FGC está abierto: solo puedes estar en línea en un lanzador a la vez.",
+    "Search stopped because the game is running in another launcher. You are still logged in.":
+        "Búsqueda detenida porque el juego está abierto en otro lanzador. Sigues conectado.",
+    "{count} other player(s) are searching with a different build":
+        "{count} jugadores más están buscando con una build diferente",
     'T5DR Online {latest} is out. Update the launcher (it offers the update when it starts, or press "Check for updates").':
         'T5DR Online {latest} ya está disponible. Actualiza el launcher (ofrece la actualización al iniciarse, o pulsa «Buscar actualizaciones»).',
     "Intel HD Graphics 4400: graphics device lost": "Intel HD Graphics 4400: dispositivo gráfico perdido",

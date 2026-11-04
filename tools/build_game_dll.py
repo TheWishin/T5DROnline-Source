@@ -75,11 +75,18 @@ TAIL_LINES = 40                 # of a failed compile's output, after its error 
 
 # x86-64-v3 (what -march=x86-64-v3 may use): clang's macros for each feature.
 V3_FEATURES = ("__AVX__", "__AVX2__", "__BMI__", "__BMI2__", "__F16C__", "__FMA__", "__LZCNT__", "__MOVBE__")
+# clang -mavx also enables these predecessor features. No AVX2, FMA or PCLMUL.
+AVX_FEATURES = ("__AVX__", "__SSE3__", "__SSSE3__", "__SSE4_1__", "__SSE4_2__", "__POPCNT__", "__XSAVE__")
+
+
+def target_cpu_options(march):
+    """The stable DLL label 'avx' means AVX1 with software FMA, including on newer CPUs."""
+    return [] if march == "none" else (["/clang:-mavx"] if march == "avx" else [f"/clang:-march={march}"])
 
 
 def host_cpu_level(cl, scratch):
-    """'x86-64-v3' when this PC's CPU *and* Windows support AVX2/FMA/BMI2/MOVBE/F16C/LZCNT, else 'none'
-    (plain x86-64 for the lifted PPU code), plus the missing features. clang's -march=native reads
+    """'x86-64-v3', else 'avx' (Sandy/Ivy Bridge), else the x86-64 baseline 'none', plus missing v3 features.
+    clang's -march=native reads
     CPUID and XGETBV itself -- unlike IsProcessorFeaturePresent(PF_AVX2_INSTRUCTIONS_AVAILABLE), which
     Windows 10 versions before 2004 do not know (they answer "no" on an AVX2 CPU)."""
     src = os.path.join(scratch, "cpu_probe.c")
@@ -94,7 +101,8 @@ def host_cpu_level(cl, scratch):
         macros = set(l.split()[1] for l in r.stdout.splitlines() if l.startswith("#define "))
         if r.returncode == 0 and "__x86_64__" in macros:
             missing = [m.strip("_").lower() for m in V3_FEATURES if m not in macros]
-            return ("none" if missing else "x86-64-v3"), missing
+            level = "x86-64-v3" if not missing else ("avx" if all(m in macros for m in AVX_FEATURES) else "none")
+            return level, missing
     except (OSError, subprocess.SubprocessError):
         pass
     if os.name == "nt":                     # fallback: Windows' own answer
@@ -478,7 +486,7 @@ def main():
     ap.add_argument("--force", action="store_true", help="recompile objects that look current")
     ap.add_argument("--march", default="auto",
                     help="target CPU of the lifted PPU code: auto (x86-64-v3 when this PC's CPU and Windows "
-                         "support it, else none), x86-64-v3, native, none")
+                         "support it, else avx when AVX1 is available, else none), x86-64-v3, avx, native, none")
     ap.add_argument("--copt", action="append", default=[],
                     help="extra compile option for every lifted source (experiments; repeat for more)")
     ap.add_argument("--ldopt", action="append", default=[], help="extra lld-link option (experiments; repeat for more)")
@@ -534,9 +542,10 @@ def main():
     why = ""
     if march == "auto":
         march, missing = host_cpu_level(cl_cmd, obj)
-        why = (" (this processor has AVX2, FMA, BMI2 and MOVBE)" if march != "none" else
+        why = (" (this processor has AVX2, FMA, BMI2 and MOVBE)" if march == "x86-64-v3" else
+               " (AVX1 with exact software FMA; no AVX2 required)" if march == "avx" else
                " (baseline x86-64: this processor or Windows lacks " + ", ".join(missing) + ")")
-    ppu_opts = ["/clang:-ffp-contract=off"] + ([] if march == "none" else [f"/clang:-march={march}"])
+    ppu_opts = ["/clang:-ffp-contract=off"] + target_cpu_options(march)
     print(f"lifted PPU code: -march={march}{why}", flush=True)
     profile = a.profile
     if not profile:

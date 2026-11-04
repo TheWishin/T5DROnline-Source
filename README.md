@@ -109,9 +109,10 @@ In detail:
 - A 64-bit Intel or AMD processor with SSE4.1: Intel Core 2 (2008) or newer,
   AMD FX, A-series or Ryzen (2011) or newer. Older ones (Core 2 Quad Q6600,
   Phenom II, Athlon II) cannot run it: the game says so when it starts, and
-  **Check my problem** says it before a build. AVX2 is not needed. With AVX2
-  (Intel 4th-gen Core / AMD Ryzen and newer) the build makes faster code; the
-  launcher decides this by itself.
+  **Check my problem** says it before a build. AVX2 is not needed. The build
+  selects faster code automatically: AVX1 for Sandy/Ivy Bridge when Windows
+  supports it, x86-64-v3 for newer CPUs with its full feature set, and the
+  baseline otherwise.
 - 4 GB RAM: the game uses about 0.8 GB (1.1 GB committed) in a fight; BUILD
   GAME runs as many compile jobs as the free memory allows.
 - Speed: fights held 60 fps with 4 CPU threads in our tests (fast desktop

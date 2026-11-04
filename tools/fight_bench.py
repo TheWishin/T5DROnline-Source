@@ -41,6 +41,9 @@ or power-limited processor) for the whole run. The renderer's split per frame
 frame log. The game's main thread per frame (its CPU time and the game part,
 release -> flip request; median and p99) comes from PS3_GAME_THREAD_LOG
 (ps3recomp patch 0061; older builds leave it out).
+
+After the measurement cutoff the game runs only until its buffered frame log
+contains that cutoff (up to 10 s). These drain frames never enter the results.
 """
 import argparse
 import csv
@@ -335,6 +338,75 @@ def _num(v):
         return False
 
 
+def frame_log_tail(path, tail_bytes=65536):
+    """Frequency and newest complete CSV row's QPC, even while its writer runs."""
+    try:
+        with open(path, "rb") as stream:
+            frequency = int(stream.readline().decode("ascii").strip().split("=")[1])
+            header = next(csv.reader([stream.readline().decode("ascii").strip()]))
+            qpc_index = header.index("qpc")
+            stream.seek(0, os.SEEK_END)
+            offset = max(0, stream.tell() - tail_bytes)
+            stream.seek(offset)
+            tail = stream.read()
+    except (OSError, ValueError, IndexError, StopIteration, UnicodeError, csv.Error):
+        return None, None
+    if frequency <= 0:
+        return None, None
+    if offset:
+        tail = tail.partition(b"\n")[2]  # the first fragment may start mid-row
+    for line in reversed(tail.split(b"\n")[:-1]):
+        try:
+            fields = next(csv.reader([line.decode("ascii").rstrip("\r")]))
+            if len(fields) == len(header):
+                return frequency, int(fields[qpc_index])
+        except (ValueError, IndexError, StopIteration, UnicodeError, csv.Error):
+            continue
+    return frequency, None
+
+
+def drain_frame_log(path, cutoff_seconds, is_running, timeout=10.0, poll_interval=0.1,
+                    clock=time.monotonic, sleep=time.sleep):
+    """Wait for buffered measurement rows, with a fixed cutoff and bounded wait."""
+    started = clock()
+    while True:
+        frequency, last_qpc = frame_log_tail(path)
+        cutoff_qpc = cutoff_seconds * frequency if frequency else None
+        complete = last_qpc is not None and cutoff_qpc is not None and last_qpc >= cutoff_qpc
+        elapsed = clock() - started
+        if complete:
+            status = "complete"
+        elif not is_running():
+            status = "process_exited"
+        elif elapsed >= timeout:
+            status = "timeout"
+        else:
+            sleep(min(poll_interval, timeout - elapsed))
+            continue
+        return {"status": status, "complete": complete, "wait_s": elapsed,
+                "qpc_frequency": frequency, "cutoff_qpc": cutoff_qpc,
+                "last_complete_qpc": last_qpc,
+                "unlogged_tail_ms": (max(0, cutoff_qpc - last_qpc) * 1000 / frequency
+                                     if frequency and last_qpc is not None else None)}
+
+
+def read_frame_log(path):
+    """Read complete rows; termination can leave a final row without its newline."""
+    with open(path, "rb") as stream:
+        data = stream.read()
+    lines = data[:data.rfind(b"\n") + 1].decode("utf-8", errors="replace").splitlines()
+    frequency = int(lines[0].split("=")[1])
+    rows = [row for row in csv.DictReader(lines[1:])
+            if None not in row and all(value is not None for value in row.values())
+            and _num(row.get("qpc")) and _num(row.get("dt_us"))]
+    return frequency, rows
+
+
+def frame_window(rows, lo, hi):
+    """Keep the original measurement bounds after the writer has drained."""
+    return [row for row in rows if lo <= float(row["qpc"]) <= hi]
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--exe", default=os.path.join(ROOT, "build", "cmake", "t5dr.exe"))
@@ -429,6 +501,9 @@ def main():
     t0 = time.time()
     eco_t = 0.0
     fight_qpc = fight_t = None
+    end_qpc = None
+    measurement_complete = False
+    drain = {"status": "not_measured", "complete": False}
     tt = []
     pad = list(PAD)
     try:
@@ -454,28 +529,35 @@ def main():
                 if IS_WIN and len(tt) == 1 and rel >= a.secs - 1:
                     tt.append((time.perf_counter(), thread_times(p.pid), sys_times(), thread_switches(p.pid)))
                 if rel >= a.secs:
+                    end_qpc = time.perf_counter()
+                    measurement_complete = True
                     break
                 while pad and pad[0][0] <= rel:
                     setpad(pad.pop(0)[1])
             time.sleep(0.01)
     finally:
-        end_qpc = time.perf_counter()
-        if p.poll() is None:
-            subprocess.run(["taskkill", "/F", "/T", "/PID", str(p.pid)], capture_output=True)
-            p.wait()
-        for h in hogs:
-            if h.poll() is None:
-                h.kill()
-                h.wait()
-        log.close()
+        if end_qpc is None:
+            end_qpc = time.perf_counter()
+        try:
+            try:
+                if measurement_complete:
+                    drain = drain_frame_log(env["PS3_FRAMELOG"], end_qpc,
+                                            lambda: p.poll() is None)
+            finally:
+                if p.poll() is None:
+                    p.kill()
+                p.wait(timeout=30)
+        finally:
+            for h in hogs:
+                if h.poll() is None:
+                    h.kill()
+                    h.wait(timeout=30)
+            log.close()
 
     # frames in the window (the frame log's qpc is QueryPerformanceCounter, like perf_counter)
-    with open(os.path.join(out, "frames.csv")) as f:
-        freq = int(f.readline().split("=")[1])
-        # (a row the killed game was still writing can be cut short: no qpc/dt_us -- left out)
-        rows = [r for r in csv.DictReader(f) if _num(r.get("qpc")) and _num(r.get("dt_us"))]
+    freq, rows = read_frame_log(os.path.join(out, "frames.csv"))
     lo, hi = (fight_qpc + a.skip) * freq, end_qpc * freq
-    w = [r for r in rows if lo <= float(r["qpc"]) <= hi]
+    w = frame_window(rows, lo, hi)
     dts = [float(r["dt_us"]) / 1000.0 for r in w if float(r["dt_us"]) > 0]
     gpu = [float(r["gpu_us"]) / 1000.0 for r in w if r.get("gpu_us") and float(r["gpu_us"]) > 0]
     fps = len(dts) / (sum(dts) / 1000.0) if dts else 0.0
@@ -484,7 +566,13 @@ def main():
            "hog": a.hog, "hog_cpus": a.hog_cpus, "hog_priority": a.hog_priority if a.hog else "",
            "p50": pct(dts, 50), "p95": pct(dts, 95), "p99": pct(dts, 99), "max": max(dts) if dts else 0.0,
            "over_17_5": sum(d > 17.5 for d in dts), "env": a.env, "exe": os.path.abspath(a.exe), "out": out,
-           "window_qpc": [lo, hi], "qpc_frequency": freq}
+           "window_qpc": [lo, hi], "qpc_frequency": freq, "frame_log_drain": drain,
+           "csv_coverage": {"first_qpc": float(rows[0]["qpc"]) if rows else None,
+                            "last_qpc": float(rows[-1]["qpc"]) if rows else None,
+                            "covers_cutoff": bool(rows and float(rows[-1]["qpc"]) >= hi),
+                            "unlogged_tail_ms": max(0, hi - float(rows[-1]["qpc"])) * 1000 / freq
+                            if rows else None}}
+    print("frame-log drain: %s, %.2f s" % (drain["status"], drain.get("wait_s", 0)))
     print("cpus=%s frames=%d fps=%.2f frame ms p50=%.2f p95=%.2f p99=%.2f max=%.1f, over 17.5 ms: %d" % (
         res["cpus"], len(dts), fps, res["p50"], res["p95"], res["p99"], res["max"], res["over_17_5"]))
     split = renderer_split(w)
@@ -528,7 +616,12 @@ def main():
         tot = sum(v[1] for v in threads.values()) / span
         mach = ((tt[1][2][1] - tt[0][2][1]) - (tt[1][2][0] - tt[0][2][0])) / span
         sw_tot = sum(v[2] for v in threads.values()) / span
-        res.update({"span_s": span, "frames_in_cpu_window": nfr, "game_cpu": tot, "other_load": mach - tot,
+        cpu_lo, cpu_hi = tt[0][0] * freq, tt[1][0] * freq
+        res.update({"span_s": span, "frames_in_cpu_window": nfr,
+                    "cpu_window_qpc": [cpu_lo, cpu_hi],
+                    "cpu_window_csv_covered": bool(rows and float(rows[0]["qpc"]) <= cpu_lo
+                                                   and float(rows[-1]["qpc"]) >= cpu_hi),
+                    "game_cpu": tot, "other_load": mach - tot,
                     "cpu_ms_per_frame": 1000.0 * tot * span / nfr, "switches_per_s": sw_tot,
                     "threads": {nm: {"n": n, "cpu_pct": 100.0 * d / span, "ms_per_frame": 1000.0 * d / nfr,
                                      "switches_per_s": sw / span}

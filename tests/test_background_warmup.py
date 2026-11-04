@@ -44,6 +44,23 @@ class Control:
 
 
 class Background(unittest.TestCase):
+    def test_short_plan_prioritizes_pool_and_cpu_stage_with_varied_fighters(self):
+        cases = worker.fight_lines(6, background=True)
+        self.assertEqual([c[0] for c in cases[:2]], [30, 20])
+        self.assertEqual(len({c[0] for c in cases}), 6)
+        self.assertEqual(len({p for c in cases for p in c[1:3]}), 12)
+        self.assertTrue(all(0 <= p < 35 for c in cases for p in c[1:3]))
+        self.assertEqual(cases[0][3], "33,26,30,1")
+        # All four attack buttons run within a 3-second background fight.
+        for button in ("SQUARE", "TRIANGLE", "CROSS", "CIRCLE"):
+            self.assertTrue(any(button in row.split() for row in worker.PAD[:12]))
+
+    def test_full_foreground_plan_still_covers_all_stages_and_fighters(self):
+        cases = worker.fight_lines(18)
+        self.assertEqual([c[0] for c in cases], list(range(17, 35)))
+        self.assertEqual({p for c in cases for p in c[1:3]}, set(range(35)))
+        self.assertEqual(worker.fight_lines(len(worker.STAGES))[-1][0], 15)
+
     def test_process_confirmation_is_inconclusive_off_windows(self):
         with mock.patch.object(warmup.sys, "platform", "linux"), \
                 mock.patch.object(warmup.ctypes, "WinDLL", create=True,
@@ -227,11 +244,33 @@ class Background(unittest.TestCase):
             self.assertEqual(worker.warmup(args, self.out), 0)
             self.assertEqual(worker.warmup(args, self.out), 0)
         self.assertEqual(len(calls[0]), 6)
+        self.assertEqual([case[0] for case in calls[0][:2]], [30, 20])
         self.assertEqual(calls[1], calls[0][1:])
         with open(os.path.join(self.out, worker.CACHE, worker.BACKGROUND_MARKER), encoding="utf-8") as f:
             marker = json.load(f)
         self.assertEqual(marker["completed"], 6)
         self.assertTrue(marker["complete"])
+        self.assertEqual(marker["plan"]["coverage"], [case[3] for case in calls[0]])
+
+    def test_old_sequential_coverage_marker_does_not_skip_new_plan(self):
+        args = SimpleNamespace(env=[], force=False, fights=6, fight_seconds=3,
+                               minutes=3, background=True)
+        marker_path = os.path.join(self.out, worker.CACHE, worker.BACKGROUND_MARKER)
+        os.makedirs(os.path.dirname(marker_path), exist_ok=True)
+        with open(marker_path, "w", encoding="utf-8") as f:
+            json.dump({"exe": {"size": 1, "mtime": 2},
+                       "plan": {"fights": 6, "seconds": 3},
+                       "completed": 6, "complete": True}, f)
+        with mock.patch.object(worker.run_game, "game_command", return_value=(["host", "program"], {}, self.out)), \
+                mock.patch.object(worker.os.path, "isfile", return_value=True), \
+                mock.patch.object(worker, "exe_stamp", return_value={"size": 1, "mtime": 2}), \
+                mock.patch.object(worker.sys, "platform", "win32"), \
+                mock.patch.object(worker.subprocess, "Popen", return_value=Process()), \
+                mock.patch("t5lobby.match_driver.Control", Control), \
+                mock.patch.object(worker, "play", return_value=0) as play:
+            self.assertEqual(worker.warmup(args, self.out), 0)
+        self.assertEqual([case[0] for case in play.call_args.args[3]][:2], [30, 20])
+        self.assertEqual(len(play.call_args.args[3]), 6)
 
     def test_play_pause_precedes_the_next_fight(self):
         pause = os.path.join(self.out, "pause")

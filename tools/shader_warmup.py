@@ -10,6 +10,10 @@ hidden game before a real game starts and restarts at the next unfinished fight
 afterwards. The explicit developer command below retains its longer foreground
 plan. No shader binaries or caches are shipped.
 
+1.2.2: the six background fights prioritize Pool Party (30) and Ghetto Pit (20),
+then four different stages and fighter pairs. This bounded sample covers common
+stage/character/effect paths; it cannot pre-create every pipeline in the game.
+
 A fresh build meets every pipeline once: the renderer decompiles the game's RSX programs into HLSL, compiles
 them (D3DCompile) and the driver builds the pipeline -- on the render translation's thread, during the first
 fights on every stage (a player's i5-2500 log: 300+ frames slowed by the translation in its first 30 s). The
@@ -54,6 +58,15 @@ from t5lobby import process_owner  # noqa: E402
 # Stage select ids first (what ranked and quick matches draw), then the Tekken 5 stages (lobby fighters.json).
 STAGES = list(range(17, 35)) + list(range(0, 14)) + [15]
 FIGHTERS = 35   # ids 0-34: Jinpachi (35) is not selectable offline without his unlock -- his fight never started
+# (stage, P1, P2), intentionally independent of the complete foreground plan.
+# Water/reflections first, then the CPU benchmark stage; mixed skins, meshes and
+# attack effects in the remaining fights. Attack input below is shared by both.
+BACKGROUND_CASES = [(30, 33, 26),   # Lili / Asuka
+                    (20, 15, 29),  # Kazuya / Devil Jin
+                    (17, 0, 1),    # Paul / Law
+                    (24, 4, 30),   # Yoshimitsu / Raven
+                    (28, 21, 11),  # Jack-5 / Kuma
+                    (34, 3, 34)]   # King / Dragunov
 # P1 presses during each fight (as tools/fight_bench.py): the fighters move, hit and block, so the hit sparks and
 # effects of a real fight are drawn too -- with idle fighters a warmed stage still met ~10 new pipelines.
 PAD = ["RIGHT", "SQUARE", "", "TRIANGLE", "", "CROSS", "", "RIGHT", "CIRCLE", "", "LEFT", "", "SQUARE", "",
@@ -83,8 +96,14 @@ def skip_requested(path):
     return bool(path) and os.path.exists(path)
 
 
-def fight_lines(n):
+def fight_lines(n, background=False):
     """n fight lines "p1,p2,stage,1": stage after stage, the fighters two by two (all 35 in the first 18)."""
+    if background:
+        selected = {stage for stage, _, _ in BACKGROUND_CASES}
+        cases = BACKGROUND_CASES + [(stage, (2 * i) % FIGHTERS, (2 * i + 1) % FIGHTERS)
+                                    for i, stage in enumerate(STAGES) if stage not in selected]
+        return [(stage, p1, p2, f"{p1},{p2},{stage},1")
+                for stage, p1, p2 in cases[:max(0, n)]]
     out = []
     for i in range(min(n, len(STAGES))):
         p1, p2 = (2 * i) % FIGHTERS, (2 * i + 1) % FIGHTERS
@@ -148,7 +167,12 @@ def warmup(a, out):
     marker = os.path.join(cache, BACKGROUND_MARKER if background else MARKER)
     stamp = exe_stamp(cmd[0])
     previous = read_json(marker)
+    lines = fight_lines(a.fights, background=background)
     plan = {"fights": a.fights, "seconds": a.fight_seconds}
+    if background:
+        # Changing coverage/input invalidates old checkpoints; completed counts
+        # must never index a different sequence after a launcher update.
+        plan.update(coverage=[case[3] for case in lines], pad=PAD)
     matching = previous.get("exe") == stamp and (not background or previous.get("plan") == plan)
     if not a.force and matching and (not background or previous.get("complete") is True
                                     or previous.get("skipped") is True):
@@ -162,7 +186,6 @@ def warmup(a, out):
         # knows only the US program (src/platform/t5_game.h); without it the game would sit at its title
         note("not for this version of the game (the European one) -- the first fights build their shaders instead")
         return 0
-    lines = fight_lines(a.fights)
     total = len(lines)
     completed = previous.get("completed", 0) if background and matching and not a.force else 0
     if not isinstance(completed, int) or not 0 <= completed <= total:

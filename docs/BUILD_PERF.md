@@ -66,13 +66,15 @@ profile, six fights without the pool stage):
 
 Not benchmarked, decided from the code:
 
-- **`-march`.** Players' DLLs are x86-64-v3 when the CPU has AVX2, else the
-  x86-64 baseline (unchanged). An x86-64-v2 (+`-mmovbe`) level for CPUs
+- **`-march`.** At the time of this study, players' DLLs used x86-64-v3 or the
+  x86-64 baseline. An x86-64-v2 (+`-mmovbe`) level for CPUs
   without AVX2 would change nothing: the instruction mix of a lifted chunk
   is within 0.3 % of the baseline build's, and v3's within 0.7 %. Guest loads
   are relaxed atomics (single-copy atomicity, patch 0013) and LLVM never folds
   those into `movbe` -- the old "v3 is 25-30 % faster" came from before that.
-  Nothing requires AVX2.
+  Nothing requires AVX2. Since 1.2.2, AVX1 is a measured middle level for 0114's
+  vector code; the instruction-mix argument above predates 0114. See
+  [RENDER_PERF.md "1.2.2"](RENDER_PERF.md#122-old-pc-follow-up-perf-122-baseline-f81432c4).
 - **`/GS-`** (stack cookies). The DLL build had it already; with `/GS` a lifted
   chunk gets 0 cookies anyway (the PPU registers live in the context, not in
   local arrays). The CMake build now passes `/GS-` for the lifted code too.

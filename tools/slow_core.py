@@ -8,8 +8,11 @@ priority above every thread of a game started below normal (TIME_CRITICAL in a n
 process; the game's audio mixer is the only thread of the same level). All of them take the
 processor for the first --busy percent of each --period-us, on the same QueryPerformanceCounter
 clock, so the processors are taken and given back together: the game then has all of them for the
-rest of each period -- like processors running at (100 - busy) % of their speed, with every thread
-of the game slowed alike, and not like fewer processors (which the affinity mask models).
+rest of each period. This is a scheduling-availability proxy, with all game threads constrained
+alike, rather than fewer processors (which the affinity mask models). Measure the actual fixed-work
+throughput with tools/calibrate_slow_core.py before attaching a CPU-model label: busy=40 does not
+guarantee 60% throughput, especially with SMT. The periodic stops can introduce artificial wake
+jitter; they do not reproduce an older processor's IPC, caches, memory or SMT implementation.
 
 Runs until --secs have passed or this script is killed (a kill-on-close job ends the busy
 processes with it). Prints each busy process's measured share at the end. Windows' timers wake a
@@ -77,8 +80,9 @@ def start(mask, busy, period_us, secs):
     while m:
         if m & 1:
             p = subprocess.Popen([sys.executable, "-c", CHILD, str(period_us), str(period_us * busy // 100),
-                                  str(int(secs))], creationflags=subprocess.CREATE_SUSPENDED
-                                 if hasattr(subprocess, "CREATE_SUSPENDED") else 0x4)
+                                  str(int(secs))], creationflags=0x20 | 0x4)
+            # Explicit NORMAL_PRIORITY_CLASS: a BelowNormal benchmark wrapper
+            # otherwise passes its lower class to these duty-cycle workers.
             k32.SetProcessAffinityMask(W.HANDLE(int(p._handle)), 1 << lp)
             if _procs is not None:
                 p._t5_job = _procs.kill_on_close_job(p.pid)

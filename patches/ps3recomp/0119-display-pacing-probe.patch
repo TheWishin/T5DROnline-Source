@@ -1,0 +1,307 @@
+diff --git a/runtime/platform/lat_log.c b/runtime/platform/lat_log.c
+--- a/runtime/platform/lat_log.c
++++ b/runtime/platform/lat_log.c
+@@ -23,7 +23,110 @@
+ static INIT_ONCE s_once = INIT_ONCE_STATIC_INIT;
+ static FILE* s_file;
+ static FILE* s_dump;
+-static LONGLONG s_qpf = 1, s_last_flush;
++static LONGLONG s_dump_flush;
++static LONGLONG s_qpf = 1;
++static int s_sync;
++static LONGLONG s_sync_flush;
++/* Only the disk worker touches s_file after initialization. Producers hold
++ * s_lock only to copy into a bounded MPSC queue, never across filesystem I/O.
++ * Overflow is explicit: # trace_dropped=N makes an incomplete trace invalid
++ * for a zero-hitch/zero-skipped-frame claim. */
++enum { LAT_ROWS = 4096, LAT_ROW_BYTES = 1024 };
++static struct { char text[LAT_ROW_BYTES]; unsigned bytes; } s_rows[LAT_ROWS];
++static unsigned s_write, s_read;
++static volatile LONG s_stop;
++static volatile LONG64 s_dropped;
++static HANDLE s_writer, s_wake;
++static LONG64 s_reported_dropped;
++static void report_dropped(void)
++{
++    const LONG64 dropped = InterlockedCompareExchange64(&s_dropped, 0, 0);
++    if (dropped != s_reported_dropped) {
++        fprintf(s_file, "# trace_dropped=%lld\n", (long long)dropped);
++        s_reported_dropped = dropped;
++    }
++}
++static DWORD WINAPI writer_main(LPVOID unused)
++{
++    (void)unused;
++    typedef HRESULT (WINAPI* name_thread_fn)(HANDLE, PCWSTR);
++    name_thread_fn name_thread = (name_thread_fn)(void*)GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "SetThreadDescription");
++    if (name_thread) name_thread(GetCurrentThread(), L"Latency trace writer");
++    LONGLONG last_flush = lat_qpc();
++    for (;;) {
++        char row[LAT_ROW_BYTES]; unsigned bytes = 0; int stop = 0;
++        AcquireSRWLockExclusive(&s_lock);
++        if (s_read != s_write) {
++            const unsigned slot = s_read++ % LAT_ROWS;
++            bytes = s_rows[slot].bytes;
++            memcpy(row, s_rows[slot].text, bytes);
++        }
++        stop = s_stop && !bytes;
++        ReleaseSRWLockExclusive(&s_lock);
++        if (bytes) fwrite(row, 1, bytes, s_file);
++        const LONGLONG now = lat_qpc();
++        if (now - last_flush >= s_qpf / 20 || stop) {
++            report_dropped();
++            fflush(s_file);
++            last_flush = now;
++        }
++        if (!bytes) {
++            if (stop) break;
++            WaitForSingleObject(s_wake, 50);
++        }
++    }
++    return 0;
++}
++static void writer_stop(void)
++{
++    g_lat_log_on = 0; /* stop new producers before draining on normal exit */
++    AcquireSRWLockExclusive(&s_lock);
++    if (s_stop) { ReleaseSRWLockExclusive(&s_lock); return; }
++    s_stop = 1;
++    if (s_dump) { fflush(s_dump); fclose(s_dump); s_dump = NULL; }
++    if (s_sync) {
++        report_dropped(); fflush(s_file); fclose(s_file); s_file = NULL;
++        ReleaseSRWLockExclusive(&s_lock);
++        return;
++    }
++    SetEvent(s_wake);
++    ReleaseSRWLockExclusive(&s_lock);
++    /* Normal exit drains the queue. Process termination still preserves the
++     * worker's most recent 50 ms flush; no foreground per-frame flush exists. */
++    if (WaitForSingleObject(s_writer, 2000) == WAIT_OBJECT_0) {
++        fclose(s_file); s_file = NULL;
++        CloseHandle(s_writer); CloseHandle(s_wake);
++    }
++}
++static void enqueue(const char* row, unsigned bytes)
++{
++    AcquireSRWLockExclusive(&s_lock);
++    if (s_stop) {
++        InterlockedIncrement64(&s_dropped);
++        ReleaseSRWLockExclusive(&s_lock);
++        return;
++    }
++    if (s_sync) { /* Diagnostic A/B only: restore the old foreground I/O. */
++        fwrite(row, 1, bytes, s_file);
++        const LONGLONG now = lat_qpc();
++        if (now - s_sync_flush >= s_qpf / 20) {
++            report_dropped();
++            fflush(s_file); s_sync_flush = now;
++        }
++        ReleaseSRWLockExclusive(&s_lock);
++        return;
++    }
++    int wake = 0;
++    if (s_write - s_read >= LAT_ROWS || bytes >= LAT_ROW_BYTES) {
++        InterlockedIncrement64(&s_dropped);
++    } else {
++        wake = s_write == s_read;
++        const unsigned slot = s_write++ % LAT_ROWS;
++        memcpy(s_rows[slot].text, row, bytes); s_rows[slot].bytes = bytes;
++    }
++    if (wake) SetEvent(s_wake);
++    ReleaseSRWLockExclusive(&s_lock);
++}
+ static struct { uint32_t addr, len; } s_watch[8], s_dumpr;
+ static int s_nwatch;
+ 
+@@ -69,6 +172,20 @@
+             snprintf(dp, sizeof dp, "%s.dump", path);
+             if ((s_dump = fopen(dp, "wb"))) { s_dumpr.addr = a[0]; s_dumpr.len = l[0]; }
+         } }
++    { const char* e = getenv("PS3_LATENCY_SYNC"); s_sync = e && *e == '1'; }
++    fprintf(s_file, "# writer=%s\n", s_sync ? "synchronous-diagnostic" : "asynchronous");
++    fprintf(s_file, "# present_hresult=1 display_statistics=successful_nonoccluded_present_only\n");
++    if (s_sync) { atexit(writer_stop); g_lat_log_on = 1; return TRUE; }
++    s_wake = CreateEventW(NULL, FALSE, FALSE, NULL);
++    s_writer = s_wake ? CreateThread(NULL, 0, writer_main, NULL, 0, NULL) : NULL;
++    if (!s_writer) {
++        if (s_wake) CloseHandle(s_wake);
++        fclose(s_file); s_file = NULL;
++        if (s_dump) { fclose(s_dump); s_dump = NULL; }
++        g_lat_log_on = 0;
++        return TRUE; /* never fall back to synchronous logging */
++    }
++    atexit(writer_stop);
+     g_lat_log_on = 1;
+     return TRUE;
+ }
+@@ -79,24 +196,17 @@
+     return g_lat_log_on > 0;
+ }
+ 
+-/* caller holds the lock: flush every ~50 ms of events (a killed game keeps them) */
+-static void maybe_flush(LONGLONG now)
+-{
+-    if (now - s_last_flush > s_qpf / 20) {
+-        fflush(s_file);
+-        if (s_dump) fflush(s_dump);
+-        s_last_flush = now;
+-    }
+-}
+-
+ static void vput(char kind, LONGLONG q, const char* fmt, va_list ap)
+ {
+-    AcquireSRWLockExclusive(&s_lock);
+-    fprintf(s_file, "%c %lld ", kind, (long long)q);
+-    vfprintf(s_file, fmt, ap);
+-    fputc('\n', s_file);
+-    maybe_flush(q);
+-    ReleaseSRWLockExclusive(&s_lock);
++    char row[LAT_ROW_BYTES];
++    const int prefix = snprintf(row, sizeof row, "%c %lld ", kind, (long long)q);
++    const int n = prefix >= 0 && (unsigned)prefix < sizeof row
++        ? vsnprintf(row + prefix, sizeof row - (unsigned)prefix, fmt, ap) : -1;
++    if (n < 0 || prefix < 0 || (unsigned)n >= sizeof row - (unsigned)prefix - 1) {
++        InterlockedIncrement64(&s_dropped); return;
++    }
++    row[prefix + n] = '\n';
++    enqueue(row, (unsigned)(prefix + n + 1));
+ }
+ 
+ void lat_log_(char kind, const char* fmt, ...)
+@@ -131,17 +241,23 @@
+     for (int i = 0; i < s_nwatch && vm_base; i++)
+         for (uint32_t o = 0; o < s_watch[i].len && n < (int)sizeof line - 12; o += 4)
+             n += snprintf(line + n, sizeof line - n, " %08X", rd_be32(s_watch[i].addr + o));
+-    AcquireSRWLockExclusive(&s_lock);
+-    fputs(line, s_file);
+-    fputc('\n', s_file);
++    if (n < 0 || n >= (int)sizeof line - 1) InterlockedIncrement64(&s_dropped);
++    else { line[n++] = '\n'; enqueue(line, (unsigned)n); }
+     if (s_dump && vm_base) {
+-        const uint32_t s32 = seq;
+-        const long long q64 = (long long)q;
+-        fwrite(&s32, 4, 1, s_dump);
+-        fwrite(&q64, 8, 1, s_dump);
+-        fwrite(vm_base + s_dumpr.addr, 1, s_dumpr.len, s_dump);
+-    }
+-    maybe_flush(q);
+-    ReleaseSRWLockExclusive(&s_lock);
++        /* Optional guest-memory dumps are intrusive by design. Their binary
++         * stream retains its legacy format and is separate from timing logs. */
++        AcquireSRWLockExclusive(&s_lock);
++        if (!s_stop && s_dump) {
++            const uint32_t s32 = seq;
++            const long long q64 = (long long)q;
++            fwrite(&s32, 4, 1, s_dump);
++            fwrite(&q64, 8, 1, s_dump);
++            fwrite(vm_base + s_dumpr.addr, 1, s_dumpr.len, s_dump);
++            if (q - s_dump_flush > s_qpf / 20) {
++                fflush(s_dump); s_dump_flush = q;
++            }
++        }
++        ReleaseSRWLockExclusive(&s_lock);
++    }
+ }
+ #endif
+diff --git a/runtime/platform/lat_log.h b/runtime/platform/lat_log.h
+--- a/runtime/platform/lat_log.h
++++ b/runtime/platform/lat_log.h
+@@ -13,18 +13,27 @@
+  *   F qpc seq w0 w1 ...     the title asked for flip `seq` (in-FIFO flip): the
+  *                           frame's simulation is done; w* = PS3_LATENCY_WATCH words
+  *   X qpc seq               the FIFO walker reached flip `seq`: translated
+- *   P qpc seq frame pc      Present() of flip `seq` returned (pc = DXGI present count)
+- *   D qpc pc sync_qpc       DXGI frame statistics: present `pc` reached the display
+- *                           at the vblank stamped sync_qpc
++ *   P qpc seq frame pc hr   Present() of flip `seq` returned (pc = DXGI present count,
++ *                           hr = signed HRESULT; only 0/S_OK eligible for display).
++ *   D qpc pc present_refresh sync_refresh sync_qpc
++ *                           DXGI displayed present and refresh reference. Display
++ *                           QPC = sync_qpc + (present_refresh-sync_refresh)*period;
++ *                           sync_qpc alone is NOT the present's display time.
++ *                           D is suppressed for non-S_OK presents; match pc to
++ *                           its successful P event before accepting a sample.
+  *   C qpc vblank period     DWM composition clock (last display vblank, period)
+  *   N qpc frame run ...     netplay boundary (src/netplay), K.. other notes
++ *   # trace_dropped=N       cumulative bounded-queue overflow; trace incomplete
+  *
+  * PS3_LATENCY_WATCH=addr:len[,addr:len...] (hex): guest bytes printed with
+  * every F line as big-endian 32-bit words. PS3_LATENCY_DUMP=addr:len appends
+  * those bytes per flip to <log>.dump (u32 seq, i64 qpc, bytes) for finding
+  * which words to watch.
+  *
+- * Off (no PS3_LATENCY_LOG) every call is one predictable branch.
++ * Text timing events use a bounded asynchronous disk writer (50 ms flush).
++ * PS3_LATENCY_SYNC=1 restores foreground text writes/flushes for A/B tests.
++ * PS3_LATENCY_DUMP is an intrusive synchronous guest-memory diagnostic; omit
++ * it for frame-pacing measurements. Off, every call is one predictable branch.
+  */
+ #ifndef PS3RECOMP_LAT_LOG_H
+ #define PS3RECOMP_LAT_LOG_H
+diff --git a/libs/video/rsx_null_backend.c b/libs/video/rsx_null_backend.c
+--- a/libs/video/rsx_null_backend.c
++++ b/libs/video/rsx_null_backend.c
+@@ -437,9 +437,14 @@
+     /* PS3_WINDOW_BACKGROUND=1: open minimized and without taking focus, as the
+      * D3D12 backend does -- with RSX_LIVE_DRAW=1 this is the window the game
+      * shows, so the switch has to work here too. */
+-    const int background = getenv("PS3_WINDOW_BACKGROUND") != NULL;
++    const char* background_env = getenv("PS3_WINDOW_BACKGROUND");
++    const int background = background_env != NULL;
++    /* Test hook: keep composing without taking focus. A minimized window is
++     * occluded and cannot supply displayed-frame statistics. A fully covered
++     * window may still be occluded; callers must validate DXGI coverage. */
++    const int unfocused = background_env && strcmp(background_env, "2") == 0;
+     s_state.hwnd = CreateWindowExA(
+-        0, "ps3recomp_null",
++        unfocused ? WS_EX_NOACTIVATE : 0, "ps3recomp_null",
+         title ? title : "ps3recomp",
+         WS_OVERLAPPEDWINDOW | (background ? 0 : WS_VISIBLE),
+         wx, wy,
+@@ -452,8 +457,12 @@
+     }
+     /* The launcher-owned shader warm-up needs no taskbar window. Other
+      * background tools retain the established minimized-window behavior. */
+-    if (background && !getenv("PS3_WINDOW_HIDDEN"))
+-        ShowWindow(s_state.hwnd, SW_SHOWMINNOACTIVE);
++    if (background && !getenv("PS3_WINDOW_HIDDEN")) {
++        ShowWindow(s_state.hwnd, unfocused ? SW_SHOWNOACTIVATE : SW_SHOWMINNOACTIVE);
++        if (unfocused)
++            SetWindowPos(s_state.hwnd, HWND_BOTTOM, 0, 0, 0, 0,
++                         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
++    }
+ 
+     s_state.hdc = GetDC(s_state.hwnd);
+     s_state.last_fps_time = GetTickCount64();
+diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
+--- a/libs/video/rsx_live_draw.c
++++ b/libs/video/rsx_live_draw.c
+@@ -3260,12 +3260,17 @@
+            g_ld_refresh_hz >= 59 && g_ld_refresh_hz <= 61 && !(g_ld_present_flags & DXGI_PRESENT_ALLOW_TEARING) &&
+            !ld_fs_exclusive_now();
+ }
+-static void ld_lat_after_present(u32 frame)
++static void ld_lat_after_present(u32 frame, HRESULT present_hr)
+ {
+     if (!lat_log_enabled()) return;
+     UINT pc = 0;
+     g.swap->lpVtbl->GetLastPresentCount(g.swap, &pc);
+-    lat_log('P', "%u %u %u", cellGcm_lat_walk_seq(), frame, pc);
++    lat_log('P', "%u %u %u %ld", cellGcm_lat_walk_seq(), frame, pc, (long)present_hr);
++    /* DXGI_STATUS_OCCLUDED is a success HRESULT and GetFrameStatistics may
++     * still return advancing counters. They do not prove this window was
++     * displayed. Keep P's HRESULT as eligibility evidence; emit no D for an
++     * occluded/non-S_OK present. Analysis must match D's pc to a successful P. */
++    if (present_hr != S_OK) return;
+     DXGI_FRAME_STATISTICS st;
+     memset(&st, 0, sizeof st);
+     static UINT last_pc = 0;
+@@ -15145,7 +15150,7 @@
+         ld_test_device_removed();
+         if (SUCCEEDED(present_hr)) {
+             ld_present_measure_record(g_ld_frames + 1u);
+-            ld_lat_after_present(g_ld_frames + 1u);
++            ld_lat_after_present(g_ld_frames + 1u, present_hr);
+         } else {
+             fprintf(stderr,
+                     "[d3d-fail] Present hr=0x%08lX frame=%u "

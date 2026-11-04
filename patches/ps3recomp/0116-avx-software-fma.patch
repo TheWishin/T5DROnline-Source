@@ -1,0 +1,92 @@
+diff --git a/runtime/ppu/ppu_vmx.h b/runtime/ppu/ppu_vmx.h
+--- a/runtime/ppu/ppu_vmx.h
++++ b/runtime/ppu/ppu_vmx.h
+@@ -367,11 +367,41 @@
+     return _mm_castsi128_pd(_mm_add_epi64(u, _mm_and_si128(_mm_and_si128(adj, even), step)));
+ }
+ #endif
++#if defined(__AVX__) && !defined(__FMA__)
++VMX_INL __m128d vmx_fmaf_round_pd(__m128d s, __m128d err)
++{
++    /* err != 0.0 && err == err, and s's last bit even */
++    const __m128i adj = _mm_castpd_si128(_mm_and_pd(_mm_cmpneq_pd(err, _mm_setzero_pd()), _mm_cmpord_pd(err, err)));
++    const __m128i u = _mm_castpd_si128(s);
++    const __m128i e32 = _mm_cmpeq_epi32(_mm_and_si128(u, _mm_set_epi32(0, 1, 0, 1)), _mm_setzero_si128());
++    const __m128i even = _mm_and_si128(e32, _mm_shuffle_epi32(e32, 0xB1));
++    /* (err > 0.0) == (s > 0.0) ? u + 1 : u - 1 */
++    const __m128i diff = _mm_castpd_si128(_mm_xor_pd(_mm_cmpgt_pd(err, _mm_setzero_pd()),
++                                                     _mm_cmpgt_pd(s, _mm_setzero_pd())));
++    const __m128i one = _mm_set_epi32(0, 1, 0, 1);
++    const __m128i step = vmx_sel_v(diff, _mm_sub_epi64(_mm_setzero_si128(), one), one);
++    return _mm_castsi128_pd(_mm_add_epi64(u, _mm_and_si128(_mm_and_si128(adj, even), step)));
++}
++VMX_INL __m128 vmx_fmaf_avx(__m128 x, __m128 y, __m128 z)
++{
++    PPU_FP_NOCONTRACT
++    const __m256d dx = _mm256_cvtps_pd(x), dy = _mm256_cvtps_pd(y), dz = _mm256_cvtps_pd(z);
++    const __m256d p = _mm256_mul_pd(dx, dy);
++    const __m256d s = _mm256_add_pd(p, dz);
++    const __m256d bb = _mm256_sub_pd(s, p);
++    const __m256d err = _mm256_add_pd(_mm256_sub_pd(p, _mm256_sub_pd(s, bb)), _mm256_sub_pd(dz, bb));
++    const __m128d lo = vmx_fmaf_round_pd(_mm256_castpd256_pd128(s), _mm256_castpd256_pd128(err));
++    const __m128d hi = vmx_fmaf_round_pd(_mm256_extractf128_pd(s, 1), _mm256_extractf128_pd(err, 1));
++    return _mm_movelh_ps(_mm_cvtpd_ps(lo), _mm_cvtpd_ps(hi));
++}
++#endif
+ /* the four lanes of ppu_fmaf_det(x, y, z) */
+ VMX_INL __m128 vmx_fmaf_v(__m128 x, __m128 y, __m128 z)
+ {
+ #if defined(__FMA__)
+     return _mm_fmadd_ps(x, y, z);
++#elif defined(__AVX__)
++    return vmx_fmaf_avx(x, y, z);
+ #else
+     const __m128d lo = vmx_fmaf_soft_pd(_mm_cvtps_pd(x), _mm_cvtps_pd(y), _mm_cvtps_pd(z));
+     const __m128d hi = vmx_fmaf_soft_pd(_mm_cvtps_pd(_mm_movehl_ps(x, x)), _mm_cvtps_pd(_mm_movehl_ps(y, y)),
+diff --git a/runtime/ppu/ppu_loader.cpp b/runtime/ppu/ppu_loader.cpp
+--- a/runtime/ppu/ppu_loader.cpp
++++ b/runtime/ppu/ppu_loader.cpp
+@@ -2229,6 +2229,21 @@
+ 
+ #ifdef _WIN32
+ #include <intrin.h>
++/* The AVX1 DLL level uses -mavx, including clang's enabled predecessor features.
++ * Check OSXSAVE before XGETBV: CPUs/Windows without AVX state support must never
++ * execute it. This runs before ppu_game_init and the lifted DLL constructors. */
++__attribute__((target("xsave"))) static int ppu_host_has_avx(void)
++{
++    int r[4];
++    __cpuid(r, 0);
++    if (r[0] < 1) return 0;
++    __cpuid(r, 1);
++    const unsigned need = (1u << 0) | (1u << 9) | (1u << 19) | (1u << 20) |
++                          (1u << 23) | (1u << 26) | (1u << 27) | (1u << 28);
++    if (((unsigned)r[2] & need) != need) return 0;
++    return (_xgetbv(0) & 6) == 6;
++}
++
+ /* x86-64-v3 as -march=x86-64-v3 uses it: AVX2, FMA, BMI1/2, F16C, LZCNT, MOVBE,
+  * and Windows saving the YMM registers (XGETBV). */
+ __attribute__((target("xsave"))) static int ppu_host_has_x86_64_v3(void)
+@@ -2301,6 +2316,21 @@
+                             L"This game build was made on a PC whose processor has AVX2. This PC's processor "
+                             L"does not have it, so the build cannot run here.\n\n"
+                             L"Open the launcher and press BUILD GAME: it builds the game again for this PC "
++                            L"(your saves are kept).",
++                            L"T5DR Online - build the game again", MB_OK | MB_ICONWARNING | MB_SETFOREGROUND);
++            ExitProcess(14);
++        }
++        if (strcmp(march, "avx") == 0 &&
++            (!ppu_host_has_avx() || (t && strcmp(t, "noavx") == 0))) {
++            fprintf(stderr, "[game-dll] FATAL (exit code 14): %s was built for -march=avx "
++                            "(AVX, SSE4.2, POPCNT); this processor or Windows does not support it "
++                            "-- build the game again on this PC\n", path);
++            fflush(stderr);
++            if (!getenv("PS3_WINDOW_BACKGROUND") && !getenv("PS3_NO_DIALOGS"))
++                MessageBoxW(NULL,
++                            L"This game build needs AVX instructions and Windows support for them. "
++                            L"This PC cannot run it.\n\n"
++                            L"Open the launcher and press BUILD GAME to build for this PC "
+                             L"(your saves are kept).",
+                             L"T5DR Online - build the game again", MB_OK | MB_ICONWARNING | MB_SETFOREGROUND);
+             ExitProcess(14);

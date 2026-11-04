@@ -275,8 +275,8 @@ and Python versions).
   outside the Microsoft C library (whose AVX/FMA/SSE4.2 paths sit behind its
   own CPUID check). The 0.1.0 runtime already met this; now it is enforced.
   `t5dr.exe` stops with a message on a CPU without SSE4.1, and on a game DLL
-  built for AVX2 when the CPU has none (a `native` folder copied to an older
-  PC).
+  built for AVX/AVX2 when the CPU or Windows lacks the required support (a
+  `native` folder copied to an older PC).
 
 The repository has no LICENSE file for our own code yet; a public release
 should say under which license the launcher and tools are.

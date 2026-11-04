@@ -128,7 +128,20 @@ class TargetCpu(unittest.TestCase):
         self.assertEqual(self._level(all_v3), ("x86-64-v3", []))
         level, missing = self._level([m for m in all_v3 if m != "__MOVBE__"])
         self.assertEqual((level, missing), ("none", ["movbe"]))
-        self.assertEqual(self._level(["__x86_64__", "__AVX__", "__SSE4_1__"])[0], "none")   # Sandy Bridge
+        self.assertEqual(self._level(["__x86_64__", "__AVX__", "__SSE4_1__"])[0], "none")   # incomplete answer
+
+    def test_avx_requires_every_enabled_feature(self):
+        avx = ["__x86_64__"] + list(self.bd.AVX_FEATURES)
+        self.assertEqual(self._level(avx)[0], "avx")
+        for feature in self.bd.AVX_FEATURES:
+            with self.subTest(feature=feature):
+                self.assertEqual(self._level([m for m in avx if m != feature])[0], "none")
+        self.assertEqual(self._level(avx + list(self.bd.V3_FEATURES))[0], "x86-64-v3")
+
+    def test_avx_build_options_do_not_enable_fma_or_avx2(self):
+        self.assertEqual(self.bd.target_cpu_options("none"), [])
+        self.assertEqual(self.bd.target_cpu_options("avx"), ["/clang:-mavx"])
+        self.assertEqual(self.bd.target_cpu_options("x86-64-v3"), ["/clang:-march=x86-64-v3"])
 
     def test_no_clang_answer_falls_back(self):
         with mock.patch.object(self.bd.subprocess, "run", side_effect=OSError("no clang")):

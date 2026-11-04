@@ -140,7 +140,8 @@ endif()
 
 # Target CPU of the lifted PPU code (tools/build_game_dll.py --march does the same
 # for the player's build). auto = x86-64-v3 (AVX2, FMA, BMI2, MOVBE) when this
-# PC has AVX2, else the x86-64 baseline. v3 cut the main thread's work per fight
+# PC has those features, else AVX1 on Sandy/Ivy Bridge, else the x86-64 baseline.
+# v3 cut the main thread's work per fight
 # frame by ~25-30% (byte-swapped loads/stores become movbe; the fused ops become
 # vfmadd). -ffp-contract=off always: with FMA available clang would otherwise
 # fuse a*b+c written as two operations, which changes results; the PPU's fused
@@ -148,16 +149,17 @@ endif()
 # with or without FMA instructions and never calls the C runtime's math -- so
 # builds for different targets play each other in sync (docs/NETPLAY.md, "Same
 # game state on every CPU").
-set(T5DR_LIFTED_ARCH "auto" CACHE STRING "-march for the lifted PPU code: auto, x86-64-v3, native, none")
+set(T5DR_LIFTED_ARCH "auto" CACHE STRING "target CPU for the lifted code: auto, x86-64-v3, avx, native, none")
 set(_lifted_arch "${T5DR_LIFTED_ARCH}")
 if(_lifted_arch STREQUAL "auto")
     set(_lifted_arch "none")
     if(WIN32 AND Python3_EXECUTABLE)
         execute_process(COMMAND "${Python3_EXECUTABLE}" -c
-                "import ctypes; print(1 if ctypes.windll.kernel32.IsProcessorFeaturePresent(40) else 0)"
-            OUTPUT_VARIABLE _avx2 OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
-        if(_avx2 STREQUAL "1")
-            set(_lifted_arch "x86-64-v3")
+                "import sys; sys.path.insert(0, sys.argv[1]); from build_game_dll import host_cpu_level; print(host_cpu_level(sys.argv[2], sys.argv[3])[0])"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tools" "${CMAKE_CXX_COMPILER}" "${CMAKE_CURRENT_BINARY_DIR}"
+            OUTPUT_VARIABLE _detected_lifted_arch OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+        if(_detected_lifted_arch MATCHES "^(none|avx|x86-64-v3)$")
+            set(_lifted_arch "${_detected_lifted_arch}")
         endif()
     endif()
 endif()
@@ -178,7 +180,9 @@ if(MSVC)
     # registers in its context, not in local arrays, so a cookie guards nothing there.
     list(APPEND _lifted_opts /GS-)
 endif()
-if(NOT _lifted_arch STREQUAL "none")
+if(_lifted_arch STREQUAL "avx")
+    list(APPEND _lifted_opts "${_clang_flag_prefix}-mavx")
+elseif(NOT _lifted_arch STREQUAL "none")
     list(APPEND _lifted_opts "${_clang_flag_prefix}-march=${_lifted_arch}")
 endif()
 message(STATUS "Lifted PPU code: -march=${_lifted_arch}")

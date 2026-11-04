@@ -3996,8 +3996,206 @@ roughly the frame rate it gains.
   exist and give the same bits, but the sound core on them needs ~2-3x its time (the reason 1.0 compiled the runtime
   with `-msse4.1`: 9-12 ms per 5.33 ms audio tick before it) -- such a PC could not keep the sound going; a second
   runtime build for them was not made. The game says so at its start (exit code 14) and Check my problem before a build.
-- **PGO** for the new lift: the shipped profile's SPU entries no longer match the promoted functions (the compiler
-  treats them as unprofiled); retrain with `tools/pgo_train.py` when the release is integrated. All numbers above are
-  with the stale profile, as a release built now would be.
-- An AVX (no AVX2) build level for Sandy/Ivy Bridge: four double lanes would halve the software FMA's work; 1.1.7
-  found v2+AVX worth nothing for the scalar code, not measured for 0114's vector code.
+- **PGO** was subsequently retrained for 0113/0114 in `3524a712` (seven fights, 2026-11-04). It is already in
+  `integration-121`; see 1.2.2 for a repeat training comparison. The earlier claim that all promoted SPU entries
+  lost their profiles was too broad: most frontend structural hashes survive register promotion.
+- An AVX (no AVX2) build level was subsequently measured and added in 1.2.2 below. The earlier 1.1.7
+  scalar-code result does not describe 0114's vector code.
+
+
+## 1.2.2: old-PC follow-up (`perf-122`, baseline `f81432c4`)
+
+Target: Sandy/Ivy Bridge, 2 cores / 4 threads or 4 cores without SMT, AVX without AVX2/FMA3, resource binding tier 1,
+4 GB RAM. These are stand-ins on the development PC; they do not measure a real Sandy Bridge CPU or Fermi GPU.
+Every run, including failed/interrupted attempts and rejected candidates, is in [PERF122_RUNS.md](PERF122_RUNS.md).
+
+### Already in the baseline
+
+The guest-store follow-up to 0066 was already implemented by **0069**: the DLL-local constant bitmap pointer and
+two atomic block-byte reads, with the store and compiler fence between them. No duplicate store patch is needed.
+The new optimized-IR regression checks all four store widths, both reads, their order and the shared byte address.
+The shipped profile is already the seven-fight 1.2.1 retrain from `3524a712`; its normalized bytes match the
+integration build's profile. A fresh training run changes counts, not missing promoted-SPU coverage.
+
+### Tried and dropped
+
+- **Per-waiter address waits**, no application spinning: 32 paired syscall micro runs. On slowed 2c/4t, the median
+  paired address/CV ratio was 0.9455; on slowed 4c/4t it was 1.0480. In a pool fight the main thread waited about
+  **1.1 ms/frame** on the draw condition, but signal-to-ready dispatch was only **0.023 ms/frame**. Most of the
+  wait is drawing work. The unchanged CV run also improved as other machine load fell; the new wake path's direct
+  saving was only a few microseconds. No default synchronization change is retained.
+- **Tier-1 per-slot descriptor versions**: the existing `RSX_TIER1_PATH=1` hook already forces the required path
+  on this GPU. The candidate preserved only **0.0 extra tables/frame on stage 30, 0.1 on stage 20**, against
+  roughly 160-200 tables copied. It has no useful opportunity in these fights and was removed. An independent
+  descriptor-content oracle passed 900,000 operations; all three broken invalidation mutants failed.
+
+The warm forced-tier-1 translation profile (stage 20, 4c/4t, 2,911 busy samples) was 18.3% `sink_end_impl`,
+12.9% FIFO walking, 9.2% texture hashing, 8.7% `blk_span`, 6.8% block dispatch, 2.6% NVIDIA driver and 0.8%
+descriptor-table memoization. Another 7.1% was the benchmark's per-draw QPC instrumentation. No shader-compiler
+samples remained in that warm profile. This cannot establish Fermi driver/GPU cost. The player's old 27 ms
+translation figure included about 20 ms of GPU waiting; it was not 27 ms of CPU descriptor work.
+
+### AVX1 retained (0116)
+
+The software VMX FMA keeps the same per-lane double product, TwoSum error and round-to-odd correction. AVX1 does
+the FP arithmetic in four double lanes, then the unchanged SSE2 integer correction in two halves; baseline and
+FMA3 paths stay unchanged. `avx` is a build-level label mapped to `-mavx`, with FP contraction disabled. Both DLL
+and CMake auto selection use the same compiler feature probe. The runtime checks the enabled predecessor
+features, AVX/OSXSAVE and XMM/YMM OS state before the DLL's deferred constructors. Unsupported systems use the
+baseline when building; a copied incompatible DLL exits with code 14. The real DLL has no entry point or TLS
+callbacks, and the simulated-no-AVX loader check passed.
+
+Six paired helper repetitions: existing baseline **8.31-8.71 ns**, AVX flags alone **6.25-6.35 ns**, four-double
+AVX1 **5.58-5.70 ns**; median paired reduction **32.5%**. Baseline, AVX1 and v3 each passed **32,262,144** scalar
+comparison cases, zero differing results. Full-game retention gate: at least 3% less main-thread work; the
+60-fps cap makes CPU time/headroom the useful measure. Two simultaneous games, then their processor masks
+exchanged, baseline DLL against AVX1 DLL with the **same retained host and old profile**, `slow_core --busy 60`
+(4 ms period), software FMA forced, tier 1 forced, default graphics, Lili vs Asuka. Each displayed value is the
+geometric mean of the two crossed placements; all CSV windows have complete coverage.
+
+| stand-in / stage | main CPU ms/frame before / after | total CPU ms/frame before / after | fps before / after | main work saved |
+|---|---:|---:|---:|---:|
+| 2c4t, 30 | 5.36 / **5.09** | 23.44 / 22.75 | 55.25 / 56.56 | **5.2%** |
+| 2c4t, 20 | 5.28 / **5.00** | 22.26 / 21.46 | 59.02 / 59.07 | **5.3%** |
+| 4c4t, 30 | 4.25 / **4.05** | 18.66 / 18.77 | 58.98 / 58.64 | **4.8%** |
+| 4c4t, 20 | 4.49 / **4.19** | 18.76 / 18.69 | 57.60 / 59.64 | **6.6%** |
+
+Across eight pairs: **5.46% less main-thread work**, **1.57% less total processor time/frame**, **1.34% more fps**.
+All four crossed configuration means clear the 3% main-thread gate; six of eight individual main-thread ratios
+win. Individual ratios span 0.804-1.098, showing why one placement is insufficient. These are headroom numbers;
+the total-CPU/FPS gain is smaller than the main-thread saving. A paired stage-20 runtime sample used 0.987 /
+0.988 GB working set and 1.291 / 1.291 GB private memory, baseline / AVX1. No material RAM increase.
+
+The actual three hot matrix functions have no reachable dirty-YMM outgoing call/return boundary. The compiler
+cleanup regression catches `-mno-vzeroupper` as a negative control, addressing an AVX-to-legacy-SSE penalty that
+this modern development CPU cannot reproduce.
+
+An auxiliary draw-skipping resimulation diagnostic produced 0 gameplay-hash mismatches over 240 boundaries
+per build, but full-state mismatches occurred in **both** baseline (32) and AVX1 (33). Its steady CPU ratio was
+0.995 median / 0.982 geometric mean; the drawing work being optimized was cut out. It is excluded from both
+the performance gate and the state proof; three unlaunched follow-ups were cancelled. The accepted state
+proof is the complete cross-build matches and their replays below.
+
+
+### Benchmark correction
+
+`fight_bench.py` previously killed the asynchronous CSV writer with approximately two seconds still buffered.
+Its thread CPU totals then used an incomplete frame denominator. It now records the measurement cutoff, waits
+up to ten seconds for a complete CSV row beyond it, and excludes all drain frames from analysis. Results record
+CSV coverage and both CPU snapshot QPCs. Only its owned game process is terminated. Four fake-clock/file tests
+cover partial rows, tail seeks, timeout/process exit and cutoff exclusion. The first three exploratory runs'
+thread-table CPU/frame values are invalid and are marked as such in the ledger; subsequent runs confirm full
+coverage. Main-thread CPU medians from the separate game-thread log are unaffected by that denominator bug.
+
+### Cross-build state proof
+
+Stock 1.2.1 baseline DLL/host against the AVX1 DLL and retained host, software FMA paths, local UDP only, whole
+matches, Lili vs Asuka: rollback stage 20 at RTT 150 +-5 ms and 3% loss, **0 mismatching through frame 3,599**,
+result hash **087916b94ba9c6d3** on both; lockstep stage 30 at RTT 30 +-2 ms and 1% loss, **0 mismatching through
+frame 3,599**, hash **f2fdbfcb1219ebbb** on both. All four recordings (both peers of both modes) replay identically on AVX1: every recorded hash and match result.
+
+### Repeat PGO training: no replacement retained
+
+Seven fights were trained for 75 seconds each with `tools/pgo_train.py`; all 449 sound, 121 skinning and 38
+other SPU records still match the current profile's structural hashes. The new counters were compiled into
+a baseline DLL and compared in eight simultaneous, mask-swapped pairs on the same four conditions as AVX1.
+
+| after/before, crossed placements | main CPU | total CPU | sound CPU | fps |
+|---|---:|---:|---:|---:|
+| 2c4t, stage 30 | 0.9866 | 0.9778 | 1.0111 | 1.0006 |
+| 2c4t, stage 20 | 1.0009 | 0.9928 | 0.9864 | 0.9812 |
+| 4c4t, stage 30 | 0.9980 | 0.9895 | 0.9869 | 0.9976 |
+| 4c4t, stage 20 | 1.0095 | 0.9997 | 1.0176 | 0.9967 |
+
+Overall point changes: main **-0.13%**, total CPU **-1.01%**, sound **+0.04%**, fps **-0.60%**. Each metric
+won only four of eight individual placements; all descriptive intervals across the four crossed conditions
+include no change. No convincing improvement over the already-trained 1.2.1 profile: its bytes remain
+unchanged. Fresh profiles and all training/measurement paths remain in the local evidence ledger.
+
+### 1.2.2: displayed-frame pacing and the i3-3240 target
+
+The acceptance target is **each displayed frame**, not an average of 60 FPS:
+at 59.94/60 Hz, 15.7-17.7 ms per frame, offline p99 <=17.5 ms and zero
+frames >20 ms/minute on 4c/4t; rollback through RTT 150 ms, 3% loss, p99
+<=20 ms and at most one frame >20 ms/minute. Report p50/p95/p99/p99.9,
+>20/>25/>33 ms counts and rates, repeated refreshes and the band share.
+
+**The earlier 1.2.2 CPU/FPS table does not prove these targets.** Its
+background windows were minimized. A retained AVX pool capture contains
+1,006 occluded rows in its 18-second window and no valid display evidence
+(`build/perf122/pacing/historical-occluded-analysis.json`). Some occluded
+captures even expose advancing DXGI counters; counters must also be linked
+to a successful non-occluded Present. Neither guest vblanks, successful
+Present calls alone nor rollback live-boundary times prove scanout pacing.
+
+`tools/frame_pacing.py` reconstructs display QPC from
+`SyncQPCTime + (PresentRefreshCount - SyncRefreshCount) * physical_period`.
+`SyncQPCTime` alone is a refresh reference, not this frame's display time.
+It de-duplicates statistics, handles counter wrap, excludes window-crossing
+intervals, and marks missing present IDs, trace loss and absent coverage
+incomplete. A present-ID gap cannot distinguish an unseen observation from
+a dropped present, so skipped frames remain unknown in that case. Counts
+per minute use the observed interval duration. The supplied display rate,
+if any, must describe the real monitor. `RSX_TEST_DISPLAY_HZ=144` exercises
+wait policy; it does not create a physical 144 Hz display. A real 144 Hz
+display naturally holds 60 FPS frames for two or three refreshes; those
+holds are distinct from accidental doubled refreshes at 60 Hz.
+
+**Hitch fixes and audit:** patch 0119 removes foreground text-log filesystem
+I/O from the game, renderer and ticker. The old latency probe took a shared
+lock across formatting and `fflush` every ~50 ms. A bounded asynchronous
+writer now copies events under a short lock and reports queue overflow;
+`PS3_LATENCY_SYNC=1` restores synchronous I/O for A/B diagnostics. Optional
+guest-memory binary dumps remain intrusive and must be omitted for timing.
+The blocked-disk concurrency test verifies producer completion, ordered
+surviving records and exact delivered-plus-dropped accounting. Background
+mode `PS3_WINDOW_BACKGROUND=2` shows without activation and leaves the
+window at the bottom, instead of minimizing it; actual display statistics
+still have to pass the visibility/coverage checks.
+
+The six-fight background shader warm-up now starts with pool stage 30 and
+stage 20 and varies fighters/effects; its versioned coverage invalidates
+old completed plans. This addresses the previous plan's six consecutive
+stages 17-22, which never visited the pool. The full foreground warm-up
+still covers all selectable fighters/stages. This is broader coverage,
+not proof that every possible first-seen pipeline has been precompiled.
+
+Historical attribution, not a new stand-in result: the retained AVX pool
+trace's worst selected interval coincides with `[hitch] pso` creation through
+the pipeline library, with no HLSL compilation. Its frame-log PSO/create
+fields account for almost the entire translation stall. This is concrete
+first-seen pipeline/driver evidence for that event, rather than a growing
+summary claim. Raw fields/key are retained in
+`build/perf122/pacing/historical-hitch-attribution.json` and the original
+`build/perf122/pairs/avx_pair_2c4t_s30_r1/after/game.log`; the minimized,
+uncalibrated capture cannot establish the new display targets or prove
+that the expanded warm-up covers that exact key.
+
+No lifetime-growing summary traversal was found: render/xlat summaries use
+fixed counters, rollback quantiles scan fixed 400-bin histograms, and the
+periodic frame-time sample arrays have bounded windows. This does not
+exclude blocking stderr writes. Pipeline-library serialization is still
+foreground work after 300 frames without a new PSO; asynchronous disk writes
+do not remove that serialization. Texture/PSO first-sight counters and
+rollback depth must be correlated with real captures before blaming a tail
+on either. This native runtime has no managed GC; general allocator and
+driver stalls have not been ruled out by a GC claim.
+
+The calibrated stand-in, before/after measurements and every unsuccessful
+reservation are recorded in [FRAME_PACING122_RUNS.md](FRAME_PACING122_RUNS.md).
+The i3 CPU/GPU budget and limitations are in [WEAK_PC.md](WEAK_PC.md#i3-3240-stand-in).
+
+Current acceptance status (no substitute CPU/Present-call numbers):
+
+| Required machine / conditions | Before display metrics | After display metrics | State proof for this continuation |
+|---|---|---|---|
+| Full PC, stages 20/30, offline and local rollback RTT 50/150 + 3% loss, 60 Hz / 144-Hz wait hook | Not measured: shared slots unavailable | Not measured | Not run |
+| 4c/4t, same stages/network/display cases | Not measured | Not measured | Not run |
+| Calibrated baseline / AVX1 i3 stand-in, Old PC + forced tier 1 + Fermi compute proxy, same cases | No accepted calibration or capture | No accepted calibration or capture | Not run |
+
+Thus p50/p95/p99/p99.9, >20/>25/>33-ms rates, repeated/skipped refreshes
+and the 15.7-17.7-ms share are **unavailable for the requested new matrix**.
+Neither the constant-frame target nor the 60-FPS i3 goal has been established.
+The new host build passes, and baseline/AVX1 stand-in binaries are assembled.
+The retained earlier-round state proofs concern its binaries; they do not
+replace new pair runs after patch 0119.

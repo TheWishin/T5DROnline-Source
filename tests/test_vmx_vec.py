@@ -79,7 +79,7 @@ class Bits(unittest.TestCase):
                "/I", os.path.join(self.tree, "runtime", "ppu"), os.path.join(ROOT, "tests", "c", "vmx_vec_test.c"),
                "/Fe:" + exe, "/Fo:" + os.path.join(self.tmp, name + ".obj")]
         if march:
-            cmd.insert(5, "/clang:-march=" + march)
+            cmd.insert(5, "/clang:-mavx" if march == "avx" else "/clang:-march=" + march)
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=600, cwd=self.tmp)
         if not os.path.isfile(exe):
             self.fail("vmx_vec_test did not build: " + (r.stdout + r.stderr)[-600:])
@@ -99,6 +99,12 @@ class Bits(unittest.TestCase):
         if not (k.IsProcessorFeaturePresent(40)):          # PF_AVX2_INSTRUCTIONS_AVAILABLE
             self.skipTest("no AVX2 here")
         self.check(self.build("v3", "x86-64-v3"))
+
+    def test_avx_without_fma_same_bits(self):
+        import ctypes
+        if not ctypes.windll.kernel32.IsProcessorFeaturePresent(39):  # PF_AVX_INSTRUCTIONS_AVAILABLE
+            self.skipTest("no OS-enabled AVX here")
+        self.check(self.build("avx", "avx"))
 
 
 if __name__ == "__main__":

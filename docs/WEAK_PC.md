@@ -57,7 +57,7 @@ Hyper-Threading (Core i5-2500), the oldest graphics cards with Direct3D 12 at fe
 | Windows 10 or 11, 64-bit | Direct3D 12 (the renderer) | Windows 7 / 8.1 | no: Direct3D 12 exists only on Windows 10 and newer (a Direct3D 11 renderer is not planned) |
 | a 64-bit processor with **SSE4.1** | the runtime is compiled with `-msse4.1`: the SPU sound core's byte shuffles, blends and float ops (`spu_helpers.h`) | Intel Core 2 before "Penryn" (E6000, Q6000 -- 2006/2007), AMD Phenom II, Athlon II, the A-series "Llano" (2011), E-series "Bobcat" | not usefully: the scalar fallbacks exist and give the same bits, but on them the sound core needs 2-3x its time -- 1.0 needed 9-12 ms of each 5.33 ms audio tick before SSE4.1 -- so such a PC would lose its sound. The game says so at its start (exit code 14, `src/platform/cpu_check.cpp`) and since 1.2.1 **Check my problem** says it before a build. Every Intel Core i3/i5/i7 and every AMD FX / A-series from 2012 / Ryzen has SSE4.1 |
 | CMPXCHG16B (`-mcx16`) | the runtime's atomics | none: Windows 8.1 and newer need it themselves | -- |
-| AVX, AVX2, FMA3 | nothing. With AVX2 + FMA + BMI2 + MOVBE the build makes x86-64-v3 code (faster); without it the x86-64 baseline (every 2010-2012 CPU) | -- | -- |
+| AVX, AVX2, FMA3 | none is required. The build selects x86-64-v3 with its full feature set; since 1.2.2 it selects AVX1 on Sandy/Ivy Bridge with OS AVX support, otherwise the x86-64 baseline. AVX1 keeps exact software FMA; see RENDER_PERF.md "1.2.2" | -- | -- |
 | Direct3D 12, feature level 11_0 | the renderer | Intel HD 2000-4000 (Sandy and Ivy Bridge graphics: Intel never shipped a Direct3D 12 driver for them), AMD HD 5000/6000 (TeraScale), NVIDIA before Fermi | no (no driver to talk to); Intel HD 4200-4600 (Haswell) have Direct3D 12 but players saw device losses on HD 4400 (TROUBLESHOOTING "Intel HD 4400") |
 | resource binding tier 1 | supported since 1.1.5 (patch 0081's tier-1 path) | -- | -- |
 | RAM | the game: 0.8 GB working set, 1.1 GB committed in a fight (measured below); BUILD GAME: the lift ~0.6 GB, each compile job 0.3-0.6 GB (the number of jobs follows the free memory) | -- | 4 GB is enough |
@@ -432,3 +432,77 @@ Never run tests from `build/cmake` (other agents use it).
 
 Add `PS3_LATENCY_LOG=<file>` for the per-frame game part and translation
 (events B, F, X, K, V and, with 0059, L = a held tick released by its frame).
+
+## i3-3240 stand-in
+
+The 1.2.2 continuation targets Ivy Bridge 2 cores / 4 threads at 3.4 GHz,
+AVX without AVX2/FMA3, SSE4.1 and 4-8 GB RAM. Keep the baseline generated
+DLL and compare the retained AVX1 DLL using the same host; force software
+FMA (`PS3_FP_SOFT_FMA=1`, `PS3_CRT_FMA3=0`) and resource-binding tier 1
+(`RSX_TIER1_PATH=1`). The mask `0xF000` selects the two adjacent SMT cores
+used for this task. Old PC settings are Lowest internal resolution, stage
+blur, shadows and effects off. Test both stages 30 (pool) and 20.
+
+`tools/calibrate_slow_core.py` builds fixed native single-thread integer
+and scalar-FP workloads without AVX/FMA. It brackets each slowed sample by
+unthrottled samples, verifies deterministic checksums and process priorities,
+and accepts a duty only if **both** median throughput ratios are 55-60%
+and every unthrottled bracket stays within 5%. Use the accepted duty and
+4,000-us period on the exact game mask. The previous round's nominal
+`--busy 60` was not such a calibration. Its CPU results must not be relabeled
+as measured i3-3240 performance.
+
+This is a scheduling-availability proxy on Zen 4, not an emulation of Ivy
+Bridge IPC, caches, RAM bandwidth or SMT efficiency. Synchronized busy
+intervals can themselves add wake jitter, unlike a continuously running
+3.4 GHz core. Baseline/AVX1 code avoids unsupported guest-code instructions,
+but does not change the host processor's microarchitecture.
+The development machine's RAM/VRAM capacity is also unchanged; this proxy
+does not reproduce paging or memory pressure in a real 4-8 GB installation.
+
+The GPU proxy uses `RSX_TEST_SLOW_GPU=16000000,256` with the forced tier-1
+binding path. It adds a **fixed compute workload** and cannot reproduce
+Fermi bandwidth, driver cost or the scaling of Old PC settings. In
+particular, disabling game effects does not reduce that injected workload.
+Do not lower the hook simply to make a 60 FPS result: a GPU that actually
+needs 32 ms/frame is already 15.33 ms over the 16.67-ms budget before CPU
+work, and requires at least a 1.92x GPU-time improvement. Those are budget
+arithmetic, not a new measurement of the player's card.
+
+| i3-3240 stand-in: ms/frame | before | after | interpretation |
+|---|---:|---:|---|
+| Game thread CPU | not measured | not measured | CPU execution, separately from release-to-flip wall time |
+| Translation | not measured | not measured | FIFO CPU and wall time must both be reported |
+| Sound core CPU | not measured | not measured | Sum named sound-core threads over the covered CPU window |
+| Skinning CPU | not measured | not measured | Sum job workers; parallel CPU time is not a serial frame cost |
+| GPU | not measured | not measured | Timestamp workload including the fixed slow-GPU dispatch |
+
+The shared heavy slots prevented calibration and new game captures. No
+accepted slowdown duty or new before/after budget is available; the exact
+CPU limit on this machine class is therefore not established. The fixed
+GPU-workload limitation above is known from how the proxy is constructed,
+not a measurement of the player's Fermi card with the new settings.
+
+No new 60 FPS or constant-frame-time claim follows from the earlier average
+FPS tables. Acceptance needs complete successful non-occluded DXGI display
+observations, a full steady-minute capture, zero offline >20-ms frames and
+at most one/minute online through RTT 150 ms. The required p50/p95/p99/p99.9,
+threshold counts, repeated refreshes and 15.7-17.7-ms share belong to that
+display capture. Missing display evidence is unavailable, not zero judder.
+
+Next levers, ranked by what can settle the limit:
+
+1. Measure the real Fermi card with Old PC settings and GPU-pass timestamps;
+   reduce the expensive passes or binding/upload traffic identified there.
+   A fixed synthetic GPU delay cannot evaluate those optimizations.
+2. If measured GPU time falls below 16.67 ms, optimize whichever exceeds the
+   remaining serial CPU budget: game release-to-flip plus translation,
+   accounting for skinning waits and sound-core competition on two cores.
+3. For first-sight hitches, cover both requested stages and representative
+   effects in warm-up; then move pipeline-library serialization off the
+   steady render path if captures implicate it. For online-only tails,
+   correlate rollback depth/restore/resimulation costs before changing rules.
+4. Remove probe/log and wake jitter proven by those captures; retain
+   frame-identical rollback/lockstep and replay checks for simulation changes.
+
+Every run and reservation is in [FRAME_PACING122_RUNS.md](FRAME_PACING122_RUNS.md).

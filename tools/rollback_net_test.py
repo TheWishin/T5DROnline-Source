@@ -255,12 +255,12 @@ def pct(xs, p):
 
 
 def latlog_stats(path):
-    """--latlog: what the player sees, from the runtime's latency probe (PS3_LATENCY_LOG,
-    ps3recomp patch 0034, extended by 0039): intervals between two presents (P lines)
-    while the match is fought (N lines with the fighting flag, rb_net.cpp), how many
-    display refreshes showed no new frame (the DWM vblank grid of the C lines) and,
-    per rollback (M line), when the live frame after it was presented compared with
-    the vblank it was meant for."""
+    """Host Present-return intervals during fights, plus observed DXGI display data.
+
+    P events measure host submission timing. A DWM clock (C) alone cannot identify
+    which refresh displayed a frame; only correlated D statistics are display
+    evidence. Sparse D observations remain explicitly incomplete.
+    """
     if not os.path.exists(path):
         return None
     freq = 10_000_000
@@ -314,25 +314,17 @@ def latlog_stats(path):
         iv += [(seg[k + 1] - seg[k]) * ms for k in range(len(seg) - 1)]
     out = {"presents": len(pres), "p50": pct(iv, 50), "p95": pct(iv, 95), "p99": pct(iv, 99), "max": max(iv) if iv else 0,
            "over_20ms": sum(1 for x in iv if x > 20.0), "over_25ms": sum(1 for x in iv if x > 25.0), "intervals": len(iv)}
-    # display refreshes with no new frame: each present lands on the next refresh after it (+0.5 ms copy)
-    if C and pres:
-        Cq = [c[0] for c in C]
-        gpu = freq // 2000
-        slots = []
-        for p_ in pres:
-            k = bisect.bisect_right(Cq, p_) - 1
-            if k < 0:
-                continue
-            vb, per = C[k][1], C[k][2]
-            n = -(-(p_ + gpu - vb) // per)
-            slots.append(((vb + n * per), per))
-        if slots:
-            per = sorted(s[1] for s in slots)[len(slots) // 2]
-            ids = [round(s[0] / per) for s in slots]
-            gaps = [ids[k + 1] - ids[k] for k in range(len(ids) - 1)]
-            within = [g for g in gaps if 0 <= g <= 30]      # a new stretch (the next round) starts far away
-            out["display_hz"] = freq / per
-            out["refreshes_per_frame"] = {str(g): within.count(g) for g in sorted(set(within))}
+    out["display_evidence"] = False
+    # Load by path as this tool is also imported directly by other test harnesses.
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("frame_pacing", os.path.join(ROOT, "tools", "frame_pacing.py"))
+    pacing = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(pacing)
+    out["present_return_metrics"] = pacing.summary(iv)
+    try:
+        out["display"] = pacing.analyze_latency(path, fights_only=True)["display"]
+    except ValueError as exc:
+        out["display"] = {"available": False, "complete": False, "reason": str(exc)}
     return out
 
 
@@ -399,8 +391,8 @@ def main():
     ap.add_argument("--polite", action="store_true",
                     help="someone is using this PC: games muted (PS3_AUDIO_MUTE=1) at below-normal priority")
     ap.add_argument("--latlog", action="store_true",
-                    help="PS3_LATENCY_LOG per game (lat.log): present-to-present times in the fight and display "
-                         "refreshes without a new frame go into the summary")
+                    help="PS3_LATENCY_LOG per game (lat.log): host Present-return intervals and observed "
+                         "DXGI display statistics (when available) go into the summary")
     ap.add_argument("--mash", action="store_true",
                     help="fight_flow_test's mash scripts instead of the attack scripts: face buttons and directions "
                          "at random, 1..--mash-gap frames apart (T5_NET_SCRIPT, fights only with --fight)")
@@ -663,10 +655,11 @@ def main():
         out += summarize(d, who, rcs[who], hung[who])
         ls = latlog_stats(os.path.join(d, who, "lat.log")) if a.latlog else None
         if ls:
-            out.append(f"  presents while fighting: {ls['presents']}, present-to-present p50 {ls['p50']:.1f} ms p95 {ls['p95']:.1f} "
+            out.append(f"  host Present returns while fighting: {ls['presents']}, interval p50 {ls['p50']:.1f} ms p95 {ls['p95']:.1f} "
                        f"p99 {ls['p99']:.1f} max {ls['max']:.1f}, {ls['over_20ms']} over 20 ms, {ls['over_25ms']} over 25 ms"
-                       + (f"; display {ls['display_hz']:.2f} Hz, refreshes per new frame {ls['refreshes_per_frame']}"
-                          if "display_hz" in ls else ""))
+                       + (f"; DXGI display {ls['display']['display_hz']:.2f} Hz, complete={ls['display']['complete']}, "
+                          f"refreshes per observed consecutive frame {ls['display']['refreshes_per_frame']}"
+                          if ls["display"]["available"] else "; display unavailable (host intervals are not scanout times)"))
         for r in files[who]["results"]:
             out.append("  result: " + r)
     if proxy:

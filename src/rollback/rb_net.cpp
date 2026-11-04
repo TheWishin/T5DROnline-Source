@@ -290,8 +290,9 @@ void inputs_for(uint32_t g, np::PadInput out[2])
     out[1 - slot] = rem;
 }
 
-/* displayed-frame times: wall time between two live boundaries (what the
- * player sees; a rollback's re-simulation lands in the frame it happens in) */
+/* Host live-boundary times, including rollback resimulation. These are useful
+ * CPU diagnostics, but are not display timestamps: use DXGI statistics in
+ * PS3_FRAMELOG / PS3_LATENCY_LOG for scanout pacing and repeated refreshes. */
 constexpr int kFtBins = 400;     /* 0.5 ms bins up to 200 ms */
 uint32_t g_ft_win[kFtBins], g_ft_all[kFtBins], g_ft_fight[kFtBins];
 LARGE_INTEGER g_t_live; bool g_t_live_ok = false;
@@ -363,7 +364,7 @@ void report()
          g_st.sleeps, g_st.sleep_ms, g_st.frames ? g_st.lead_sum / g_st.frames : 0.0,
          g_st.frames ? g_st.commit_ms / g_st.frames : 0.0, np::rb_peer_ack(), np::rb_mismatches(), g_phase_changes,
          ss.started_live, ss.deduped, ss.started_resim, ss.orphaned, ss.stops_kept, ss.stops_suppressed, ss.queries_replayed, ss.events_kept, ss.events_new);
-    note("rbnet: frame times (displayed frames) this window p50 %.1f ms p99 %.1f ms max %.1f ms; whole run p50 %.1f p99 %.1f; intro frames with neutral input %u, post-match frames by rule %u, select screen frames in lockstep %u, loads %u, forced rollbacks %u",
+    note("rbnet: frame times (host live boundaries) this window p50 %.1f ms p99 %.1f ms max %.1f ms; whole run p50 %.1f p99 %.1f; intro frames with neutral input %u, post-match frames by rule %u, select screen frames in lockstep %u, loads %u, forced rollbacks %u",
          ft_pct(g_ft_win, 0.5), ft_pct(g_ft_win, 0.99), ft_pct(g_ft_win, 0.99999), ft_pct(g_ft_all, 0.5), ft_pct(g_ft_all, 0.99), g_intro_frames, g_post_frames, g_select_lock_frames, g_loads, g_forced);
     {   /* frame-time branch: p95 too, and the frames of the fight alone (no loads, intro or result screens) */
         uint64_t nf = 0; for (int i = 0; i < kFtBins; i++) nf += g_ft_fight[i];

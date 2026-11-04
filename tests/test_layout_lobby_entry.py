@@ -89,10 +89,19 @@ def observe(walk, name, top=None):
                 # The existing compact-display control frees list rows on a
                 # short high-DPI screen; exercise that actual production action.
                 view.toggle_top(True)
+            # Tk keeps a window within the screen (wm maxsize defaults to it). GitHub's
+            # Windows runners have a 1024x768 screen, so 1400x840 came out 1024x749
+            # there and the lists lost their rows: the sizes below are the ones under
+            # test, so let them exceed the runner's screen (offscreen anyway).
+            app.wm_maxsize(max(app.wm_maxsize()[0], walk.px(1400)), max(app.wm_maxsize()[1], height))
             for width in (1400, 1080, 1180, 1080):
                 app.geometry("%dx%d+20000+20000" % (walk.px(width), height))
                 app.deiconify()
                 app.update()
+                # (the launcher's own minimum height may make it a little taller than asked: px(680) at 150 %)
+                assert abs(app.winfo_width() - walk.px(width)) <= 2 and app.winfo_height() >= height - 2, (
+                    "window size", width, walk.px(width), height, app.winfo_width(), app.winfo_height(),
+                    app.winfo_screenwidth(), app.winfo_screenheight())
                 view._apply_wraps()
                 app.update()
                 assert int(players.grid_info()["columnspan"]) == 1, players.grid_info()

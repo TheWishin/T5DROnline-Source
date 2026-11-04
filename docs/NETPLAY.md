@@ -331,7 +331,7 @@ other, so they must fit into a frame together. Once 30 rollbacks and 600 live fi
 `T5_RB_COST_FILE` (the launcher: `<out>/rb_cost.txt`), so the next game starts with them. The capacity is the
 deepest rollback the PC can run inside one frame and still keep 60 fps:
 `C = floor((15 ms - L - R) / S)`, 0..15 (15 ms of the 16.7: room for the present and jitter). On this dev PC in a
-fight (L ~5, R ~0.6, S ~1.9 ms) that is 5; a weak 4-core laptop (L 12, R 1, S 4) gets 0. `T5_RB_COST=L,R,S` sets
+fight (pair run rb_new2, both mashing at RTT 150: L 4.5, R 0.7, S 2.0 ms) that is 4; a weak 4-core laptop (L 12, R 1, S 4) gets 0. `T5_RB_COST=L,R,S` sets
 the numbers (tests).
 
 **HELLO.** A game that offers rollback sets flag bit 2 (`kHelloRbCost`) and appends 8 bytes after the HelloExt:
@@ -356,6 +356,14 @@ The log: `online feel balanced (this player balanced, the opponent balanced), ro
 0 frame(s), expected depth 3 -> 3 frame(s): balanced: a frame for the slower PC's rollbacks`. The opt-in jitter rule
 (`T5_RB_NET_ADAPTIVE_DELAY`, docs/ROLLBACK_120.md) runs after it as before. A delay changed during a match would need
 a frame-indexed protocol and replay support; the choice stays frozen for the session, like every rollback delay.
+
+Tested (branch netext, `tools/rollback_net_test.py`, RTT 150 / 3 % loss, both sides mashing, 2 matches each, replays
+recorded on both sides): new / new with the joiner's cost forced to capacity 0 (`T5_RB_COST=12,1,4`): the host picked
+2 + 1 = 3 ("a frame for the slower PC's rollbacks"), the joiner took it, 0 mismatching frames, same result hashes;
+the same after the wall-time measurement (rb_new2: the host measured itself at capacity 4 and wrote rb_cost.txt);
+lockstep new / new; new host / 1.2.0 joiner and 1.2.0 host / new joiner (each falls back to the 1.2.0 rule, delay 2):
+0 mismatching frames, same hashes. `tools/replay_play.py` with the new build: 5 of 5 recordings identical (rollback,
+lockstep, both cross pairs).
 
 ### Connection line
 

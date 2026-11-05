@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.join(ROOT, "lobby"))
 from t5lobby import proto
 from t5lobby.buildid import BuildInfo
 from t5lobby.client import LobbyClient
-from t5lobby.compatibility import BuildGroups
+from t5lobby.compatibility import BuildGroups, CrossplayPolicy
 from t5lobby.server.config import Config
 from t5lobby.server.lobby import LobbyServer
 
@@ -63,7 +63,7 @@ class IntegratedCapabilities(unittest.IsolatedAsyncioTestCase):
         self.assertLessEqual(len(caps), 32)
         # Exercise the actual hello handler without constructing network services.
         server = SimpleNamespace(cfg=Config(ingame_rematch=True, auto_skip=True), latest_release="",
-                                 build_groups=BuildGroups(),
+                                 build_groups=BuildGroups(), crossplay=CrossplayPolicy(),
                                  release_cache=SimpleNamespace(public=lambda _: None),
                                  udp=SimpleNamespace(port=7781, port2=7782),
                                  relays=SimpleNamespace(public_list=lambda: []),

@@ -381,6 +381,11 @@ class OnlineView:
             for card in (getattr(self.tab, "me_row", None), getattr(self, "stage_card", None)):
                 if card is not None:
                     card.configure(padding=px(6 if on else 10))
+            # The gaps under the play card's character row and the players list's header: a short tab (a 1000 px
+            # window at 150 %, Spanish, five open challenges) left the list's first row cut by 3 px.
+            for widget, row_gap in ((getattr(self, "play_top", None), 6), (getattr(self, "players_head", None), 6)):
+                if widget is not None:
+                    widget.grid_configure(pady=(0, px(2 if on else row_gap)))
             # Descriptive copy and the repeated main-fighter caption yield to
             # the lists on short displays; every action and picker stays shown.
             for label in (self.me_main, self.me_stats, self.ranked_sub, self.quick_sub, self.search_opts_label,
@@ -699,6 +704,7 @@ class OnlineView:
         f.columnconfigure(1, weight=1, uniform="hero")
         top = self.body(f)
         top.grid(row=0, column=0, columnspan=3, sticky="we", pady=(0, px(6)))
+        self.play_top = top                       # (its space below shrinks while the tab is short: _fit_height)
         top.columnconfigure(0, weight=1)
         ttk.Label(top, text=t("Find an opponent online").upper(), style="Card.Caps.TLabel").grid(
             row=0, column=0, sticky="w")
@@ -897,7 +903,8 @@ class OnlineView:
         self.players_count = tk.StringVar(page, value="")
         head, tools = self.section_head(pc, t("Players online").upper(), self.players_count)
         head.grid(row=0, column=0, sticky="we", pady=(0, px(6)))
-        tab.chal.build_tools(tools, px)            # the challenge's input delay (tk_challenges.py)
+        self.players_head = head                  # (as play_top: tighter while the tab is short)
+        tab.chal.build_tools(tools, px)           # the challenge's input delay (tk_challenges.py)
         b = ttk.Button(tools, text=t("Challenge"), style="Card.Accent.TButton", state="disabled",
                        command=tab.do_challenge)
         b.pack(side="left")

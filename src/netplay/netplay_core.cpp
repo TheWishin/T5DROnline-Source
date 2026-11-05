@@ -1098,7 +1098,7 @@ void connect_locked()
          * seed and delay, rollback when both offer it (rb_net.cpp enabled(): offered, negotiated, from frame <= 1) */
         uint32_t rb_start = 0;
         if (const char* v = getenv("T5_RB_NET_START")) rb_start = (uint32_t)atoi(!strncmp(v, "frame:", 6) ? v + 6 : v);
-        rp::rec_session_known(s.seed ? s.seed : s.session, s.rb_offer && s.rb_peer && rb_start <= 1, s.delay);
+        rp::rec_session_known(s.seed ? s.seed : s.session, s.rb_offer && s.rb_peer && rb_start <= 1, s.delay, s.peer_program && s.peer_program != own_program());
     }
     SetEvent(s.rx_event);
 }
@@ -2523,7 +2523,7 @@ void rb_set_lead(int lead) { State& s = S(); std::lock_guard<std::mutex> lk(s.mu
 int  rb_peer_lead() { State& s = S(); std::lock_guard<std::mutex> lk(s.mu); return s.peer_lead; }
 uint32_t rb_mismatches() { State& s = S(); std::lock_guard<std::mutex> lk(s.mu); return s.mismatches; }
 uint32_t rb_peer_ack() { State& s = S(); std::lock_guard<std::mutex> lk(s.mu); return s.peer_ack; }
-bool cross_program() { State& s = S(); std::lock_guard<std::mutex> lk(s.mu); return s.peer_program && s.peer_program != own_program(); }
+bool cross_program() { State& s = S(); std::lock_guard<std::mutex> lk(s.mu); return s.replay ? rp::play_cross_program_hash() : s.peer_program && s.peer_program != own_program(); }
 
 void set_local_inject(bool on, uint16_t buttons) { g_local_inject = buttons; g_local_inject_on = on; }
 

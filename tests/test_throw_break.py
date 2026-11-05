@@ -57,7 +57,7 @@ class IntegrationTest(unittest.TestCase):
         build = (Path(ROOT) / "tools/build_game.py").read_text(encoding="utf-8")
         self.assertGreaterEqual(int(re.search(r"(?m)^CODE_VERSION\s*=\s*(\d+)", build).group(1)), 12)
         replay = (Path(ROOT) / "src/netplay/replay.cpp").read_text(encoding="utf-8")
-        self.assertIn("constexpr uint32_t kVersion = 8;", replay)
+        self.assertIn("constexpr uint32_t kVersion = 9;", replay)
         self.assertIn("m.throw_break_rule = ver >= 8;", replay)
         self.assertIn("m.throw_break_rule = d.matches[k].throw_break_rule;", replay)
         self.assertIn("return d.rollback && d.rb_delay >= 0 ? d.rb_delay : d.delay;", replay)

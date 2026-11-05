@@ -93,8 +93,12 @@ class Table(unittest.TestCase):
     def test_no_bare_game_address_in_the_modules_that_run_for_eu_online(self):
         bad = []
         for name, code in sources():
-            if name in US_ONLY or name in ("t5_addr.h", "t5_addr_eu_online.inc", "t5_game.h"):
+            # cross_hash's literals are field/referent identities in the US
+            # coordinate space. It transforms a supplied byte copy and never
+            # dereferences guest memory; T5A would defeat canonicalization.
+            if name in US_ONLY or name in ("t5_addr.h", "t5_addr_eu_online.inc", "t5_game.h", "cross_hash.h", "first_block_hash.h"):
                 continue
+            code = re.sub(r"static constexpr uint32_t kGameUS\[\] = \{.*?\};", "", code, flags=re.S)
             code = re.sub(r'"(?:\\.|[^"\\])*"', '""', code)
             code = re.sub(r"(?:T5(?:A|R|REG|_US)|t5game::region)\(\s*0x[0-9A-Fa-f]+[uUlL]*", "T5A(", code)
             for m in re.finditer(r"\b0x([0-9A-Fa-f]{5,8})[uUlL]*\b", code):
@@ -104,6 +108,12 @@ class Table(unittest.TestCase):
                 if 0x10000 <= v < 0x500000 or 0x10000000 <= v < 0x10770000:
                     bad.append("%s: 0x%X" % (name, v))
         self.assertEqual(bad, [])
+
+    def test_canonical_hash_table_never_accesses_guest_memory(self):
+        with open(os.path.join(ROOT, "src", "netplay", "cross_hash.h"), encoding="utf-8") as source:
+            code = STRIP.sub("", source.read())
+        self.assertNotIn("vm_base", code)
+        self.assertNotIn("reinterpret_cast", code)
 
     def test_the_us_only_modules_say_so(self):
         for rel in ("src/rollback/rb_ktrace.cpp", "src/rollback/rb_shadowtrace.cpp"):

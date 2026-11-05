@@ -31,6 +31,7 @@ import datetime
 import hashlib
 import json
 import os
+import re
 import shutil
 import stat
 import struct
@@ -498,7 +499,8 @@ def patch_digest(d=None):
 
 # Bump when a change to the steps below changes what ends up in t5dr.exe (lifter
 # arguments, SPU handling, compile flags); messages and the like do not count.
-CODE_VERSION = 12  # 2: sound core lifted with SPU_CORE_EXTRA_FUNCS; 3: sound core with SPU_NEAR_FLOAT;
+CODE_VERSION = 13  # 13: EU Online live instruction immediates for negotiated mixed-edition timers.
+                  # 2: sound core lifted with SPU_CORE_EXTRA_FUNCS; 3: sound core with SPU_NEAR_FLOAT;
                    # 4 (1.1.3): lifted code compiled with the PGO profile (tools/gamedll/t5dr_lifted.proftext);
                    # 5 (1.1.4 work): lifted PPU code with register promotion (ps3recomp patch 0066), compiled with
                    # -fno-finite-loops (build_game_dll.py);
@@ -519,6 +521,7 @@ CODE_VERSION = 12  # 2: sound core lifted with SPU_CORE_EXTRA_FUNCS; 3: sound co
 
 # Guest functions src/ detours: a macOS online build lifts them with hook slots (step_lift).
 HOOK_SLOTS = os.path.join(ROOT, "src", "rollback", "hook_slots.txt")
+EU_LIVE_IMMEDIATES = os.path.join(ROOT, "tools", "eu_mixed_live_immediates.json")
 
 # The lifted code's profile for profile-guided optimisation (docs/BUILD_PERF.md): text, split into
 # four parts and turned into clang's format at compile time (build_game_dll.prepare_profiles).
@@ -531,6 +534,7 @@ def code_id():
     h = hashlib.sha1()
     h.update(f"{CODE_VERSION}:{PS3RECOMP_COMMIT}:{CODE_END}".encode())
     h.update(patch_digest().encode())
+    h.update(sha1(EU_LIVE_IMMEDIATES).encode())
     with open(os.path.join(ROOT, "CMakeLists.txt"), "rb") as f:
         h.update(f.read().replace(b"\r\n", b"\n"))
     if os.path.exists(PGO_PROFILE):                  # a new profile changes the compiled code
@@ -1017,6 +1021,28 @@ def step_vfs(a):
                 os.remove(stale)
 
 
+def live_immediate_identity(manifest):
+    """The lifter's canonical manifest identity (also exported by the game DLL)."""
+    with open(manifest, encoding="utf-8") as source:
+        meta = json.load(source)
+    sites = sorted((int(str(site["address"]), 0), int(str(site["expected_word"]), 0)) for site in meta["sites"])
+    canonical = json.dumps(sites, separators=(",", ":"))
+    return len(sites), hashlib.sha256(canonical.encode("ascii")).hexdigest()
+
+
+def live_immediate_header_matches(recomp, manifest):
+    try:
+        count, digest = live_immediate_identity(manifest)
+        with open(os.path.join(recomp, "ppu_live_immediates.h"), encoding="utf-8") as source:
+            header = source.read()
+        return count > 0 and all(re.search(pattern, header, re.M) for pattern in (
+            r"^#define T5DR_LIVE_IMMEDIATE_ABI 1\s*$",
+            rf"^#define T5DR_LIVE_IMMEDIATE_COUNT {count}\s*$",
+            rf'^#define T5DR_LIVE_IMMEDIATE_MANIFEST_SHA256 "{digest}"\s*$'))
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+
+
 def step_lift(a):
     # The lift is redone when the lifter changed (the patches change what it
     # emits -- e.g. 0013's inline guest stores); a stamp next to the output
@@ -1032,6 +1058,10 @@ def step_lift(a):
     lifter_id = (sha1(lifter) if os.path.exists(lifter) else "") + ("" if regpromo else ":regpromo=off")
     if prog is not US_PROGRAM:          # (a lift of one program is never taken for another's: 1.1.9)
         lifter_id += ":program=" + prog["key"]
+    live = []
+    if prog["key"].startswith("eu_online"):
+        live = ["--live-immediates", EU_LIVE_IMMEDIATES]
+        lifter_id += ":live-immediates=" + sha1(EU_LIVE_IMMEDIATES)
     # macOS online (--macos-online): every function src/ detours gets a hook slot (rb_detour.cpp; an
     # arm64 Mac may not patch its own code). The stamp records the list, so a change lifts again.
     hooks = []
@@ -1039,8 +1069,11 @@ def step_lift(a):
         hooks = ["--hook-slots", HOOK_SLOTS]
         lifter_id += ":hooks=" + sha1(HOOK_SLOTS)
     if os.path.exists(os.path.join(P.recomp, "ppu_recomp.h")) and not a.force:
-        made_by = open(stamp).read().strip() if os.path.exists(stamp) else None
-        if made_by == lifter_id:
+        made_by = None
+        if os.path.exists(stamp):
+            with open(stamp) as cached:
+                made_by = cached.read().strip()
+        if made_by == lifter_id and (not live or live_immediate_header_matches(P.recomp, EU_LIVE_IMMEDIATES)):
             print("  already done")
             return
         print("  the lifter changed since the last lift: lifting again")
@@ -1056,7 +1089,7 @@ def step_lift(a):
          "--functions", os.path.join(P.analysis, "functions.json"),
          "--hle-stubs", os.path.join(P.analysis, "EBOOT.imports.json"),
          "--code-end", prog["code_end"], "--max-chunk-lines", "80000",
-         "-o", P.recomp] + ([] if regpromo else ["--regpromo", "off"]) + hooks)
+         "-o", P.recomp] + ([] if regpromo else ["--regpromo", "off"]) + hooks + live)
     with open(stamp, "w") as f:
         f.write(lifter_id + "\n")
 

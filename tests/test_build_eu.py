@@ -294,7 +294,9 @@ class LauncherLines(unittest.TestCase):
         mkput(os.path.join(out, "game", "EBOOT.elf"), b"EU program")
         mkput(self.core.game_exe(out), b"exe")
         mkput(os.path.join(out, "build", "t5dr_build.json"), json.dumps({"code_id": self.core.build_game.code_id()}))
-        with mock.patch.object(self.core.build_game, "sha1", lambda p: EU_SHA1):
+        real_sha1 = self.core.build_game.sha1
+        elf = os.path.join(out, "game", "EBOOT.elf")
+        with mock.patch.object(self.core.build_game, "sha1", lambda p: EU_SHA1 if os.path.normcase(os.path.abspath(p)) == os.path.normcase(os.path.abspath(elf)) else real_sha1(p)):
             st = self.core.game_state(out)
         self.assertTrue(st["ok"], st["text"])
         self.assertIn("NPEA00019 v01.00", st["text"])

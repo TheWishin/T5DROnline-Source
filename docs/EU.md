@@ -320,3 +320,25 @@ cross-build group. The integrated lobby defaults to exact build IDs; `T5L_COMPAT
 operator-approved groups when both clients support them (see [COMPATIBILITY_GROUPS.md](COMPATIBILITY_GROUPS.md)).
 No EU/US group ships, EU v01.00 remains incompatible, and EU Online must not be grouped with US merely because
 fighter data matches. Identifying the region does not grant compatibility.
+
+## US-vs-EU crossplay proof (2026-11-05, branch eu-crossplay-2)
+
+Host `t5dr.exe` e8aabbb6ec197cb7 (+ game DLLs: US 1baae969..., EU 443dceaa...), 1.2.1 sources of this branch.
+Fight `jin,jin,20,2` then three more matches (king/nina stage 27, christie/feng stage 17 twice), RTT 150 ms,
+jitter 5 ms, 3 % loss, muted, below-normal, one process pair per run:
+
+| pair | netcode | frames compared | differing | match results |
+|---|---|---|---|---|
+| US host / EU joiner | rollback | 13,611 | 0 | 4 of 4 equal |
+| EU host / US joiner | rollback | 13,648 | 0 | 4 of 4 equal |
+| US host / EU joiner | lockstep | 13,579 | 0 | 4 of 4 equal |
+| EU host / US joiner | lockstep | 13,579 | 0 | 4 of 4 equal |
+| US / US control | rollback | 13,767 | 0 | 4 of 4 equal |
+| US / US control | lockstep | 13,719 | 0 | 4 of 4 equal |
+| EU / EU control | rollback | 13,748 | 0 | 4 of 4 equal |
+| EU / EU control | lockstep | 13,700 | 0 | 4 of 4 equal |
+
+Every mixed recording (16 files) plays back identical (0 hash mismatches, 225-228 hashes) on both editions.
+A same-edition recording (format 8) is for its own edition only: played on the other edition it parts at its first
+compared frame (by design: that edition hashes its own layout). Harness: `tools/rollback_net_test.py` with
+`tools/cross_build_test.py check_run`, then `tools/replay_play.py` per recording and edition.

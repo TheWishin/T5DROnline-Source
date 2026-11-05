@@ -91,7 +91,7 @@ class Source(unittest.TestCase):
 
     def test_replay_keeps_the_rules(self):
         rp = read("src/netplay/replay.cpp")
-        self.assertIn("constexpr uint32_t kVersion = 8;", rp)
+        self.assertIn("constexpr uint32_t kVersion = 9;", rp)
         self.assertIn("put32(b, m.ft.rules);", rp)
         self.assertIn("if (ver >= 5) m.ft.rules = r.u32();", rp)
         self.assertIn('*line += " train=1";', rp)
@@ -113,12 +113,12 @@ class Source(unittest.TestCase):
     def test_live_spectators_explicitly_version_skip_rules(self):
         rp = read("src/netplay/replay.cpp")
         self.assertIn("put32(b, rules_version(d) - 4);", rp)
-        self.assertIn("if (version < 1 || version > 4) return false;", rp)
+        self.assertIn("if (version < 1 || version > 5) return false;", rp)
         self.assertIn("const uint32_t match_version = version + 4;", rp)
         self.assertIn("p.live_match_version = match_version;", rp)
         self.assertIn("get_match(r, p.live_match_version)", rp)
         self.assertIn("put32(b, rules_version(d));", rp)
-        self.assertIn("return kVersion;  /* the input filter changed even when automatic round skipping is off */", rp)
+        self.assertIn("return d.cross_program_hash ? kVersion : 8;", rp)
         upgrade = rp[rp.index("void live_match_locked("):]
         self.assertLess(upgrade.index("L_SESSION, session_payload(st.d)"), upgrade.index("L_MATCH, b"))
         self.assertIn("kLiveRulesGuard = 0xFE", rp)

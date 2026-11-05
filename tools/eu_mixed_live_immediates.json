@@ -1,0 +1,41 @@
+{
+  "schema": 1,
+  "sites": [
+    {
+      "address": "0x00042464",
+      "expected_word": "0x2F80006E"
+    },
+    {
+      "address": "0x000425E4",
+      "expected_word": "0x2F800162"
+    },
+    {
+      "address": "0x00042AC4",
+      "expected_word": "0x38000064"
+    },
+    {
+      "address": "0x000439CC",
+      "expected_word": "0x2F800063"
+    },
+    {
+      "address": "0x00043B94",
+      "expected_word": "0x2F80005A"
+    },
+    {
+      "address": "0x00043F48",
+      "expected_word": "0x2F8B0018"
+    },
+    {
+      "address": "0x00043F60",
+      "expected_word": "0x2F800018"
+    },
+    {
+      "address": "0x00044238",
+      "expected_word": "0x2F80006E"
+    },
+    {
+      "address": "0x00044CF0",
+      "expected_word": "0x2B8005DC"
+    }
+  ]
+}

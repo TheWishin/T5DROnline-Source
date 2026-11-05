@@ -54,8 +54,13 @@ updated lobby server; on an older server they simply do not appear.
   new recordings use replay format 8.
 - **Practise while searching.** Start Practice while waiting for Quick or Ranked Match; when a challenger is ready,
   answer the ready check and move into the online match.
-- **EU Online edition builds** no longer need an experimental opt-in. Online play and US/EU crossplay remain gated
-  until the European build passes the same match and replay checks as the US build.
+- **EU Online edition builds** no longer need an experimental opt-in.
+- **US and EU Online PCs can play the same match** (rollback and lockstep): the two programs lay the game out
+  differently, so a mixed session hashes the state in the US program's canonical layout (addresses and pointers are
+  compared by what they point at), the EU game uses the US deadlines for the round timers, and its random streams are
+  keyed by the US call sites. Same-edition sessions are unchanged (US/US and EU/EU hash exactly as before). Mixed
+  recordings use replay format 9 and play back identically on either edition. The lobby still pairs builds by exact
+  build ID; an operator turns the US/EU group on (docs/COMPATIBILITY_GROUPS.md).
 - **Online feel** (Settings -> Online input delay, for Auto): **Responsive** (the 1.2.0 pick), **Balanced** (default:
   one frame more when the slower PC cannot keep up with its rollbacks) or **Smooth** (more delay, fewer and smaller
   rollbacks). Each game measures how deep a rollback its PC can run inside a frame and remembers it for the next match.

@@ -21,6 +21,21 @@ fetch = load_tool("fetch_llvm")
 
 
 class PackagedRuntimeSources(unittest.TestCase):
+    def test_live_immediate_manifest_is_available_to_the_staged_builder(self):
+        with tempfile.TemporaryDirectory() as stage:
+            package.add_our_files(stage)
+            manifest = os.path.join(stage, "tools", "eu_mixed_live_immediates.json")
+            with open(manifest, "rb") as source:
+                actual = source.read()
+            with open(os.path.join(package.ROOT, "tools", "eu_mixed_live_immediates.json"), "rb") as source:
+                self.assertEqual(actual, source.read())
+            # Import the staged builder in a fresh process: a developer checkout
+            # must not accidentally supply the required JSON through globals.
+            result = subprocess.run([PY, "-c", "import build_game; print(build_game.code_id())"],
+                                    cwd=os.path.join(stage, "tools"), capture_output=True, text=True, timeout=60)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertRegex(result.stdout.strip(), r"^[0-9a-f]{16}$")
+
     def test_eu_address_header_has_its_include_in_the_staged_tree(self):
         # The developer build sees this include, but a release builds only from
         # staged files. Omitting it breaks every fresh runtime release build.

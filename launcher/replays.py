@@ -79,7 +79,7 @@ def split(path):
 
 
 COSTUME_BLOCK = 0x108          # src/directfight/costume_logic.h kBlock (format 3)
-MAX_VERSION = 8               # format 8: throw-break timing compensated by recorded input delay
+MAX_VERSION = 9               # format 8: throw-break timing compensated by recorded input delay
 
 
 def _payload_version(b):
@@ -132,6 +132,7 @@ def read_payload(path):
     out = {"version": r.u32(), "soft_reset_guard": version >= 7, "throw_break_rule": version >= 8}
     hf = r.u32()
     out["rollback"] = bool(hf & 1)
+    out["cross_program_hash"] = version >= 9 and bool(hf & 8)
     # format 4: bit 1 the select screen's generator mixes the match number (older: one seed per session),
     # bit 2 Jinpachi and the random cell were offered (T5_NET_UNLOCKS=open)
     out["select_mix"] = out["version"] >= 4 and bool(hf & 2)

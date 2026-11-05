@@ -85,6 +85,7 @@ import prereqs     # noqa: E402
 OUR_FILES = [
     "CMakeLists.txt",
     "tools/build_game.py", "tools/run_game.py", "tools/make_keys.py", "tools/unself.py", "tools/prereqs.py",
+    "tools/eu_mixed_live_immediates.json",  # exact opt-in sites required by build_game.py and code_id()
     "tools/build_game_dll.py", "tools/lift_spu_jobs.py", "tools/gamedll/t5dr_game_dll.c", "tools/gamedll/t5dr_host.def",
     "tools/gamedll/ucrt_min.def", "tools/gamedll/t5dr_lifted.proftext", "tools/profile_check.py",
     "tools/shader_warmup.py",      # 1.1.5: build_game.py --warmup (the launcher's BUILD GAME)

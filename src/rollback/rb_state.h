@@ -13,6 +13,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <vector>
+#include <string>
 
 namespace rb {
 
@@ -53,10 +54,13 @@ uint64_t state_page_hash(uint32_t ea);
  * on demand. Unlike the full-state hash it is independent of whether a
  * frame was drawn, so it is the verdict of the draw-cut test and what the
  * peers compare. */
+uint32_t state_cross_program_unresolved();
+void state_set_cross_program_hash(bool on);  /* negotiated live policy, or the policy recorded in format 9 */
 uint64_t state_game_hash();
 /* The bytes the gameplay hash covers, in region order (for desync dumps);
  * returns the byte count, at most cap. */
 uint32_t state_game_bytes(uint8_t* out, uint32_t cap);
+std::string state_game_layout(uint32_t bytes, uint64_t hash);  /* sidecar for these exact serialized bytes */
 uint64_t hash_page(uint32_t ea);
 /* The full-state per-page hash (test mode); off: commits and restores skip it. */
 void     state_set_page_hashing(bool on);

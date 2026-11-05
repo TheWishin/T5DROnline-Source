@@ -59,15 +59,16 @@ bool rp_zlib_decompress_into(const unsigned char* data, int len, unsigned char* 
 namespace rp {
 namespace {
 
-constexpr uint32_t kVersion = 8;   /* 2: the last frame the recording game ran (after the hash interval);
+constexpr uint32_t kVersion = 9;   /* 2: the last frame the recording game ran (after the hash interval);
                                     3: each match's custom costume blocks;
                                     4: header flags bit 1 (select seed per match) and bit 2 (unlocks open);
                                     5: each match's rules word (online training, the health handicap);
                                     6: rules bit 1 automatic after-round skips;
                                     7: filter cross-pad START/SELECT soft reset; old readers must reject;
                                        rules bit 2 automatic intro skips (1.2.0, never in format 5/6);
-                                    8: online throw-break window compensation by recorded input delay */
-constexpr uint32_t kFlagRollback = 1, kFlagSelectMix = 2, kFlagUnlocksOpen = 4;
+                                    8: online throw-break window compensation by recorded input delay;
+                                    9: mixed-edition canonical hash policy (flags bit 3) */
+constexpr uint32_t kFlagRollback = 1, kFlagSelectMix = 2, kFlagUnlocksOpen = 4, kFlagCrossHash = 8;
 constexpr uint32_t kCostumeBlock = 0x108;
 constexpr int kMaxDelay = 30;      /* netplay_core.cpp kMaxDelay: the input delay a session can have */
 constexpr char kMagic[] = "T5REPLAY 1\n";
@@ -86,6 +87,7 @@ struct Match {
 struct Data {
     int slot = 0, delay = 0, rb_delay = -1;
     bool rollback = false;
+    bool cross_program_hash = false;  /* format 9: hashed representation, also used without a remote peer */
     bool select_mix = true;       /* format 4: the select seed mixes the match number (older: false) */
     bool unlocks_open = false;    /* format 4: T5_NET_UNLOCKS=open (Jinpachi and the random cell offered) */
     uint32_t version = 5;          /* decoded format; new recordings always publish kVersion */
@@ -183,13 +185,12 @@ struct DataInputs : InputSource {
 
 uint32_t header_flags(const Data& d)
 {
-    return (d.rollback ? kFlagRollback : 0u) | (d.select_mix ? kFlagSelectMix : 0u) | (d.unlocks_open ? kFlagUnlocksOpen : 0u);
+    return (d.rollback ? kFlagRollback : 0u) | (d.select_mix ? kFlagSelectMix : 0u) | (d.unlocks_open ? kFlagUnlocksOpen : 0u) | (d.cross_program_hash ? kFlagCrossHash : 0u);
 }
 
 uint32_t rules_version(const Data& d)
 {
-    (void)d;
-    return kVersion;  /* the input filter changed even when automatic round skipping is off */
+    return d.cross_program_hash ? kVersion : 8;  /* the input filter changed even when automatic round skipping is off */
 }
 
 std::vector<uint8_t> to_binary(const Data& d, const InputSource& src)
@@ -291,6 +292,7 @@ bool from_binary(const uint8_t* p, size_t n, Data& d, std::string* why)
     d.version = ver;
     const uint32_t hf = r.u32();
     d.rollback = (hf & kFlagRollback) != 0;
+    d.cross_program_hash = ver >= 9 && (hf & kFlagCrossHash);
     d.select_mix = ver >= 4 && (hf & kFlagSelectMix);       /* format 3 and older: one select seed per session */
     d.unlocks_open = ver >= 4 && (hf & kFlagUnlocksOpen);
     d.slot = (int)r.u32(); d.delay = (int)r.u32(); d.rb_delay = (int)r.u32();
@@ -924,7 +926,7 @@ bool live_record(Play& p, uint8_t type, const uint8_t* b, uint32_t n)
     switch (type) {
     case L_SESSION: {
         const uint32_t version = r.u32();
-        if (version < 1 || version > 4) return false;
+        if (version < 1 || version > 5) return false;
         const uint32_t match_version = version + 4;
         if (match_version > p.live_match_version && !p.live_rules_guard) return false;
         if (p.live_rules_guard && match_version <= p.live_match_version) return false;
@@ -934,6 +936,7 @@ bool live_record(Play& p, uint8_t type, const uint8_t* b, uint32_t n)
         p.live_rules_guard = false;
         const uint32_t lf = r.u32();
         const bool rb = (lf & kFlagRollback) != 0;
+        const bool cross_hash = version >= 5 && (lf & kFlagCrossHash);
         d.select_mix = (lf & kFlagSelectMix) != 0;
         d.unlocks_open = (lf & kFlagUnlocksOpen) != 0;
         const int slot = (int)r.u32(), delay = (int)r.u32(), rb_delay = (int)r.u32();
@@ -945,7 +948,7 @@ bool live_record(Play& p, uint8_t type, const uint8_t* b, uint32_t n)
             return false;
         }
         if (!p.have_session && p.on) p.session_new = true;
-        if (p.have_session && (rb != d.rollback || slot != d.slot || delay != d.delay || sseed != d.session_seed ||
+        if (p.have_session && (cross_hash != d.cross_program_hash || rb != d.rollback || slot != d.slot || delay != d.delay || sseed != d.session_seed ||
                                mseed != d.match_seed)) {
             /* the playback runs with what the first SESSION said (the handshake's): the players' games
              * changed it later (a reconnect before frame 0) -- this playback cannot follow */
@@ -954,7 +957,8 @@ bool live_record(Play& p, uint8_t type, const uint8_t* b, uint32_t n)
                  "seeds %08X/%08X)", d.rollback ? "rollback" : "lockstep", d.delay, d.session_seed, d.match_seed,
                  rb ? "rollback" : "lockstep", delay, sseed, mseed);
         }
-        d.rollback = rb; d.slot = slot; d.delay = delay; d.rb_delay = rb_delay;
+        d.rollback = rb;
+        d.cross_program_hash = cross_hash; d.slot = slot; d.delay = delay; d.rb_delay = rb_delay;
         d.session_seed = sseed; d.match_seed = mseed; d.hash_every = every ? every : 60;
         d.build = r.str(); d.created = r.str();
         p.have_session = true;
@@ -1289,12 +1293,13 @@ void rec_session_end(const char* why)
  * the same values rec_start() records at frame 0 -- the seeds and the delay are the host's, rollback is
  * what both offered. The live stream's SESSION goes out now, so a spectator's game can boot while the
  * players' games still load the fight (it then waits at the select screen for the first fight). */
-void rec_session_known(uint32_t match_seed, bool rollback, int delay)
+void rec_session_known(uint32_t match_seed, bool rollback, int delay, bool cross_program_hash)
 {
     Rec& r = R();
     std::lock_guard<std::mutex> lk(r.mu);
     if (!r.on || r.cur->live_path.empty() || r.cur->live_started) return;
     r.cur->d.match_seed = match_seed;
+    r.cur->d.cross_program_hash = cross_program_hash;
     r.cur->d.rollback = rollback;
     r.cur->d.delay = delay;
     r.cur->live_started = true;
@@ -1302,12 +1307,13 @@ void rec_session_known(uint32_t match_seed, bool rollback, int delay)
     note("live stream: the session is known at the handshake (%s, delay %d)", rollback ? "rollback" : "lockstep", delay);
 }
 
-void rec_start(uint32_t match_seed, bool rollback, int delay)
+void rec_start(uint32_t match_seed, bool rollback, int delay, bool cross_program_hash)
 {
     Rec& r = R();
     std::lock_guard<std::mutex> lk(r.mu);
     if (!r.on) return;
     r.cur->d.match_seed = match_seed;
+    r.cur->d.cross_program_hash = cross_program_hash;
     r.cur->d.rollback = rollback;
     r.cur->d.delay = delay;
     r.cur->live_started = !r.cur->live_path.empty();
@@ -1470,6 +1476,7 @@ int  play_slot() { return P().d.slot; }
 int  play_delay() { return P().d.delay; }
 /* a live stream whose SESSION has not come yet: rollback, the lobby's netcode (rb_net.cpp offers it at the
  * game's start; netplay_core replay_session_known() takes the offer back for a lockstep session) */
+bool play_cross_program_hash() { return P().d.cross_program_hash; }
 bool play_rollback() { const Play& p = P(); return p.live && !p.have_session ? true : p.d.rollback; }
 uint32_t play_session_seed() { return P().d.session_seed; }
 uint32_t play_match_seed() { return P().d.match_seed; }

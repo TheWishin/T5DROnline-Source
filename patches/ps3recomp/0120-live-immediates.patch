@@ -1,0 +1,171 @@
+diff --git a/tools/ppu_lifter.py b/tools/ppu_lifter.py
+--- a/tools/ppu_lifter.py
++++ b/tools/ppu_lifter.py
+@@ -12,6 +12,7 @@
+ """
+ 
+ import argparse
++import hashlib
+ import json
+ import os
+ import re
+@@ -1284,6 +1285,7 @@
+     """Translates PPU instructions into C source."""
+ 
+     def __init__(self, prefix: str = "", weak_emit: bool = False):
++        self.live_immediates: dict[int, int] = {}
+         self.functions: list[LiftedFunction] = []
+         self.call_targets: set[int] = set()
+         self.branch_targets: set[int] = set()  # all func_X references (b/bc trampolines)
+@@ -1791,6 +1793,11 @@
+         mn = insn.mnemonic
+         ops = _parse_operands(insn.operands)
+         addr = insn.addr
++        live = addr in self.live_immediates
++        if live and (insn.mnemonic not in ("li", "cmpwi", "cmplwi") or insn.raw != self.live_immediates[addr]):
++            raise ValueError(f"live immediate at {addr:08X}: instruction does not match manifest")
++        live_signed = f"((int16_t)(vm_read32(0x{addr:08X}u) & 0xFFFFu))"
++        live_unsigned = f"(vm_read32(0x{addr:08X}u) & 0xFFFFu)"
+ 
+         if insn.raw is not None and (insn.raw >> 26) == 4:
+             v = self._vmx_helper(insn)
+@@ -1800,7 +1807,8 @@
+         # ------- Arithmetic -------
+         if mn == "li":
+             rd = _reg_idx(ops[0])
+-            return f"ctx->gpr[{rd}] = (int64_t)(int32_t)({_imm(ops[1])});"
++            imm = live_signed if live else _imm(ops[1])
++            return f"ctx->gpr[{rd}] = (int64_t)(int32_t)({imm});"
+ 
+         if mn == "lis":
+             rd = _reg_idx(ops[0])
+@@ -2256,6 +2264,7 @@
+                 bf = 0
+                 ra_i = _reg_idx(ops[0])
+                 imm = _imm(ops[1])
++            if live: imm = live_signed
+             cast = "(int32_t)" if mn == "cmpwi" else "(int64_t)"
+             shift = (7 - bf) * 4
+             return (f"{{ int64_t a = {cast}ctx->gpr[{ra_i}]; int64_t b = (int64_t){imm}; "
+@@ -2271,6 +2280,7 @@
+                 bf = 0
+                 ra_i = _reg_idx(ops[0])
+                 imm = _imm(ops[1])
++            if live: imm = live_unsigned
+             cast = "(uint32_t)" if mn == "cmplwi" else "(uint64_t)"
+             shift = (7 - bf) * 4
+             return (f"{{ uint64_t a = {cast}ctx->gpr[{ra_i}]; uint64_t b = (uint64_t){imm}; "
+@@ -5062,12 +5072,13 @@
+ 
+ def _worker_init(segs, big_endian, name_map, prefix, hle_stub_nids=None,
+                  function_entries=None, code_lo=0, code_hi=None, jump_tables=None,
+-                 toc_base=0):
++                 toc_base=0, live_immediates=None):
+     _WORKER_STATE["segs"] = segs
+     _WORKER_STATE["be"] = big_endian
+     _WORKER_STATE["names"] = name_map
+     _WORKER_STATE["prefix"] = prefix
+     _WORKER_STATE["toc_base"] = toc_base
++    _WORKER_STATE["live_immediates"] = live_immediates or {}
+     _WORKER_STATE["hle_stub_nids"] = hle_stub_nids or {}
+     # Branch-routing context the body lift needs -- previously omitted, so the
+     # parallel path lost the code-window filter (out-of-range branches became
+@@ -5092,6 +5103,7 @@
+     lifter.code_hi = _WORKER_STATE.get("code_hi", None)
+     lifter.jump_tables = _WORKER_STATE.get("jump_tables", {})
+     lifter.toc_base = _WORKER_STATE.get("toc_base", 0)
++    lifter.live_immediates = _WORKER_STATE.get("live_immediates", {})
+     results = []
+     for start, end in bounds:
+         blob = b""
+@@ -5330,7 +5342,7 @@
+     initargs = (segs, big_endian, lifter.name_map, lifter.prefix,
+                 lifter.hle_stub_nids, lifter.function_entries,
+                 lifter.code_lo, lifter.code_hi, lifter.jump_tables,
+-                getattr(lifter, "toc_base", 0))
++                getattr(lifter, "toc_base", 0), lifter.live_immediates)
+     results_by_idx = {}
+     todo = deque(range(len(tasks)))      # chunks no worker holds and none finished
+     workers = []
+@@ -5491,6 +5503,32 @@
+                 body_lines=body, calls=calls, fallthrough_to=ft))
+ 
+ 
++def load_live_immediates(path):
++    """Exact opt-in instruction sites. A relinked or unsupported image fails closed."""
++    if not path:
++        return {}
++    with open(path, encoding="utf-8") as f:
++        meta = json.load(f)
++    if meta.get("schema") != 1 or not isinstance(meta.get("sites"), list) or not meta["sites"]:
++        raise ValueError("live immediate manifest needs schema 1 and nonempty sites")
++    result = {}
++    for site in meta["sites"]:
++        address, word = (int(str(site[k]), 0) for k in ("address", "expected_word"))
++        if address < 0 or address >= 1 << 32 or address & 3 or word < 0 or word >= 1 << 32 or address in result:
++            raise ValueError("invalid or duplicate live immediate site")
++        result[address] = word
++    return result
++
++
++def live_immediate_header(sites):
++    canonical = json.dumps([[a, w] for a, w in sorted(sites.items())], separators=(",", ":"))
++    digest = hashlib.sha256(canonical.encode("ascii")).hexdigest() if sites else ""
++    return ("#pragma once\n"
++            f"#define T5DR_LIVE_IMMEDIATE_ABI {1 if sites else 0}\n"
++            f"#define T5DR_LIVE_IMMEDIATE_COUNT {len(sites)}\n"
++            f'#define T5DR_LIVE_IMMEDIATE_MANIFEST_SHA256 "{digest}"\n')
++
++
+ def main() -> None:
+     parser = argparse.ArgumentParser(description="PPU to C lifter for PS3 recompilation")
+     parser.add_argument("input", help="Input ELF or raw binary")
+@@ -5554,7 +5592,12 @@
+     parser.add_argument("--regpromo-skip", metavar="FILE", default=None,
+                         help="guest function addresses (hex, one per line, # comments) that keep the "
+                              "unpromoted body -- e.g. functions whose host prologue a runtime patches")
++    parser.add_argument("--live-immediates", metavar="FILE", help="JSON exact li/cmpwi/cmplwi sites to read from guest instruction memory at runtime")
+     args = parser.parse_args()
++    try:
++        live_immediates = load_live_immediates(args.live_immediates)
++    except (ValueError, KeyError, OSError) as exc:
++        parser.error(str(exc))
+ 
+     # Load firmware-import stubs (addr -> NID) up front; applied to func_bounds
+     # and the lifter below.
+@@ -5598,6 +5641,13 @@
+             print(f"Warning: ELF parse failed ({exc}), treating as raw", file=sys.stderr)
+             all_insns = disassemble_bytes(file_data, base_addr, big_endian)
+             seg_blobs = [(base_addr, file_data)]
++
++    if live_immediates:
++        by_address = {insn.addr: insn for insn in all_insns}
++        for pc, expected in live_immediates.items():
++            insn = by_address.get(pc)
++            if insn is None or insn.raw != expected or insn.mnemonic not in ("li", "cmpwi", "cmplwi"):
++                parser.error(f"live immediate at {pc:08X}: missing, unsupported or changed instruction")
+ 
+     # Get function boundaries
+     if args.functions:
+@@ -5990,6 +6040,7 @@
+ 
+     lifter = PPULifter(prefix=args.symbol_prefix, weak_emit=args.weak)
+     lifter.header_name = args.header_name
++    lifter.live_immediates = live_immediates
+     # A single-module executable keeps r2 (TOC) constant, so an `ld r2, N(r1)` TOC
+     # restore can be lowered to this literal instead of a stack read (the recomp has
+     # no glink stub writing the save slot, so the stack read returns garbage -> r2
+@@ -6079,7 +6130,13 @@
+     if total_mid:
+         print(f"  Generated {total_mid} mid-function tail-entry wrappers total")
+ 
++    for pc in live_immediates:
++        needle = f"vm_read32(0x{pc:08X}u)"
++        if not any(needle in line for function in lifter.functions for line in function.body_lines):
++            parser.error(f"live immediate at {pc:08X}: no emitted instruction body")
+     os.makedirs(args.output, exist_ok=True)
++    with open(os.path.join(args.output, "ppu_live_immediates.h"), "w") as f:
++        f.write(live_immediate_header(live_immediates))
+ 
+     header_path = os.path.join(args.output, args.header_name)
+     with open(header_path, "w") as f:

@@ -333,8 +333,8 @@ class LauncherLines(unittest.TestCase):
         title, seen, fix = found[0].text()
         self.assertIn("offline only for now", title)
         self.assertIn("NPEA00019", fix)
-        self.assertIn("later update", fix)
-        self.assertIn("never play each other online", fix)
+        self.assertIn("cannot go online", fix)
+        self.assertIn("play each other in 1.2.1", fix)
 
 
 if __name__ == "__main__":

@@ -1900,16 +1900,16 @@ MESSAGES = {
     "[Server: {notice}]": "[Serveur : {notice}]",
     "Server notice: {notice}": "Annonce du serveur : {notice}",
     "The game is not built.": "Le jeu n'est pas compilé.",
-    "This game is the European version ({title_id}): it plays offline only for now. Online play for the European version comes in a later update; it never plays against the US version (NPUB30009).":
-        "Ce jeu est la version européenne ({title_id}) : pour l'instant elle se joue hors ligne seulement. Le jeu en ligne pour la version européenne arrivera dans une prochaine mise à jour ; elle ne joue jamais contre la version US (NPUB30009).",
+    "This game is the European version ({title_id}): it plays offline only. Online play needs the US version (NPUB30009) or the European Online edition.":
+        "Ce jeu est la version européenne ({title_id}) : elle se joue hors ligne seulement. Le jeu en ligne demande la version US (NPUB30009) ou l'édition Online européenne.",
     "Your game is the European version: offline only for now":
         "Votre jeu est la version européenne : hors ligne seulement pour l'instant",
-    "The European version ({title_id}) plays its offline modes. Online play for it comes in a later update; until then online play needs the US version (NPUB30009). European and US games never play each other online.":
-        "La version européenne ({title_id}) joue ses modes hors ligne. Le jeu en ligne pour elle arrivera dans une prochaine mise à jour ; d'ici là le jeu en ligne demande la version US (NPUB30009). Les jeux européens et US ne jouent jamais l'un contre l'autre en ligne.",
+    "The European version ({title_id}) plays its offline modes but cannot go online. Online play needs the US version (NPUB30009) or the European Online edition, which play each other in 1.2.1.":
+        "La version européenne ({title_id}) joue ses modes hors ligne mais ne peut pas jouer en ligne. Le jeu en ligne demande la version US (NPUB30009) ou l'édition Online européenne, qui jouent l'une contre l'autre depuis 1.2.1.",
     "Build stamp: the game is {title_id}.":
         "Tampon du build : le jeu est {title_id}.",
-    "{id}  ({size} bytes) -- the European Online edition: it plays offline, and online against other European Online games.":
-        "{id}  ({size} octets) -- l'édition Online européenne : elle se joue hors ligne, et en ligne contre d'autres éditions Online européennes.",
+    "{id}  ({size} bytes) -- the European Online edition: it plays offline, and online against US and European Online players (1.2.1 crossplay).":
+        "{id}  ({size} octets) -- l'édition Online européenne : elle se joue hors ligne, et en ligne contre les joueurs US et de l'édition Online européenne (jeu croisé depuis 1.2.1).",
     "Your package is the European Online edition (version {version})":
         "Ton paquet est l'édition Online européenne (version {version})",
     "Earlier versions of the launcher did not build it. This one does: choose the package and its license on the Build tab and press BUILD GAME. It plays offline, and online against other European Online games.":
@@ -1918,8 +1918,8 @@ MESSAGES = {
         "build.log : une compilation précédente a refusé l'édition Online européenne (version {version}).",
     "Your game is the European Online edition":
         "Ton jeu est l'édition Online européenne",
-    "The European Online edition ({title_id} version {version}) plays its offline modes, and online against players who have the European Online edition too. European and US games do not play each other online.":
-        "L'édition Online européenne ({title_id} version {version}) joue ses modes hors ligne, et en ligne contre les joueurs qui ont aussi l'édition Online européenne. Les jeux européens et américains ne jouent pas les uns contre les autres en ligne.",
+    "The European Online edition ({title_id} version {version}) plays its offline modes, and online against players who have the US version or the European Online edition (1.2.1 crossplay).":
+        "L'édition Online européenne ({title_id} version {version}) joue ses modes hors ligne, et en ligne contre les joueurs qui ont la version US ou l'édition Online européenne (jeu croisé depuis 1.2.1).",
     "Build stamp: the game is {title_id} version {version}.":
         "Tampon de compilation : le jeu est {title_id} version {version}.",
     "This Mac build has no online play. For a test match: tools/build_game.py --macos-online (docs/MACOS_ONLINE_TEST.md).":

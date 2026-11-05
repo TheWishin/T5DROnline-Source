@@ -176,15 +176,13 @@ def check_edition(out_dir):
         return [Finding(
             "eu_online", N_("Your game is the European Online edition"),
             N_("The European Online edition ({title_id} version {version}) plays its offline modes, and online "
-               "against players who have the European Online edition too. European and US games do not play each "
-               "other online."),
+               "against players who have the US version or the European Online edition (1.2.1 crossplay)."),
             N_("Build stamp: the game is {title_id} version {version}."), {"title_id": title, "version": version},
             kind="hint")]
     return [Finding(
         "eu_offline", N_("Your game is the European version: offline only for now"),
-        N_("The European version ({title_id}) plays its offline modes. Online play for it comes in a later update; "
-           "until then online play needs the US version (NPUB30009). European and US games never play each other "
-           "online."),
+        N_("The European version ({title_id}) plays its offline modes but cannot go online. Online play needs the "
+           "US version (NPUB30009) or the European Online edition, which play each other in 1.2.1."),
         N_("Build stamp: the game is {title_id}."), {"title_id": title}, kind="hint")]
 
 

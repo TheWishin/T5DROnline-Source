@@ -1971,16 +1971,16 @@ MESSAGES = {
     "[Server: {notice}]": "[Server: {notice}]",
     "Server notice: {notice}": "Server-Hinweis: {notice}",
     "The game is not built.": "Das Spiel ist nicht gebaut.",
-    "This game is the European version ({title_id}): it plays offline only for now. Online play for the European version comes in a later update; it never plays against the US version (NPUB30009).":
-        "Dieses Spiel ist die europäische Version ({title_id}): Sie spielt vorerst nur offline. Online-Spiel für die europäische Version kommt mit einem späteren Update; gegen die US-Version (NPUB30009) spielt sie nie.",
+    "This game is the European version ({title_id}): it plays offline only. Online play needs the US version (NPUB30009) or the European Online edition.":
+        "Dieses Spiel ist die europäische Version ({title_id}): Sie spielt nur offline. Online-Spiel braucht die US-Version (NPUB30009) oder die europäische Online-Ausgabe.",
     "Your game is the European version: offline only for now":
         "Dein Spiel ist die europäische Version: vorerst nur offline",
-    "The European version ({title_id}) plays its offline modes. Online play for it comes in a later update; until then online play needs the US version (NPUB30009). European and US games never play each other online.":
-        "Die europäische Version ({title_id}) spielt ihre Offline-Modi. Online-Spiel dafür kommt mit einem späteren Update; bis dahin braucht Online-Spiel die US-Version (NPUB30009). Europäische und US-Spiele spielen online nie gegeneinander.",
+    "The European version ({title_id}) plays its offline modes but cannot go online. Online play needs the US version (NPUB30009) or the European Online edition, which play each other in 1.2.1.":
+        "Die europäische Version ({title_id}) spielt ihre Offline-Modi, kann aber nicht online spielen. Online-Spiel braucht die US-Version (NPUB30009) oder die europäische Online-Ausgabe; diese spielen ab 1.2.1 gegeneinander.",
     "Build stamp: the game is {title_id}.":
         "Build-Stempel: das Spiel ist {title_id}.",
-    "{id}  ({size} bytes) -- the European Online edition: it plays offline, and online against other European Online games.":
-        "{id}  ({size} Bytes) -- die europäische Online-Ausgabe: Sie spielt offline, und online gegen andere europäische Online-Ausgaben.",
+    "{id}  ({size} bytes) -- the European Online edition: it plays offline, and online against US and European Online players (1.2.1 crossplay).":
+        "{id}  ({size} Bytes) -- die europäische Online-Ausgabe: Sie spielt offline, und online gegen US- und europäische Online-Spieler (Crossplay ab 1.2.1).",
     "Your package is the European Online edition (version {version})":
         "Dein Paket ist die europäische Online-Ausgabe (Version {version})",
     "Earlier versions of the launcher did not build it. This one does: choose the package and its license on the Build tab and press BUILD GAME. It plays offline, and online against other European Online games.":
@@ -1989,8 +1989,8 @@ MESSAGES = {
         "build.log: ein früherer Build hat die europäische Online-Ausgabe (Version {version}) abgelehnt.",
     "Your game is the European Online edition":
         "Dein Spiel ist die europäische Online-Ausgabe",
-    "The European Online edition ({title_id} version {version}) plays its offline modes, and online against players who have the European Online edition too. European and US games do not play each other online.":
-        "Die europäische Online-Ausgabe ({title_id} Version {version}) spielt ihre Offline-Modi, und online gegen Spieler, die auch die europäische Online-Ausgabe haben. Europäische und US-Spiele spielen online nicht gegeneinander.",
+    "The European Online edition ({title_id} version {version}) plays its offline modes, and online against players who have the US version or the European Online edition (1.2.1 crossplay).":
+        "Die europäische Online-Ausgabe ({title_id} Version {version}) spielt ihre Offline-Modi, und online gegen Spieler mit der US-Version oder der europäischen Online-Ausgabe (Crossplay ab 1.2.1).",
     "Build stamp: the game is {title_id} version {version}.":
         "Build-Stempel: das Spiel ist {title_id} Version {version}.",
     "This Mac build has no online play. For a test match: tools/build_game.py --macos-online (docs/MACOS_ONLINE_TEST.md).":

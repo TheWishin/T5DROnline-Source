@@ -1865,16 +1865,16 @@ MESSAGES = {
     "[Server: {notice}]": "[サーバー：{notice}]",
     "Server notice: {notice}": "サーバーからのお知らせ：{notice}",
     "The game is not built.": "ゲームがビルドされていません。",
-    "This game is the European version ({title_id}): it plays offline only for now. Online play for the European version comes in a later update; it never plays against the US version (NPUB30009).":
-        "このゲームは欧州版（{title_id}）です：今のところオフラインでのみ遊べます。欧州版のオンライン対戦は今後のアップデートで対応します。北米版（NPUB30009）とは対戦しません。",
+    "This game is the European version ({title_id}): it plays offline only. Online play needs the US version (NPUB30009) or the European Online edition.":
+        "このゲームは欧州版（{title_id}）です：オフラインのみで遊べます。オンライン対戦には北米版（NPUB30009）または欧州オンライン版が必要です。",
     "Your game is the European version: offline only for now":
         "あなたのゲームは欧州版です：今のところオフラインのみ",
-    "The European version ({title_id}) plays its offline modes. Online play for it comes in a later update; until then online play needs the US version (NPUB30009). European and US games never play each other online.":
-        "欧州版（{title_id}）はオフラインのモードで遊べます。欧州版のオンライン対戦は今後のアップデートで対応します。それまではオンライン対戦に北米版（NPUB30009）が必要です。欧州版と北米版がオンラインで対戦することはありません。",
+    "The European version ({title_id}) plays its offline modes but cannot go online. Online play needs the US version (NPUB30009) or the European Online edition, which play each other in 1.2.1.":
+        "欧州版（{title_id}）はオフラインのモードで遊べますが、オンライン対戦はできません。オンライン対戦には北米版（NPUB30009）または欧州オンライン版が必要で、この二つは 1.2.1 から互いに対戦できます。",
     "Build stamp: the game is {title_id}.":
         "ビルドスタンプ：ゲームは {title_id} です。",
-    "{id}  ({size} bytes) -- the European Online edition: it plays offline, and online against other European Online games.":
-        "{id}  （{size} バイト） -- 欧州オンライン版：オフラインで遊べ、他の欧州オンライン版とオンライン対戦できます。",
+    "{id}  ({size} bytes) -- the European Online edition: it plays offline, and online against US and European Online players (1.2.1 crossplay).":
+        "{id}  （{size} バイト） -- 欧州オンライン版：オフラインで遊べ、北米版および欧州オンライン版のプレイヤーとオンライン対戦できます（1.2.1 からのクロスプレイ）。",
     "Your package is the European Online edition (version {version})":
         "パッケージは欧州オンライン版です（バージョン {version}）",
     "Earlier versions of the launcher did not build it. This one does: choose the package and its license on the Build tab and press BUILD GAME. It plays offline, and online against other European Online games.":
@@ -1883,8 +1883,8 @@ MESSAGES = {
         "build.log：以前のビルドが欧州オンライン版（バージョン {version}）を拒否しました。",
     "Your game is the European Online edition":
         "ゲームは欧州オンライン版です",
-    "The European Online edition ({title_id} version {version}) plays its offline modes, and online against players who have the European Online edition too. European and US games do not play each other online.":
-        "欧州オンライン版（{title_id} バージョン {version}）はオフラインモードで遊べ、同じく欧州オンライン版を持つプレイヤーとオンライン対戦できます。欧州版と北米版はオンラインで対戦しません。",
+    "The European Online edition ({title_id} version {version}) plays its offline modes, and online against players who have the US version or the European Online edition (1.2.1 crossplay).":
+        "欧州オンライン版（{title_id} バージョン {version}）はオフラインモードで遊べ、北米版または欧州オンライン版を持つプレイヤーとオンライン対戦できます（1.2.1 からのクロスプレイ）。",
     "Build stamp: the game is {title_id} version {version}.":
         "ビルドスタンプ：ゲームは {title_id} バージョン {version} です。",
     "This Mac build has no online play. For a test match: tools/build_game.py --macos-online (docs/MACOS_ONLINE_TEST.md).":

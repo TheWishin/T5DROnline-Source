@@ -512,7 +512,7 @@ def describe_pkg(path, out_dir=None):
     prog = build_game.program_of(content_id=cid)
     if prog and prog["key"].startswith("eu_online"):
         return True, "ok", t("{id}  ({size} bytes) -- the European Online edition: it plays offline, and online "
-                             "against other European Online games.", id=cid, size=f"{size:,}")
+                             "against US and European Online players (1.2.1 crossplay).", id=cid, size=f"{size:,}")
     if prog and not prog["online"]:
         return True, "ok", t("{id}  ({size} bytes) -- the European version: it plays offline only for now. Online play "
                              "for it comes in a later update.",

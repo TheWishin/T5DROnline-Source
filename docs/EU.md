@@ -101,7 +101,8 @@ effect functions from its own effect table (`EU_ONLINE_SPU_EXTRA`), the skinning
 **offline only**: both versions have `"online": false` in the build table and stamp, so the launcher cannot log
 them into the lobby. Enable online only after EU-vs-EU rollback and lockstep pairs pass with zero mismatches.
 The EU Online hooks now use the per-program table in `src/platform/t5_addr.h` / `t5_addr_eu_online.inc`;
-EU v01.00 hooks remain disabled. No US/EU compatibility group is approved.
+EU v01.00 hooks remain disabled. 1.2.1: the two Online versions log in and share the lobby's declared crossplay
+group with the US program (docs/COMPATIBILITY_GROUPS.md, "Declared crossplay group"); EU v01.00 never joins it.
 
 **Late-input boot fix (1.2.1):** the keyread takeover called EU code with the wrong TOC base in r2. Its function
 descriptor specifies `0x481000`; the address table had mapped the US TOC base to `0x481130`, a TOC slot rather

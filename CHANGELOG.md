@@ -63,8 +63,12 @@ updated lobby server; on an older server they simply do not appear.
   differently, so a mixed session hashes the state in the US program's canonical layout (addresses and pointers are
   compared by what they point at), the EU game uses the US deadlines for the round timers, and its random streams are
   keyed by the US call sites. Same-edition sessions are unchanged (US/US and EU/EU hash exactly as before). Mixed
-  recordings use replay format 9 and play back identically on either edition. The lobby still pairs builds by exact
-  build ID; an operator turns the US/EU group on (docs/COMPATIBILITY_GROUPS.md).
+  recordings use replay format 9 and play back identically on either edition. In the lobby (Quick, Ranked, rooms,
+  challenges) a US and an EU Online launcher of this release meet: each build declares the same crossplay group (its
+  build stamp and release.json), the launcher sends it with its edition, and the server accepts it only for those
+  programs. Anything else (EU v01.00, other releases, older launchers) still needs an identical build ID; the
+  operator can switch it off (`T5L_CROSSPLAY=0`) or narrow it (`T5L_CROSSPLAY_GROUPS`), docs/COMPATIBILITY_GROUPS.md.
+  The European Online edition can now log in to the lobby.
 - **Online feel** (Settings -> Online input delay, for Auto): **Responsive** (the 1.2.0 pick), **Balanced** (default:
   one frame more when the slower PC cannot keep up with its rollbacks) or **Smooth** (more delay, fewer and smaller
   rollbacks). Each game measures how deep a rollback its PC can run inside a frame and remembers it for the next match.

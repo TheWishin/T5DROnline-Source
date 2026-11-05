@@ -48,7 +48,7 @@ class Defaults(unittest.TestCase):
                 self.assertNotIn(cid, bg.OTHER_VERSIONS)
                 self.assertIn(cid, bg.ALL_CONTENT_IDS)
                 self.assertEqual((p["version"], p["sfo"]["VERSION"], p["sfo"]["APP_VER"]), (ver, ver, "01.00"))
-                self.assertEqual((p["online"], p["pgo"], p["code_end"]), (False, False, "0x3D7884"))
+                self.assertEqual((p["online"], p["pgo"], p["code_end"]), (True, False, "0x3D7884"))
                 self.assertNotIn("experimental", p)
                 self.assertEqual(len(p["spu_extra"].split("=")[1].split(",")), 13)
             # title ID alone still means the EU v01.00 game (the first NPEA00019 entry)
@@ -73,13 +73,13 @@ class Defaults(unittest.TestCase):
         self.assertIn(E201_SHA1, bg.PROGRAMS)
 
     def test_online_gate_is_written_for_both_eu_versions_only(self):
-        # Address coverage alone does not qualify a build for the lobby: EU-vs-EU
-        # rollback and lockstep pairs must pass before either version is enabled.
+        # 1.2.1: US/EU and EU/EU rollback and lockstep pairs passed (docs/EU.md "US-vs-EU crossplay proof"), so
+        # both EU Online versions are online builds that declare the crossplay group; EU v01.00 stays offline.
         bg = load_build_game(False)
         with tempfile.TemporaryDirectory() as out:
             bg.P = bg.Paths(out, os.path.join(out, "ps3recomp"))
             os.makedirs(os.path.dirname(bg.P.stamp), exist_ok=True)
-            for sha, online in ((E201_SHA1, False), (E200_SHA1, False), (bg.ELF_SHA1, True)):
+            for sha, online in ((E201_SHA1, True), (E200_SHA1, True), (bg.ELF_SHA1, True), (EU_SHA1, False)):
                 with self.subTest(sha=sha), mock.patch.object(bg, "built_program", return_value=bg.PROGRAMS[sha]), \
                         mock.patch.object(bg, "code_id", return_value="fixture-code"):
                     bg.write_stamp("fixture-compiler")
@@ -88,7 +88,11 @@ class Defaults(unittest.TestCase):
                     self.assertEqual(stamp["elf_sha1"], sha)
                     self.assertIs(stamp.get("online", True), online)
                     if online:
-                        self.assertNotIn("online", stamp)  # US stamp stays unchanged.
+                        self.assertNotIn("online", stamp)  # an online build's stamp has no "online" key
+                        self.assertEqual(stamp["crossplay"], bg.crossplay_group())
+                        self.assertEqual(stamp["edition"], "US" if sha == bg.ELF_SHA1 else "EU-Online")
+                    else:
+                        self.assertNotIn("crossplay", stamp)    # EU v01.00 declares nothing
 
     def test_sfo_version_text(self):
         bg = load_build_game(False)
@@ -173,7 +177,7 @@ class Steps(unittest.TestCase):
         self.assertIs(self.bg.built_program(), self.bg.PROGRAMS[E201_SHA1])
         out = self.out.getvalue()
         self.assertIn("version 01.00 (VERSION 02.01)", out)
-        self.assertIn("it plays offline; online play awaits EU-vs-EU validation", out)
+        self.assertIn("it plays offline, and online against other European Online games", out)
         self.assertNotIn("practice tools and the training overlay need the US version", out)
 
     def test_v0201_needs_its_rap(self):
@@ -253,7 +257,7 @@ class Steps(unittest.TestCase):
         with open(self.bg.P.stamp) as f:
             stamp = json.load(f)
         self.assertEqual((stamp["title"], stamp["elf_sha1"], stamp["version"], stamp.get("online", True)),
-                         ("NPEA00019", E201_SHA1, "02.01", False))
+                         ("NPEA00019", E201_SHA1, "02.01", True))
 
 
 class StepsWithoutOptIn(Steps):

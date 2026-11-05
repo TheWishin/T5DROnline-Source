@@ -85,11 +85,14 @@ SPU_CORE_EXTRA_FUNCS = ("bnuscore=0xF9B8,0x59A8,0x5D90,0x5FD8,0x68A0,0x6E98,0x75
 #              its effect table (the same 12 names, 0x60 further on) points 0x88 further; the 13th entry by its code
 #   pgo        the shipped PGO profile names the US program's functions: for another program it would only mislead
 #   online     the online modules know this program (BuildInfo.has_online reads it from the build stamp)
+#   edition    1.2.1: "US" / "EU-Online", what the build stamp and the lobby hello call the program's edition
+#   crossplay  1.2.1: the program takes part in the lobby's crossplay group (crossplay_group() below): sessions
+#              between these programs hash the state in the US layout (src/netplay/cross_hash.h, docs/EU.md)
 PROGRAMS = {
     ELF_SHA1: {
         "key": "us", "title_id": TITLE_ID, "version": TITLE_VERSION, "region": "US", "name": GAME_NAME,
         "content_ids": CONTENT_IDS, "pkg_size": PKG_SIZE, "code_end": CODE_END, "spu_extra": SPU_CORE_EXTRA_FUNCS,
-        "pgo": True, "online": True,
+        "pgo": True, "online": True, "edition": "US", "crossplay": True,
     },
     "586baa2074e3d259b303879fc7cbea1000041b60": {
         "key": "eu", "title_id": "NPEA00019", "version": "01.00", "region": "EU",
@@ -107,7 +110,8 @@ US_PROGRAM = PROGRAMS[ELF_SHA1]
 # by small per-unit shifts. Two versions of its package exist; v02.01 is the v02.00 program with three bytes changed
 # (an age-rating compare of sceNpManagerGetContentRatingFlag and a data word next to it) and the same game data.
 # Since 1.2.1 it builds without an opt-in, and the netplay modules know its addresses (src/platform/t5_addr.h).
-# Keep the lobby disabled until EU-vs-EU rollback and lockstep pairs pass (docs/EU.md "EU Online").
+# 1.2.1: US/EU and EU/EU rollback and lockstep pairs passed at 0 mismatching frames (docs/EU.md), so the lobby takes
+# it ("online": True) and matches it with US builds of the same crossplay group (docs/COMPATIBILITY_GROUPS.md).
 #   sfo    what its PARAM.SFO says (VERSION is the edition's own number, APP_VER stays 01.00)
 #   code_end      the last firmware import stub (0x3D7864) + 0x20
 #   spu_extra     the sound core's effect table (the same 12 names at the US place, 0x11AD0) points at these 13
@@ -119,7 +123,7 @@ EU_ONLINE_PROGRAMS = {
         "name": "Tekken 5: Dark Resurrection Online (PS3, EU PSN, NPEA00019 v02.01)",
         "sfo": {"VERSION": "02.01", "APP_VER": "01.00"},
         "content_ids": ("EP9000-NPEA00019_00-TEKKENRETAIL0000",), "pkg_size": 631901088, "code_end": "0x3D7884",
-        "spu_extra": EU_ONLINE_SPU_EXTRA, "pgo": False, "online": False,
+        "spu_extra": EU_ONLINE_SPU_EXTRA, "pgo": False, "online": True, "edition": "EU-Online", "crossplay": True,
     },
     "a26bc6e037e5a8faf40250849acfa8a40d027fff": {
         "key": "eu_online200", "title_id": "NPEA00019", "version": "02.00", "region": "EU",
@@ -127,7 +131,7 @@ EU_ONLINE_PROGRAMS = {
         "sfo": {"VERSION": "02.00", "APP_VER": "01.00"},
         # (package size from the co-developer's build script; no v02.00 package was here to measure)
         "content_ids": ("UP0700-NPEA00019_00-TEKKEN5DRO000000",), "pkg_size": 628324080, "code_end": "0x3D7884",
-        "spu_extra": EU_ONLINE_SPU_EXTRA, "pgo": False, "online": False,
+        "spu_extra": EU_ONLINE_SPU_EXTRA, "pgo": False, "online": True, "edition": "EU-Online", "crossplay": True,
     },
 }
 # (1.2.0's opt-in, T5DR_EU_ONLINE=1 / --eu-online, is no longer needed; both are still accepted and change nothing)
@@ -548,6 +552,30 @@ def code_id():
                 with open(os.path.join(dp, n), "rb") as f:
                     h.update(n.encode() + f.read().replace(b"\r\n", b"\n"))
     return h.hexdigest()[:16]
+
+
+def crossplay_group():
+    """The crossplay group this version declares in its build stamp (and package_release.py in release.json):
+    "t5x-" and 12 hex digits of what the simulation depends on and every crossplay program shares -- the code
+    version, the pinned ps3recomp and its patch series, the live-immediates table, CMakeLists and, in a release, the
+    prebuilt runtime and the game-DLL sources. Unlike code_id() it leaves out what differs by program (the code end,
+    the PGO profile that only the US program has): US and EU Online builds of one release get the same group, a
+    build of another version a different one. The lobby only matches different builds when both declare the same
+    group AND its own table knows their programs (lobby/t5lobby/compatibility.py): the group alone grants nothing."""
+    h = hashlib.sha1()
+    h.update(f"t5dr-crossplay:{CODE_VERSION}:{PS3RECOMP_COMMIT}".encode())
+    h.update(patch_digest().encode())
+    h.update(sha1(EU_LIVE_IMMEDIATES).encode())
+    with open(os.path.join(ROOT, "CMakeLists.txt"), "rb") as f:
+        h.update(f.read().replace(b"\r\n", b"\n"))
+    if prebuilt_host():
+        h.update(sha1(os.path.join(HOST_DIR, "t5dr.exe")).encode())
+        gd = os.path.join(ROOT, "tools", "gamedll")
+        for dp, _, fns in sorted(os.walk(gd)):
+            for n in sorted(fns):
+                with open(os.path.join(dp, n), "rb") as f:
+                    h.update(n.encode() + f.read().replace(b"\r\n", b"\n"))
+    return "t5x-" + h.hexdigest()[:12]
 
 
 # A release made with package_release.py --prebuilt-host carries the runtime
@@ -971,7 +999,8 @@ def step_decrypt(a):
              f"{cid} (program SHA-1 {got[:12]}...). The port builds: {SUPPORTED_TEXT}.")
     print(f"  program OK: SHA-1 {got} ({have['title_id']} v{have['version']}, {have['region']})")
     if have["key"].startswith("eu_online"):
-        print(f"  note: {have['name']}: it plays offline; online play awaits EU-vs-EU validation (docs/EU.md)")
+        print(f"  note: {have['name']}: it plays offline, and online against other European Online games and "
+              "US games of this release (docs/EU.md)")
     elif not have["online"]:
         print(f"  note: {have['title_id']} is another build of the game than the US one -- it plays offline; online "
               "play, the practice tools and the training overlay need the US version (NPUB30009) for now")
@@ -1204,6 +1233,10 @@ def write_stamp(compiler, extra=None):
             "compiler": compiler, "built": datetime.datetime.now().isoformat(timespec="seconds")}
     if not prog["online"]:
         keys["online"] = False          # BuildInfo.has_online: the lobby client starts no match with this game
+    if prog.get("crossplay"):
+        # (1.2.1) the declaration the launcher sends in its lobby hello (BuildInfo.from_out_dir)
+        keys["edition"] = prog["edition"]
+        keys["crossplay"] = crossplay_group()
     with open(P.stamp, "w") as f:
         json.dump(dict(keys, **(extra or {})), f, indent=1)
 

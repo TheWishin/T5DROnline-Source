@@ -38,6 +38,8 @@ class BuildInfo:
     release: str = "dev"
     net: int = NETPLAY_VERSION
     build_id: str = field(default="")
+    edition: str = ""      # 1.2.1: "US" / "EU-Online" (the build stamp's "edition"); informational, the server checks it
+    crossplay: str = ""    # 1.2.1: the crossplay group this release declares (stamp "crossplay"); see compatibility.py
 
     def __post_init__(self):
         if not self.build_id:
@@ -45,8 +47,13 @@ class BuildInfo:
             self.build_id = hashlib.sha1(s.encode()).hexdigest()[:16]
 
     def as_wire(self):
-        return {"id": self.build_id, "elf": self.elf_sha1, "code": self.code_id,
+        wire = {"id": self.build_id, "elf": self.elf_sha1, "code": self.code_id,
                 "net": self.net, "release": self.release}
+        if self.crossplay:         # (absent for builds that declare nothing: the hello is what 1.2.0 sent)
+            wire["crossplay"] = self.crossplay
+            if self.edition:
+                wire["edition"] = self.edition
+        return wire
 
     @staticmethod
     def wire_id(build):
@@ -87,4 +94,7 @@ class BuildInfo:
         code = info.get("code_id")
         if not code:
             raise ValueError(f"{stamp} has no code_id")
-        return cls(sha1_file(elf), code, release)   # hash the file itself (5 MB, a few ms)
+        group = info.get("crossplay")
+        return cls(sha1_file(elf), code, release,       # hash the file itself (5 MB, a few ms)
+                   edition=str(info.get("edition") or "") if isinstance(group, str) else "",
+                   crossplay=group if isinstance(group, str) else "")

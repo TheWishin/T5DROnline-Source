@@ -51,7 +51,7 @@ import time
 
 from .. import __version__, fighters, lag as lagmod, proto, ranks, rating as glicko
 from ..buildid import BuildInfo
-from ..compatibility import BuildGroups, CAP as COMPAT_CAP, REGIONS, compatible
+from ..compatibility import BuildGroups, CAP as COMPAT_CAP, REGIONS, CrossplayPolicy, compatible
 from ..proto import LobbyError
 from .casual import CasualMixin
 from .chatfilter import ChatFilter
@@ -631,6 +631,7 @@ class LobbyServer(PrivateChatMixin, SpectateMixin, RoomsMixin, CasualMixin, Matc
     def __init__(self, cfg=None):
         self.cfg = cfg or Config.from_env()
         self.build_groups = BuildGroups(self.cfg.compat_groups)
+        self.crossplay = CrossplayPolicy(self.cfg.crossplay, self.cfg.crossplay_groups)   # (1.2.1: declared groups)
         self.chat_filter = ChatFilter(self.cfg.chat_filter_path, enabled=self.cfg.chat_filter)
         self.store = Store(self.cfg.db)
         self.udp = UdpService(self, self.cfg)
@@ -1113,7 +1114,8 @@ class LobbyServer(PrivateChatMixin, SpectateMixin, RoomsMixin, CasualMixin, Matc
             conn.caps = frozenset(conn.caps) - {"auto_skip_after_round_v1"}     # (switched off: T5L_AUTO_SKIP=0)
         if not self.cfg.auto_skip_intro:
             conn.caps = frozenset(conn.caps) - {"auto_skip_intro_v1"}           # (switched off: T5L_AUTO_SKIP_INTRO=0)
-        conn.compat_group = self.build_groups.group(bid, int(build.get("net", 0)), conn.caps)
+        conn.compat_group = (self.build_groups.group(bid, int(build.get("net", 0)), conn.caps)
+                             or self.crossplay.group(build, conn.caps))
         conn.region = REGIONS.get(str(build.get("elf", "")).lower(), "?")
         conn.helloed = True
         return {"t": "welcome", "server": SERVER_NAME, "proto": proto.PROTO_VERSION,

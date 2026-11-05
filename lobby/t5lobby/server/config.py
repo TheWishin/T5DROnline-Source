@@ -28,6 +28,8 @@ class Config:
     guest_ranked: bool = False      # T5L_GUEST_RANKED: guests may use the ranked queue (rating lives for the session)
     builds: list = field(default_factory=list)   # T5L_BUILDS: allowed build ids (comma list); empty = any
     compat_groups: str = ""         # T5L_COMPAT_GROUPS: approved build groups JSON; empty = exact builds only
+    crossplay: bool = True          # T5L_CROSSPLAY: accept the crossplay group a 1.2.1 release declares (US + EU Online); 0 = exact builds
+    crossplay_groups: list = field(default_factory=list)   # T5L_CROSSPLAY_GROUPS: only these declared groups (t5x-...); empty = any
     tls_cert: str = ""              # T5L_TLS_CERT / T5L_TLS_KEY: PEM files -> control channel over TLS
     tls_key: str = ""
     max_clients: int = 500          # T5L_MAX_CLIENTS

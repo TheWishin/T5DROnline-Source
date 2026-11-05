@@ -541,6 +541,19 @@ def add_prebuilt_host(stage, clang, jobs, version="0.0.0-dev"):
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def staged_crossplay_group(stage):
+    """The crossplay group builds made from this folder declare in their stamp (build_game.crossplay_group(); release.json
+    "crossplay" -- the release's own declaration, for its notes and the operator), computed from the staged copy for the
+    same reason as the code ID. The lobby accepts it only for the US and EU Online programs (lobby/t5lobby/compatibility.py)."""
+    code = ("import sys; sys.dont_write_bytecode = True; sys.path.insert(0, sys.argv[1]); "
+            "import build_game; print(build_game.crossplay_group())")
+    r = subprocess.run([sys.executable, "-B", "-c", code, os.path.join(stage, "tools")],
+                       capture_output=True, text=True, env=dict(os.environ, PYTHONDONTWRITEBYTECODE="1"))
+    if r.returncode or not r.stdout.strip():
+        fail("could not compute the crossplay group of the staged folder:\n" + (r.stdout + r.stderr)[-1500:])
+    return r.stdout.strip().splitlines()[-1]
+
+
 def staged_code_id(stage):
     """The code ID that builds made from this folder will carry (t5dr_build.json, and what the
     launcher compares to ask for a rebuild). build_game.code_id() also hashes runtime/t5dr.exe and
@@ -1068,6 +1081,7 @@ def main():
             info = json.load(f)
         info["signed"] = install_signed(stage, os.path.abspath(a.signed_dir), a.accept_untrusted_signature)
         info["code_id"] = staged_code_id(stage)      # hashes runtime/t5dr.exe, which now carries a signature
+        info["crossplay"] = {"group": staged_crossplay_group(stage), "editions": ["US", "EU-Online"]}
         with open(release_json, "w") as f:
             json.dump(info, f, indent=1)
     else:
@@ -1087,6 +1101,7 @@ def main():
             fail("--release needs the native starter T5DR Online.exe (MSVC or clang-cl)")
         add_docs(stage, version)
         info = {"name": "T5DR Online", "version": version, "code_id": staged_code_id(stage),
+                "crossplay": {"group": staged_crossplay_group(stage), "editions": ["US", "EU-Online"]},
                 "ps3recomp": build_game.PS3RECOMP_COMMIT, "patches": patches, "game": build_game.GAME_NAME,
                 "commit": source_commit(), "built": build_time(),
                 "llvm": clang[1] if a.llvm else None, "python": py_ver, "prebuilt_host": bool(a.prebuilt_host),

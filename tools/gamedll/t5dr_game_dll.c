@@ -4,6 +4,21 @@
  * Compiled with the same header-free flags as the lifted code. */
 #include <stdint.h>
 
+/* Additive feature declaration: an old host may ignore these exports. A mixed
+ * timing host requires the exact instrumented manifest before changing guest
+ * instruction immediates; a stale DLL must fail closed. */
+#if defined(__has_include)
+# if __has_include("ppu_live_immediates.h")
+#  include "ppu_live_immediates.h"
+# endif
+#endif
+#ifndef T5DR_LIVE_IMMEDIATE_ABI
+#define T5DR_LIVE_IMMEDIATE_ABI 0
+#define T5DR_LIVE_IMMEDIATE_MANIFEST_SHA256 ""
+#endif
+__declspec(dllexport) const uint32_t t5dr_game_live_immediate_abi = T5DR_LIVE_IMMEDIATE_ABI;
+__declspec(dllexport) const char t5dr_game_live_immediate_manifest[] = T5DR_LIVE_IMMEDIATE_MANIFEST_SHA256;
+
 int _fltused = 0x9875;
 
 /* The target CPU the lifted code was compiled for (build_game_dll.py --march). The

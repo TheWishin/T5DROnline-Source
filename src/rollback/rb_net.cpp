@@ -198,6 +198,7 @@ uint32_t g_wft_from = 0, g_wft_frames = 0;   /* T5_RB_WFT_NET=from:frames (tests
 constexpr uint32_t kDumpFrames = 64, kDumpBytes = 0x6000;
 bool g_dump = false; uint32_t g_dumps = 0;
 uint32_t g_dump_from = 1, g_dump_to = 0;   /* T5_RB_DUMP_AT=from:to: rb_frame_f<frame>.bin, the final bytes (tools/rb_equiv_test.py) */
+std::string g_dump_layout[kDumpFrames];
 uint8_t* g_dump_ring = nullptr; uint32_t g_dump_tag[kDumpFrames], g_dump_len[kDumpFrames];
 uint32_t g_hash_sent = 0;        /* final hashes handed over for frames < this */
 uint32_t g_floor = 0;            /* no rollback before this frame (start / scene barrier) */
@@ -934,17 +935,44 @@ static uint32_t boundary(uint32_t f, bool scene_flag, np::PadInput out[2])
     /* the gameplay hash (the netplay desync check's regions): what the peers
      * compare once every input before f is confirmed; a rollback re-simulates
      * the boundary and overwrites it before it is handed over */
+    state_set_cross_program_hash(np::cross_program());
     g_hash[f % kHist] = state_game_hash(); g_hash_tag[f % kHist] = f + 1;
+    if (state_cross_program_unresolved() && !(g_intro_rule && rd32(kPhaseWord) <= 12)) {
+        if (g_dump) {
+            uint8_t bytes[kDumpBytes];
+            const uint32_t n = state_game_bytes(bytes, sizeof bytes);
+            uint64_t raw = 1469598103934665603ull;
+            for (uint32_t i = 0; i < n; ++i) { raw ^= bytes[i]; raw *= 1099511628211ull; }
+            char path[80]; snprintf(path, sizeof path, "rb_invalid_f%06u.bin", f);
+            if (FILE* fp = fopen(path, "wb")) { fwrite(bytes, 1, n, fp); fclose(fp); }
+            snprintf(path, sizeof path, "rb_invalid_f%06u.regions.json", f);
+            if (FILE* fp = fopen(path, "wb")) { fputs(state_game_layout(n, raw).c_str(), fp); fclose(fp); }
+        }
+        note("FATAL: mixed-program hash has %u unresolved canonical state items at frame %u", state_cross_program_unresolved(), f);
+        abort();
+    }
     /* direct fight: the game mode's start, loading and intros (phase 0..12) are
      * not compared -- their state follows the loading, whose progress differs
      * between a game that has played and a fresh one (t5_hooks.cpp kIntroHash) */
     if (g_intro_rule && rd32(kPhaseWord) <= 12) g_hash[f % kHist] = 0x4F52544E49ull;
     shadowtrace_boundary(f, g_resim);   /* T5_RB_SHADOW_TRACE=1 (diagnostics, rb_shadowtrace.cpp) */
-    if (g_dump_ring) { g_dump_tag[f % kDumpFrames] = f + 1; g_dump_len[f % kDumpFrames] = state_game_bytes(g_dump_ring + (size_t)(f % kDumpFrames) * kDumpBytes, kDumpBytes); }
+    if (g_dump_ring) {
+        const uint32_t slot = f % kDumpFrames;
+        uint8_t* bytes = g_dump_ring + (size_t)slot * kDumpBytes;
+        g_dump_tag[slot] = f + 1;
+        g_dump_len[slot] = state_game_bytes(bytes, kDumpBytes);
+        uint64_t raw_hash = 1469598103934665603ull;
+        for (uint32_t i = 0; i < g_dump_len[slot]; ++i) { raw_hash ^= bytes[i]; raw_hash *= 1099511628211ull; }
+        g_dump_layout[slot] = state_game_layout(g_dump_len[slot], raw_hash);
+    }
     for (uint32_t mf; g_dump && np::take_mismatch(&mf);) {
         if (g_dump_tag[mf % kDumpFrames] != mf + 1 || g_dumps >= 20) continue;
         char path[64]; snprintf(path, sizeof path, "rb_desync_f%06u.bin", mf);
-        if (FILE* fp = fopen(path, "wb")) { fwrite(g_dump_ring + (size_t)(mf % kDumpFrames) * kDumpBytes, 1, g_dump_len[mf % kDumpFrames], fp); fclose(fp); g_dumps++; }
+        if (FILE* fp = fopen(path, "wb")) {
+            fwrite(g_dump_ring + (size_t)(mf % kDumpFrames) * kDumpBytes, 1, g_dump_len[mf % kDumpFrames], fp); fclose(fp); g_dumps++;
+            snprintf(path, sizeof path, "rb_desync_f%06u.regions.json", mf);
+            if (FILE* meta = fopen(path, "wb")) { fputs(g_dump_layout[mf % kDumpFrames].c_str(), meta); fclose(meta); }
+        }
     }
 
     if (g_resim) {
@@ -1079,7 +1107,11 @@ static uint32_t boundary(uint32_t f, bool scene_flag, np::PadInput out[2])
         if (g_hash_tag[g % kHist] == g + 1) np::rb_push_hash(g, g_hash[g % kHist]);
         if (g >= g_dump_from && g <= g_dump_to && g_dump_tag[g % kDumpFrames] == g + 1) {
             char path[64]; snprintf(path, sizeof path, "rb_frame_f%06u.bin", g);
-            if (FILE* fp = fopen(path, "wb")) { fwrite(g_dump_ring + (size_t)(g % kDumpFrames) * kDumpBytes, 1, g_dump_len[g % kDumpFrames], fp); fclose(fp); }
+            if (FILE* fp = fopen(path, "wb")) {
+                fwrite(g_dump_ring + (size_t)(g % kDumpFrames) * kDumpBytes, 1, g_dump_len[g % kDumpFrames], fp); fclose(fp);
+                snprintf(path, sizeof path, "rb_frame_f%06u.regions.json", g);
+                if (FILE* meta = fopen(path, "wb")) { fputs(g_dump_layout[g % kDumpFrames].c_str(), meta); fclose(meta); }
+            }
         }
         g_hash_sent = g + 1;
     }

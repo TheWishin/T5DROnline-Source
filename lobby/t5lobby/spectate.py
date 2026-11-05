@@ -174,7 +174,7 @@ class LiveParser:
             if len(b) < 32:
                 raise LiveError("short session record")
             ver, flags, slot, delay, rb_delay, seed, mseed, every = struct.unpack_from("<8I", b, 0)
-            if ver not in (1, 2, 3, 4):
+            if ver not in (1, 2, 3, 4, 5):
                 raise LiveError("unsupported live session version")
             previous = self.session["version"] if self.session is not None else 1
             if ver < previous:
@@ -189,7 +189,8 @@ class LiveParser:
             created, _ = _str(b, i)
             self.session = {"version": ver, "rollback": bool(flags & 1), "slot": slot, "delay": delay,
                             "hash_every": every, "build": build, "created": created,
-                            "soft_reset_guard": ver >= 3, "throw_break_rule": ver >= 4}
+                            "soft_reset_guard": ver >= 3, "throw_break_rule": ver >= 4,
+                            "cross_program_hash": ver >= 5 and bool(flags & 8)}
             self.rules_guard_pending = False
         elif t == R_INPUTS:
             first, cnt = struct.unpack_from("<2I", b, 0)

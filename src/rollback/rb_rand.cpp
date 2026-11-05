@@ -74,6 +74,8 @@
 #include "rb_detour.h"
 #include "../replay/blob.h"
 #include "../platform/t5_addr.h"   /* T5A(): this program's address of a US address (EU Online) */
+#include "../netplay/netplay.h"
+#include "rb_rand_sites.h"
 
 extern "C" uint32_t t5_df_mode_cur(void);    /* src/directfight/df_fight.cpp: the mode manager's current / next mode */
 extern "C" uint32_t t5_df_mode_next(void);
@@ -147,7 +149,13 @@ uint32_t priv_draw(uint32_t lr)
         if (s.lr == 0) {
             s.lr = lr;
             s.g = Shuffle{};
-            s.g.s = g_site_seed ^ (lr * 0x85EBCA6Bu);
+            uint32_t seed_site = lr;
+            if (np::cross_program() && t5game::game() == t5game::Game::EU_ONLINE && !rand_site_us(lr, &seed_site)) {
+                fprintf(stderr, "[rollback] FATAL: mixed-program private RNG caller 0x%08X has no proven US identity\n", lr);
+                fflush(stderr);
+                abort();
+            }
+            s.g.s = rand_site_seed(g_site_seed, seed_site);
             g_sites_used++;
             return shuffle_draw(s.g);
         }

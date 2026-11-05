@@ -84,6 +84,9 @@
 #include "ppu_recomp.h"   /* ppu_context, vm_base -- from the lifter output */
 #include "netplay.h"
 #include "replay.h"       /* replays: recording and playback (docs/REPLAYS.md) */
+#include "cross_hash.h"
+#include "first_block_hash.h"
+#include "mixed_timing.h"   /* field-specific mixed-edition pointer identities */
 #include "no_pause.h"     /* no pause online: the rule (docs/NETPLAY.md "No pause online") */
 
 extern "C" void t5_throw_break_install(void);
@@ -445,9 +448,9 @@ const char* kDefaultHashSkip =
     "100996B4:24";
 /* Cross-play (docs/EU.md "Cross-play"): a US game against an EU Online one hashes the same variables in the same
  * order in both programs -- the default regions in the US program's layout, each one mapped as a whole to the other
- * program (t5_addr.h spans: one shift per region), without the fight-state block's first 0xB80 bytes (twenty small
- * objects laid out differently in EU Online) and without the words that hold an address (their values differ by
- * the program's layout, not by the fight). Used only when the HELLO says the peer is another program. */
+ * program (t5_addr.h spans: one shift per region). The initial variable-layout CRT block is validated against
+ * the pinned image and serialized separately (first_block_hash.h). Typed pointer fields retain referent
+ * identity through cross_hash.h. Used only for a negotiated mixed session or its recorded replay policy. */
 const char* kCrossHash =
     "10099F24:70,104CCDFC:40,106D4D88:8,10095168:9C0,10053578:4,10076920:4,1074F218:10C,"
     "1008EB80:550,1008F0D0:2F30,10099600:600,100A0900:200,100A3B00:300";
@@ -470,9 +473,78 @@ int g_hash_cross = 0;              /* the ranges in use: 0 this program's own, 1
 constexpr uint32_t kSnapFrames = 64;
 bool g_desync_dump = false;
 std::vector<uint8_t> g_snap[kSnapFrames];
+std::string g_snap_layout[kSnapFrames];
 uint32_t g_snap_tag[kSnapFrames];
 uint32_t g_desync_dumps = 0;
 uint32_t g_desync_dump_max = 20;   /* T5_NET_DESYNC_DUMP=<n> (n > 1): this many files at most (default 20) */
+uint32_t g_hash_dump_from = 1, g_hash_dump_to = 0; /* T5_NET_HASH_DUMP_AT=from:to, inclusive decimal frames */
+uint32_t g_cross_unresolved = 0;
+uint32_t g_control_pointer = 0;
+uint32_t g_first_payload_bytes = 0;
+
+/* Record the layout with the bytes: a dump without it can silently be decoded
+ * with another edition's regions or an obsolete hash policy. This is diagnostic
+ * output only; no guest state, hashes or network decisions are changed. */
+std::string hash_dump_layout(uint64_t h)
+{
+    char t[256];
+    snprintf(t, sizeof t, "{\"schema\":1,\"program\":%u,\"mixed\":%s,\"unresolved_state_items\":%u,\"custom_ranges\":%s,\"hash\":\"%016llx\",\"ranges\":[",
+             (unsigned)t5game::game(), g_hash_cross ? "true" : "false", g_cross_unresolved, g_hash_from_env ? "true" : "false",
+             (unsigned long long)h);
+    std::string out = t;
+    const auto canonical = g_hash_from_env ? g_hash_ranges : parse_ranges(g_hash_cross ? kCrossHash : kDefaultHash);
+    uint32_t off = 0;
+    for (size_t i = 0; i < g_hash_ranges.size(); ++i) {
+        const Range& r = g_hash_ranges[i];
+        snprintf(t, sizeof t, "%s{\"offset\":%u,\"address\":%u,\"length\":%u,\"us_address\":%u,\"us_length\":%u}",
+                 i ? "," : "", off, r.addr, r.len, canonical[i].addr, canonical[i].len);
+        out += t; off += r.len;
+    }
+    if (g_hash_cross) {
+        snprintf(t, sizeof t, "%s{\"offset\":%u,\"address\":%u,\"length\":16,\"us_address\":%u,\"us_length\":16,\"dynamic\":true,\"root_us\":%u,\"object_offset\":24}",
+                 g_hash_ranges.empty() ? "" : ",", off,
+                 g_control_pointer && np::cross_hash::valid_control_pointer(g_control_pointer) ? g_control_pointer + 0x18u : 0u,
+                 T5_US(0x1008EBA0u), T5_US(0x1008EBA0u));
+        out += t; off += 16;
+        if (g_first_payload_bytes) {
+            const bool eu = t5game::game() == t5game::Game::EU_ONLINE;
+            using namespace np::cross_hash::first_block;
+            snprintf(t, sizeof t, ",{\"offset\":%u,\"address\":%u,\"length\":4,\"us_address\":%u,\"us_length\":4,\"semantic\":\"validated-crt\",\"guard_length\":%u}",
+                     off, eu ? kEUBase : kUSBase, kUSBase, eu ? kEULength : kUSLength);
+            out += t; off += 4;
+            snprintf(t, sizeof t, ",{\"offset\":%u,\"address\":%u,\"length\":4,\"us_address\":%u,\"us_length\":4}",
+                     off, (eu ? kEUBase + 0x1A8u : kUSBase + 0x1B0u), kUSBase + 0x1B0u);
+            out += t; off += 4;
+            for (const auto& range : kMathRanges) {
+                snprintf(t, sizeof t, ",{\"offset\":%u,\"address\":%u,\"length\":%u,\"us_address\":%u,\"us_length\":%u}",
+                         off, eu ? range.eu : range.us, range.len, range.us, range.len);
+                out += t; off += range.len;
+            }
+        }
+    }
+    out += "],\"skips\":[";
+    for (size_t i = 0; i < g_hash_skip.size(); ++i) {
+        snprintf(t, sizeof t, "%s{\"address\":%u,\"length\":%u}", i ? "," : "", g_hash_skip[i].addr, g_hash_skip[i].len);
+        out += t;
+    }
+    snprintf(t, sizeof t, "],\"bytes\":%u}\n", off); out += t;
+    return out;
+}
+
+void write_hash_dump(const char* prefix, uint32_t f)
+{
+    const uint32_t slot = f % kSnapFrames;
+    if (g_snap_tag[slot] != f + 1) return;
+    char path[96];
+    snprintf(path, sizeof path, "%s_f%06u.bin", prefix, f);
+    if (FILE* fp = fopen(path, "wb")) {
+        fwrite(g_snap[slot].data(), 1, g_snap[slot].size(), fp); fclose(fp);
+        snprintf(path, sizeof path, "%s_f%06u.regions.json", prefix, f);
+        if (FILE* meta = fopen(path, "wb")) {
+            fwrite(g_snap_layout[slot].data(), 1, g_snap_layout[slot].size(), meta); fclose(meta);
+        }
+    }
+}
 
 /* ---- the pad, as the game sees it ------------------------------------------ */
 
@@ -564,6 +636,7 @@ void h_cellPadGetInfo(ppu_context* ctx)
 uint64_t state_hash(std::string* parts = nullptr)
 {
     uint64_t h = 1469598103934665603ull;
+    g_cross_unresolved = 0;
     static std::vector<uint8_t> buf;
     if (!g_hash_from_env && (int)np::cross_program() != g_hash_cross) {
         g_hash_cross = np::cross_program() ? 1 : 0;
@@ -575,21 +648,50 @@ uint64_t state_hash(std::string* parts = nullptr)
         }
         np::note("state hash: %s", g_hash_cross ? "cross-program (the US program's layout, docs/EU.md)" : "this program's own");
     }
-    for (const Range& r : g_hash_ranges) {
+    g_control_pointer = g_hash_cross ? rd32(T5A(0x1008EBA0u)) : 0;
+    static const std::vector<Range> cross_regions = parse_ranges(kCrossHash);
+    for (size_t region_index = 0; region_index < g_hash_ranges.size(); ++region_index) {
+        const Range& r = g_hash_ranges[region_index];
         buf.assign(vm_base + r.addr, vm_base + r.addr + r.len);
         for (const Range& k : g_hash_skip) {   /* blank the noisy words */
             const uint32_t a = k.addr > r.addr ? k.addr : r.addr;
             const uint32_t e = (k.addr + k.len) < (r.addr + r.len) ? (k.addr + k.len) : (r.addr + r.len);
             for (uint32_t x = a; x < e; x++) buf[x - r.addr] = 0;
         }
+        if (g_hash_cross) g_cross_unresolved += np::cross_hash::canonicalize(cross_regions[region_index].addr, r.addr, buf.data(), r.len);
         h = fnv64(buf.data(), buf.size(), h);
-        if (g_desync_dump && parts) g_snap[g_frame_hashing % kSnapFrames].insert(
+        if ((g_desync_dump || (g_frame_hashing >= g_hash_dump_from && g_frame_hashing <= g_hash_dump_to)) && parts) g_snap[g_frame_hashing % kSnapFrames].insert(
             g_snap[g_frame_hashing % kSnapFrames].end(), buf.begin(), buf.end());
         if (parts) {
             uint64_t p = fnv64(buf.data(), buf.size());
             char t[12];
             snprintf(t, sizeof t, " %08x", (uint32_t)(p ^ (p >> 32)));
             *parts += t;
+        }
+    }
+    if (g_hash_cross) {
+        uint8_t control[16];
+        np::cross_hash::append_control_state(g_control_pointer && np::cross_hash::valid_control_pointer(g_control_pointer)
+                                            ? vm_base + g_control_pointer : nullptr, control);
+        h = fnv64(control, sizeof control, h);
+        if ((g_desync_dump || (g_frame_hashing >= g_hash_dump_from && g_frame_hashing <= g_hash_dump_to)) && parts)
+            g_snap[g_frame_hashing % kSnapFrames].insert(g_snap[g_frame_hashing % kSnapFrames].end(), control, control + sizeof control);
+        if (parts) {
+            const uint64_t p = fnv64(control, sizeof control);
+            char t[12]; snprintf(t, sizeof t, " %08x", (uint32_t)(p ^ (p >> 32))); *parts += t;
+        }
+    }
+    if (g_hash_cross) {
+        uint8_t first_bytes[np::cross_hash::first_block::kBytes];
+        const auto first = np::cross_hash::first_block::append(vm_base, first_bytes, sizeof first_bytes);
+        g_first_payload_bytes = first.bytes;
+        g_cross_unresolved += first.unresolved;
+        h = fnv64(first_bytes, first.bytes, h);
+        if ((g_desync_dump || (g_frame_hashing >= g_hash_dump_from && g_frame_hashing <= g_hash_dump_to)) && parts)
+            g_snap[g_frame_hashing % kSnapFrames].insert(g_snap[g_frame_hashing % kSnapFrames].end(), first_bytes, first_bytes + first.bytes);
+        if (parts) {
+            const uint64_t p = fnv64(first_bytes, first.bytes);
+            char t[12]; snprintf(t, sizeof t, " %08x", (uint32_t)(p ^ (p >> 32))); *parts += t;
         }
     }
     return h;
@@ -2091,6 +2193,7 @@ void on_frame_start(ppu_context* ctx)
     if (!rb::net::bypass()) t5_training_frame(ctx);   /* src/training: reads the frame that just ran (read only) */
     if (!rb::net::bypass() && ctx->thread_id == (g_main_tid != ~0ull ? g_main_tid : 1)) t5_net_line_frame();
     if (!rb::net::bypass()) t5_always_left_frame();   /* "Always left": this PC's picture and pad only */
+    if (ctx->thread_id == (g_main_tid != ~0ull ? g_main_tid : 1)) np::mixed_timing::update();
     rb::rand_install();   /* the game-DLL build: once the lifted table is out (no-op after the first time) */
     t5_unlock_install();  /* likewise */
     t5_aspect_install();  /* likewise */
@@ -2381,29 +2484,33 @@ void on_frame_start(ppu_context* ctx)
         reseed(seed);
         np::note("game RNGs reseeded with 0x%08X", seed);
         /* the replay: the seed, and whether the rollback loop takes over at frame 1 */
-        rp::rec_start(seed, rb::net::enabled() && rb::net::start_frame() <= 1, np::delay());
+        rp::rec_start(seed, rb::net::enabled() && rb::net::start_frame() <= 1, np::delay(), np::cross_program());
         apply_rounds();
         match_begins(0);
     }
     std::string parts = "H";
     g_frame_hashing = f;
-    if (g_desync_dump) { g_snap[f % kSnapFrames].clear(); g_snap_tag[f % kSnapFrames] = f + 1; }
+    const bool capture_hash = g_desync_dump || (f >= g_hash_dump_from && f <= g_hash_dump_to);
+    if (capture_hash) { g_snap[f % kSnapFrames].clear(); g_snap_tag[f % kSnapFrames] = f + 1; }
     uint64_t h = state_hash(&parts);
+    if (capture_hash) g_snap_layout[f % kSnapFrames] = hash_dump_layout(h);
+    if (f >= g_hash_dump_from && f <= g_hash_dump_to) write_hash_dump("np_hash", f);
     if (g_directfight && intro_phase_now()) h = kIntroHash;   /* the fight's loading and intros: not compared (below) */
     for (uint32_t mf; g_desync_dump && np::take_mismatch(&mf);) {
         if (g_snap_tag[mf % kSnapFrames] != mf + 1 || g_desync_dumps >= g_desync_dump_max) continue;
-        char path[64];
-        snprintf(path, sizeof path, "np_desync_f%06u.bin", mf);
-        if (FILE* fp = fopen(path, "wb")) {
-            fwrite(g_snap[mf % kSnapFrames].data(), 1, g_snap[mf % kSnapFrames].size(), fp);
-            fclose(fp);
-            g_desync_dumps++;
-        }
+        write_hash_dump("np_desync", mf);
+        g_desync_dumps++;
     }
     np::log_extra(f, parts.c_str());
     page_hashes(f);
     dump_memory(f);
     shot(f);
+    if (g_hash_cross && g_cross_unresolved && !(g_directfight && intro_phase_now())) {
+        if (g_desync_dump) write_hash_dump("np_invalid", f);
+        np::note("FATAL: mixed-edition hash has %u unresolved canonical state items at frame %u; refusing an incomplete comparison",
+                 g_cross_unresolved, f);
+        abort();
+    }
     np::PadInput in[2];
     /* Direct fight: the game mode's start, loading and intros take no input --
      * not even at the first boundary of a session, which samples the input of
@@ -2687,6 +2794,12 @@ void h_cellPadInit(ppu_context* ctx)
     g_hash_from_env = hs != nullptr;
     { const char* dd = getenv("T5_NET_DESYNC_DUMP"); const int n = dd ? atoi(dd) : 0;
       g_desync_dump = n >= 1; if (n > 1) g_desync_dump_max = (uint32_t)n; }
+    if (const char* at = getenv("T5_NET_HASH_DUMP_AT")) {
+        unsigned from = 0, to = 0;
+        if (sscanf(at, "%u:%u", &from, &to) == 2 && from <= to) {
+            g_hash_dump_from = from; g_hash_dump_to = to;
+        } else np::note("ignoring invalid T5_NET_HASH_DUMP_AT (expected from:to decimal frames)");
+    }
     InitializeCriticalSection(&g_result_cs);
     read_session_env();
     { const char* t = getenv("T5_NET_TAKEOVER_TEST"); g_takeover_test = t && *t == '1'; }

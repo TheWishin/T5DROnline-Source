@@ -15,11 +15,11 @@ class ReplayAuditContractTest(unittest.TestCase):
         cls.source = (ROOT / "src/netplay/replay.cpp").read_text(encoding="utf-8-sig")
 
     def test_new_recordings_always_version_the_changed_input_policy(self):
-        self.assertIn("constexpr uint32_t kVersion = 8;", self.source)
+        self.assertIn("constexpr uint32_t kVersion = 9;", self.source)
         start = self.source.index("uint32_t rules_version(")
         end = self.source.index("std::vector<uint8_t> to_binary", start)
         policy = self.source[start:end]
-        self.assertIn("return kVersion;", policy)
+        self.assertIn("return d.cross_program_hash ? kVersion : 8;", policy)
         self.assertNotIn("return 5", policy)
         self.assertIn("put32(b, rules_version(d) - 4);", self.source)
         self.assertIn("rules_version(st.d) > st.live_rules_version", self.source)

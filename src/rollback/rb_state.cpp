@@ -11,6 +11,8 @@
 
 #include "rb.h"
 #include "rb_state.h"
+#include "../netplay/cross_hash.h"
+#include "../netplay/first_block_hash.h"
 #include "../platform/t5_addr.h"   /* T5A(): this program's address of a US address (EU Online) */
 
 extern "C" uint8_t* vm_base;
@@ -295,33 +297,96 @@ static bool hash_full()
     if (f < 0) { const char* e = getenv("T5_RB_HASH_FULL"); f = e && *e == '1'; }
     return f != 0;
 }
+static bool g_cross_program_hash = false;
+static uint32_t g_cross_unresolved = 0;
+uint32_t state_cross_program_unresolved() { return g_cross_unresolved; }
+void state_set_cross_program_hash(bool on) { g_cross_program_hash = on; }
+/* Canonical region identities parallel kGame. The variable-layout CRT prefix
+ * is validated and serialized separately, with its mutable counter and math roles. */
+static constexpr uint32_t kGameUS[] = {
+    0x10099F24, 0x104CCDFC, 0x106D4D88, 0x10095168, 0x10053578,
+    0x10076920, 0x1074F218, 0x1008E000, 0x1008EB80, 0x1008F0D0,
+    0x10099600, 0x100A0900, 0x100A3B00
+};
+static_assert(sizeof kGameUS / sizeof kGameUS[0] == sizeof kGame / sizeof kGame[0], "hash region identities");
 uint32_t state_game_bytes(uint8_t* out, uint32_t cap)
 {
+    g_cross_unresolved = 0;
     uint32_t n = 0;
-    for (const Range& r : kGame) {
-        if (n + r.len > cap) break;
+    for (size_t i = 0; i < sizeof kGame / sizeof kGame[0]; ++i) {
+        if (g_cross_program_hash && kGameUS[i] == T5_US(0x1008E000)) continue;
+        const Range& r = kGame[i];
+        if (r.len > cap - n) { if (g_cross_program_hash) ++g_cross_unresolved; break; }
         memcpy(out + n, vm_base + r.base, r.len);
         if (!hash_full()) for (const Range& k : kGameSkip) {
             const uint32_t a = std::max(k.base, r.base), e = std::min(k.base + k.len, r.base + r.len);
             for (uint32_t x = a; x < e; x++) out[n + (x - r.base)] = 0;
         }
+        if (g_cross_program_hash) g_cross_unresolved += np::cross_hash::canonicalize(kGameUS[i], r.base, out + n, r.len);
         n += r.len;
+    }
+    if (g_cross_program_hash) {
+        const uint32_t root = np::cross_hash::read_be(vm_base + T5A(0x1008EBA0));
+        if (root && !np::cross_hash::valid_control_pointer(root)) {
+            ++g_cross_unresolved;
+        } else if (cap - n >= 16) {
+            np::cross_hash::append_control_state(root ? vm_base + root : nullptr, out + n);
+            n += 16;
+        } else {
+            ++g_cross_unresolved;  /* never accept a truncated canonical payload */
+        }
+    }
+    if (g_cross_program_hash) {
+        const auto first = np::cross_hash::first_block::append(vm_base, out + n, cap - n);
+        g_cross_unresolved += first.unresolved;
+        n += first.bytes;
     }
     return n;
 }
 uint64_t state_game_hash()
 {
     uint64_t h = 1469598103934665603ull;
-    static uint8_t buf[0x4000];
-    for (const Range& r : kGame) {
-        memcpy(buf, vm_base + r.base, r.len);
-        if (!hash_full()) for (const Range& k : kGameSkip) {
-            const uint32_t a = std::max(k.base, r.base), e = std::min(k.base + k.len, r.base + r.len);
-            for (uint32_t x = a; x < e; x++) buf[x - r.base] = 0;
-        }
-        for (uint32_t i = 0; i < r.len; i++) { h ^= buf[i]; h *= 1099511628211ull; }
-    }
+    static uint8_t buf[0x6000];
+    const uint32_t n = state_game_bytes(buf, sizeof buf);
+    for (uint32_t i = 0; i < n; ++i) { h ^= buf[i]; h *= 1099511628211ull; }
     return h;
+}
+std::string state_game_layout(uint32_t bytes, uint64_t hash)
+{
+    char text[384];
+    snprintf(text, sizeof text, "{\"schema\":1,\"program\":%u,\"mixed\":%s,\"unresolved_state_items\":%u,\"hash\":\"%016llx\",\"ranges\":[",
+             (unsigned)t5game::game(), g_cross_program_hash ? "true" : "false", g_cross_unresolved, (unsigned long long)hash);
+    std::string out = text;
+    uint32_t off = 0;
+    auto range = [&](uint32_t actual, uint32_t us, uint32_t length, const char* extra = "") {
+        snprintf(text, sizeof text, "%s{\"offset\":%u,\"address\":%u,\"length\":%u,\"us_address\":%u,\"us_length\":%u%s}",
+                 off ? "," : "", off, actual, length, us, length, extra);
+        out += text; off += length;
+    };
+    for (size_t i = 0; i < sizeof kGame / sizeof kGame[0]; ++i) {
+        if (g_cross_program_hash && kGameUS[i] == T5_US(0x1008E000)) continue;
+        range(kGame[i].base, kGameUS[i], kGame[i].len);
+    }
+    if (g_cross_program_hash) {
+        const uint32_t root = np::cross_hash::read_be(vm_base + T5A(0x1008EBA0));
+        range(root ? root + 0x18u : 0, T5_US(0x1008EBA0), 16, ",\"dynamic\":true,\"root_us\":269020064,\"object_offset\":24");
+        using namespace np::cross_hash::first_block;
+        if (bytes == off + kBytes) {
+            const bool eu = t5game::game() == t5game::Game::EU_ONLINE;
+            char extra[96];
+            snprintf(extra, sizeof extra, ",\"semantic\":\"validated-crt\",\"guard_length\":%u", eu ? kEULength : kUSLength);
+            range(eu ? kEUBase : kUSBase, kUSBase, 4, extra);
+            range(eu ? kEUBase + 0x1A8u : kUSBase + 0x1B0u, kUSBase + 0x1B0u, 4);
+            for (const auto& math : kMathRanges) range(eu ? math.eu : math.us, math.us, math.len);
+        }
+    }
+    out += "],\"skips\":[";
+    if (!hash_full()) for (size_t i = 0; i < sizeof kGameSkip / sizeof kGameSkip[0]; ++i) {
+        snprintf(text, sizeof text, "%s{\"address\":%u,\"length\":%u}", i ? "," : "", kGameSkip[i].base, kGameSkip[i].len);
+        out += text;
+    }
+    snprintf(text, sizeof text, "],\"bytes\":%u}\n", bytes); out += text;
+    return out;
 }
 uint64_t state_page_hash(uint32_t ea) { return g_page_hash ? g_page_hash[ea >> 12] : 0; }
 

@@ -230,7 +230,7 @@ class Steps(unittest.TestCase):
         lift = next(c for c in cmds if c[1].endswith("ppu_lifter.py"))
         self.assertEqual(lift[lift.index("--code-end") + 1], "0x3D7884")
         with open(os.path.join(self.bg.P.recomp, ".lifter.sha1")) as f:
-            self.assertTrue(f.read().strip().endswith(":program=eu_online"))
+            self.assertTrue(f.read().strip().endswith(":program=eu_online:live-immediates=" + self.bg.sha1(self.bg.EU_LIVE_IMMEDIATES)))
         cmds.clear()
         os.makedirs(os.path.join(self.bg.P.spu, "images"), exist_ok=True)
 

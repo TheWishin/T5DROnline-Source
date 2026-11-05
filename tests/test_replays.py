@@ -504,10 +504,50 @@ class GameCodeTest(unittest.TestCase):
     def lines(self, out, tag):
         return [ln[len(tag) + 1:] for ln in out.splitlines() if ln.startswith(tag + " ")]
 
+    def test_mixed_hash_policy_roundtrips_through_native_file_and_live_readers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            live = os.path.join(directory, "mixed.live")
+            with mock.patch.dict(os.environ, {"TEST_CROSS_HASH": "1"}):
+                code, output = self.run_exe("write", directory, "400", "17", live)
+            self.assertEqual(code, 0, output)
+            path = self.lines(output, "FILE")[0]
+            payload = replays.read_payload(path)
+            self.assertEqual(payload["version"], 9)
+            self.assertTrue(payload["cross_program_hash"])
+            for candidate in (path, live):
+                code, output = self.run_exe("read", candidate)
+                self.assertEqual(code, 0, output)
+                self.assertEqual(self.lines(output, "CROSSHASH"), ["1"])
+            scrubbed = replays.strip_names(path)
+            with open(path, "wb") as stream:
+                stream.write(scrubbed)
+            self.assertTrue(replays.read_payload(path)["cross_program_hash"])
+
     def test_full_state_checkpoint_preserves_live_bytes_and_rejects_invalid_pages(self):
-        result = subprocess.run([self.state_exe], capture_output=True, text=True, timeout=30)
+        # Made-up ELF with the supported header identity and zero-initialized
+        # data: the immutable-prefix guard must read a real reference fixture.
+        elf = os.path.join(self.tmp, "state-reference.elf")
+        header = bytearray(64)
+        header[:6] = b"\x7fELF\x02\x02"
+        struct.pack_into(">Q", header, 24, 0x447690)
+        struct.pack_into(">Q", header, 32, 64)
+        struct.pack_into(">HH", header, 54, 56, 1)
+        ph = struct.pack(">II6Q", 1, 6, 120, 0x1008E000, 0, 0, 0xB80, 16)
+        with open(elf, "wb") as stream:
+            stream.write(header + ph)
+            stream.truncate(5294536)
+        result = subprocess.run([self.state_exe, elf], capture_output=True, text=True, timeout=30)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("PASS replay state checkpoint", result.stdout)
+        layout = json.loads(self.lines(result.stdout, "LAYOUT")[0])
+        self.assertEqual(layout["bytes"], 19572)
+        self.assertEqual(layout["unresolved_state_items"], 0)
+        offset = 0
+        for region in layout["ranges"]:
+            self.assertEqual(region["offset"], offset)
+            offset += region["length"]
+        self.assertEqual(offset, layout["bytes"])
+        self.assertTrue(any(region.get("semantic") == "validated-crt" for region in layout["ranges"]))
 
     def synthetic_live(self, name, *, ended=False, buffered=False):
         """Only made-up format records; no game executable, input log or server."""

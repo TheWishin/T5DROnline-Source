@@ -102,7 +102,7 @@ class ReplayRules(unittest.TestCase):
                 self.assertEqual(replays.read_payload(self.path)["throw_break_rule"], version >= 8)
 
     def test_future_or_invalid_versions_are_not_silently_decoded(self):
-        for version in (0, 9):
+        for version in (0, 10):
             self.write(version)
             with self.assertRaises(replays.ReplayError):
                 replays.read_payload(self.path)
@@ -232,7 +232,7 @@ class LiveRules(unittest.TestCase):
             self.assertFalse(parser.matches[0]["auto_skip_after_round"])
 
     def test_unknown_session_is_rejected_before_match_publication(self):
-        for version in (0, 5):
+        for version in (0, 6):
             parser = spectate.LiveParser()
             parser.feed(stream(version))
             self.assertFalse(parser.ready)

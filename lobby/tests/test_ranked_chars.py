@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import util
 from t5lobby import fighters, proto, ranks
-from t5lobby.compatibility import BuildGroups
+from t5lobby.compatibility import BuildGroups, CrossplayPolicy
 from t5lobby.server.config import Config
 from t5lobby.server.lobby import CAPS, FEATURES, LobbyServer
 from t5lobby.server.store import SCHEMA_VERSION, Store
@@ -155,6 +155,7 @@ class ProfileTest(unittest.TestCase):
         self.srv.cfg = Config()
         # __new__ bypasses the server constructor, including its compatibility policy.
         self.srv.build_groups = BuildGroups(self.srv.cfg.compat_groups)
+        self.srv.crossplay = CrossplayPolicy(self.srv.cfg.crossplay, self.srv.cfg.crossplay_groups)
         self.srv.table = fighters.table()
         self.srv.udp = SimpleNamespace(port=0, port2=0)
         self.srv.latest_release = ""

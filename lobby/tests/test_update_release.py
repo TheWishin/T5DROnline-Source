@@ -8,7 +8,7 @@ from unittest import mock
 
 import util  # noqa: F401 (sets sys.path without starting its server helper)
 from t5lobby import proto
-from t5lobby.compatibility import BuildGroups
+from t5lobby.compatibility import BuildGroups, CrossplayPolicy
 from t5lobby.server import Config, LobbyServer
 from t5lobby.server import releases
 
@@ -33,6 +33,7 @@ class WelcomeReleaseTest(unittest.IsolatedAsyncioTestCase):
                                  reports_on=lambda: False, reports_welcome=lambda conn: {})   # (1.2.1 reports.py)
         # Match the constructor's policy while keeping this handler test socket-free.
         server.build_groups = BuildGroups(server.cfg.compat_groups)
+        server.crossplay = CrossplayPolicy(server.cfg.crossplay, server.cfg.crossplay_groups)
         conn = SimpleNamespace(player=None, ip="192.0.2.1", writer=mock.Mock())
         conn.writer.get_extra_info.return_value = None
         # No capabilities or build are needed: an old launcher still gets its normal welcome.

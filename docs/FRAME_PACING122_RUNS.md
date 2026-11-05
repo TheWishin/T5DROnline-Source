@@ -79,7 +79,7 @@ frame logs, homes and disjoint masks. Compare hashes, not only FPS.
 
 Earlier-round edits are preserved. The continuation changes these files:
 
-- `patches/ps3recomp/0119-display-pacing-probe.patch`
+- `patches/ps3recomp/0122-display-pacing-probe.patch`
 - `src/rollback/rb_net.cpp` (labels live-boundary times accurately)
 - `tools/frame_pacing.py`, `tools/calibrate_slow_core.py`, `tools/slow_core.py`
 - `tools/rollback_net_test.py`, `tools/shader_warmup.py`

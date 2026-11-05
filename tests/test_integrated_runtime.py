@@ -45,8 +45,8 @@ class IntegratedRuntimeTest(unittest.TestCase):
                 self.assertLess(begin.index(accessor), begin.index("r.cur = st;"))
                 self.assertNotIn(f'replay_paths::env("{key}")', begin)
         self.assertIn("if (dir) replay_paths::make_directory(dir);", begin)
-        # Every new recording versions reset filtering, independent of the skip hint.
-        self.assertIn("return kVersion;", replay.split("uint32_t rules_version(", 1)[1]
+        # Every new recording versions reset filtering, independent of the skip hint (format 8; mixed-edition: 9).
+        self.assertIn("return d.cross_program_hash ? kVersion : 8;", replay.split("uint32_t rules_version(", 1)[1]
                       .split("std::vector<uint8_t> to_binary", 1)[0])
         hint = begin.index('const char* skip_format = t5_env("T5_AUTO_SKIP_AFTER_ROUND");')
         self.assertLess(hint, begin.index("r.cur = st;"))

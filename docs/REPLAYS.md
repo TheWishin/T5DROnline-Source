@@ -88,6 +88,14 @@ ly, rx, ry, then P2) of one byte per frame, each XORed with the frame before, so
 run of zeros. The JSON line is a view of the binary (format 4 adds `"unlocks": "open"|"closed"`); the
 game reads only the binary. `launcher/replays.py` reads both (`read_header`, `read_payload`).
 
+**Format 9 (mixed-edition hash policy, 1.2.1).** A recording of a session between a US and an EU Online PC
+(rollback or lockstep) uses format 9 and guarded SESSION 5: header flags bit 3 says the compared state hashes are
+in the US program's canonical layout (typed pointers compared by what they point at, see docs/EU.md "Cross-play"),
+the EU game applies the US round deadlines, and its private random streams are keyed by the US call sites. Either
+edition plays such a file back identically. The binary layout is otherwise format 8. Recordings of same-edition
+sessions stay format 8 (US/US and EU/EU hash exactly as before) and are played back by their own edition only;
+older readers reject format 9.
+
 **Format 8 (throw-break timing).** All new native recordings use format 8 and guarded SESSION 4.
 The binary layout remains the same as format 7. The game applies the deterministic online throw-break
 rule using the recorded session's actual input delay: rollback delay when known, otherwise the header's

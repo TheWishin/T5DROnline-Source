@@ -265,7 +265,7 @@ class Background(unittest.TestCase):
                 mock.patch.object(worker.os.path, "isfile", return_value=True), \
                 mock.patch.object(worker, "exe_stamp", return_value={"size": 1, "mtime": 2}), \
                 mock.patch.object(worker.sys, "platform", "win32"), \
-                mock.patch.object(worker.subprocess, "Popen", return_value=Process()), \
+                mock.patch.object(process_owner, "popen", return_value=Process()), \
                 mock.patch("t5lobby.match_driver.Control", Control), \
                 mock.patch.object(worker, "play", return_value=0) as play:
             self.assertEqual(worker.warmup(args, self.out), 0)

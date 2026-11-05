@@ -70,7 +70,7 @@ __declspec(noinline) void avx_call(void* d, const void* a, const void* b, const 
         self.assertRegex(dll, r't5_tls_callback __xl_a = 0;')
         self.assertRegex(dll, r't5_tls_callback __xl_z = 0;')
         self.assertNotIn("DllMain", dll)
-        patch = read("patches", "ps3recomp", "0116-avx-software-fma.patch")
+        patch = read("patches", "ps3recomp", "0121-avx-software-fma.patch")
         self.assertIn('strcmp(march, "avx") == 0', patch)
         self.assertIn('strcmp(t, "noavx") == 0', patch)
 
@@ -79,7 +79,7 @@ __declspec(noinline) void avx_call(void* d, const void* a, const void* b, const 
                                               if os.path.isfile(r"C:\Program Files\LLVM\bin\clang-cl.exe") else None)
         if os.name != "nt" or not clang:
             self.skipTest("Windows clang-cl CPU guard harness")
-        patch = read("patches", "ps3recomp", "0116-avx-software-fma.patch")
+        patch = read("patches", "ps3recomp", "0121-avx-software-fma.patch")
         added = "\n".join(l[1:] for l in patch.splitlines() if l.startswith("+") and not l.startswith("+++"))
         helper = re.search(r'__attribute__\(\(target\("xsave"\)\)\) static int ppu_host_has_avx\(void\)\n\{.*?\n\}',
                            added, re.S).group()

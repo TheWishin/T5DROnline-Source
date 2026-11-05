@@ -14,7 +14,7 @@ establish the stricter displayed-frame targets. Synthetic correctness tests and 
 not evidence of a frame-rate gain. All accepted measurements, invalid attempts
 and cancelled reservations are identified below; no required gate is pending.
 
-The only retained new runtime patch is `0116-avx-software-fma.patch`. Its
+The only retained new runtime patch is `0121-avx-software-fma.patch`. Its
 eight-pair main-thread CPU gate and cross-build state proof are completed below;
 the fresh-count PGO comparison is complete and rejected: no clear benefit over
 the current profile. Candidates 0117 (address waits) and 0118 (per-slot descriptor validation) were rejected after the initial
@@ -103,7 +103,7 @@ measure the development CPU, not physical Sandy/Ivy Bridge hardware.
 
 Median paired vector-time ratios to baseline: existing Sandy compiler level
 0.750902; experimental four-double-lane AVX1 helper 0.674848. The prototype
-was promoted as candidate patch `0116-avx-software-fma.patch` for full-game
+was promoted as candidate patch `0121-avx-software-fma.patch` for full-game
 testing. Its runtime CPU/OS checks include AVX, OSXSAVE and XMM/YMM state.
 This is a candidate until the full-game threshold and cross-build proof pass.
 
@@ -705,7 +705,7 @@ pair is excluded. The final generated-input recheck found **27 files, 0 differen
 | `docs/RELEASE.md` | AVX/OS-state compatibility guard documentation. |
 | `docs/RENDER_PERF.md` | 1.2.2 before/after results, decisions, limits and state proofs; correct stale PGO note. |
 | `docs/WEAK_PC.md` | Optional AVX1 level without raising the minimum CPU requirement. |
-| `patches/ps3recomp/0116-avx-software-fma.patch` | Exact AVX1 vector software FMA and the pre-initialization CPU/OS guard. |
+| `patches/ps3recomp/0121-avx-software-fma.patch` | Exact AVX1 vector software FMA and the pre-initialization CPU/OS guard. |
 | `tests/test_avx_level.py` | CPU/OS guard, deferred initialization, AVX/SSE cleanup and negative control. |
 | `tests/test_fight_bench_rows.py` | Complete-row draining, timeout/exit and original-window bounds. |
 | `tests/test_pc_compat.py` | Automatic AVX1 feature selection and feature omissions. |

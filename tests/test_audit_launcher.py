@@ -160,10 +160,10 @@ class ReplayFormatAudit(unittest.TestCase):
                 self.assertIs(decoded["soft_reset_guard"], False)
                 self.assertEqual(decoded["inputs"][0][0][0], 9)
 
-    def test_unknown_format_nine_is_rejected(self):
+    def test_unknown_format_ten_is_rejected(self):
         with self.assertRaises(self.replays.ReplayError):
-            self.decode(self.replay_bytes(9))
-        with mock.patch.object(self.replays, "split", return_value=self.replay_bytes(9)):
+            self.decode(self.replay_bytes(10))
+        with mock.patch.object(self.replays, "split", return_value=self.replay_bytes(10)):
             with self.assertRaises(self.replays.ReplayError):
                 self.replays.strip_names("unused")
 

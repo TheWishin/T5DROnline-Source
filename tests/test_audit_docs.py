@@ -29,7 +29,7 @@ class AuditDocumentation(unittest.TestCase):
 
     def test_current_replay_format_and_legacy_policy_are_documented(self):
         native = (ROOT / "src/netplay/replay.cpp").read_text(encoding="utf-8")
-        self.assertRegex(native, r"kVersion\s*=\s*8\b")
+        self.assertRegex(native, r"kVersion\s*=\s*9\b")
         replay = (ROOT / "docs/REPLAYS.md").read_text(encoding="utf-8")
         for text in ("**Format 7 (1.2.0 integrated).**", "guarded SESSION 3",
                      "historical input policy", "**Format 6 (earlier 1.2.0 draft).**"):

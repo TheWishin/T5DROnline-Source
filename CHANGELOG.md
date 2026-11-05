@@ -31,6 +31,10 @@ updated lobby server; on an older server they simply do not appear.
     game.
 
 ### Speed and old PCs
+- **Sandy / Ivy Bridge PCs (AVX without AVX2) get their own build level.** BUILD GAME picks AVX instead of the plain
+  x86-64 baseline there, with the fused multiply-add done in software exactly as before (the game state is the same on
+  every CPU, so these PCs still play everybody online); the main thread needs about 5 % less processor time on an
+  i3-3240. Newer PCs are unchanged (docs/BUILD_PERF.md, docs/PERF122_RUNS.md).
 - **Old PC settings.** Settings -> Graphics has a new **Old PC** button: like Lowest, with the effects off too. On a
   2-core processor or an old graphics card (resource binding tier 1) the launcher chooses it by itself once, as long
   as you have not changed the graphics settings. "Lowest" itself is unchanged.

@@ -42,7 +42,7 @@ def load_ppm(path):
         while data[i:i + 1].isspace():
             i += 1
         j = i
-        while not data[j:j + 1].isspace():
+        while j < len(data) and not data[j:j + 1].isspace():
             j += 1
         parts.append(data[i:j])
         i = j
@@ -53,12 +53,19 @@ def load_ppm(path):
 def dark_frames(folder):
     """[(frame name, brightness)] of the frames whose middle (the 3D picture, not the HUD) is under 45 and
     less than half as bright as both neighbours: a frame that lost its 3D picture."""
-    names = sorted(f for f in os.listdir(folder) if f.startswith("frame_") and f.endswith(".ppm") and "_s" not in f)
-    m = []
+    names = sorted(f for f in os.listdir(folder) if f.startswith("frame_") and f.endswith(".ppm") and "_s" not in f
+                   and os.path.getsize(os.path.join(folder, f)) > 64)   # the last frame of a killed game can be empty
+    # (load_ppm never returned on an empty file: its header scan looped at the end of the data)
+    m, whole = [], []
     for n in names:
-        img = load_ppm(os.path.join(folder, n))
+        try:
+            img = load_ppm(os.path.join(folder, n))
+        except ValueError:          # cut short: the game was killed while the writer thread wrote it
+            continue
+        whole.append(n)
         h, w = img.shape[:2]
         m.append(float(img[h * 200 // 720:h * 560 // 720:4, w * 100 // 1280:w * 1180 // 1280:4].mean()))
+    names = whole
     bad = [(names[i], round(m[i], 1)) for i in range(1, len(m) - 1)
            if m[i] < 45 and m[i] < 0.5 * min(m[i - 1], m[i + 1])]
     return len(names), bad

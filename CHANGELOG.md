@@ -3,7 +3,12 @@
 All notable changes, newest first. The project is a test release. Short commit hashes are in parentheses. The state of each
 part is in the README's status table.
 
-## v1.2.2 (unreleased)
+## v1.2.2 (2026-11-07)
+
+**A fix release for 1.2.1: the music no longer sticks on one stage's theme for a whole set, no more doubled
+sounds under heavy rollback, a warning when a challenge's input delay is much lower than the ping needs, and clearer
+build messages (European and Japanese editions, the .rap license file, the PS3 key download).** Both players need
+1.2.2 (the lobby pairs equal versions only).
 
 ### Online
 - **Music stuck on one stage's theme for a whole set** (rollback, mostly with input delay 0): when the stage's music

@@ -139,8 +139,11 @@ In detail:
   - the license: `.rap` (16 bytes), named
     `UP0700-NPUB30009_00-UPDATE0000010000.rap`
   - since 1.1.9 also the European PSN release, **TEKKEN 5 DARK RESURRECTION, `NPEA00019`, version 01.00**
-    (its `.pkg` and `EP9000-NPEA00019_00-0000000000000000.rap`): it builds and plays **offline only for now**;
-    online play for it comes in a later update (docs/EU.md)
+    (its `.pkg` and `EP9000-NPEA00019_00-0000000000000000.rap`): it builds and plays **offline only** (it cannot
+    go online; docs/EU.md)
+  - since 1.2.1 also the European **Online** edition, `NPEA00019` **version 02.00 or 02.01**: it plays offline **and
+    online** (against the US version and other EU Online games). v02.01 needs its `.rap`, v02.00 none (docs/EU.md)
+  - the Japanese release (`NPJB00001`) has different game code and **cannot be built**
   - **Other versions are refused** (disc copies, other regions, other
     versions). The port is tied to these exact programs.
 
@@ -564,9 +567,11 @@ More help: `docs\TROUBLESHOOTING.md` in this folder.
 **Do I need a PS3 or RPCS3?** No. You need the `.pkg` and `.rap` of your own
 purchase. RPCS3 is not used or installed.
 
-**Can I use a disc copy, the EU/JP version or another version?** The European PSN release (NPEA00019
-version 01.00) builds and plays offline since 1.1.9 (online for it in a later update). Otherwise no: only
-NPUB30009 version 01.00. The builder refuses everything else.
+**Can I use a disc copy, the EU/JP version or another version?** The US PSN release (NPUB30009 version 01.00)
+and the European Online edition (NPEA00019 version 02.00 / 02.01) build and play online and offline (they play
+each other since 1.2.1). The European release NPEA00019 version 01.00 builds and plays offline only. The Japanese
+release has different game code and cannot be built. The builder refuses everything else (disc copies, the US
+"non-Online" version 01.01, other regions).
 
 **Where can I get the game?** From your own PlayStation Network account. We do
 not provide the package or the license and cannot help to get them.

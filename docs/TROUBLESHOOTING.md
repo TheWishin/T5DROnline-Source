@@ -110,10 +110,12 @@ package's content ID:
 
 ### "Choose your license file (.rap) first" or "is not a PS3 license"
 
-The build cannot run without the `.rap`. It is the license of your own purchase.
-We cannot provide it. On a PS3 that has the game activated, licenses are stored
-in the user's `exdata` folder (**untested**: general PS3 knowledge, not
-checked by us).
+The build cannot run without the `.rap`. It is the PSN license of your own
+purchase (`UP0700-NPUB30009_00-...rap`, or `EP...rap` for the European release).
+It comes from your PS3's `exdata` folder, or from the tool you used to back up
+your own purchase (**untested**: general PS3 knowledge, not checked by us).
+The game cannot be built without your own license, and we cannot provide it.
+(The European Online edition v02.00 uses a free license and needs no `.rap`.)
 
 "A .rap file is exactly 16 bytes" means the file is damaged, or it is not a
 `.rap` (for example a web page saved under that name).
@@ -126,8 +128,9 @@ Download it again from your account. If the size is right, send `native\build.lo
 ### "Could not download the public PS3 key data from github.com"
 
 The first build fetches about 50 KB (two text files) from
-`raw.githubusercontent.com`. Check the internet connection. A VPN, proxy,
-firewall or antivirus "web shield" may block it. Press BUILD GAME again once it
+`raw.githubusercontent.com`, needed once. The build tries 3 times with a short
+wait; if it still fails, check your internet connection or firewall. A VPN,
+proxy or antivirus "web shield" may block it. Press BUILD GAME again once it
 works. The build continues where it stopped.
 
 ### "The ps3recomp copy in this folder does not match this version of the port"

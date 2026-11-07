@@ -514,8 +514,8 @@ def describe_pkg(path, out_dir=None):
         return True, "ok", t("{id}  ({size} bytes) -- the European Online edition: it plays offline, and online "
                              "against US and European Online players (1.2.1 crossplay).", id=cid, size=f"{size:,}")
     if prog and not prog["online"]:
-        return True, "ok", t("{id}  ({size} bytes) -- the European version: it plays offline only for now. Online play "
-                             "for it comes in a later update.",
+        return True, "ok", t("{id}  ({size} bytes) -- the European version 01.00: it plays offline only and cannot go "
+                             "online (the European Online edition, version 02.00 or 02.01, can).",
                              id=cid, size=f"{size:,}")
     if prog:
         return True, "ok", t("{id}  ({size} bytes) -- the supported version", id=cid, size=f"{size:,}")
@@ -602,7 +602,9 @@ def make_peek_keys(out_dir, timeout=90):
 
 def describe_rap(path, pkg=None):
     if not path:
-        return False, "error", t("No license chosen.")
+        return False, "error", t("No license chosen. The .rap is the PSN license of your own purchase (UP0700-NPUB30009_00-...rap): from "
+                         "your PS3's exdata folder or the tool you used to back up your own purchase. The game "
+                         "cannot be built without your own license.")
     if not os.path.exists(path):
         return False, "error", t("File not found.")
     if os.path.getsize(path) != 16:

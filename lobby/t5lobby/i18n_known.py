@@ -294,7 +294,12 @@ BUILD_TOOL = (
     N_("Choose your game package (.pkg) first."),
     N_("The package file does not exist: {file}"),
     N_("{file} is not a PS3 package (.pkg)."),
-    N_("Choose your license file (.rap) first."),
+    N_("Choose your license file (.rap) first. The .rap is the PSN license of your own purchase "
+       "(UP0700-NPUB30009_00-...rap, or EP...rap for the European release): it comes from your PS3's exdata "
+       "folder or from the tool you used to back up your own purchase. The game cannot be built without your "
+       "own license."),
+    N_("This package is the Japanese release ({id}). It has different game code and can't be built. The port "
+       "builds: {supported}."),
     N_("{file} is not a PS3 license: a .rap file is exactly 16 bytes."),
     N_("This package has no USRDIR/EBOOT.BIN -- it is not a game package (an add-on or theme?). The port needs "
        "{game}."),
@@ -326,8 +331,8 @@ BUILD_TOOL = (
     N_("This folder is incomplete ({folders} missing). Extract the release zip again with \"Extract All\" into a "
        "short path such as {example}, then start T5DR Online.exe from there -- not from inside the zip."),
     N_("This package's Python is missing pycryptodome. Download the release again."),
-    N_("Could not download the public PS3 key data from github.com (needed once, a few KB). Check the internet "
-       "connection and press BUILD GAME again."),
+    N_("Could not download the public PS3 key data from github.com (needed once, a few KB), even after 3 tries. "
+       "Check your internet connection or firewall and press BUILD GAME again."),
     N_("The C++ build tools (Visual Studio 2022 Build Tools, x64 C++ toolset) are not installed. Open the "
        "launcher's Build tab and click Install next to them."),
     N_("clang-cl.exe and lld-link.exe were not found in toolchain\\llvm\\bin. Download the release again."),

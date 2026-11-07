@@ -12,6 +12,8 @@ import argparse
 import os
 import re
 import sys
+import time
+import urllib.error
 import urllib.request
 
 RAW = "https://raw.githubusercontent.com/RPCS3/rpcs3/master/rpcs3/Crypto/"
@@ -25,8 +27,29 @@ def read(source, name):
     if source:
         with open(os.path.join(source, name), encoding="utf-8") as f:
             return f.read()
-    with urllib.request.urlopen(RAW + name, timeout=60) as r:
-        return r.read().decode("utf-8")
+    return fetch(RAW + name)
+
+
+TRIES = 3          # 1.2.2: a flaky connection or a firewall that lets the second try through
+WAIT_S = 2.0
+
+
+def fetch(url, tries=None, wait=None, opener=None):
+    """The text at `url`: up to `tries` attempts (default 3) with a short wait between them; the last error is raised
+    (build_game recognises urlopen/URLError and says what to check)."""
+    tries = TRIES if tries is None else tries
+    wait = WAIT_S if wait is None else wait
+    opener = opener or urllib.request.urlopen
+    for n in range(1, tries + 1):
+        try:
+            with opener(url, timeout=60) as r:
+                return r.read().decode("utf-8")
+        except (urllib.error.URLError, OSError) as e:       # (URLError, timeouts, resets)
+            if n == tries:
+                raise
+            print(f"  could not fetch {url.rsplit('/', 1)[-1]} ({e}); trying again in {wait:g} s ({n}/{tries})",
+                  file=sys.stderr)
+            time.sleep(wait)
 
 
 def main():

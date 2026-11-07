@@ -74,6 +74,51 @@ class MakeKeys(unittest.TestCase):
             self.assertIn("RAP_E2 not found", r.stderr)
             self.assertFalse(os.path.exists(os.path.join(d, "ps3.keys")))
 
+class FetchRetries(unittest.TestCase):
+    """1.2.2: a missing internet for the public key data is tried 3 times before the build fails."""
+
+    mk = load_tool("make_keys")
+
+    class Resp:
+        def __init__(self, text):
+            self.text = text
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return self.text.encode()
+
+    def opener(self, fails, calls):
+        import urllib.error
+
+        def f(url, timeout=None):
+            calls.append(url)
+            if len(calls) <= fails:
+                raise urllib.error.URLError("getaddrinfo failed")
+            return self.Resp("ok")
+        return f
+
+    def test_second_try_succeeds(self):
+        calls = []
+        self.assertEqual(self.mk.fetch("https://x/y.h", wait=0, opener=self.opener(2, calls)), "ok")
+        self.assertEqual(len(calls), 3)
+
+    def test_three_failures_raise_the_url_error(self):
+        import urllib.error
+        calls = []
+        with self.assertRaises(urllib.error.URLError):
+            self.mk.fetch("https://x/y.h", wait=0, opener=self.opener(9, calls))
+        self.assertEqual(len(calls), 3)
+
+    def test_first_try_needs_no_wait(self):
+        calls = []
+        self.assertEqual(self.mk.fetch("https://x/y.h", wait=60, opener=self.opener(0, calls)), "ok")
+        self.assertEqual(len(calls), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

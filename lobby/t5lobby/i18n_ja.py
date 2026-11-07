@@ -302,8 +302,8 @@ MESSAGES = {
     "Cannot read the file: {error}": "ファイルを読み込めません：{error}",
     "This is not a PS3 package (.pkg).": "PS3パッケージ（.pkg）ではありません。",
     "{id}  ({size} bytes) -- the supported version": "{id}  ({size} バイト) -- 対応バージョン",
-    "{id}  ({size} bytes) -- the European version: it plays offline only for now. Online play for it comes in a later update.":
-        "{id}  ({size} バイト) -- 欧州版：今のところオフラインでのみ遊べます。欧州版のオンライン対戦は今後のアップデートで対応します。",
+    '{id}  ({size} bytes) -- the European version 01.00: it plays offline only and cannot go online (the European Online edition, version 02.00 or 02.01, can).':
+        '{id}  （{size} バイト） -- 欧州版 01.00：オフライン専用で、オンラインには接続できません（欧州版 Online、バージョン 02.00 / 02.01 はできます）。',
     "checking the game version inside the package…": "パッケージ内のゲームバージョンを確認中…",
     "{id}  ({size} bytes) -- Tekken 5 DR, but not the supported package ({supported}). "
     "The build will most likely refuse it.":
@@ -311,7 +311,8 @@ MESSAGES = {
         "否します。",
     "{id}  ({size} bytes) -- not Tekken 5 DR Online ({title_id}).":
         "{id}  ({size} バイト) -- Tekken 5 DR Online ではありません（{title_id}）。",
-    "No license chosen.": "ライセンスが選択されていません。",
+    "No license chosen. The .rap is the PSN license of your own purchase (UP0700-NPUB30009_00-...rap): from your PS3's exdata folder or the tool you used to back up your own purchase. The game cannot be built without your own license.":
+        'ライセンスが選択されていません。.rap はご自身で購入した分の PSN ライセンスです（UP0700-NPUB30009_00-...rap）。PS3 の exdata フォルダー、またはご自身の購入分をバックアップしたツールから入手できます。ご自身のライセンスがないとゲームはビルドできません。',
     "Not a PS3 license: a .rap file is exactly 16 bytes.":
         "PS3のライセンスではありません。.rap ファイルはちょうど16バイトです。",
     "{name} -- matches the supported package": "{name} -- 対応パッケージと一致",
@@ -634,8 +635,8 @@ MESSAGES = {
     "The launcher looks in this PC's logs and settings for the problems other players had, and says how to fix them. Nothing is changed and nothing is sent.":
         "ランチャーがこのPCのログと設定から、他のプレイヤーに起きた問題を探し、直し方を表示します。何も変更せず、何も送信しません。",
     "Your game package is version {version}": "ゲームのパッケージがバージョン{version}です",
-    "The port works only with version {supported} of the game: TEKKEN 5 DARK RESURRECTION ONLINE, US PSN (NPUB30009), a .pkg of {size} bytes, with its license {rap}; or TEKKEN 5 DARK RESURRECTION, European PSN (NPEA00019), a .pkg of {eu_size} bytes, with its license {eu_rap} (offline only for now). Version {version} cannot be used, whatever the license. Choose a {supported} package on the Build tab and press BUILD GAME.":
-        "このポートはゲームのバージョン{supported}でのみ動作します：TEKKEN 5 DARK RESURRECTION ONLINE、北米PSN（NPUB30009）、{size}バイトの.pkgとそのライセンス{rap}；またはTEKKEN 5 DARK RESURRECTION、欧州PSN（NPEA00019）、{eu_size}バイトの.pkgとそのライセンス{eu_rap}（今はオフラインのみ）。バージョン{version}はどのライセンスでも使えません。ビルドタブで{supported}のパッケージを選び、BUILD GAMEを押してください。",
+    'The port works only with version {supported} of the game: TEKKEN 5 DARK RESURRECTION ONLINE, US PSN (NPUB30009), a .pkg of {size} bytes, with its license {rap}; TEKKEN 5 DARK RESURRECTION ONLINE, European PSN (NPEA00019 version 02.00 or 02.01), which also plays online against the US version; or TEKKEN 5 DARK RESURRECTION, European PSN (NPEA00019 version 01.00), a .pkg of {eu_size} bytes, with its license {eu_rap} (offline only). The Japanese release has different game code and cannot be built. Version {version} cannot be used, whatever the license. Choose a {supported} package on the Build tab and press BUILD GAME.':
+        'このポートが対応するのは、ゲームのバージョン {supported} のみです：TEKKEN 5 DARK RESURRECTION ONLINE、米国 PSN（NPUB30009）、{size} バイトの .pkg とライセンス {rap}；TEKKEN 5 DARK RESURRECTION ONLINE、欧州 PSN（NPEA00019 バージョン 02.00 / 02.01、米国版ともオンライン対戦できます）；TEKKEN 5 DARK RESURRECTION、欧州 PSN（NPEA00019 バージョン 01.00）、{eu_size} バイトの .pkg とライセンス {eu_rap}（オフライン専用）。日本版はゲームコードが異なるためビルドできません。バージョン {version} は、ライセンスに関係なく使用できません。Build タブで {supported} のパッケージを選び、BUILD GAME を押してください。',
     "build.log: the package says version {version}.": "build.log：パッケージのバージョンは{version}です。",
     "Unpacking the game ran out of memory": "ゲームの展開中にメモリが不足しました",
     "Close other programs (browser, games, launchers) and press BUILD GAME again; since 1.1.5 the launcher unpacks the game in small pieces. If it fails again, check that Windows has a page file (System > About > Advanced system settings > Performance > Virtual memory: automatic).":
@@ -1143,7 +1144,10 @@ MESSAGES = {
     "Choose your game package (.pkg) first.": "先にゲームパッケージ（.pkg）を選んでください。",
     "The package file does not exist: {file}": "パッケージファイルがありません：{file}",
     "{file} is not a PS3 package (.pkg).": "{file} は PS3 パッケージ（.pkg）ではありません。",
-    "Choose your license file (.rap) first.": "先にライセンスファイル（.rap）を選んでください。",
+    "Choose your license file (.rap) first. The .rap is the PSN license of your own purchase (UP0700-NPUB30009_00-...rap, or EP...rap for the European release): it comes from your PS3's exdata folder or from the tool you used to back up your own purchase. The game cannot be built without your own license.":
+        '先にライセンスファイル（.rap）を選んでください。.rap はご自身で購入した分の PSN ライセンスです（UP0700-NPUB30009_00-...rap、欧州版は EP...rap）。PS3 の exdata フォルダー、またはご自身の購入分をバックアップしたツールから入手できます。ご自身のライセンスがないとゲームはビルドできません。',
+    "This package is the Japanese release ({id}). It has different game code and can't be built. The port builds: {supported}.":
+        'このパッケージは日本版（{id}）です。ゲームコードが異なるためビルドできません。このポートがビルドできるのは：{supported}。',
     "{file} is not a PS3 license: a .rap file is exactly 16 bytes.":
         "{file} は PS3 のライセンスではありません。.rap ファイルはちょうど16バイトです。",
     "This package has no USRDIR/EBOOT.BIN -- it is not a game package (an add-on or "
@@ -1240,10 +1244,8 @@ MESSAGES = {
         "zip を使ってください。",
     "This package's Python is missing pycryptodome. Download the release again.":
         "このパッケージの Python に pycryptodome がありません。リリースをもう一度ダウンロードしてください。",
-    "Could not download the public PS3 key data from github.com (needed once, a few KB). "
-    "Check the internet connection and press BUILD GAME again.":
-        "github.com から公開 PS3 鍵データをダウンロードできませんでした（初回のみ必要、数KB）。インターネット接続を確"
-        "認して、もう一度 BUILD GAME を押してください。",
+    'Could not download the public PS3 key data from github.com (needed once, a few KB), even after 3 tries. Check your internet connection or firewall and press BUILD GAME again.':
+        'github.com から公開 PS3 キーデータをダウンロードできませんでした（3 回試しました。最初の一度だけ必要で、数 KB です）。インターネット接続またはファイアウォールを確認して、もう一度 BUILD GAME を押してください。',
     "The C++ build tools (Visual Studio 2022 Build Tools, x64 C++ toolset) are not "
     "installed. Open the launcher's Build tab and click Install next to them.":
         "C++ ビルドツール（Visual Studio 2022 Build Tools、x64 C++ ツールセット）がインストールされていません。ランチ"
@@ -1867,8 +1869,8 @@ MESSAGES = {
     "The game is not built.": "ゲームがビルドされていません。",
     "This game is the European version ({title_id}): it plays offline only. Online play needs the US version (NPUB30009) or the European Online edition.":
         "このゲームは欧州版（{title_id}）です：オフラインのみで遊べます。オンライン対戦には北米版（NPUB30009）または欧州オンライン版が必要です。",
-    "Your game is the European version: offline only for now":
-        "あなたのゲームは欧州版です：今のところオフラインのみ",
+    'Your game is the European version 01.00: offline only':
+        'お使いのゲームは欧州版 01.00 です：オフライン専用',
     "The European version ({title_id}) plays its offline modes but cannot go online. Online play needs the US version (NPUB30009) or the European Online edition, which play each other in 1.2.1.":
         "欧州版（{title_id}）はオフラインのモードで遊べますが、オンライン対戦はできません。オンライン対戦には北米版（NPUB30009）または欧州オンライン版が必要で、この二つは 1.2.1 から互いに対戦できます。",
     "Build stamp: the game is {title_id}.":

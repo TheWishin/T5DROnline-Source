@@ -67,8 +67,8 @@ class HasOnline(unittest.TestCase):
             with redirect_stdout(buf):
                 rc = cli.main(["--server", "127.0.0.1:1", "--name", "x", "--build-out", d, "--quick"])
             self.assertEqual(rc, 1)
-            self.assertIn("NPEA00019, the European version: it plays offline only for now", buf.getvalue())
-            self.assertIn("later update", buf.getvalue())
+            self.assertIn("NPEA00019, the European version 01.00: it plays offline only and cannot go online",
+                          buf.getvalue())
             self.assertNotIn("--macos-online", buf.getvalue())
 
     def test_game_title(self):

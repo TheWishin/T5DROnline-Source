@@ -133,10 +133,12 @@ def check_build(out_dir):
         out.append(Finding(
             "package_version", N_("Your game package is version {version}"),
             N_("The port works only with version {supported} of the game: TEKKEN 5 DARK RESURRECTION ONLINE, US PSN "
-               "(NPUB30009), a .pkg of {size} bytes, with its license {rap}; or TEKKEN 5 DARK RESURRECTION, European "
-               "PSN (NPEA00019), a .pkg of {eu_size} bytes, with its license {eu_rap} (offline only for now). "
-               "Version {version} cannot be used, whatever the license. Choose a {supported} package on the Build tab "
-               "and press BUILD GAME."),
+               "(NPUB30009), a .pkg of {size} bytes, with its license {rap}; TEKKEN 5 DARK RESURRECTION ONLINE, European "
+               "PSN (NPEA00019 version 02.00 or 02.01), which also plays online against the US version; or TEKKEN 5 "
+               "DARK RESURRECTION, European PSN (NPEA00019 version 01.00), a .pkg of {eu_size} bytes, with its "
+               "license {eu_rap} (offline only). The Japanese release has different game code and cannot be built. "
+               "Version {version} cannot be used, whatever the license. Choose a {supported} package on the Build "
+               "tab and press BUILD GAME."),
             N_("build.log: the package says version {version}."),
             {"version": ver, "supported": SUPPORTED_VERSION, "size": PKG_SIZE, "rap": RAP_NAME,
              "eu_size": EU_PKG_SIZE, "eu_rap": EU_RAP_NAME},
@@ -163,7 +165,7 @@ def check_build(out_dir):
 
 # ---------------------------------------------------------------------------- the game
 def check_edition(out_dir):
-    """1.1.9: a game built from the European release (build stamp "title": NPEA00019) plays offline only for now."""
+    """1.1.9: a game built from the European release (build stamp "title": NPEA00019) plays offline only (the European Online edition, 02.0x, is the online one)."""
     try:
         with open(os.path.join(out_dir, "build", "t5dr_build.json"), encoding="utf-8") as f:
             stamp = json.load(f)
@@ -180,7 +182,7 @@ def check_edition(out_dir):
             N_("Build stamp: the game is {title_id} version {version}."), {"title_id": title, "version": version},
             kind="hint")]
     return [Finding(
-        "eu_offline", N_("Your game is the European version: offline only for now"),
+        "eu_offline", N_("Your game is the European version 01.00: offline only"),
         N_("The European version ({title_id}) plays its offline modes but cannot go online. Online play needs the "
            "US version (NPUB30009) or the European Online edition, which play each other in 1.2.1."),
         N_("Build stamp: the game is {title_id}."), {"title_id": title}, kind="hint")]

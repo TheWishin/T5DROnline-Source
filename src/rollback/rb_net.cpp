@@ -59,6 +59,14 @@ uint32_t g_saved_minvb[2] = { 0, 1 };   /* the present's min vblanks (u64) befor
 uint32_t g_started_at = 0;
 const uint32_t kPhaseWord = T5A(0x1008F070u);
 uint32_t g_phase_lock = 0, g_lock_until = 0, g_last_phase = 0xFFFFFFFFu, g_phase_changes = 0;
+/* Direct fight: the first frames after the intro (phase <= 12 -> 17, "Fight!") run in lockstep. The title starts the
+ * stage's music in the last intro frame or the first fight frame, whichever the stream thread's timing gives; started
+ * in the first fight frame and then re-simulated by a rollback (with input delay 0 nearly always: the peer's input of
+ * that frame comes 2-3 frames late), the title's music manager never again faded, stopped or started a track -- that
+ * stage's music for the rest of the session (t5-flash-121, 1.2.2; the sound hooks keep the library calls from being
+ * made twice, but what the stream side wrote back into the restored frame is lost). With an input delay of 2 or more
+ * the inputs of these frames are already there: no wait. T5_RB_NET_FIGHT_LOCK=0 = 1.2.1. */
+uint32_t g_fight_lock = 3;
 uint32_t g_load_lock = 60;       /* T5_RB_NET_LOAD_LOCK: lockstep frames after a load completed (loader drain waited) */
 uint32_t g_loads = 0;
 /* The fight intro takes no input. From the match-start barrier to "Fight!"
@@ -357,13 +365,13 @@ void report()
     note("rbnet: %u frames in %.1f s (%.1f fps), %u rollbacks (%u frames re-simulated, max depth %u, depth histogram%s), %.2f ms per rollback (max %.2f; "
          "restore %.2f ms of it), %u stalls (%.1f ms, %.1f ms of them in lockstep windows), %u frames ran on predicted input, %u time-sync sleeps (%.0f ms), avg advantage %.2f frames, commit avg %.2f ms, peer ack %u, desync mismatches %u, phase changes %u, "
          "sounds: %u started live, %u kept from a first run, %u new in re-simulated frames, %u from mispredicted frames played on, "
-         "stops in re-simulated frames: %u repeats skipped, %u new not applied; %u status answers replayed; music/bank events: %u repeats skipped, %u new",
+         "stops in re-simulated frames: %u repeats skipped, %u new not applied; %u status answers replayed; music/bank events: %u repeats skipped, %u new; back-to-back rollback passes %u",
          g_st.frames, win_ms / 1000.0, g_st.frames * 1000.0 / (win_ms > 0 ? win_ms : 1), g_st.rollbacks, g_st.resim_frames, g_st.max_depth, n ? hist : " -",
          g_st.rollbacks ? g_st.rollback_ms / g_st.rollbacks : 0.0, g_st.rollback_ms_max,
          g_st.rollbacks ? g_st.restore_ms / g_st.rollbacks : 0.0, g_st.stalls, g_st.stall_ms, g_st.stall_ms_lock, g_st.predicted,
          g_st.sleeps, g_st.sleep_ms, g_st.frames ? g_st.lead_sum / g_st.frames : 0.0,
          g_st.frames ? g_st.commit_ms / g_st.frames : 0.0, np::rb_peer_ack(), np::rb_mismatches(), g_phase_changes,
-         ss.started_live, ss.deduped, ss.started_resim, ss.orphaned, ss.stops_kept, ss.stops_suppressed, ss.queries_replayed, ss.events_kept, ss.events_new);
+         ss.started_live, ss.deduped, ss.started_resim, ss.orphaned, ss.stops_kept, ss.stops_suppressed, ss.queries_replayed, ss.events_kept, ss.events_new, ss.passes_back_to_back);
     note("rbnet: frame times (host live boundaries) this window p50 %.1f ms p99 %.1f ms max %.1f ms; whole run p50 %.1f p99 %.1f; intro frames with neutral input %u, post-match frames by rule %u, select screen frames in lockstep %u, loads %u, forced rollbacks %u",
          ft_pct(g_ft_win, 0.5), ft_pct(g_ft_win, 0.99), ft_pct(g_ft_win, 0.99999), ft_pct(g_ft_all, 0.5), ft_pct(g_ft_all, 0.99), g_intro_frames, g_post_frames, g_select_lock_frames, g_loads, g_forced);
     {   /* frame-time branch: p95 too, and the frames of the fight alone (no loads, intro or result screens) */
@@ -470,6 +478,7 @@ bool enabled()
             if (const char* s = getenv("T5_RB_NET_START")) { if (!strncmp(s, "frame:", 6)) g_start = (uint32_t)atoi(s + 6); else g_start = (uint32_t)atoi(s); }
             if (const char* s = getenv("T5_RB_NET_MAXPRED")) g_maxpred = (uint32_t)std::max(1, std::min(16, atoi(s)));
             if (const char* s = getenv("T5_RB_NET_PHASE_LOCK")) g_phase_lock = (uint32_t)atoi(s);
+            if (const char* s = getenv("T5_RB_NET_FIGHT_LOCK")) g_fight_lock = (uint32_t)std::max(0, std::min(60, atoi(s)));
             if (const char* s = getenv("T5_RB_NET_LOAD_LOCK")) g_load_lock = (uint32_t)atoi(s);
             g_intro_rule = (getenv("T5_FIGHT") && *getenv("T5_FIGHT")) || (getenv("T5_FIGHT_FILE") && *getenv("T5_FIGHT_FILE")) ||
                            (getenv("T5_CTL_DIR") && *getenv("T5_CTL_DIR")) || np::replaying();   /* (a replay is a direct fight) */
@@ -1018,8 +1027,9 @@ static uint32_t boundary(uint32_t f, bool scene_flag, np::PadInput out[2])
              * lockstep window keeps every frame after the transition
              * confirmed, so only the few frames right before it can ever be
              * re-simulated across it */
-            if (f + g_phase_lock > g_lock_until) g_lock_until = f + g_phase_lock;   /* never shortens a warm-up or load window */
-            if (g_verbose) note("rbnet: frame %u: fight phase %u -> %u: lockstep for %u frames", f, g_last_phase, phase, g_phase_lock);
+            const uint32_t lock = g_intro_rule && g_last_phase <= 12 && phase == 17 ? std::max(g_phase_lock, g_fight_lock) : g_phase_lock;
+            if (f + lock > g_lock_until) g_lock_until = f + lock;   /* never shortens a warm-up or load window */
+            if (g_verbose) note("rbnet: frame %u: fight phase %u -> %u: lockstep for %u frames", f, g_last_phase, phase, lock);
         }
         g_last_phase = phase;
         if (g_wft_frames && wft_enabled()) {

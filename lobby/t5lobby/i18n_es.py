@@ -2748,6 +2748,7 @@ MESSAGES = {
     "Delay: {frames}": "Delay: {frames}",
     "Input delay {frames} (auto, from the ping)": "Input delay {frames} (auto, según el ping)",
     "Input delay {frames} (chosen by the challenger)": "Input delay {frames} (elegido por quien desafía)",
+    "Low for {ping} ms (Auto: {auto}): expect heavy rollback and slow loading screens.": "Bajo para {ping} ms (Auto: {auto}): mucho rollback y pantallas de carga lentas.",
     "Input delay: {delay}.": "Input delay: {delay}.",
     "Unavailable": "No disponible",
     "Ranked L": "Ranked D",

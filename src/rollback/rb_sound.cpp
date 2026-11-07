@@ -292,9 +292,36 @@ void sound_install()
                                             : g_mode == SoundMode::Skip ? "skip (sound update off)" : "raw (everything runs again)");
 }
 
+/* the pass is over: a sound an earlier run started that no run of the pass
+ * asked for again belongs to the mispredicted timeline -- it plays on */
+static void end_pass()
+{
+    for (uint32_t k = g_pass_from; k <= g_pass_to; k++) {
+        FrameLog& K = g_log[k % kFrames];
+        if (K.tag != k + 1) continue;
+        for (uint32_t i = 0; i < K.n; i++)
+            if (!K.e[i].used && !K.e[i].orphan) {
+                K.e[i].orphan = true; g_st.orphaned++;
+                if (g_trace) fprintf(g_trace, "O %u grp=%d id=%d ch=%d f=%x\n", k, K.e[i].grp, K.e[i].id, K.e[i].ch, K.e[i].flags);
+            }
+    }
+}
+
 void sound_begin_frame(uint32_t f, bool resim)
 {
-    if (resim && !g_resim) {
+    /* A rollback can begin at the very boundary where the previous one came
+     * back to the live frame, before that frame ran: input that arrived during
+     * the re-simulation shows another misprediction (rb_net.cpp boundary():
+     * rollback_done, then start_rollback). The sound side then sees a
+     * re-simulated frame at or before the one it ran last, with no live frame
+     * between -- a new pass all the same. Until 1.2.2 that pass kept the
+     * previous pass's matches, so every sound of its frames started a second
+     * time, music/bank events went to the library again and stops were
+     * dropped (t5-flash-121: 30-40 such passes per match with input delay 0,
+     * the doubled starts in the sound trace as N entries after D ones). */
+    const bool back_to_back = resim && g_resim && f <= g_frame;
+    if (back_to_back) { g_st.passes_back_to_back++; end_pass(); }
+    if (resim && (!g_resim || back_to_back)) {
         /* a rollback pass begins: frames f .. the last live frame run again;
          * what their earlier runs started and told the library is up for
          * matching once more */
@@ -306,17 +333,7 @@ void sound_begin_frame(uint32_t f, bool resim)
             if (C.tag == k + 1) for (uint32_t i = 0; i < C.n; i++) C.c[i].used = false;
         }
     } else if (!resim && g_resim) {
-        /* the pass is over: a sound an earlier run started that no run of the
-         * pass asked for again belongs to the mispredicted timeline -- it plays on */
-        for (uint32_t k = g_pass_from; k <= g_pass_to; k++) {
-            FrameLog& K = g_log[k % kFrames];
-            if (K.tag != k + 1) continue;
-            for (uint32_t i = 0; i < K.n; i++)
-                if (!K.e[i].used && !K.e[i].orphan) {
-                    K.e[i].orphan = true; g_st.orphaned++;
-                    if (g_trace) fprintf(g_trace, "O %u grp=%d id=%d ch=%d f=%x\n", k, K.e[i].grp, K.e[i].id, K.e[i].ch, K.e[i].flags);
-                }
-        }
+        end_pass();
     }
     g_frame = f; g_resim = resim;
     if (!resim) {   /* first run of f */

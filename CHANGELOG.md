@@ -3,6 +3,19 @@
 All notable changes, newest first. The project is a test release. Short commit hashes are in parentheses. The state of each
 part is in the README's status table.
 
+## v1.2.2 (unreleased)
+
+### Online
+- **Music stuck on one stage's theme for a whole set** (rollback, mostly with input delay 0): when the stage's music
+  started in the first frame of "Fight!" and a rollback ran that frame again, the game never changed the music again
+  until it was closed. The first frames after the intro now wait for the opponent's input (no rollback can reach the
+  music start). With input delay 2 or more there is nothing to wait for.
+- **Sounds no longer start twice** when a rollback begins right where the previous one ended (frequent with input
+  delay 0): the second rollback started every sound of its frames again.
+- **A challenge with a very low input delay says so**: when the chosen delay is 2 or more frames below what Auto picks
+  for the ping (at 65 ms: 0 instead of 2), the card and the chat line say "Low for 65 ms (Auto: 2): expect heavy
+  rollback and slow loading screens."
+
 ## v1.2.1 (2026-11-04)
 
 **A practice menu like in newer Tekken games, faster play on old PCs, an "online feel" for the input delay, a

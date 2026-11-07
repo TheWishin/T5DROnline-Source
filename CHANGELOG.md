@@ -5,6 +5,17 @@ part is in the README's status table.
 
 ## v1.2.2 (unreleased)
 
+### Online
+- **Music stuck on one stage's theme for a whole set** (rollback, mostly with input delay 0): when the stage's music
+  started in the first frame of "Fight!" and a rollback ran that frame again, the game never changed the music again
+  until it was closed. The first frames after the intro now wait for the opponent's input (no rollback can reach the
+  music start). With input delay 2 or more there is nothing to wait for.
+- **Sounds no longer start twice** when a rollback begins right where the previous one ended (frequent with input
+  delay 0): the second rollback started every sound of its frames again.
+- **A challenge with a very low input delay says so**: when the chosen delay is 2 or more frames below what Auto picks
+  for the ping (at 65 ms: 0 instead of 2), the card and the chat line say "Low for 65 ms (Auto: 2): expect heavy
+  rollback and slow loading screens."
+
 ### Launcher and help
 - **The build messages now say what is true since 1.2.1.** The European Online edition (NPEA00019 version 02.00 /
   02.01) is online and offline and plays the US version; the European release 01.00 is offline only and cannot go

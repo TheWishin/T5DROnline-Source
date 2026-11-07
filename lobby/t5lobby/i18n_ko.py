@@ -2681,6 +2681,7 @@ MESSAGES = {
     "Delay: {frames}": "지연: {frames}",
     "Input delay {frames} (auto, from the ping)": "입력 지연 {frames} (자동, Ping 기준)",
     "Input delay {frames} (chosen by the challenger)": "입력 지연 {frames} (도전한 사람이 선택)",
+    "Low for {ping} ms (Auto: {auto}): expect heavy rollback and slow loading screens.": "{ping} ms에는 낮습니다 (Auto: {auto}): 롤백이 잦고 로딩 화면이 느려집니다.",
     "Input delay: {delay}.": "입력 지연: {delay}.",
     "Unavailable": "불가",
     "Ranked L": "Ranked 패",

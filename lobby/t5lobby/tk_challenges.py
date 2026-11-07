@@ -60,6 +60,23 @@ def auto_delay(ms, extended=False):
     return 1 if ms <= 60 else 2
 
 
+def low_delay_note(d, ms, extended=False):
+    """A warning for a challenge whose input delay is far below what Auto picks for the ping: '' when it is not.
+    With 2+ frames below Auto (at 65 ms: 0 instead of 2) every press of the opponent arrives late and is rolled back,
+    and the screens between the fights, which wait for each frame's input, slow down (t5-flash-121, 1.2.2)."""
+    if not isinstance(d, dict) or d.get("auto") or not isinstance(d.get("frames"), int):
+        return ""
+    if isinstance(ms, dict):                  # the server's ping: {"ms", "kind", "known"}
+        ms = ms.get("ms") if ms.get("known", True) else None
+    if isinstance(ms, bool) or not isinstance(ms, (int, float)):
+        return ""
+    auto = auto_delay(ms, extended=extended)
+    if auto is None or d["frames"] > auto - 2:
+        return ""
+    return t("Low for {ping} ms (Auto: {auto}): expect heavy rollback and slow loading screens.", ping=int(round(ms)),
+             auto=auto)
+
+
 def delay_text(d):
     """A challenge's `delay` ({"frames", "auto"}) as "2 (auto)" / "1"; '' when there is none."""
     if not isinstance(d, dict):
@@ -109,6 +126,13 @@ class ChallengesUI:
         pid = sel[0] if sel and sel[0] != AWAY else None
         extended = c is not None and hasattr(c, "challenge_delay_max") and c.challenge_delay_max(pid) == 8
         return DELAY_CHOICES if extended else LEGACY_DELAY_CHOICES
+
+    def _extended(self):
+        """Auto on the 1..8 curve (a 1.2.0 server and opponent) or the old 1/2 one; False without a tab (tests)."""
+        try:
+            return self.delay_choices() == DELAY_CHOICES
+        except AttributeError:
+            return False
 
     def effective_delay(self):
         """Keep a remembered high choice, but show and send Auto where the server or opponent cannot take it."""
@@ -166,7 +190,7 @@ class ChallengesUI:
         ms = None
         if sel:
             ms = (getattr(self.tab, "_list_rtt", {}) or {}).get(sel[0], (None, False))[0]
-        self._auto_for = auto_delay(ms, extended=self.delay_choices() == DELAY_CHOICES)
+        self._auto_for = auto_delay(ms, extended=self._extended())
         self._fill_delay()                         # equal pings can still have different supported choices
         self._show_open()
 
@@ -263,8 +287,10 @@ class ChallengesUI:
         name = ((r.get("to") or {}).get("name") if isinstance(r, dict) else None) or name
         delay = r.get("delay") if isinstance(r, dict) else None
         d = delay_text(delay)
+        warn = low_delay_note(delay, r.get("ping") if isinstance(r, dict) else None,
+                              extended=self._extended())
         self.tab.chat_line(t("You challenged {name}.", name=name) + (" " + t("Input delay: {delay}.", delay=d)
-                                                                      if d else ""))
+                                                                      if d else "") + (" " + warn if warn else ""))
         self.tab.status(t("Challenge sent."))
         state = self.ended.pop(cid, None)
         if state is not None:                 # (answered before the reply was read)
@@ -292,8 +318,9 @@ class ChallengesUI:
             name = (ev.get("from") or {}).get("name") or "?"
             self.incoming[ev.get("challenge")] = name
             d = delay_text(ev.get("delay"))
+            warn = low_delay_note(ev.get("delay"), ev.get("ping"), extended=self._extended())
             self.tab.chat_line(t("{name} challenges you.", name=name)
-                               + (" " + t("Input delay: {delay}.", delay=d) if d else ""))
+                               + (" " + t("Input delay: {delay}.", delay=d) if d else "") + (" " + warn if warn else ""))
         elif kind == "challenge_update":
             cid, state = ev.get("challenge"), ev.get("state")
             if cid in self.out:
@@ -361,6 +388,9 @@ class ChallengesUI:
         if isinstance(d, dict) and d.get("frames") is not None:
             lines.append(t("Input delay {frames} (auto, from the ping)", frames=d["frames"]) if d.get("auto") else
                          t("Input delay {frames} (chosen by the challenger)", frames=d["frames"]))
+            warn = low_delay_note(d, ev.get("ping"), extended=d["frames"] > 2 or self._extended())
+            if warn:
+                lines.append(warn)
         return " -- ".join(lines)
 
     # ------------------------------------------------------------------ the player list

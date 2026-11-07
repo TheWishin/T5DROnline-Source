@@ -2713,6 +2713,7 @@ MESSAGES = {
     "Delay: {frames}": "遅延: {frames}",
     "Input delay {frames} (auto, from the ping)": "入力遅延 {frames}（自動、Pingから）",
     "Input delay {frames} (chosen by the challenger)": "入力遅延 {frames}（申し込んだ側が指定）",
+    "Low for {ping} ms (Auto: {auto}): expect heavy rollback and slow loading screens.": "{ping} ms には低すぎます（Auto: {auto}）。ロールバックが多くなり、ロード画面が遅くなります。",
     "Input delay: {delay}.": "入力遅延: {delay}。",
     "Unavailable": "対戦不可",
     "Ranked L": "Ranked 敗",

@@ -10,16 +10,17 @@ Since 1.1.9 the build accepts the European PSN release of the game next to the U
 | Package size | 619,430,240 bytes | 599,050,576 bytes |
 | License (.rap) | UP0700-NPUB30009_00-UPDATE0000010000.rap | EP9000-NPEA00019_00-0000000000000000.rap |
 | Decrypted EBOOT.elf | 5,294,536 bytes, SHA-1 be80165b84e30b6334baa6d6331b9db4ffd5a6a4 | 4,168,760 bytes, SHA-1 586baa2074e3d259b303879fc7cbea1000041b60 |
-| What works | everything | offline only for now: its modes (below), sound, movies; online play comes in a later update |
+| What works | everything | offline only: its modes (below), sound, movies; it cannot go online (the EU **Online** edition, below, can) |
 
-**The European version plays offline only for now; online play for it comes in a later update.** Its title
+**The European version 01.00 plays offline only and cannot go online** (the program is not the US one, and the lobby never groups it with
+US; the EU Online edition, below, plays online since 1.2.1). Its title
 menu has five modes: ARCADE BATTLE, GHOST BATTLE, VS BATTLE, GALLERY, OPTIONS (no PRACTICE and no SURVIVAL:
-those came with the US "Online" edition). It does not have yet: online play, the training overlay (input display,
+those came with the US "Online" edition). It does not have: online play, the training overlay (input display,
 frame data), the launcher's unlocks, "late input" (the pads read at the top of each frame, a few ms less input
 lag) and the shader warm-up after BUILD GAME. All of these read or change the game at the US program's
 addresses, and the European program is not the same program (below). The game says so in its log
-(`[t5] ... off -- this game is NPEA00019 v01.00 (EU)`); the launcher says "offline only for now, online play
-in a later update" on the Build tab (package line), on the Online tab (when you log in) and in "Check my
+(`[t5] ... off -- this game is NPEA00019 v01.00 (EU)`); the launcher says "offline only and cannot go online (the European Online edition, version 02.00
+or 02.01, can)" on the Build tab (package line), on the Online tab (when you log in) and in "Check my
 problem" (a hint for a European build).
 
 ### Checked on the real game (1.1.9)
@@ -75,7 +76,7 @@ differently, so not even the desync check could compare them. The lobby already 
 build ID is the same, and the build ID contains the SHA-1 of the decrypted program (lobby/t5lobby/buildid.py):
 a European game is only ever matched with a European game -- nothing in the lobby or the server had to change.
 
-## The European "Online" edition (experimental, offline only)
+## The European "Online" edition (v02.00 / v02.01: online and offline since 1.2.1)
 
 There are two more European packages, both TEKKEN 5 DARK RESURRECTION ONLINE (NPEA00019):
 
@@ -93,13 +94,13 @@ the same game. (The US "non-Online" package, UP0700-NPUB30009_00-000000000000000
 RESURRECTION" VERSION 01.01, ELF 4,206,424 bytes, SHA-1 aa047e02e79e96955835f6bcfd4e6c44d47cdd78, is the "v01.01"
 some players have: the US counterpart of EU v01.00.)
 
-**Build (1.2.1, offline):** both packages are accepted without an opt-in (v02.01 with its .rap; v02.00 without one,
+**Build (1.2.1):** both packages are accepted without an opt-in (v02.01 with its .rap; v02.00 without one,
 using the free-license key from the local keys file). The old `--eu-online` / `T5DR_EU_ONLINE=1` options remain
 accepted for scripts and change nothing. Its tables: code end 0x3D7884 (the last of its 256 import stubs + 0x20), the sound core's 13
 effect functions from its own effect table (`EU_ONLINE_SPU_EXTRA`), the skinning jobs (the US images byte for byte,
 0x600 further on) and its own signal job (`JOBS_EU_ONLINE` in tools/lift_spu_jobs.py), no PGO profile. It plays
-**offline only**: both versions have `"online": false` in the build table and stamp, so the launcher cannot log
-them into the lobby. Enable online only after EU-vs-EU rollback and lockstep pairs pass with zero mismatches.
+**offline and online since 1.2.1**: both versions have `"online": true` and `"crossplay": true` in the build table
+and stamp (1.2.0 had them offline only, until the EU-vs-EU and EU-vs-US pairs passed with zero mismatches).
 The EU Online hooks now use the per-program table in `src/platform/t5_addr.h` / `t5_addr_eu_online.inc`;
 EU v01.00 hooks remain disabled. 1.2.1: the two Online versions log in and share the lobby's declared crossplay
 group with the US program (docs/COMPATIBILITY_GROUPS.md, "Declared crossplay group"); EU v01.00 never joins it.

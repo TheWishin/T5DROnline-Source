@@ -297,6 +297,23 @@ class Steps(unittest.TestCase):
         put(rap, b"\1" * 15)
         self.assertBuildError(lambda: self.bg.step_decrypt(self.args(rap=rap)), "exactly 16 bytes")
 
+    def test_missing_rap_says_what_it_is_and_where_it_comes_from(self):
+        # 1.2.2: three players had no .rap (packages from download sites)
+        with self.assertRaises(self.bg.BuildError) as cm:
+            self.bg.need_rap(self.args())
+        msg = str(cm.exception)
+        for part in ("Choose your license file (.rap) first.", "PSN license of your own purchase",
+                     "UP0700-NPUB30009_00-...rap", "EP...rap", "exdata folder",
+                     "tool you used to back up your own purchase",
+                     "cannot be built without your own license"):
+            self.assertIn(part, msg)
+
+    def test_japanese_package_is_refused_plainly(self):
+        self.assertTrue(self.bg.is_japanese("NPJB00001"))
+        self.assertTrue(self.bg.is_japanese("BLJS10001"))
+        for tid in ("NPUB30009", "NPEA00019", "BLUS30001", "", None):
+            self.assertFalse(self.bg.is_japanese(tid))
+
     def test_need_pkg(self):
         self.assertBuildError(lambda: self.bg.need_pkg(self.args()), "package (.pkg)")
         self.assertBuildError(lambda: self.bg.need_pkg(self.args(pkg=os.path.join(self.tmp.name, "no.pkg"))),

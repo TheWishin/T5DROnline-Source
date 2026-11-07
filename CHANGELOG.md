@@ -3,6 +3,20 @@
 All notable changes, newest first. The project is a test release. Short commit hashes are in parentheses. The state of each
 part is in the README's status table.
 
+## v1.2.2 (unreleased)
+
+### Launcher and help
+- **The build messages now say what is true since 1.2.1.** The European Online edition (NPEA00019 version 02.00 /
+  02.01) is online and offline and plays the US version; the European release 01.00 is offline only and cannot go
+  online (no "later update" any more); the Japanese release (NPJB00001) has different game code and cannot be built
+  (the build says so plainly). README, docs/EU.md and "Check my problem" match.
+- **"Choose your license file (.rap) first"** now says what the .rap is (the PSN license of your own purchase,
+  `UP0700-NPUB30009_00-...rap` or `EP...rap`), where it comes from (your PS3's exdata folder, or the tool you used
+  to back up your own purchase) and that the game cannot be built without your own license. The Build tab's license
+  line says the same.
+- **A missing internet connection for the public PS3 key data** (a few KB from github.com, needed once) is retried
+  3 times with a short wait before the build fails; the message asks you to check your internet or firewall.
+
 ## v1.2.1 (2026-11-04)
 
 **A practice menu like in newer Tekken games, faster play on old PCs, an "online feel" for the input delay, a

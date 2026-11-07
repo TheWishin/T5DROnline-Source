@@ -61,7 +61,9 @@ class Defaults(unittest.TestCase):
         bg = load_build_game(False)
         t = bg.SUPPORTED_TEXT
         self.assertIn("US PSN (NPUB30009 v01.00): online and offline", t)
-        self.assertIn("European PSN (NPEA00019 v02.00 or v02.01): offline only for now", t)
+        self.assertIn("European PSN (NPEA00019 v02.00 or v02.01): online and offline", t)
+        self.assertNotIn("offline only for now", t)
+        self.assertNotIn("EU-vs-EU", t)
         self.assertIn("European PSN (NPEA00019 v01.00): offline only", t)
         self.assertNotIn("01.01", t)
 
@@ -205,6 +207,16 @@ class Steps(unittest.TestCase):
         self.assertIn("This package is version 02.00 of the game (program content ID " + E201_CID, str(cm.exception))
         self.assertIn("The port builds: ", str(cm.exception))
 
+    def test_japanese_package_is_refused_plainly(self):
+        rap = self.stage("UP0700-NPJB00001_00-0000000000000000",
+                         {"TITLE": "TEKKEN 5 DARK RESURRECTION", "TITLE_ID": "NPJB00001", "VERSION": "01.00"})
+        with mock.patch.object(self.bg, "run", lambda *a, **k: self.fail("must not decrypt")),                 self.assertRaises(self.bg.BuildError) as cm:
+            self.bg.step_decrypt(self.args(rap=rap))
+        msg = str(cm.exception)
+        self.assertIn("This package is the Japanese release (NPJB00001). It has different game code and can't be "
+                      "built.", msg)
+        self.assertIn("European PSN (NPEA00019 v02.00 or v02.01): online and offline", msg)
+
     def test_us_still_needs_its_rap(self):
         self.stage(self.bg.CONTENT_ID, {"TITLE": "T5", "TITLE_ID": "NPUB30009", "VERSION": "01.00"})
         _, run = self.decrypt_to(b"US program")
@@ -300,7 +312,7 @@ class PlayerLog120(unittest.TestCase):
         self.assertIn("This copy's program is not one the port knows", msg)
         self.assertIn("version 01.00 (VERSION 02.01)", msg)          # both numbers, not "01.00" alone
         self.assertNotIn("supports only", msg)
-        self.assertIn("European PSN (NPEA00019 v02.00 or v02.01): offline only for now", msg)
+        self.assertIn("European PSN (NPEA00019 v02.00 or v02.01): online and offline", msg)
 
 
 class SoundCoreThread(unittest.TestCase):

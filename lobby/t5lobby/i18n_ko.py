@@ -302,8 +302,8 @@ MESSAGES = {
     "Cannot read the file: {error}": "파일을 읽을 수 없습니다: {error}",
     "This is not a PS3 package (.pkg).": "PS3 패키지(.pkg)가 아닙니다.",
     "{id}  ({size} bytes) -- the supported version": "{id}  ({size}바이트) -- 지원 버전",
-    "{id}  ({size} bytes) -- the European version: it plays offline only for now. Online play for it comes in a later update.":
-        "{id}  ({size}바이트) -- 유럽 버전: 지금은 오프라인으로만 플레이할 수 있습니다. 유럽 버전의 온라인 플레이는 이후 업데이트에서 지원됩니다.",
+    '{id}  ({size} bytes) -- the European version 01.00: it plays offline only and cannot go online (the European Online edition, version 02.00 or 02.01, can).':
+        '{id}  ({size} 바이트) -- 유럽판 01.00: 오프라인 전용이며 온라인에 접속할 수 없습니다(유럽판 Online 에디션 02.00 또는 02.01은 가능합니다).',
     "checking the game version inside the package…": "패키지 안의 게임 버전을 확인하는 중…",
     "{id}  ({size} bytes) -- Tekken 5 DR, but not the supported package ({supported}). "
     "The build will most likely refuse it.":
@@ -311,7 +311,8 @@ MESSAGES = {
         "다.",
     "{id}  ({size} bytes) -- not Tekken 5 DR Online ({title_id}).":
         "{id}  ({size}바이트) -- Tekken 5 DR Online이 아닙니다 ({title_id}).",
-    "No license chosen.": "선택한 라이선스가 없습니다.",
+    "No license chosen. The .rap is the PSN license of your own purchase (UP0700-NPUB30009_00-...rap): from your PS3's exdata folder or the tool you used to back up your own purchase. The game cannot be built without your own license.":
+        '선택한 라이선스가 없습니다. .rap은 직접 구매한 게임의 PSN 라이선스입니다(UP0700-NPUB30009_00-...rap). PS3의 exdata 폴더나 직접 구매한 게임을 백업할 때 쓴 도구에서 얻을 수 있습니다. 본인의 라이선스가 없으면 게임을 빌드할 수 없습니다.',
     "Not a PS3 license: a .rap file is exactly 16 bytes.":
         "PS3 라이선스가 아닙니다. .rap 파일은 정확히 16바이트입니다.",
     "{name} -- matches the supported package": "{name} -- 지원 패키지와 일치",
@@ -630,8 +631,8 @@ MESSAGES = {
     "The launcher looks in this PC's logs and settings for the problems other players had, and says how to fix them. Nothing is changed and nothing is sent.":
         "런처가 이 PC의 로그와 설정에서 다른 플레이어들이 겪었던 문제를 찾아 해결 방법을 알려 줍니다. 아무것도 바꾸지 않고 아무것도 보내지 않습니다.",
     "Your game package is version {version}": "게임 패키지가 버전 {version}입니다",
-    "The port works only with version {supported} of the game: TEKKEN 5 DARK RESURRECTION ONLINE, US PSN (NPUB30009), a .pkg of {size} bytes, with its license {rap}; or TEKKEN 5 DARK RESURRECTION, European PSN (NPEA00019), a .pkg of {eu_size} bytes, with its license {eu_rap} (offline only for now). Version {version} cannot be used, whatever the license. Choose a {supported} package on the Build tab and press BUILD GAME.":
-        "이 포트는 게임 버전 {supported}에서만 동작합니다: TEKKEN 5 DARK RESURRECTION ONLINE, 북미 PSN(NPUB30009), {size}바이트의 .pkg와 그 라이선스 {rap}; 또는 TEKKEN 5 DARK RESURRECTION, 유럽 PSN(NPEA00019), {eu_size}바이트의 .pkg와 그 라이선스 {eu_rap}(지금은 오프라인 전용). 버전 {version}은 어떤 라이선스로도 쓸 수 없습니다. 빌드 탭에서 {supported} 패키지를 선택하고 BUILD GAME을 누르세요.",
+    'The port works only with version {supported} of the game: TEKKEN 5 DARK RESURRECTION ONLINE, US PSN (NPUB30009), a .pkg of {size} bytes, with its license {rap}; TEKKEN 5 DARK RESURRECTION ONLINE, European PSN (NPEA00019 version 02.00 or 02.01), which also plays online against the US version; or TEKKEN 5 DARK RESURRECTION, European PSN (NPEA00019 version 01.00), a .pkg of {eu_size} bytes, with its license {eu_rap} (offline only). The Japanese release has different game code and cannot be built. Version {version} cannot be used, whatever the license. Choose a {supported} package on the Build tab and press BUILD GAME.':
+        '이 포트는 게임 버전 {supported}만 지원합니다: TEKKEN 5 DARK RESURRECTION ONLINE, 미국 PSN(NPUB30009), {size}바이트 .pkg와 라이선스 {rap}; TEKKEN 5 DARK RESURRECTION ONLINE, 유럽 PSN(NPEA00019 버전 02.00 또는 02.01, 미국판과도 온라인 대전 가능); TEKKEN 5 DARK RESURRECTION, 유럽 PSN(NPEA00019 버전 01.00), {eu_size}바이트 .pkg와 라이선스 {eu_rap}(오프라인 전용). 일본판은 게임 코드가 달라 빌드할 수 없습니다. 버전 {version}은(는) 라이선스와 상관없이 사용할 수 없습니다. Build 탭에서 {supported} 패키지를 고르고 BUILD GAME을 누르세요.',
     "build.log: the package says version {version}.": "build.log: 패키지 버전이 {version}입니다.",
     "Unpacking the game ran out of memory": "게임 압축 해제 중 메모리가 부족했습니다",
     "Close other programs (browser, games, launchers) and press BUILD GAME again; since 1.1.5 the launcher unpacks the game in small pieces. If it fails again, check that Windows has a page file (System > About > Advanced system settings > Performance > Virtual memory: automatic).":
@@ -1134,7 +1135,10 @@ MESSAGES = {
     "Choose your game package (.pkg) first.": "먼저 게임 패키지(.pkg)를 고르세요.",
     "The package file does not exist: {file}": "패키지 파일이 없습니다: {file}",
     "{file} is not a PS3 package (.pkg).": "{file}은(는) PS3 패키지(.pkg)가 아닙니다.",
-    "Choose your license file (.rap) first.": "먼저 라이선스 파일(.rap)을 고르세요.",
+    "Choose your license file (.rap) first. The .rap is the PSN license of your own purchase (UP0700-NPUB30009_00-...rap, or EP...rap for the European release): it comes from your PS3's exdata folder or from the tool you used to back up your own purchase. The game cannot be built without your own license.":
+        '먼저 라이선스 파일(.rap)을 고르세요. .rap은 직접 구매한 게임의 PSN 라이선스입니다(UP0700-NPUB30009_00-...rap, 유럽판은 EP...rap). PS3의 exdata 폴더나 직접 구매한 게임을 백업할 때 쓴 도구에서 얻을 수 있습니다. 본인의 라이선스가 없으면 게임을 빌드할 수 없습니다.',
+    "This package is the Japanese release ({id}). It has different game code and can't be built. The port builds: {supported}.":
+        '이 패키지는 일본판({id})입니다. 게임 코드가 달라 빌드할 수 없습니다. 이 포트가 빌드하는 것: {supported}.',
     "{file} is not a PS3 license: a .rap file is exactly 16 bytes.":
         "{file}은(는) PS3 라이선스가 아닙니다. .rap 파일은 정확히 16바이트입니다.",
     "This package has no USRDIR/EBOOT.BIN -- it is not a game package (an add-on or "
@@ -1225,10 +1229,8 @@ MESSAGES = {
         "ps3recomp(리컴파일러)를 받으려면 Git이 필요합니다. Git을 설치하거나, 이미 포함된 릴리스 zip을 쓰세요.",
     "This package's Python is missing pycryptodome. Download the release again.":
         "이 패키지의 Python에 pycryptodome이 없습니다. 릴리스를 다시 받으세요.",
-    "Could not download the public PS3 key data from github.com (needed once, a few KB). "
-    "Check the internet connection and press BUILD GAME again.":
-        "github.com에서 공개 PS3 키 데이터를 받을 수 없습니다 (한 번만 필요, 몇 KB). 인터넷 연결을 확인하고 BUILD "
-        "GAME을 다시 누르세요.",
+    'Could not download the public PS3 key data from github.com (needed once, a few KB), even after 3 tries. Check your internet connection or firewall and press BUILD GAME again.':
+        'github.com에서 공개 PS3 키 데이터를 내려받지 못했습니다(3번 시도했습니다. 처음 한 번만 필요하고 몇 KB입니다). 인터넷 연결이나 방화벽을 확인한 뒤 BUILD GAME을 다시 누르세요.',
     "The C++ build tools (Visual Studio 2022 Build Tools, x64 C++ toolset) are not "
     "installed. Open the launcher's Build tab and click Install next to them.":
         "C++ 빌드 도구(Visual Studio 2022 Build Tools, x64 C++ 도구 세트)가 설치되어 있지 않습니다. 런처의 빌드 탭을 "
@@ -1846,8 +1848,8 @@ MESSAGES = {
     "The game is not built.": "게임이 빌드되지 않았습니다.",
     "This game is the European version ({title_id}): it plays offline only. Online play needs the US version (NPUB30009) or the European Online edition.":
         "이 게임은 유럽 버전({title_id})입니다: 오프라인으로만 플레이할 수 있습니다. 온라인 플레이에는 북미 버전(NPUB30009) 또는 유럽 온라인판이 필요합니다.",
-    "Your game is the European version: offline only for now":
-        "게임이 유럽 버전입니다: 지금은 오프라인 전용",
+    'Your game is the European version 01.00: offline only':
+        '사용 중인 게임은 유럽판 01.00입니다: 오프라인 전용',
     "The European version ({title_id}) plays its offline modes but cannot go online. Online play needs the US version (NPUB30009) or the European Online edition, which play each other in 1.2.1.":
         "유럽 버전({title_id})은 오프라인 모드를 플레이할 수 있지만 온라인으로는 플레이할 수 없습니다. 온라인 플레이에는 북미 버전(NPUB30009) 또는 유럽 온라인판이 필요하며, 이 둘은 1.2.1부터 서로 대전할 수 있습니다.",
     "Build stamp: the game is {title_id}.":

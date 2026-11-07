@@ -143,7 +143,7 @@ PROGRAMS.update(EU_ONLINE_PROGRAMS)
 EDITIONS = {
     "us": ("Tekken 5: Dark Resurrection Online, US PSN (NPUB30009 v01.00)", "online and offline"),
     "eu_online": ("Tekken 5: Dark Resurrection Online, European PSN (NPEA00019 v02.00 or v02.01)",
-                  "offline only for now (online awaits EU-vs-EU validation)"),
+                  "online and offline (plays the US version 1.2.1 and other EU Online games)"),
     "eu": ("Tekken 5: Dark Resurrection, European PSN (NPEA00019 v01.00)", "offline only"),
     "us0101": ("Tekken 5: Dark Resurrection, US PSN, version 01.01 (NPUB30009, not the Online edition)", None),
 }
@@ -171,6 +171,12 @@ def _derive_program_lists():
 def enable_eu_online():
     """1.2.0's opt-in (kept for scripts): the EU Online programs are always accepted since 1.2.1."""
     os.environ[EU_ONLINE_ENV] = "1"
+
+
+def is_japanese(title_id):
+    """The Japanese PSN/disc title IDs (NPJB00001, BLJS...; the 3rd letter J = Japan): different game code (1.2.2)."""
+    t = str(title_id or "")
+    return len(t) >= 4 and t[:2] in ("NP", "BL", "BC") and t[2] == "J"
 
 
 def edition_text(content_id=None, sha=None):
@@ -815,8 +821,8 @@ def step_keys(a):
         run([PY, os.path.join(ROOT, "tools", "make_keys.py"), "--out", P.keys], capture=True)
     except subprocess.CalledProcessError as e:
         if "urlopen" in (e.output or "") or "URLError" in (e.output or "") or "getaddrinfo" in (e.output or ""):
-            fail("Could not download the public PS3 key data from github.com (needed once, a few KB). "
-                 "Check the internet connection and press BUILD GAME again.")
+            fail("Could not download the public PS3 key data from github.com (needed once, a few KB), even after "
+                 "3 tries. Check your internet connection or firewall and press BUILD GAME again.")
         raise
 
 
@@ -899,7 +905,10 @@ def other_package(a):
 
 def need_rap(a):
     if not a.rap:
-        fail("Choose your license file (.rap) first.")
+        fail("Choose your license file (.rap) first. The .rap is the PSN license of your own purchase "
+             "(UP0700-NPUB30009_00-...rap, or EP...rap for the European release): it comes from your PS3's exdata "
+             "folder or from the tool you used to back up your own purchase. The game cannot be built without your "
+             "own license.")
     if not os.path.exists(a.rap) or os.path.getsize(a.rap) != 16:
         fail(f"{a.rap} is not a PS3 license: a .rap file is exactly 16 bytes.")
 
@@ -942,6 +951,9 @@ def step_decrypt(a):
     title, tid, ver = s.get("TITLE", "?"), s.get("TITLE_ID", "?"), sfo_version(s)
     print(f"  PARAM.SFO: {title} / {tid} / version {sfo_version_text(s)}")
     if tid not in TITLE_IDS:
+        if is_japanese(tid):
+            fail(f"This package is the Japanese release ({tid}). It has different game code and can't be built. "
+                 f"The port builds: {SUPPORTED_TEXT}.")
         fail(f"This package is \"{title}\" ({tid}). The port needs {SUPPORTED_TEXT}.")
     kind = program_kind(eboot)
     prog = self_content_id(eboot) if kind == "self" else None
@@ -1002,8 +1014,9 @@ def step_decrypt(a):
         print(f"  note: {have['name']}: it plays offline, and online against other European Online games and "
               "US games of this release (docs/EU.md)")
     elif not have["online"]:
-        print(f"  note: {have['title_id']} is another build of the game than the US one -- it plays offline; online "
-              "play, the practice tools and the training overlay need the US version (NPUB30009) for now")
+        print(f"  note: {have['title_id']} v{have['version']} is another build of the game than the US one -- it "
+              "plays offline only; online play, the practice tools and the training overlay need the US version "
+              "(NPUB30009) or the European Online edition (NPEA00019 v02.00 / v02.01)")
 
 
 def step_unpack(a):

@@ -305,8 +305,8 @@ MESSAGES = {
     "Cannot read the file: {error}": "Impossible de lire le fichier : {error}",
     "This is not a PS3 package (.pkg).": "Ce n'est pas un paquet PS3 (.pkg).",
     "{id}  ({size} bytes) -- the supported version": "{id}  ({size} octets) -- la version prise en charge",
-    "{id}  ({size} bytes) -- the European version: it plays offline only for now. Online play for it comes in a later update.":
-        "{id}  ({size} octets) -- la version européenne : pour l'instant elle se joue hors ligne seulement. Le jeu en ligne pour elle arrivera dans une prochaine mise à jour.",
+    '{id}  ({size} bytes) -- the European version 01.00: it plays offline only and cannot go online (the European Online edition, version 02.00 or 02.01, can).':
+        "{id}  ({size} octets) -- la version européenne 01.00 : elle ne joue qu'hors ligne et ne peut pas aller en ligne (l'édition européenne Online, version 02.00 ou 02.01, le peut).",
     "checking the game version inside the package…": "vérification de la version du jeu dans le paquet…",
     "{id}  ({size} bytes) -- Tekken 5 DR, but not the supported package ({supported}). "
     "The build will most likely refuse it.":
@@ -314,7 +314,8 @@ MESSAGES = {
         "refusera très probablement.",
     "{id}  ({size} bytes) -- not Tekken 5 DR Online ({title_id}).":
         "{id}  ({size} octets) -- pas Tekken 5 DR Online ({title_id}).",
-    "No license chosen.": "Aucune licence choisie.",
+    "No license chosen. The .rap is the PSN license of your own purchase (UP0700-NPUB30009_00-...rap): from your PS3's exdata folder or the tool you used to back up your own purchase. The game cannot be built without your own license.":
+        "Aucune licence choisie. Le .rap est la licence PSN de ton propre achat (UP0700-NPUB30009_00-...rap) : il vient du dossier exdata de ta PS3 ou de l'outil avec lequel tu as sauvegardé ton achat. Le jeu ne peut pas être créé sans ta propre licence.",
     "Not a PS3 license: a .rap file is exactly 16 bytes.":
         "Ce n'est pas une licence PS3 : un fichier .rap fait exactement 16 octets.",
     "{name} -- matches the supported package": "{name} -- correspond au paquet pris en charge",
@@ -645,8 +646,8 @@ MESSAGES = {
     "The launcher looks in this PC's logs and settings for the problems other players had, and says how to fix them. Nothing is changed and nothing is sent.":
         "Le launcher cherche dans les logs et les réglages de ce PC les problèmes que d'autres joueurs ont eus, et indique comment les corriger. Rien n'est modifié et rien n'est envoyé.",
     "Your game package is version {version}": "Votre paquet du jeu est la version {version}",
-    "The port works only with version {supported} of the game: TEKKEN 5 DARK RESURRECTION ONLINE, US PSN (NPUB30009), a .pkg of {size} bytes, with its license {rap}; or TEKKEN 5 DARK RESURRECTION, European PSN (NPEA00019), a .pkg of {eu_size} bytes, with its license {eu_rap} (offline only for now). Version {version} cannot be used, whatever the license. Choose a {supported} package on the Build tab and press BUILD GAME.":
-        "Le port ne fonctionne qu'avec la version {supported} du jeu : TEKKEN 5 DARK RESURRECTION ONLINE, PSN US (NPUB30009), un .pkg de {size} octets, avec sa licence {rap} ; ou TEKKEN 5 DARK RESURRECTION, PSN européen (NPEA00019), un .pkg de {eu_size} octets, avec sa licence {eu_rap} (hors ligne seulement pour l'instant). La version {version} ne peut pas servir, quelle que soit la licence. Choisissez un paquet {supported} dans l'onglet Compiler et appuyez sur BUILD GAME.",
+    'The port works only with version {supported} of the game: TEKKEN 5 DARK RESURRECTION ONLINE, US PSN (NPUB30009), a .pkg of {size} bytes, with its license {rap}; TEKKEN 5 DARK RESURRECTION ONLINE, European PSN (NPEA00019 version 02.00 or 02.01), which also plays online against the US version; or TEKKEN 5 DARK RESURRECTION, European PSN (NPEA00019 version 01.00), a .pkg of {eu_size} bytes, with its license {eu_rap} (offline only). The Japanese release has different game code and cannot be built. Version {version} cannot be used, whatever the license. Choose a {supported} package on the Build tab and press BUILD GAME.':
+        "Le portage ne fonctionne qu'avec la version {supported} du jeu : TEKKEN 5 DARK RESURRECTION ONLINE, PSN américain (NPUB30009), un .pkg de {size} octets, avec sa licence {rap} ; TEKKEN 5 DARK RESURRECTION ONLINE, PSN européen (NPEA00019 version 02.00 ou 02.01), qui joue aussi en ligne contre la version américaine ; ou TEKKEN 5 DARK RESURRECTION, PSN européen (NPEA00019 version 01.00), un .pkg de {eu_size} octets, avec sa licence {eu_rap} (hors ligne uniquement). La version japonaise a un autre code de jeu et ne peut pas être créée. La version {version} est inutilisable, quelle que soit la licence. Choisis un paquet {supported} dans l'onglet Build et clique sur BUILD GAME.",
     "build.log: the package says version {version}.": "build.log : le paquet indique la version {version}.",
     "Unpacking the game ran out of memory": "La mémoire a manqué pendant l'extraction du jeu",
     "Close other programs (browser, games, launchers) and press BUILD GAME again; since 1.1.5 the launcher unpacks the game in small pieces. If it fails again, check that Windows has a page file (System > About > Advanced system settings > Performance > Virtual memory: automatic).":
@@ -1172,7 +1173,10 @@ MESSAGES = {
     "Choose your game package (.pkg) first.": "Choisis d'abord ton paquet du jeu (.pkg).",
     "The package file does not exist: {file}": "Le fichier du paquet n'existe pas : {file}",
     "{file} is not a PS3 package (.pkg).": "{file} n'est pas un paquet PS3 (.pkg).",
-    "Choose your license file (.rap) first.": "Choisis d'abord ton fichier de licence (.rap).",
+    "Choose your license file (.rap) first. The .rap is the PSN license of your own purchase (UP0700-NPUB30009_00-...rap, or EP...rap for the European release): it comes from your PS3's exdata folder or from the tool you used to back up your own purchase. The game cannot be built without your own license.":
+        "Choisis d'abord ton fichier de licence (.rap). Le .rap est la licence PSN de ton propre achat (UP0700-NPUB30009_00-...rap, ou EP...rap pour la version européenne) : il vient du dossier exdata de ta PS3 ou de l'outil avec lequel tu as sauvegardé ton propre achat. Le jeu ne peut pas être créé sans ta propre licence.",
+    "This package is the Japanese release ({id}). It has different game code and can't be built. The port builds: {supported}.":
+        'Ce paquet est la version japonaise ({id}). Elle a un autre code de jeu et ne peut pas être créée. Le portage crée : {supported}.',
     "{file} is not a PS3 license: a .rap file is exactly 16 bytes.":
         "{file} n'est pas une licence PS3 : un fichier .rap fait exactement 16 octets.",
     "This package has no USRDIR/EBOOT.BIN -- it is not a game package (an add-on or "
@@ -1272,10 +1276,8 @@ MESSAGES = {
         "release, qui le contient déjà.",
     "This package's Python is missing pycryptodome. Download the release again.":
         "Il manque pycryptodome dans le Python de ce paquet. Télécharge à nouveau la release.",
-    "Could not download the public PS3 key data from github.com (needed once, a few KB). "
-    "Check the internet connection and press BUILD GAME again.":
-        "Impossible de télécharger les données publiques de clés PS3 depuis github.com (nécessaires une fois, "
-        "quelques Ko). Vérifie la connexion internet et appuie à nouveau sur BUILD GAME.",
+    'Could not download the public PS3 key data from github.com (needed once, a few KB), even after 3 tries. Check your internet connection or firewall and press BUILD GAME again.':
+        'Impossible de télécharger les données de clés PS3 publiques depuis github.com, même après 3 essais (nécessaire une seule fois, quelques Ko). Vérifie ta connexion internet ou le pare-feu et clique de nouveau sur BUILD GAME.',
     "The C++ build tools (Visual Studio 2022 Build Tools, x64 C++ toolset) are not "
     "installed. Open the launcher's Build tab and click Install next to them.":
         "Les outils de compilation C++ (Visual Studio 2022 Build Tools, ensemble d'outils C++ x64) ne sont pas "
@@ -1902,8 +1904,8 @@ MESSAGES = {
     "The game is not built.": "Le jeu n'est pas compilé.",
     "This game is the European version ({title_id}): it plays offline only. Online play needs the US version (NPUB30009) or the European Online edition.":
         "Ce jeu est la version européenne ({title_id}) : elle se joue hors ligne seulement. Le jeu en ligne demande la version US (NPUB30009) ou l'édition Online européenne.",
-    "Your game is the European version: offline only for now":
-        "Votre jeu est la version européenne : hors ligne seulement pour l'instant",
+    'Your game is the European version 01.00: offline only':
+        'Ton jeu est la version européenne 01.00 : hors ligne uniquement',
     "The European version ({title_id}) plays its offline modes but cannot go online. Online play needs the US version (NPUB30009) or the European Online edition, which play each other in 1.2.1.":
         "La version européenne ({title_id}) joue ses modes hors ligne mais ne peut pas jouer en ligne. Le jeu en ligne demande la version US (NPUB30009) ou l'édition Online européenne, qui jouent l'une contre l'autre depuis 1.2.1.",
     "Build stamp: the game is {title_id}.":

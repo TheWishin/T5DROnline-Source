@@ -1069,9 +1069,14 @@ class RenderTests(Base):
         first, second = app.detail.get().split("\n")
         self.assertTrue(first.startswith("Schritt 6 von 9: Code übersetzen"), first)
         self.assertTrue(second.startswith("Der Schritt „Code übersetzen“ hat seit 3 Minuten nichts ausgegeben."), second)
-        app.build.events.put(("error", "Choose your license file (.rap) first."))
+        app.build.events.put(("error", (
+            "Choose your license file (.rap) first. The .rap is the PSN license of your own purchase "
+            "(UP0700-NPUB30009_00-...rap, or EP...rap for the European release): it comes from your PS3's exdata "
+            "folder or from the tool you used to back up your own purchase. The game cannot be built without your "
+            "own license.")))
         app._drain_build()
-        self.assertEqual(app.error.get(), "Wähle zuerst deine Lizenzdatei (.rap).")
+        self.assertTrue(app.error.get().startswith("Wähle zuerst deine Lizenzdatei (.rap). Die .rap ist die PSN-Lizenz"),
+                        app.error.get())
         app.build = None
         self.assertEqual(i18n.missing(), [])
 

@@ -2381,6 +2381,9 @@ def main():
                     help="open the Online tab, log in with the saved login and start searching: ranked, or casual "
                          "(Quick match). Without a saved login the tab opens with a hint")
     a, unknown = ap.parse_known_args()      # (an unknown option from an old shortcut must not stop the launcher)
+    # (a launcher with a testing option is a tool's, never a player's: it must not touch the player's settings)
+    core.declare_launcher(testing=bool(a.screenshots or a.build_steps or a.low_priority or a.play_seconds
+                                       or a.force))
     enable_dpi_awareness()
     if not a.screenshots:
         log_thread_errors()

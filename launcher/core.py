@@ -192,13 +192,69 @@ SETTINGS_SYNC = settings_sync.VERSION
 _TEST_RUN = "unittest" in sys.modules
 
 
+# Set by the launcher's own start (t5dr_launcher.pyw main, declare_launcher): only a launcher a player started may
+# use the player's settings file. Anything else that imports this module -- a tool, a test, a helper process, a
+# launcher started with a testing option -- gets no shared file unless it names a folder of its own.
+_PLAYER_LAUNCHER = False
+# Variables test runs and tools set for the processes they start (any value but "" / "0" for the first group).
+_TEST_ENV_ON = ("T5DR_TESTING", "CI", "GITHUB_ACTIONS", "PYTEST_CURRENT_TEST")
+_TEST_ENV_OFF = ("T5_FW_CHECK", "T5DR_FW_CHECK")           # "0" = a test switched the firewall check off
+_shared_refusal_logged = set()
+
+
+def declare_launcher(testing=False):
+    """Called once by the launcher's main(): this process is the launcher itself. testing: it was started with a
+    testing option (--screenshots, --build-steps, ...), so it is a tool's launcher, not a player's."""
+    global _PLAYER_LAUNCHER
+    _PLAYER_LAUNCHER = not testing
+    return _PLAYER_LAUNCHER
+
+
+def _under(path, parent):
+    try:
+        path, parent = (os.path.normcase(os.path.realpath(x)) for x in (path, parent))
+        return os.path.commonpath([path, parent]) == parent
+    except (OSError, ValueError):
+        return False
+
+
+def shared_settings_refusal(environ=None):
+    """Why this process must not use the player's own settings folder (%APPDATA%/T5DROnline), or None for a
+    launcher a player started from an installed folder. A folder named by T5_SETTINGS_DIR / T5_ONLINE_DIR is never
+    the player's and is not judged here."""
+    env = os.environ if environ is None else environ
+    if _TEST_RUN:
+        return "a test run"
+    if not _PLAYER_LAUNCHER:
+        return "not the launcher itself (a tool or helper process, or a launcher started with a testing option)"
+    for name in _TEST_ENV_ON:
+        if env.get(name, "") not in ("", "0"):
+            return f"{name} is set (a test or tool started this launcher)"
+    for name in _TEST_ENV_OFF:
+        if env.get(name) == "0":
+            return f"{name}=0 (a test or tool started this launcher)"
+    if os.path.exists(os.path.join(ROOT, ".git")) or os.path.isfile(os.path.join(ROOT, "tests", "ci_unittest.py")):
+        return "a source tree, not an installed folder"
+    import tempfile
+    for tmp in {tempfile.gettempdir(), env.get("TEMP") or "", env.get("TMP") or ""} - {""}:
+        if _under(ROOT, tmp):
+            return "the folder is inside the temporary folder (an unpacked test copy)"
+    return None
+
+
 def shared_settings_dir():
     """The folder of the settings both launchers share, or None when this process must not use it: switched off
-    (T5_SETTINGS_SHARED=0), or a test run that did not say where its own folder is (never the player's real file)."""
+    (T5_SETTINGS_SHARED=0), or it is not a player's launcher and did not say where its own folder is
+    (shared_settings_refusal: never the player's real file)."""
     if os.environ.get("T5_SETTINGS_SHARED") == "0":
         return None
-    if _TEST_RUN and not (os.environ.get("T5_SETTINGS_DIR") or os.environ.get("T5_ONLINE_DIR")):
-        return None
+    if not (os.environ.get("T5_SETTINGS_DIR") or os.environ.get("T5_ONLINE_DIR")):
+        why = shared_settings_refusal()
+        if why:
+            if why not in _shared_refusal_logged and not _TEST_RUN:
+                _shared_refusal_logged.add(why)
+                log(f"settings: the shared settings file is not used: {why}; set T5_SETTINGS_DIR to name a folder")
+            return None
     return settings_sync.shared_dir()
 
 

@@ -31,7 +31,7 @@ class PingDelayContract(unittest.TestCase):
         srv._can = mock.Mock(return_value=False)
         players = []
         for side in range(2):
-            p = SimpleNamespace(send=mock.Mock(), brief=lambda side=side: {"name": str(side)})
+            p = SimpleNamespace(send=mock.Mock(), brief=lambda side=side: {"name": str(side)}, conn=None)
             players.append(p)
         match = SimpleNamespace(
             id="m000000000001", players=players, fallback=False, state="punch",

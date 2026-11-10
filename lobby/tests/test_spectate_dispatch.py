@@ -129,7 +129,7 @@ class DispatchTests(unittest.TestCase):
             _set_actions=noop,
         )
         for name in ("_coexist_tick", "_tick_ready", "_tick_set", "_invite_wait_tick", "_relogin_tick",
-                     "_presence_tick", "_show_notice", "_pad_tick"):
+                     "_presence_tick", "_show_notice", "_pad_tick", "_records_tick"):
             setattr(tab, name, noop)
         method("_poll")(tab)
         self.assertEqual(seen, ["preempt", "driver", "tab", "watch_callback"])

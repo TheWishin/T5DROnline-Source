@@ -185,6 +185,9 @@ SETTINGS_VERSION = 1
 # This launcher reads and writes the per-user settings file OpenRecomp uses too (settings_sync). OpenRecomp looks for
 # this name to know that it need not explain anything to this launcher.
 SETTINGS_SYNC = settings_sync.VERSION
+# Decided once, at import: a test runner is loaded before the code it tests, and a launcher running for a player
+# must not turn into a "test run" because some module imports unittest later.
+_TEST_RUN = "unittest" in sys.modules
 
 
 def shared_settings_dir():
@@ -192,7 +195,7 @@ def shared_settings_dir():
     (T5_SETTINGS_SHARED=0), or a test run that did not say where its own folder is (never the player's real file)."""
     if os.environ.get("T5_SETTINGS_SHARED") == "0":
         return None
-    if "unittest" in sys.modules and not (os.environ.get("T5_SETTINGS_DIR") or os.environ.get("T5_ONLINE_DIR")):
+    if _TEST_RUN and not (os.environ.get("T5_SETTINGS_DIR") or os.environ.get("T5_ONLINE_DIR")):
         return None
     return settings_sync.shared_dir()
 
@@ -299,10 +302,11 @@ class Settings(dict):
         size = window_size(self["window_w"], self["window_h"])
         self["window_w"], self["window_h"] = size or (DEFAULTS["window_w"], DEFAULTS["window_h"])
         # (a setting neither file had yet is not "loaded": the first save puts it into the shared file)
-        self._loaded = {k: v for k, v in settings_sync.shared_part(self).items() if k in self._had}
-        if not isinstance(version, int) or version < 1:
-            for key in ("stage_blur", "internal_res_set", "settings_version"):
-                self._loaded.pop(key, None)      # what the step above decided is saved for both launchers
+        if self._store is not None:
+            self._loaded = {k: v for k, v in settings_sync.shared_part(self).items() if k in self._had}
+            if not isinstance(version, int) or version < 1:
+                for key in ("stage_blur", "internal_res_set", "settings_version"):
+                    self._loaded.pop(key, None)  # what the step above decided is saved for both launchers
 
     @property
     def install_id(self):
@@ -336,8 +340,6 @@ class Settings(dict):
     def _sync_save(self, written):
         """After launcher.json was written (or not): put what changed since the start into the shared file."""
         store = self._store
-        if store is None:
-            return
         now = settings_sync.shared_part(self)
         changes = {k: v for k, v in now.items() if k not in self._loaded or self._loaded[k] != v}
         try:
@@ -374,7 +376,8 @@ class Settings(dict):
                     os.remove(temporary)
                 except OSError:
                     pass
-        self._sync_save(written)
+        if getattr(self, "_store", None) is not None:
+            self._sync_save(written)
 
     @property
     def settings_dir(self):

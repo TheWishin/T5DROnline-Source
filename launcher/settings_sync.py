@@ -26,6 +26,8 @@ FILE_NAME = "settings.json"
 BACKUP_DIR = "settings-backup"
 MAX_INSTALLS = 8               # "seen" is kept for the folders used last
 MAX_BACKUPS = 20
+TEST_FOLDER = "t5dr-shared"    # a launcher's test run keeps its shared file in a folder of this name in its own sandbox
+CHECK_PREFIX = "t5dr-settings-check-"      # a throwaway folder for checking values with an installed launcher
 LOCK_ERRORS = (5, 32, 33)      # access denied, sharing violation, lock violation: an antivirus or the other launcher
 
 # What stays with one T5DR folder or one launcher and is never written to the shared file:
@@ -130,8 +132,8 @@ def write_json(path, value, seconds=2.0, sleep=time.sleep):
 
 def _mtime(path):
     try:
-        return os.path.getmtime(path) if path else 0.0
-    except OSError:
+        return float(os.path.getmtime(path)) if path else 0.0
+    except Exception:  # noqa: BLE001 -- no time is "old", never a reason to fail
         return 0.0
 
 

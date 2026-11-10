@@ -4428,3 +4428,81 @@ Pairs, patch 0123's build against the 1.2.3 base build (`rollback_net_test.py`, 
 
 Smoke quick on the new build: PASS (83 checks). All 94 patches apply to a fresh f17bcd3 (`prepare_ps3recomp`) and give
 the files built here.
+
+## Black flashes on fast displays (1.2.3 investigation, patch 0124, branch `flash-hz-018`)
+
+Report (owner, 1.2.2, RTX 3090, a display that runs up to 500 Hz; an earlier one: RX 9070 XT, 240 Hz): online,
+single black frames on every stage. Our pair tests ran minimised on a 59/60 Hz desktop, i.e. with the display lock
+on -- the path a display faster than 61 Hz takes (no lock: the 59.94 Hz QPC clock, a vsync'd present with the
+frame-latency wait) had not been run under rollback.
+
+**Not reproduced.** What was run on main `db9711a5` (this PC, desktop at 59 Hz, games minimised, LPs 16-31, muted):
+rollback pairs, both sides mashing, RTT 60-160 ms with jitter and 2 % loss, every presented frame of both games
+measured.
+
+| display | fight, settings | frames measured (host / joiner) | rollbacks | dark frames |
+|---|---|---|---|---|
+| real 59 Hz (display lock on) | stage 20, defaults | 7,376 / 7,387 | 2,180 / 2,259 | 0 / 0 |
+| simulated 240 Hz (`RSX_TEST_DISPLAY_HZ`, no lock) | stage 20, defaults | 7,518 / 7,528 | 2,374 / 2,359 | 0 / 0 |
+| simulated 500 Hz | stage 20, defaults | 7,382 / 7,393 | 2,223 / 2,258 | 0 / 0 |
+| simulated 240 Hz | stage 34, Stage blur Off, 4K internal, RTT 160 | 6,879 / 6,891 | 2,019 / 2,023 | 0 / 0 |
+| simulated 500 Hz | stage 30, Stage blur Off, 1440p internal | 5,464 / 5,159 | 1,133 / 1,227 | 0 / 0 |
+| simulated 240 Hz | stage 27, Stage blur Off, 1440p internal, RTT 60 | 7,032 / 6,582 | 735 / 675 | 0 / 0 |
+| real 59 Hz (lock on) | stage 34, Stage blur Off, 1440p internal, RTT 160 | 3,324 / 3,101 | 530 / 539 | 0 / 0 |
+
+(The last three rows with `RSX_FLASH_CHECK` from the start of the game, boot and loading included; the others
+from 6 s into the fight.) Both pictures of every frame are clean: the game's display buffer and the window's back buffer after the present
+copy and the overlay (the last thing the game hands to Windows). Every pair: 0 mismatching frames. The check
+itself sees a lost picture: the 1.1.7 bug switched back on (`RSX_VERTEX_KEEP_SKIPPED=0`, stage 4, 8 processors)
+gives 4 dark frames in 354, on both pictures, each named in the game log.
+
+**What that rules out** (as far as a minimised window can): a present of an empty or cleared display buffer, a
+present copy that reads its source too early, a re-simulation drawing into the picture being shown, and the
+draw cut of re-simulated frames reaching a shown frame -- at any of the three rates. What it cannot show is
+anything after `Present()`: the window on a real 240/500 Hz screen (independent flip or DWM), variable refresh,
+the driver.
+
+**What is different online on a fast display** (measured, `PS3_LATENCY_LOG` P events during the fight, host, per
+minute):
+
+| run | presents under 8.3 ms after the last | over 20.8 ms | over 25 ms |
+|---|---|---|---|
+| real 59 Hz, lock on (the display hides it: one picture per refresh) | 79 | 351 | 105 |
+| simulated 240 Hz | 111 | 529 | 147 |
+| simulated 500 Hz | 115 | 428 | 137 |
+
+(mashing bots at RTT 100: far more rollbacks than people cause.) A frame made late by a rollback is presented
+when it is translated and the next one 4-8 ms later (it catches up with the vblank clock); offline the game
+never presents two pictures closer than a tick. A 60 Hz screen shows one picture per refresh whatever the
+presents do. A faster screen shows the 5 ms picture and the 30 ms one; with G-Sync/FreeSync active each present
+is a refresh of its own, and an interval over 20.8 ms is below a 48 Hz range's floor (the display repeats the
+frame). That is the known cause of brightness flicker on variable-refresh panels (OLED and VA most). Whether it
+is what the owner saw is **not verified**: it needs the real screen.
+
+### The flash check (patch 0124)
+
+`RSX_FLASH_CHECK=<folder>` (launcher Settings -> Extra settings; any player can leave it on while playing):
+every presented frame's two pictures are copied in the frame's own command list (no wait, as
+`LD_FRAME_DUMP_ASYNC`), measured on a writer thread and logged to `<folder>\flash.csv`; a dark picture between
+two bright ones is named in the game log (`[flash-check] DARK game|window picture ...`) and written as a `.ppm`;
+every 1,800 frames `[flash-check] N pictures read back ...: D dark ...`. Bright pictures are not kept whole (the
+present thread copies ~180 rows), so a 1440p pair keeps its speed (58.8 fps median; whole copies: 41). Writing
+every picture to disk, as `tools/flicker_check.py` does for 6 s, slowed a pair to 14-25 fps.
+
+It answers the open question in one session on the real screen: **a flash the player sees with 0 dark pictures
+in the log is not in the game's picture** (display path: try VSync Off, G-Sync/FreeSync off for `t5dr.exe`,
+a fixed refresh rate); a dark picture in the log is ours, and its frame number and the latency log's M/Q lines
+say which rollback it belongs to (`tools/flash_stats.py FLASH.csv LAT.log`).
+
+Tests set the pieces one by one: `LD_FRAME_DUMP_STATS=<csv>` (statistics instead of pictures),
+`LD_FRAME_DUMP_ASYNC_BB=1` (the back buffer too, `frame_<n>_flip<n>_bb`). Nothing changes without these
+variables: same present path, same pictures.
+
+Checked: main's build hosting against the patched build (no flash check set), rollback, RTT 100: 0 mismatching
+frames through 4,799, the same state hashes on both sides; the 94 patches apply on a fresh tree
+(`prepare_ps3recomp`) and give the file that was built; `tests/test_flash_stats.py`.
+
+Seen on the way, not followed up: one pair (simulated 500 Hz, stage 30) lost its connection after 56 s -- the
+joiner's packets stopped reaching the host through the test's UDP proxy, both games ended with
+`peer_timeout` / `peer_quit` (the rerun was fine); one pair hung in the loading before the select screen (async
+reader busy) while two other heavy jobs ran on this PC (the rerun was fine).

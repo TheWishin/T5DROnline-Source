@@ -123,7 +123,10 @@ Nothing is ever deleted: a file that loses is copied to `settings-backup`, a dam
 ## Tests
 
 No test reads or writes the player's files: T5DR's `Settings` uses a shared folder only for its own default
-`launcher.json`, and never in a test run that names no folder (`T5_SETTINGS_DIR` / `T5_ONLINE_DIR`); OpenRecomp's
+`launcher.json`, and the player's own folder only in a launcher a player started -- never in a test run, a tool, a
+launcher started with a testing option, from a source tree or the temporary folder, or with a test variable set
+(`core.shared_settings_refusal`, `tests/test_settings_guard.py`), unless `T5_SETTINGS_DIR` / `T5_ONLINE_DIR` names a
+folder. A developer who runs the launcher from a checkout sets `T5_SETTINGS_DIR` to share settings. OpenRecomp's
 test runs keep the shared file inside each test's own home.
 
 * T5DR: `tests/test_settings_sync.py`. The file (version, unknown fields, held file retried, damaged file moved

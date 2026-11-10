@@ -14,6 +14,7 @@ released, tagged, pushed or deployed. The merged branches themselves were not ch
 | 5 | `settings-sync` (a72c5cd3, with 22562b68) | 1eb9b830 | none |
 | 6 | `t5-costumes-123` (36dfaae7) | 1f013ff2 | `CHANGELOG.md` |
 | 7 | `t5-winrate-123` (5b0e05c5) | 9b030cca | `lobby/t5lobby/client.py`, `lobby/t5lobby/server/lobby.py` |
+| 8 | `practice-state-018` (0bf5459e) | 4a8cbd7b | none |
 
 `t5-perf-123` sits on `t5-longsession-123` (2a55e17a), so merge 1 also brings a9bc6ca4 (offline Versus never
 mirrored), 04d7f9a8 (rollback cost: trimmed means), df896c64 and 2a55e17a (docs, screen side test).
@@ -23,6 +24,8 @@ After the merges:
 - eb03524e, 0652d76f: the two test-only commits of `lobby-deploy-123` (681c952c, 19ff1514; stand-in tabs and players
   for the win records in five lobby test modules), taken with `cherry-pick -x`.
 - 7a9999ef: `docs/INTEGRATION_1.2.0.md` says 31 capabilities (see "Found by the suite").
+- After merge 8: the settings guard for launchers started as processes (see "Settings sync: test status") and the
+  capability count pinned by a test (see "Capability count").
 
 ## Conflict decisions
 
@@ -38,6 +41,15 @@ Both sides were kept every time.
   the order `lobby-deploy-123` uses: the two files were taken from its merge 2d4fe006, so the launcher's files and the
   server branch's files are the same there. After merge 7, `lobby/` differs from 2d4fe006 only in the six language
   catalogs (texts of the other merged branches).
+
+- **`practice-state-018` (merge 8):** no text conflict. Decision: merged whole, now that the branch is one finished
+  commit (0bf5459e, "SELECT+3 puts the round's first state back (offline games)") on main db9711a5 with a clean
+  worktree; the first integration left it out as unfinished. It changes `src/training/practice.cpp`,
+  `src/training/practice_logic.h` and `src/netplay/t5_hooks.cpp`, files that merge 3 (vs-overlay, `src/training`)
+  and merge 1 (perf, `src/netplay`) also change in other places: git joined them without a conflict, both sides are
+  in. The joined C++ was not compiled or run here (no game build in this job) -- it belongs to step 1 of "Before a
+  release". The branch has no CHANGELOG entry (its text is in `docs/TRAINING.md`); one is to be written with the
+  release notes. `tests/test_training.py`: OK at the head.
 
 ## Patch series
 
@@ -88,10 +100,28 @@ all the server reads (`caps[:32]`): the next capability after the profile pictur
 Its own module `tests/test_settings_sync.py`: 29 pass, 3 skipped (they need an OpenRecomp checkout in
 `T5DR_TEST_OPENRECOMP_SRC`; none was given, and the owner's OpenRecomp folder is not to be touched). The runs wrote
 nothing into the real `%APPDATA%\T5DROnline` (checked: only `online.json` from 2026-11-08 is there) and nothing into
-the runs' own stand-in folders. Open: the test-run guard in `launcher/core.py` is "unittest was imported before core";
-a launcher that a tool or test starts as its own process (GUI smoke of the preflight, e2e, i18n_layout) is not a test
-run by that rule and reads and writes the player's real settings.json unless `T5_SETTINGS_DIR` or
-`T5_SETTINGS_SHARED=0` is set for it.
+the runs' own stand-in folders. Closed after merge 8: the guard in `launcher/core.py` was "unittest was imported before core", so a launcher that a
+tool or test starts as its own process (GUI smoke of the preflight, e2e, i18n_layout) could read and write the
+player's real settings.json when the tool forgot `T5_SETTINGS_DIR` / `T5_ONLINE_DIR`. Now the player's folder is
+used only by a launcher a player started (`core.shared_settings_refusal`): the launcher's `main()` declares itself
+(`core.declare_launcher`), and it is refused when started with a testing option (`--screenshots`, `--build-steps`,
+`--play-seconds`, `--low-priority`, `--force`), from a source tree (`.git` or `tests/ci_unittest.py` next to it), from
+a folder inside the temporary folder, or with a test variable set (`CI`, `GITHUB_ACTIONS`, `PYTEST_CURRENT_TEST`,
+`T5DR_TESTING`, `T5_FW_CHECK=0`, `T5DR_FW_CHECK=0`). Refused = no shared file at all (launcher.json only), one line
+in launcher.log. A folder named by `T5_SETTINGS_DIR` / `T5_ONLINE_DIR` is used by any process, as before. Decision:
+refuse, not redirect -- a process cannot know a tool's test folder, and a guessed one would hide the mistake.
+Consequence: a launcher run from a developer checkout no longer shares settings with OpenRecomp unless
+`T5_SETTINGS_DIR` names the folder. `tests/test_settings_guard.py` (11 tests) runs `core` in child processes that
+are no unittest run and have none of the variables, with `APPDATA` pointed at the test's own stand-in folder: none
+writes the stand-in "real" path, the player's own launcher does. Not done here (owner's PC): the same with real
+launcher windows and the real OpenRecomp.
+
+## Capability count
+
+A fully enabled 1.2.3 client sends **31** capabilities in its hello (the last two are `ranked_costume` and
+`hud_records`); the server reads the first **32** (`caps[:32]`), so one place is left. `docs/INTEGRATION_1.2.0.md`
+says 31. `tests/test_audit_cycle1_docs.py` checks the number against the client's hello, the two names on both sides,
+the server's limit and both documents. `lobby-deploy-123` is a different state (it also has `profile_pics`, one more).
 
 ## Playtime
 
@@ -102,8 +132,6 @@ T5DR folder starts its playtime at 0.
 
 ## Left out
 
-- **`practice-state-018`:** not finished. Its commits are all "WIP" (tip moved 66997cc0 -> 6cbcbbd9 -> 70b1fe23
-  during this job) and its worktree has uncommitted changes.
 - **`profile-pic-018` (ba83d6fe):** in `lobby-deploy-123` but not in the list for this integration. The 1.2.3
   launcher from this branch has no profile pictures; a server from `lobby-deploy-123` offers them.
 - **Whole lobby suite, game build, pairs, e2e, smoke, preflight:** not run. No heavy game job was started, so

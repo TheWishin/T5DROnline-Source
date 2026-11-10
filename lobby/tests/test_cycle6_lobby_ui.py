@@ -26,7 +26,7 @@ def controller():
     tab.spec, tab.casual, tab.search = Mock(), Mock(), Mock()   # (search: 1.2.1 search options, tk_search.py)
     tab.spec.client_kw.return_value = {}
     for name in ("_game_can_pick", "_game_has_rules", "_game_has_life150", "_game_has_ingame_ui",
-                 "_game_has_auto_skip", "_game_has_auto_skip_intro"):
+                 "_game_has_auto_skip", "_game_has_auto_skip_intro", "_game_has_records", "_records_wanted"):
         setattr(tab, name, lambda: False)
     tab._save_cfg = Mock()
     tab.chat_log = Mock()

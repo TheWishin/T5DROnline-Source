@@ -385,6 +385,39 @@ fallback.
 - **Timeout**: a player who picks nothing within 30 s gets the launcher's
   character (with the default costume), and the opponent's game gets that pick.
 
+### Costumes in ranked (1.2.3)
+
+Owner decision 2026-11-10: in **ranked** the player chooses fighter **and costume** in the launcher, and it is
+remembered; in **casual** they keep choosing on the game's own select screen (the confirm button is the costume).
+
+- **Launcher** (`lobby/t5lobby/tk_costume.py`): the character select grid has a "Costume (ranked)" row under the
+  fighters with the current fighter's costumes, numbered in the game's model order (the game log's "costume K"):
+  costume 1 = LP, 2 = LK, 3 = RP (the third costume of Law, Yoshimitsu, Jin, Lee, Anna, Ganryu, Bruce, Raven),
+  4 = RK (Xiaoyu and Asuka); Kuma (punch) and Panda (kick) have one each, Random none
+  (`fighters.costume_buttons`). The fighter button shows the number ("Jin · 3"). Remembered per fighter in
+  `online.json` `costumes` {fighter: button}; a fighter nobody chose a costume for starts on costume 1. A pick on
+  the game's select screen (casual) is remembered the same way (`match_driver._own_pick` -> `tk_costume.
+  remember_pick`), so that fighter starts on that costume next time in ranked. The customization of the costume
+  comes from the player's offline save as before (docs/DIRECTFIGHT.md "Custom costumes online") -- the costume
+  chosen here is the one the customization must be on.
+- **Protocol**: the client announces the `ranked_costume` cap (the launcher does when its game has the in-game
+  select, which also gives it `buttons=` on the fight line) and sends `costume` (the confirm button 1-4, 0 = the
+  game's default) with `set_char` and `queue` only to a server whose `welcome.features` has `ranked_costume`.
+- **Server** (`_launcher_picks`, `_lock_launcher_picks`; `T5L_RANKED_LAUNCHER_PICK`, default on): a rated set
+  between two clients with the cap has **no select screen**: game 1 too starts with the launchers' fighters
+  (Random drawn once, for the whole set) and `fight.buttons` = their costumes (a Random fighter: 0, the game's
+  default), the lock the set keeps for games 2 and 3, a replay of game 1 and a new connection -- the path games 2
+  and 3 always took after an in-game pick (no game change). A costume changed during a set counts from the next
+  set. One client without the cap, or the setting off: game 1 is picked in the game as before. Casual matches and
+  quick matches are unchanged (in-game select).
+- **OpenRecomp-FGC** (not changed here; it loads this install's `t5lobby` package, so client, match driver and
+  fight line come with it) needs only its own side: (1) `adapters/t5_match.py _online_match_client_options`:
+  `options["ranked_costume"] = game_supports_pick(...)`, like `ingame_pick` -- without it the server keeps the
+  in-game pick of game 1 for that pair, nothing breaks; (2) `adapters/t5_online.py _online_search_submit` and
+  wherever it calls `set_char`: pass `costume=` (the confirm button) for the chosen fighter; (3) a costume choice
+  beside its fighter choice (`chosen_fighter()`), offering `fighters.costume_buttons(key)` and remembered per
+  fighter in its own prefs (`tk_costume.remembered` / `remember` are plain functions it can call).
+
 ## Results and match integrity
 
 Each launcher reports what its game saw. A report (`result` message) carries:
@@ -1026,6 +1059,7 @@ New `T5L_*` variables (all in `server/config.py`):
 | `T5L_RANKED_ROOMS` | 1 | rooms may be ranked |
 | `T5L_ROUNDS` | 3 | rounds to win (`T5_FIGHT`) |
 | `T5L_INGAME_PICK` | 30 | seconds to pick on the game's own select screen when both clients can (`fight.pick`); 0 = the launchers' characters |
+| `T5L_RANKED_LAUNCHER_PICK` | 1 | a rated set between two `ranked_costume` clients starts every game with the launchers' fighters and costumes (no select screen); 0 = game 1 picked in the game |
 | `T5L_OLD_STAGES` | 0 | 1 = a match's stage may also be one of the Tekken 5 stages (`t5s01`..`t5s15`) when both clients announce `old_stages` |
 | `T5L_RANKED_INPUT_DELAY` | 2 | rollback input delay of ranked matches, frames, the same for everybody (`-1`: the players' own settings) |
 | `T5L_PING_DELAYS` | `150:3,250:4` | 1.1.5: rollback input delay of far matches (ranked or not), at least 3 frames above 150 ms measured ping, 4 above 250 ms (the higher of this and `T5L_RANKED_INPUT_DELAY`); `""` = off |
@@ -1062,7 +1096,7 @@ in `hello.caps`, and an older client gets the old messages.
 | `passwd` `old`, `new`, `remember` | `passwd_ok` (+ `session`) |
 | `recover` (no login needed) `name`, `code`, `password` | `recovered {name, codes_left}` |
 | `recovery_codes` `password` | `recovery_codes {codes}` |
-| `set_char` `char`; `queue` + `char` | |
+| `set_char` `char`; `queue` + `char` (1.2.3, cap/feature `ranked_costume`: + `costume`, the confirm button 1-4, 0 = default) | |
 | `profile` `name`, `history`; `history` `name`, `limit`, `offset`; `leaderboard` `limit`, `offset` | `profile {profile}`, `history {rows}`, `leaderboard {rows}` (+ rank, provisional, main, online; 1.1.9: + `ranked_wins`, `ranked_losses`, `casual_wins`, `casual_losses` -- counted matches split as the profile's `stats` counts them, every game of a set a ranked match) |
 | `hello` `caps`: `ranked_chars` (1.2.0); `profile` as above | `welcome.caps` accepts `ranked_chars`; `profile.profile.ranked_chars: [{char, games, wins, losses, draws, win_rate}]` (numeric win-rate percent rounded to two decimal places). Only sent to clients with this cap; `[]` for guests and accounts without attributed ranked games. |
 | `result` + `source`, `desync`, `hash`, `frames`, `reason`, `chars` ([P1, P2] fighter keys or game ids: what the game fought with), `costumes` ([P1, P2] confirm buttons 0-4) | `result_ack` |

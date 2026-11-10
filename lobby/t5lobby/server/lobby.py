@@ -86,6 +86,7 @@ CAPS |= {"badges", "mentions", "ranked_chars", "casual_sets", "room_tables",
          "ingame_rematch_v1", "auto_skip_after_round_v1"}
 CAPS |= {"auto_skip_intro_v1"}  # 1.2.0: the game skips the fighters' intros by the fight line's rule (matchrules.py)
 CAPS |= {REPORT_CAP}           # 1.2.x: problem reports from the launcher (reports.py)
+CAPS |= {"ranked_costume"}     # 1.2.3: ranked fighter + costume chosen in the launcher (set_char / queue "costume")
 QUEUE_MODES = ("quick", "ranked")
 # What this server supports beyond protocol 1's base (the client checks before using them).
 FEATURES = ["ranks", "sessions", "recovery", "passwd", "profile", "history", "chars", "integrity", "rematch",
@@ -98,6 +99,7 @@ STATS_SECONDS = 300.0          # the stats page's numbers are computed again at 
 FEATURES += ["training", "handicap"]   # 1.1.5: training rooms and the health handicap (matchrules.py)
 FEATURES.append("handicap150")         # 1.1.7: the health handicap up to 150 % (matchrules.py CAP_150)
 FEATURES.append("challenges2")         # 1.1.9: several open challenges at once, the challenger's input delay
+FEATURES.append("ranked_costume")      # 1.2.3: set_char / queue take "costume" (1-4); a rated set picks in the launcher
 FEATURES += ["private_chat", "mutes"]
 FEATURES.append("input_delay8")        # 1.2.0: only pairs announcing this cap use the new challenge delays
 FEATURES += ["badges", "mentions", "casual_sets", "room_tables"]
@@ -208,6 +210,7 @@ class Player:
         self.dropped_at = None
         self.last_challenge = 0.0
         self.char = fighters.RANDOM     # character picked in the launcher (a fighters key)
+        self.costume = 0                # its costume = the confirm button (1-4 = LP, RP, LK, RK; 0 = the game's default)
         self.main = None                # most played character (accounts, from the history)
         self.rank = ranks.RankState()   # tier state (accounts: from the database)
         self.rules = ranks.RankRules()
@@ -332,6 +335,8 @@ class GameSet:
         self.ranked = bool(ranked)
         self.picks = {}                 # player id -> the character picked for the whole (locked) set
         self.costumes = {}              # player id -> its confirm button (1-4) when picked in the game (in-game select)
+                                        # or in the launcher (launcher_pick)
+        self.launcher_pick = False      # a rated set whose fighters and costumes came from the launchers (1.2.3)
         self.matches = []
         self.games = 0                  # games started
         self.current = None             # the match being set up or played
@@ -1726,7 +1731,7 @@ class LobbyServer(PrivateChatMixin, SpectateMixin, RoomsMixin, CasualMixin, Matc
             raise LobbyError(proto.E_BUSY, f"you are {p.status}")
         self._abandon_set(p)                     # looking for a new opponent leaves the old set (and unlocks the character)
         if "char" in msg:
-            self._set_char(p, msg["char"])
+            self._set_char(p, msg["char"], msg.get("costume"))
         p.strict = bool(msg.get("strict")) and mode == "ranked"
         p.filters = self._read_filters(msg)          # search options (mmfilters.py; an older launcher sends none)
         self._leave_queue(p)
@@ -1757,20 +1762,29 @@ class LobbyServer(PrivateChatMixin, SpectateMixin, RoomsMixin, CasualMixin, Matc
                 p.send({"t": "notice", "code": "server_restart", "msg": self.DRAIN_TEXT})
         self.dirty = True
 
-    def _set_char(self, p, char):
+    def _set_char(self, p, char, costume=None):
         char = str(char or fighters.RANDOM)
         if not self.table.valid_fighter(char):
             raise LobbyError(proto.E_BAD_REQUEST, f"unknown character {char!r}")
+        if costume is not None and not (isinstance(costume, int) and not isinstance(costume, bool)
+                                        and 0 <= costume <= 4):
+            raise LobbyError(proto.E_BAD_REQUEST, "costume is a confirm button 1-4 (0 = the default)")
         gs = p.set
         if gs is not None and gs.state == "active" and gs.locked and char != gs.picks.get(p.id, p.char):
             raise LobbyError(proto.E_STATE, "your character is locked until this ranked set ends")
         if p.char != char:
             p.char = char
             self.dirty = True
+            if costume is None:
+                p.costume = 0                # (an older launcher: the costume belonged to the old character)
+        if costume is not None:
+            # (a locked set keeps the costumes it started with: GameSet.costumes; this is for the next set)
+            p.costume = 0 if char == fighters.RANDOM else costume
 
     async def h_set_char(self, conn, msg):
-        """The character the player will fight with (a fighters key or "random")."""
-        self._set_char(conn.player, msg.get("char"))
+        """The character the player will fight with (a fighters key or "random") and, from a launcher with the
+        "ranked_costume" cap, its costume (the confirm button 1-4; 0 = the game's default)."""
+        self._set_char(conn.player, msg.get("char"), msg.get("costume"))
 
     # ------------------------------------------------------------------ profiles, history, leaderboard
     async def h_stats(self, conn, msg):
@@ -3067,6 +3081,8 @@ class LobbyServer(PrivateChatMixin, SpectateMixin, RoomsMixin, CasualMixin, Matc
         m.chars = list(self.table.resolve(m.picks[0], m.picks[1], fighters.RANDOM, seed)[:2])
         m.stage = self.table.resolve(m.picks[0], m.picks[1], self._casual_stage(m, seed), seed,
                                      old_stages=self._old_stages(m))[2]
+        if not m.pick and self._launcher_picks(m):
+            self._lock_launcher_picks(m)
         for side, p in enumerate(m.players):
             p.status = "playing"
             self._send_match_start(m, side)
@@ -3127,12 +3143,42 @@ class LobbyServer(PrivateChatMixin, SpectateMixin, RoomsMixin, CasualMixin, Matc
             return 0
         if not self._picks_in_game(m):
             return 0
+        if self._launcher_picks(m):
+            return 0                         # (a rated set whose players chose fighter and costume in the launcher)
         return int(self.cfg.ingame_pick)
+
+    def _launcher_picks(self, m):
+        """A rated (ranked) set picks fighter and costume in the launchers (1.2.3, owner 2026-11-10; docs/RANKED.md
+        "Costumes in ranked"): no select screen in game 1 either -- every game of the set starts with the launchers'
+        fighters and `buttons`, as games 2 and 3 did after an in-game pick. Only when both clients have the
+        "ranked_costume" cap (T5L_RANKED_LAUNCHER_PICK); otherwise game 1 is picked in the game as before."""
+        gs = m.set
+        if not self.cfg.ranked_launcher_pick or gs is None or not gs.locked or not gs.rated:
+            return False
+        if gs.launcher_pick:
+            return True
+        if gs.costumes or any(x.pick for x in gs.matches if x is not m):
+            return False                     # (game 1 was picked in the game: the set keeps that)
+        return all("ranked_costume" in getattr(p.conn, "caps", ()) for p in m.players)
+
+    def _lock_launcher_picks(self, m):
+        """The set's first game fixes what every game of it fights with: the fighters (Random drawn once, here) and
+        the launchers' costumes (a Random fighter: the game's default)."""
+        gs = m.set
+        if gs.launcher_pick:
+            return
+        gs.launcher_pick = True
+        for p, key in zip(m.players, m.chars):
+            gs.picks[p.id] = key
+            gs.costumes[p.id] = p.costume if key == p.char else 0
+        log.info("set %s: fighters and costumes from the launchers: %s (%d) vs %s (%d)", gs.id,
+                 m.chars[0], gs.costumes[m.players[0].id], m.chars[1], gs.costumes[m.players[1].id])
 
     @staticmethod
     def _locked_costumes(m):
         """A locked set's later game after an in-game pick: {"buttons": [P1, P2]}, the costumes (confirm
-        buttons) its picking game fought with, so a new connection or a restarted game keeps them too."""
+        buttons) its picking game fought with, so a new connection or a restarted game keeps them too. A set
+        picked in the launchers (_launcher_picks): every game, the first too, with the launchers' costumes."""
         gs = m.set
         if m.pick or gs is None or not gs.locked or not gs.costumes:
             return {}

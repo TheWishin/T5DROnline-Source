@@ -28,6 +28,41 @@ STAGE_NAMES = {
     "t5s11": N_("Polar Paradise"), "t5s12": N_("Hell's Gate"), "t5s13": N_("Final Frontier"),
     "t5s14": N_("Poolside"), "t5s15": N_("Final Stage"),
 }
+# Costumes (docs/DIRECTFIGHT.md "Character select in the game" / "Mirror matches"): the button that confirms a fighter
+# on the select screen is its costume -- 1 = LP (Square), 2 = RP (Triangle), 3 = LK (Cross), 4 = RK (Circle). Most
+# fighters have two costumes (LP = RP, LK = RK), eight a third one on RP, Xiaoyu and Asuka four; Kuma is Kuma's cell
+# with a punch, Panda the same cell with a kick (one costume each). Listed in the game's model order, which is how the
+# game's own log numbers them ("costumes worn: P1 costume K"): costume 1 = LP, 2 = LK, 3 = RP, 4 = RK.
+COSTUME_BUTTONS = {"default": (1, 3), "three": (1, 3, 2), "four": (1, 3, 2, 4)}
+_THREE_COSTUMES = frozenset(("law", "yoshimitsu", "jin", "lee", "anna", "ganryu", "bruce", "raven"))
+_FOUR_COSTUMES = frozenset(("xiaoyu", "asuka"))
+_ONE_COSTUME = {"kuma": (1,), "panda": (3,)}
+BUTTON_NAMES = {1: "LP", 2: "RP", 3: "LK", 4: "RK"}
+
+
+def costume_buttons(key):
+    """The confirm buttons of fighter `key`'s costumes, costume 1 first; () for Random / unknown / a boss."""
+    if not key or key == RANDOM:
+        return ()
+    if key in _ONE_COSTUME:
+        return _ONE_COSTUME[key]
+    if key == "jinpachi":
+        return ()
+    if key in _FOUR_COSTUMES:
+        return COSTUME_BUTTONS["four"]
+    if key in _THREE_COSTUMES:
+        return COSTUME_BUTTONS["three"]
+    return COSTUME_BUTTONS["default"]
+
+
+def costume_button(key, button):
+    """`button` if it is one of fighter `key`'s costumes, else its costume 1's button (0 for Random)."""
+    buttons = costume_buttons(key)
+    if not buttons:
+        return 0
+    return button if button in buttons else buttons[0]
+
+
 _DEFAULT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "fighters.json")
 
 

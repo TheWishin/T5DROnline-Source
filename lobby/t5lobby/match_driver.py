@@ -1583,7 +1583,8 @@ class MatchDriver:
         if state and state != self.game_state:
             self.game_state = state
             keys = [self._key(st.get("p1")), self._key(st.get("p2"))]
-            self.note("game_state", state=state, match=st.get("match"), chars=keys if all(keys) else None)
+            self.note("game_state", state=state, match=st.get("match"), chars=keys if all(keys) else None,
+                      own_pick=self._own_pick() if state == "fight" else None)
             if state in self.STATE_TEXT and self.ticket is not None:
                 secs = ((self.match_ev or {}).get("fight") or {}).get("pick") or 30
                 self.status(t(self.STATE_TEXT[state], secs=secs))
@@ -1782,6 +1783,16 @@ class MatchDriver:
             return None
         keys = [self._key(c) for c in self.fight_chars]
         return keys if all(keys) else None
+
+    def _own_pick(self):
+        """(fighter key, confirm button) this player picked on the game's select screen in this match, or None
+        (not picked in the game, a timeout's default button): the launcher remembers the button as that fighter's
+        costume (tk_costume.remember_pick)."""
+        chars, buttons = self._picked_chars(), self._picked_costumes()
+        slot = (self.match_ev or {}).get("slot")
+        if not chars or not buttons or slot not in (0, 1) or not buttons[slot]:
+            return None
+        return chars[slot], buttons[slot]
 
     def _picked_costumes(self):
         """[P1, P2] confirm buttons (costumes) of a match whose characters were picked in the game: a ranked set

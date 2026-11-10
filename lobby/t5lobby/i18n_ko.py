@@ -2892,3 +2892,12 @@ MESSAGES.update({
     "Starting Practice before searching...": "검색 전에 연습 모드를 시작하는 중...",
     "Practice could not start; search was not started.": "연습 모드를 시작하지 못해 검색을 시작하지 않았습니다.",
 })
+
+# 1.2.3: the ranked costume beside the fighter (tk_costume.py)
+MESSAGES.update({
+    'Costume {n} ({button})': '코스튬 {n} ({button})',
+    'Costume (ranked)': '코스튬 (랭크)',
+    'This server picks ranked costumes in the game.': '이 서버에서는 랭크 코스튬을 게임 안에서 고릅니다.',
+    'Ranked: your fighter and costume from here. Quick match and casual: pick your fighter in the game (the confirm button is the costume, Select = random); the fighter here is used when you do not pick in time.':
+        '랭크: 캐릭터와 코스튬을 여기서 고릅니다. 퀵 매치와 캐주얼: 게임 안에서 캐릭터를 고릅니다(결정 버튼이 코스튬, Select = 랜덤). 제시간에 고르지 않으면 여기 캐릭터가 쓰입니다.',
+})

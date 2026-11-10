@@ -20,7 +20,7 @@ import threading
 import tkinter as tk
 from tkinter import ttk
 
-from . import fighter_art, fighters
+from . import fighter_art, fighters, tk_costume
 from .i18n import t
 
 COLUMNS = 6                 # names only
@@ -63,6 +63,7 @@ class CharSelect:
         self.locked = False
         self.panel = None
         self.tiles = []                    # [(key, name, button)]
+        self.costume_buttons = []          # [(confirm button, ttk button)]: the ranked costume row (tk_costume.py)
         self.cursor = 0                    # the tile with the keyboard focus (the controller's Cross picks it)
         self.columns = COLUMNS
         self.button = ttk.Button(parent, style="Card.TButton", command=self.toggle, cursor="hand2")
@@ -134,7 +135,8 @@ class CharSelect:
     def _label(self):
         name = self.tab.char_var.get() or t("Random")
         try:
-            self.button.configure(text=f"{name}  ▾")
+            # (the ranked costume's number after the name: "Jin · 3", tk_costume.py)
+            self.button.configure(text=f"{name}{tk_costume.suffix(self.tab)}  ▾")
         except tk.TclError:
             pass
 
@@ -286,9 +288,12 @@ class CharSelect:
             b.bind("<Escape>", self._escape)
             b.bind("<FocusIn>", lambda _e, j=i: setattr(self, "cursor", j), add="+")
             self.tiles.append((key, name, b))
+        costume = tk_costume.build_row(self, p)      # the current fighter's ranked costume (tk_costume.py)
+        if costume is not None:
+            costume.grid(row=2, column=0, sticky="w", pady=(px(10), 0))
         ttk.Label(p, style="Card.Faint.TLabel", text=t(
             "Arrow keys move, Enter picks, Esc closes. With a controller: Cross / A picks, Circle / B closes.")).grid(
-            row=2, column=0, sticky="w", pady=(px(10), 0))
+            row=3, column=0, sticky="w", pady=(px(10), 0))
         p.place(in_=box, relx=0.5, y=px(64), anchor="n", relwidth=0.94)
         p.lift()
         self._focus(next((i for i, (k, _n, _b) in enumerate(self.tiles) if k == current), 0))

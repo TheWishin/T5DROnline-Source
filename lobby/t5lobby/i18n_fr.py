@@ -2988,3 +2988,12 @@ MESSAGES.update({
     "Starting Practice before searching...": "Démarrage de la pratique avant la recherche...",
     "Practice could not start; search was not started.": "Impossible de démarrer la pratique ; la recherche n’a pas commencé.",
 })
+
+# 1.2.3: the ranked costume beside the fighter (tk_costume.py)
+MESSAGES.update({
+    'Costume {n} ({button})': 'Tenue {n} ({button})',
+    'Costume (ranked)': 'Tenue (classé)',
+    'This server picks ranked costumes in the game.': 'Ce serveur fait choisir la tenue classée dans le jeu.',
+    'Ranked: your fighter and costume from here. Quick match and casual: pick your fighter in the game (the confirm button is the costume, Select = random); the fighter here is used when you do not pick in time.':
+        "Classé : ton combattant et ta tenue se choisissent ici. Quick match et casual : choisis ton combattant dans le jeu (le bouton qui confirme donne la tenue, Select = au hasard) ; le combattant d'ici sert si tu ne choisis pas à temps.",
+})

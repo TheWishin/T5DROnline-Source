@@ -106,7 +106,7 @@ class LobbyClient(TourCalls, SpectateClientMixin):
                  private_rooms=True, match_rules=False, life150=False, input_delay8=True,
                  badges=True, mentions=True, tcp_fallback_port=443, casual_sets=True, room_tables=True,
                  ingame_rematch=False, auto_skip_after_round=False, private_chat=True, guest_mutes=(),
-                 auto_skip_intro=False):
+                 auto_skip_intro=False, ranked_costume=False):
         """server: "host[:port]". build: BuildInfo. on_event: optional callable(event) run on the
         client thread (use the `events` queue from a UI). game_port: local UDP port for the game
         (0 = any free one; set it when the player forwarded a port on the router).
@@ -171,7 +171,11 @@ class LobbyClient(TourCalls, SpectateClientMixin):
         skip consent is a separate, default-off preference (set_auto_skip_after_round); the round skip does not
         need the in-game rematch.
         auto_skip_intro (1.2.0): this launcher's game skips the fighters' intros by the fight line's rule
-        (auto_skip_intro=1): the server then sets it for every match against another such launcher. No setting."""
+        (auto_skip_intro=1): the server then sets it for every match against another such launcher. No setting.
+        ranked_costume (1.2.3): the player chooses the ranked fighter's costume in the launcher (set_char /
+        ranked_match `costume`, the confirm button 1-4) and this launcher's game starts a fight with `buttons=`: a
+        ranked set against another such launcher then has no select screen, every game starts with both launchers'
+        fighters and costumes (docs/RANKED.md "Costumes in ranked"). Off by default (the launcher turns it on)."""
         self.host, self.port = proto.parse_hostport(server)
         self.build = build
         self.on_event = on_event
@@ -193,6 +197,7 @@ class LobbyClient(TourCalls, SpectateClientMixin):
         self.plain_passwords = plain_passwords
         self.blind_ready = blind_ready
         self.ingame_pick = ingame_pick
+        self.ranked_costume = bool(ranked_costume)
         self.sets = sets
         self.casual_sets = bool(sets and casual_sets)
         self.casual_first_to = 1     # launcher preference; the server owns each accepted set
@@ -416,7 +421,8 @@ class LobbyClient(TourCalls, SpectateClientMixin):
                                                 + (["auto_skip_intro_v1"] if self.auto_skip_intro else [])
                                                 + [COMPAT_CAP]
                                                 + (["private_chat"] if self.private_chat else [])
-                                                + ["mutes"]})
+                                                + ["mutes"]
+                                                + (["ranked_costume"] if self.ranked_costume else [])})
         except (LobbyError, OSError, asyncio.CancelledError):
             # Refused (version) or no answer (e.g. TLS on one side only): leave nothing half open.
             closing, self._closing = self._closing, True
@@ -1432,8 +1438,18 @@ class LobbyClient(TourCalls, SpectateClientMixin):
     def history(self, name=None, limit=20, offset=0):
         return self._call({"t": "history", "name": name, "limit": limit, "offset": offset})["rows"]
 
-    def set_char(self, char):
-        return self._call({"t": "set_char", "char": char})
+    def costume_ok(self):
+        """Does the server take the launcher's costume (set_char / queue `costume`)? Only with ranked_costume."""
+        return self.ranked_costume and self.has_feature("ranked_costume")
+
+    def _costume(self, msg, costume):
+        if costume is not None and self.costume_ok():
+            msg["costume"] = int(costume) if isinstance(costume, int) and 0 <= costume <= 4 else 0
+        return msg
+
+    def set_char(self, char, costume=None):
+        """The fighter (and, with costume_ok(), its costume: the confirm button 1-4, 0 = the game's default)."""
+        return self._call(self._costume({"t": "set_char", "char": char}, costume))
 
     def report_perf(self, fps):
         """This PC's sustained game speed (frames per second, from the last match): the server
@@ -1464,18 +1480,20 @@ class LobbyClient(TourCalls, SpectateClientMixin):
                 msg["steady"] = True
         return msg
 
-    def quick_match(self, char=None, options=None):
+    def quick_match(self, char=None, options=None, costume=None):
         msg = {"t": "queue", "mode": "quick"}
         if char:
             msg["char"] = char
+            self._costume(msg, costume)
         return self._call(self._search_options(msg, options))
 
-    def ranked_match(self, char=None, strict=False, options=None):
+    def ranked_match(self, char=None, strict=False, options=None, costume=None):
         """Queue for a ranked match. strict=True: only opponents within the server's strict range
-        (150 rating points) -- the wait can be long."""
+        (150 rating points) -- the wait can be long. costume: the fighter's costume (confirm button 1-4)."""
         msg = {"t": "queue", "mode": "ranked"}
         if char:
             msg["char"] = char
+            self._costume(msg, costume)
         if strict:
             msg["strict"] = True
         return self._call(self._search_options(msg, options))

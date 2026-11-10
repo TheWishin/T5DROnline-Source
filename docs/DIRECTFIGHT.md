@@ -1424,6 +1424,27 @@ format-3 recording with zero fallback bytes and a format-2 recording without
 blocks to prove exact setup preservation. The historical runs below predate this correction and do not
 prove it.
 
+**1.2.3 check (branch t5-costumes-123, the 1.2.2 game; owner: "white custom costumes online", no player log).**
+Three rollback pairs through a local lobby with the launcher's ranked costume (docs/RANKED.md "Costumes in ranked":
+every game of the set starts with the launchers' fighters and `buttons`), the 1.1.3/1.1.4 test saves, pictures at
+`T5_DF_SHOT=++700` / `++900` of every game on both PCs (`lobby/tools/ranked_session.py --ranked-costume --costumes
+B1,B2 --cpus 0xFFFF0000`; runs in build/costume123/runs):
+
+| run | P1 | P2 | rollbacks (P1/P2) | result |
+|---|---|---|---|---|
+| rc1 (delay 2) | Kazuya costume 2 (LK), `col_sysdata`: custom (parts 3C,3E,41,44, colours 5,3,7) | Lili costume 1 (LP), `A_sysdata`: block used, "nothing worn, customized: costume 2" | 0 / 0 | 3/3 games, 0 mismatching, same hashes |
+| rc2 (delay 0) | Heihachi costume 2 (LK), `A_sysdata`: nothing customized -> the canonical unequipped block | Lili costume 2 (LK), `col_sysdata`: custom (parts 3D,3C,3B,3A, colours 4,6,9) | 639 / 806 | 3/3, 0 mismatching, same hashes |
+| rc3 (delay 0) | Xiaoyu costume 4 (RK) mirror, `B_sysdata` | Xiaoyu RK -> 0x11 (the mirror rule), `col_sysdata` | 1,403 / 662 | 3/3, 0 mismatching, same hashes |
+
+The pictures of the two PCs are pixel-identical in all nine games. No white part anywhere: the customized
+costumes wear their parts and colours (Kazuya's coloured suit, Lili's purple dress with mask and boots), and the
+unequipped fallback shows the costume's own look (Heihachi's second costume green and patterned; the notes above
+describe these second costumes as white under the zero block used before 1.2.0 -- not run again here). What does show white is a costume whose own default look is white
+(Lili's first costume in rc1) while the customization sits on another costume -- the log says so (`nothing worn,
+customized: costume 2`). That and the pre-1.2.0 zero fallback are the explanations found; not reproduced: a
+customized costume turning white. In ranked the player now chooses the costume in the launcher, so it can be the
+customized one; a new report needs the game log's `costumes written` / `costumes worn` lines (both PCs).
+
 **Mirrors and costumes.** A block holds all three costumes of the character;
 the costume a player fights in is still the confirm button (and, in a mirror
 of one costume, the game's rule that P2 gets the other costume): a

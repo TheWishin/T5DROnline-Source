@@ -16,6 +16,10 @@
     python lobby/tools/ranked_session.py --exe <t5dr.exe> --persistent --attacks --ingame-pick \\
         --pick1 jin:rp --pick2 lil:lk                                # picked on the game's select screen
 
+--ranked-costume (1.2.3): both clients announce the launcher's ranked costume (docs/RANKED.md "Costumes in ranked"):
+a ranked set then has no select screen; --costumes 3,1 gives each player's costume (the confirm button 1-4, as the
+launcher sends it). --cpus 0xFFFF0000: both games on those logical processors only (another measurement on the PC).
+
 --ingame-pick: both clients announce the in-game select (docs/RANKED.md "Character select in the
 game"); with the real game, --pick1/--pick2 give each player's picks per pick round (comma-separated,
 the last one repeats; tools/pick_flow_test.py's scenarios: <char>:<lp|rp|lk|rk>, random, timeout,
@@ -96,10 +100,30 @@ def start_server(a, db):
     sys.exit("lobby server did not start")
 
 
+def set_affinity(pid, mask):
+    """The process (all its threads) on the processors of `mask` only (SetProcessAffinityMask)."""
+    import ctypes
+    from ctypes import wintypes
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.OpenProcess.restype = wintypes.HANDLE
+    k32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    k32.SetProcessAffinityMask.argtypes = (wintypes.HANDLE, ctypes.c_size_t)
+    k32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    h = k32.OpenProcess(0x0200 | 0x0400, False, pid)      # PROCESS_SET_INFORMATION | QUERY_INFORMATION
+    if not h:
+        print(f"  affinity: cannot open process {pid}", flush=True)
+        return
+    try:
+        if not k32.SetProcessAffinityMask(h, mask):
+            print(f"  affinity: SetProcessAffinityMask failed ({ctypes.get_last_error()})", flush=True)
+    finally:
+        k32.CloseHandle(h)
+
+
 class ProcGame:
     """What the launcher's GameRun offers the driver: running(), stop(), proc, log_path."""
 
-    def __init__(self, cmd, env, cwd, log_path, minimized):
+    def __init__(self, cmd, env, cwd, log_path, minimized, cpus=0):
         self.log_path = log_path
         si = None
         if minimized and os.name == "nt":
@@ -110,6 +134,8 @@ class ProcGame:
             self.proc = subprocess.Popen(cmd, env=env, cwd=cwd, stdout=lf, stderr=subprocess.STDOUT,
                                          stdin=subprocess.DEVNULL, startupinfo=si,
                                          creationflags=BELOW_NORMAL if minimized and os.name == "nt" else 0)
+        if cpus and os.name == "nt":
+            set_affinity(self.proc.pid, cpus)
 
     def running(self):
         return self.proc.poll() is None
@@ -131,7 +157,10 @@ class Player:
         self.a, self.idx, self.name, self.char = a, idx, name, char
         self.dir = os.path.abspath(os.path.join(a.out, f"p{idx}"))
         os.makedirs(self.dir, exist_ok=True)
-        self.client = LobbyClient(addr, build, auto_ready=True, ingame_pick=a.ingame_pick, sets=not a.no_bo3)
+        self.client = LobbyClient(addr, build, auto_ready=True, ingame_pick=a.ingame_pick, sets=not a.no_bo3,
+                                  ranked_costume=a.ranked_costume)
+        costumes = a.costumes.split(",") if a.costumes else []
+        self.costume = int(costumes[idx - 1]) if len(costumes) >= idx else None
         self.client.connect()
         try:
             self.client.login(name, "password-" + name)
@@ -198,7 +227,7 @@ class Player:
             full.setdefault("T5_STUB_GAP", "3")
             full.setdefault("T5_STUB_LINGER", "30")
             cmd = [sys.executable, os.path.join(HERE, "stub_game.py")]
-        g = ProcGame(cmd, full, self.dir, log, minimized=bool(a.exe))
+        g = ProcGame(cmd, full, self.dir, log, minimized=bool(a.exe), cpus=int(a.cpus, 0) if a.cpus else 0)
         self.games.append(g)
         if a.exe and full.get("PS3_PAD_FILE"):
             specs = (a.pick1 if self.idx == 1 else a.pick2).split(",")
@@ -376,6 +405,10 @@ def main():
                                                        "queue again: the next opponent, a new netplay session")
     ap.add_argument("--fresh-p2", action="store_true", help="--sets: player 2's game is closed before every new "
                                                             "pairing (a fresh game against a persistent one)")
+    ap.add_argument("--ranked-costume", action="store_true", help="both clients choose the ranked costume in the "
+                    "launcher (cap ranked_costume): no select screen in a ranked set")
+    ap.add_argument("--costumes", default="", help="--ranked-costume: each player's costume button, e.g. 3,1")
+    ap.add_argument("--cpus", default="", help="both games' processor mask, e.g. 0xFFFF0000")
     ap.add_argument("--pick1", default="timeout", help="real game, --ingame-pick: player 1's picks")
     ap.add_argument("--pick2", default="timeout", help="real game, --ingame-pick: player 2's picks")
     ap.add_argument("--no-bo3", action="store_true", help="the clients do not announce ranked sets (per-game rating)")
@@ -404,7 +437,7 @@ def main():
             me = players[-1].client.me
             print(f"{me['name']}: {ranks.label(me)}, rating {me['rating']} +/- {me['rd']}")
         for p in players:
-            p.client.set_char(p.char)
+            p.client.set_char(p.char, p.costume)
         if a.queue == "room":
             # a lobby room: the first player opens it, the second joins (two members: a ready check)
             room = players[0].client.create_room("ranked_session", ranked=a.room_ranked)

@@ -54,7 +54,7 @@ class CharSelectTest(TkBase):
         plan = tab._pad_plan()
         self.assertEqual(set(plan), {"cross", "circle"})
         sent = []
-        tab.client.set_char = lambda key: sent.append(key)
+        tab.client.set_char = lambda key, *_costume: sent.append(key)
         plan["cross"][1]()
         self.pump(lambda: sent)
         self.assertFalse(sel.is_open())
@@ -78,6 +78,48 @@ class CharSelectTest(TkBase):
         tab._pad_plan()["circle"][1]()
         self.assertFalse(sel.is_open())
         self.assertEqual(tab._char_key(), fighters.RANDOM)
+
+    def test_ranked_costume_row(self):
+        """1.2.3 (tk_costume.py): the grid's costume row for the current fighter; a click remembers it per fighter,
+        sends it with the fighter and shows its number on the button; one-costume fighters and Random have no row."""
+        from t5lobby import tk_costume
+        tab = self.login()
+        tab.client.ranked_costume = True                                # (as with a game that has the in-game select)
+        self.assertTrue(tab.client.costume_ok())
+        sel = tab.charsel
+        sent = []
+        tab.client.set_char = lambda key, *costume: sent.append((key,) + costume)
+        tab.char_var.set(tab.table.fighter_name("jin"))
+        self.assertIn("· 1", str(sel.button.cget("text")))
+        sel.open()
+        self.root.update()
+        self.assertEqual([b for b, _w in sel.costume_buttons], [1, 3, 2])
+        self.assertEqual(str(sel.costume_buttons[0][1].cget("style")), "Card.Accent.TButton")   # costume 1 lit
+        sel.costume_buttons[2][1].invoke()                              # costume 3 = RP
+        self.pump(lambda: sent)
+        self.assertFalse(sel.is_open())
+        self.assertEqual(sent, [("jin", 2)])
+        self.assertEqual(tab.cfg["costumes"], {"jin": 2})
+        self.assertIn("Jin · 3", str(sel.button.cget("text")))
+        # another fighter: its own costume; back to Jin: his is still there
+        tab.char_var.set(tab.table.fighter_name("steve"))
+        self.assertIn("· 1", str(sel.button.cget("text")))
+        tab.char_var.set(tab.table.fighter_name("jin"))
+        self.assertEqual(tk_costume.remembered(tab.cfg, "jin"), 2)
+        for key in ("kuma", fighters.RANDOM):
+            tab.char_var.set(tab.table.fighter_name(key))
+            sel.open()
+            self.root.update()
+            self.assertEqual(sel.costume_buttons, [])
+            self.assertNotIn("·", str(sel.button.cget("text")))
+            sel.close()
+        # a server that takes no costume: the row is there but greyed
+        tab.char_var.set(tab.table.fighter_name("jin"))
+        tab.client.ranked_costume = False
+        sel.open()
+        self.root.update()
+        self.assertTrue(all(str(w.cget("state")) == "disabled" for _b, w in sel.costume_buttons))
+        sel.close()
 
     def test_main_is_starred(self):
         tab = self.login()

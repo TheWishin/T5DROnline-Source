@@ -3,6 +3,16 @@
 All notable changes, newest first. The project is a test release. Short commit hashes are in parentheses. The state of each
 part is in the README's status table.
 
+## Unreleased
+
+### Online
+- **Ranked: fighter and costume from the launcher.** The character select grid in the Online tab has a "Costume
+  (ranked)" row; the choice is remembered per fighter (also what you last picked on the game's select screen in a
+  casual match). A ranked set then starts every game, the first too, with both players' fighters and costumes --
+  no select screen in ranked. Your offline customization shows on the costume you chose. Casual matches keep the
+  game's own select screen. Needs the new lobby server and both players on this version; otherwise game 1 is
+  picked in the game as before.
+
 ## v1.2.2 (2026-11-07)
 
 **A fix release for 1.2.1: the music no longer sticks on one stage's theme for a whole set, no more doubled

@@ -30,6 +30,7 @@ install for players or for whoever runs the server.
 - [Chime and taskbar flash](#chime-and-taskbar-flash)
 - [Search options, areas and languages](#search-options-areas-and-languages) (highest ping, no Wi-Fi, steady 60 fps)
 - [Remove my data](#remove-my-data) (the account on the server, the online data on this PC)
+- [Profile picture](#profile-picture) (a picture of the customized fighter on the player's own profile card, this PC only)
 - Tournaments: their own page, [TOURNAMENTS.md](TOURNAMENTS.md)
 - [Protocol reference](#protocol-reference)
 - [Security and abuse protection](#security-and-abuse-protection)
@@ -1112,8 +1113,81 @@ name it played with (which any guest may use): the window says so and offers the
 
 *This PC*: the Online tab's settings and saved logins (`online.json`), the replay files of the replay folder (only
 `*.t5replay`, never the folder: it may be one the player chose), the game's `*.log` files in `<out>/logs`, the save
-the game uses online (`<out>/gamedata-online`) and `rb_cost.txt` -- each listed with its size, removed only after the
+the game uses online (`<out>/gamedata-online`), `rb_cost.txt` and the profile pictures' cache (`<out>/profile-pics`)
+-- each listed with its size, removed only after the
 same two confirmations. The game build, the offline save and `launcher.json` stay.
+
+## Profile picture
+
+Launcher only (`launcher/profile_pic.py`, `lobby/t5lobby/tk_profile_pic.py`, format `lobby/t5lobby/picfmt.py`).
+The player's **own** profile card in the Online tab shows a picture of their **customized fighter** -- the game's own
+picture of the fighter in the costume from the player's save, the one opponents see online ([DIRECTFIGHT.md
+"Custom costumes online"](DIRECTFIGHT.md)).
+
+**The picture stays on this PC** (owner decision 2026-11-10). Nothing of it is sent to the lobby server, the server
+stores none, and no other player sees it: the lobby protocol has no message, capability or profile field for
+pictures, and another player's card never shows one. No game code, no game state, no netplay and no build id
+changes; the 1.2.2 game takes the pictures.
+
+### How the picture is taken (design choice: A, a short offline game)
+
+The launcher starts a short **offline** game of its own and reads its picture back. Everything it uses is already
+in the released game:
+
+| Step | Switch (existing) |
+|---|---|
+| straight into a VS fight, the player's fighter as P1, one round, a bright open stage | `T5_FIGHT=<fighter>,<paul or law>,0,1 buttons=<b>\|1` |
+| P1 wears the customization of the player's save | `T5_COSTUME_SAVE=<a copy of SYS-DATA>` (the offline test hook of "Custom costumes online"; the game only reads it) |
+| a throw-away save folder: the player's saves are never opened for writing | `PS3_SAVEDATA_DIR=./profile-pics/work/save` |
+| no window, no sound, no dialogs, 720p | `PS3_WINDOW_BACKGROUND` + `PS3_WINDOW_HIDDEN`, `PS3_AUDIO_MUTE`, `PS3_NO_DIALOGS`, `RSX_TEST_CLIENT_SIZE=1280x720` |
+| the picture: what the window would show | `RSX_TEST_BB_SHOT=<request file>` (the backbuffer as PPM) |
+
+The moment is **P1's intro**: the game's own close-up of the fighter alone, no HUD. The launcher waits for the log
+line that ends the loading (`costumes: blocks hash ... after the loading`), asks for four pictures 2.0 / 2.5 / 3.0 /
+3.5 s later (the intro fades in during the first second and lasts 3.5 s or more), keeps the one at 2.5 s unless its
+middle shows next to nothing (then 3.0, 2.0, 3.5), cuts the upright middle out (540 x 720) and shrinks it to
+240 x 320. The game's log also says which costume the confirm button gave and whether it wears the customization
+(`costumes worn: P1 costume 2 (...): parts ...`): a costume that is not customized gets no picture, and the launcher
+tries the next button (LP, LK, RP, RK; at most four games per fighter) until the customized costume shows. The
+capture game runs at below-normal priority and ends at once when the player starts a game.
+
+Why not B (a picture of the select screen): the customization is put on the fighters only at FIGHT START (the VS
+custom-data blocks the direct-fight driver writes; they are zero at the select screen), so the select screen's
+preview cannot show what opponents see without new game code; and the online select screen exists only inside a
+session, where a picture would be taken while the netplay runs. A needs no new game state and nothing online; it
+costs 25-30 s per game (measured, warm shader cache).
+
+Proof (2026-11-10, the 1.2.2 tree's game, the test saves with a customized Kazuya and Lili): Kazuya with LP ->
+costume 1, not customized, no picture; with LK -> `costumes worn: P1 costume 2 (model 0x25): parts 03,-,0D,-
+colours 1,-,-`, the picture shows the red-haired Kazuya in the white suit; Lili with LK -> costume 2, her white
+dress. `refresh()` for Kazuya: two games, 53 s, one picture of 109 KB; again: 0 games, 0.3 s (cache). Not seen yet:
+the other 33 fighters' intros (the camera is the game's: a fighter whose intro keeps it far away or off the middle
+gives a smaller or cut figure), a real player's PC, Wine.
+
+**When.** While the Online tab is idle (logged in with an account, nothing searched or played, no game, build or
+shader warm-up running), for the fighter picked in the lobby. **Cache**: `<out>/profile-pics/index.json` +
+`<fighter>-<costume>.png`; the key of a picture is a hash of what that costume wears in the save (the 4 worn parts
+and 3 worn colours of its 0x58-byte record) -- never the save's path, name or any other byte of it. A new picture is
+taken only when that changed; a fighter with nothing customized has no picture. The card shows the picture of the
+fighter the account plays most when this PC has that one, else of the fighter picked in the lobby. Settings ->
+*Profile picture* (on by default) switches it off: nothing is taken and nothing is shown. "Remove my data" offers
+the cache folder among this PC's files.
+
+### Size and format
+
+PNG, 240 x 320, 8-bit RGB, at most 200 KB (measured: 100-125 KB; a picture that would be larger loses its lowest 2-4
+colour bits). One picture per fighter and costume (1-3).
+
+The file is a strict subset of PNG: the chunks IHDR, IDAT, IEND and nothing else. `picfmt.clean()` is the only way
+a picture reaches the cache or the screen: it unpacks the pixels (bounded by width x height: a small file cannot
+unpack huge) and writes them anew with the module's own encoder -- so no text, time, colour profile, EXIF or private
+chunk can exist in it. A file with any other chunk, pixel format, size, trailing bytes or a wrong checksum is
+refused whole.
+
+Tests: `lobby/tests/test_picfmt.py` (the format and every refusal), `tests/test_profile_pic.py` (the capture with a
+stand-in game: buttons, cache, retake, failures, leftovers of a killed run, the save untouched),
+`lobby/tests/test_tk_profile_pic.py` (the own card, never another player's, the setting, and that the lobby
+protocol has nothing for pictures).
 
 ## Protocol reference
 

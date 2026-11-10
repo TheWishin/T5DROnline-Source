@@ -433,6 +433,8 @@ class OnlineTab:
     def _set_account_view(self, logged_in):
         self.view.set_logged_in(logged_in)
 
+    launcher_log = staticmethod(lambda text: _launcher_log(text))
+
     def _set_actions(self):
         me = self.client.me if self.client and self.client.connected else None
         st = (me or {}).get("status")
@@ -668,6 +670,9 @@ class OnlineTab:
         self.tours.tick()
         self._invite_wait_tick()
         self._relogin_tick()
+        pic = getattr(self.view, "profile_pic", None)
+        if pic is not None:
+            pic.upkeep()                 # this player's own profile picture (tk_profile_pic.py; throttled)
         self._presence_tick()
         self._show_notice()
         self._pad_tick()

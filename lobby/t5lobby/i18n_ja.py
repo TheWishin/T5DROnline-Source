@@ -2946,3 +2946,17 @@ MESSAGES.update({
     'Ranked: your fighter and costume from here. Quick match and casual: pick your fighter in the game (the confirm button is the costume, Select = random); the fighter here is used when you do not pick in time.':
         'ランクマッチ: キャラクターとコスチュームはここで選びます。クイックマッチとカジュアル: ゲーム内でキャラクターを選びます（決定ボタンがコスチューム、Select = ランダム）。時間内に選ばないとここのキャラクターになります。',
 })
+
+# ---- profile picture (launcher/t5dr_launcher.pyw Settings, lobby/t5lobby/tk_profile_pic.py)
+MESSAGES.update({
+    "Profile picture":
+        "プロフィール画像",
+    "Show a picture of my customized fighter on my own profile card":
+        "カスタマイズしたキャラクターの画像を自分のプロフィールカードに表示する",
+    "The launcher takes it by itself with a short hidden game when your fighter's customization changed. It stays on this PC: nothing is sent to the server and no other player sees it.":
+        "キャラクターのカスタマイズが変わると、ランチャーが短い非表示のゲームで自動的に撮影します。画像はこのPCにだけ保存され、サーバーには何も送信されず、ほかのプレイヤーには表示されません。",
+    "{fighter}, costume {number}":
+        "{fighter}、コスチューム {number}",
+    "Profile pictures of your fighters":
+        "あなたのキャラクターのプロフィール画像",
+})

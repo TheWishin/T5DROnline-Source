@@ -38,6 +38,7 @@ NEW_LAUNCHER_NOTE = N_("Optional launcher with Tekken 5 DR and Tekken 4 in one w
 import problem_check_ui  # noqa: E402
 import tab_look  # noqa: E402
 import tkgc  # noqa: E402
+import profile_pic  # noqa: E402
 import replays  # noqa: E402
 import replays_ui  # noqa: E402
 import updater  # noqa: E402
@@ -254,6 +255,7 @@ class App(tk.Tk):
         self.language = core.apply_language(self.settings)      # before the first text is built
         self.info = core.release_info()
         self.build = None
+        self._pic_stop = threading.Event()     # ends a running profile-picture capture (profile_picture)
         self.game = None
         # Time played (playtime.py): counted while the game this launcher started runs; no setup, starts at 0.
         self.playtime_store = playtime.Store(playtime.default_path(
@@ -1059,6 +1061,18 @@ class App(tk.Tk):
                 "\"In lobby\", \"Searching ranked\" or your match (fighters, ranked set score) with a timer, through "
                 "the Discord app on this PC. Without Discord running nothing happens.")).pack(anchor="w", pady=(2, 0))
 
+        # Profile picture (docs/ONLINE.md "Profile picture"): the customized fighter on the own profile card, this PC only
+        ppc = ttk.LabelFrame(right, text="  " + t("Profile picture") + "  ", padding=(12, 6))
+        ppc.pack(fill="x", pady=(6, 0))
+        self.profile_pic_var = tk.BooleanVar(value=bool(self.settings.get("profile_pic", True)))
+        ttk.Checkbutton(ppc, text=t("Show a picture of my customized fighter on my own profile card"),
+                        variable=self.profile_pic_var, style=self.wrap_style("TCheckbutton", 440),
+                        command=self.save_settings).pack(anchor="w")
+        ttk.Label(ppc, style="Muted.TLabel", wraplength=300, justify="left", text=t(
+            "The launcher takes it by itself with a short hidden game when your fighter's customization changed. "
+            "It stays on this PC: nothing is sent to the server and no other player sees it.")).pack(
+            anchor="w", pady=(4, 0))
+
         # Spectators (docs/SPECTATE.md): who may watch this player's online matches, live, a few seconds late
         spc = ttk.LabelFrame(right, text="  " + t("Spectators") + "  ", padding=(12, 6))
         spc.pack(fill="x", pady=(6, 0))
@@ -1564,6 +1578,28 @@ class App(tk.Tk):
         rank_art.ART.prepare(theme.plate_heights(theme.apply(self)), out_dir=out, after=self.after,
                              log=None if self.readonly else core.log)
 
+    def profile_picture(self, fighter, fighter_id, opponent_id):
+        """The Online tab asks for this player's profile pictures of `fighter` (docs/ONLINE.md "Profile picture";
+        launcher/profile_pic.py). Called on a worker thread: no Tk here. -> profile_pic.refresh's result, or None
+        when this is not the moment (a game, a build or the shader warm-up runs, the game is not built). Starts the
+        short hidden capture game only when the cache has no picture for the save's customization; a game the
+        player starts ends it at once (start_game)."""
+        if self.readonly or self.build or (self.game and self.game.running()) or not self.game_state().get("ok"):
+            return None
+        out = self.settings.out_dir
+        try:
+            if core.warmup.running_out():
+                return None
+        except Exception:       # noqa: BLE001
+            return None
+        save = os.path.join(core.saves_dir(out), "NPUB30009-SYSNET", "SYS-DATA")
+        if not os.path.isfile(save):
+            return {"state": "none", "pics": [], "ran": 0}        # no offline save: nothing customized
+        self._pic_stop.clear()
+        extra = {k: v for k, v in self.settings.env_overrides().items() if k.upper().startswith("RSX_ADAPTER")}
+        return profile_pic.refresh(out, fighter, fighter_id, opponent_id, save, stop=self._pic_stop, log=core.log,
+                                   extra_env=extra)
+
     def game_exe(self):
         """The t5dr.exe start_game() runs (the Online tab's firewall hint checks the rules for exactly this path)."""
         return core.game_exe(self.settings.out_dir)
@@ -1891,6 +1927,8 @@ class App(tk.Tk):
             self.settings["always_left"] = self.settings["screen_side"] == "left"
         if hasattr(self, "discord_var"):
             self.settings["discord_presence"] = bool(self.discord_var.get())
+        if hasattr(self, "profile_pic_var"):
+            self.settings["profile_pic"] = bool(self.profile_pic_var.get())
         if hasattr(self, "spectators_var"):
             self.settings["spectators"] = bool(self.spectators_var.get())
             self.settings["spectators_ranked"] = bool(self.spectators_ranked_var.get())
@@ -1927,6 +1965,7 @@ class App(tk.Tk):
             return None
         if self.game and self.game.running():
             return self.game
+        self._pic_stop.set()               # a hidden profile-picture game ends now (profile_picture)
         _folder, warning = self._replay_folder_status()
         if warning:
             dialogs.show_info(t("Replay folder"), warning, parent=self)
@@ -2244,6 +2283,7 @@ class App(tk.Tk):
         if self.build:
             self.build.cancel()
         core.warmup.close_all()
+        self._pic_stop.set()
         updater.confirm_started()          # closed by hand (or restarting): it did start, the update stays
         self.save_settings()
         self.nb.unbind("<<NotebookTabChanged>>")          # (destroying the tabs would fire it with none selected)

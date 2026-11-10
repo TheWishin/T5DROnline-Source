@@ -62,6 +62,9 @@ def local_items(online_json, out_dir, replay_dir):
     save = os.path.join(out_dir, "gamedata-online") if out_dir else ""
     if save and os.path.isdir(save):
         items.append(("save", t("The save the game uses online"), [save], _size(save)))
+    pics = os.path.join(out_dir, "profile-pics") if out_dir else ""     # (launcher/profile_pic.py's cache)
+    if pics and os.path.isdir(pics):
+        items.append(("pics", t("Profile pictures of your fighters"), [pics], _size(pics)))
     cost = os.path.join(out_dir, "rb_cost.txt") if out_dir else ""
     if cost and os.path.isfile(cost):
         items.append(("cost", t("This PC's measured rollback cost"), [cost], _size(cost)))

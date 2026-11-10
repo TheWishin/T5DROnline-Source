@@ -148,6 +148,7 @@ DEFAULTS = {
     "replays": True,           # online matches are saved as replays (T5_REPLAY_DIR, docs/REPLAYS.md)
     "replay_dir": "",          # empty: <out>/replays; otherwise an existing folder chosen in Settings
     "replay_names": True,      # ... with the players' lobby names in them (off: T5_REPLAY_NAMES=0)
+    "profile_pic": True,       # a picture of the customized fighter on the own profile card, this PC only (docs/ONLINE.md)
     "spectators": True,        # online: friends and room visitors may watch this player's matches (docs/SPECTATE.md)
     "spectators_ranked": False,  # ... the ranked ones too (both players must allow it)
     "hud_records": True,       # online: both players' win records in the game's PLAYER DATA bar (lobby server/records.py)

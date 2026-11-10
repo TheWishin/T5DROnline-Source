@@ -26,8 +26,8 @@ import tkinter as tk
 import tkinter.font as tkfont
 from tkinter import ttk
 
-from . import (chat, fighter_art, fighters, i18n, proto, ranks, theme, tk_charsel, tk_history, tk_ranked_chars,
-               tk_rules, tk_stats, tk_tour)
+from . import (chat, fighter_art, fighters, i18n, proto, ranks, theme, tk_charsel, tk_history, tk_profile_pic,
+               tk_ranked_chars, tk_rules, tk_stats, tk_tour)
 from .i18n import N_, t
 from .lag import describe_event as describe_lag, lagged
 from .rank_art import ART
@@ -1075,6 +1075,7 @@ class OnlineView:
         tab.tv_hist.tag_configure("won", foreground=C["ok"])
         tab.tv_hist.tag_configure("lost", foreground=C["bad"])
         self.ranked_chars = tk_ranked_chars.RankedCharacters(self, card)
+        self.profile_pic = tk_profile_pic.ProfilePicture(self, card)     # the customized fighter (tk_profile_pic.py)
 
     def _build_friends_page(self, page):
         """Friends (accounts): the list with who is online, invites, requests both ways, add by name."""
@@ -1448,6 +1449,9 @@ class OnlineView:
     def profile_shown(self, p):
         self.prof_badge.set(_tier_of(p) if p.get("account", True) else None, p.get("provisional"))
         self.ranked_chars.shown(p)
+        pic = getattr(self, "profile_pic", None)       # (a view built without the profile page has none)
+        if pic is not None:
+            pic.shown(p)
         self._update_profile_mute()
 
     def _update_profile_mute(self):

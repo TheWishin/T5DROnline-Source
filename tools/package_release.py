@@ -100,6 +100,7 @@ OUR_FILES = [
     "launcher/tkgc.py",            # 1.1.9: garbage freed on the Tk thread only (t5dr_launcher.pyw imports it)
     "launcher/gpu_error.py",       # selected-adapter evidence and HD 4400 device-loss advice
     "launcher/playtime.py",        # time played on the Play tab (playtime.json next to launcher.json)
+    "launcher/profile_pic.py",     # the profile picture of the customized fighter (docs/ONLINE.md "Profile picture")
     "docs/RELEASE.md",
     # online: "Host for friends" entry point (works with the bundled, isolated Python) and the server list
     "lobby/run.py", "lobby/servers.json",

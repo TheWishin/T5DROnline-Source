@@ -69,6 +69,11 @@ the new lobby server.
   one file next to the online login, so a second T5DR folder -- and OpenRecomp -- shows the same settings. What
   belongs to a folder (the package, the build) stays in that folder. A 1.2.2 launcher still reads its own file;
   its changes are taken over at the next start of this version.
+- **Profile picture**: your own profile card in the Online tab shows a picture of your customized fighter. The
+  launcher takes it by itself with a short hidden game when the customization changed. It stays on this PC:
+  nothing is sent to the server and no other player sees it. Settings -> Profile picture turns it off.
+- **Battery warning**: on battery with battery saver, the Power saver plan or Windows' "Best power efficiency"
+  mode, Play and Build first say "Plug in the charger so the sound does not crackle." You can go on.
 
 ### Diagnostics
 - **Flash check** (`RSX_FLASH_CHECK=<folder>` in Settings -> Extra settings): for players who see single black

@@ -2960,3 +2960,9 @@ MESSAGES.update({
     "Profile pictures of your fighters":
         "あなたのキャラクターのプロフィール画像",
 })
+
+# ---- battery warning before Play and Build (launcher/core.py battery_warning)
+MESSAGES.update({
+    "Plug in the charger so the sound does not crackle.":
+        "音が途切れないように、充電器を接続してください。",
+})

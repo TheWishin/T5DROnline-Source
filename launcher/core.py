@@ -1735,6 +1735,38 @@ def power_saving_auto(status=None, plan=None, cpu=None):
     return False, None
 
 
+# On battery with a power setting that holds the processor back, the sound core misses its 5.33 ms tick and the
+# sound crackles. Said before Play and Build (t5dr_launcher.pyw battery_notice); the player can go on.
+POWER_MODE_EFFICIENCY = "961cc777-2547-4f9d-8174-7d86181b8a7a"       # Windows' "Best power efficiency" power mode
+BATTERY_WARNING = N_("Plug in the charger so the sound does not crackle.")
+
+
+def battery_power_mode():
+    """The power mode Windows uses on battery (the overlay scheme's GUID, lower case), or ''."""
+    if not IS_WIN:
+        return ""
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
+                            r"SYSTEM\CurrentControlSet\Control\Power\User\PowerSchemes") as k:
+            return str(winreg.QueryValueEx(k, "ActiveOverlayDcPowerScheme")[0]).lower()
+    except OSError:
+        return ""
+
+
+def battery_warning(status=None, plan=None, mode=None):
+    """BATTERY_WARNING (English, for t()) when this PC runs on battery and battery saver, the Power saver plan or
+    the "Best power efficiency" power mode holds the processor back; None on AC, on a desktop or when unknown.
+    status / plan / mode: a given power source instead of this PC's (tests)."""
+    ac, _pct, has_battery, saver = status if status is not None else system_power_status()
+    if ac is not False or not has_battery:
+        return None
+    if saver or (plan if plan is not None else active_power_plan()) == POWER_SAVER_PLAN \
+            or (mode if mode is not None else battery_power_mode()) == POWER_MODE_EFFICIENCY:
+        return BATTERY_WARNING
+    return None
+
+
 # Stage blur / glow: some stages filter the whole picture -- a soft focus on the misty swamp (stage
 # 34) and stages 24, 26 and 28, a glow around the sun on stage 20. On: as the game draws it, at
 # every internal resolution like at Native. Off (the default since 1.1.4): PS3_STAGE_BLUR=0, those

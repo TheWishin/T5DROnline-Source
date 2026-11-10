@@ -626,7 +626,7 @@ class App(tk.Tk):
         self.skip_btn = ttk.Button(b, text=t("Skip warm-up"), command=self.skip_warmup)
         row = ttk.Frame(b)
         row.grid(row=3, column=0, columnspan=3, sticky="we", pady=(8, 2))
-        self.build_btn = self.big_button(row, t("BUILD GAME"), self.start_build)
+        self.build_btn = self.big_button(row, t("BUILD GAME"), self.build_clicked)
         self.build_btn.pack(side="left")
         self.cancel_btn = ttk.Button(row, text=t("Cancel"), command=self.cancel_build, state="disabled")
         self.cancel_btn.pack(side="left", padx=8)
@@ -1634,7 +1634,23 @@ class App(tk.Tk):
 
     def build_from_play(self):
         self.nb.select(self.tabs["build"])
+        self.build_clicked()
+
+    def build_clicked(self):
+        self.battery_notice()
         self.start_build()
+
+    def battery_notice(self):
+        """Before Play or Build: on battery with a power setting that holds the processor back, say so
+        (core.battery_warning). Only a hint: the player goes on with OK. -> True when it was shown."""
+        try:
+            warning = core.battery_warning()
+        except Exception:       # noqa: BLE001 -- a hint must never stop a game or a build
+            warning = None
+        if not warning:
+            return False
+        dialogs.show_info(APP_TITLE, t(warning), parent=self)
+        return True
 
     def open_controls(self):
         """Settings -> Set up controllers...: the Controls window (controls_ui.py)."""
@@ -1993,6 +2009,7 @@ class App(tk.Tk):
         return g
 
     def play(self):
+        self.battery_notice()
         self.start_game()
 
     PLAYTIME_GAME = "t5dr"

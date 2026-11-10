@@ -4365,8 +4365,55 @@ first draft) are the Present calls moving inside the lead, not the screen. On ev
 not come from the **game part** (the game thread's own frame: median 6-11 ms in those frames against 3-5 ms
 normally), not from the translation. Only slow_core's 4 ms period (the processors taken 2.4 ms at a time, the walk
 stopped mid-frame) makes the translation share the blame, and it needs the longest lead (16.5 ms: a frame of extra
-input delay on such a PC). Next: what the game thread does in its spike frames (`PS3_SCHED_TRACE`, the game part
-split of `[slow-frames]`).
+input delay on such a PC).
+
+### The spike frames: the command ring's wrap (PS3_SCHED_TRACE + timestamped stack samples)
+
+Decision case: whole processors (all 32, and 2c/4t without slow_core). `PS3_SCHED_TRACE` (every guest syscall / HLE
+call over 20 us, all guest threads) and the game thread log, 80 s of stage 20 (`build/perf123/trspike.py`):
+
+| | game part | main thread CPU | blocked | of it the draw-thread cond (sc 107) |
+|---|---|---|---|---|
+| frames around the median (32 processors) | 3.19 ms | 2.99 | 0.23 | 0.18 |
+| the top 1 % (= the late frames) | 6.00 | 2.94 | 3.09 | 2.93 |
+| 2c/4t, around the median | 3.55 | 3.25 | 0.49 | 0.27 |
+| 2c/4t, the top 1 % | 6.24 | 2.88 | 3.38 | 3.06 |
+
+The main thread's own work is the same; it waits 3-5 ms for the game's draw thread (`NU::Draw::RequestManager`). In
+those waits the draw thread is busy only 20 % of the time (ordinary waits: ~100 %). `tools/thread_profile.py
+--raw-time` (new: QPC-stamped samples, waits included) says where it waits: ~80 % in our `cellGcm_fifo_recycle`,
+called by the title's GCM "buffer full" callback. The title's command ring reaches its end about once a second on
+stage 20 (51 wraps in 50 s; on the pool stage 30, ~6 a second), and the recycle waits until the FIFO walker has
+translated the whole tail of the ring -- 2.8 ms (median), p90 4.0, max 6.2 a wrap -- polling with `Sleep(1)`. The
+skinning chain's queue (sc 130) is not a cause here: 0.00-0.17 ms a frame, 0.06 in the top 1 %; it only grows on the
+4 ms stop-go stand-in (0.57 -> 1.31 ms), where the main thread is also runnable but not running for 2 ms more (the
+stand-in itself). Two to three frames per 80 s run are the main thread's own CPU at 7-11 ms (cause not found yet).
+
+**Patch 0123, the ring wrap's wait woken by the walker**: the same wait condition and bound, but `WaitOnAddress` on
+the walker's drained position, woken when the walker publishes it (at most 1 ms a round, so the semaphore case is
+seen as before); `PS3_GCM_RECYCLE_WAKE=0` = `Sleep(1)`, `=2` alternates the two wrap by wrap and `[gcm-recycle]`
+compares them in one game:
+
+| run | wraps | the guest thread waited, median (woken / Sleep) | mean |
+|---|---|---|---|
+| 32 processors, stage 20 | 120 | 2.13 / 3.00 ms | 2.06 / 3.11 |
+| 2c/4t, stage 20 | 120 | 1.90 / 2.73 | 1.76 / 2.61 |
+| 2c/4t, stage 30 (the pool) | 720 | 1.49 / 2.67 | 1.65 / 2.52 |
+
+Whole runs on 2c/4t, stage 20, interleaved (woken, Sleep, woken, Sleep; 7,000 frames each): game part p99 5.1 / 6.0 /
+5.0 / 6.2 ms, release -> present p99 7.4 / 8.0 / 7.1 / 8.1, frames over 8.5 ms 9 / 40 / 8 / 36 (0.13 / 0.57 / 0.11 /
+0.51 %); the display lock's own count of frames shown a refresh late 15 / 19 / 16 / 19 in ~7,100 frames each (its lead
+follows the tail, so the shorter tail mostly means a shorter lead: less input delay at the same smoothness).
+
+Same game with the wake: rollback pair (this build hosting with the defaults vs the 1.2.3 base, RTT 150 +-5, 3 % loss,
+Asuka vs Lili stage 20) 0 mismatching through frame 10,199, hash `4b229446e8d1442b` on both; lockstep pair (base
+host vs this build, RTT 30, 1 % loss, Jin vs Lili stage 25) 0 mismatching through 10,199, `93ae13b6e919adbf` on both;
+smoke quick PASS (83 checks).
+
+Not done -- owner's decision: the PS3 SDK's callback waits only until the RSX has left the head of the ring it is
+about to overwrite, not for the whole tail. Doing that would make most of each wrap's 1.5-2 ms wait vanish, but the
+walker would then translate the tail while the game writes the head -- a change in the emulation's order that needs
+picture checks and pairs before anyone relies on it.
 
 ### Same game
 

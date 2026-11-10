@@ -198,6 +198,8 @@ def main():
     ap.add_argument("--stack", type=int, default=2048, help="stack bytes scanned for callers")
     ap.add_argument("--top", type=int, default=40)
     ap.add_argument("--json", default="")
+    ap.add_argument("--raw-time", action="store_true",
+                    help="--raw lines start with @<QPC> and the leaf function (perf_counter_ns / 100 = QPC at 10 MHz)")
     ap.add_argument("--raw", default="", help="also write every busy sample: leaf, then callers; executable "
                     "addresses as RVAs (hex), for line-level symbolizing with a PDB (llvm-symbolizer)")
     a = ap.parse_args()
@@ -318,6 +320,19 @@ def main():
         leaf = sym(rip)
         if in_syscall(rip) and leaf.split("]")[-1].startswith(WAITS):
             n_idle += 1
+            if raw_out and a.raw_time and oks:
+                # --raw-time: waiting samples too, with the callers by name (what the thread waits in)
+                names, data = [], stk.raw[:got.value]
+                for i in range(0, len(data) - 7, 8):
+                    v = int.from_bytes(data[i:i + 8], "little")
+                    if ebase <= v < ebase + esize and is_ret(v):
+                        f = sym(v)
+                        if not names or f != names[-1]:
+                            names.append(f.replace(" ", "_"))
+                        if len(names) >= 8:
+                            break
+                raw_out.write("@%d IDLE:%s %s\n" % (time.perf_counter_ns() // 100, leaf.replace(" ", "_"),
+                                                    " ".join(names)))
             continue
         n_busy += 1
         self_c[leaf] += 1
@@ -336,6 +351,10 @@ def main():
                     if len(chain) >= 12:
                         break
         if raw_out:
+            # with --raw-time: the sample's QPC time (perf_counter is QPC on Windows) and the leaf's name first, to
+            # line the samples up with a PS3_SCHED_TRACE or the frame log
+            if a.raw_time:
+                raw_out.write("@%d %s " % (time.perf_counter_ns() // 100, leaf.replace(" ", "_")))
             raw_out.write(" ".join(rchain) + "\n")
         for f in set(chain):
             incl_c[f] += 1

@@ -1,3 +1,74 @@
+diff --git a/libs/video/cellGcmSys.c b/libs/video/cellGcmSys.c
+--- a/libs/video/cellGcmSys.c
++++ b/libs/video/cellGcmSys.c
+@@ -384,6 +384,7 @@ static u32 s_labels[CELL_GCM_MAX_LABEL_COUNT];
+  * wait for the RSX to catch up before recycling the ring (else the frame's
+  * just-written commands are lost). Updated in cellGcm_rsx_process_fifo. */
+ volatile u32 g_gcm_fifo_drained_ea = 0;
++static volatile LONG s_recycle_waiters;   /* patch 0123: cellGcm_fifo_recycle waits on the address above */
+ 
+ /* The guest variable cellGcmInit's ctx_out pointed at -- the title's own
+  * gCellGcmCurrentContext. A title that switches to a command buffer of its own
+@@ -2718,6 +2719,7 @@ static void gcm_rsx_process_fifo_unlocked(void)
+     }
+ 
+     g_gcm_fifo_drained_ea = gcm_io2ea(s_fifo_getoff);
++    if (s_recycle_waiters) WakeByAddressAll((PVOID)&g_gcm_fifo_drained_ea);   /* patch 0123 */
+     /* GCM_GET_EQ_PUT=1: publish `get` as having reached `put` rather than where
+      * the walker actually is. A probe, not a fix -- it removes the back-pressure
+      * a title uses to avoid overwriting commands the GPU has not read. It exists
+@@ -2793,12 +2795,50 @@ void cellGcm_fifo_recycle(u32 ctx_ea)
+      * waiting here for the walker to pass it is a deadlock the 2 s bound ends.
+      * The SDK's callback only waits for `get` to leave the head it is about to
+      * overwrite; a walker parked at the tail left it long ago. */
++    /* Patch 0123: the walker wakes this wait when it publishes how far it drained (WaitOnAddress, at most
++     * 1 ms per round, so the semaphore case below is still seen as before); it slept Sleep(1) a round,
++     * 1-2 ms of rounding on each wrap of the ring -- about once a second in a fight, and the game's draw
++     * thread and then its main thread wait for it (docs/RENDER_PERF.md "1.2.3: the ring wrap").
++     * PS3_GCM_RECYCLE_WAKE=0: Sleep(1); =2 (tests): the two alternate wrap by wrap, [gcm-recycle] compares. */
++    static int wake_cfg = -1;
++    if (wake_cfg < 0) { const char* e = getenv("PS3_GCM_RECYCLE_WAKE"); wake_cfg = e && *e ? atoi(e) : 1; }
++    static u32 s_wraps;
++    const u32 wrap = s_wraps++;
++    const int wake = wake_cfg == 2 ? (int)(wrap & 1u) : wake_cfg != 0;
++    LARGE_INTEGER rw0, rwf; QueryPerformanceCounter(&rw0); QueryPerformanceFrequency(&rwf);
+     int spins = 0;
+     while (g_gcm_fifo_drained_ea != begin && spins < 2000) {
+         if (s_sema_wait_ea && io_begin != 0xFFFFFFFFu &&
+             (s_fifo_getoff < io_begin || s_fifo_getoff >= io_begin + GCM_RECYCLE_MARGIN))
+             break;
+-        Sleep(1); spins++;
++        if (wake) {
++            const u32 seen = g_gcm_fifo_drained_ea;
++            if (seen == begin) break;
++            InterlockedIncrement(&s_recycle_waiters);
++            WaitOnAddress((volatile VOID*)&g_gcm_fifo_drained_ea, (PVOID)&seen, sizeof seen, 1);
++            InterlockedDecrement(&s_recycle_waiters);
++        } else {
++            Sleep(1);
++        }
++        spins++;
++    }
++    {   /* patch 0123: how long each wrap held the guest thread, per way of waiting */
++        LARGE_INTEGER rw1; QueryPerformanceCounter(&rw1);
++        const double ms = (double)(rw1.QuadPart - rw0.QuadPart) * 1000.0 / (double)rwf.QuadPart;
++        static double sum[2]; static u32 n[2]; static float rec[2][64];
++        rec[wake][n[wake] % 64u] = (float)ms; sum[wake] += ms; n[wake]++;
++        if (wake_cfg == 2 && (wrap % 40u) == 39u) {
++            float a[2][64]; double med[2] = {0, 0};
++            for (int w = 0; w < 2; w++) {
++                const u32 k = n[w] < 64u ? n[w] : 64u;
++                memcpy(a[w], rec[w], k * sizeof(float));
++                for (u32 i = 1; i < k; i++) { const float x = a[w][i]; u32 j = i; while (j && a[w][j - 1] > x) { a[w][j] = a[w][j - 1]; j--; } a[w][j] = x; }
++                med[w] = k ? a[w][k / 2] : 0.0;
++            }
++            fprintf(stderr, "[gcm-recycle] %u ring wraps: the guest thread waited median %.2f / %.2f ms, mean %.2f / %.2f "
++                    "(woken by the walker / Sleep(1))%c", wrap + 1, med[1], med[0], n[1] ? sum[1] / n[1] : 0.0,
++                    n[0] ? sum[0] / n[0] : 0.0, 10);
++        }
+     }
+     if (spins >= 2000) {
+         static int warned = 0;
 diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
 --- a/libs/video/rsx_live_draw.c
 +++ b/libs/video/rsx_live_draw.c

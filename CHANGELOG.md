@@ -20,6 +20,10 @@ part is in the README's status table.
   display holds the frames back, not the processor"; the launcher's note after a game says to try VSync Off. On
   a screen faster than 60 Hz the game itself then presents without vsync (no tearing; `RSX_HOLD_VSYNC=0` keeps
   vsync). Not tried on a real Fermi card: the next log from one says whether that was the cause.
+- **Fewer late frames when the game's command ring wraps** (about once a second; on the pool stage six times a second):
+  the game's draw thread waited for the renderer with 1 ms sleeps; it is now woken as soon as the renderer is done
+  (1.5-2.1 ms instead of 2.7-3.1 ms a wrap). On a 2-core stand-in the frames that took longer than 8.5 ms fell from
+  0.5 % to 0.1 %. `PS3_GCM_RECYCLE_WAKE=0` puts the old wait back.
 - **Less work for the render translation**: each draw copies only the transform constants its vertex program
   reads into the graphics card's upload memory (the 8 KB block was copied whole: ~3 MB a fight frame), and the
   per-draw timing clock runs only with the frame log on. The picture is the same (every program checked against

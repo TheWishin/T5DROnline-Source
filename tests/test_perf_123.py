@@ -80,6 +80,22 @@ class Runtime(unittest.TestCase):
         self.assertIn("g_ld_present_interval = slow || g_ld_hold_vsync_off ? 0 : g_ld_interval_cfg;", p)
 
 
+class RingWrap(unittest.TestCase):
+    """The title's command ring wraps about once a second; its callback (cellGcm_fifo_recycle) waits for the
+    walker as before, but woken by it instead of polling with Sleep(1)."""
+    def test_same_condition_woken_by_the_walker(self):
+        p = added()
+        self.assertIn("if (s_recycle_waiters) WakeByAddressAll((PVOID)&g_gcm_fifo_drained_ea);", p)
+        self.assertIn("WaitOnAddress((volatile VOID*)&g_gcm_fifo_drained_ea, (PVOID)&seen, sizeof seen, 1);", p)
+        self.assertIn('getenv("PS3_GCM_RECYCLE_WAKE")', p)
+        # the old wait stays the fallback, and the loop's condition and bound are unchanged
+        self.assertIn("            Sleep(1);", p)
+        with open(PATCH, encoding="utf-8") as f:
+            text = f.read()
+        self.assertIn(" while (g_gcm_fifo_drained_ea != begin && spins < 2000) {", text)
+        self.assertNotIn("-    while (g_gcm_fifo_drained_ea != begin && spins < 2000) {", text)
+
+
 class Launcher(unittest.TestCase):
     def test_launcher_reads_the_new_verdict(self):
         self.assertEqual(core.SLOW_GPU_HELD.match(HELD).group(1), "24.0")

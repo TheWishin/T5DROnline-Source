@@ -2836,6 +2836,10 @@ MESSAGES = {
     'Online feel:': 'オンラインの感触:',
     'For Auto. Responsive: the least delay. Balanced: one frame more when a PC cannot keep up with its rollbacks. Smooth: more delay, fewer and smaller rollbacks. Different choices meet at Balanced.': 'Auto のとき。反応重視: 遅延を最小に。バランス: PC がロールバックに追いつけないときは 1 フレーム追加。なめらか: 遅延を増やし、ロールバックを少なく小さく。選択が違うときはバランスになります。',
     'Show the connection line in online matches (ping, delay, rollbacks; F3 in the game)': 'オンライン対戦で接続ラインを表示 (Ping、遅延、ロールバック。ゲーム中は F3)',
+    'Show win records in online matches (wins, losses and win rate on the select and VS screens)':
+        'オンライン対戦で戦績を表示 (キャラクター選択と VS 画面に勝ち数・負け数・勝率)',
+    "Ranked matches show the ranked record, other matches the record of all matches. Off: neither player's record is shown in your matches.":
+        'ランクマッチではランクの戦績、それ以外は全対戦の戦績を表示します。オフ: あなたの対戦ではどちらのプレイヤーの戦績も表示されません。',
     'F3 (connection line)': 'F3 (接続ライン)',
     'Search options': '検索オプション',
     'Search options...': '検索オプション...',

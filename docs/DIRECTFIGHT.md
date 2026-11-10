@@ -24,6 +24,7 @@ T5_NET_RESULT_FILE=<path>                            {"match": id, "winner": 0|1
 T5_DF_STATUS_FILE=<path>                             JSON status for the launcher (rewritten on change)
 T5_HUD_NAMES=<P1 name>|<P2 name>                     names under the health bars (lobby names, 16 characters)
 T5_HUD_RANKS=<P1 tier>,<P2 tier>                     rank badges, 0-36 in the game's order (0 Beginner, 10 1st Dan, ...)
+T5_HUD_RECORDS=<w>-<l>|<w>-<l>                       win records for the PLAYER DATA bar (empty side = 0 W 0 L; fight line records=)
 T5_CTL_DIR=<dir>                                     persistent game: every match is a control command (below)
 T5_ONLINE_FAST_BOOT=0|1                              online loading cover (default OFF since the 1.2.0 owner decision; 1 = on, testers)
 T5_DF_PICK=<seconds>                                 pick=<seconds> for fight lines without one (tests)
@@ -638,6 +639,20 @@ P1/P2 list) at the same lockstep frame; the blocks are outside the netplay
 state hash anyway and nothing in a fight reads them (every match since: equal
 hashes). The launcher passes the lobby names and tiers (guests and players
 still in placement: 0, Beginner): `match_driver.hud_values()`.
+
+**Win records (1.2.3).** The "PLAYER DATA <w> W <l> L <rate> %" bar of the select
+screen and the VS screen reads the same blocks: wins u32 at +0x108, losses u32 at
++0x10C (getters 0x2A196C / 0x2A1A34, shown by 0x105EEC, which caps each at 999999
+and works out the rate, wins * 10000 / (wins + losses), two decimals). With
+`T5_HUD_RECORDS=37-21|0-4` (or a fight line's `records=`) the driver writes both
+sides there wherever it writes the names; a side left empty gets 0 / 0 (the bar as
+it always read online), and once a game has written records, a later match without
+any writes 0 / 0 too (never the last opponent's numbers). The log line is
+`HUD records: P1 37-21, P2 0-4 (was ...)`. Like the names: display only, outside
+the netplay state hash, the same numbers on both PCs (the lobby sends them only
+when both launchers and games can and both players allow it: lobby
+`server/records.py`, docs/ONLINE.md "Win records in the match"). Replays and
+spectators carry no records: their bar reads 0 W 0 L.
 
 ## Persistent game (T5_CTL_DIR): a new opponent without a new process
 

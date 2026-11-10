@@ -63,6 +63,7 @@ from .matchrules import MatchRulesMixin
 from .mmfilters import MatchFiltersMixin
 from .forget import ForgetMixin
 from .private_chat import PrivateChatMixin
+from .records import CAP as RECORDS_CAP, FEATURE as RECORDS_FEATURE, RecordsMixin
 from .rematch import RematchMixin, VOTE_GRACE
 from .reports import CAP as REPORT_CAP, ReportsMixin
 from .rooms import Room, RoomsMixin  # noqa: F401 -- (Room: lobby.Room for tools and tests)
@@ -87,6 +88,7 @@ CAPS |= {"badges", "mentions", "ranked_chars", "casual_sets", "room_tables",
 CAPS |= {"auto_skip_intro_v1"}  # 1.2.0: the game skips the fighters' intros by the fight line's rule (matchrules.py)
 CAPS |= {REPORT_CAP}           # 1.2.x: problem reports from the launcher (reports.py)
 CAPS |= {"ranked_costume"}     # 1.2.3: ranked fighter + costume chosen in the launcher (set_char / queue "costume")
+CAPS |= {RECORDS_CAP}          # 1.2.3: each player's win record in the game's PLAYER DATA bar (records.py)
 QUEUE_MODES = ("quick", "ranked")
 # What this server supports beyond protocol 1's base (the client checks before using them).
 FEATURES = ["ranks", "sessions", "recovery", "passwd", "profile", "history", "chars", "integrity", "rematch",
@@ -104,6 +106,7 @@ FEATURES += ["private_chat", "mutes"]
 FEATURES.append("input_delay8")        # 1.2.0: only pairs announcing this cap use the new challenge delays
 FEATURES += ["badges", "mentions", "casual_sets", "room_tables"]
 FEATURES.append(COMPAT_CAP)
+FEATURES.append(RECORDS_FEATURE)       # 1.2.3: record_prefs, records in match_start (records.py)
 FEATURES += ["mm_filters", "forget_me"]  # 1.2.1: search options + area / language (mmfilters.py), "Remove my data" (forget.py)
 CHALLENGES_OPEN = 5                    # a player's open challenges at once (1.1.9; before: one)
 CHALLENGE_GAP_S = 0.7                  # ... sent at most this often (before: one every 2 s)
@@ -224,6 +227,7 @@ class Player:
         self.last_invite = 0.0
         self.spec_allow = False         # spectators allowed (spec_prefs; never sent by a client without the cap)
         self.spec_ranked = False        # ... in ranked matches too
+        self.record_show = True         # win records in the game's PLAYER DATA bar (record_prefs; records.py)
         self.watching = None            # the spectating.Stream this player watches
         self.life = 100                 # health handicap in casual matches, percent (set_life; matchrules.py)
         self.area = ""                  # where the player is: mmfilters.AREAS ("" = not known), shown in the lobby list
@@ -632,7 +636,7 @@ class Conn:
 # =============================================================================== server
 
 class LobbyServer(PrivateChatMixin, SpectateMixin, RoomsMixin, CasualMixin, MatchRulesMixin, RematchMixin,
-                  MatchFiltersMixin, ForgetMixin, ReportsMixin):
+                  MatchFiltersMixin, ForgetMixin, ReportsMixin, RecordsMixin):
     def __init__(self, cfg=None):
         self.cfg = cfg or Config.from_env()
         self.build_groups = BuildGroups(self.cfg.compat_groups)
@@ -1032,6 +1036,7 @@ class LobbyServer(PrivateChatMixin, SpectateMixin, RoomsMixin, CasualMixin, Matc
                        "friend_add", "friend_answer", "friend_cancel", "friend_remove", "invite", "invite_answer",
                        "invite_cancel", "private_mute", "mute"))
     STATE = STATE | {"netinfo"}          # (mmfilters.py)
+    STATE = STATE | {"record_prefs"}     # (records.py)
     HEAVY = HEAVY | {"forget_me"}        # a password check (forget.py)
 
     async def dispatch(self, conn, line):
@@ -3126,6 +3131,7 @@ class LobbyServer(PrivateChatMixin, SpectateMixin, RoomsMixin, CasualMixin, Matc
                 **({"stream": m.stream_id} if self._can(p, "spectate") else {}),
                 "min_seconds": self.cfg.min_match_seconds,
                 **self._casual_start_info(m),          # casual by choice: the launcher offers Swap sides
+                **self._records_start_info(m, p),      # both players' win records for the game (records.py)
                 "set": m.set.info() if m.set is not None else None})
 
     def _old_stages(self, m):

@@ -106,7 +106,7 @@ class LobbyClient(TourCalls, SpectateClientMixin):
                  private_rooms=True, match_rules=False, life150=False, input_delay8=True,
                  badges=True, mentions=True, tcp_fallback_port=443, casual_sets=True, room_tables=True,
                  ingame_rematch=False, auto_skip_after_round=False, private_chat=True, guest_mutes=(),
-                 auto_skip_intro=False, ranked_costume=False):
+                 auto_skip_intro=False, ranked_costume=False, hud_records=False):
         """server: "host[:port]". build: BuildInfo. on_event: optional callable(event) run on the
         client thread (use the `events` queue from a UI). game_port: local UDP port for the game
         (0 = any free one; set it when the player forwarded a port on the router).
@@ -166,6 +166,8 @@ class LobbyClient(TourCalls, SpectateClientMixin):
         tcp_fallback_port: same host's alternate TLS control port (443; 0 disables). TLS clients try
         it after an unreachable primary and prefer it when an established primary connection breaks.
         The certificate check and protocol stay identical; plain TCP clients never use it.
+        hud_records: this player's game writes both players' win records into its PLAYER DATA bar (T5_HUD_RECORDS,
+        1.2.3; the cap "hud_records"; match_driver.game_supports_records). set_record_prefs() is the player's choice.
         ingame_rematch, auto_skip_after_round: explicit game-build capabilities for the optional 1.2 protocol,
         off by default. The launcher checks the corresponding game marker and T5_INGAME_REMATCH switch first;
         skip consent is a separate, default-off preference (set_auto_skip_after_round); the round skip does not
@@ -228,6 +230,8 @@ class LobbyClient(TourCalls, SpectateClientMixin):
         self.ingame_rematch = bool(ingame_rematch)
         self.auto_skip_after_round = bool(auto_skip_after_round)
         self.auto_skip_intro = bool(auto_skip_intro)
+        self.hud_records = bool(hud_records)
+        self.record_show = None          # "Show win records in matches" (set_record_prefs): sent after every login
         self.skip_after_round = False    # the player's consent; a room/server still chooses the agreed rule
         self.life = 100              # this player's health handicap (set_life), as the server confirmed it
         self.casual_prefs = None     # (side None/0/1, stage key or "random"): casual wishes, sent after every login
@@ -422,7 +426,8 @@ class LobbyClient(TourCalls, SpectateClientMixin):
                                                 + [COMPAT_CAP]
                                                 + (["private_chat"] if self.private_chat else [])
                                                 + ["mutes"]
-                                                + (["ranked_costume"] if self.ranked_costume else [])})
+                                                + (["ranked_costume"] if self.ranked_costume else [])
+                                                + (["hud_records"] if self.hud_records else [])})
         except (LobbyError, OSError, asyncio.CancelledError):
             # Refused (version) or no answer (e.g. TLS on one side only): leave nothing half open.
             closing, self._closing = self._closing, True
@@ -556,6 +561,7 @@ class LobbyClient(TourCalls, SpectateClientMixin):
                 self._start_keepalive()
                 await self._spec_after_login()
                 await self._casual_after_login()
+                await self._records_after_login()
                 self._emit({"t": "reconnected"})
                 return
         finally:
@@ -1348,6 +1354,7 @@ class LobbyClient(TourCalls, SpectateClientMixin):
             self._tasks.append(asyncio.ensure_future(self._clock_sync()))
         await self._spec_after_login()
         await self._casual_after_login()
+        await self._records_after_login()
         return self.me
 
     async def _clock_sync(self, n=3):
@@ -1840,6 +1847,23 @@ class LobbyClient(TourCalls, SpectateClientMixin):
         """The stage keys this launcher may offer (the server's list; the stage select's on an older server)."""
         got = ((self.welcome or {}).get("casual") or {}).get("stages")
         return list(got) if isinstance(got, list) else []
+
+    def records_ok(self):
+        """Win records in the match (1.2.3, server/records.py): this client and the server can."""
+        w = self.welcome or {}
+        return bool(self.hud_records and "hud_records" in (w.get("caps") or ())
+                    and "hud_records" in (w.get("features") or ()))
+
+    def set_record_prefs(self, show=True):
+        """The player's "Show win records in matches": off hides both players' records in this player's matches (the
+        two games must write the same). Kept and sent again after every login."""
+        self.record_show = bool(show)
+        if self.connected and self.me and self.records_ok():
+            self._fire({"t": "record_prefs", "show": self.record_show})
+
+    async def _records_after_login(self):
+        if self.record_show is not None and self.records_ok():
+            await self._safe(self._send({"t": "record_prefs", "show": self.record_show}))
 
     def set_casual_prefs(self, side=None, stage="random"):
         """This player's wishes for casual matches (challenges, invites, rooms): side 0 = P1, 1 = P2, None = any;

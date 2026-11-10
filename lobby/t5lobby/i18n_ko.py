@@ -2804,6 +2804,10 @@ MESSAGES = {
     'Online feel:': '온라인 느낌:',
     'For Auto. Responsive: the least delay. Balanced: one frame more when a PC cannot keep up with its rollbacks. Smooth: more delay, fewer and smaller rollbacks. Different choices meet at Balanced.': 'Auto일 때. 반응 우선: 지연을 가장 적게. 균형: PC가 롤백을 따라가지 못하면 1프레임 추가. 부드럽게: 지연을 늘려 롤백을 더 적고 작게. 서로 다르게 고르면 균형이 됩니다.',
     'Show the connection line in online matches (ping, delay, rollbacks; F3 in the game)': '온라인 매치에서 연결 줄 표시 (Ping, 지연, 롤백; 게임 중 F3)',
+    'Show win records in online matches (wins, losses and win rate on the select and VS screens)':
+        '온라인 매치에서 전적 표시 (캐릭터 선택과 VS 화면에 승, 패, 승률)',
+    "Ranked matches show the ranked record, other matches the record of all matches. Off: neither player's record is shown in your matches.":
+        '랭크 매치는 랭크 전적을, 다른 매치는 모든 매치의 전적을 보여 줍니다. 끄면: 내 매치에서는 어느 플레이어의 전적도 표시되지 않습니다.',
     'F3 (connection line)': 'F3 (연결 줄)',
     'Search options': '검색 옵션',
     'Search options...': '검색 옵션...',

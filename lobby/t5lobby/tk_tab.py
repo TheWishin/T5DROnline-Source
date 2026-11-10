@@ -78,7 +78,7 @@ from .editions import edition_note
 from .i18n import N_, stamp, t, translate_message
 from .match_driver import MatchDriver, fps_from_logs, game_files, game_supports_pick, game_supports_rules, \
     game_supports_life150, game_supports_ingame_ui, game_supports_auto_skip, ingame_rematch_wanted, \
-    game_supports_auto_skip_intro
+    game_supports_auto_skip_intro, game_supports_records
 from .proto import DEFAULT_PORT, LobbyError
 from . import theme, tk_casual, tk_challenges, tk_rooms, tk_rules, tk_spectate, tk_tour, tk_views, tklist, winfront
 from . import tk_costume, tk_forget, tk_search
@@ -672,6 +672,7 @@ class OnlineTab:
         self._show_notice()
         self._pad_tick()
         self.spec.poll()
+        self._records_tick()
         self.rooms_ui.tick()
         self.view.tick()
         if not self._closed:
@@ -852,6 +853,7 @@ class OnlineTab:
                         ingame_rematch=self._game_has_ingame_ui(),
                         auto_skip_after_round=self._game_has_auto_skip(),
                         auto_skip_intro=self._game_has_auto_skip_intro(),
+                        hud_records=self._game_has_records(),
                         sets=bool(self.cfg.get("sets", True)),   # online.json "sets": false: no ranked sets
                         # launcher Settings -> "Open the game's port on my router" (docs/NETPLAY.md)
                         port_mapping=bool(getattr(self.app, "settings", {}).get("router_ports", True)),
@@ -861,6 +863,9 @@ class OnlineTab:
         c._guest_mutes_server_key = server_key
         self.spec.new_client(c)
         self.casual.new_client(c)
+        self._record_pref = self._records_wanted()
+        if hasattr(c, "set_record_prefs"):
+            c.set_record_prefs(self._record_pref)
         # this PC's game speed from its last online match (the lobby warns / keeps slow PCs out of ranked);
         # before the first one, from the newest game log (offline play)
         try:
@@ -902,6 +907,27 @@ class OnlineTab:
         is used is the player's own box ("Auto-skip replays and round endings", off by default) and the opponent's."""
         out = getattr(self.app.settings, "out_dir", os.getcwd())
         return os.environ.get("T5_AUTO_SKIP", "1").strip() != "0" and game_supports_auto_skip(game_files(out))
+
+    def _game_has_records(self):
+        """1.2.3: this PC's game writes both players' win records into its PLAYER DATA bar (server/records.py)."""
+        out = getattr(self.app.settings, "out_dir", os.getcwd())
+        return game_supports_records(game_files(out))
+
+    def _records_wanted(self):
+        """Settings -> "Show win records in matches" (on by default)."""
+        s = getattr(self.app, "settings", None) or {}
+        try:
+            return s.get("hud_records", True) is not False
+        except AttributeError:
+            return True
+
+    def _records_tick(self):
+        """The setting changed: tell the server (it hides the records of both players of this player's matches)."""
+        c = self.client
+        want = self._records_wanted()
+        if c is not None and want != getattr(self, "_record_pref", None) and hasattr(c, "set_record_prefs"):
+            self._record_pref = want
+            self.call(c.set_record_prefs, want)
 
     def _game_has_auto_skip_intro(self):
         """1.2.0: this PC's game skips the fighters' intros by the fight line's rule (no setting)."""

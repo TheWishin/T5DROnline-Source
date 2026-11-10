@@ -1028,6 +1028,16 @@ class App(tk.Tk):
                                     "the game)"), variable=self.net_line_var,
                         style=self.wrap_style("TCheckbutton", 500), command=self.save_settings).pack(
             anchor="w", pady=(8, 0))
+        # Win records (lobby/t5lobby/server/records.py, docs/ONLINE.md "Win records in the match"): the game's own
+        # PLAYER DATA bar, like an arcade cabinet's; both players must allow it (the two games write the same)
+        self.hud_records_var = tk.BooleanVar(value=self.settings.get("hud_records", True) is not False)
+        ttk.Checkbutton(net, text=t("Show win records in online matches (wins, losses and win rate on the select and "
+                                    "VS screens)"), variable=self.hud_records_var,
+                        style=self.wrap_style("TCheckbutton", 500), command=self.save_settings).pack(
+            anchor="w", pady=(8, 0))
+        ttk.Label(net, style="Muted.TLabel", wraplength=300, justify="left", text=t(
+            "Ranked matches show the ranked record, other matches the record of all matches. Off: neither "
+            "player's record is shown in your matches.")).pack(anchor="w", pady=(2, 0))
         # docs/NETPLAY.md "Getting a direct connection": a forwarded game port lets the opponent's punches in
         self.router_ports_var = tk.BooleanVar(value=bool(self.settings.get("router_ports", True)))
         ttk.Checkbutton(net, text=t("Open the game's port on my router during online matches (UPnP / NAT-PMP / PCP)"),
@@ -1874,6 +1884,8 @@ class App(tk.Tk):
         if hasattr(self, "online_feel_var"):
             self.settings["online_feel"] = self.online_feel_var.get()
             self.settings["net_line"] = bool(self.net_line_var.get())
+        if hasattr(self, "hud_records_var"):
+            self.settings["hud_records"] = bool(self.hud_records_var.get())
         if hasattr(self, "screen_side_var"):
             self.settings["screen_side"] = self.screen_side_var.get()
             self.settings["always_left"] = self.settings["screen_side"] == "left"

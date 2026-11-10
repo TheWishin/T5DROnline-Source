@@ -1,0 +1,244 @@
+diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
+--- a/libs/video/rsx_live_draw.c
++++ b/libs/video/rsx_live_draw.c
+@@ -14472,17 +14472,50 @@ static u64 ld_dump_surface_ppm(const char* path, const surface_t* surface)
+  * the list's fence has passed -- nothing waits; a frame whose slot is still
+  * busy is not dumped (counted in "[frame-dump] async: ... skipped"). */
+ #define LD_ASYNC_SLOTS 8
++static char g_ld_dump_bb_path[MAX_PATH * 2];   /* patch 0124: this present's back buffer goes there too */
+ static struct {
+     ID3D12Resource* rb;
+     UINT64 size;
+     u64 fence;                /* 0 = free */
+     u32 w, h, pitch, texel;
+     int fp16;
++    LONGLONG qpc;             /* when the copy was recorded (patch 0124) */
+     char path[MAX_PATH * 2];
+ } g_ld_async[LD_ASYNC_SLOTS];
+ static u64 g_ld_async_done, g_ld_async_skipped;
+ typedef struct ld_async_job { struct ld_async_job* next; u8* px; u32 w, h, pitch, texel; int fp16;
+-                              char path[MAX_PATH * 2]; } ld_async_job;
++                              u32 src_h, ystep; int full;   /* patch 0124: every ystep-th row kept unless full */
++                              LONGLONG qpc; char path[MAX_PATH * 2]; } ld_async_job;
++/* Patch 0124: RSX_FLASH_CHECK=<dir> -- the flash check a player can leave on while playing: every presented
++ * picture (the game's display buffer and the window's back buffer after the present copy and the overlay)
++ * is copied in the frame's own list, measured on the writer thread and logged to <dir>\\flash.csv; a dark
++ * one between two bright ones is named in the game log ("[flash-check] DARK ...") and written as a picture.
++ * A flash the player sees that is in neither picture happens after the game: display, driver, compositor.
++ * (= LD_FRAME_DUMP=<dir> LD_FRAME_DUMP_EVERY=1 LD_FRAME_DUMP_ASYNC=1 LD_FRAME_DUMP_ASYNC_BB=1
++ * LD_FRAME_DUMP_STATS=<dir>\\flash.csv, which tests set one by one.) Bright pictures are not kept whole:
++ * the present thread copies every n-th row (about 180), so the check costs a fight nothing it can feel. */
++static const char* ld_flash_check_dir(void)
++{
++    static const char* dir = (const char*)-1;
++    if (dir == (const char*)-1) { const char* e = getenv("RSX_FLASH_CHECK"); dir = (e && *e) ? e : NULL; }
++    return dir;
++}
++static FILE* ld_flash_stats_file(void)
++{
++    static FILE* stats = (FILE*)-1;
++    if (stats == (FILE*)-1) {
++        const char* e = getenv("LD_FRAME_DUMP_STATS");
++        char path[MAX_PATH * 2];
++        if (!(e && *e) && ld_flash_check_dir()) {
++            CreateDirectoryA(ld_flash_check_dir(), NULL);
++            snprintf(path, sizeof path, "%s\\flash.csv", ld_flash_check_dir());
++            e = path;
++        }
++        stats = (e && *e) ? fopen(e, "w") : NULL;
++        if (stats) fprintf(stderr, "[flash-check] every presented picture is measured: %s\n", e);
++    }
++    return stats;
++}
+ static ld_async_job* volatile g_ld_async_head;
+ static CRITICAL_SECTION g_ld_async_cs;
+ static HANDLE g_ld_async_ev;
+@@ -14497,7 +14530,52 @@ static DWORD WINAPI ld_async_writer(LPVOID arg)
+             if (j) g_ld_async_head = j->next;
+             LeaveCriticalSection(&g_ld_async_cs);
+             if (!j) break;
+-            FILE* f = fopen(j->path, "wb");
++            /* Patch 0124, the flash check: no picture file per frame -- one line "name,qpc,middle,whole,black"
++             * (mean of the 3D picture's middle as tools/flicker_check.py measures it, mean of the whole
++             * picture, share of pixels under 8) and the picture itself only for a dark one. */
++            int write_picture = 1;
++            if (ld_flash_stats_file()) {
++                FILE* stats = ld_flash_stats_file();
++                double mid = 0, whole = 0; unsigned nmid = 0, nwhole = 0, nblack = 0;
++                const u32 sy = j->full ? 4u : 1u, sx = j->full ? 4u : j->ystep;
++                const u32 y0 = j->src_h * 200u / 720u, y1 = j->src_h * 560u / 720u, x0 = j->w * 100u / 1280u, x1 = j->w * 1180u / 1280u;
++                for (u32 y = 0; y < j->h; y += sy) {
++                    const u8* row = j->px + (size_t)y * j->pitch;
++                    const u32 src_y = y * j->ystep;
++                    for (u32 x = 0; x < j->w; x += sx) {
++                        u8 c[3]; ld_dump_texel_rgb(row + x * j->texel, j->fp16, c);
++                        const unsigned v = (unsigned)c[0] + c[1] + c[2];
++                        whole += v; nwhole++;
++                        if (c[0] < 8 && c[1] < 8 && c[2] < 8) nblack++;
++                        if (src_y >= y0 && src_y < y1 && x >= x0 && x < x1) { mid += v; nmid++; }
++                    }
++                }
++                mid = nmid ? mid / (3.0 * nmid) : 0; whole = nwhole ? whole / (3.0 * nwhole) : 0;
++                const char* name = strrchr(j->path, '\\');
++                name = name ? name + 1 : j->path;
++                fprintf(stats, "%s,%lld,%.2f,%.2f,%.4f\n", name, (long long)j->qpc, mid, whole,
++                        nwhole ? (double)nblack / nwhole : 0.0);
++                /* the rule of tools/flicker_check.py, a picture late: under 45 and under half of both neighbours */
++                static struct { double mid[2]; char name[2][64]; unsigned n, dark, kept; } k[2];
++                const int kind = strstr(name, "_bb.") ? 1 : 0;
++                if (k[kind].n >= 2 && k[kind].mid[1] < 45.0 && k[kind].mid[1] < 0.5 * k[kind].mid[0] &&
++                    k[kind].mid[1] < 0.5 * mid) {
++                    k[kind].dark++;
++                    fprintf(stderr, "[flash-check] DARK %s picture %s: middle %.1f between %.1f and %.1f\n",
++                            kind ? "window" : "game", k[kind].name[1], k[kind].mid[1], k[kind].mid[0], mid);
++                }
++                k[kind].mid[0] = k[kind].mid[1]; k[kind].mid[1] = mid;
++                snprintf(k[kind].name[1], sizeof k[kind].name[1], "%s", name);
++                k[kind].n++;
++                if (kind == 0 && k[0].n % 1800 == 0) {
++                    fprintf(stderr, "[flash-check] %u pictures read back (%llu not: every slot busy): %u dark on the game's "
++                                    "picture, %u of %u dark on the window's\n", k[0].n,
++                            (unsigned long long)g_ld_async_skipped, k[0].dark, k[1].dark, k[1].n);
++                    fflush(stats);
++                }
++                write_picture = j->full && mid < 45.0 && k[kind].kept++ < 200;
++            }
++            FILE* f = write_picture ? fopen(j->path, "wb") : NULL;
+             if (f) {
+                 fprintf(f, "P6\n%u %u\n255\n", j->w, j->h);
+                 u8* line = (u8*)malloc((size_t)j->w * 3);
+@@ -14525,11 +14603,28 @@ static void ld_dump_async_poll(void)
+         u8* px = NULL; D3D12_RANGE rr = {0, (SIZE_T)g_ld_async[i].size};
+         if (SUCCEEDED(g_ld_async[i].rb->lpVtbl->Map(g_ld_async[i].rb, 0, &rr, (void**)&px))) {
+             ld_async_job* j = (ld_async_job*)calloc(1, sizeof *j);
+-            if (j) j->px = (u8*)malloc((size_t)g_ld_async[i].size);
++            u32 rows = g_ld_async[i].h, ystep = 1;
++            if (j && ld_flash_stats_file() && rows > 360) {
++                /* a quick look at the middle: only a dark picture is kept whole */
++                double probe = 0; unsigned n = 0;
++                for (u32 gy = 1; gy < 8; gy++)
++                    for (u32 gx = 1; gx < 16; gx++) {
++                        u8 c[3];
++                        ld_dump_texel_rgb(px + (size_t)(rows * (200u + gy * 45u) / 720u) * g_ld_async[i].pitch +
++                                          (size_t)(g_ld_async[i].w * gx / 16u) * g_ld_async[i].texel, g_ld_async[i].fp16, c);
++                        probe += c[0] + c[1] + c[2]; n++;
++                    }
++                if (probe / (3.0 * n) >= 60.0) { ystep = rows / 180u; rows = (rows + ystep - 1u) / ystep; }
++            }
++            if (j) j->px = (u8*)malloc((size_t)g_ld_async[i].pitch * rows);
+             if (j && j->px) {
+-                memcpy(j->px, px, (size_t)g_ld_async[i].size);
+-                j->w = g_ld_async[i].w; j->h = g_ld_async[i].h; j->pitch = g_ld_async[i].pitch;
+-                j->texel = g_ld_async[i].texel; j->fp16 = g_ld_async[i].fp16;
++                if (ystep == 1) memcpy(j->px, px, (size_t)g_ld_async[i].pitch * rows);
++                else for (u32 y = 0; y < rows; y++)
++                    memcpy(j->px + (size_t)y * g_ld_async[i].pitch, px + (size_t)y * ystep * g_ld_async[i].pitch,
++                           (size_t)g_ld_async[i].w * g_ld_async[i].texel);
++                j->src_h = g_ld_async[i].h; j->ystep = ystep; j->full = ystep == 1;
++                j->w = g_ld_async[i].w; j->h = rows; j->pitch = g_ld_async[i].pitch;
++                j->texel = g_ld_async[i].texel; j->fp16 = g_ld_async[i].fp16; j->qpc = g_ld_async[i].qpc;
+                 memcpy(j->path, g_ld_async[i].path, sizeof j->path);
+                 EnterCriticalSection(&g_ld_async_cs);
+                 ld_async_job** t = (ld_async_job**)&g_ld_async_head;   /* keep the order */
+@@ -14546,7 +14641,17 @@ static void ld_dump_async_poll(void)
+     }
+ }
+ /* The copy of `surface` into a free slot, recorded into the open list. */
++static void ld_dump_async_record_tex(const char* path, ID3D12Resource* rt, u32 width, u32 height, DXGI_FORMAT fmt,
++                                     D3D12_RESOURCE_STATES state);
+ static void ld_dump_async_record(const char* path, const surface_t* surface)
++{
++    if (!surface) return;
++    ld_dump_async_record_tex(path, surface->tex, surface->pw ? surface->pw : surface->w,
++                             surface->ph ? surface->ph : surface->h, surface->fmt, D3D12_RESOURCE_STATE_RENDER_TARGET);
++}
++/* ... of any texture in the state it is in at this point of the list (patch 0124: the back buffer too) */
++static void ld_dump_async_record_tex(const char* path, ID3D12Resource* rt, u32 width, u32 height, DXGI_FORMAT fmt,
++                                     D3D12_RESOURCE_STATES state)
+ {
+     static int inited;
+     if (!inited) {
+@@ -14558,13 +14663,10 @@ static void ld_dump_async_record(const char* path, const surface_t* surface)
+         fprintf(stderr, "[frame-dump] async (LD_FRAME_DUMP_ASYNC): copies in the frame's own list, %u readback "
+                         "slots, written once the GPU is past them; nothing waits\n", LD_ASYNC_SLOTS);
+     }
+-    ID3D12Resource* rt = surface ? surface->tex : NULL;
+     if (!rt || !g.ready) return;
+     ld_begin_recording();
+-    const u32 width = surface->pw ? surface->pw : surface->w;
+-    const u32 height = surface->ph ? surface->ph : surface->h;
+     if (!width || !height) return;
+-    const int fp16 = surface->fmt == DXGI_FORMAT_R16G16B16A16_FLOAT;
++    const int fp16 = fmt == DXGI_FORMAT_R16G16B16A16_FLOAT;
+     const u32 texel = fp16 ? 8u : 4u;
+     const u32 pitch = (width * texel + 255) & ~255u;
+     const UINT64 size = (UINT64)pitch * height;
+@@ -14596,21 +14698,22 @@ static void ld_dump_async_record(const char* path, const surface_t* surface)
+     b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+     b.Transition.pResource = rt;
+     b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+-    b.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
++    b.Transition.StateBefore = state;
+     b.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+     LDL->lpVtbl->ResourceBarrier(LDL, 1, &b);
+     D3D12_TEXTURE_COPY_LOCATION src = {0}, dst = {0};
+     src.pResource = rt; src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX; src.SubresourceIndex = 0;
+     dst.pResource = g_ld_async[slot].rb; dst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+-    dst.PlacedFootprint.Footprint.Format = surface->fmt;
++    dst.PlacedFootprint.Footprint.Format = fmt;
+     dst.PlacedFootprint.Footprint.Width = width;
+     dst.PlacedFootprint.Footprint.Height = height;
+     dst.PlacedFootprint.Footprint.Depth = 1;
+     dst.PlacedFootprint.Footprint.RowPitch = pitch;
+     LDL->lpVtbl->CopyTextureRegion(LDL, &dst, 0, 0, 0, &src, NULL);
+     b.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
+-    b.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
++    b.Transition.StateAfter = state;
+     LDL->lpVtbl->ResourceBarrier(LDL, 1, &b);
++    g_ld_async[slot].qpc = ld_pf_qpc();
+     g_ld_async[slot].w = width; g_ld_async[slot].h = height; g_ld_async[slot].pitch = pitch;
+     g_ld_async[slot].texel = texel; g_ld_async[slot].fp16 = fp16;
+     snprintf(g_ld_async[slot].path, sizeof g_ld_async[slot].path, "%s", path);
+@@ -15072,7 +15175,8 @@ static void ld_present_body(u32 buffer_id, int display_synced, const hp_target*
+     if (dump_every < 0) { dump_dir = getenv("LD_FRAME_DUMP");
+                           const char* e = getenv("LD_FRAME_DUMP_EVERY");
+                           dump_every = (dump_dir && dump_dir[0]) ? (e ? atoi(e) : 300) : 0;
+-                          if (dump_every <= 0 && dump_dir && dump_dir[0]) dump_every = 300; }
++                          if (dump_every <= 0 && dump_dir && dump_dir[0]) dump_every = 300;
++                          if (ld_flash_check_dir()) { dump_dir = ld_flash_check_dir(); dump_every = 1; } }
+     /* LD_FRAME_DUMP_FROM=<frame>: start dumping there (dense captures of a
+      * late scene, e.g. frames for a GIF, without thousands of early files). */
+     static long dump_from = -1;
+@@ -15138,14 +15242,16 @@ static void ld_present_body(u32 buffer_id, int display_synced, const hp_target*
+     if (dump_every > 0) ld_dump_async_poll();   /* patch 0082: finished async copies to the writer */
+     if (dump_now) {
+         char path[MAX_PATH * 2];
+-        if (dump_gate && dump_gate[0])   /* named by the frame and the flip it shows, for lining up with the latency log */
++        if ((dump_gate && dump_gate[0]) || ld_flash_check_dir())   /* named by the frame and the flip it shows, for lining up with the latency log */
+             snprintf(path, sizeof(path), "%s\\frame_%06u_flip%06u.ppm", dump_dir, g_ld_frames + 1u,
+                      cellGcm_lat_walk_seq());
+         else
+             snprintf(path, sizeof(path), "%s\\frame_%06u.ppm", dump_dir, dump_n - 1u);
+         static int async = -1;   /* LD_FRAME_DUMP_ASYNC=1 (patch 0082): no wait for the GPU */
+-        if (async < 0) { const char* e = getenv("LD_FRAME_DUMP_ASYNC"); async = e && e[0] == '1'; }
++        if (async < 0) { const char* e = getenv("LD_FRAME_DUMP_ASYNC"); async = (e && e[0] == '1') || ld_flash_check_dir(); }
+         if (async) ld_dump_async_record(path, &g.surfaces[target]);
++        if (async) snprintf(g_ld_dump_bb_path, sizeof g_ld_dump_bb_path, "%s\\frame_%06u_flip%06u_bb.ppm", dump_dir,
++                            g_ld_frames + 1u, cellGcm_lat_walk_seq());
+         /* LD_FRAME_DUMP_ASYNC_SURF=<hex offset>: that render target too (frame_<n>_s<offset>.ppm) */
+         { static long sx = -2;
+           if (sx == -2) { const char* e = getenv("LD_FRAME_DUMP_ASYNC_SURF"); sx = e ? (long)strtoul(e, NULL, 16) : -1; }
+@@ -15316,6 +15422,13 @@ static void ld_present_body(u32 buffer_id, int display_synced, const hp_target*
+ 
+     /* The composed, letterboxed backbuffer is in PRESENT here. Capture
+      * through LDL so the recorder preserves copy/barrier ordering. */
++    { static int bbd = -1;   /* LD_FRAME_DUMP_ASYNC_BB=1 (patch 0124): the back buffer as presented, frame_<n>_bb.ppm */
++      if (bbd < 0) { const char* e = getenv("LD_FRAME_DUMP_ASYNC_BB"); bbd = (e && e[0] == '1') || ld_flash_check_dir(); }
++      if (bbd && g_ld_dump_bb_path[0]) {
++          ld_dump_async_record_tex(g_ld_dump_bb_path, bb, g_ldp.bb_w, g_ldp.bb_h, DXGI_FORMAT_R8G8B8A8_UNORM,
++                                   D3D12_RESOURCE_STATE_PRESENT);
++          g_ld_dump_bb_path[0] = 0;
++      } }
+     const int clip_slot = ld_clips_record(bb, g_ldp.bb_w, g_ldp.bb_h);
+     const LONGLONG pf_present_begin = ld_pf_qpc();
+     ld_flush(LD_FLUSH_PRESENT);

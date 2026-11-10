@@ -718,6 +718,7 @@ MESSAGES = {
         "gegen andere zu spielen, nutze den",
     "Online tab": "Online-Reiter",
     "Stop game": "Spiel stoppen",
+    "Playtime: {hours} h {minutes} min": "Spielzeit: {hours} h {minutes} min",
     "Open newest game log": "Neuestes Spiel-Log öffnen",
     "Open saves folder": "Speicherordner öffnen",
     "The game opens in its own window (DirectX 12). Keyboard and Xbox-style controllers "

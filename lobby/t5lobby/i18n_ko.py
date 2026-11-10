@@ -676,6 +676,7 @@ MESSAGES = {
         "Arcade, Versus, Practice 등 이 PC에서 하는 모드입니다. 인터넷 대전은 여기로:",
     "Online tab": "온라인 탭",
     "Stop game": "게임 중지",
+    "Playtime: {hours} h {minutes} min": "플레이 시간: {hours}시간 {minutes}분",
     "Open newest game log": "최신 게임 로그 열기",
     "Open saves folder": "세이브 폴더 열기",
     "The game opens in its own window (DirectX 12). Keyboard and Xbox-style controllers "

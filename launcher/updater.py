@@ -139,6 +139,7 @@ PROGRAM_ITEMS = ("T5DR Online.exe", "T5DR Online.cmd", "launcher", "lobby", "too
                  "LICENSES", "README.txt", "release.json")
 # The player's files: never in a release, never moved. A zip that has one at its top is refused.
 PROTECTED = ("native", "launcher.json", "launcher.log", "launcher.log.1", CACHE_FILE, ".update",
+             "playtime.json", "playtime.json.bak", "playtime.json.bad",      # time played (playtime.py)
              "keys", "game", "build", "gamedata", "logs", "scratch")
 _PROGRAM = {n.lower() for n in PROGRAM_ITEMS}
 _PROTECTED = {n.lower() for n in PROTECTED}

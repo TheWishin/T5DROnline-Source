@@ -692,6 +692,7 @@ MESSAGES = {
         "Arcade, Versus, Practice et les autres modes sur ce PC. Pour jouer contre d'autres joueurs sur internet :",
     "Online tab": "onglet En ligne",
     "Stop game": "Arrêter le jeu",
+    "Playtime: {hours} h {minutes} min": "Temps de jeu : {hours} h {minutes} min",
     "Open newest game log": "Ouvrir le dernier journal du jeu",
     "Open saves folder": "Ouvrir le dossier des sauvegardes",
     "The game opens in its own window (DirectX 12). Keyboard and Xbox-style controllers "

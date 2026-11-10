@@ -687,6 +687,7 @@ MESSAGES = {
         "Arcade, Versus, Practice e os outros modos neste PC. Para jogar contra outras pessoas pela internet, use a",
     "Online tab": "aba Online",
     "Stop game": "Parar o jogo",
+    "Playtime: {hours} h {minutes} min": "Tempo de jogo: {hours} h {minutes} min",
     "Open newest game log": "Abrir o log mais recente",
     "Open saves folder": "Abrir pasta de saves",
     "The game opens in its own window (DirectX 12). Keyboard and Xbox-style controllers "

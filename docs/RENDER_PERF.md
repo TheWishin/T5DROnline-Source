@@ -4342,15 +4342,31 @@ speed.
 
 ### Frame-time spread (owner 2026-11-10: a constant 16.7 ms, not a good average)
 
-Present-to-present in fights (`fight_bench`, the window minimised, Lili vs Asuka):
+What a player sees is not the present-to-present time: under the display lock (59/60 Hz screens) a tick comes `lead`
+before a display refresh, and a frame presented within `lead` after its tick is shown on that refresh, whatever its
+present time. A frame presented later is shown one refresh late -- the picture before it stays 33 ms. So the measure
+is release (the tick) -> present per frame against the lead, and the runtime's own count of frames late for their
+vblank. Patch 0123's build, Lili vs Asuka stage 20, 126 s of fight each (`fight_bench --secs 150`, the window
+minimised; the lead and counts from the game's `[pacing] display lock` lines, the split from `build/perf123/late.py`:
+game thread log + frame log):
 
-| PC / stand-in | p50 | p95 | p99 | max | frames over 17.5 ms |
-|---|---|---|---|---|---|
-| all 32 processors, patch 0123 | 16.69 | 17.18 | 17.59 | 19.6 | 12 of 959 |
-| 4c/4t + slow_core 60, base | 16.05-16.29 | 19.6-19.9 | 20.3-20.5 | 24-43 | 218-235 of ~1,075 |
-| 2c/4t + slow_core 60, base and 0123 | 16.1-16.3 | 19.8-20.0 | 20.5-22.4 | 23-55 | 231-305 of ~1,078 |
+| PC / stand-in | release -> present p50 / p99 / max | game part p50 / p99 | request -> present p50 / p99 | lead | frames shown a refresh late | of those, mostly the game part |
+|---|---|---|---|---|---|---|
+| all 32 processors | 5.0 / 7.8 / 11.0 ms | 3.1 / 5.8 | 1.9 / 2.9 | 7.6-10.1 ms | 6-9 of ~3,500 a minute (0.2-0.3 %) | 85 of 85 over 7.6 ms |
+| 2c/4t (`0xF000`), no slow_core | 5.7 / 7.8 / 12.6 | 3.6 / 5.7 | 2.0 / 2.7 | 8.5-9.6 | 9-10 (0.3 %) | 23 of 26 |
+| 4c/4t + slow_core 60, 1 ms period | 6.9 / 10.2 / 16.1 | 4.2 / 7.0 | 2.5 / 4.0 | 10.9-12.5 | 3-14 (0.1-0.4 %) | 24 of 29 |
+| 2c/4t + slow_core 60, 1 ms period | 8.6 / 11.5 / 18.5 | 5.3 / 7.6 | 3.2 / 5.0 | 13.5-13.7 | 8-9 (0.25 %) | 4 of 6 |
+| 4c/4t + slow_core 60, 4 ms period | 9.9 / 15.7 / 93.8 | 5.8 / 10.5 | 4.0 / 7.1 | 16.5 (the most) | 19-33 (0.5-1 %) | 23 of 26 |
+| 2c/4t + slow_core 60, 4 ms period | 13.3 / 18.2 / 36.6 | 8.6 / 11.9 | 4.6 / 7.5 | 16.5 (the most) | 99-390 (3-11 %) | 183 of 393 |
 
-On the stand-ins the average is 60 but a fifth of the frames are presented 3 ms late and the next one early.
+The present-to-present times of the same runs (p50 16.3-16.7, p99 19-22 ms, the earlier table of this section's
+first draft) are the Present calls moving inside the lead, not the screen. On every stand-in with whole processors
+(no slow_core, or slow_core's 1 ms period) 99.6-99.9 % of the frames are shown on their refresh; the frames that are
+not come from the **game part** (the game thread's own frame: median 6-11 ms in those frames against 3-5 ms
+normally), not from the translation. Only slow_core's 4 ms period (the processors taken 2.4 ms at a time, the walk
+stopped mid-frame) makes the translation share the blame, and it needs the longest lead (16.5 ms: a frame of extra
+input delay on such a PC). Next: what the game thread does in its spike frames (`PS3_SCHED_TRACE`, the game part
+split of `[slow-frames]`).
 
 ### Same game
 

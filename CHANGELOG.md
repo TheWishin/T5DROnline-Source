@@ -33,6 +33,12 @@ part is in the README's status table.
 - **"Always see me on the left" no longer mirrors offline Versus** (report GMSUZH): with the setting on, a local
   Versus fight was shown from P2's side (P1 on the right, P1's left and right reversed). The setting now works in
   casual online matches only, as its text says; online it is unchanged.
+- **Input display in offline Versus** (Settings -> Training overlay -> "Input display in offline Versus", off by
+  default; F2 in the game switches it): both players' inputs with how long each was held, as in Practice, without
+  frame data. Never online, never in a replay.
+- **Your own button names in the input display**: a `[names]` section in `controls.ini` (`[names1]` / `[names2]` per
+  player) renames 1 2 3 4 (`1 = LP`) and lists L1 R1 L2 R2 L3 R3 START SELECT once they have a name (`L1 = TAG`), in
+  Practice and offline Versus. Text on the picture only; nothing in the game changes (docs/TRAINING.md).
 
 ## v1.2.2 (2026-11-07)
 

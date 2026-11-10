@@ -753,6 +753,11 @@ MESSAGES = {
         "muestra nítidos, sin el brillo. Solo cambia tu imagen: online, cada jugador puede elegir distinto.",
     "Training overlay": "Overlay de entrenamiento",
     "Also in the other offline modes (Arcade, Versus, ...)": "También en los demás modos offline (Arcade, Versus, ...)",
+    "Input display in offline Versus": "Mostrar entradas en Versus offline",
+    "Offline Versus: both players' inputs, with your own button names from controls.ini ([names]). "
+    "Never online. F2 in the game switches it.":
+        "Versus offline: las entradas de ambos jugadores, con tus propios nombres de botones de "
+        "controls.ini ([names]). Nunca en línea. F2 en el juego lo cambia.",
     "Position:": "Posición:",
     "Top": "Arriba",
     "Bottom": "Abajo",

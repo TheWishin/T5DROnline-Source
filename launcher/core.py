@@ -122,6 +122,7 @@ DEFAULTS = {
     "training_all": False,     # ... also in the other offline modes (T5_TRAINING_ALL=1)
     "training_online": False,  # ... also online, this PC's own inputs only (T5_TRAINING_ONLINE=1)
     "training_pos": "top",     # where the training display sits: top | bottom (T5_TRAINING_POS)
+    "vs_overlay": False,       # the input display in offline Versus, with the player's own button names (T5_VS_OVERLAY=1)
     "practice": True,          # practice tools in Practice (offline): SELECT combos, dummy, recordings, T5_PRACTICE
     "auto_skip_offline": False, # offline: the game skips replays and round endings itself (T5_AUTO_SKIP_OFFLINE)
     "practice_dummy": "game",  # the dummy's behaviour at the start (PRACTICE_DUMMY keys), T5_PRACTICE_DUMMY
@@ -243,6 +244,8 @@ class Settings(dict):
             self["training"] = "frames"
         if not isinstance(self["training_pos"], str) or self["training_pos"] not in TRAINING_POS:
             self["training_pos"] = "top"
+        if not isinstance(self["vs_overlay"], bool):
+            self["vs_overlay"] = False
         if not isinstance(self["practice"], bool):
             self["practice"] = True
         if not isinstance(self["practice_dummy"], str) or self["practice_dummy"] not in PRACTICE_DUMMY:
@@ -405,6 +408,11 @@ class Settings(dict):
                     env["T5_TRAINING_ONLINE"] = "1"
                 env["T5_TRAINING_POS"] = self["training_pos"] if self["training_pos"] in TRAINING_POS else "top"
                 env["T5_TRAINING_LANG"] = i18n.resolve(self["language"]) if I18N else "en"
+        # The input display in offline Versus (docs/TRAINING.md "Offline Versus"): its own setting, off by
+        # default; the game never shows it online, in a replay or while spectating, whatever this says.
+        if self["vs_overlay"]:
+            env["T5_VS_OVERLAY"] = "1"
+            env.setdefault("T5_TRAINING_POS", self["training_pos"] if self["training_pos"] in TRAINING_POS else "top")
         # Practice tools (docs/TRAINING.md "Practice tools"): offline Practice only -- the game never uses
         # them online, in a replay or while spectating, whatever this says.
         env["T5_PRACTICE"] = "1" if self["practice"] else "0"

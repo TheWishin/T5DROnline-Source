@@ -169,6 +169,7 @@ int cell_col(int c) { return c >= 24 ? c - 24 : c >= 12 ? c - 12 : c; }
  * costume. pick: seconds for the in-game select (0 = the line's characters). */
 struct Fight { int chr[2] = { -1, -1 }; int stage = -1; int rounds = 3; int color[2] = { 1, 1 }; bool valid = false;
                std::string text, match; std::string names[2]; int rank[2] = { -1, -1 }; bool hud = false;
+               int64_t rec[2][2] = { { -1, -1 }, { -1, -1 } }; bool has_rec = false;   /* win records (T5_HUD_RECORDS) */
                int btn[2] = { 0, 0 }; int pick = 0;
                np::MatchRules rules; };   /* train=1, life=P1|P2 (match_rules.h) */
 std::string g_fight_file, g_status_file, g_result_file;
@@ -211,6 +212,25 @@ std::string pct_decode(const std::string& s)
     return o;
 }
 
+/* win records "37-21|0-4" (T5_HUD_RECORDS, or a fight line's records=): wins-losses per side, P1 first; an empty or
+ * malformed side = no record (the bar shows 0 W 0 L). Each count at most 999999, what the bar shows. */
+void parse_records(Fight& f, const char* recs)
+{
+    if (!recs) return;
+    const std::string s = recs;
+    const size_t bar = s.find('|');
+    const std::string side[2] = { s.substr(0, bar), bar == std::string::npos ? std::string() : s.substr(bar + 1) };
+    for (int p = 0; p < 2; p++) {
+        f.rec[p][0] = f.rec[p][1] = -1;
+        unsigned long long w = 0, l = 0; int n = 0;
+        if (sscanf(side[p].c_str(), "%llu-%llu%n", &w, &l, &n) == 2 && n == (int)side[p].size()) {
+            f.rec[p][0] = (int64_t)(w > 999999 ? 999999 : w);
+            f.rec[p][1] = (int64_t)(l > 999999 ? 999999 : l);
+        }
+    }
+    f.has_rec = true;
+}
+
 /* names "A|B" (T5_HUD_NAMES, or a fight line's names=) and ranks "11,3" / "11|3" */
 void parse_hud(Fight& f, const char* names, const char* ranks, bool encoded)
 {
@@ -250,8 +270,10 @@ bool parse_fight(const char* s0, Fight& out)
     /* the HUD identity carries over from the last fight (a rematch: same players) unless the line has its own */
     for (int p = 0; p < 2; p++) { f.names[p] = out.names[p]; f.rank[p] = out.rank[p]; }
     f.hud = out.hud;
+    for (int p = 0; p < 2; p++) { f.rec[p][0] = out.rec[p][0]; f.rec[p][1] = out.rec[p][1]; }
+    f.has_rec = out.has_rec;
     std::vector<std::string> tok;
-    std::string cur, names, ranks;
+    std::string cur, names, ranks, recs;
     auto push = [&]() {
         if (cur.empty()) return;
         const size_t eq = cur.find('=');
@@ -260,6 +282,7 @@ bool parse_fight(const char* s0, Fight& out)
         else if (_stricmp(k.c_str(), "match") == 0) f.match = cur.substr(eq + 1);   /* key=value options */
         else if (_stricmp(k.c_str(), "names") == 0) names = cur.substr(eq + 1);
         else if (_stricmp(k.c_str(), "ranks") == 0) ranks = cur.substr(eq + 1);
+        else if (_stricmp(k.c_str(), "records") == 0) recs = cur.substr(eq + 1);
         else if (_stricmp(k.c_str(), "pick") == 0) { const int n = atoi(cur.substr(eq + 1).c_str()); f.pick = n < 0 ? 0 : n > 120 ? 120 : n; }
         else if (_stricmp(k.c_str(), "train") == 0) f.rules.training = atoi(cur.substr(eq + 1).c_str()) != 0;
         /* Only the authoritative fight line chooses this rule. A local UI
@@ -300,6 +323,7 @@ bool parse_fight(const char* s0, Fight& out)
     if (f.rules.training) f.rounds = 1;   /* a training fight ends at its first KO (a give-up): back to the select screen */
     if (tok.size() > 5) { f.color[0] = atoi(tok[4].c_str()) == 2 ? 2 : 1; f.color[1] = atoi(tok[5].c_str()) == 2 ? 2 : 1; }
     parse_hud(f, names.empty() ? nullptr : names.c_str(), ranks.empty() ? nullptr : ranks.c_str(), true);
+    parse_records(f, recs.empty() ? nullptr : recs.c_str());
     f.valid = true;
     out = f;
     return true;
@@ -319,10 +343,18 @@ const uint32_t kTocCustomData = T5A(0x0046ECD0);
 constexpr uint32_t kCustomStride  = 0x1F4;
 constexpr uint32_t kCustomRank    = 0x11C;
 constexpr uint32_t kCustomName    = 0x134;
+/* The record of the PLAYER DATA bar ("<w> W <l> L <rate> %", select screen and VS screen, like an arcade card): u32
+ * wins at +0x108 and losses at +0x10C, read by the game's getters 0x2A196C / 0x2A1A34 for 0x105EEC, which caps each at
+ * 999999 and works out the rate (wins * 10000 / (wins + losses), two decimals). Online it read 0 W 0 L until 1.2.3.
+ * Display only, like the name and the rank: outside the netplay state hash, and both PCs write the same numbers (the
+ * server's list, P1 first, only when both players' launchers and games can and both allow it: lobby records.py). */
+constexpr uint32_t kCustomWins    = 0x108;
+constexpr uint32_t kCustomLosses  = 0x10C;
+bool g_rec_written = false;   /* this process wrote records: a later match without any writes 0 W 0 L (not the old ones) */
 
 void write_hud(const Fight& f, uint32_t frame)
 {
-    if (!f.hud) return;
+    if (!f.hud && !f.has_rec) return;
     const uint32_t base = rd32(kTocCustomData);
     if (base < 0x10000000u || base >= 0x10760000u) { note("HUD identity: custom data pointer 0x%08X unexpected, left alone", base); return; }
     for (int p = 0; p < 2; p++) {
@@ -338,6 +370,19 @@ void write_hud(const Fight& f, uint32_t frame)
     }
     note("frame %u: HUD identity: P1 '%s' rank %d, P2 '%s' rank %d", frame, f.names[0].c_str(), f.rank[0],
          f.names[1].c_str(), f.rank[1]);
+    if (f.has_rec) {
+        g_rec_written = true;
+        uint32_t was[2][2];
+        for (int p = 0; p < 2; p++) {
+            const uint32_t b = base + (uint32_t)p * kCustomStride;
+            was[p][0] = rd32(b + kCustomWins); was[p][1] = rd32(b + kCustomLosses);
+            /* a side without a record: 0 W 0 L, the same bytes on both PCs whatever the save had there */
+            wr32(b + kCustomWins, f.rec[p][0] >= 0 ? (uint32_t)f.rec[p][0] : 0u);
+            wr32(b + kCustomLosses, f.rec[p][1] >= 0 ? (uint32_t)f.rec[p][1] : 0u);
+        }
+        note("frame %u: HUD records: P1 %lld-%lld, P2 %lld-%lld (was %u-%u, %u-%u)", frame, (long long)f.rec[0][0],
+             (long long)f.rec[0][1], (long long)f.rec[1][0], (long long)f.rec[1][1], was[0][0], was[0][1], was[1][0], was[1][1]);
+    }
 }
 
 /* ---- status / result files ------------------------------------------------ */
@@ -697,7 +742,12 @@ bool take_fight_env(const CtlCmd& c, bool new_opponent)
     if (const char* st = sess_env("T5_DF_STATUS_FILE")) g_status_file = st;
     Fight nf = g_cfg;
     if (new_opponent) { nf.names[0].clear(); nf.names[1].clear(); nf.rank[0] = nf.rank[1] = -1; nf.hud = false; }
+    /* records: every command brings the session's (a rematch's are the newer numbers); none = no bar written */
+    for (auto& r : nf.rec) r[0] = r[1] = -1;
+    nf.has_rec = false;
     parse_hud(nf, sess_env("T5_HUD_NAMES"), sess_env("T5_HUD_RANKS"), false);
+    parse_records(nf, sess_env("T5_HUD_RECORDS"));
+    if (!nf.has_rec && g_rec_written) nf.has_rec = true;   /* (rec -1 on both sides: 0 W 0 L) */
     const char* line = sess_env("T5_FIGHT");
     if (!line || !parse_fight(line, nf)) {
         note("control command %u: no usable T5_FIGHT ('%s')", c.seq, line ? line : "");
@@ -2158,6 +2208,7 @@ void fight_init()
     { const char* h = getenv("T5_DF_HOLD"); g_hold = !(h && *h == '0'); if (!g_hold) g_skip = false; }
     if (const char* b = getenv("T5_DF_SKIP_BUTTON")) g_skip_button = (uint16_t)strtoul(b, nullptr, 16);
     parse_hud(g_cfg, getenv("T5_HUD_NAMES"), getenv("T5_HUD_RANKS"), false);
+    parse_records(g_cfg, getenv("T5_HUD_RECORDS"));
     if (file) g_fight_file = file;
     if (const char* r = getenv("T5_NET_RESULT_FILE")) g_result_file = r;
     if (const char* s = getenv("T5_DF_STATUS_FILE")) g_status_file = s;

@@ -25,6 +25,7 @@ install for players or for whoever runs the server.
 - [Friends and invites](#friends-and-invites)
 - [Developer badges and chat mentions](#developer-badges-and-chat-mentions) (1.2.0)
 - [Sides and stages by choice](#sides-and-stages-by-choice) (casual: P1 / P2, the stage, Swap sides on a rematch)
+- [Win records in the match](#win-records-in-the-match) (1.2.3: wins, losses and win rate on the select and VS screens)
 - [Discord Rich Presence](#discord-rich-presence)
 - [Chime and taskbar flash](#chime-and-taskbar-flash)
 - [Search options, areas and languages](#search-options-areas-and-languages) (highest ping, no Wi-Fi, steady 60 fps)
@@ -867,6 +868,34 @@ and new launchers on the 1.1.4 server), `lobby/tests/test_tk_casual.py` (the lau
 match card, Rematch: swap sides), and the real-game e2e scenario `net_casual_choice` (net suite: a challenge with a
 P2 wish and a stage, Rematch: swap sides, both wanting P1 with a stage against Random; the lobby's sides and stage
 against the games' netplay roles and FIGHT START stage, every match with 0 mismatching frames).
+
+## Win records in the match
+
+Player wish: "show w/r percentage in matches -- just like in the arcades". The game has the arcade's record bar
+itself: the select screen and the VS screen show each side's "PLAYER DATA <wins> W <losses> L <rate> %" under the
+name and the rank badge. Online it always read "0 W 0 L 0.00 %". Since 1.2.3 it shows the players' lobby records.
+
+- **Which record.** A ranked match shows each player's ranked record (what the ranking is about; casual games among
+  friends cannot pad it); every other match (Quick, challenges, rooms, tournaments that are not rated) the record
+  over all their counted matches, ranked and casual together (casual-only numbers are small for players who mostly
+  play ranked, and an arcade card counts every fight too). Counted matches as the profile's stats; draws are left
+  out (the bar has wins and losses only), so its rate is wins / (wins + losses) and may differ a little from the
+  profile's. Guests have no record: their side reads 0 W 0 L.
+- **When.** Both launchers (cap `hud_records`, only when their game build has `T5_HUD_RECORDS`) and the server
+  (feature `hud_records`) must have it, and both players must allow it: Settings -> "Show win records in online
+  matches" (on by default) is sent as `record_prefs {show}` after every login and on change; a player who turns it
+  off hides both players' records in their matches. The two games then write the same numbers, so their memory
+  stays the same (the bytes are display data outside the netplay state hash anyway; docs/DIRECTFIGHT.md "Names and
+  ranks in the HUD").
+- **How.** `match_start` carries `records: {kind: "ranked" | "all", sides: [[wins, losses] | null, ...]}` (P1
+  first, the same list for both players; read again at every match start, so a rematch counts the match before
+  it). The match driver passes `T5_HUD_RECORDS=37-21|0-4` (and `records=` on a process-mode fight line); the game
+  writes them at the select screen of an in-game pick and at FIGHT START, where it writes the names.
+- **Old clients and servers.** A server without the feature sends nothing and the launcher sends no
+  `record_prefs`; an older launcher or game means no records for either player. Replays and spectators carry no
+  records (their bar reads 0 W 0 L).
+- Code: `lobby/t5lobby/server/records.py`, `match_driver.hud_records`, `src/directfight/df_fight.cpp`
+  (`parse_records`, `write_hud`). Tests: `lobby/tests/test_hud_records.py`, `tests/test_hud_records_setting.py`.
 
 ## Spectating
 

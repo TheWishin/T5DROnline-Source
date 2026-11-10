@@ -368,7 +368,7 @@ class Game:
         return read_json(os.path.join(self.ctl, "state.json")) or {}
 
 
-def session_env(a, k, match, game, port0):
+def session_env(a, k, match, game, port0, n=None):
     """T5_NET_* for a match of session k as the lobby would hand it out (new ports/seed/key per session)."""
     seed = 1000 + 7919 * k
     env = {
@@ -378,6 +378,9 @@ def session_env(a, k, match, game, port0):
         "T5_NET_START": "external", "T5_DF_STATUS_FILE": game.status_path,
         "T5_HUD_NAMES": "Tester One|Tester Two", "T5_HUD_RANKS": f"{(k * 3) % 37},{(k * 5) % 37}",
     }
+    if getattr(a, "hud_records", ""):
+        # win records for the PLAYER DATA bar (lobby server/records.py), "{k}" = the match number
+        env["T5_HUD_RECORDS"] = a.hud_records.replace("{k}", str(k if n is None else n))
     if game.role == "host":
         env["T5_NET_PORT"] = str(port0)
         env["T5_NET_PEER"] = f"127.0.0.1:{port0 + 1}"
@@ -453,6 +456,8 @@ def main():
     ap.add_argument("--give-up-every", type=int, default=0, metavar="N",
                     help="--mash: SELECT held 70 frames every N frames (the host from N, the joiner from 1.5 N): a "
                          "training fight's give-up")
+    ap.add_argument("--hud-records", default="", metavar="W-L|W-L",
+                    help="T5_HUD_RECORDS for every match ({k} = the match number), as the launcher hands it out")
     ap.add_argument("--rematch-every", type=int, default=0, help="persistent: every K-th match is a rematch in the session")
     ap.add_argument("--pattern", default="", help="persistent: N (new session) / R (rematch) per match in turn, e.g. NNR")
     ap.add_argument("--same-chars", action="store_true", help="a rematch keeps the last match's characters (the lobby's way)")
@@ -552,7 +557,7 @@ def main():
             t_cmd = {}
             t_prev = time.time()
             for (g, dly) in zip(order, delays):
-                env = session_env(a, sess_k, mid, g, port)
+                env = session_env(a, sess_k, mid, g, port, n=k)
                 st = g.status()
                 base[g.idx] = int(st.get("match") or 0)
                 wait = dly - (time.time() - t_prev)

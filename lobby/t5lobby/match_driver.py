@@ -93,6 +93,7 @@ INGAME_UI_MARKER = b"T5_INGAME_REMATCH"
 QUEUEPLAY_MARKER = b"T5_QUEUEPLAY"
 AUTO_SKIP_MARKER = b"T5_AUTO_SKIP_AFTER_ROUND"
 AUTO_SKIP_INTRO_MARKER = b"auto_skip_intro="   # 1.2.0: a game build that skips the intros by the fight line's rule
+RECORDS_MARKER = b"T5_HUD_RECORDS"   # 1.2.3: a game build that writes the players' win records (PLAYER DATA bar)
 LIFE150_MARKER = b'"life_max": 150'   # 1.1.7: a game build that plays a health handicap up to 150 % (df_fight.cpp status)
 LIFE_MAX = 150                  # the highest health handicap a fight line may carry (percent; 1.1.5 / 1.1.6: 100)
 
@@ -378,6 +379,11 @@ def game_supports_rules(paths):
     return _has_marker(paths, RULES_MARKER)
 
 
+def game_supports_records(paths):
+    """Does this game build write both players' win records into its PLAYER DATA bar (T5_HUD_RECORDS / records=)?"""
+    return _has_marker(paths, RECORDS_MARKER)
+
+
 def game_supports_life150(paths):
     """Can this game build play a health handicap above 100 % (up to 150; 1.1.7)?"""
     return _has_marker(paths, LIFE150_MARKER)
@@ -613,6 +619,10 @@ class MatchDriver:
             # In-game identity (docs/DIRECTFIGHT.md): the lobby's names and rank tiers in the fight HUD.
             env["T5_HUD_NAMES"] = "|".join(hud[0])
             env["T5_HUD_RANKS"] = ",".join(str(t) for t in hud[1])
+        rec = hud_records(ev)
+        if rec:
+            # both players' win records for the game's PLAYER DATA bar (server/records.py; both PCs the same)
+            env["T5_HUD_RECORDS"] = rec
         if self.always_left is not None:
             # "Always see me on the left" as the player left it for this match (docs/NETPLAY.md "Always left"; the
             # game mirrors only a casual match's P2, T5_NET_CASUAL from the ticket)
@@ -669,6 +679,9 @@ class MatchDriver:
         if hud:
             line += " names=" + "|".join(urllib.parse.quote(n, safe="") for n in hud[0])
             line += " ranks=" + "|".join(str(t) for t in hud[1])
+        rec = hud_records(ev)
+        if rec:
+            line += " records=" + rec
         tmp = self.fight_path + ".tmp"
         with open(tmp, "w", encoding="ascii") as f:
             f.write(line + (f" match={proto.file_safe(mid)}" if mid else "") + "\n")
@@ -1913,6 +1926,26 @@ def hud_values(ev):
         t = p.get("tier")
         tiers.append(t if isinstance(t, int) and 0 <= t < len(ranks.RANKS) else ranks.BEGINNER)
     return names, tiers
+
+
+def hud_records(ev):
+    """T5_HUD_RECORDS ("37-21|0-4", P1 first; an empty side = no record, the game shows 0 W 0 L) from match_start's
+    `records` (server/records.py: both players' wins and losses, only when both clients can and both players allow
+    it), or None."""
+    rec = (ev or {}).get("records")
+    sides = rec.get("sides") if isinstance(rec, dict) else None
+    if not isinstance(sides, list) or len(sides) != 2:
+        return None
+    out = []
+    for s in sides:
+        if (isinstance(s, list) and len(s) == 2
+                and all(isinstance(x, int) and not isinstance(x, bool) and x >= 0 for x in s)):
+            out.append(f"{min(s[0], 999999)}-{min(s[1], 999999)}")   # (the bar shows at most 999999 each)
+        elif s is None:
+            out.append("")
+        else:
+            return None
+    return "|".join(out)
 
 
 def _result_extra(path):

@@ -147,6 +147,7 @@ DEFAULTS = {
     "replay_names": True,      # ... with the players' lobby names in them (off: T5_REPLAY_NAMES=0)
     "spectators": True,        # online: friends and room visitors may watch this player's matches (docs/SPECTATE.md)
     "spectators_ranked": False,  # ... the ranked ones too (both players must allow it)
+    "hud_records": True,       # online: both players' win records in the game's PLAYER DATA bar (lobby server/records.py)
     "auto_spectate": False,    # watch an available match while idle; always yield to this player's match
     "auto_watch_table": True,  # in a community room: watch the match at my table while I wait (docs/SPECTATE.md)
     "power_saving": "auto",    # auto | on | off: PS3_LAPTOP (POWER_SAVING)

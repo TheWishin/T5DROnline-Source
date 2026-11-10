@@ -2864,6 +2864,10 @@ MESSAGES = {
     'Online feel:': 'Sensación online:',
     'For Auto. Responsive: the least delay. Balanced: one frame more when a PC cannot keep up with its rollbacks. Smooth: more delay, fewer and smaller rollbacks. Different choices meet at Balanced.': 'Para Auto. Respuesta rápida: el menor retraso. Equilibrado: un frame más cuando un PC no da abasto con sus rollbacks. Fluido: más retraso, rollbacks menos frecuentes y más pequeños. Si eligen distinto, queda Equilibrado.',
     'Show the connection line in online matches (ping, delay, rollbacks; F3 in the game)': 'Mostrar la línea de conexión en partidas online (ping, retraso, rollbacks; F3 en el juego)',
+    'Show win records in online matches (wins, losses and win rate on the select and VS screens)':
+        'Mostrar el récord en las partidas online (victorias, derrotas y porcentaje de victorias en la selección y la pantalla VS)',
+    "Ranked matches show the ranked record, other matches the record of all matches. Off: neither player's record is shown in your matches.":
+        'Las partidas ranked muestran el récord ranked; las demás, el récord de todas las partidas. Desactivado: no se muestra el récord de ningún jugador en tus partidas.',
     'F3 (connection line)': 'F3 (línea de conexión)',
     'Search options': 'Opciones de búsqueda',
     'Search options...': 'Opciones de búsqueda...',

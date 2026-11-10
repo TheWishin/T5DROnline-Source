@@ -2518,6 +2518,9 @@ MESSAGES = {
         "그래픽 카드 때문에 대전이 60 fps보다 느렸습니다: 이 게임에는 너무 느립니다. 내부 해상도를 최저로 해도 조금 나아지는 정도입니다.",
     "Fights were slower than 60 fps because of the processor: close other programs while you play. A lower Internal resolution does not help.":
         "프로세서 때문에 대전이 60 fps보다 느렸습니다: 플레이하는 동안 다른 프로그램을 닫으세요. 내부 해상도를 낮춰도 도움이 되지 않습니다.",
+    # patch 0123: frames held by the driver or the display (core.speed_hint)
+    "Fights were slower than 60 fps: the graphics card waited for its driver or the screen and was mostly idle. Try VSync Off in Settings. A lower Internal resolution does not help.":
+        "대전이 60 fps보다 느렸습니다: 그래픽 카드가 드라이버나 화면을 기다리느라 대부분 쉬고 있었습니다. 설정에서 VSync를 끄기로 해 보세요. 내부 해상도를 낮춰도 도움이 되지 않습니다.",
     # ---- private and community rooms (lobby/t5lobby/tk_rooms.py; the server's messages: i18n_known.py)
     "private rooms need a newer launcher; update it": "비공개 방은 더 새로운 런처가 필요합니다. 런처를 업데이트하세요",
     "only the room's host can do that": "방장만 할 수 있습니다",

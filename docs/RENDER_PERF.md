@@ -4232,3 +4232,136 @@ dualsense,bt-ext|usb`, 80 taps of 0.1-5 ms a run, interleaved over own builds of
 1.1.9 324 of 329, 1.2.0 246/251, 1.2.1 254/262, 1.2.2 263/264 (losses only in runs at 6-50 fps under load, all
 versions); `tools/latency_test.py` offline, press -> display p50 1.1.9 38.1-39.5 ms, 1.2.2 35.7-36.2 ms. The pad layer and
 the offline latency did not get worse in 1.2.x.
+
+## 1.2.3: frames held before the GPU starts them, frames in flight, transform constants (patch 0123, branch `t5-perf-123`)
+
+Owner's goals: performance for every PC, frame timing, less input delay. Measured on this PC (Ryzen 9 7950X, RTX 3090,
+display at 59/60 Hz; 1-14 processors busy with other agents' work during the runs, so every comparison below is either
+interleaved inside one game or a pair of runs back to back). Local evidence: `build/perf123/runs`.
+
+### An old GT 730 that waits without working (report YESB6Y)
+
+i7-9700 + GT 730 (Fermi, resource binding tier 1, driver 391.35 of March 2018 -- the last for Fermi), 75 Hz screen,
+1.2.2 at the defaults (Native, vsync on, borderless, effects and shadows off). Its game log:
+
+| window | fps | median per frame | GPU busy | old verdict |
+|---|---|---|---|---|
+| title menus (~150 draws) | **37.5-37.9** (= 75 / 2) | game 1.4 ms, translation 24-25, **GPU wait 23-24** | 4.1 ms a frame, 16-17 % | CPU-bound |
+| practice fight (730 draws) | **25.0-27.6** (= 75 / 3) | -- | 9.0 ms a frame | -- |
+| movies, light menus | 55-60 | GPU wait 0.0 | 3.8-4.8 ms | -- |
+
+The `[gpu-pass]` timestamps add up to 4 ms a frame, the walker waits 23 ms for the fence of the frame before (two in
+flight), and the rate is the display's refresh divided by a whole number: each frame's command list sat in the queue
+for whole refreshes before the card started it. That is no CPU limit and no resolution limit. Whether the hold is the
+display path (the flip of a vsync'd present) or the old driver's tier-1 handling cannot be measured here: every GPU on
+this PC is tier 3, and with `RSX_TEST_SLOW_GPU` (11.7 and 19.5 ms of real GPU work a frame) vsync'd presents with the
+display lock off ran at 59.94 and 50.5 fps -- the GPU's own rate, never 60 / n.
+
+What changed:
+
+- **The hold is measured.** Every list's start and end timestamps are mapped to QPC with
+  `ID3D12CommandQueue::GetClockCalibration` (refreshed every 100 ms): hold = start - max(submit, the previous list's
+  end), the time the queue had the list and the GPU had finished everything before it. `[slow-frames]` gets "GPU
+  queue: X ms a frame held before the GPU started it (median Y ms a list), N of M lists held 1 ms or more, K of them
+  until just after a display refresh" whenever its GPU wait is 2 ms or more. One harvester at a time now (the ticker's
+  `rsx_live_draw_gpu_ms` raced the walker's).
+- **A verdict for it**: GPU wait >= 4 ms a frame, GPU busy under 50 %, the wait longer than the game part and the
+  translation, not integrated graphics -> " | GPU held: the frame waits X ms for the graphics card, which works Y ms
+  of it (busy N % of the time), an old graphics card (resource binding tier 1); it starts a frame Z ms after it gets
+  it (37.5 fps = the 75 Hz display's refresh rate / 2) -- the graphics driver or the display holds the frames back,
+  not the processor; a lower Internal resolution does not help". The launcher's note after a game
+  (`core.SLOW_GPU_HELD`, 6 catalogs) says to try VSync Off; the problem report's speed lines name it.
+- **Vsync fallback**: in such a window, on a display faster than 61 Hz that is not display-locked, the present goes
+  without vsync from then on -- sync interval 0 on the flip model *without* ALLOW_TEARING, what the 59/60 Hz display
+  lock and displays under 59 Hz always used: no tearing, the newest frame at the next refresh, a Present that never
+  waits for a refresh. Logged once (`[pacing] display 75 Hz: frames were held ...`); `RSX_HOLD_VSYNC=0` keeps vsync.
+  **Unproven on a Fermi card**: the player's next log shows the "GPU queue" part after the switch.
+- Test hook `RSX_TEST_GPU_HOLD_MS=<ms>`: every list waits in the queue (a GPU-side `Wait` on a fence a helper thread
+  signals <ms> after the submit). 45 ms with `RSX_TEST_DISPLAY_HZ=75` on the RTX 3090: 40 fps, "GPU queue: 22-23 ms a
+  frame held ... (median 25-28 ms a list)", the GPU-held verdict and the fallback once. Without the hook the RTX 3090
+  holds lists 0.3-0.8 ms (median, GPU-bound by `RSX_TEST_SLOW_GPU`).
+
+### Frames in flight: two stay
+
+Does patch 0075's second frame in flight on a dedicated card add a frame of input delay? Separate runs were too noisy
+to say (press -> display modelled from the DWM vblank grid: one in flight 29.3-41.6 ms, two 30.3-42.9 ms, 4 + 4 runs at
+4.5-14 other processors busy), so `RSX_FIF_AB=<n>` alternates one and two in flight every n frames inside one game
+(one = the walker waits for the list just submitted, as `RSX_FRAMES_IN_FLIGHT=1` does) and `[fif-ab]` compares, per
+mode, how long after its present each frame's list ended on the GPU and how many frames that made a refresh late.
+Lili vs Asuka, stage 20, n = 60, 2,400 frames per mode:
+
+| GPU work a frame | present -> GPU end, median, one / two in flight | a refresh late, one / two |
+|---|---|---|
+| 0.3 ms (the RTX 3090 itself) | 0.34 / 0.37 ms; 0.62 / 0.67 ms | 158 / 194; 150 / 114 |
+| ~4.5 ms (`RSX_TEST_SLOW_GPU=2000000`) | 8.77 / 8.90; 6.12 / 6.12 | 1,659 / 1,630; 1,924 / 1,968 |
+| ~12 ms (`=5000000`) | 11.17 / 11.17 | 2,117 / 2,147 |
+
+No difference: a frame's own list starts at once in both modes, because the one before it is done by then; two in
+flight only let the walker start the next frame early. fps, all 32 processors: 59.95 / 59.95 (one) against 59.90 /
+59.95 (two); with 15 ms of GPU work 59.49 / 55.35 against 55.64 / 55.56; on a 2-core stand-in 1.1.5 measured +7-13 %
+for two. **Two stay the default**; an adaptive one/two was written and dropped (nothing to gain). DXGI frame
+statistics of a visible but covered window (`PS3_WINDOW_BACKGROUND=2`) said ~64 ms press -> shown: DWM composes such a
+window a refresh or two later; a player's fullscreen window flips directly, which this PC cannot measure without taking
+the owner's screen. `tools/latency_test.py` also reads patch 0123's `G` events (each list's submit / start / end on the
+QPC clock) and DXGI's `D` events when they cover the presses.
+
+### Weak CPUs: where the time goes, and the transform constants
+
+2 cores / 4 threads (`--cpus 0xF000`) and 4 cores / 4 threads (`0x5500`), `tools/slow_core.py --busy 60` on them,
+`fight_bench --polite`, 1.2.3 base, two runs each: 59.7-60.0 fps everywhere; processor time a fight frame 13-19 ms:
+sound core 3.1-4.4, game thread 2.6-3.5, translation 1.6-2.9, vertex worker 1.0-2.3, the game's draw thread 1.0-2.0,
+skinning (chain + jobs) 1.6-3.2, renderer thread 0.6-1.2. Stack profiles (`tools/thread_profile.py`, 2c/4t, stage 20):
+the sound core is lifted DSP code (one FFT loop 26 %), the game thread flat (top function 4 %), the skinning chain one
+job function 39 %; the translation thread `sink_end_impl` 16 %, FIFO walk 12 %, texture hashing 10.5 %, `blk_span`
+10 %, `RtlQueryPerformanceCounter` 7.4 % and `memcpy` ~7 % called from `sink_end_impl`.
+
+Two cuts, both renderer-side:
+
+- **Transform constants: only what the program reads.** A draw whose constants changed copied the whole 8 KB block
+  (512 vec4) into the upload heap -- 4.2-4.4 MB of write-combined stores a fight frame. `rsx_vp_const_mask`
+  (`rsx_vp_decompiler.c`) marks every constant a vertex program can read (every source field of type 3 of every
+  instruction up to the end bit, whatever the opcode uses; an address-register-indexed read = all 512); the draw
+  copies the runs of marked constants (gaps under 4 copied along) and the viewport transform, and the ring still steps
+  a whole block. A block is reused for the next draw only if it holds every constant that draw's program reads.
+  Copied: **4,198-4,366 -> 149-151 KB a frame**. Interleaved in one game (`RSX_VP_CONST_AB=60`, 2c/4t + slow_core 60,
+  stages 20 and 30, 2 runs each, ~710 frames per mode): the copy 248-284 -> 110-122 us (median), the translation
+  4,252-4,368 -> 4,120-4,218 us (median -2.4..-3.4 %, mean -4..-11 %), the walker's processor time 2,084-2,194 ->
+  1,949-2,052 us; 4 of 4 lower. All 32 processors, back to back: translation 1.66 -> 1.54 ms (median). The picture
+  cannot change: `RSX_VP_CONST_CHECK=1` decompiles every program the game binds and checks each `vp_c[N]` of its HLSL
+  against the mask -- stages 20, 30 and 4 with boot, title and menus: 201,201 / 296,701 / 239,901 programs (memo
+  misses), 0 reads outside; `tests/c/vp_const_range_test.c`: 20,000 random programs against the decompiler's HLSL, and a
+  mask that forgets source 2 or the index bit is caught. `RSX_VP_CONST_RANGE=0` = whole blocks.
+- **The per-draw clock only for the frame log**: `sink_end` and `sink_clear` read QueryPerformanceCounter twice a draw
+  (~1,700 a fight frame) for the frame log's `draw_us` / `clear_us`, also without `PS3_FRAMELOG`; now only with it
+  (1.3 % of the translation thread's busy samples; the rest of the 7.4 % above is the frame log's own phase timers,
+  which every benchmark switches on).
+
+Not done: the sound core and the skinning jobs are on their fast paths already (0064, 0113); the vertex worker decodes
+with type-specialised loops (a cache of decoded static vertex data would be next); texture hashing runs at memory
+speed.
+
+### Frame-time spread (owner 2026-11-10: a constant 16.7 ms, not a good average)
+
+Present-to-present in fights (`fight_bench`, the window minimised, Lili vs Asuka):
+
+| PC / stand-in | p50 | p95 | p99 | max | frames over 17.5 ms |
+|---|---|---|---|---|---|
+| all 32 processors, patch 0123 | 16.69 | 17.18 | 17.59 | 19.6 | 12 of 959 |
+| 4c/4t + slow_core 60, base | 16.05-16.29 | 19.6-19.9 | 20.3-20.5 | 24-43 | 218-235 of ~1,075 |
+| 2c/4t + slow_core 60, base and 0123 | 16.1-16.3 | 19.8-20.0 | 20.5-22.4 | 23-55 | 231-305 of ~1,078 |
+
+On the stand-ins the average is 60 but a fifth of the frames are presented 3 ms late and the next one early.
+
+### Same game
+
+Patch 0123 changes only the renderer and the log; the game's state is the same (no CODE_VERSION change).
+Pairs, patch 0123's build against the 1.2.3 base build (`rollback_net_test.py`, both mashing, whole matches):
+
+| pair | network | sync | result hash, both PCs |
+|---|---|---|---|
+| rollback, new host with lists held 45 ms + a 75 Hz display (fallback taken, 40 fps) vs base joiner, Asuka vs Lili stage 20 | RTT 150 +-5, 3 % loss | 0 mismatching through frame 10,199 | `3d61528929666149` |
+| rollback, base host vs new joiner (defaults), Lili vs Asuka stage 30 | RTT 150 +-5, 3 % loss | 0 mismatching through frame 8,399 | `368a3951180a2ff2` |
+| lockstep, new host vs base joiner, Jin vs Lili stage 25 | RTT 30 +-2, 1 % loss | 0 mismatching through frame 10,199 | `5afae04c54559e48` |
+
+Smoke quick on the new build: PASS (83 checks). All 94 patches apply to a fresh f17bcd3 (`prepare_ps3recomp`) and give
+the files built here.

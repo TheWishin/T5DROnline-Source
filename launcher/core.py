@@ -1874,11 +1874,14 @@ SLOW_IGPU_BUSY = re.compile(r"^\[slow-frames\].*\| integrated graphics busy ([0-
 SLOW_CARD_BOUND = re.compile(r"^\[slow-frames\].*\| GPU-bound: the graphics card needs ([0-9.]+) ms a frame")
 SLOW_CPU_BOUND = re.compile(r"^\[slow-frames\].*\| (?:CPU-bound|CPU and GPU in turn): the game needs ([0-9.]+) ms a "
                             r"frame and the render translation ([0-9.]+)")
+# Patch 0123: the frames waited for the GPU while it was mostly idle (the driver or the display held them: an old
+# GT 730 on a 75 Hz screen read "CPU-bound" before, docs/RENDER_PERF.md "1.2.3: held frames").
+SLOW_GPU_HELD = re.compile(r"^\[slow-frames\].*\| GPU held: the frame waits ([0-9.]+) ms for the graphics card")
 
 
 def speed_hint(lines):
     """One sentence for the Play tab after a game, from its [slow-frames] lines: what was the limit."""
-    gpu = igpu = card = cpu = 0
+    gpu = igpu = card = cpu = held = 0
     for line in lines:
         if SLOW_GPU_BOUND.match(line):
             gpu += 1
@@ -1888,12 +1891,16 @@ def speed_hint(lines):
             card += 1
         elif SLOW_CPU_BOUND.match(line):
             cpu += 1
+        elif SLOW_GPU_HELD.match(line):
+            held += 1
     if gpu:
         return t("Fights were slower than 60 fps because of the graphics (GPU-bound): choose a lower "
                  "Internal resolution in Settings.")
     if igpu:
         return t("Fights were slower than 60 fps: the integrated graphics were busy and slowed the processor "
                  "too. A lower Internal resolution in Settings helps.")
+    if held and held >= card and held >= cpu:
+        return t("Fights were slower than 60 fps: the graphics card waited for its driver or the screen and was mostly idle. Try VSync Off in Settings. A lower Internal resolution does not help.")
     if card and card >= cpu:
         return t("Fights were slower than 60 fps because of the graphics card: it is too slow for this game. "
                  "Internal resolution Lowest helps a little at most.")

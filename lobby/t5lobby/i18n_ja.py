@@ -2550,6 +2550,9 @@ MESSAGES = {
         "グラフィックカードが原因で対戦が60 fpsより遅くなりました：このゲームには性能が足りません。内部解像度を最低にしても、改善はわずかです。",
     "Fights were slower than 60 fps because of the processor: close other programs while you play. A lower Internal resolution does not help.":
         "プロセッサーが原因で対戦が60 fpsより遅くなりました：プレイ中は他のプログラムを閉じてください。内部解像度を下げても改善しません。",
+    # patch 0123: frames held by the driver or the display (core.speed_hint)
+    "Fights were slower than 60 fps: the graphics card waited for its driver or the screen and was mostly idle. Try VSync Off in Settings. A lower Internal resolution does not help.":
+        "対戦が60 fpsより遅くなりました：グラフィックカードがドライバーまたは画面を待っていて、ほとんど動いていませんでした。設定でVSyncをオフにしてみてください。内部解像度を下げても効果はありません。",
     # ---- private and community rooms (lobby/t5lobby/tk_rooms.py; the server's messages: i18n_known.py)
     "private rooms need a newer launcher; update it": "非公開ルームには新しいランチャーが必要です。アップデートしてください",
     "only the room's host can do that": "それができるのはルームのホストだけです",

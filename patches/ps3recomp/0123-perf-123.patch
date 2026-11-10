@@ -1,0 +1,688 @@
+diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
+--- a/libs/video/rsx_live_draw.c
++++ b/libs/video/rsx_live_draw.c
+@@ -116,6 +116,11 @@ double rsx_live_draw_gpu_ms(void) { return rsx_metal_backend_gpu_ms ? rsx_metal_
+ double rsx_live_draw_gpu_ms(void) { return -1.0; }
+ #endif
+ void rsx_live_draw_gpu_info(int* uma, unsigned* tier, int* fif) { *uma = -1; *tier = 0; *fif = 1; }
++/* patch 0123: no queue holds measured off D3D12 */
++void rsx_live_draw_gpu_hold(double* h, unsigned long long* l, unsigned long long* n, unsigned long long* v, double* m)
++{ *h = 0; *l = *n = *v = 0; *m = -1; }
++int  rsx_live_draw_hold_fallback(void) { return 0; }
++unsigned rsx_live_draw_refresh_hz(void) { return 0; }
+ int  rsx_live_draw_display_hybrid(void) { return -1; }
+ /* The ticker (boot_main.cpp) publishes its next tick here for the D3D12 present; nothing reads it
+  * without that engine. */
+@@ -213,6 +218,7 @@ static volatile long g_ld_ps1_vram_ready = 0;
+     if (_ld_diag < 0) _ld_diag = getenv(name) != NULL; _ld_diag; })
+ #endif
+ #include <string.h>
++#include <math.h>   /* fmod: patch 0123's vblank phase */
+ 
+ #ifndef WIN32_LEAN_AND_MEAN
+ #define WIN32_LEAN_AND_MEAN
+@@ -938,8 +944,59 @@ static struct {
+     u64 done_ticks, done_lists;    /* retired lists */
+     u64 log_ticks;                 /* done_ticks at the previous frame-log row */
+     u64 stat_ticks, stat_lists;    /* ... at the previous [render-stats] line */
++    LONGLONG submit_qpc[LD_GT_SLOTS];   /* patch 0123: when the list went to the queue (QPC) */
++    u8 present_mode[LD_GT_SLOTS];       /* patch 0123: a frame's present list: the frames in flight then */
+ } g_gt = { -1 };
+ 
++/* ---- Patch 0123: how long a list waits in the queue before the GPU starts it ------------------
++ * A player's GT 730 (Fermi, resource binding tier 1, 2018 driver, 75 Hz screen): menus at 37.5 fps
++ * and fights at 25 -- 75 Hz / 2 and / 3 -- with "GPU wait 23 ms" a frame while the GPU's own
++ * timestamps added up to 4 ms (busy 17 %). The GPU did not work for those 23 ms; something held
++ * the frame's list before it started. The list's start timestamp, mapped to QPC with the queue's
++ * clock calibration, says how long: hold = start - max(submit, the previous list's end) -- the
++ * queue had the list and the GPU had finished everything before it, yet it did not start. Holds
++ * that end right after a display refresh (the DWM vblank grid) point at the display path. [slow-
++ * frames] reports them and its verdict names them; RSX_GPU_TIME=0 turns them off with the
++ * timestamps. */
++static struct {
++    SRWLOCK lock;                  /* harvest runs on the walker, the renderer thread and the ticker */
++    double cal_gpu, cal_qpc;       /* the queue's clock calibration (GPU ticks, QPC) */
++    double qpc_per_tick;
++    ULONGLONG cal_ms, vb_ms;       /* when calibration / the vblank grid were last read */
++    LONGLONG vb, vb_per;           /* the DWM vblank grid */
++    double prev_end;               /* the previous retired list's end (QPC) */
++    u64 lists, held, at_vblank;    /* retired lists, held >= 1 ms, of those starting <= 1.5 ms after a vblank */
++    double hold_ticks;             /* QPC ticks held, all lists */
++    float recent[256];             /* the last holds (ms) */
++    u32 nrecent;
++} g_gh = { SRWLOCK_INIT };
++static void ld_gh_list(LONGLONG submit, u64 b, u64 e2)
++{
++    if (!g_gh.qpc_per_tick || !submit) return;
++    const double start = g_gh.cal_qpc + ((double)b - g_gh.cal_gpu) * g_gh.qpc_per_tick;
++    const double end = g_gh.cal_qpc + ((double)e2 - g_gh.cal_gpu) * g_gh.qpc_per_tick;
++    const double avail = g_gh.prev_end > (double)submit ? g_gh.prev_end : (double)submit;
++    double hold = start - avail;
++    g_gh.prev_end = end;
++    /* PS3_LATENCY_LOG: G submit start end (QPC) -- when the GPU really ran each list (tools/latency_test.py:
++     * a frame reaches the display at the first refresh after its present and its list's end) */
++    lat_log('G', "%lld %lld %lld", (long long)submit, (long long)start, (long long)end);
++    const double qpf = (double)g_ld_qpc_frequency;
++    if (qpf <= 0 || hold < 0) hold = 0;
++    if (hold > qpf) return;                  /* over a second: a stall, a lost device -- not this */
++    g_gh.lists++;
++    g_gh.hold_ticks += hold;
++    g_gh.recent[g_gh.nrecent++ % 256u] = (float)(hold * 1000.0 / qpf);
++    if (hold * 1000.0 >= qpf) {              /* held 1 ms or more */
++        g_gh.held++;
++        if (g_gh.vb_per > 0) {
++            double ph = fmod(start - (double)g_gh.vb, (double)g_gh.vb_per);
++            if (ph < 0) ph += (double)g_gh.vb_per;
++            if (ph <= 1.5e-3 * qpf) g_gh.at_vblank++;
++        }
++    }
++}
++
+ static void ld_gt_harvest(void);
+ 
+ /* Patch 0103: one host schedule, protected only for short snapshot/feedback
+@@ -2603,6 +2660,59 @@ static ld_slot_t g_ld_slot[LD_SLOTS_MAX];
+ static u32 g_ld_nslots = 1, g_ld_cur = 0;
+ static u64 g_ld_vb_cap, g_ld_ib_cap;  /* per slot (half the old ring each with 2 slots) */
+ static u64 g_ld_overlap_waits;         /* begin-recording waits for a slot (frames) */
++/* Patch 0123: RSX_FIF_AB=<n> (tests) -- one and two frames in flight alternate every n frames on a
++ * dedicated card (both slots allocated; "one" = the walker waits for the list just submitted before it
++ * records the next frame, as RSX_FRAMES_IN_FLIGHT=1 does), and [fif-ab] compares, per mode, how long
++ * after its present each frame's list ends on the GPU and how many frames that made a refresh late.
++ * Measured on the RTX 3090 (docs/RENDER_PERF.md "1.2.3: frames in flight"): no difference at 0.3,
++ * 4.5 or 12 ms of GPU work a frame, so two stay the default (they help a GPU slower than the game). */
++static volatile int g_ld_fif_eff = 2;  /* slots in use (<= g_ld_nslots) */
++static int g_ld_fif_ab = -1;           /* RSX_FIF_AB */
++static struct {                        /* per mode 1/2: the present lists, GPU end vs submit */
++    u64 n, miss; double sum_ms; float recent[256]; u32 nrec; u32 frames;
++} g_ld_fifs[3];
++static void ld_fif_note_present(int mode, double submit, double end)
++{
++    if (mode < 1 || mode > 2 || g_ld_qpc_frequency <= 0) return;
++    const double qpf = (double)g_ld_qpc_frequency;
++    const double d = (end > submit ? end - submit : 0.0) * 1000.0 / qpf;
++    g_ld_fifs[mode].n++; g_ld_fifs[mode].sum_ms += d;
++    g_ld_fifs[mode].recent[g_ld_fifs[mode].nrec++ % 256u] = (float)d;
++    if (g_gh.vb_per > 0) {   /* shown a refresh later than a frame that is ready 0.5 ms after its present */
++        const double per = (double)g_gh.vb_per, vb = (double)g_gh.vb;
++        if (ceil((end - vb) / per) > ceil((submit + 0.5e-3 * qpf - vb) / per)) g_ld_fifs[mode].miss++;
++    }
++}
++static float ld_fif_median(int mode)
++{
++    float a[256];
++    const u32 n = g_ld_fifs[mode].nrec < 256u ? g_ld_fifs[mode].nrec : 256u;
++    if (!n) return -1.0f;
++    memcpy(a, g_ld_fifs[mode].recent, n * sizeof(float));
++    for (u32 i = 1; i < n; i++) { const float x = a[i]; u32 j = i; while (j && a[j - 1] > x) { a[j] = a[j - 1]; j--; } a[j] = x; }
++    return a[n / 2];
++}
++static void ld_fif_policy(void)
++{
++    if (g_ld_nslots < 2) return;
++    if (g_ld_fif_ab < 0) { const char* e = getenv("RSX_FIF_AB"); g_ld_fif_ab = e && atoi(e) > 0 ? atoi(e) : 0; }
++    if (g_ld_fif_ab > 0) {
++        const int m = (int)((g_ld_frames / (u32)g_ld_fif_ab) & 1u) ? 2 : 1;
++        g_ld_fif_eff = m;
++        g_ld_fifs[m].frames++;
++        static u32 last_line;
++        if (g_ld_frames - last_line >= 1200u) {
++            last_line = g_ld_frames;
++            fprintf(stderr, "[fif-ab] every %d frames: frames %u / %u, present -> GPU end median %.2f / %.2f ms, mean "
++                    "%.2f / %.2f, a refresh late %llu of %llu / %llu of %llu (1 / 2 in flight)\n", g_ld_fif_ab,
++                    g_ld_fifs[1].frames, g_ld_fifs[2].frames, ld_fif_median(1), ld_fif_median(2),
++                    g_ld_fifs[1].n ? g_ld_fifs[1].sum_ms / (double)g_ld_fifs[1].n : 0.0,
++                    g_ld_fifs[2].n ? g_ld_fifs[2].sum_ms / (double)g_ld_fifs[2].n : 0.0,
++                    (unsigned long long)g_ld_fifs[1].miss, (unsigned long long)g_ld_fifs[1].n,
++                    (unsigned long long)g_ld_fifs[2].miss, (unsigned long long)g_ld_fifs[2].n);
++        }
++    }
++}
+ /* Patch 0075: two frames in flight by default on a dedicated graphics card. A player's i3-3240 with an
+  * old GT 730 (resource binding tier 1): GPU busy 32-36 ms a frame, and with one slot the walker waited
+  * 20 ms of every frame for it before recording -- the "render translation 27 ms" of that log was 20 ms
+@@ -3175,6 +3285,29 @@ static u32 ld_display_refresh(HMONITOR mon)
+     return 0;
+ }
+ 
++/* Patch 0123: frames held before the GPU starts them (rsx_live_draw_gpu_hold) on a display faster
++ * than the game that is not locked to it (75/120/144 Hz...): [slow-frames] (boot_main.cpp) asks for
++ * this once. The present then runs without vsync -- sync interval 0 on the flip model without
++ * ALLOW_TEARING, as on a display slower than the game and as the display lock does at 59/60 Hz: no
++ * tearing, the newest frame is shown at the next refresh, and a Present never queues behind the
++ * display's refreshes. The game's pace is its own vblank clock either way. RSX_HOLD_VSYNC=0: never.
++ * Returns 1 when it switched now, 2 when it had already, 0 when it does not apply. */
++static volatile int g_ld_hold_vsync_off = 0;
++int rsx_live_draw_hold_fallback(void)
++{
++    if (g_ld_hold_vsync_off) return 2;
++    const char* e = getenv("RSX_HOLD_VSYNC");
++    if ((e && *e == '0') || g_ld_interval_forced || g_ld_lock_mode || g_ld_present_interval != 1 ||
++        g_ld_refresh_hz <= 61)
++        return 0;
++    g_ld_hold_vsync_off = 1;
++    g_ld_present_interval = 0;
++    fprintf(stderr, "[pacing] display %u Hz: frames were held before the graphics card started them -- presenting "
++                    "without vsync from now on (no tearing: the newest frame is shown at the next refresh; "
++                    "RSX_HOLD_VSYNC=0 keeps vsync)\n", g_ld_refresh_hz);
++    return 1;
++}
++unsigned rsx_live_draw_refresh_hz(void) { return g_ld_refresh_hz; }
+ static void ld_pacing_check(void)
+ {
+     static HMONITOR last_mon = NULL;
+@@ -3189,7 +3322,7 @@ static void ld_pacing_check(void)
+     if (hz == g_ld_refresh_hz) return;
+     g_ld_refresh_hz = hz;
+     const int slow = hz > 1 && hz < 59 && !getenv("RSX_SLOW_DISPLAY_VSYNC");   /* 59 = 59.94 Hz; 0/1 = unknown */
+-    g_ld_present_interval = slow ? 0 : g_ld_interval_cfg;
++    g_ld_present_interval = slow || g_ld_hold_vsync_off ? 0 : g_ld_interval_cfg;
+     fprintf(stderr, "[pacing] display %u Hz: %s\n", hz,
+             slow ? "slower than the game's 59.94 Hz -- presenting without vsync so the game keeps its speed"
+                  : "vsync on");
+@@ -3365,21 +3498,73 @@ static u32 ld_gt_end(void)
+     g_gt.head++;
+     return k + 1;
+ }
+-static void ld_gt_submitted(u32 slot1, u64 fence_value)
++static void ld_gt_submitted(u32 slot1, u64 fence_value, int present)
+ {
+-    if (slot1) g_gt.fence[slot1 - 1] = fence_value;
++    if (slot1) {
++        g_gt.fence[slot1 - 1] = fence_value;
++        g_gt.present_mode[slot1 - 1] = present ? (u8)g_ld_fif_eff : 0;   /* patch 0123 */
++        LARGE_INTEGER q; QueryPerformanceCounter(&q);
++        g_gt.submit_qpc[slot1 - 1] = q.QuadPart;   /* patch 0123 */
++    }
+ }
++static int ld_dwm_vblank(LONGLONG* vblank, LONGLONG* period);
+ static void ld_gt_harvest(void)
+ {
+     if (g_gt.on <= 0) return;
++    /* patch 0123: one harvester at a time (the ticker's rsx_live_draw_gpu_ms raced the walker) */
++    if (!TryAcquireSRWLockExclusive(&g_gh.lock)) return;
+     const u64 done = g.fence->lpVtbl->GetCompletedValue(g.fence);
++    const ULONGLONG now = GetTickCount64();
++    if (now - g_gh.cal_ms >= 100) {          /* GPU clock -> QPC, kept fresh against drift */
++        UINT64 gt = 0, ct = 0, f = 0;
++        if (SUCCEEDED(g.queue->lpVtbl->GetClockCalibration(g.queue, &gt, &ct)) &&
++            SUCCEEDED(g.queue->lpVtbl->GetTimestampFrequency(g.queue, &f)) && f && g_ld_qpc_frequency > 0) {
++            g_gh.cal_gpu = (double)gt; g_gh.cal_qpc = (double)ct;
++            g_gh.qpc_per_tick = (double)g_ld_qpc_frequency / (double)f;
++        }
++        g_gh.cal_ms = now;
++    }
++    if (now - g_gh.vb_ms >= 1000) {
++        LONGLONG v = 0, p = 0;
++        if (ld_dwm_vblank(&v, &p)) { g_gh.vb = v; g_gh.vb_per = p; } else g_gh.vb_per = 0;
++        g_gh.vb_ms = now;
++    }
+     while (g_gt.tail != g_gt.head) {
+         const u32 k = g_gt.tail % LD_GT_SLOTS;
+         if (!g_gt.fence[k] || g_gt.fence[k] > done) break;
+         const u64 b = g_gt.rbp[2 * k], e2 = g_gt.rbp[2 * k + 1];
+-        if (e2 > b) { g_gt.done_ticks += e2 - b; g_gt.done_lists++; }
++        if (e2 > b) {
++            g_gt.done_ticks += e2 - b; g_gt.done_lists++;
++            ld_gh_list(g_gt.submit_qpc[k], b, e2);
++            if (g_gt.present_mode[k] && g_gh.qpc_per_tick)
++                ld_fif_note_present(g_gt.present_mode[k], (double)g_gt.submit_qpc[k],
++                                    g_gh.cal_qpc + ((double)e2 - g_gh.cal_gpu) * g_gh.qpc_per_tick);
++        }
+         g_gt.tail++;
+     }
++    ReleaseSRWLockExclusive(&g_gh.lock);
++}
++/* Patch 0123: the queue holds for [slow-frames] (boot_main.cpp) -- totals since start, and the median
++ * of the last 256 lists' holds (ms). */
++void rsx_live_draw_gpu_hold(double* hold_ms, unsigned long long* lists, unsigned long long* held,
++                            unsigned long long* at_vblank, double* recent_median_ms)
++{
++    *hold_ms = 0; *lists = *held = *at_vblank = 0; *recent_median_ms = -1;
++    if (g_gt.on <= 0 || g_ld_qpc_frequency <= 0) return;
++    AcquireSRWLockExclusive(&g_gh.lock);
++    *hold_ms = g_gh.hold_ticks * 1000.0 / (double)g_ld_qpc_frequency;
++    *lists = g_gh.lists; *held = g_gh.held; *at_vblank = g_gh.at_vblank;
++    float a[256];
++    const u32 n = g_gh.nrecent < 256u ? g_gh.nrecent : 256u;
++    memcpy(a, g_gh.recent, n * sizeof(float));
++    ReleaseSRWLockExclusive(&g_gh.lock);
++    if (!n) return;
++    for (u32 i = 1; i < n; i++) {             /* 256 at most, once per 30 s window */
++        const float x = a[i]; u32 j = i;
++        while (j && a[j - 1] > x) { a[j] = a[j - 1]; j--; }
++        a[j] = x;
++    }
++    *recent_median_ms = a[n / 2];
+ }
+ 
+ /* ---- GPU time per pass (patch 0051, RSX_GPU_PASSES=1) ---------------------
+@@ -3706,6 +3891,57 @@ static void ld_ring_guard(int ring, u64 off, u64 len)
+     for (u64 b = off >> shift[ring]; b <= (off + len - 1) >> shift[ring]; b++) blk[b] = cur;
+ }
+ 
++/* Patch 0123 test hook: RSX_TEST_GPU_HOLD_MS=<ms> -- every list waits in the queue (a GPU-side Wait on
++ * a fence a helper thread signals <ms> after the submit) before the GPU may start it: a graphics card
++ * or driver that starts frames late while it has nothing else to do, on a fast GPU. [slow-frames]
++ * then shows the hold and its verdict (with RSX_TEST_DISPLAY_HZ=75, the vsync fallback). Test only. */
++static int g_ld_th_ms = -1;
++static ID3D12Fence* g_ld_th_fence;
++static HANDLE g_ld_th_event;
++static volatile LONG64 g_ld_th_req[64];       /* due QPC of hold value n at [n % 64] */
++static volatile LONG64 g_ld_th_next = 0, g_ld_th_signalled = 0;
++static DWORD WINAPI ld_th_thread(LPVOID p)
++{
++    (void)p;
++    for (;;) {
++        WaitForSingleObject(g_ld_th_event, 5);
++        for (;;) {
++            const LONG64 n = g_ld_th_signalled + 1;
++            if (n > g_ld_th_next) break;
++            const LONG64 due = g_ld_th_req[n % 64];
++            LARGE_INTEGER now; QueryPerformanceCounter(&now);
++            if (now.QuadPart < due) {
++                const LONG64 ms = (due - now.QuadPart) * 1000 / (g_ld_qpc_frequency > 0 ? g_ld_qpc_frequency : 1);
++                Sleep(ms > 0 ? (DWORD)ms : 0);
++                continue;
++            }
++            g_ld_th_fence->lpVtbl->Signal(g_ld_th_fence, (UINT64)n);
++            g_ld_th_signalled = n;
++        }
++    }
++    return 0;
++}
++static void ld_test_gpu_hold(void)
++{
++    if (g_ld_th_ms < 0) {
++        const char* e = getenv("RSX_TEST_GPU_HOLD_MS");
++        g_ld_th_ms = e && atoi(e) > 0 ? atoi(e) : 0;
++        if (g_ld_th_ms && (FAILED(g.dev->lpVtbl->CreateFence(g.dev, 0, D3D12_FENCE_FLAG_NONE, &IID_ID3D12Fence,
++                                                            (void**)&g_ld_th_fence)) ||
++                           !(g_ld_th_event = CreateEventW(NULL, FALSE, FALSE, NULL)) ||
++                           !CreateThread(NULL, 0, ld_th_thread, NULL, 0, NULL)))
++            g_ld_th_ms = 0;
++        if (g_ld_th_ms) fprintf(stderr, "[test] RSX_TEST_GPU_HOLD_MS: every list held %d ms in the queue\n", g_ld_th_ms);
++    }
++    if (!g_ld_th_ms) return;
++    if (g_ld_th_next - g_ld_th_signalled >= 60) return;   /* never more than the ring holds */
++    const LONG64 n = g_ld_th_next + 1;
++    LARGE_INTEGER now; QueryPerformanceCounter(&now);
++    g_ld_th_req[n % 64] = now.QuadPart + (LONG64)g_ld_th_ms * g_ld_qpc_frequency / 1000;
++    g.queue->lpVtbl->Wait(g.queue, g_ld_th_fence, (UINT64)n);
++    InterlockedExchange64(&g_ld_th_next, n);
++    SetEvent(g_ld_th_event);
++}
+ static void ld_begin_recording_owned(void);
+ /* Patch 0067: resetting the list (and waiting for the GPU before it) needs the
+  * real list: the walker takes it over from the renderer thread first. */
+@@ -3732,6 +3968,12 @@ static void ld_begin_recording_owned(void)
+             done->retired[done->n_retired++] = g.retired_textures[i];
+         }
+         g.n_retired_textures = 0;
++        ld_fif_policy();                 /* patch 0123 */
++        if (g_ld_fif_eff == 1 && done->fence && ld_gs_fence_done() < done->fence) {
++            const LONGLONG w1 = ld_pf_qpc();
++            ld_wait_fence(done->fence, "begin-recording");
++            g_pf.flush_wait_ticks += ld_pf_qpc() - w1;
++        }
+         g_ld_cur = (g_ld_cur + 1) % g_ld_nslots;
+         ld_slot_t* s = &g_ld_slot[g_ld_cur];
+         if (s->fence && ld_gs_fence_done() < s->fence) {
+@@ -3806,11 +4048,12 @@ static void ld_flush_owned(ld_flush_reason reason)
+         return;
+     }
+     ID3D12CommandList* lists[] = {(ID3D12CommandList*)g.list};
++    ld_test_gpu_hold();                /* patch 0123 test hook: RSX_TEST_GPU_HOLD_MS */
+     ld_gs_submit(g.fence_value + 1);   /* patch 0076: the list's name for DRED */
+     g.queue->lpVtbl->ExecuteCommandLists(g.queue, 1, lists);
+     const u64 v = ++g.fence_value;
+     g_ld_slot[g_ld_cur].fence = v;   /* patch 0063: the slot's last list */
+-    ld_gt_submitted(gt_slot, v);
++    ld_gt_submitted(gt_slot, v, reason == LD_FLUSH_PRESENT);
+     ld_gp_submitted(gp_slot, v);
+     const HRESULT signal_hr =
+         g.queue->lpVtbl->Signal(g.queue, g.fence, v);
+@@ -7142,9 +7385,53 @@ typedef struct {
+     u64 hash;            /* ld_fast_hash(ucode, instrs * 16, 0x5650) */
+     u32 input_mask;      /* 0xFFFF when the analysis is not exact */
+     u32 txl_mask;
++    u64 c_mask[8];       /* patch 0123: the constants it can read (rsx_vp_const_mask) */
+ } ld_vp_memo;
+ static ld_vp_memo g_ld_vpm;
+ static u64 g_ld_vpm_hits, g_ld_vpm_misses;
++/* Patch 0123, RSX_VP_CONST_CHECK=1 (tests): every program's constant mask checked against what the
++ * decompiler makes of it -- each vp_c[N] in the HLSL in the mask, an indexed vp_c[(...)] only with all
++ * 512. [vp-const] lines count the programs and name any that read outside. */
++static void ld_vp_const_check(const u8* uc, u32 instrs, const u64 mask[8])
++{
++    static int on = -1;
++    static u64 checked, bad;
++    if (on < 0) { const char* e = getenv("RSX_VP_CONST_CHECK"); on = e && *e == '1'; }
++    if (!on || !instrs) return;
++    static char* hlsl;
++    if (!hlsl) hlsl = (char*)malloc(1u << 20);
++    if (!hlsl || rsx_vp_decompile(uc, instrs * 16, hlsl, 1u << 20) < 0) return;
++    checked++;
++    int outside = 0, all = 1, nset = 0;
++    for (int k = 0; k < 8; k++) { all &= mask[k] == ~0ull; nset += __builtin_popcountll(mask[k]); }
++    const char* scan = strstr(hlsl, "float4 vp_c[512];");   /* the declaration is not a read */
++    scan = scan ? scan + 17 : hlsl;
++    for (const char* p = strstr(scan, "vp_c["); p; p = strstr(p + 5, "vp_c[")) {
++        const char* q = p + 5;
++        if (*q == '(') { if (!all) outside++; continue; }
++        const unsigned long c = strtoul(q, NULL, 10);
++        if (c >= 512 || !(mask[c >> 6] >> (c & 63) & 1u)) outside++;
++    }
++    if (outside) bad++;
++    if (outside || (checked % 100u) == 1u)
++        fprintf(stderr, "[vp-const] check: %llu program(s), %llu with a read outside the mask%s (this one: %u "
++                        "instructions, %d constant(s)%s)\n", (unsigned long long)checked, (unsigned long long)bad,
++                outside ? " -- WRONG" : "", instrs, nset, all ? ", indexed: all" : "");
++}
++/* Patch 0123: a draw copies only the transform constants its program can read into its constant
++ * block (the 8 KB of 512 vec4 + the viewport transform were copied whole into the upload heap for
++ * every draw that could not reuse the block before it: 4-7 MB a fight frame of write-combined
++ * stores on the walker); the block layout and the ring step stay. RSX_VP_CONST_RANGE=0: whole
++ * blocks; RSX_VP_CONST_AB=<n> (tests): whole and ranged every other n frames. */
++static int ld_vp_const_range_on(void)
++{
++    static int on = -1, ab = -1;
++    if (on < 0) { const char* e = getenv("RSX_VP_CONST_RANGE"); on = !(e && *e == '0'); }
++    if (ab < 0) { const char* e = getenv("RSX_VP_CONST_AB"); ab = e && atoi(e) > 0 ? atoi(e) : 0; }
++    if (ab) return (int)((g_ld_frames / (u32)ab) & 1u);
++    return on;
++}
++static u64 g_ld_cb_bytes;   /* patch 0123: transform-constant bytes copied (RSX_HITCH_LOG: [vp-const] per frame) */
+ 
+ static const ld_vp_memo* ld_vp_info(void)
+ {
+@@ -7164,6 +7451,7 @@ static const ld_vp_memo* ld_vp_info(void)
+     g_ld_vpm.hash = 0;
+     g_ld_vpm.input_mask = 0xFFFFu;
+     g_ld_vpm.txl_mask = 0;
++    memset(g_ld_vpm.c_mask, 0xFF, sizeof g_ld_vpm.c_mask);
+     if (start >= RSX_DSP_VP_INSTR)
+         return &g_ld_vpm;
+     const u8* vp_uc = (const u8*)(g.rsx.vp + start * 4);
+@@ -7180,6 +7468,8 @@ static const ld_vp_memo* ld_vp_info(void)
+         !analysis.exact)
+         analysis.input_mask = 0xFFFFu;
+     g_ld_vpm.input_mask = analysis.input_mask;
++    rsx_vp_const_mask(vp_uc, vp_instrs * 16, g_ld_vpm.c_mask);
++    ld_vp_const_check(vp_uc, vp_instrs, g_ld_vpm.c_mask);
+     return &g_ld_vpm;
+ }
+ 
+@@ -12141,17 +12431,42 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+      * valid while it is the newest block in the ring (nothing advanced
+      * cb_used past it and no ring reset happened). */
+     static u32 s_cb_gen = 0, s_cb_after = 0, s_cb_offset = 0;
++    static u64 s_cb_mask[8] = { ~0ull, ~0ull, ~0ull, ~0ull, ~0ull, ~0ull, ~0ull, ~0ull };   /* patch 0123 */
+     static float s_cb_xf[8];
++    static const u64 k_all[8] = { ~0ull, ~0ull, ~0ull, ~0ull, ~0ull, ~0ull, ~0ull, ~0ull };
++    const u64* need = k_all;
++    if (ld_vp_const_range_on()) {
++        const ld_vp_memo* vpc = ld_vp_info();
++        if (vpc->instrs) need = vpc->c_mask;
++    }
++    u64 missing = 0;   /* constants this draw reads that the block before it does not hold */
++    for (int k = 0; k < 8; k++) missing |= need[k] & ~s_cb_mask[k];
+     u32 cb_offset = g.cb_used;
+     const int cb_reuse = !al_defer && s_cb_after != 0 && g.cb_used == s_cb_after &&
+-                         g.rsx.constants_gen == s_cb_gen &&
++                         g.rsx.constants_gen == s_cb_gen && !missing &&
+                          memcmp(xf, s_cb_xf, sizeof(xf)) == 0;
+     if (cb_reuse) {
+         cb_offset = s_cb_offset;
+     } else {
+         u8* cbdst = g.cb_mapped + g.cb_used;
+-        memcpy(cbdst, g.rsx.constants, RSX_DSP_NUM_CONSTANTS * 16);
++        /* the runs of constants it reads, gaps under 4 (64 bytes) copied along */
++        u32 c = 0, bytes = 0;
++        while (c < RSX_DSP_NUM_CONSTANTS) {
++            if (!(need[c >> 6] >> (c & 63) & 1u)) {
++                if (!need[c >> 6] && !(c & 63)) { c += 64; continue; }
++                c++; continue;
++            }
++            u32 e = c + 1, gap = 0;
++            for (u32 i = c + 1; i < RSX_DSP_NUM_CONSTANTS; i++) {
++                if (need[i >> 6] >> (i & 63) & 1u) { e = i + 1; gap = 0; }
++                else if (++gap >= 4) break;
++            }
++            memcpy(cbdst + c * 16u, g.rsx.constants[c], (e - c) * 16u);
++            bytes += (e - c) * 16u;
++            c = e;
++        }
+         memcpy(cbdst + 512 * 16, xf, sizeof(xf));
++        g_ld_cb_bytes += bytes + (u32)sizeof(xf);
+     }
+     LD_PF_PHASE(ph_cbcopy_ticks);
+ 
+@@ -12201,6 +12516,7 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+         g.cb_used += CB_BLOCK_ALIGNED;
+         s_cb_after = g.cb_used;
+         s_cb_gen = g.rsx.constants_gen;
++        memcpy(s_cb_mask, need, sizeof(s_cb_mask));
+         memcpy(s_cb_xf, xf, sizeof(xf));
+     }
+     if (al_defer) s_cb_after = 0;         /* patch 0086: its block gets its own transform later -- never shared */
+@@ -12443,12 +12759,19 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+ static void sink_end(void* user, const rsx_dispatch* r)
+ {
+     ld_begin_recording();
+-    const LONGLONG begin = ld_pf_qpc();
++    /* patch 0123: the per-draw clock only for the frame log (PS3_FRAMELOG) -- two QueryPerformanceCounter
++     * calls a draw, ~1,700 a fight frame, that nothing else reads */
++#if defined(YZ_PERF_PROFILE)
++    const int timed = 1;
++#else
++    const int timed = g_pf_phases > 0;
++#endif
++    const LONGLONG begin = timed ? ld_pf_qpc() : 0;
+     g_pf_phase_t = begin;
+     g_vj_res.armed = 0;
+     sink_end_impl(user, r);
+     ld_vjob_reserve_keep();   /* patch 0082 */
+-    const LONGLONG spent = ld_pf_qpc() - begin;
++    const LONGLONG spent = timed ? ld_pf_qpc() - begin : 0;
+     g_pf.draw_ticks += spent;
+     g_pf.draws++;
+ #if defined(YZ_PERF_PROFILE)
+@@ -12459,9 +12782,9 @@ static void sink_end(void* user, const rsx_dispatch* r)
+ static void sink_clear_impl(void* user, const rsx_dispatch* r, u32 mask);
+ static void sink_clear(void* user, const rsx_dispatch* r, u32 mask)
+ {
+-    const LONGLONG begin = ld_pf_qpc();
++    const LONGLONG begin = g_pf_phases > 0 ? ld_pf_qpc() : 0;   /* patch 0123: frame log only */
+     sink_clear_impl(user, r, mask);
+-    g_pf.clear_ticks += ld_pf_qpc() - begin;
++    if (g_pf_phases > 0) g_pf.clear_ticks += ld_pf_qpc() - begin;
+ }
+ static void sink_clear_impl(void* user, const rsx_dispatch* r, u32 mask)
+ {
+@@ -15451,6 +15774,13 @@ static void ld_present_body(u32 buffer_id, int display_synced, const hp_target*
+                   (unsigned long long)g_tpool_fallback, g_tpool_n_heaps,
+                   (unsigned long long)g_pso_lib_hits, (unsigned long long)g_pso_lib_stores,
+                   (long long)g_prewarm_created, (long long)g_prewarm_taken);
++      if (hl && (g_ld_frames % 600u) == 0) {   /* patch 0123 */
++          static u64 last_cb;
++          fprintf(stderr, "[vp-const] transform constants copied: %.1f KB a frame (%s)\n",
++                  (double)(g_ld_cb_bytes - last_cb) / 600.0 / 1024.0,
++                  ld_vp_const_range_on() ? "only what each program reads" : "whole blocks");
++          last_cb = g_ld_cb_bytes;
++      }
+       /* patch 0062: per frame over the last 600 frames */
+       static u64 l_set, l_cons, l_reused, l_copied, l_keyhits, l_hn, l_hb, l_draws;
+       if (hl && (g_ld_frames % 600u) == 0) {
+diff --git a/libs/video/rsx_vp_decompiler.c b/libs/video/rsx_vp_decompiler.c
+--- a/libs/video/rsx_vp_decompiler.c
++++ b/libs/video/rsx_vp_decompiler.c
+@@ -267,6 +267,43 @@ static int rsx_vp_decompile_impl(
+     const u8* ucode, u32 max_bytes, u32 vtex_mask, int compact_inputs,
+     u32 input_mask, char* out, u32 out_size);
+ 
++/* Patch 0123: the transform constants a program can read -- what emit_src makes of a source field
++ * of register type 3 (vp_c[const_src & 511], or vp_c[(const_src + aN.c) & 511] with the instruction's
++ * index bit). Every source field of every instruction up to the end bit counts, whatever its opcode
++ * uses (a superset). mask: bit c of mask[c / 64] = constant c. */
++int rsx_vp_const_mask(const u8* ucode, u32 max_bytes, u64 mask[8])
++{
++    if (!ucode || !mask) return 0;
++    for (int k = 0; k < 8; k++) mask[k] = 0;
++    for (u32 off = 0; off + 16 <= max_bytes; off += 16) {
++        const u32 d1 = rd_le(ucode + off + 4);
++        const u32 d2 = rd_le(ucode + off + 8);
++        const u32 d3 = rd_le(ucode + off + 12);
++        const u32 src0 = ((d2 >> 23) & 0x1FF) | ((d1 & 0xFF) << 9);
++        const u32 src1 = (d2 >> 6) & 0x1FFFF;
++        const u32 src2 = ((d3 >> 21) & 0x7FF) | ((d2 & 0x3F) << 11);
++        if ((src0 & 3u) == 3u || (src1 & 3u) == 3u || (src2 & 3u) == 3u) {
++            if ((d3 >> 1) & 1u) break;                       /* indexed: any of the 512 */
++            const u32 c = ((d1 >> 12) & 0x3FFu) & 511u;
++            mask[c >> 6] |= 1ull << (c & 63);
++        }
++        if (d3 & 1u) return 1;
++    }
++    for (int k = 0; k < 8; k++) mask[k] = ~0ull;            /* indexed, or no end bit within max_bytes */
++    return 0;
++}
++int rsx_vp_const_range(const u8* ucode, u32 max_bytes, u32* lo, u32* hi)
++{
++    if (!lo || !hi) return 0;
++    u64 m[8];
++    const int exact = rsx_vp_const_mask(ucode, max_bytes, m);
++    u32 l = 512, h = 0;
++    for (u32 c = 0; c < 512; c++)
++        if (m[c >> 6] >> (c & 63) & 1u) { if (c < l) l = c; h = c; }
++    if (l > h) { *lo = 1; *hi = 0; } else { *lo = l; *hi = h; }
++    return exact;
++}
++
+ int rsx_vp_decompile(const u8* ucode, u32 max_bytes, char* out, u32 out_size)
+ {
+     return rsx_vp_decompile_ex(ucode, max_bytes, 0u, out, out_size);
+diff --git a/libs/video/rsx_vp_decompiler.h b/libs/video/rsx_vp_decompiler.h
+--- a/libs/video/rsx_vp_decompiler.h
++++ b/libs/video/rsx_vp_decompiler.h
+@@ -52,6 +52,12 @@ int rsx_vp_analyze_inputs(const u8* ucode, u32 max_bytes,
+  * stubbed to zero unless rsx_vp_decompile_ex receives a bound-unit mask. */
+ int rsx_vp_decompile(const u8* ucode, u32 max_bytes, char* out, u32 out_size);
+ 
++/* Patch 0123: the transform constants the program can read: [*lo, *hi] (lo > hi: none), returning 1;
++ * 0 with [0, 511] when an instruction indexes them by an address register (or no end bit). */
++int rsx_vp_const_range(const u8* ucode, u32 max_bytes, u32* lo, u32* hi);
++/* ... and which of the 512: bit c of mask[c / 64] (all set when it returns 0). */
++int rsx_vp_const_mask(const u8* ucode, u32 max_bytes, u64 mask[8]);
++
+ /* The VP slot the next program decompiled starts at (NV4097 transform
+  * program start). Branch targets are absolute slots; this makes them relative
+  * to the ucode pointer handed in. Defaults to 0. */
+diff --git a/runtime/ppu/tests/boot_main.cpp b/runtime/ppu/tests/boot_main.cpp
+--- a/runtime/ppu/tests/boot_main.cpp
++++ b/runtime/ppu/tests/boot_main.cpp
+@@ -468,6 +468,12 @@ extern "C" unsigned ppu_boot_frames_presented(void) { return (unsigned)g_frames_
+ extern "C" void rsx_live_draw_wait_totals(long long* gpu_wait_ticks, long long* present_ticks);
+ extern "C" double rsx_live_draw_gpu_ms(void);
+ extern "C" void rsx_live_draw_gpu_info(int* uma, unsigned* tier, int* fif);   /* patch 0075 */
++/* Patch 0123: lists held in the queue before the GPU started them (rsx_live_draw.c), the vsync
++ * fallback for a display that holds them, the display's refresh rate */
++extern "C" void rsx_live_draw_gpu_hold(double* hold_ms, unsigned long long* lists, unsigned long long* held,
++                                       unsigned long long* at_vblank, double* recent_median_ms);
++extern "C" int rsx_live_draw_hold_fallback(void);
++extern "C" unsigned rsx_live_draw_refresh_hz(void);
+ extern "C" float rsx_internal_res_scale(void);
+ extern "C" const char* rsx_internal_res_label(void);
+ /* Patch 0067: presents handed to the renderer's present thread (rsx_live_draw.h) */
+@@ -499,6 +505,7 @@ struct SlowFrames {
+     int64_t mw0[HS_WAIT_KINDS] = {0}, mw_prev_rsx = 0;
+     uint64_t mcpu0 = 0; int mcpu_ok = 0;
+     double gpu_ms0 = -1, game_sum = 0, gpu_ema = 0, gpu_ema_t = 0, gpu_ema_ms = -1;
++    double hold_ms0 = 0; unsigned long long hold_lists0 = 0, hold_n0 = 0, hold_vb0 = 0;   /* patch 0123 */
+     unsigned n_gpart = 0;
+     unsigned n_gpu_rsx = 0, n_gpu_queue = 0;
+     double worst = 0; const char* worst_why = "";
+@@ -560,6 +567,7 @@ struct SlowFrames {
+             mcpu_ok = host_sched_main_cpu(&mcpu0);
+             gpu_ms0 = gms;
+             game_sum = 0; n_gpart = 0;
++            double hm; rsx_live_draw_gpu_hold(&hold_ms0, &hold_lists0, &hold_n0, &hold_vb0, &hm);
+         }
+         if (game > 0 && game < 1000.0) { game_sum += game; n_gpart++; }
+         if (frames < CAP) {
+@@ -596,7 +604,7 @@ struct SlowFrames {
+         char ld[96] = "";
+         host_sched_load_text(ld, sizeof ld);
+         /* patch 0063: the game part split, the GPU's busy time, the processors' real clock */
+-        char split[320] = "", gpu_txt[200] = "", clk[96] = "", verdict[320] = "";
++        char split[320] = "", gpu_txt[200] = "", clk[96] = "", verdict[480] = "", hold_txt[200] = "";
+         {
+             int64_t mw[HS_WAIT_KINDS];
+             host_sched_main_waits(mw);
+@@ -647,6 +655,19 @@ struct SlowFrames {
+             if (g_tier == 1) snprintf(tier, sizeof tier, " (an old graphics card: resource binding tier 1)");
+             else if (g_tier) snprintf(tier, sizeof tier, " (resource binding tier %u)", g_tier);
+             const float rscale = rsx_internal_res_scale();
++            /* patch 0123: how long the queue held this window's lists before the GPU started them */
++            double hold_med = -1;
++            {
++                double hm = 0; unsigned long long hl = 0, hn = 0, hv = 0;
++                rsx_live_draw_gpu_hold(&hm, &hl, &hn, &hv, &hold_med);
++                const unsigned long long dl = hl - hold_lists0, dn = hn - hold_n0, dv = hv - hold_vb0;
++                if (dl && m_wait >= 2.0)
++                    snprintf(hold_txt, sizeof hold_txt, "; GPU queue: %.1f ms a frame held before the GPU started "
++                             "it (median %.1f ms a list), %llu of %llu lists held 1 ms or more, %llu of them until "
++                             "just after a display refresh", (hm - hold_ms0) / fr, hold_med, dn, dl, dv);
++                if (dl < 8) hold_med = -1;
++                hold_ms0 = hm; hold_lists0 = hl; hold_n0 = hn; hold_vb0 = hv;
++            }
+             if (slowish && busy >= 0.85 && (igpu || rscale > 1.01f))
+                 snprintf(verdict, sizeof verdict, " | GPU-bound: the graphics need %.1f ms a frame%s -- a lower "
+                          "Internal resolution is what helps", gpf, igpu ? " (integrated graphics)" : "");
+@@ -667,6 +688,34 @@ struct SlowFrames {
+                          "render translation %.1f, then the frame waits %.1f ms for the graphics card%s, busy %.0f %% "
+                          "of the time with %d frame%s in flight", gpart, xl_cpu, m_wait, tier, busy * 100.0, g_fif,
+                          g_fif == 1 ? "" : "s");
++            /* Patch 0123: the frames wait for the GPU, but the GPU is mostly idle -- it starts them late
++             * (YESB6Y: GT 730 Fermi, 75 Hz, "GPU wait 23 ms" at 17 % busy, 37.5 = 75 / 2 fps in menus,
++             * 25 = 75 / 3 in fights; the old verdict called it CPU-bound). Not the processor, not the
++             * resolution: the driver or the display path. On a display faster than the game that is not
++             * locked to it the present goes without vsync from then on (rsx_live_draw_hold_fallback). */
++            else if (slowish && !igpu && busy >= 0 && busy < 0.5 && m_wait >= 4.0 && m_wait >= gpart &&
++                     m_wait >= xl_cpu) {
++                char disp[96] = "", act[96] = "", start[64] = "";
++                const unsigned hz = rsx_live_draw_refresh_hz();
++                const double fps = span > 0 ? (double)frames / span : 0.0;
++                if (hz > 61 && fps > 1.0) {
++                    const int div = (int)((double)hz / fps + 0.5);
++                    if (div >= 2 && fabs((double)hz / div - fps) <= 0.04 * fps)
++                        snprintf(disp, sizeof disp, " (%.1f fps = the %u Hz display's refresh rate / %d)", fps, hz, div);
++                }
++                if (hold_med >= 0)
++                    snprintf(start, sizeof start, "; it starts a frame %.1f ms after it gets it", hold_med);
++                const int fb = rsx_live_draw_hold_fallback();
++                if (fb == 1) snprintf(act, sizeof act, "; vsync is off from now on (no tearing)");
++                else if (fb == 2) snprintf(act, sizeof act, " (vsync already off)");
++                char tier2[96] = "";
++                if (g_tier == 1) snprintf(tier2, sizeof tier2, ", an old graphics card (resource binding tier 1)");
++                else if (g_tier) snprintf(tier2, sizeof tier2, ", resource binding tier %u", g_tier);
++                snprintf(verdict, sizeof verdict, " | GPU held: the frame waits %.1f ms for the graphics card, which "
++                         "works %.1f ms of it (busy %.0f %% of the time)%s%s%s -- the graphics driver or the display "
++                         "holds the frames back, not the processor; a lower Internal resolution does not help%s",
++                         m_wait, gpf, busy * 100.0, tier2, start, disp, act);
++            }
+             else if (slowish && n_xlat > n_game + n_gpu && xl_cpu * 2.0 < per_ms)
+                 /* most slow frames waited for the translation, whose median is small: hitches, not a slow PC
+                  * (the i5-2500's first 30 s: 304 such frames at a median of 0.7 ms) */
+@@ -686,10 +735,11 @@ struct SlowFrames {
+         fprintf(stderr, "[slow-frames] last %.0f s: %u frames, %u slow (over %.1f ms): CPU %u (game %u, render "
+                         "translation %u, vblank thread late %u), GPU %u, present %u; %u late for their vblank, "
+                         "shown when translated; median per frame: game %.1f ms, "
+-                        "translation %.1f, GPU wait %.1f, present %.1f%s%s; worst %.1f ms (%s); vblank clock %.2f Hz%s"
++                        "translation %.1f, GPU wait %.1f, present %.1f%s%s%s; worst %.1f ms (%s); vblank clock %.2f Hz%s"
+                         "%s%s%s%s | %s%s\n",
+                 span, frames, slow, 1.25 * per_ms, n_game + n_xlat + n_tick, n_game, n_xlat, n_tick, n_gpu, n_pres,
+                 n_late, median(c_game, n), median(c_xlat, n), median(c_gpu, n), median(c_pres, n), split, gpu_txt,
++                hold_txt,
+                 worst, slow ? worst_why : "-", (double)ticks / span, (double)ticks / span > 60.05 ? " (FASTER than 60)" : "",
+                 ld[0] ? "; " : "", ld, clk[0] ? "; " : "", clk, pw[0] ? pw : "power state unknown", verdict);
+         frames = slow = n_game = n_xlat = n_tick = n_gpu = n_pres = ticks = n_late = 0;

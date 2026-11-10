@@ -109,6 +109,24 @@ The i3-3240 + Fermi GT 730 (resource binding tier 1) logs said game 17-22 ms, "r
   with the Old PC settings (the `[gpu-pass]` lines are on by default on tier 1), plus the same fight with
   `RSX_TIER1_PATH=0` under Extra settings.
 
+### A second old GT 730: frames held, not drawn (1.2.3, report YESB6Y)
+
+An i7-9700 (8 cores) with a Fermi GT 730 (resource binding tier 1, the last Fermi driver from March 2018) on a 75 Hz
+screen, 1.2.2 at the defaults: menus at **37.5 fps = 75 / 2**, fights at **25 = 75 / 3**, and every slow window read
+"translation 24 ms, GPU wait 23 ms, GPU busy 4 ms a frame (17 %)" -- the game 1.4 ms, the translation's own work 1.0.
+The card worked 4 ms of each frame and still the frame waited 23 ms for it: something held the frame's command list
+before the card started it, in whole refreshes of the screen. The verdict called it "CPU-bound". What 1.2.3 does
+(RENDER_PERF.md "1.2.3: frames held before the GPU starts them"):
+
+- each list's start on the GPU is put on the processor's clock, so the log says how long the queue held it
+  ("GPU queue: ... held before the GPU started it", and how many of those started right after a display refresh);
+- such a window gets the verdict **"GPU held"** (the driver or the display path, not the processor, not the
+  resolution) and the launcher says to try VSync Off;
+- on a screen faster than 60 Hz the game presents without vsync from then on (no tearing; what the 59/60 Hz
+  display lock has always done). Whether that frees this card is **not known**: nothing here holds frames like it
+  (every GPU on this PC is resource binding tier 3). The next log from such a PC answers it -- the same "GPU queue"
+  part after the switch.
+
 ## How a fight frame is built
 
 ```

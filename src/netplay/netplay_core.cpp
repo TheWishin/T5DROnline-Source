@@ -63,6 +63,7 @@
 
 #include "net_bind.h"
 #include "netplay.h"
+#include "../rollback/rb_cost_hist.h"
 #include "rollback_delay.h"
 #include "rollback_feel.h"
 #include "replay.h"
@@ -2466,7 +2467,8 @@ int rb_apply_delay()
 int rb_rtt_ms() { State& s = S(); std::lock_guard<std::mutex> lk(s.mu); int n = 0; return (int)(rtt_estimate_locked(&n) + 0.5f); }
 
 /* The rollback loop measured this PC in a match (ms per live fight frame, per restore, per re-simulated frame):
- * the kept value moves halfway towards it, and the file gets it for the next game. */
+ * the kept value moves halfway towards it (a window over 1.5 times the kept value counts as 1.5 times), and the
+ * file gets it for the next game. */
 void rb_cost_note(double live_ms, double restore_ms, double resim_ms)
 {
     LocalCost c;
@@ -2477,9 +2479,10 @@ void rb_cost_note(double live_ms, double restore_ms, double resim_ms)
         cost_load_locked();
         if (g_cost_forced) return;              /* T5_RB_COST (tests): the given numbers stay */
         if (g_cost.known) {
-            g_cost.live_ms = 0.5 * (g_cost.live_ms + live_ms);
-            g_cost.restore_ms = 0.5 * (g_cost.restore_ms + restore_ms);
-            g_cost.resim_ms = 0.5 * (g_cost.resim_ms + resim_ms);
+            /* halfway towards the window's numbers, one bad window capped at 1.5 times (1.2.3, rb_cost_hist.h) */
+            g_cost.live_ms = rb::cost_keep(true, g_cost.live_ms, live_ms);
+            g_cost.restore_ms = rb::cost_keep(true, g_cost.restore_ms, restore_ms);
+            g_cost.resim_ms = rb::cost_keep(true, g_cost.resim_ms, resim_ms);
             g_cost.matches++;
         } else {
             g_cost.known = true; g_cost.live_ms = live_ms; g_cost.restore_ms = restore_ms; g_cost.resim_ms = resim_ms;

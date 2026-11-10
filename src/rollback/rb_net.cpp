@@ -12,6 +12,7 @@
 #include "rb_state.h"
 #include "rb_net.h"
 #include "rb_detour.h"   /* shadowtrace_boundary (diagnostics) */
+#include "rb_cost_hist.h"   /* trimmed means of the rollback cost samples (1.2.3) */
 #include "../netplay/replay.h"   /* a replay plays back with the loop it was recorded with */
 #include "../netplay/replay_paths.h"
 #include "../platform/t5_addr.h"   /* T5A(): this program's address of a US address (EU Online) */
@@ -271,6 +272,14 @@ struct CostAcc {
      * flip wait's poll as busy (rollback mode polls it), so it is only the fallback without early rollbacks. */
     bool out_live = false;
     double wall_ms = 0; uint32_t wall_n = 0;
+    /* 1.2.3: every sample also in a histogram; the netplay core gets their trimmed means (rb_cost_hist.h) */
+    rb::CostHist live_h, wall_h, restore_h, resim_h;
+    void reset()
+    {
+        prev_cyc = 0; prev_ok = false; rb_cyc = 0; live_ms = 0; live_n = 0; restore_ms = 0; resim_ms = 0;
+        rb_n = 0; resim_n = 0; last_rms = 0; out_live = false; wall_ms = 0; wall_n = 0;
+        live_h.reset(); wall_h.reset(); restore_h.reset(); resim_h.reset();
+    }
 } g_cost;
 /* the connection line (line_stats) */
 uint32_t g_line_rollbacks = 0, g_line_deepest = 0;
@@ -347,12 +356,18 @@ void cost_flush(bool session_end)
 {
     const uint32_t need_rb = session_end ? 10 : 30, need_live = session_end ? 300 : 600;
     const bool wall = g_cost.wall_n >= need_live;
-    if (g_cost.rb_n >= need_rb && (wall || g_cost.live_n >= need_live) && g_cost.resim_n)
-        np::rb_cost_note(wall ? g_cost.wall_ms / g_cost.wall_n : g_cost.live_ms / g_cost.live_n,
-                         g_cost.restore_ms / g_cost.rb_n, g_cost.resim_ms / g_cost.resim_n);
-    else if (!session_end)
+    if (g_cost.rb_n >= need_rb && (wall || g_cost.live_n >= need_live) && g_cost.resim_n) {
+        /* trimmed means (1.2.3): a stall in a few of the window's frames or rollbacks no longer sets the number */
+        const double live = wall ? g_cost.wall_h.trimmed() : g_cost.live_h.trimmed();
+        const double restore = g_cost.restore_h.trimmed(), resim = g_cost.resim_h.trimmed();
+        if (g_verbose || resim < 0.8 * g_cost.resim_h.mean() || live < 0.8 * (wall ? g_cost.wall_h.mean() : g_cost.live_h.mean()))
+            note("rbnet: rollback cost window: live %.2f ms (mean %.2f), restore %.2f (%.2f), re-simulated frame %.2f (%.2f): "
+                 "the trimmed numbers count", live, wall ? g_cost.wall_h.mean() : g_cost.live_h.mean(), restore,
+                 g_cost.restore_h.mean(), resim, g_cost.resim_h.mean());
+        np::rb_cost_note(live, restore, resim);
+    } else if (!session_end)
         return;   /* keep collecting */
-    g_cost = CostAcc();
+    g_cost.reset();
 }
 
 void report()
@@ -856,6 +871,8 @@ static void rollback_done(uint32_t f)
     if (fighting_now() && g_resim_target > g_resim_from && wall > g_cost.last_rms) {
         g_cost.restore_ms += g_cost.last_rms; g_cost.rb_n++;
         g_cost.resim_ms += wall - g_cost.last_rms; g_cost.resim_n += g_resim_target - g_resim_from;
+        g_cost.restore_h.add(g_cost.last_rms);
+        g_cost.resim_h.add((wall - g_cost.last_rms) / (double)(g_resim_target - g_resim_from), g_resim_target - g_resim_from);
     }
     if (g_early_f == f && !g_tick_waited && g_early_tick_seen) {   /* an early rollback that the tick overtook */
         const double late = 1000.0 * (double)(t.QuadPart - g_t_tick_seen.QuadPart) / (double)g_qpf.QuadPart;
@@ -1006,7 +1023,7 @@ static uint32_t boundary(uint32_t f, bool scene_flag, np::PadInput out[2])
             const uint64_t c = thread_cycles();
             if (g_cost.prev_ok && fighting_now()) {
                 const double ms = ((double)(c - g_cost.prev_cyc) - (double)g_cost.rb_cyc) / cyc_per_ms();
-                if (ms > 0 && ms < 100) { g_cost.live_ms += ms; g_cost.live_n++; }
+                if (ms > 0 && ms < 100) { g_cost.live_ms += ms; g_cost.live_n++; g_cost.live_h.add(ms); }
             }
             g_cost.prev_cyc = c; g_cost.prev_ok = true; g_cost.rb_cyc = 0;
         }
@@ -1179,7 +1196,7 @@ void early_commit()
     if (g_cost.out_live && g_t_bnd_out_ok) {   /* rollback cost: the live frame's busy part, wall time */
         g_cost.out_live = false;
         const double ms = ms_since(g_t_bnd_out);
-        if (ms > 0 && ms < 100 && fighting_now()) { g_cost.wall_ms += ms; g_cost.wall_n++; }
+        if (ms > 0 && ms < 100 && fighting_now()) { g_cost.wall_ms += ms; g_cost.wall_n++; g_cost.wall_h.add(ms); }
     }
     double cms = 0;
     state_commit(f, nullptr, &cms);

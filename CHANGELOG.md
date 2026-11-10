@@ -5,6 +5,13 @@ part is in the README's status table.
 
 ## Unreleased (1.2.3)
 
+### Online
+- **One stall no longer adds an input delay frame to the next matches**: the Balanced online feel adds a frame when
+  a PC's measured rollback cost is too high. One rollback that met a stall (a pipeline built at first sight, another
+  program) could triple a whole measurement, so later matches of a long session -- and the next game, through
+  rb_cost.txt -- were played with one frame more input delay. The measurement now leaves out its few slowest and
+  fastest frames, and one bad measurement can raise the kept cost by a quarter at most.
+
 ### Offline
 - **"Always see me on the left" no longer mirrors offline Versus** (report GMSUZH): with the setting on, a local
   Versus fight was shown from P2's side (P1 on the right, P1's left and right reversed). The setting now works in

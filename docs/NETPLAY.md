@@ -328,7 +328,12 @@ time between two live boundaries without the rollbacks in it, which counts the f
 (R) and the wall time of a re-simulated frame (S). A rollback, the game's frame and its translation run one after the
 other, so they must fit into a frame together. Once 30 rollbacks and 600 live fight frames are in (at a session's end: 10 and
 300) the netplay core keeps them -- halfway between the old value and the new one -- and writes them to
-`T5_RB_COST_FILE` (the launcher: `<out>/rb_cost.txt`), so the next game starts with them. The capacity is the
+`T5_RB_COST_FILE` (the launcher: `<out>/rb_cost.txt`), so the next game starts with them. Since 1.2.3 a window's
+numbers are trimmed means (the top and bottom tenth of its frames and rollbacks left out, `src/rollback/rb_cost_hist.h`)
+and a window more than 1.5 times the kept value counts as 1.5 times: in a 50-minute two-game run one rollback that met
+a stall made a window's S 18 ms instead of 5, the kept S 12 ms, the capacity 0, and Balanced gave the last two matches
+one more input delay frame (press to screen +14 ms) -- and rb_cost.txt would have carried it into the next game. A log
+line `rollback cost window: ... the trimmed numbers count` says when the trimmed numbers differ from the plain means. The capacity is the
 deepest rollback the PC can run inside one frame and still keep 60 fps:
 `C = floor((15 ms - L - R) / S)`, 0..15 (15 ms of the 16.7: room for the present and jitter). On this dev PC in a
 fight (pair run rb_new2, both mashing at RTT 150: L 4.5, R 0.7, S 2.0 ms) that is 4; a weak 4-core laptop (L 12, R 1, S 4) gets 0. `T5_RB_COST=L,R,S` sets

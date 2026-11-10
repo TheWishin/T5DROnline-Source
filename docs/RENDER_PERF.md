@@ -4199,3 +4199,36 @@ Neither the constant-frame target nor the 60-FPS i3 goal has been established.
 The new host build passes, and baseline/AVX1 stand-in binaries are assembled.
 The retained earlier-round state proofs concern its binaries; they do not
 replace new pair runs after patch 0119.
+
+## Long sessions (1.2.3, branch `t5-longsession-123`)
+
+Report: after ~30 minutes online inputs feel laggier and black flashes appear late in a session (owner: RTX 3090,
+2560x1440 at 500 Hz, internal 2x, persistent game; Massot: RX 9070 XT, 240 Hz). Measured on this PC (RTX 3090, the
+display at 59/60 Hz during the runs, 3-6 other games of other agents running) with two persistent games on 127.0.0.1,
+the host as the owner plays (1440p internal, vsync, stage blur off, a visible topmost window, a fake DualSense over
+Bluetooth jabbing every 0.8-1.6 s), the joiner mashing, 3 rounds a match, 27 fighters, 19 stages:
+
+| run | length | texture cache | press -> screen p50 per 5 min | frame p99 | dark frames on screen |
+|---|---|---|---|---|---|
+| a new session per match, display lock on | 36 min, 13 matches | full after ~25 min, 2,048 evictions | 67-72 ms, no trend | 19-34 ms (load) | 0 of 130,000 |
+| the same, display lock off (`RSX_TEST_DISPLAY_HZ=500`) | 50 min, 21 matches | full, 1,991 | 70-77 ms; 88.6 in the last 5 min | 19-37 ms | 0 of 165,000 |
+| one session, 19 rematches (the owner's room) | 50 min, 20 matches | full, 5,352 | 64-71 ms, no trend | 19-23 ms | 0 of 177,000 |
+
+The one step up (88.6 ms) was one more input delay frame in the last two matches: the Balanced online feel saw this
+PC's rollback capacity at 0 after one measurement window whose re-simulated frame read 18 ms (one rollback met a stall)
+-- fixed: trimmed means and a capped step (NETPLAY.md "Online feel and rollback capacity"). Nothing else grew:
+translation (F->X), the present queue (X->P), present -> display (DXGI statistics), the game's own memory (+170 MB
+private, +95 MB video over 37 min: the texture cache filling) and handles stayed flat. Screen = `tools/screen_watch.c`
+(DXGI desktop duplication of the game window: mean brightness of every composed desktop frame; a flash = a frame below
+half of both neighbours); numbers by `tools/long_session_stats.py`.
+
+Not covered here: a real 240/500 Hz display (this PC's screen was at 60 Hz; changing it is a system setting), borderless
+fullscreen (independent flip), a real DualSense, a real network. The owner's logs of 2026-11-08 show no growth either:
+frame times p99 per match 20-29 ms with no trend over 10 matches, fps 59.6-60, the rollback cost per match moving with
+the stage (stage 24 heaviest), the texture cache full from match 3 on.
+
+Offline input (Blauechips: "older releases read inputs better", DualSense, every mode): `tools/tap_latch_test.py --hid
+dualsense,bt-ext|usb`, 80 taps of 0.1-5 ms a run, interleaved over own builds of 1.1.9, 1.2.0, 1.2.1 and 1.2.2: delivered
+1.1.9 324 of 329, 1.2.0 246/251, 1.2.1 254/262, 1.2.2 263/264 (losses only in runs at 6-50 fps under load, all
+versions); `tools/latency_test.py` offline, press -> display p50 1.1.9 38.1-39.5 ms, 1.2.2 35.7-36.2 ms. The pad layer and
+the offline latency did not get worse in 1.2.x.

@@ -6,8 +6,8 @@ launcher's own lobby, like Tekken 6 Native Online.
 
 <!-- RELEASE LINE: the version and date in the next two lines change with every release, when it is tagged
 (docs/RELEASING.md "Cutting a release", step 2); the same lines are in docs/README.de.md. -->
-**Release 1.2.2 (2026-11-07).** Download
-`T5DR-Online-1.2.2.zip` from https://github.com/TheWishin/T5DROnline/releases
+**Release 1.2.3 (2026-11-10).** Download
+`T5DR-Online-1.2.3.zip` from https://github.com/TheWishin/T5DROnline/releases
 
 **Community Discord:** https://discord.gg/4DwDHAkk2x -- questions, matches, feedback.
 

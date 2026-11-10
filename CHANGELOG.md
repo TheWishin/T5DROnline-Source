@@ -3,7 +3,13 @@
 All notable changes, newest first. The project is a test release. Short commit hashes are in parentheses. The state of each
 part is in the README's status table.
 
-## Unreleased (1.2.3)
+## v1.2.3 (2026-11-10)
+
+**Ranked matches start straight from the launcher's fighter and costume, win records show on the select and VS
+screens online, the Practice reset really resets, offline Versus gets an input display, the launcher counts your
+playtime and shares its settings between folders, and old PCs and old graphics cards lose fewer frames.** Both
+players need 1.2.3 (the lobby pairs equal versions only); the ranked costume choice and the win records also need
+the new lobby server.
 
 ### Online
 - **One stall no longer adds an input delay frame to the next matches**: the Balanced online feel adds a frame when
@@ -17,6 +23,11 @@ part is in the README's status table.
   no select screen in ranked. Your offline customization shows on the costume you chose. Casual matches keep the
   game's own select screen. Needs the new lobby server and both players on this version; otherwise game 1 is
   picked in the game as before.
+- **Win records in online matches**: the game's own PLAYER DATA bar on the select and VS screens shows both
+  players' wins, losses and win rate, as in the arcades (it always read 0 W 0 L online). A ranked match shows the
+  ranked record, any other match all counted matches; guests have none. Settings -> "Show win records in online
+  matches" (on by default); shown only when both players allow it and both are on this version, with the new lobby
+  server.
 
 ### Speed
 - **Old graphics cards that hold frames back are named, and the game reacts** (report YESB6Y: a GT 730 of the
@@ -45,6 +56,36 @@ part is in the README's status table.
 - **Your own button names in the input display**: a `[names]` section in `controls.ini` (`[names1]` / `[names2]` per
   player) renames 1 2 3 4 (`1 = LP`) and lists L1 R1 L2 R2 L3 R3 START SELECT once they have a name (`L1 = TAG`), in
   Practice and offline Versus. Text on the picture only; nothing in the game changes (docs/TRAINING.md).
+- **The Practice reset puts the round's first state back** (SELECT+3, RESTART NOW and the wall resets): on 1.2.2
+  the reset moved the fighters near the start instead of resetting, sometimes flipped the sides, and could leave
+  them off the axis until the game was restarted. The game now keeps the state of the fight's first frame and puts
+  it back; what you set in the game's pause menu since (mode, dummy, counter attack, command capture, attack data)
+  is kept. Offline games only. `T5_PRACTICE_STATE=0` = the old reset.
+
+### Launcher
+- **Playtime on the Play tab**: the launcher counts the time the game it started runs (offline and online; not a
+  replay or a watched match) and adds it up. It is kept through updates. A new folder starts at 0.
+- **One settings file per user**: the launcher's settings are kept in
+  one file next to the online login, so a second T5DR folder -- and OpenRecomp -- shows the same settings. What
+  belongs to a folder (the package, the build) stays in that folder. A 1.2.2 launcher still reads its own file;
+  its changes are taken over at the next start of this version.
+
+### Diagnostics
+- **Flash check** (`RSX_FLASH_CHECK=<folder>` in Settings -> Extra settings): for players who see single black
+  frames. The game measures every frame it shows, writes `flash.csv`, a `[flash-check] DARK ...` line in the game
+  log and the picture of each dark frame into the folder. It can be left on while playing (a 1440p match kept 58.8 fps).
+  Send the folder with a problem report.
+
+### Known issues
+- **Online, high ping: a fast double press can lose its second press.** Two quick presses of the same button
+  (within a few frames) sometimes arrive as one when the ping is high. Open; not fixed in this version.
+- **Single black frames on fast displays** (reports: 240 Hz and up to 500 Hz screens, online): not reproduced
+  here -- about 89,000 measured frames in rollback matches at real 59 Hz and simulated 240 / 500 Hz had no dark
+  frame, so the picture the game hands to Windows is whole. What happens on a real fast screen after that is not
+  known yet. If you see it, turn the flash check on (above) and send the folder.
+- **One frame (16.7 ms) of online input delay only up to 60 ms ping**: above that the Auto setting uses two
+  frames, and more on relayed matches with a very high ping. Setting a lower delay by hand at a high ping makes
+  the game roll back more and feel choppy.
 
 ## v1.2.2 (2026-11-07)
 

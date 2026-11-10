@@ -26,6 +26,8 @@ import prereqs     # noqa: E402
 import run_game    # noqa: E402
 import warmup      # noqa: E402
 import gpu_error   # noqa: E402
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import settings_sync  # noqa: E402  (the settings T5DR's launcher and OpenRecomp share: docs/SETTINGS_SYNC.md)
 
 # The player's language (lobby/t5lobby/i18n.py): t("English text", name=value) and N_("text") to mark a text that
 # is translated where it is shown. The launcher chooses the language once, at start (apply_language).
@@ -180,22 +182,52 @@ def ui_family(default="Segoe UI"):
 # launcher.json's settings_version. 1 (1.1.4): Stage blur / glow Off by default, Auto Internal resolution on
 # integrated graphics unless the player chose a step. A launcher.json without it is migrated once (Settings).
 SETTINGS_VERSION = 1
+# This launcher reads and writes the per-user settings file OpenRecomp uses too (settings_sync). OpenRecomp looks for
+# this name to know that it need not explain anything to this launcher.
+SETTINGS_SYNC = settings_sync.VERSION
+
+
+def shared_settings_dir():
+    """The folder of the settings both launchers share, or None when this process must not use it: switched off
+    (T5_SETTINGS_SHARED=0), or a test run that did not say where its own folder is (never the player's real file)."""
+    if os.environ.get("T5_SETTINGS_SHARED") == "0":
+        return None
+    if "unittest" in sys.modules and not (os.environ.get("T5_SETTINGS_DIR") or os.environ.get("T5_ONLINE_DIR")):
+        return None
+    return settings_sync.shared_dir()
 
 
 class Settings(dict):
-    def __init__(self, path=SETTINGS_FILE):
+    def __init__(self, path=None, shared=None):
+        """path: launcher.json (default: this folder's). shared: the folder of the per-user settings.json both
+        launchers use; None = the player's (shared_settings_dir) for this folder's own launcher.json, none at all
+        for any other path (a tool or a test reading some launcher.json); False = none."""
         super().__init__(DEFAULTS)
-        self.path = path
+        if shared is None and path is None:
+            shared = shared_settings_dir()
+        path = self.path = path or SETTINGS_FILE
+        self._store = settings_sync.Store(shared, who="t5dr-launcher") if shared else None
+        self._local = None            # launcher.json as it was read
+        self._loaded = {}             # the shared settings as they were loaded: save() writes what differs
+        self._had = ()                # the settings launcher.json or the shared file had
         saved = None
         try:
             with open(path, encoding="utf-8") as f:
                 saved = json.load(f)
+            if not isinstance(saved, dict):
+                raise ValueError("not a settings object")
+            self._local = dict(saved)
+            saved = self._sync_load(saved)
             self.update({k: v for k, v in saved.items() if k in DEFAULTS})
             # launcher.json of 0.1.8 .. 1.0.x: "3D resolution" (render_scale 1 / 0.75 / 0.5)
             if "internal_res" not in saved and "render_scale" in saved:
                 self["internal_res"] = OLD_RENDER_SCALES.get(str(saved["render_scale"]), "native")
         except (OSError, ValueError, AttributeError):
-            saved = None
+            saved = self._sync_load(None)
+            if saved is not None:         # a new folder: the player's settings are there from the first start
+                self.update({k: v for k, v in saved.items() if k in DEFAULTS})
+                if "internal_res" not in saved and "render_scale" in saved:
+                    self["internal_res"] = OLD_RENDER_SCALES.get(str(saved["render_scale"]), "native")
         if self["internal_res"] not in INTERNAL_RES:
             self["internal_res"] = "native"
         version = saved.get("settings_version") if isinstance(saved, dict) else SETTINGS_VERSION
@@ -266,6 +298,54 @@ class Settings(dict):
             self["display"] = "window"
         size = window_size(self["window_w"], self["window_h"])
         self["window_w"], self["window_h"] = size or (DEFAULTS["window_w"], DEFAULTS["window_h"])
+        # (a setting neither file had yet is not "loaded": the first save puts it into the shared file)
+        self._loaded = {k: v for k, v in settings_sync.shared_part(self).items() if k in self._had}
+        if not isinstance(version, int) or version < 1:
+            for key in ("stage_blur", "internal_res_set", "settings_version"):
+                self._loaded.pop(key, None)      # what the step above decided is saved for both launchers
+
+    @property
+    def install_id(self):
+        return settings_sync.install_id(os.path.dirname(os.path.abspath(self.path)))
+
+    def _sync_load(self, saved):
+        """launcher.json's object (None: there is none) with the shared settings as the per-user file has them."""
+        store = self._store
+        self._had = frozenset(saved or ())
+        if store is None:
+            return saved
+        try:
+            result = settings_sync.sync(store, self.install_id, saved, self.path)
+        except Exception as e:  # noqa: BLE001 -- the shared file must never keep the launcher from starting
+            log(f"settings: shared file not used ({type(e).__name__}: {e})")
+            self._store = None
+            return saved
+        self._sync_log()
+        if not result.values:
+            return saved
+        merged = dict(saved or {})
+        merged.update({k: v for k, v in result.values.items() if k in DEFAULTS})
+        self._had = frozenset(merged)
+        return merged
+
+    def _sync_log(self):
+        notes, self._store.notes[:] = list(self._store.notes), []
+        for note in notes:
+            log(note)
+
+    def _sync_save(self, written):
+        """After launcher.json was written (or not): put what changed since the start into the shared file."""
+        store = self._store
+        if store is None:
+            return
+        now = settings_sync.shared_part(self)
+        changes = {k: v for k, v in now.items() if k not in self._loaded or self._loaded[k] != v}
+        try:
+            if settings_sync.save(store, self.install_id, changes, self._local, self.path, now if written else None):
+                self._loaded = now
+            self._sync_log()
+        except Exception as e:  # noqa: BLE001
+            log(f"settings: shared file not written ({type(e).__name__}: {e})")
 
     def save(self):
         side = self.get("screen_side", "dealt")
@@ -273,6 +353,7 @@ class Settings(dict):
         self["always_left"] = self["screen_side"] == "left"
         self["notify_voice"] = self.get("notify_sound", "announcer") == "announcer"    # (for an older launcher)
         temporary = None
+        written = False
         try:
             # Never truncate the only settings copy before its replacement is complete.
             # A sibling file keeps the final rename on the same filesystem.
@@ -284,6 +365,7 @@ class Settings(dict):
                 f.flush()
                 os.fsync(f.fileno())
             os.replace(temporary, self.path)
+            written = True
         except OSError:
             pass
         finally:
@@ -292,6 +374,7 @@ class Settings(dict):
                     os.remove(temporary)
                 except OSError:
                     pass
+        self._sync_save(written)
 
     @property
     def settings_dir(self):

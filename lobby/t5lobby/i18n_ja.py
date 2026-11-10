@@ -680,6 +680,7 @@ MESSAGES = {
         "Arcade、Versus、Practice など、このPCで遊ぶモードです。インターネット対戦はこちら：",
     "Online tab": "オンラインタブ",
     "Stop game": "ゲームを停止",
+    "Playtime: {hours} h {minutes} min": "プレイ時間: {hours} 時間 {minutes} 分",
     "Open newest game log": "最新のゲームログを開く",
     "Open saves folder": "セーブフォルダーを開く",
     "The game opens in its own window (DirectX 12). Keyboard and Xbox-style controllers "

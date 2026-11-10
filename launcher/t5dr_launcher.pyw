@@ -25,6 +25,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 os.environ["PYTHONUTF8"] = "1"
 import core    # noqa: E402
 import online  # noqa: E402
+try:
+    import playtime  # noqa: E402  (time played, playtime.json next to launcher.json)
+except ImportError:        # (a folder without the file: the launcher works, the line stays empty)
+    playtime = None
 from core import N_, t  # noqa: E402  (English text in, the player's language out; lobby/t5lobby/i18n.py)
 import problem_report as report  # noqa: E402
 import problem_report_ui as report_ui  # noqa: E402
@@ -251,6 +255,11 @@ class App(tk.Tk):
         self.info = core.release_info()
         self.build = None
         self.game = None
+        # Time played (playtime.py): counted while the game this launcher started runs; no setup, starts at 0.
+        self.playtime_store = playtime.Store(playtime.default_path(
+            self.settings.settings_dir, "T5DR_PLAYTIME_FILE")) if playtime else None
+        self.playtime_session = None
+        self._playtime_read = (0.0, 0.0)     # (when the file was read last, its seconds)
         self.restart_requested = False
         self.step_state = {s: "pending" for s in core.build_game.STEPS}
         self.step_t0 = None
@@ -684,6 +693,9 @@ class App(tk.Tk):
         self.run_var = tk.StringVar(value="")
         ttk.Label(box, textvariable=self.run_var, style="H2.TLabel", wraplength=820, justify="left").pack(
             anchor="w", pady=(14, 4))   # wraps: an exit reason or the speed note (patch 0063) is a sentence
+        self.playtime_var = tk.StringVar(value="")
+        ttk.Label(box, textvariable=self.playtime_var, style="Muted.TLabel").pack(anchor="w", pady=(0, 4))
+        self._playtime_show(force=True)
         links = ttk.Frame(box)
         links.pack(anchor="w", pady=(4, 0))
         ttk.Button(links, text=t("Open newest game log"), command=self.open_game_log).pack(side="left")
@@ -1905,6 +1917,7 @@ class App(tk.Tk):
             dialogs.show_error(APP_TITLE, t("Could not start the game:\n{error}", error=e), parent=self)
             return None
         self.game = g
+        self._playtime_start(g)
         self._dialogs_seen, self._dialog_text, self._dialog_box = 0, "", False
         core.log(f"game started: process {pid}, log {os.path.basename(g.log_path)}, settings give "
                  f"{', '.join(f'{k}={v}' for k, v in sorted(self.settings.env_overrides().items())) or 'nothing'}, "
@@ -1922,6 +1935,46 @@ class App(tk.Tk):
 
     def play(self):
         self.start_game()
+
+    PLAYTIME_GAME = "t5dr"
+
+    def _playtime_start(self, game):
+        """Count the time this game runs, from its process handle (not a replay or a match being watched)."""
+        if self.playtime_store is None or getattr(game, "_playback", False) or \
+                getattr(game, "proc", None) is None:
+            return
+        try:
+            self.playtime_session = playtime.track(game.proc, self.playtime_store, self.PLAYTIME_GAME)
+        except Exception as e:      # noqa: BLE001 -- the count must never stop a game
+            core.log(f"playtime: not counted ({e})")
+
+    def playtime_seconds(self, force=False):
+        """Seconds played in all: the file (read again every few seconds) + what the running game added since
+        its last save."""
+        if self.playtime_store is None:
+            return None
+        session = self.playtime_session
+        live = session is not None and session.running()
+        now = time.monotonic()
+        if force or now - self._playtime_read[0] >= (5 if live else 30) or (session is not None and not live):
+            self._playtime_read = (now, self.playtime_store.seconds(self.PLAYTIME_GAME))
+            if session is not None and not live:
+                self.playtime_session = None        # ended: its time is in the file
+        return self._playtime_read[1] + (session.unsaved() if live else 0.0)
+
+    def _playtime_show(self, force=False):
+        if not hasattr(self, "playtime_var"):
+            return
+        try:
+            seconds = self.playtime_seconds(force)
+        except Exception:           # noqa: BLE001 -- a line of the Play tab must never stop the launcher
+            seconds = None
+        if seconds is None:
+            return
+        hours, minutes = playtime.split(seconds)
+        text = t("Playtime: {hours} h {minutes} min", hours=hours, minutes=minutes)
+        if text != self.playtime_var.get():
+            self.playtime_var.set(text)
 
     def search_on_start(self, mode):
         """--search ranked|casual: the Online tab, logged in with the saved login, searching (README "Start a search
@@ -2085,6 +2138,7 @@ class App(tk.Tk):
     # ------------------------------------------------------------------ loop
     def _tick(self):
         self._poll_warmup()
+        self._playtime_show()
         if self.build:
             self._drain_build()
         if self.game:

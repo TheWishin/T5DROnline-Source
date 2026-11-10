@@ -56,6 +56,8 @@ scratch/
 native/
 *.t5replay
 launcher.json
+playtime.json*
+.playtime-*.tmp
 dist/
 # Online tab: per-user settings and saved logins (normally in %APPDATA%\T5DROnline, never commit)
 online.json

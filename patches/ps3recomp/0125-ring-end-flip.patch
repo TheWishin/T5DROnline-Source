@@ -1,0 +1,124 @@
+diff --git a/libs/video/cellGcmSys.c b/libs/video/cellGcmSys.c
+--- a/libs/video/cellGcmSys.c
++++ b/libs/video/cellGcmSys.c
+@@ -3016,14 +3016,80 @@ s32 cellGcmSetFlipCommand(u32 bufferId) { return gcm_flip_request(bufferId, 0);
+  * at ctx->current instead; the drain stops at it and fires the flip there,
+  * exactly as it does for the 0xFEAD words a statically-linked libgcm emits.
+  * Returns 0 when there is no room or ctx is not a mapped command buffer. */
++/* Patch 0125: a flip or user command in the ring's last GCM_RECYCLE_SLACK bytes
++ * (see gcm_flip_into_fifo). PS3_GCM_RING_END=0 = as before: made at call time. */
++static int gcm_ring_end_cfg(void)
++{
++    static int cfg = -1;
++    if (cfg < 0) { const char* e = getenv("PS3_GCM_RING_END"); cfg = !(e && *e == '0'); }
++    return cfg;
++}
++/* tests: PS3_GCM_TEST_RING_SLACK=<bytes> widens "the ring's end" (more frames end there),
++ * PS3_GCM_TEST_RING_WRAP=1 takes the JUMP-first way whenever a frame ends there */
++static u32 gcm_ring_end_slack(void)
++{
++    static u32 v;
++    if (!v) { const char* e = getenv("PS3_GCM_TEST_RING_SLACK"); v = e && strtoul(e, NULL, 0) >= 16u ? (u32)strtoul(e, NULL, 0) : GCM_RECYCLE_SLACK; }
++    return v;
++}
++static int gcm_ring_end_wrap_first(void)
++{
++    static int v = -1;
++    if (v < 0) { const char* e = getenv("PS3_GCM_TEST_RING_WRAP"); v = e && *e == '1'; }
++    return v;
++}
++static void gcm_ring_end_note(int in_fifo, u32 cur, u32 end)
++{
++    static int n[2];
++    const int k = __atomic_fetch_add(&n[in_fifo ? 1 : 0], 1, __ATOMIC_RELAXED);
++    if (k < 4 || (k % 100) == 0)
++        fprintf(stderr, "[cellGcmSys] frame ended %u bytes before the ring's end: %s (%d so far)\n",
++                end >= cur ? end - cur : 0u,
++                in_fifo ? "ring wrapped there, the flip stays in the FIFO"
++                        : "flip made at call time, outside the FIFO (one picture is lost)", k + 1);
++}
++
+ static int gcm_flip_into_fifo(u32 ctx, u32 bufferId)
+ {
+     if (!ctx || bufferId >= CELL_GCM_MAX_DISPLAY_BUFFER_NUM ||
+         !s_display_buffer_set[bufferId]) return 0;
+     const u32 end = vm_read32(ctx + 4), cur = vm_read32(ctx + 8);
++    if (gcm_ea2io(cur) == 0xFFFFFFFFu) return 0;
+     /* Never near the end: those bytes are the title's reserve before its
+      * ring wraps, and the recycle above keys on them. */
+-    if (cur + 8 + GCM_RECYCLE_SLACK > end || gcm_ea2io(cur) == 0xFFFFFFFFu) return 0;
++    if (cur + 8 + gcm_ring_end_slack() > end) {
++        /* Patch 0125: ... unless the ring can be wrapped right here. A frame that
++         * happened to end in the ring's last 4 KB (Tekken 5 DR: a fight frame
++         * is 450-700 KB of its 4 MB ring, so about one frame in a thousand,
++         * and several in a row while a hit effect changes the frame's size)
++         * had its flip refused and made at call time instead: the picture was
++         * presented before the walker had read any of its commands (a frame
++         * with no draws, the next one with both frames' draws), the tick
++         * after it was held a whole period for a flip that was not in the
++         * FIFO (PS3_LATE_FLIP), and the game lost one tick -- one picture
++         * shown for 50-54 ms, and the pads read once for two frames. Wrapping
++         * is what the wrap below does on every lap anyway; the same rule
++         * decides (the walker has left the ring's head). PS3_GCM_RING_END=0:
++         * refuse as before. */
++        const u32 begin = vm_read32(ctx), io_begin = gcm_ea2io(begin);
++        if (!gcm_ring_end_cfg() || cur < begin || cur > end || io_begin == 0xFFFFFFFFu ||
++            s_fifo_getoff < io_begin + GCM_RECYCLE_MARGIN) {
++            gcm_ring_end_note(0, cur, end);
++            return 0;
++        }
++        gcm_ring_end_note(1, cur, end);
++        if (cur + 8 > end || gcm_ring_end_wrap_first()) {
++            /* no room for the marker and the JUMP after it: the JUMP here
++             * (`end` is the ring's last word), the marker at the ring's start */
++            vm_write32(cur, 0x20000000u | io_begin);
++            if (gcm_vsync_flip()) InterlockedIncrement(&s_fifo_flips_queued);
++            vm_write32(begin, GCM_FLIP_MARKER | bufferId);
++            vm_write32(ctx + 8, begin + 4);
++            return 1;
++        }
++        /* else: the marker here and the JUMP after it, below (less than
++         * GCM_FLIP_WRAP_BYTES are left and the walker is past the head) */
++    }
+     if (gcm_vsync_flip()) InterlockedIncrement(&s_fifo_flips_queued);
+     vm_write32(cur, GCM_FLIP_MARKER | bufferId);
+     /* Wrap here, on the guest thread, once the ring is nearly used -- what the
+@@ -4073,8 +4139,27 @@ void cellGcmSetUserCommand(void* ctx, u32 cause)
+         c, cause, c ? vm_read32(c) : 0, c ? vm_read32(c + 4) : 0, c ? vm_read32(c + 8) : 0,
+         c ? gcm_ea2io(vm_read32(c + 8)) : 0, s_fifo_getoff, vm_read32(GCM_CONTROL_GUEST_ADDR)); }
+     if (c) {
+-        const u32 end = vm_read32(c + 4), cur = vm_read32(c + 8);
+-        if (cur && cur + 8 + GCM_RECYCLE_SLACK <= end && gcm_ea2io(cur) != 0xFFFFFFFFu) {
++        const u32 end = vm_read32(c + 4);
++        u32 cur = vm_read32(c + 8);
++        /* Patch 0125: in the ring's last GCM_RECYCLE_SLACK bytes the command
++         * was not written but delivered at once -- before the walker had read
++         * the frame it closes, and without the kick below (see
++         * gcm_flip_into_fifo, whose flip follows 5 us later in Tekken 5 DR).
++         * Now it is written there when 16 bytes are left (this command, then
++         * the flip's marker and JUMP); with less, the ring is wrapped first
++         * when the walker has left its head, as the flip does. */
++        int near_end = 0, wrapped = 0;
++        if (cur && cur + 8 + gcm_ring_end_slack() > end && cur <= end && c == s_gcm_context_ea &&
++            gcm_ring_end_cfg() && gcm_ea2io(cur) != 0xFFFFFFFFu) {
++            const u32 begin = vm_read32(c), io_begin = gcm_ea2io(begin);
++            if (cur + 16 <= end && !gcm_ring_end_wrap_first()) near_end = 1;
++            else if (cur >= begin && io_begin != 0xFFFFFFFFu && s_fifo_getoff >= io_begin + GCM_RECYCLE_MARGIN) {
++                vm_write32(cur, 0x20000000u | io_begin);   /* JUMP -> begin */
++                cur = begin;
++                near_end = wrapped = 1;
++            }
++        }
++        if (cur && (near_end || cur + 8 + gcm_ring_end_slack() <= end) && gcm_ea2io(cur) != 0xFFFFFFFFu) {
+             vm_write32(cur, 0x0004EB00u);   /* 1 word, subchannel 7, method 0xB00 */
+             vm_write32(cur + 4, cause);
+             vm_write32(c + 8, cur + 8);
+@@ -4085,7 +4170,7 @@ void cellGcmSetUserCommand(void* ctx, u32 cause)
+              * the title wrote it before calling us. */
+             if (c == s_gcm_context_ea) {
+                 const u32 io = gcm_ea2io(cur + 8);
+-                if (io != 0xFFFFFFFFu && io > vm_read32(GCM_CONTROL_GUEST_ADDR)) {
++                if (io != 0xFFFFFFFFu && (wrapped || io > vm_read32(GCM_CONTROL_GUEST_ADDR))) {
+                     atomic_thread_fence(memory_order_release);
+                     vm_write32(GCM_CONTROL_GUEST_ADDR, io);
+                     { LARGE_INTEGER q; QueryPerformanceCounter(&q); s_put_write_qpc = q.QuadPart; }

@@ -1602,8 +1602,39 @@ save reaches the match (details and runs: DIRECTFIGHT.md "Unlocks"):
   `PS3_SAVEDATA_DIR`; the launcher sets it to `<game folder>/gamedata-online`
   for every online game. Both PCs start from the same fresh save; the
   player's own save is never read or written by online play. The game's own
-  button layout, round time and volumes are therefore offline-only settings;
-  the launcher's controls (controls.ini) work online as before.
+  round time and volumes are therefore offline-only settings; the launcher's
+  controls (controls.ini) work online as before, and the game's own button
+  layout is carried over on the input side (next section).
+
+### The game's Controller Setup online
+
+Player report on 1.2.2: "doesn't read my in-game config or macros for L and R
+during quick match". OPTIONS > CONTROLLER SETUP (L2 R2 L1 R1 as LP, RP, LK, RK
+or a two-button shortcut, and the four face buttons) is part of the system
+save. The fresh online save has every shoulder button OFF, so shortcuts set in
+the game did nothing online, while the same buttons worked offline.
+
+The setup cannot be loaded into the online game: it is applied to P1's and
+P2's pad inside the simulation, and both PCs must simulate the same. It is
+applied where controls.ini is instead -- to this PC's own sample, before it is
+exchanged (`src/netplay/game_setup.h`, `game_setup.cpp`, `player_input` in
+`netplay_core.cpp`): the held buttons become the face buttons that mean the
+same under the default setup both online games have. The other PC, replays
+and spectators see ordinary face buttons; nothing in the game is written.
+
+- The save: SYS-DATA +0x11 (P1) and +0x19 (P2), eight bytes each in the order
+  L2 R2 L1 R1 triangle circle cross square; 0 OFF, 1 LP, 2 RP, 3 LK, 4 RK,
+  5 LP+RP, 6 LK+RK, 7 LP+LK, 8 RP+RK, 9 LP+RK, 10 RP+LK (read off the game's
+  setup screen with saves holding each value; above 10 the screen is blank).
+  A fresh save: 0 0 0 0 2 4 3 1. The player's record is P1's.
+- Which save: `T5_PAD_SETUP_SAVE`, else the offline save the launcher already
+  names for the costumes (`T5_COSTUME_SAVE`); `0` = none. Read once per
+  process; one `controller setup:` line in the game log says what was found.
+- When: host or join, a fight running (phase 17), never a replay, a script,
+  the second local player or the in-game select (menus read the pad itself).
+- Tests: `tests/test_game_setup.py` (+ `tests/c/game_setup_test.cpp`).
+- Not covered: the offline Practice a game shows while its player waits in a
+  queue runs on the online save too and still has the default setup.
 
 Proof (two games on this PC, persistent game, both mashing with motion
 inputs, 1 round; the host with a save that has every unlock, free-bought

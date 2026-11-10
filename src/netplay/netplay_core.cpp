@@ -577,6 +577,8 @@ void player_input(PadInput* in)
     HostPadData d;
     local_player_sample(&d);
     pad_into(d, in);
+    /* The player's own Controller Setup from the offline save (game_setup.cpp): the online save has the default. */
+    in->buttons = game_setup_buttons(in->buttons);
 }
 
 /* Menu driving by the direct-fight mode while lockstep runs: the local

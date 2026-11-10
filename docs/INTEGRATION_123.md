@@ -74,7 +74,10 @@ detached copy of its commit. `PS3RECOMP_DIR` = the freshly patched tree of that 
 | 6 costumes | 1f013ff2 | 1,902 | 4 | 15 | 98 OK / 3 OK / 11 OK |
 | 7 win records | 9b030cca | 1,905 | 4 | 15 | 98 OK / 3 OK / 11 OK |
 | head | 7a9999ef | 1,905 | 3 | 15 | 98 OK / 3 OK / 11 OK |
+| 8 practice-state + guard + count | 893a57fa | 1,918 | 3 | 15 | 98 OK / 3 OK / 11 OK |
 
+- Step 8 (+13 tests: 11 settings guard, 1 capability count, 1 training) ran alone, real `%APPDATA%\T5DROnline` unchanged
+  after it (only `online.json` from 2026-11-08).
 - The 3 failures are the same on main and at every step and come from the venv: its `python.exe` is a small starter
   for the real interpreter (`test_compile_robust.Jobs.test_peak_memory_of_a_finished_process`,
   `test_release_tools.PeImports.test_python_exe`, `test_updater.Busy.test_process_list_sees_this_python`).

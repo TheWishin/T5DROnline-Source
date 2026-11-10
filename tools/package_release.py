@@ -91,6 +91,7 @@ OUR_FILES = [
     "tools/shader_warmup.py",      # 1.1.5: build_game.py --warmup (the launcher's BUILD GAME)
     "launcher/t5dr_launcher.pyw", "launcher/core.py", "launcher/online.py", "launcher/updater.py",
     "launcher/release_sig.py",
+    "launcher/settings_sync.py",   # the settings T5DR's launcher and OpenRecomp share (docs/SETTINGS_SYNC.md)
     "launcher/warmup.py", "launcher/first_start.py", "launcher/gpu_support.py",
     "launcher/problem_report.py", "launcher/problem_report_ui.py", "launcher/report_send.py",
     "launcher/problem_check.py", "launcher/problem_check_ui.py", "launcher/tab_look.py",

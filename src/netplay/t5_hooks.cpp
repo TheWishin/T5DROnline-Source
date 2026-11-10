@@ -2147,6 +2147,75 @@ int64_t replay_frame_wait(ppu_context* ctx)
 extern "C" void lat_log_(char kind, const char* fmt, ...);   /* ps3recomp patch 0034 (runtime/platform/lat_log.h) */
 extern "C" volatile int g_lat_log_on;
 
+/* ---- offline Practice: the round's first state (docs/TRAINING.md "The reset is the round's first state") ----
+ * The practice reset (SELECT + 3) puts the whole fight back, as a replay's seek does (replay_capture /
+ * replay_restore above): the state set of rb_state.cpp, the generators' host side, the main thread's context
+ * and the async reader's completion tokens, taken and put back at the same place -- the top of the main
+ * thread's frame, before its pads are read -- with the loaders, the geometry manager and the draw manager
+ * parked. Only a game started for offline play has it (g_offline: no netplay, no control channel, no replay);
+ * practice.cpp asks for it from t5_practice_boundary(), which only offline_frame() calls. */
+extern "C" void t5_practice_boundary(void);   /* src/training/practice.cpp */
+struct PracticeState {
+    bool have = false;
+    std::vector<uint8_t> memory, random;
+    ppu_context cpu = {};
+    uint32_t reader_id = 0;
+    int32_t reader_tokens = -1;
+} g_practice_state;
+ppu_context* g_practice_ctx = nullptr;   /* set only around t5_practice_boundary(): the main thread at its boundary */
+
+bool practice_parked()
+{
+    const uint32_t reader = T5A(0x1009FE28u);   /* the async reader (ZsAread): +8 busy, +0x14 its queue */
+    return rd32(T5A(0x1008F070u)) == 17 && sem_idle(8) && sem_idle(10) && geom_idle() && draw_idle() &&
+           rd32(reader + 8) == 0 && rd32(reader + 0x14) == 0;
+}
+
+/* op 1: keep the state of this boundary; 2: put the kept state back; 3: forget it; 4: is one kept.
+ * Returns 1 = done, 0 = not at this boundary (a loader or the draw side still works: ask again at the next),
+ * -1 = not possible (not an offline game, not the main thread's boundary, nothing kept, a refused state). */
+extern "C" int t5_practice_state(int op)
+{
+    PracticeState& st = g_practice_state;
+    if (op == 3) { st = PracticeState{}; return 1; }
+    if (op == 4) return st.have ? 1 : 0;
+    ppu_context* ctx = g_practice_ctx;
+    if (!g_offline || g_persistent || np::enabled() || np::replaying() || rp::recording() || rb::net::bypass() ||
+        !ctx || !g_active || ctx->thread_id != g_main_tid) return -1;
+    if (op != 1 && op != 2) return -1;
+    if (op == 2 && !st.have) return -1;
+    for (int i = 0; i < 50 && !practice_parked(); i++) Sleep(1);
+    if (!practice_parked()) return 0;
+    const uint32_t reader_sem = rd32(T5A(0x1009FE2Cu));
+    if (op == 1) {
+        PracticeState n;
+        replay_live_regions();
+        if (!rb::rand_capture(&n.random) || !rb::state_capture(&n.memory)) return 0;
+        n.cpu = *ctx;
+        n.reader_id = reader_sem;
+        n.reader_tokens = t5_sem_count(reader_sem);
+        n.have = true;
+        st = std::move(n);
+        np::note("practice: the round's first state kept (%.0f MB)", st.memory.size() / 1048576.0);
+        return 1;
+    }
+    if (!rb::rand_restore(st.random, false)) { np::note("practice: the kept state's generators do not fit -- not put back"); return -1; }
+    if (st.reader_tokens >= 0 && (reader_sem != st.reader_id || t5_sem_count(st.reader_id) < 0)) {
+        np::note("practice: the reader is another one than at the round's start -- state not put back");
+        return -1;
+    }
+    replay_live_regions();
+    if (!rb::state_restore(st.memory)) return 0;   /* nothing was written (a GCM handler did not return in time) */
+    rb::rand_restore(st.random);
+    const uint64_t tid = ctx->thread_id; *ctx = st.cpu; ctx->thread_id = tid;
+    if (st.reader_tokens >= 0) t5_sem_set_count(st.reader_id, st.reader_tokens);
+    rb::sound_reset();
+    replay_take_tokens(ctx);   /* the frame ticks that came while the state was copied */
+    return 1;
+}
+/* the gameplay hash of this boundary (tests: T5_PRACTICE_STATE_TEST) */
+extern "C" unsigned long long t5_practice_state_hash(void) { return rb::state_game_hash(); }
+
 /* Offline: the take-over of the boot mode (keyread's vblank wakes stopped, the
  * thread parked, see on_frame_start), then the keyread tick at every frame. */
 void offline_frame(ppu_context* ctx)
@@ -2175,6 +2244,11 @@ void offline_frame(ppu_context* ctx)
                  "T5_LATE_INPUT=0 leaves it to the game's keyread thread)", g_boot_frames);
     }
     if (ctx->thread_id != g_main_tid) return;
+    if (g_offline) {   /* offline Practice: the reset to the round's first state, before this frame's pads */
+        g_practice_ctx = ctx;
+        t5_practice_boundary();
+        g_practice_ctx = nullptr;
+    }
     if (g_lat_log_on) lat_log_('B', "%u", rd32(T5A(0x1008EB9Cu)));   /* PS3_LATENCY_LOG: the pads are read now */
     keyread_tick();
 }

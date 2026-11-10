@@ -57,6 +57,10 @@
 extern "C" int t5_df_offline_practice(void);
 
 extern "C" int t5_netplay_enabled(void);       /* src/netplay/t5_hooks.cpp */
+/* ... the round's first state, offline games only (1 keep, 2 put back, 3 forget; 1 done, 0 not at this boundary,
+ * -1 not possible), and the gameplay hash of the boundary (tests) */
+extern "C" int t5_practice_state(int op);
+extern "C" unsigned long long t5_practice_state_hash(void);
 extern "C" int t5_training_display_get(void);   /* training.cpp: the overlay's mode (0 off, 1 inputs, 2 frame data) */
 extern "C" void t5_training_display_set(int mode);
 
@@ -173,6 +177,10 @@ struct Cfg {
     bool offline = false;     /* started without netplay, replay or spectating */
     bool menu = true;         /* START opens the practice menu (T5_PRACTICE_MENU=0: the game's pause menu) */
     DummyMode dummy0 = DummyMode::Game;
+    bool state = true;        /* SELECT+3 puts the round's first state back (T5_PRACTICE_STATE=0: only the places) */
+    uint32_t test_frames = 0; /* T5_PRACTICE_STATE_TEST=N[:K]: a scripted P1 for N frames, the hash of every frame, K resets */
+    uint32_t test_resets = 0;
+    bool test_refuse = false; /* T5_PRACTICE_STATE=refuse (tests): the state is kept but never comes back */
     std::string dir = "practice";   /* T5_PRACTICE_DIR ("" = keep nothing) */
     FILE* log = nullptr;
 } g_cfg;
@@ -217,6 +225,47 @@ int g_nudge[2] = { 0, 0 };    /* frames of the tap still to give, per fighter */
 Place g_target[2];            /* the places of the last reset */
 uint64_t g_replace_at = 0;
 bool g_no_wall = false;      /* the status line says that the last wall reset found no wall */
+/* The reset is the round's first state (docs/TRAINING.md): kept at the first frame of the fight, before any
+ * input reaches it, put back by SELECT+3 / RESTART NOW / the wall resets at the top of the next frame
+ * (t5_practice_boundary). Without one (a game that can go online, T5_PRACTICE_STATE=0, a state that could not
+ * be kept) the reset moves the places as before. */
+enum class Snap : uint8_t { None, Have, Failed };
+Snap g_snap = Snap::None;
+int g_snap_tries = 0;
+PAction g_restore = PAction::None;     /* the reset that waits for the state (at the next boundary) */
+int g_restore_tries = 0;
+PAction g_restored = PAction::None;    /* the state is back: what this reset still does (this frame's pads) */
+PAction g_fallback = PAction::None;    /* the state could not be put back: this reset the old way */
+uint32_t g_since = 0;                  /* frames since the state was kept / put back (the test's script) */
+uint32_t g_resets = 0;
+constexpr int kSnapTries = 120;
+/* What the player sets in the game's own pause menu after the round started (TRAINING DUMMY, COUNTER ATTACK,
+ * COMMAND CAPTURE, ATTACK DATA, HIT ANALYSIS) must outlive a reset. The menu keeps its values in the words at
+ * 0x1008EFF0.. (traced: +0 the dummy, +4 / +0xC go 0 -> 1 with HIT ANALYSIS / COMMAND CAPTURE, a second set at
+ * 0x1008F000) and the game acts on copies among the mode's settings at 0x1008EBF0.. (+4 MODE SELECT: 0 FREESTYLE,
+ * 1 VS CPU TRAINING; +0xC the menu's cursor; 0x1008EC0F, 0x1008EC33,
+ * 0x1008EC63 / 67). The fight does not run while that menu is open, so every word of these two areas that
+ * differs when it closes from what it was when it opened is the menu's doing: kept here, written again after
+ * each reset. */
+struct OptArea { uint32_t at, len; };
+const OptArea kOptArea[2] = { { T5A(0x1008EBF0), 0x90 }, { T5A(0x1008EFE0), 0x30 } };
+constexpr int kOptWords = (0x90 + 0x30) / 4;
+uint32_t g_opt_seen[kOptWords];        /* the areas at the last frame the fight ran */
+uint32_t g_opt_value[kOptWords];       /* a word the game's menu changed ... */
+bool g_opt_set[kOptWords];             /* ... since the state was kept */
+bool g_opt_have = false, g_was_paused = false;
+template <class F> void opt_each(F f)
+{
+    int i = 0;
+    for (const OptArea& a : kOptArea)
+        for (uint32_t o = 0; o < a.len; o += 4) f(i++, a.at + o);
+}
+void opt_forget()
+{
+    g_opt_have = g_was_paused = false;
+    for (bool& b : g_opt_set) b = false;
+}
+int g_test_rest = 0;                   /* T5_PRACTICE_STATE_TEST: frames both pads have been let go */
 
 void init()
 {
@@ -231,6 +280,13 @@ void init()
     if (const char* m = getenv("T5_PRACTICE_MENU"); m && *m == '0') g_cfg.menu = false;
     if (const char* d = getenv("T5_PRACTICE_DIR")) g_cfg.dir = strcmp(d, "-") ? d : "";
     if (const char* f = getenv("T5_PRACTICE_LOG"); f && *f) g_cfg.log = fopen(f, "w");
+    if (const char* st = getenv("T5_PRACTICE_STATE"); st && *st == '0') g_cfg.state = false;
+    else if (st && *st == 'r') g_cfg.test_refuse = true;
+    if (const char* t = getenv("T5_PRACTICE_STATE_TEST"); t && *t) {
+        char* e;
+        g_cfg.test_frames = (uint32_t)strtoul(t, &e, 10);
+        g_cfg.test_resets = *e == ':' ? (uint32_t)strtoul(e + 1, nullptr, 10) : 1;
+    }
     if (g_cfg.on)
         fprintf(stderr, "[practice] tools on (Practice, offline): SELECT combos%s, dummy %s%s\n",
                 g_cfg.menu ? ", START menu" : "", practice::dummy_key(g_cfg.dummy0),
@@ -552,8 +608,14 @@ extern "C" void t5_practice_pads(uint16_t* p1, uint16_t* p2)
             g_menu.hide(); g_latch = practice::Latch{}; g_delay.reset(); g_counter.reset();
             g_start_pending = false; g_start_tap = 0; g_have_remembered = false; g_back_turn = false; g_menu_restart = false;
             g_prev_rec = Recorder::State::Idle;
+            g_restore = g_restored = g_fallback = PAction::None;
         }
         return;
+    }
+    if (g_cfg.log) {                /* tests: the game's "fight runs" byte, when it changes */
+        static int was = -1;
+        const int run = rd8(kRunning);
+        if (run != was) { was = run; note("fight runs byte %d", run); }
     }
     if (rd8(kRunning) != 1) {       /* the pause menu: nothing injected, the player's own TRAINING DUMMY shown */
         apply_setting(-1);
@@ -582,6 +644,46 @@ extern "C" void t5_practice_pads(uint16_t* p1, uint16_t* p2)
         note_state("practice start:");
     }
     g_frame++;
+    if (g_restored != PAction::None) {
+        /* the round's first state is back (t5_practice_boundary, this frame): both stand at their first places.
+         * RESTART AT another place, the sides switched, the dummy back turned and the wall resets go on from
+         * there, with no wait -- nobody is in a move. */
+        const PAction then = g_restored;
+        g_restored = PAction::None;
+        g_trace_from = g_frame;
+        g_check_at = g_frame + 30;
+        note_place("state restored:");
+        const bool plain = then == PAction::ResetRound &&
+                           (g_set.restart == Restart::RoundStart || (g_set.restart == Restart::Remembered && !g_have_remembered)) &&
+                           !g_set.switched && !g_set.back_turned;
+        if (!plain) act(then);
+        g_prev_hp = 0;
+        if (!g_cfg.test_frames) {       /* (the test's script goes on in this very frame) */
+            g_prev_raw = *p1;
+            *p1 = 0;
+            *p2 = 0;
+            apply_setting(g_dummy.setting(g_set.dummy));
+            return;
+        }
+    }
+    if (g_restore != PAction::None) {   /* the reset is asked for: nothing more goes into the frame it replaces */
+        g_prev_raw = *p1;
+        *p1 = 0;
+        *p2 = 0;
+        return;
+    }
+    if (g_cfg.test_frames && g_snap != Snap::Have) g_test_rest = *p1 || *p2 ? 0 : g_test_rest + 1;
+    if (g_cfg.test_frames && g_snap == Snap::Have) {   /* T5_PRACTICE_STATE_TEST: the same pad after every reset */
+        *p1 = practice::test_script(g_since, rd8(kFighter[0] + 0x1D2) != 0);
+        if (g_cfg.log && g_since % 30 == 0) {
+            note_place("places:");
+            note("test %u %u health %d %d", g_resets, g_since, (int)(int16_t)rd16(kFighter[0] + 0x6BC), (int)(int16_t)rd16(kFighter[1] + 0x6BC));
+        }
+        *p2 = 0;
+        g_since++;
+        g_prev_raw = 0;
+        return;
+    }
     if (g_placer.pending()) {       /* a wall reset: the game has run a frame from the mover's last place */
         const Placer::Cmd c = g_placer.next(read_place(g_placer.mover()));
         if (c.done) {
@@ -699,9 +801,20 @@ extern "C" void t5_practice_pads(uint16_t* p1, uint16_t* p2)
     PAction a = g_combo.frame(latched ? 0 : raw, me.right, &hide);
     if (a == PAction::None && g_menu_restart) a = PAction::ResetRound;
     g_menu_restart = false;
+    const bool old_way = a == PAction::None && g_fallback != PAction::None;   /* the state did not come back */
+    if (old_way) a = g_fallback;
+    g_fallback = PAction::None;
     const bool is_reset = a == PAction::ResetRound || a == PAction::DummyWallFront || a == PAction::DummyWallBack ||
                           a == PAction::PlayerWallFront || a == PAction::PlayerWallBack;
-    if (is_reset) {
+    if (is_reset && g_snap == Snap::Have && !old_way) {
+        /* the round's first state comes back at the top of the next frame, whatever the fighters do now */
+        g_gate.cancel();
+        g_placer.cancel();
+        g_restore = a;
+        g_restore_tries = 0;
+        note_state("before reset:");
+        note_place("before reset, places:");
+    } else if (is_reset) {
         /* the reset waits until both fighters stand (after a launcher the dummy would keep flying / lie at its new
          * place, a fighter in a move would leave it, and the facing tap needs fighters that can act) */
         const PAction now = g_gate.request(a, me, dm);
@@ -767,6 +880,89 @@ extern "C" void t5_practice_pads(uint16_t* p1, uint16_t* p2)
     apply_setting(waiting ? kSetQuickRecovery
                   : g_rec.state() != Recorder::State::Idle || tap2 ? (int)Dummy::kSetController : g_dummy.setting(g_set.dummy));
     g_prev_hp = dm.hp;
+}
+
+/* t5_hooks.cpp offline_frame, a game started for offline play only: the top of the main thread's frame, before
+ * this frame's pads are read (t5_practice_pads comes right after it). Keeps the round's first state and puts it
+ * back for a reset. The state is the game's own memory at that boundary (rb_state.cpp, as a replay's seek puts
+ * it back); what the player chose in the game's own pause menu since is carried over (kOptArea). */
+extern "C" void t5_practice_boundary(void)
+{
+    if (!g_init) init();
+    if (!g_cfg.on || !g_cfg.state) return;
+    if (!allowed()) {
+        if (g_snap != Snap::None) {
+            t5_practice_state(3);
+            g_snap = Snap::None;
+            g_snap_tries = 0;
+            g_restore = g_restored = g_fallback = PAction::None;
+            note("left the fight: the round's first state forgotten");
+        }
+        opt_forget();
+        return;
+    }
+    if (rd8(kRunning) != 1) { g_was_paused = true; return; }
+    if (g_was_paused && g_opt_have) {      /* the game's pause menu closed: what it changed */
+        int n = 0;
+        opt_each([&](int i, uint32_t a) {
+            const uint32_t v = rd32(a);
+            if (v != g_opt_seen[i]) { g_opt_value[i] = v; g_opt_set[i] = true; n++; }
+        });
+        if (n) note("the game's pause menu changed %d option word(s): kept over a reset", n);
+    }
+    g_was_paused = false;
+    /* (the test compares hashes that cover the pads' own blocks: its state is kept once the harness that
+     * brought the game here has let go of the pads for half a second) */
+    if (g_snap == Snap::None && !(g_cfg.test_frames && g_test_rest < 30)) {
+        const int r = t5_practice_state(1);
+        if (r == 1) {
+            g_snap = Snap::Have;
+            g_since = 0;
+            g_resets = 0;
+            for (bool& b : g_opt_set) b = false;
+            note("the round's first state kept after %d frame(s)", g_snap_tries);
+        } else if (r < 0 || ++g_snap_tries >= kSnapTries) {
+            g_snap = Snap::Failed;
+            note("the round's first state is not kept (%s): a reset moves the places only",
+                 r < 0 ? "not a game started for offline play" : "the loaders did not rest");
+        }
+    }
+    if (g_snap != Snap::Have) return;
+    if (g_cfg.test_frames && g_cfg.log && g_since <= g_cfg.test_frames && g_restore == PAction::None)
+        note("hash %u %u %016llx", g_resets, g_since, t5_practice_state_hash());
+    if (g_cfg.test_frames && g_restore == PAction::None && g_since == g_cfg.test_frames && g_resets < g_cfg.test_resets)
+        g_restore = PAction::ResetRound;
+    if (g_restore != PAction::None) {
+        const int setting = (int)(rd32(kDummySetting) & 0xFF);
+        const int applied[2] = { (int)(rd32(kDummyApplied[0]) & 0xFF), (int)(rd32(kDummyApplied[1]) & 0xFF) };
+        const int r = g_cfg.test_refuse ? -1 : t5_practice_state(2);
+        if (r == 1) {
+            opt_each([](int i, uint32_t a) { if (g_opt_set[i]) put32(a, g_opt_value[i]); });
+            put_low_byte(kDummySetting, setting);
+            for (int i = 0; i < 2; i++) put_low_byte(kDummyApplied[i], applied[i]);
+            g_restored = g_restore;
+            g_restore = PAction::None;
+            g_since = 0;
+            g_resets++;
+            g_gate.cancel();
+            g_placer.cancel();
+            g_face_at = g_replace_at = 0;
+            g_nudge[0] = g_nudge[1] = 0;
+            g_back_turn = false;
+            g_delay.reset();
+            g_counter.reset();
+            note("reset %u: the round's first state is back", g_resets);
+            if (g_cfg.test_frames && g_cfg.log) note("hash %u %u %016llx", g_resets, g_since, t5_practice_state_hash());
+        } else if (r < 0 || ++g_restore_tries >= kSnapTries) {
+            note("the round's first state did not come back (%s): this reset moves the places",
+                 r < 0 ? "refused" : "the loaders did not rest");
+            g_fallback = g_restore;
+            g_restore = PAction::None;
+            if (r < 0) { t5_practice_state(3); g_snap = Snap::Failed; }
+        }
+    }
+    opt_each([](int i, uint32_t a) { g_opt_seen[i] = rd32(a); });
+    g_opt_have = true;
 }
 
 /* training.cpp: the practice status line (empty: nothing to show) */

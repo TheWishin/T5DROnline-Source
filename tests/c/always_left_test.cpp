@@ -68,13 +68,13 @@ int main()
     f.replaying = false; f.game_type = 2;
     CHECK(!al::active(f), "the attract demo: never");
     f.net = al::Net::Off; f.game_type = 4;
-    CHECK(al::active(f), "offline Versus: the P2 side's view");
+    CHECK(!al::active(f), "offline Versus: normal (1.2.3: casual online matches only)");
     f.game_type = 0;
     CHECK(!al::active(f), "offline Arcade: normal");
     f.game_type = 10;
     CHECK(!al::active(f), "offline Practice: normal");
     f.net = al::Net::Local; f.game_type = 4;
-    CHECK(al::active(f), "two players at one PC (netplay local mode), Versus: as offline");
+    CHECK(!al::active(f), "two players at one PC (netplay local mode), Versus: normal, as offline");
 
     CHECK(al::parse_enabled("1") && al::parse_enabled("on") && al::parse_enabled("TRUE") && al::parse_enabled("yes"),
           "1/on/true/yes");

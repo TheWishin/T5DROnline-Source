@@ -3,6 +3,13 @@
 All notable changes, newest first. The project is a test release. Short commit hashes are in parentheses. The state of each
 part is in the README's status table.
 
+## Unreleased (1.2.3)
+
+### Offline
+- **"Always see me on the left" no longer mirrors offline Versus** (report GMSUZH): with the setting on, a local
+  Versus fight was shown from P2's side (P1 on the right, P1's left and right reversed). The setting now works in
+  casual online matches only, as its text says; online it is unchanged.
+
 ## v1.2.2 (2026-11-07)
 
 **A fix release for 1.2.1: the music no longer sticks on one stage's theme for a whole set, no more doubled

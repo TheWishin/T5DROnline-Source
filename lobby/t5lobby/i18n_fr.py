@@ -2596,6 +2596,9 @@ MESSAGES = {
         "Les combats étaient sous 60 fps à cause de la carte graphique : elle est trop lente pour ce jeu. La résolution interne la plus basse aide un peu tout au plus.",
     "Fights were slower than 60 fps because of the processor: close other programs while you play. A lower Internal resolution does not help.":
         "Les combats étaient sous 60 fps à cause du processeur : ferme les autres programmes pendant que tu joues. Une résolution interne plus basse n'aide pas.",
+    # patch 0123: frames held by the driver or the display (core.speed_hint)
+    "Fights were slower than 60 fps: the graphics card waited for its driver or the screen and was mostly idle. Try VSync Off in Settings. A lower Internal resolution does not help.":
+        "Les combats étaient plus lents que 60 fps : la carte graphique attendait son pilote ou l'écran et restait presque inactive. Essaie VSync Désactivée dans les Paramètres. Une résolution interne plus basse n'aide pas.",
     # ---- private and community rooms (lobby/t5lobby/tk_rooms.py; the server's messages: i18n_known.py)
     "private rooms need a newer launcher; update it":
         "les salons privés demandent un launcher plus récent ; mets-le à jour",

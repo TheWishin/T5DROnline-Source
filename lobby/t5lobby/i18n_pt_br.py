@@ -2558,6 +2558,9 @@ MESSAGES = {
         "As lutas ficaram abaixo de 60 fps por causa da placa de vídeo: ela é lenta demais para este jogo. A resolução interna Mínima ajuda pouco, no máximo.",
     "Fights were slower than 60 fps because of the processor: close other programs while you play. A lower Internal resolution does not help.":
         "As lutas ficaram abaixo de 60 fps por causa do processador: feche outros programas enquanto joga. Uma resolução interna menor não ajuda.",
+    # patch 0123: frames held by the driver or the display (core.speed_hint)
+    "Fights were slower than 60 fps: the graphics card waited for its driver or the screen and was mostly idle. Try VSync Off in Settings. A lower Internal resolution does not help.":
+        "As lutas ficaram abaixo de 60 fps: a placa de vídeo esperou pelo driver ou pela tela e ficou quase sempre ociosa. Tente VSync Desligado nas Configurações. Uma resolução interna menor não ajuda.",
     # ---- private and community rooms (lobby/t5lobby/tk_rooms.py; the server's messages: i18n_known.py)
     "private rooms need a newer launcher; update it": "salas privadas precisam de um launcher mais novo; atualize-o",
     "only the room's host can do that": "só o anfitrião da sala pode fazer isso",

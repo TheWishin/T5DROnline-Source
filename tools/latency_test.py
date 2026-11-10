@@ -117,7 +117,7 @@ def proc_cpu(pid):
 
 
 def parse_log(path):
-    ev = {k: [] for k in "EKRFXPDCVBN"}
+    ev = {k: [] for k in "EKRFXPDCVBNG"}
     freq = 10_000_000
     watch = []
     with open(path, errors="replace") as f:
@@ -163,14 +163,31 @@ def analyze(out, move_ea=None, move_off=None, quiet=False):
     Xl = sorted((e[0], int(e[1])) for e in ev["X"])
     Xq = [x[0] for x in Xl]
     P = {}
+    Ppc = {}
     for e in ev["P"]:
         P.setdefault(int(e[1]), e[0])
+        if len(e) >= 5 and e[4] == "0":          # an S_OK present ("P qpc walk frame pc hr"): its present count
+            Ppc.setdefault(int(e[1]), int(e[3]))
+    # DXGI frame statistics (D: present count, the refresh it was shown at, a sync refresh + its QPC): when
+    # each present really reached the display -- valid only for a visible window (PS3_WINDOW_BACKGROUND=2;
+    # a minimised one is occluded and gets no D lines)
+    Dshow = {}
+    per_q = statistics.median([int(e[2]) for e in ev["C"]]) if ev["C"] else 0
+    for e in ev["D"]:
+        try:
+            pcnt, pref, sref, sq = int(e[1]), int(e[2]), int(e[3]), int(e[4])
+        except (ValueError, IndexError):
+            continue
+        if per_q and sq:
+            Dshow.setdefault(pcnt, sq + (pref - sref) * per_q)
     K = [(e[0], int(e[2])) for e in ev["K"]]          # (qpc, walked seq at release)
     C = [(e[0], int(e[1]), int(e[2])) for e in ev["C"]]
     E = [(e[0], int(e[2], 16)) for e in ev["E"] if e[1] == "0"]
     R = [(e[0], int(e[2], 16)) for e in ev["R"] if e[1] == "0" and e[3] in ("G", "L")]
     import bisect
     Fq = [x[0] for x in F]
+    G = sorted((int(e[1]), int(e[2]), int(e[3])) for e in ev["G"] if len(e) >= 4)   # (submit, start, end)
+    Gs = [g[0] for g in G]
     Kq = [k[0] for k in K]
 
     def first_after(lst, t, pred=lambda x: True):
@@ -235,8 +252,18 @@ def analyze(out, move_ea=None, move_off=None, quiet=False):
             gpu = freq // 2000              # the present copy (~0.5 ms) must land before the vblank
             n = -(-(p + gpu - vb) // per)     # DWM may stamp the coming vblank: n can be <= 0
             disp = vb + n * per
+        shown = Dshow.get(Ppc.get(seq, -1))
+        # patch 0123's G lines: the list submitted with this present (submit between X and P) and when the GPU
+        # finished it -- the frame cannot be shown before the first refresh after both
+        gdone = None
+        gi = bisect.bisect_right(Gs, p) - 1
+        if gi >= 0 and G[gi][0] >= x - freq // 1000 and c:
+            vb, per = c[1], c[2]
+            ready = max(p, G[gi][2])
+            n = -(-(ready - vb) // per)
+            gdone = vb + n * per
         rows.append(dict(press=t, E=e[0], R=r[0], cons_start=cs, cons_seq=F[cons][1], react_start=rs,
-                         react_seq=seq, frames_game=react - cons, F=fq, X=x, P=p, disp=disp))
+                         react_seq=seq, frames_game=react - cons, F=fq, X=x, P=p, disp=disp, shown=shown, gdone=gdone))
     if not rows:
         print("no usable presses (phase 17 with a reaction) in", out)
         return None
@@ -248,6 +275,16 @@ def analyze(out, move_ea=None, move_off=None, quiet=False):
              ("present queue", lambda r: r["P"] - r["X"]),
              ("to display vblank", lambda r: (r["disp"] - r["P"]) if r["disp"] else 0),
              ("TOTAL press->display", lambda r: (r["disp"] or r["P"]) - r["press"])]
+    g_rows = [r for r in rows if r.get("gdone")]
+    if len(g_rows) * 2 >= len(rows):
+        parts.append(("GPU end->vblank model", lambda r: (r["gdone"] - r["P"]) if r.get("gdone") else 0))
+        parts.append(("TOTAL press->display (GPU end)", lambda r: (r.get("gdone") or r["disp"] or r["P"]) - r["press"]))
+    shown_rows = [r for r in rows if r.get("shown")]
+    if len(shown_rows) * 2 >= len(rows):
+        # measured, not modelled: DXGI says which refresh showed the reacting frame
+        rows = shown_rows
+        parts.append(("present->shown (DXGI)", lambda r: r["shown"] - r["P"]))
+        parts.append(("TOTAL press->shown (DXGI)", lambda r: r["shown"] - r["press"]))
     res = {"n": len(rows), "parts": {}}
     lines = ["%-22s %8s %8s %8s %8s" % ("part (ms)", "median", "mean", "p10", "p90")]
     for name, fn in parts:

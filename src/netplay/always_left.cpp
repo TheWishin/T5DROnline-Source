@@ -13,9 +13,8 @@
  * renderer (ps3recomp patch 0086) whether to show this frame mirrored. While it does:
  *   - online: this player's sample has left and right swapped (always_left_input, netplay_core.cpp
  *     sample_local) -- before it is exchanged, so both PCs simulate the same, swapped input;
- *   - offline (a Versus fight): P2's (left) or P1's (right) pad has left and right swapped as the game reads it
- *     (t5_always_left_pad_fix, from the late-input pad hook or the direct fight's; T5_LATE_INPUT=0 without a
- *     direct fight has no such hook and stays unswapped).
+ *   - offline: nothing since 1.2.3 (al::active is online only); t5_always_left_pad_fix, called by the late-input
+ *     pad hook and the direct fight's, then never swaps.
  *
  *   T5_ALWAYS_LEFT_TRACE=1   (tests) every 20 fight frames: both fighters' places on the floor and their
  *                            distance, on stderr ("[always-left] trace ...")

@@ -45,7 +45,10 @@ int main()
     f.side = Side::Right; f.net = al::Net::Off;
     assert(!al::active(f)); // A persistent online game between matches never takes the offline preview rule.
     f.online_game = false;
-    assert(al::active(f)); // Offline Versus preview uses P1 for Always right.
+    assert(!al::active(f)); // 1.2.3: offline Versus is never mirrored (Always left/right are casual online only).
+    f.side = Side::Left;
+    assert(!al::active(f));
+    f.side = Side::Right;
     f.enabled = false;
     assert(!al::active(f));
     for (unsigned b = 0; b < 65536; ++b)

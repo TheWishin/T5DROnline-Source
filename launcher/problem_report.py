@@ -855,6 +855,9 @@ SLOW_VERDICT_IGPU = re.compile(r"\| integrated graphics busy ([0-9]+) % of the t
 SLOW_VERDICT_CARD = re.compile(r"\| GPU-bound: the graphics card needs ([0-9.]+) ms a frame at ([^-|]+?) --")
 SLOW_VERDICT_CPU = re.compile(r"\| (CPU-bound|CPU and GPU in turn): the game needs ([0-9.]+) ms a frame and the "
                               r"render translation ([0-9.]+)")
+# Patch 0123: frames held before a mostly idle GPU started them (the driver or the display path)
+SLOW_VERDICT_HELD = re.compile(r"\| GPU held: the frame waits ([0-9.]+) ms for the graphics card, which works ([0-9.]+) "
+                               r"ms of it \(busy ([0-9]+) % of the time\)")
 FACT_GPU = re.compile(r"^\[gpu\] adapter: (.+?) \(vendor [0-9A-Fa-f]+, .*?\b(integrated|dedicated)\)")
 FACT_RES = re.compile(r"^\[display\] internal resolution (.+?) \(([0-9.]+)x\)")
 
@@ -894,6 +897,15 @@ def speed_diagnosis(run_lines, facts, screens=()):
                    (f"; in {turn} of them the frames also waited for the graphics card" if turn else "") +
                    "): a lower Internal resolution does not help; other programs, the power mode and the number of "
                    "processor cores do.")
+    held = [SLOW_VERDICT_HELD.search(ln) for ln in slow]
+    n_held = sum(1 for m in held if m)
+    if n_held:
+        wait = max(float(m.group(1)) for m in held if m)
+        busy = max(int(m.group(3)) for m in held if m)
+        out.append(f"Frames were held back before the graphics card started them in {n_held} of the last {len(slow)} "
+                   f"windows (up to {wait:.1f} ms a frame waiting for a card busy at most {busy} % of the time): the "
+                   "graphics driver or the display path, not the processor and not the resolution; see the line's "
+                   "'GPU queue' part and whether vsync was turned off.")
     integrated = res = None
     for ln in facts:
         m = FACT_GPU.match(ln)

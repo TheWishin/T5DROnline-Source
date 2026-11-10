@@ -3,6 +3,37 @@
 All notable changes, newest first. The project is a test release. Short commit hashes are in parentheses. The state of each
 part is in the README's status table.
 
+## Unreleased (1.2.3)
+
+### Online
+- **One stall no longer adds an input delay frame to the next matches**: the Balanced online feel adds a frame when
+  a PC's measured rollback cost is too high. One rollback that met a stall (a pipeline built at first sight, another
+  program) could triple a whole measurement, so later matches of a long session -- and the next game, through
+  rb_cost.txt -- were played with one frame more input delay. The measurement now leaves out its few slowest and
+  fastest frames, and one bad measurement can raise the kept cost by a quarter at most.
+
+### Speed
+- **Old graphics cards that hold frames back are named, and the game reacts** (report YESB6Y: a GT 730 of the
+  Fermi kind on a 75 Hz screen played menus at 37.5 and fights at 25 fps -- 75 / 2 and 75 / 3 -- while the card
+  worked only 17 % of the time; the log called it "CPU-bound"). The game log now measures how long each frame
+  waits before the graphics card starts it, and such a window reads "GPU held: ... the graphics driver or the
+  display holds the frames back, not the processor"; the launcher's note after a game says to try VSync Off. On
+  a screen faster than 60 Hz the game itself then presents without vsync (no tearing; `RSX_HOLD_VSYNC=0` keeps
+  vsync). Not tried on a real Fermi card: the next log from one says whether that was the cause.
+- **Fewer late frames when the game's command ring wraps** (about once a second; on the pool stage six times a second):
+  the game's draw thread waited for the renderer with 1 ms sleeps; it is now woken as soon as the renderer is done
+  (1.5-2.1 ms instead of 2.7-3.1 ms a wrap). On a 2-core stand-in the frames that took longer than 8.5 ms fell from
+  0.5 % to 0.1 %. `PS3_GCM_RECYCLE_WAKE=0` puts the old wait back.
+- **Less work for the render translation**: each draw copies only the transform constants its vertex program
+  reads into the graphics card's upload memory (the 8 KB block was copied whole: ~3 MB a fight frame), and the
+  per-draw timing clock runs only with the frame log on. The picture is the same (every program checked against
+  the shader the game runs); `RSX_VP_CONST_RANGE=0` copies whole blocks.
+
+### Offline
+- **"Always see me on the left" no longer mirrors offline Versus** (report GMSUZH): with the setting on, a local
+  Versus fight was shown from P2's side (P1 on the right, P1's left and right reversed). The setting now works in
+  casual online matches only, as its text says; online it is unchanged.
+
 ## v1.2.2 (2026-11-07)
 
 **A fix release for 1.2.1: the music no longer sticks on one stage's theme for a whole set, no more doubled

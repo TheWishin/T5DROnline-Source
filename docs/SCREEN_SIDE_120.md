@@ -17,8 +17,8 @@ left whole (never seen in a fight). Issue #31 (own bar empty, names jumping) is 
 [ALWAYS_LEFT_FIX.md](ALWAYS_LEFT_FIX.md) for the measured HUD and the rule. It needs no additional
 shader or memory address. The old runtime
 function names remain for compatibility. Ranked, Quick, tournaments, watched replays and the attract demo
-keep their normal picture. Offline Versus retains the old preview behavior: left previews P2, right previews
-P1; the corresponding player's pad is mirrored.
+keep their normal picture. Offline Versus is never mirrored since 1.2.3 (1.2.0-1.2.2 previewed P2 for left and P1
+for right with that player's pad mirrored, which players with the setting on reported as a bug: GMSUZH).
 
 The direction swap stays in `sample_local` before network exchange. Both PCs simulate the same exchanged
 input; no fighter, camera or battle-state guest field is written by the screen-side code. Offline only the

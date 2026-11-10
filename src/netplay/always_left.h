@@ -14,9 +14,9 @@
  *     T5_NET_CASUAL=1, from the lobby's match_start: a challenge, a friend's invite, a room that is not ranked,
  *     their rematches). Ranked, the Quick queue and tournament sets never: there the sides stay the server's
  *     coin and the picture stays as it is (the owner's rule for 1.1.9);
- *     offline: a Versus fight (two players at one PC: the screen follows P2 for left, P1 for right -- for trying it alone
- *     with a second pad); the other offline modes stay as they are -- and never in a game started for online
- *     play (online_game), whatever its netplay state. A replay being watched: as recorded, not mirrored.
+ *     offline: never (1.2.3; before, offline Versus showed P2's / P1's view -- report GMSUZH: "Always see me on the
+ *     left" mirrored a local Versus fight although the setting says casual matches), and never in a game started
+ *     for online play (online_game) outside its sessions. A replay being watched: as recorded, not mirrored.
  *
  * The pure part (no runtime calls); tests/c/always_left_test.cpp checks it.
  */
@@ -66,8 +66,9 @@ inline bool active(const Frame& f)
     if (f.phase != kPhaseFight || f.game_type == kGtDemo) return false;
     if (f.net == Net::Host || f.net == Net::Join)
         return f.casual && f.local_slot == (f.side == Side::Right ? 0 : 1);
-    if (f.online_game) return false;
-    return f.game_type == kGtVersus;
+    /* 1.2.3: casual online matches only, as the setting says. Offline Versus (and two players at one PC)
+     * used to show P2's view: P1 on the right with left/right swapped (report GMSUZH). */
+    return false;
 }
 
 /* T5_ALWAYS_LEFT: "1" (or "on", "true", "yes") = on; anything else, or unset, = off. */

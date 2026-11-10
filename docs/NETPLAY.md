@@ -328,7 +328,12 @@ time between two live boundaries without the rollbacks in it, which counts the f
 (R) and the wall time of a re-simulated frame (S). A rollback, the game's frame and its translation run one after the
 other, so they must fit into a frame together. Once 30 rollbacks and 600 live fight frames are in (at a session's end: 10 and
 300) the netplay core keeps them -- halfway between the old value and the new one -- and writes them to
-`T5_RB_COST_FILE` (the launcher: `<out>/rb_cost.txt`), so the next game starts with them. The capacity is the
+`T5_RB_COST_FILE` (the launcher: `<out>/rb_cost.txt`), so the next game starts with them. Since 1.2.3 a window's
+numbers are trimmed means (the top and bottom tenth of its frames and rollbacks left out, `src/rollback/rb_cost_hist.h`)
+and a window more than 1.5 times the kept value counts as 1.5 times: in a 50-minute two-game run one rollback that met
+a stall made a window's S 18 ms instead of 5, the kept S 12 ms, the capacity 0, and Balanced gave the last two matches
+one more input delay frame (press to screen +14 ms) -- and rb_cost.txt would have carried it into the next game. A log
+line `rollback cost window: ... the trimmed numbers count` says when the trimmed numbers differ from the plain means. The capacity is the
 deepest rollback the PC can run inside one frame and still keep 60 fps:
 `C = floor((15 ms - L - R) / S)`, 0..15 (15 ms of the 16.7: room for the present and jitter). On this dev PC in a
 fight (pair run rb_new2, both mashing at RTT 150: L 4.5, R 0.7, S 2.0 ms) that is 4; a weak 4-core laptop (L 12, R 1, S 4) gets 0. `T5_RB_COST=L,R,S` sets
@@ -429,7 +434,8 @@ gives the game `T5_NET_CASUAL=1` for those (`handover.match_casual`), `0` for ev
 queue, ranked rooms, tournament sets. The match driver gives every match `T5_ALWAYS_LEFT` = the setting as it is
 when the match starts (a persistent game reads both again with each match, `t5_env`; so the checkbox counts from
 the next match, and a ranked match after a casual one in the same game is never mirrored). The game mirrors only
-when both say 1 (`al::active`); a game started for online play never uses the offline rule below.
+when both say 1 (`al::active`). Offline the picture is never mirrored (1.2.3; 1.1.9-1.2.2 mirrored offline Versus
+as a preview, which players with the setting on took for a bug: report GMSUZH).
 
 The integrated 1.2.0 launcher replaces the checkbox with **As dealt / Always left / Always right**
 (`screen_side`, `T5_SCREEN_SIDE=dealt/left/right`). Always right uses the same host mirror for
@@ -437,7 +443,7 @@ actual P1; explicit dealt disables it. The legacy Always left description below 
 the left preference is selected. See [SCREEN_SIDE_120.md](SCREEN_SIDE_120.md) for migration and exclusions.
 
 While this PC plays P2 in a casual fight (phase 17, round intros and win poses included; not the attract demo,
-not a replay being watched; offline: a Versus fight shows the P2 side, for trying it alone with a second pad):
+not a replay being watched; never offline since 1.2.3):
 
 - **Picture** (ps3recomp patch 0086, `libs/video/rsx_always_left.h`): the game draws its 3D scene into a
   2048 x 1440 target and copies it into the 1280 x 720 display buffer with one full-screen quad, then draws
@@ -452,7 +458,7 @@ not a replay being watched; offline: a Versus fight shows the P2 side, for tryin
 - **Controller** (`src/netplay/always_left.cpp`): online, this player's sample has LEFT and RIGHT swapped and
   the sticks' X mirrored (`np::always_left_input`, in `sample_local`) *before* it is exchanged, so both PCs
   simulate the same input and "towards the opponent" stays the direction the player sees the opponent in.
-  Offline, port 2's data is mirrored as the game reads it (the late-input pad hook, or the direct fight's).
+  Offline nothing is swapped (1.2.3; the offline pad hooks still call `t5_always_left_pad_fix`, which does nothing).
 - **Nothing else**: no guest memory is written except the pad data the game reads; the opponent sees the
   normal picture; replays record the exchanged (game-side) input. Character select, menus and loading
   screens stay as they are.

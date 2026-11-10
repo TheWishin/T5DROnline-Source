@@ -2892,3 +2892,17 @@ MESSAGES.update({
     "Starting Practice before searching...": "검색 전에 연습 모드를 시작하는 중...",
     "Practice could not start; search was not started.": "연습 모드를 시작하지 못해 검색을 시작하지 않았습니다.",
 })
+
+# ---- profile picture (launcher/t5dr_launcher.pyw Settings, lobby/t5lobby/tk_profile_pic.py)
+MESSAGES.update({
+    "Profile picture":
+        "프로필 사진",
+    "Show a picture of my customized fighter on my lobby profile":
+        "커스터마이즈한 내 캐릭터의 사진을 로비 프로필에 표시",
+    "The launcher takes it by itself with a short hidden game when your fighter's customization changed. Only players in the lobby see it. Off: your pictures are removed from the server.":
+        "캐릭터의 커스터마이즈가 바뀌면 런처가 짧은 숨겨진 게임으로 직접 촬영합니다. 로비에 있는 플레이어만 볼 수 있습니다. 끄면 내 사진이 서버에서 삭제됩니다.",
+    "{fighter}, costume {number}":
+        "{fighter}, 코스튬 {number}",
+    "Profile pictures of your fighters":
+        "내 캐릭터의 프로필 사진",
+})

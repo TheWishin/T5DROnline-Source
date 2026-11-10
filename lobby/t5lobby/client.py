@@ -59,6 +59,7 @@ Usage:
     ... after the game:    c.report_result(winner=0, score=[3, 1])
 """
 import asyncio
+import base64
 import hashlib
 import ipaddress
 import math
@@ -69,7 +70,7 @@ import ssl
 import threading
 import time
 
-from . import proto
+from . import picfmt, proto
 from .compatibility import CAP as COMPAT_CAP, wire_compatible
 from .handover import MatchTicket, match_casual, match_unlocks
 from .i18n import t
@@ -104,7 +105,7 @@ class LobbyClient(TourCalls, SpectateClientMixin):
                  port_mapping=False, nat2=True, relay_bridge=True, relays=True, friends=True, old_stages=True,
                  tournaments=False, spectate=False, live_dir=None, watch_dir=None, test_inbound=None,
                  private_rooms=True, match_rules=False, life150=False, input_delay8=True,
-                 badges=True, mentions=True, tcp_fallback_port=443, casual_sets=True, room_tables=True,
+                 badges=True, mentions=True, profile_pics=True, tcp_fallback_port=443, casual_sets=True, room_tables=True,
                  ingame_rematch=False, auto_skip_after_round=False, private_chat=True, guest_mutes=(),
                  auto_skip_intro=False):
         """server: "host[:port]". build: BuildInfo. on_event: optional callable(event) run on the
@@ -219,6 +220,8 @@ class LobbyClient(TourCalls, SpectateClientMixin):
         self.input_delay8 = bool(input_delay8)
         self.badges = bool(badges)
         self.mentions = bool(mentions)
+        self.profile_pics = bool(profile_pics)   # profile pictures (False: an older launcher)
+        self._pic_cache = {}                     # sha -> the picture's bytes, the last few fetched
         # A launcher advertises these only after checking its game build and the feature switch.
         self.ingame_rematch = bool(ingame_rematch)
         self.auto_skip_after_round = bool(auto_skip_after_round)
@@ -416,7 +419,8 @@ class LobbyClient(TourCalls, SpectateClientMixin):
                                                 + (["auto_skip_intro_v1"] if self.auto_skip_intro else [])
                                                 + [COMPAT_CAP]
                                                 + (["private_chat"] if self.private_chat else [])
-                                                + ["mutes"]})
+                                                + ["mutes"]
+                                                + (["profile_pics"] if self.profile_pics else [])})
         except (LobbyError, OSError, asyncio.CancelledError):
             # Refused (version) or no answer (e.g. TLS on one side only): leave nothing half open.
             closing, self._closing = self._closing, True
@@ -594,7 +598,8 @@ class LobbyClient(TourCalls, SpectateClientMixin):
             if t in ("error", "ok", "welcome", "login_ok", "queued", "result_ack", "pong", "challenge",
                      "leaderboard", "bye", "profile", "history", "passwd_ok", "recovered", "recovery_codes",
                      "rematch", "blocked", "unblocked", "blocks", "set_next", "friend_added", "invite_sent",
-                     "tour_list", "tour", "muted", "mutes", "private_muted"):
+                     "tour_list", "tour", "muted", "mutes", "private_muted", "pic_go", "pic_ok", "pic",
+                     "pic_gone"):
                 return
         handler = getattr(self, "_on_" + t, None)
         if handler is not None:
@@ -1428,6 +1433,68 @@ class LobbyClient(TourCalls, SpectateClientMixin):
     # ---------------------------------------------------------------- profiles and characters
     def profile(self, name=None, history=10):
         return self._call({"t": "profile", "name": name, "history": history})["profile"]
+
+    # ---------------------------------------------------------------- profile pictures (docs/ONLINE.md)
+    def pics_ok(self):
+        """Profile pictures: this launcher announced them and the server keeps them."""
+        w = self.welcome or {}
+        return bool(self.profile_pics and "profile_pics" in (w.get("caps") or ())
+                    and "profile_pics" in (w.get("features") or ()))
+
+    def pic_limits(self):
+        return dict((self.welcome or {}).get("profile_pics") or {})
+
+    def pic_put(self, fighter, costume, png):
+        """Send this account's picture of `fighter` in costume 1-3 (picfmt's PNG). -> the server's pic_ok
+        ({sha, size, same: True when it already had exactly this one})."""
+        if not self.pics_ok():
+            raise LobbyError(proto.E_NOT_ALLOWED, "this server keeps no profile pictures")
+        png = picfmt.clean(png, int(self.pic_limits().get("max_bytes") or picfmt.MAX_BYTES))
+        return self._run(self._pic_put(fighter, int(costume), png), self.request_timeout * 4 + 30)
+
+    async def _pic_put(self, fighter, costume, png):
+        r = await self._request({"t": "pic_put", "fighter": fighter, "costume": costume, "size": len(png),
+                                 "sha256": hashlib.sha256(png).hexdigest()})
+        if r.get("t") == "pic_ok":
+            return r
+        chunk = max(256, min(4096, int(r.get("chunk") or 4096)))
+        pid = r.get("id")
+        for off in range(0, len(png), chunk):
+            r = await self._request({"t": "pic_part", "id": pid, "off": off,
+                                     "data": base64.b64encode(png[off:off + chunk]).decode("ascii")},
+                                    self.request_timeout + 20)
+        if r.get("t") != "pic_ok":
+            raise LobbyError(proto.E_BAD_REQUEST, "the server did not take the picture")
+        return r
+
+    def pic_get(self, name, fighter, costume, sha=None):
+        """Another player's (or this one's) picture -> PNG bytes, checked and written anew here too (picfmt.clean:
+        nothing but pixels ever reaches the screen). `sha`: the profile's value; a picture fetched before is not
+        asked again."""
+        if not self.pics_ok():
+            raise LobbyError(proto.E_NOT_ALLOWED, "this server keeps no profile pictures")
+        if sha and sha in self._pic_cache:
+            return self._pic_cache[sha]
+        r = self._call({"t": "pic_get", "name": name, "fighter": fighter, "costume": int(costume)})
+        try:
+            png = picfmt.clean(base64.b64decode(str(r.get("data", "")), validate=True))
+        except (ValueError, picfmt.PicError):
+            raise LobbyError(proto.E_BAD_REQUEST, "the server sent no usable picture") from None
+        self._pic_cache[str(r.get("sha") or sha)] = png
+        while len(self._pic_cache) > 24:
+            self._pic_cache.pop(next(iter(self._pic_cache)))
+        return png
+
+    def pic_del(self, fighter=None, costume=None):
+        """Remove this account's pictures from the server: one, a fighter's, or all."""
+        if not self.pics_ok():
+            raise LobbyError(proto.E_NOT_ALLOWED, "this server keeps no profile pictures")
+        msg = {"t": "pic_del"}
+        if fighter is not None:
+            msg["fighter"] = fighter
+        if costume is not None:
+            msg["costume"] = int(costume)
+        return self._call(msg).get("n", 0)
 
     def history(self, name=None, limit=20, offset=0):
         return self._call({"t": "history", "name": name, "limit": limit, "offset": offset})["rows"]

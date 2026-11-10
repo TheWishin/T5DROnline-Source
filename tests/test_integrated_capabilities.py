@@ -22,7 +22,7 @@ LEGACY = ["delta", "notices", "blind_ready", "old_stages", "ingame_pick", "sets"
           "game_fallback", "boss_chars", "lag_wait", "match_rules"]
 ADDED = ["life150", "input_delay8", "badges", "mentions", "ranked_chars", "casual_sets",
          "room_tables", "ingame_rematch_v1", "auto_skip_after_round_v1", "auto_skip_intro_v1", "compat_groups",
-         "private_chat", "mutes"]
+         "private_chat", "mutes", "profile_pics"]
 
 
 def client(**options):
@@ -69,7 +69,8 @@ class IntegratedCapabilities(unittest.IsolatedAsyncioTestCase):
                                  relays=SimpleNamespace(public_list=lambda: []),
                                  tours=SimpleNamespace(welcome=lambda: {}),
                                  _casual_welcome=lambda _: {}, _rematch_enabled=lambda: True,
-                                 reports_on=lambda: False, reports_welcome=lambda _: {})   # 1.2.1: problem reports (reports.py)
+                                 reports_on=lambda: False, reports_welcome=lambda _: {},   # 1.2.1: problem reports (reports.py)
+                                 pics_on=lambda: True, pics_welcome=lambda _: {})          # profile pictures (profile_pics.py)
         conn = SimpleNamespace(player=None, ip="127.0.0.1", writer=mock.Mock())
         conn.writer.get_extra_info.return_value = None
         welcome = await LobbyServer.h_hello(server, conn, hello)

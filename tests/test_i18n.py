@@ -63,6 +63,8 @@ DEV_ONLY = {
     "unknown message X", "bad field: X", "bad field: name", "mode is quick or ranked", "winner is 0 (P1), 1 (P2) or null (draw)",
     "score is [P1 rounds, P2 rounds]", "chars is [P1 fighter, P2 fighter]", "costumes is [P1 button, P2 button]",
     "fps is a number", "fps out of range",
+    # profile pictures (client.py pic_*; the Online tab's background upkeep never shows them, tk_profile_pic.py)
+    "this server keeps no profile pictures", "the server did not take the picture", "the server sent no usable picture",
     "unknown character X", "kind is casual or room",
     # problem reports (server/reports.py): the launcher's report connection never logs in
     "a report connection cannot log in",

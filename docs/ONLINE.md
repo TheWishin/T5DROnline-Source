@@ -29,6 +29,7 @@ install for players or for whoever runs the server.
 - [Chime and taskbar flash](#chime-and-taskbar-flash)
 - [Search options, areas and languages](#search-options-areas-and-languages) (highest ping, no Wi-Fi, steady 60 fps)
 - [Remove my data](#remove-my-data) (the account on the server, the online data on this PC)
+- [Profile picture](#profile-picture) (a picture of the customized fighter on the lobby profile)
 - Tournaments: their own page, [TOURNAMENTS.md](TOURNAMENTS.md)
 - [Protocol reference](#protocol-reference)
 - [Security and abuse protection](#security-and-abuse-protection)
@@ -1072,6 +1073,7 @@ that is not over (signed up, checked in, playing, organizing). What the server d
 | account row (name, password hash, rating, rank, record, badge, bans) | deleted; the id is never given again |
 | remembered logins, recovery codes | deleted |
 | friends, friend requests (both ways), blocks and mutes (both ways), tournament host role | deleted |
+| profile pictures ([Profile picture](#profile-picture)) | deleted |
 | matches and sets | kept for the other player's history: this side's name becomes "deleted player", its account link is removed |
 | private reports | the reporter's and the reported name become "deleted player" |
 | finished tournaments | the entrant name and the organizer name become "deleted player" |
@@ -1083,8 +1085,105 @@ name it played with (which any guest may use): the window says so and offers the
 
 *This PC*: the Online tab's settings and saved logins (`online.json`), the replay files of the replay folder (only
 `*.t5replay`, never the folder: it may be one the player chose), the game's `*.log` files in `<out>/logs`, the save
-the game uses online (`<out>/gamedata-online`) and `rb_cost.txt` -- each listed with its size, removed only after the
+the game uses online (`<out>/gamedata-online`), `rb_cost.txt` and the profile pictures' cache (`<out>/profile-pics`)
+-- each listed with its size, removed only after the
 same two confirmations. The game build, the offline save and `launcher.json` stay.
+
+## Profile picture
+
+Branch `profile-pic-018` (launcher `launcher/profile_pic.py`, `lobby/t5lobby/tk_profile_pic.py`; shared format
+`lobby/t5lobby/picfmt.py`; server `lobby/t5lobby/server/profile_pics.py`; cap and feature `profile_pics`). An
+account's profile card in the Online tab shows a picture of that player's **customized fighter** -- the game's own
+picture of the fighter in the costume from the player's save, the one opponents see online ([DIRECTFIGHT.md
+"Custom costumes online"](DIRECTFIGHT.md)). Lobby and launcher only: no game code, no game state, no netplay and no
+build id changes; the 1.2.2 game takes the pictures.
+
+### How the picture is taken (design choice: A, a short offline game)
+
+The launcher starts a short **offline** game of its own and reads its picture back. Everything it uses is already
+in the released game:
+
+| Step | Switch (existing) |
+|---|---|
+| straight into a VS fight, the player's fighter as P1, one round, a bright open stage | `T5_FIGHT=<fighter>,<paul or law>,0,1 buttons=<b>\|1` |
+| P1 wears the customization of the player's save | `T5_COSTUME_SAVE=<a copy of SYS-DATA>` (the offline test hook of "Custom costumes online"; the game only reads it) |
+| a throw-away save folder: the player's saves are never opened for writing | `PS3_SAVEDATA_DIR=./profile-pics/work/save` |
+| no window, no sound, no dialogs, 720p | `PS3_WINDOW_BACKGROUND` + `PS3_WINDOW_HIDDEN`, `PS3_AUDIO_MUTE`, `PS3_NO_DIALOGS`, `RSX_TEST_CLIENT_SIZE=1280x720` |
+| the picture: what the window would show | `RSX_TEST_BB_SHOT=<request file>` (the backbuffer as PPM) |
+
+The moment is **P1's intro**: the game's own close-up of the fighter alone, no HUD. The launcher waits for the log
+line that ends the loading (`costumes: blocks hash ... after the loading`), asks for four pictures 2.0 / 2.5 / 3.0 /
+3.5 s later (the intro fades in during the first second and lasts 3.5 s or more), keeps the one at 2.5 s unless its
+middle shows next to nothing (then 3.0, 2.0, 3.5), cuts the upright middle out (540 x 720) and shrinks it to
+240 x 320. The game's log also says which costume the confirm button gave and whether it wears the customization
+(`costumes worn: P1 costume 2 (...): parts ...`): a costume that is not customized gets no picture, and the launcher
+tries the next button (LP, LK, RP, RK; at most four games per fighter) until the customized costume shows. The
+capture game runs at below-normal priority and ends at once when the player starts a game.
+
+Why not B (a picture of the select screen): the customization is put on the fighters only at FIGHT START (the VS
+custom-data blocks the direct-fight driver writes; they are zero at the select screen), so the select screen's
+preview cannot show what opponents see without new game code; and the online select screen exists only inside a
+session, where a picture would be taken while the netplay runs. A needs no new game state and nothing online; it
+costs 25-30 s per game (measured, warm shader cache).
+
+Proof (2026-11-10, the 1.2.2 tree's game, the test saves with a customized Kazuya and Lili): Kazuya with LP ->
+costume 1, not customized, no picture; with LK -> `costumes worn: P1 costume 2 (model 0x25): parts 03,-,0D,-
+colours 1,-,-`, the picture shows the red-haired Kazuya in the white suit; Lili with LK -> costume 2, her white
+dress. `refresh()` for Kazuya: two games, 53 s, one picture of 109 KB; again: 0 games, 0.3 s (cache). Not seen yet:
+the other 33 fighters' intros (the camera is the game's: a fighter whose intro keeps it far away or off the middle
+gives a smaller or cut figure), a real player's PC, Wine.
+
+**When.** While the Online tab is idle (logged in with an account, nothing searched or played, no game, build or
+shader warm-up running), for the fighter picked in the lobby. **Cache**: `<out>/profile-pics/index.json` +
+`<fighter>-<costume>.png`; the key of a picture is a hash of what that costume wears in the save (the 4 worn parts
+and 3 worn colours of its 0x58-byte record) -- never the save's path, name or any other byte of it. A new picture is
+taken only when that changed; a fighter with nothing customized has no picture (and the launcher removes an older
+one from the server). Settings -> *Profile picture* (on by default) switches it off: nothing is taken or sent and
+the account's pictures are removed from the server.
+
+### Size and format
+
+PNG, 240 x 320, 8-bit RGB, at most 200 KB (measured: 100-125 KB; a picture that would be larger loses its lowest 2-4
+colour bits). One picture per fighter and costume (1-3), at most 9 per account (`T5L_PIC_MAX`; the oldest goes for
+a new one).
+
+The file is a strict subset of PNG: the chunks IHDR, IDAT, IEND and nothing else. `picfmt.clean()` is the only way
+a picture reaches the server's store or a player's screen: it unpacks the pixels (bounded by width x height: a
+small file cannot unpack huge) and writes them anew with the module's own encoder -- so no text, time, colour
+profile, EXIF or private chunk can exist in it, on any side. The launcher cleans before sending, the server cleans
+what it receives and stores its own bytes, the launcher cleans again what the server sends. A file with any other
+chunk, pixel format, size, trailing bytes or a wrong checksum is refused whole.
+
+### Upload, storage, who sees it
+
+| | |
+|---|---|
+| upload | `pic_put {fighter, costume, size, sha256}` -> `pic_go {id, chunk}`, then `pic_part {id, off, data}` (base64, 4 KB each, in order) -> `pic_ok {sha, size}`; the same picture again -> `pic_ok {same: true}` at once |
+| who may upload | accounts (a guest keeps nothing on the server); `T5L_PIC_UPLOADS_HOUR` 12 per account, one upload at a time per connection, 60 s to finish, `T5L_PIC_CONCURRENT` 2 checked at once |
+| stored | in a database file of its own next to the lobby's (`T5L_PIC_DB`, default `<T5L_DB>-pics`; not in the lobby's backups: launchers make the pictures again); all pictures together at most `T5L_PIC_TOTAL_MB` 1024 |
+| profile | `profile` gains `pics: [{fighter, costume, sha, size}]` (newest first) for clients with the cap |
+| the picture | `pic_get {name, fighter, costume}` -> `pic {..., data}`; rate limited like a profile request |
+| removed | by its owner (`pic_del`, or the setting off); with the account ("Remove my data" at once; an account the admin tool deleted or purged: by that tool and by the server's hourly sweep); by the operator: `t5lobby-admin pics [name] [--export DIR] [--delete [--fighter KEY] [--costume N]]` |
+| off | `T5L_PROFILE_PICS=0`: no feature in the welcome; launchers take and send nothing |
+
+**Only players in the lobby see it.** A picture leaves the server only as the answer to `pic_get` on a lobby
+connection that has logged in (account or guest) and announced the cap. The status port (`/status`, `/tournaments`)
+has no picture route, the lobby list and the leaderboard carry none, a connection that has not logged in gets
+"log in first", and a player the owner blocked gets neither the list nor the picture. The launcher keeps other
+players' pictures in memory only (the last 24), never on disk.
+
+**Older versions.** A launcher without the cap gets the profile it always got (no `pics` field) and never asks; a
+server without the feature is never sent anything, and the launcher then starts no capture game.
+
+**What the server cannot know**: what the pixels show. The format check guarantees a small picture without any
+metadata, not that it is the game's art -- a modified launcher could send any 240 x 320 picture. Hence the small
+size, the per-account limits, the operator's `pics --export / --delete` and the off switch. Reporting a picture from
+the launcher is not built.
+
+Tests: `lobby/tests/test_profile_pics.py` (format, every refusal, upload/list/fetch, limits, blocks, old client,
+feature off, account removal, admin tool), `tests/test_profile_pic.py` (the capture with a stand-in game: buttons,
+cache, retake, failures, leftovers of a killed run, the save untouched), `lobby/tests/test_tk_profile_pic.py`
+(the card and the upkeep).
 
 ## Protocol reference
 

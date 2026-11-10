@@ -525,6 +525,54 @@ def cmd_delete_user(a):
         sys.exit("deleting an account cannot be undone; add --yes")
     st = _open(a)
     print("deleted" if st.delete_account(_account(st, a.name)["name"]) else "not found")
+    _pics_sweep(a, st)
+    return 0
+
+
+def _pics(a, st=None):
+    """The profile pictures' database of this server (profile_pics.py), or None when there is none yet."""
+    from .profile_pics import PicStore, pic_db_path
+    path = pic_db_path(os.environ.get("T5L_PIC_DB", ""), _db_path(a))
+    if path == ":memory:" or not os.path.exists(path):
+        return None
+    return PicStore(path)
+
+
+def _pics_sweep(a, st):
+    """After accounts were deleted here: their profile pictures go too (the server's hourly sweep would also)."""
+    pics = _pics(a)
+    if pics is not None:
+        n = pics.sweep(lambda aid: st.account_by_id(aid) is not None)
+        if n:
+            print(f"deleted {n} profile picture(s) of removed accounts")
+
+
+def cmd_pics(a):
+    """pics [name] [--delete [--fighter KEY] [--costume N]] [--export DIR]: profile pictures (docs/ONLINE.md)."""
+    st = _open(a)
+    pics = _pics(a)
+    if pics is None:
+        print("no profile pictures are stored")
+        return 0
+    if not a.name:
+        n, size = pics.total()
+        print(f"{n} picture(s), {size / 1e6:.1f} MB, {len(pics.accounts())} account(s)")
+        return 0
+    row = _account(st, a.name)
+    rows = pics.list(row["id"])
+    if a.delete:
+        n = pics.delete(row["id"], a.fighter, a.costume)
+        print(f"deleted {n} profile picture(s) of {row['name']}")
+        return 0
+    for r in rows:
+        print(f"{row['name']}: {r['fighter']} costume {r['costume']}, {r['size']} bytes, "
+              f"{time.strftime('%Y-%m-%d %H:%M', time.gmtime(r['at']))} UTC, sha {r['sha'][:12]}")
+        if a.export:
+            os.makedirs(a.export, exist_ok=True)
+            with open(os.path.join(a.export, f"{row['id']}-{r['fighter']}-{r['costume']}.png"), "wb") as f:
+                f.write(pics.get(row["id"], r["fighter"], r["costume"])[1])
+    if not rows:
+        print(f"{row['name']} has no profile picture")
     return 0
 
 
@@ -543,6 +591,7 @@ def cmd_purge_inactive(a):
     n = st.purge_inactive_accounts(a.days, a.include_played)
     print(f"deleted {n} account(s) not seen for {a.days} days"
           + ("" if a.include_played else " that never finished a game"))
+    _pics_sweep(a, st)
     return 0
 
 
@@ -872,6 +921,12 @@ def main(argv=None):
     p = add("delete-user", cmd_delete_user, "delete an account")
     p.add_argument("name")
     p.add_argument("--yes", action="store_true")
+    p = add("pics", cmd_pics, "profile pictures: totals, or one account's (list, --export DIR, --delete)")
+    p.add_argument("name", nargs="?")
+    p.add_argument("--delete", action="store_true")
+    p.add_argument("--fighter")
+    p.add_argument("--costume", type=int)
+    p.add_argument("--export", metavar="DIR")
     add("purge-guests", cmd_purge_guests, "delete old guest-only match records").add_argument(
         "--days", type=float, default=30)
     p = add("purge-inactive", cmd_purge_inactive, "delete accounts not seen for a long time")

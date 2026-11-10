@@ -63,6 +63,7 @@ from .matchrules import MatchRulesMixin
 from .mmfilters import MatchFiltersMixin
 from .forget import ForgetMixin
 from .private_chat import PrivateChatMixin
+from .profile_pics import CAP as PIC_CAP, ProfilePicsMixin
 from .rematch import RematchMixin, VOTE_GRACE
 from .reports import CAP as REPORT_CAP, ReportsMixin
 from .rooms import Room, RoomsMixin  # noqa: F401 -- (Room: lobby.Room for tools and tests)
@@ -86,6 +87,7 @@ CAPS |= {"badges", "mentions", "ranked_chars", "casual_sets", "room_tables",
          "ingame_rematch_v1", "auto_skip_after_round_v1"}
 CAPS |= {"auto_skip_intro_v1"}  # 1.2.0: the game skips the fighters' intros by the fight line's rule (matchrules.py)
 CAPS |= {REPORT_CAP}           # 1.2.x: problem reports from the launcher (reports.py)
+CAPS |= {PIC_CAP}              # profile pictures of the customized fighter (profile_pics.py)
 QUEUE_MODES = ("quick", "ranked")
 # What this server supports beyond protocol 1's base (the client checks before using them).
 FEATURES = ["ranks", "sessions", "recovery", "passwd", "profile", "history", "chars", "integrity", "rematch",
@@ -627,7 +629,7 @@ class Conn:
 # =============================================================================== server
 
 class LobbyServer(PrivateChatMixin, SpectateMixin, RoomsMixin, CasualMixin, MatchRulesMixin, RematchMixin,
-                  MatchFiltersMixin, ForgetMixin, ReportsMixin):
+                  MatchFiltersMixin, ForgetMixin, ReportsMixin, ProfilePicsMixin):
     def __init__(self, cfg=None):
         self.cfg = cfg or Config.from_env()
         self.build_groups = BuildGroups(self.cfg.compat_groups)
@@ -663,6 +665,7 @@ class LobbyServer(PrivateChatMixin, SpectateMixin, RoomsMixin, CasualMixin, Matc
         self.chat_rate = KeyedBuckets(rate=1.0, burst=5)          # chat lines per player
         self._private_init()
         self._reports_init()       # problem reports from the launcher (reports.py)
+        self._pics_init()          # profile pictures (profile_pics.py)
         self._rooms_init()         # private rooms: the invite-code index, wrong-guess limits (rooms.py)
         self.bans = BanList()
         self.dirty = True
@@ -829,6 +832,8 @@ class LobbyServer(PrivateChatMixin, SpectateMixin, RoomsMixin, CasualMixin, Matc
             t.cancel()
         await asyncio.gather(*background, return_exceptions=True)
         self.udp.close()
+        if self.pics_on():
+            self._pics.close()
         self.store.close()
 
     # ------------------------------------------------------------------ operations: TLS, bans, names
@@ -1028,6 +1033,7 @@ class LobbyServer(PrivateChatMixin, SpectateMixin, RoomsMixin, CasualMixin, Matc
                        "invite_cancel", "private_mute", "mute"))
     STATE = STATE | {"netinfo"}          # (mmfilters.py)
     HEAVY = HEAVY | {"forget_me"}        # a password check (forget.py)
+    HEAVY = HEAVY | {"pic_get"}          # a profile picture (profile_pics.py; uploads have limits of their own)
 
     async def dispatch(self, conn, line):
         """Handle one line; False closes the connection."""
@@ -1125,7 +1131,8 @@ class LobbyServer(PrivateChatMixin, SpectateMixin, RoomsMixin, CasualMixin, Matc
                 "accounts": self.cfg.accounts, "guests": self.cfg.guests, "motd": self.cfg.motd,
                 "ip": conn.ip, "time": time.time(),
                 "features": [f for f in FEATURES if f != "private_chat" or self.cfg.private_chat]
-                + ([REPORT_CAP] if self.reports_on() else []),
+                + ([REPORT_CAP] if self.reports_on() else [])
+                + ([PIC_CAP] if self.pics_on() else []),
                 "tls": conn.writer.get_extra_info("ssl_object") is not None,
                 "ranked_guests": self.cfg.guest_ranked, "placement": self.cfg.placement,
                 "caps": sorted(conn.caps), "relay_only": self.cfg.force_relay,
@@ -1144,6 +1151,7 @@ class LobbyServer(PrivateChatMixin, SpectateMixin, RoomsMixin, CasualMixin, Matc
                 **({"room_limits": {"max_size": self.cfg.room_max_size, "next_seconds": self.cfg.room_next_seconds}}
                    if "private_rooms" in conn.caps else {}),
                 **self.reports_welcome(conn),         # problem reports: the largest zip this server takes
+                **self.pics_welcome(conn),            # profile pictures: the limits
                 **self._casual_welcome(conn)}          # the stages a launcher may offer for casual matches
 
     async def h_login(self, conn, msg):
@@ -1784,9 +1792,10 @@ class LobbyServer(PrivateChatMixin, SpectateMixin, RoomsMixin, CasualMixin, Matc
     async def h_profile(self, conn, msg):
         name = str(msg.get("name") or conn.player.name)
         return {"t": "profile", "profile": self._profile(name, int(msg.get("history", 10)), conn.player,
-                                                         ranked_chars="ranked_chars" in conn.caps)}
+                                                         ranked_chars="ranked_chars" in conn.caps,
+                                                         pics=PIC_CAP in conn.caps)}
 
-    def _profile(self, name, n_history=10, me=None, ranked_chars=False):
+    def _profile(self, name, n_history=10, me=None, ranked_chars=False, pics=False):
         online = self.by_name.get(name.lower())
         row = self.store.account(name) if proto.valid_name(name) else None
         if row is None:
@@ -1816,6 +1825,8 @@ class LobbyServer(PrivateChatMixin, SpectateMixin, RoomsMixin, CasualMixin, Matc
         if online is not None:
             d["status"] = online.status
         d["self"] = me is not None and me.account_id == aid
+        if pics and self.pics_on() and (me is None or me.account_id == aid or not self._pic_hidden_from(aid, me)):
+            d["pics"] = self._profile_pics(aid)       # what there is; the pictures themselves: pic_get
         if d["self"] or (me is not None and aid in me.friends):
             # When an account was last online is for its friends (their list says "last seen") and itself: since
             # 1.1.2 the Friends page makes that a friends-only thing, so a profile no longer tells it to everyone.
@@ -4958,6 +4969,7 @@ class LobbyServer(PrivateChatMixin, SpectateMixin, RoomsMixin, CasualMixin, Matc
                     self.udp.close_relay(mid)
             self._expire_long_relays()
             self._spec_tick()
+            self._pics_tick()
             self.ip_connects.prune()
             self.login_fail.prune()
             self.registrations.prune()

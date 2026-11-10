@@ -49,6 +49,8 @@ class ForgetMixin:
         c["friends"] = db._x("SELECT COUNT(*) FROM friends WHERE account_id = ?", (aid,)).fetchone()[0]
         c["sessions"] = db._x("SELECT COUNT(*) FROM sessions WHERE account_id = ?", (aid,)).fetchone()[0]
         c["blocks"] = db._x("SELECT COUNT(*) FROM blocks WHERE account_id = ?", (aid,)).fetchone()[0]
+        if self.pics_on():
+            c["pictures"] = len(self._pics.list(aid))
         return c
 
     async def h_forget_me(self, conn, msg):
@@ -81,6 +83,9 @@ class ForgetMixin:
         for inv in [i for i in self.invites.values() if p in (i.src, i.dst)]:
             self._end_invite(inv, "cancelled")
         counts = self.store.forget_account(aid) or {}
+        pictures = self.pics_forget(aid)                 # the profile pictures (profile_pics.py)
+        if pictures:
+            counts["pictures"] = pictures
         self._count("accounts_forgotten")
         log.info("account %s removed itself (Remove my data): %s", aid,
                  ", ".join(f"{k} {v}" for k, v in sorted(counts.items())))

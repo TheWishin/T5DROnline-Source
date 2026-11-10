@@ -167,6 +167,14 @@ class Config:
                                     # only in the server's env file, never in a client)
     report_webhook_max_kb: int = 8000  # T5L_REPORT_WEBHOOK_MAX_KB: the zip goes along up to this size (Discord without
                                     # boosts: 8 MB); a bigger one is posted without the file
+    # profile pictures (server/profile_pics.py, docs/ONLINE.md "Profile picture"): accounts only
+    profile_pics: bool = True       # T5L_PROFILE_PICS: keep and show them (0 = off: launchers take and send none)
+    pic_db: str = ""                # T5L_PIC_DB: their own database file; default: "<T5L_DB>-pics"
+    pic_max_kb: int = 200           # T5L_PIC_MAX_KB: largest picture taken (1 KB = 1000 bytes; never above 200)
+    pic_max: int = 9                # T5L_PIC_MAX: pictures per account (fighter x costume); the oldest goes for a new one
+    pic_total_mb: int = 1024        # T5L_PIC_TOTAL_MB: all pictures together; no new ones beyond it
+    pic_uploads_hour: int = 12      # T5L_PIC_UPLOADS_HOUR: new pictures an account may send per hour
+    pic_concurrent: int = 2         # T5L_PIC_CONCURRENT: pictures checked at the same time
     # friends and invites (docs/ONLINE.md "Friends and invites"): accounts only
     max_friends: int = 100          # T5L_MAX_FRIENDS: friends per account
     friend_requests_day: int = 20   # T5L_FRIEND_REQUESTS_DAY: friend requests an account may send per 24 h

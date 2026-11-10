@@ -859,10 +859,17 @@ class App(tk.Tk):
                         variable=self.training_all_var, command=self.save_settings).pack(anchor="w", pady=(4, 0))
         ttk.Checkbutton(tr, text=t("Also online (only your own inputs, no frame data)"),
                         variable=self.training_online_var, command=self.save_settings).pack(anchor="w")
+        # its own setting, also with the training overlay Off (T5_VS_OVERLAY, docs/TRAINING.md "Offline Versus")
+        self.vs_overlay_var = tk.BooleanVar(value=bool(self.settings.get("vs_overlay")))
+        ttk.Checkbutton(tr, text=t("Input display in offline Versus"),
+                        variable=self.vs_overlay_var, command=self.save_settings).pack(anchor="w")
         ttk.Label(tr, style="Muted.TLabel", wraplength=300, justify="left", text=t(
             "In Practice: your last inputs with how many frames each was held, and after each exchange the "
             "startup of the move and who can act first (+3, -12). F2 in the game switches it.")).pack(
             anchor="w", pady=(4, 0))
+        ttk.Label(tr, style="Muted.TLabel", wraplength=300, justify="left", text=t(
+            "Offline Versus: both players' inputs, with your own button names from controls.ini ([names]). "
+            "Never online. F2 in the game switches it.")).pack(anchor="w", pady=(4, 0))
 
         # Practice tools (T5_PRACTICE*, core.PRACTICE_DUMMY, docs/TRAINING.md): position resets, the
         # dummy's behaviour and 5 recording slots, with SELECT combos in Practice; offline only.
@@ -1842,6 +1849,7 @@ class App(tk.Tk):
             self.settings["training_pos"] = self.training_pos_var.get()
             self.settings["training_all"] = bool(self.training_all_var.get())
             self.settings["training_online"] = bool(self.training_online_var.get())
+            self.settings["vs_overlay"] = bool(self.vs_overlay_var.get())
         if hasattr(self, "practice_var"):
             self.settings["practice"] = bool(self.practice_var.get())
             label = self.practice_dummy_var.get()

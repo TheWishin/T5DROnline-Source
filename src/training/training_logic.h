@@ -77,7 +77,7 @@ struct Sample {
  * fighter sees it (6 = toward the opponent), buttons 1 2 3 4 as bits 0..3 in
  * the game's default button setting (1 = SQUARE, 2 = TRIANGLE, 3 = CROSS,
  * 4 = CIRCLE). Left + right together counts as neither. */
-struct Notation { uint8_t dir; uint8_t buttons; };
+struct Notation { uint8_t dir; uint16_t buttons; };   /* bits 4..11: the other buttons (button_names.h), when listed */
 inline Notation notation(uint16_t in, bool facing_left)
 {
     const bool up = in & kUp, down = in & kDown;
@@ -87,13 +87,13 @@ inline Notation notation(uint16_t in, bool facing_left)
     const int row = (up && !down) ? 2 : (down && !up) ? 0 : 1;
     Notation n;
     n.dir = (uint8_t)(row * 3 + col + 1);
-    n.buttons = (uint8_t)(((in & kSquare) ? 1 : 0) | ((in & kTriangle) ? 2 : 0) | ((in & kCross) ? 4 : 0) |
+    n.buttons = (uint16_t)(((in & kSquare) ? 1 : 0) | ((in & kTriangle) ? 2 : 0) | ((in & kCross) ? 4 : 0) |
                           ((in & kCircle) ? 8 : 0));
     return n;
 }
 
 /* "1+2", "3", "" */
-inline void buttons_text(uint8_t b, char* out, size_t n)
+inline void buttons_text(uint16_t b, char* out, size_t n)
 {
     size_t k = 0;
     for (int i = 0; i < 4 && k + 2 < n; i++)

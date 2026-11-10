@@ -15,6 +15,8 @@
  *   T5_TRAINING_ALL=1    also outside Practice (every offline fight)
  *   T5_TRAINING_ONLINE=1 also in online matches: this PC's own inputs only, no
  *                        frame data
+ *   T5_VS_OVERLAY=1      the input display in offline Versus too (never online, never in
+ *                        a replay): inputs only; F2 switches it off and on there
  *   T5_TRAINING_LANG     de | en (default: the Windows display language)
  *   T5_TRAINING_ROWS     input rows per player (4..24, default 14)
  *   T5_TRAINING_POS      top (default) | bottom: where the lists sit on the screen
@@ -37,6 +39,11 @@
  *                        guest ranges for that trace, page by page (research)
  * F2 (while the game window has the focus) cycles off / inputs / inputs and
  * frame data for this session.
+ *
+ * The buttons are listed under the player's own names when controls.ini has a
+ * [names] / [names1] / [names2] section (button_names.h), offline only. The
+ * eight buttons that are no attack button (L1..R3, START, SELECT) are read from
+ * the game's input ring -- guest memory, read only -- and listed once named.
  */
 #define WIN32_LEAN_AND_MEAN
 #include "../platform/t5_win.h"
@@ -48,6 +55,7 @@
 #include "ppu_recomp.h"     /* ppu_context, vm_base */
 #include "rsx_overlay.h"    /* ps3recomp patch 0045 */
 #include "training_logic.h"
+#include "button_names.h"
 #include "advantage_shadow_reader.h"
 #include "../platform/t5_addr.h"   /* T5A(): this program's address of a US address (EU Online) */
 
@@ -69,7 +77,9 @@ using namespace training;
 const uint32_t kPhase    = T5A(0x1008F070);   /* fight phase: 17 = the fight runs (round intros included) */
 const uint32_t kGameType = T5A(0x1008EBAC);   /* battle config +0: 0 arcade, 1 ghost, 2 demo, 4 VS, 9 survival, 10 practice */
 const uint32_t kFighter[2] = { T5A(0x10090030), T5A(0x10090900) };
-constexpr uint32_t kGtPractice = 10, kGtDemo = 2;
+constexpr uint32_t kGtPractice = 10, kGtDemo = 2, kGtVersus = 4;
+/* the game's input ring (t5_hooks.cpp): u16 P1[16], u16 P2[16] pad masks, then the write index. Read only here. */
+const uint32_t kRing = T5A(0x104CCDFC), kRingWriteIdx = T5A(0x104CCE3C);
 
 inline uint32_t rd32(uint32_t a) { uint32_t v; memcpy(&v, vm_base + a, 4); return _byteswap_ulong(v); }
 inline uint16_t rd16(uint32_t a) { uint16_t v; memcpy(&v, vm_base + a, 2); return _byteswap_ushort(v); }
@@ -105,6 +115,7 @@ enum Mode { kOff = 0, kInputs = 1, kFrames = 2 };
 struct Config {
     int  mode = kOff;
     bool all = false, online = false, de = false;
+    bool vs = false;            /* T5_VS_OVERLAY=1: the input display in offline Versus */
     int  rows = 14;
     bool bottom = false;        /* T5_TRAINING_POS=bottom */
     bool stats = false;
@@ -128,6 +139,7 @@ int parse_mode(const char* e)
 }
 
 void parse_trace_ranges(const char* p);   /* T5_TRAINING_TRACE_RANGES, below */
+void load_names();                        /* the players' own button names, below */
 
 void init()
 {
@@ -136,6 +148,8 @@ void init()
     const char* a = getenv("T5_TRAINING_ALL");
     const char* o = getenv("T5_TRAINING_ONLINE");
     g_cfg.all = a && *a == '1';
+    { const char* v = getenv("T5_VS_OVERLAY");
+      g_cfg.vs = v && (*v == '1' || !_stricmp(v, "on") || !_stricmp(v, "inputs")); }
     g_cfg.online = o && *o == '1';
     const char* l = getenv("T5_TRAINING_LANG");
     if (l && *l) g_cfg.de = !_strnicmp(l, "de", 2);
@@ -168,16 +182,69 @@ void init()
       g_cfg.online_game = (nm && *nm && !g_cfg.local_net) || (ctl && *ctl);
       const char* replay = getenv("T5_REPLAY_FILE");
       g_cfg.adv_offline = !(nm && *nm) && !(ctl && *ctl) && !(replay && *replay); }
+    /* a replay or a spectated match is no Versus of this PC's players */
+    { const char* nm = getenv("T5_NET_MODE"); const char* replay = getenv("T5_REPLAY_FILE");
+      if ((replay && *replay) || (nm && !_stricmp(nm, "replay"))) g_cfg.vs = false; }
     if (const char* f = getenv("T5_TRAINING_TRACE"); f && *f && t5game::us_only("training trace (T5_TRAINING_TRACE)")) {
         g_cfg.trace = fopen(f, "wb");
         parse_trace_ranges(getenv("T5_TRAINING_TRACE_RANGES"));
     }
-    if (g_cfg.mode != kOff || t5_practice_on()) rsx_overlay_prepare();
+    load_names();
+    if (g_cfg.mode != kOff || g_cfg.vs || t5_practice_on()) rsx_overlay_prepare();
+    if (g_cfg.vs) fprintf(stderr, "[training] input display in offline Versus (T5_VS_OVERLAY; F2 switches it)\n");
     if (g_cfg.mode != kOff) {
         fprintf(stderr, "[training] overlay: %s, %s%s %s of the screen (F2 switches it)\n",
                 g_cfg.mode == kFrames ? "inputs and frame data" : "inputs",
                 g_cfg.all ? "every offline fight" : "Practice",
                 g_cfg.online ? ", online: own inputs," : ",", g_cfg.bottom ? "bottom" : "top");
+    }
+}
+
+/* ---- the players' own button names (button_names.h) ---------------------------- */
+ButtonNames g_names;
+
+/* The controls.ini the runtime reads (pad_host_win32.c load_config): PS3_CONTROLS, else controls.ini next
+ * to the exe, else in the working directory. Read once, like the runtime does. */
+bool read_controls_ini(char* buf, size_t cap, size_t* len)
+{
+    auto slurp = [&](const char* path) {
+        FILE* f = fopen(path, "rb");
+        if (!f) return false;
+        *len = fread(buf, 1, cap, f);
+        fclose(f);
+        return true;
+    };
+    *len = 0;
+    const char* env = getenv("PS3_CONTROLS");
+    if (env && *env) return slurp(env);
+#if defined(_WIN32)
+    char exe[MAX_PATH * 2];
+    const DWORD n = GetModuleFileNameA(nullptr, exe, (DWORD)sizeof exe);
+    if (n && n + 16 < sizeof exe) {
+        if (char* slash = strrchr(exe, '\\')) {
+            strcpy(slash + 1, "controls.ini");
+            if (slurp(exe)) return true;
+        }
+    }
+#endif
+    return slurp("controls.ini");
+}
+
+void load_names()
+{
+    static char text[64 * 1024];
+    size_t len = 0;
+    if (!read_controls_ini(text, sizeof text, &len)) return;
+    parse_button_names(text, len, g_names);
+    for (int p = 0; p < 2; p++) {
+        if (!g_names.any_custom(p)) continue;
+        char line[kBtnCount * (kNameBytes + 8)];
+        size_t k = 0;
+        for (int b = 0; b < kBtnCount; b++)
+            if (g_names.custom[p][b])
+                k += (size_t)snprintf(line + k, sizeof line - k, " %s=%s", button_default_name(b), g_names.name[p][b]);
+        fprintf(stderr, "[training] player %d's button names (controls.ini):%s\n", p + 1, line);
+        if (g_cfg.log) { fprintf(g_cfg.log, "0 names P%d%s\n", p + 1, line); fflush(g_cfg.log); }
     }
 }
 
@@ -191,6 +258,8 @@ bool g_shown = false;           /* a list is published */
 bool g_boot_cover_shown = false; /* the plain online loading screen owns the overlay list */
 bool g_in_fight = false;
 int g_f2_mode = -1;             /* F2's choice for this session (-1: the setting) */
+int g_f2_vs = -1;               /* F2's choice in Versus on its own setting (-1: on) */
+bool g_named = false;           /* this frame's lists use the players' own names (offline) */
 bool g_f2_down = false;
 
 /* This path can only observe the existing live-frame hook. It has no guest
@@ -312,10 +381,13 @@ bool window_focused()
     return pid == GetCurrentProcessId();
 }
 
-void poll_hotkey()
+void poll_hotkey(bool versus_own)
 {
     const bool down = (GetAsyncKeyState(VK_F2) & 0x8000) != 0 && window_focused();
-    if (down && !g_f2_down) {
+    if (down && !g_f2_down && versus_own) {
+        g_f2_vs = g_f2_vs == 0 ? 1 : 0;
+        fprintf(stderr, "[training] F2: input display in Versus %s\n", g_f2_vs ? "on" : "off");
+    } else if (down && !g_f2_down) {
         const int cur = g_f2_mode >= 0 ? g_f2_mode : g_cfg.mode;
         g_f2_mode = (cur + 1) % 3;
         if (g_f2_mode != kOff) rsx_overlay_prepare();
@@ -326,7 +398,7 @@ void poll_hotkey()
 #else
 /* F2 needs the key state of the game's window: the Metal backend's keyboard is the
  * runtime's, so on a Mac the overlay follows T5_TRAINING alone. */
-void poll_hotkey() {}
+void poll_hotkey(bool) {}
 #endif
 
 /* ---- drawing ----------------------------------------------------------------- */
@@ -336,21 +408,39 @@ constexpr uint32_t kWhite = RSX_OVL_RGBA(240, 240, 240, 255), kGrey = RSX_OVL_RG
                    kYellow = RSX_OVL_RGBA(255, 214, 72, 255), kGreen = RSX_OVL_RGBA(96, 232, 96, 255),
                    kRed = RSX_OVL_RGBA(255, 96, 96, 255), kPanel = RSX_OVL_RGBA(0, 0, 0, 150);
 
-void draw_history(int p, float x, float y)
+/* the buttons of a row as drawn: under the player's own names offline, else 1 2 3 4 */
+constexpr size_t kRowText = kBtnCount * (kNameBytes + 1);
+void row_text(int p, uint16_t buttons, char* out, size_t n)
+{
+    if (g_named) buttons_named(buttons, g_names, p, out, n);
+    else buttons_text((uint16_t)(buttons & 15u), out, n);
+}
+
+/* right: x is the panel's right edge (P2), else its left edge */
+void draw_history(int p, float x, float y, bool right)
 {
     const History<24>& h = g_hist[p];
     const int rows = h.count < g_cfg.rows ? h.count : g_cfg.rows;
-    const float w = 156.0f;
+    float widest = 0;               /* the widest row's text, counted from the direction's column */
+    if (g_named)
+        for (int i = 0; i < rows; i++) {
+            char btn[kRowText];
+            row_text(p, h.rows[i].n.buttons, btn, sizeof btn);
+            const float tw = rsx_overlay_text_width(btn, kPx) - (h.rows[i].n.dir == 5 ? 18.0f : 0.0f);
+            if (tw > widest) widest = tw;
+        }
+    const float w = history_width(widest);
+    if (right) x -= w;
     const uint32_t accent = p == 0 ? RSX_OVL_RGBA(230, 60, 60, 255) : RSX_OVL_RGBA(70, 130, 255, 255);
     rsx_overlay_rect(x, y - 4, w, kRowH * (float)g_cfg.rows + 8, kPanel);
     rsx_overlay_rect(p == 0 ? x : x + w - 3, y - 4, 3, kRowH * (float)g_cfg.rows + 8, accent);
     for (int i = 0; i < rows; i++) {
         const HistoryRow& r = h.rows[i];
         const float ry = y + kRowH * (float)i;
-        char num[8], btn[12], dir[2] = { (char)r.n.dir, 0 };
+        char num[8], btn[kRowText], dir[2] = { (char)r.n.dir, 0 };
         if (r.frames > 999) snprintf(num, sizeof num, "999");
         else snprintf(num, sizeof num, "%u", r.frames);
-        buttons_text(r.n.buttons, btn, sizeof btn);
+        row_text(p, r.n.buttons, btn, sizeof btn);
         const uint32_t a = i == 0 ? 255u : (uint32_t)(255 - i * 8);
         const uint32_t fade = 0xFFFFFF00u;
         rsx_overlay_text(x + 48, ry, kPx, (kGrey & fade) | a, RSX_OVL_RIGHT | RSX_OVL_SHADOW, num);
@@ -410,8 +500,8 @@ void publish(int mode, bool show_p1, bool show_p2, bool frames, const char* stat
     const Layout lay = overlay_layout(g_cfg.bottom, g_cfg.rows, g_nresults, kRowH);
     rsx_overlay_begin();
     if (mode != kOff) {
-        if (show_p1) draw_history(0, 16.0f, lay.hist_y);
-        if (show_p2) draw_history(1, 1280.0f - 16.0f - 156.0f, lay.hist_y);
+        if (show_p1) draw_history(0, 16.0f, lay.hist_y, false);
+        if (show_p2) draw_history(1, 1280.0f - 16.0f, lay.hist_y, true);
         if (frames && mode == kFrames) draw_results(640.0f, lay.results_y);
     }
     if (status[0]) draw_status(status, lay.status_y);
@@ -598,7 +688,7 @@ extern "C" void t5_training_frame(ppu_context* ctx)
     if (g_boot_cover_shown) return;   /* cover also works with T5_TRAINING=off */
     if (!g_init) init();
     if (g_cfg.trace) trace_frame();
-    if (g_cfg.mode == kOff && g_f2_mode < 0 && !g_cfg.trace && !g_cfg.diagnostic && !t5_practice_on()) return;
+    if (g_cfg.mode == kOff && g_f2_mode < 0 && !g_cfg.vs && !g_cfg.trace && !g_cfg.diagnostic && !t5_practice_on()) return;
     /* T5_TRAINING_STATS: wall time and this thread's own CPU time (cycles, so a
      * busy PC preempting the thread does not count) */
     LARGE_INTEGER t0, t1;
@@ -634,15 +724,18 @@ extern "C" void t5_training_frame(ppu_context* ctx)
 /* true in a fight */
 static bool frame_body()
 {
-    poll_hotkey();
-    const int mode = g_f2_mode >= 0 ? g_f2_mode : g_cfg.mode;
-
     const uint32_t phase = rd32(kPhase), gt = rd32(kGameType);
     /* Preserve the existing query's short circuit: np::enabled() can initialise
      * the netplay subsystem. Shadow-eligible launches always take this query;
      * launches which skip it are independently excluded by shadow_allowed. */
     const bool netplay = !g_cfg.local_net && !g_cfg.online_game && t5_netplay_enabled() != 0;
     const bool online = !g_cfg.local_net && !t5_df_offline_practice() && (g_cfg.online_game || netplay);
+    /* Versus on its own setting (T5_VS_OVERLAY), offline only: F2 switches that one there. An online
+     * match, a replay and a spectated match are never "Versus on this PC". */
+    const bool versus_own = !online && phase == 17 &&
+                            versus_own_display(gt == kGtVersus, g_cfg.vs, g_cfg.all, g_cfg.mode);
+    poll_hotkey(versus_own);
+    const int mode = g_f2_mode >= 0 ? g_f2_mode : g_cfg.mode;
     const bool fight = phase == 17 && gt != kGtDemo;
     if (!fight) {
         shadow_reset("outside-fight");
@@ -682,14 +775,30 @@ static bool frame_body()
     /* the history and the tracker always run in a fight, so F2 shows a full list;
      * online only this PC's own player is followed at all */
     const int me = online ? t5_netplay_local_slot() : -1;
+    /* the players' own button names: offline only (online the list stays 1 2 3 4, as before) */
+    g_named = !online && (g_names.any_custom(0) || g_names.any_custom(1));
+    /* the pad masks of the frame that just ran, from the game's input ring (read only): the buttons
+     * that are no attack button, for the players who named them */
+    uint16_t pad[2] = { 0, 0 };
+    if (g_named && (g_names.extras(0) | g_names.extras(1))) {
+        const uint32_t slot = ((rd32(kRingWriteIdx) - 1u) & 15u) * 2u;
+        pad[0] = rd16(kRing + slot);
+        pad[1] = rd16(kRing + 0x20 + slot);
+    }
     for (int p = 0; p < 2; p++) {
         if (online && p != me) continue;
-        const Notation n = notation(s[p].input, s[p].right);
+        Notation n = notation(s[p].input, s[p].right);
+        if (g_named) n.buttons = (uint16_t)(n.buttons | (pad_extras(pad[p]) & g_names.extras(p)));
         g_hist[p].push(n);
         if (g_cfg.log && g_hist[p].rows[0].frames == 1) {   /* a new row */
             char b[12];
             buttons_text(n.buttons, b, sizeof b);
             fprintf(g_cfg.log, "%llu input P%d %d%s%s\n", (unsigned long long)g_live, p + 1, n.dir, b[0] ? "+" : "", b);
+            if (g_named && n.buttons) {                     /* ... and as it is drawn */
+                char t[kRowText];
+                row_text(p, n.buttons, t, sizeof t);
+                fprintf(g_cfg.log, "%llu drawn P%d %d %s\n", (unsigned long long)g_live, p + 1, n.dir, t);
+            }
         }
     }
     if (!online) {
@@ -716,19 +825,22 @@ static bool frame_body()
 
     bool show = mode != kOff;
     bool p1 = true, p2 = true, frames = true;
+    int shown_mode = mode;
     if (online) {
         show = show && g_cfg.online;
         p1 = me == 0;
         p2 = me == 1;
         frames = false;
-    } else if (gt != kGtPractice && !g_cfg.all) {
-        show = false;
+    } else {
+        shown_mode = offline_show(gt == kGtPractice, g_cfg.all, g_cfg.mode, mode, gt == kGtVersus, g_cfg.vs, g_f2_vs);
+        show = shown_mode != kOff;
+        if (versus_own) frames = false;      /* Versus on its own setting: the inputs, never frame data */
     }
     /* the practice tools' status line (practice.cpp; offline Practice only) */
     char status[96] = "";
     if (!online && gt == kGtPractice) t5_practice_status(status, sizeof status, g_cfg.de ? 1 : 0);
     const bool menu = !online && gt == kGtPractice && t5_practice_menu_open();
-    if (show || status[0] || menu) publish(show ? mode : kOff, p1, p2, frames, status);
+    if (show || status[0] || menu) publish(show ? shown_mode : kOff, p1, p2, frames, status);
     else hide();
     return true;
 }

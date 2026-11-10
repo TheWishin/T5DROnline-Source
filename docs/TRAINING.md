@@ -36,6 +36,7 @@ Launcher: **Settings -> Training overlay** (German: *Trainings-Anzeige*).
 | Also in the other offline modes | Arcade, Versus, Survival, Ghost too, not only Practice | `T5_TRAINING_ALL=1` |
 | Also online | in online matches: only this PC's own inputs, no frame data | `T5_TRAINING_ONLINE=1` |
 | Position: Top / Bottom | where the lists sit on the picture (1.1.9); Top is the default | `T5_TRAINING_POS=top\|bottom` |
+| Input display in offline Versus (off by default) | both players' inputs in offline Versus, also with the overlay Off; see "Offline Versus" | `T5_VS_OVERLAY=1` |
 
 By default it is shown in **Practice** only. Online it is off unless "Also
 online" is ticked, and then it shows nothing about the opponent: no inputs
@@ -89,6 +90,64 @@ Button numbers are the game's default button setting (1 = Square, 2 =
 Triangle, 3 = Cross, 4 = Circle; keyboard A S Z X). The display shows the
 pad buttons that were pressed: if the button layout was changed in the game's
 own Options menu, Square still shows as 1 even if it is a kick there.
+
+## Offline Versus
+
+**Settings -> Training overlay -> Input display in offline Versus** (off by
+default; `vs_overlay` in `launcher.json`, `T5_VS_OVERLAY=1`) shows the input
+display in **offline Versus**: P1's list at the left edge, P2's at the right,
+each with how many frames an input was held -- like the input history of
+modern Tekken, for two players at one PC. It is its own setting: it works with
+the training overlay Off, shows the inputs only (no frame data), and only in
+Versus (not Arcade, Survival, ...; "Also in the other offline modes" is the
+setting for those, and when that one is on, it decides in Versus too, frame
+data included). **F2** switches it off and on for the session. Position and
+rows are the training overlay's (`T5_TRAINING_POS`, `T5_TRAINING_ROWS`).
+
+It is never shown online, in a replay or while spectating: the game decides
+that itself (the same `online` rule as the frame data), whatever the launcher
+sends. Like the rest of the overlay it only reads the game ("The overlay never
+changes the game").
+
+## Your own button names
+
+By default the lists call the attack buttons 1 2 3 4. A `[names]` section in
+`controls.ini` (the file the bindings are in; sample: `docs/controls.ini`)
+gives them your own names, for the training overlay in Practice and the input
+display in offline Versus:
+
+```ini
+[names]          ; both players
+1 = LP
+2 = RP
+3 = LK
+4 = RK
+[names1]         ; player 1 only: wins over [names]
+L1 = TAG
+[names2]         ; player 2 only
+1 = PUNCH
+```
+
+- Targets are the binding names: `1 2 3 4` (or `LP RP LK RK`, or `SQUARE
+  TRIANGLE CROSS CIRCLE`), `L1 R1 L2 R2 L3 R3 START SELECT`.
+- A name has at most 8 characters; `"quotes"` keep blanks; an empty name is
+  the default again. The file's usual rules apply (`;` comments, names
+  case-insensitive, the last of a repeated key, the first of a repeated
+  section).
+- Pressed together they are joined with `+`: `LP+RK`. The panel grows with the
+  longest row (156 to 372 of the picture's 1,280 units).
+- The eight buttons that are no attack button are **not listed until they have
+  a name**. A named one shows when it is held, alone (`TAG`) or with the
+  others (`LP+TAG`). They come from the pad as the game read it in that frame
+  (its input ring, read only); the attack buttons, as always, from what the
+  fighter read.
+- The names are text on this PC's picture only. Online the list stays 1 2 3 4
+  (the names are not used in a fight that is online).
+
+The game logs the names it read: `[training] player 1's button names
+(controls.ini): 1=LP 2=RP 3=LK 4=RK L1=TAG`. The Controls window does not edit
+them yet: write them into `controls.ini` by hand (the window keeps sections it
+does not know).
 
 ## Practice tools (1.1.5)
 
@@ -580,6 +639,26 @@ Issue #30 Practice regression (requires a real build and game; not yet run):
 - Checked in the game: `python tools/training_check.py` (jabs, as before) and
   `python tools/training_check.py --moves` (the three cases above in local
   lockstep with the real game; the 1.1.7 game fails it, this one passes).
+
+### Offline Versus and button names
+
+- `tests/test_vs_overlay.py` + `tests/c/button_names_test.cpp`: `controls.ini`
+  text -> names (targets, `[names]` / `[names1]` / `[names2]`, the ini rules,
+  the 8-character limit, UTF-8), the defaults when nothing is named (1 2 3 4,
+  no other button listed), the other buttons' bits of the pad mask, a row's
+  text, the panel's width, who gets the display in which offline mode (Versus
+  off by default; inputs only; F2); the game side's rules (offline only, never
+  a replay, the input ring only read); the launcher's setting and its texts in
+  all six catalogs.
+- `python tools/vs_overlay_check.py --exe <t5dr.exe> --vfs <vfs>` checks it in
+  the game: a scripted Versus on this PC with `T5_VS_OVERLAY=1`, the training
+  overlay Off and a `controls.ini` with names -- shown for both players in game
+  type 4, every press listed under its player's name (`LP`, `LP+RP`, `Tag`,
+  P2's `Punch`; P2's unnamed L1 not at all), a read-back of the window with the
+  two panels; the same game with everything off shows nothing and has **the
+  same state hash in every frame** (1,183 frames compared, 0 different); a
+  file without names lists 1 2 3 4; and a Versus with no netplay code at all
+  (pads from `PS3_PAD_FILE`) shows it too.
 
 ## Limits
 

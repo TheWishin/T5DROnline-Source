@@ -784,6 +784,11 @@ MESSAGES = {
         "Spieler verschieden wählen.",
     "Training overlay": "Trainings-Anzeige",
     "Also in the other offline modes (Arcade, Versus, ...)": "Auch in den anderen Offline-Modi (Arcade, Versus, ...)",
+    "Input display in offline Versus": "Eingabe-Anzeige im Offline-Versus",
+    "Offline Versus: both players' inputs, with your own button names from controls.ini ([names]). "
+    "Never online. F2 in the game switches it.":
+        "Offline-Versus: die Eingaben beider Spieler, mit deinen eigenen Tastennamen aus controls.ini "
+        "([names]). Nie online. F2 im Spiel schaltet sie um.",
     "Position:": "Position:",
     "Top": "Oben",
     "Bottom": "Unten",

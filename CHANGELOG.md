@@ -3,6 +3,16 @@
 All notable changes, newest first. The project is a test release. Short commit hashes are in parentheses. The state of each
 part is in the README's status table.
 
+## Unreleased
+
+### Offline
+- **Input display in offline Versus** (Settings -> Training overlay -> "Input display in offline Versus", off by
+  default; F2 in the game switches it): both players' inputs with how long each was held, as in Practice, without
+  frame data. Never online, never in a replay.
+- **Your own button names in the input display**: a `[names]` section in `controls.ini` (`[names1]` / `[names2]` per
+  player) renames 1 2 3 4 (`1 = LP`) and lists L1 R1 L2 R2 L3 R3 START SELECT once they have a name (`L1 = TAG`), in
+  Practice and offline Versus. Text on the picture only; nothing in the game changes (docs/TRAINING.md).
+
 ## v1.2.2 (2026-11-07)
 
 **A fix release for 1.2.1: the music no longer sticks on one stage's theme for a whole set, no more doubled

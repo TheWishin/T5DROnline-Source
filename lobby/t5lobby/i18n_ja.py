@@ -740,6 +740,11 @@ MESSAGES = {
         "。変わるのは自分の画面だけなので、オンラインでも各プレイヤーが別々に選べます。",
     "Training overlay": "トレーニング表示",
     "Also in the other offline modes (Arcade, Versus, ...)": "他のオフラインモードでも表示（Arcade、Versus など）",
+    "Input display in offline Versus": "オフラインVersusで入力表示",
+    "Offline Versus: both players' inputs, with your own button names from controls.ini ([names]). "
+    "Never online. F2 in the game switches it.":
+        "オフラインVersus：両プレイヤーの入力を、controls.ini（[names]）で付けた自分のボタン名で表示しま"
+        "す。オンラインでは表示されません。ゲーム内のF2で切り替えます。",
     "Position:": "位置:",
     "Top": "上",
     "Bottom": "下",

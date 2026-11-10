@@ -9,6 +9,8 @@ SELECT+3 after walking away, the four wall resets (each followed by SELECT+3), t
 recording played once and in a loop, and SELECT+3 right after a launcher. The practice log must show
 
     the fighters 2000 apart at the round start; every reset still in place 30 frames later;
+    every SELECT+3 put the round's first state back (1.2.3; --places: the reset that moves the places only,
+    T5_PRACTICE_STATE=0, which waits until both stand after a launcher);
     a wall found for every wall reset, the other fighter 1100 in front of it, facing each other;
     the slot recorded, played and looped; the dummy's behaviours cycled (nine since 1.2.1);
     a reset pressed while the dummy is in the air (after df+2) waits until both stand, then holds.
@@ -113,7 +115,7 @@ def drive(g):
     g.shot("after-launcher-reset", expect="any", settle=0.5)
 
 
-def check(log_lines):
+def check(log_lines, want_state=True):
     ok = True
     places = [m.groups() for m in (PLACE.match(ln) for ln in log_lines) if m]
     print(f"{len(log_lines)} log lines, {len(places)} with places")
@@ -129,7 +131,13 @@ def check(log_lines):
     good(start and abs(math.hypot(xyz(start[0])[0] - xyz(start[0])[3], xyz(start[0])[1] - xyz(start[0])[4]) - 2000) < 50,
          "round start: the fighters 2000 apart" + (f" ({xyz(start[0])})" if start else ""))
     s = xyz(start[0]) if start else None
-    resets = [i for i, p in enumerate(places) if p[1] == "reset round start:"]
+    state = any(" the round's first state kept" in ln for ln in log_lines)
+    good(state == want_state, "the round's first state " + ("kept" if state else "not kept") +
+         (" (as wanted)" if state == want_state else " -- not as wanted"))
+    reset_line = "state restored:" if state else "reset round start:"
+    resets = [i for i, p in enumerate(places) if p[1] == reset_line]
+    # (a wall reset puts the state back first: its line is followed by the wall's probe)
+    resets = [i for i in resets if i + 1 >= len(places) or places[i + 1][1] != "wall probe from:"]
     later = [i for i, p in enumerate(places) if p[1] == "30 frames later:" or p[1] == "after the turn, back to:"]
     good(len(resets) >= 5, f"{len(resets)} round-start resets (want 5)")
     # the places are checked while the dummy stands (later on it walks, sidesteps, plays a recording)
@@ -145,7 +153,26 @@ def check(log_lines):
     # (the last waiting reset: the crouching / blocking dummy earlier on waits a few frames too)
     waits = [i for i, ln in enumerate(log_lines) if " reset waits until both stand:" in ln]
     wait_at = waits[-1] if waits else None
-    if wait_at is None:
+    if state:
+        # the state reset does not wait: the last one came with the dummy in the air (its base above the floor in
+        # the "before reset:" line), and 30 frames later both stand at the round's first places
+        good(not waits, f"no reset waited for the fighters to stand ({len(waits)} did)")
+        before = [i for i, ln in enumerate(log_lines) if " before reset: " in ln]
+        m = re.search(r" dummy y (-?[\d.]+) hips (-?[\d.]+) move (\w+)", log_lines[before[-1]]) if before else None
+        good(m and (float(m.group(1)) > 50 or not m.group(3).startswith("8001")),
+             "the last reset came while the dummy was hit" + (f" (y {m.group(1)}, move {m.group(3)})" if m else ""))
+        rest = log_lines[before[-1]:] if before else []
+        later_s = next((ln for ln in rest if re.match(r"^\d+ after reset: ", ln) and
+                        re.search(r" P1 y \S+ hips \S+ move 8001\w+ .* dummy y \S+ hips \S+ move 8001\w+ ", ln)), "")
+        good(later_s, "after it both stand (move 8001)")
+        a_p = next((m.groups() for m in (PLACE.match(ln) for ln in rest) if m and m.group(2) == "30 frames later:"), None)
+        if s and a_p:
+            a = xyz(a_p)
+            good(abs(a[0] - s[0]) < 1 and abs(a[1] - s[1]) < 1 and abs(a[3] - s[3]) < 1 and abs(a[4] - s[4]) < 1,
+                 f"30 frames after it: P1 ({a[0]:.0f}, {a[1]:.0f}) dummy ({a[3]:.0f}, {a[4]:.0f})")
+        else:
+            good(False, "no places 30 frames after the last reset")
+    elif wait_at is None:
         good(False, "a reset pressed with the dummy in the air waited for both to stand (no 'reset waits' line: did "
                     "the launcher hit?)")
     else:
@@ -256,6 +283,8 @@ def main():
     ap.add_argument("--root", default=None, help="the build's output root with game/vfs (build_game.py --out)")
     ap.add_argument("--out", default="", help="working directory (default: a temporary one)")
     ap.add_argument("--keep", action="store_true", help="keep the working directory")
+    ap.add_argument("--places", action="store_true",
+                    help="the reset that moves the places only (T5_PRACTICE_STATE=0), as before 1.2.3")
     ap.add_argument("--adv-compare", action="store_true",
                     help="also the experimental advantage comparison (T5_TRAINING_ADV_COMPARE=1): fails closed")
     a = ap.parse_args()
@@ -268,6 +297,8 @@ def main():
     tlog = os.path.join(out, "training.log")
     if a.adv_compare:
         env.update(T5_TRAINING_ADV_COMPARE="1", T5_TRAINING_LOG=tlog)
+    if a.places:
+        env["T5_PRACTICE_STATE"] = "0"
     g = Game(out, exe=exe, root=root, env=env)   # frame dumps: the menu driver finds the fight HUD in them
     ok = False
     try:
@@ -283,7 +314,7 @@ def main():
         g.stop()
     if os.path.exists(log):
         with open(log, encoding="utf-8", errors="replace") as f:
-            ok = check(f.read().splitlines())
+            ok = check(f.read().splitlines(), want_state=not a.places)
     else:
         print("no practice log: the game did not reach the fight, or T5_PRACTICE did not take")
     if a.adv_compare:

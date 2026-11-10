@@ -220,6 +220,35 @@ inline bool restart_places(Restart r, bool switched, const Place start[2], const
     out[1] = src[switched ? 0 : 1];
     return true;
 }
+/* T5_PRACTICE_STATE_TEST (tools/practice_state_check.py): P1's pad for frame f after the round's first state
+ * was kept or put back -- the same after every reset, so the frames after a reset can be compared with the
+ * first ones. Walks in, then 16-frame pieces picked by a hash of their number: steps, sidesteps, attacks, a
+ * throw, a launcher. right: P1 stands on the right (forward is LEFT). */
+inline uint16_t test_script(uint32_t f, bool right)
+{
+    const uint16_t fwd = right ? 0x8000 : 0x2000, back = right ? 0x2000 : 0x8000;   /* training_logic.h kLeft / kRight */
+    constexpr uint16_t up = 0x1000, down = 0x4000, tri = 0x10, cir = 0x20, cro = 0x40, squ = 0x80;
+    if (f < 30) return 0;
+    if (f < 90) return fwd;
+    const uint32_t piece = (f - 90) / 16, at = (f - 90) % 16;
+    uint32_t h = piece * 0x9E3779B9u + 0x7F4A7C15u;
+    h ^= h >> 15; h *= 0x2C1B3C6Du; h ^= h >> 12;
+    const bool tap = at < 3;
+    switch (h % 12) {
+    case 0: return fwd;
+    case 1: return at < 10 ? back : 0;
+    case 2: return tap ? up : 0;
+    case 3: return tap ? down : 0;
+    case 4: return tap ? squ : 0;
+    case 5: return tap ? tri : 0;
+    case 6: return tap ? cro : 0;
+    case 7: return tap ? cir : 0;
+    case 8: return tap ? (uint16_t)(tri | cir) : 0;
+    case 9: return at < 4 ? (uint16_t)(down | fwd | (at >= 1 ? tri : 0)) : 0;
+    case 10: return at < 8 ? fwd : (at < 11 ? squ : 0);
+    default: return 0;
+    }
+}
 inline PAction restart_action(Restart r)
 {
     switch (r) {

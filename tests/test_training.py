@@ -200,6 +200,35 @@ class PracticeGateTest(unittest.TestCase):
             with open(os.path.join(TRAINING, "practice.cpp"), encoding="utf-8") as f:
                 self.assertIn(env, f.read())
 
+    def test_state_reset_only_in_an_offline_game(self):
+        """The reset that puts the round's first state back (1.2.3): asked for at one place, the offline frame of a
+        game started for offline play, and refused by t5_practice_state() anywhere else."""
+        hooks = code_only(self.hooks)
+        calls = [ln.strip() for ln in hooks.splitlines() if "t5_practice_boundary(" in ln and "extern" not in ln]
+        self.assertEqual(calls, ["t5_practice_boundary();"])
+        frame = hooks.split("void offline_frame(ppu_context* ctx)")[1].split("\n}\n")[0]
+        self.assertRegex(frame, r"if \(g_offline\) \{\s*g_practice_ctx = ctx;\s*t5_practice_boundary\(\);\s*"
+                                r"g_practice_ctx = nullptr;\s*\}\s*(if \(g_lat_log_on\)[^;]*;\s*)?keyread_tick\(\);")
+        self.assertEqual(hooks.count("g_practice_ctx = ctx;"), 1)
+        fn = hooks.split("int t5_practice_state(int op)")[1].split("\n}\n")[0]
+        guard = fn.split("rb::state_capture")[0].split("rb::state_restore")[0]
+        for need in ("!g_offline", "g_persistent", "np::enabled()", "np::replaying()", "rp::recording()",
+                     "rb::net::bypass()", "!ctx", "ctx->thread_id != g_main_tid"):
+            self.assertIn(need, guard)
+        self.assertIn("return -1;", guard)
+        self.assertLess(fn.index("practice_parked()"), fn.index("rb::state_capture"))
+        # the state functions of rb_state.cpp have these two users: a replay's seek and the practice reset
+        self.assertEqual(hooks.count("rb::state_restore("), 2)
+        self.assertEqual(hooks.count("rb::state_capture("), 2)
+        # practice.cpp: only its boundary asks to keep / put back, behind the gate
+        self.assertEqual(len(re.findall(r"t5_practice_state\((?:1|2)\)", self.src)), 2)
+        boundary = self.src.split("void t5_practice_boundary(void)")[1].split("\n}\n")[0]
+        self.assertEqual(len(re.findall(r"t5_practice_state\((?:1|2)\)", boundary)), 2)
+        self.assertLess(boundary.index("if (!allowed())"), boundary.index("t5_practice_state(1)"))
+        self.assertNotRegex(boundary.split("if (!allowed())")[0], r"\bput\w*\(|t5_practice_state\(")
+        with open(os.path.join(TRAINING, "practice.cpp"), encoding="utf-8") as f:
+            self.assertIn('getenv("T5_PRACTICE_STATE")', f.read())
+
     def test_no_calls_into_the_game(self):
         self.assertNotRegex(self.src, r"ppu_guest_call|gcall\s*\(|g_lv2_syscalls|ps3_hle_register")
 

@@ -158,7 +158,7 @@ combo never makes P1 attack, walk or open the menu.
 
 | Combo | What it does |
 |---|---|
-| SELECT + 3 | both fighters back to where the fight started (1.2.1: to the menu's RESTART AT) |
+| SELECT + 3 | the round starts again: both fighters, their sides, facing, health and the camera as in the fight's first frame (1.2.3; 1.2.1: then on to the menu's RESTART AT) |
 | SELECT + f+3 | the dummy against the wall in front of you, you right in front of it |
 | SELECT + b+3 | the dummy against the wall behind you, you in front of it (you switch sides) |
 | SELECT + df+3 | you against the wall in front of you, the dummy in front of you (you switch sides) |
@@ -169,6 +169,13 @@ combo never makes P1 attack, walk or open the menu.
 | SELECT, tap up / down | the next / previous slot (8 slots since 1.2.1, 5 before) |
 | SELECT + START | remember both fighters' places: the restart goes there (1.2.1) |
 | SELECT, tap forward / back | what the dummy does: as set in the game's Practice menu, blocks after the first hit, crouches, walks forward and back, sidesteps (1.2.1: and the movement loops, see "Practice menu") |
+
+Since 1.2.3 the resets put the **round's first state** back (see "The reset
+is the round's first state" below): they come at once, whatever the fighters
+do, and nothing of the fight before them is left. What follows describes the
+reset that only moves the fighters, which is still what a game started from
+the launcher's Online tab does while it waits for an opponent, and
+`T5_PRACTICE_STATE=0`.
 
 The resets (SELECT + 3 and the four wall resets) happen when both fighters
 stand (1.2.0, player report "after a launcher the opponent keeps flying /
@@ -200,7 +207,8 @@ Off.
 
 Launcher: **Settings -> Practice tools** (German: *Trainingswerkzeuge*):
 SELECT combos on or off (default on), the dummy's behaviour at the start, a
-short help text. Environment: `T5_PRACTICE=1`, `T5_PRACTICE_DUMMY=game|block|
+short help text. Environment: `T5_PRACTICE=1`, `T5_PRACTICE_STATE=0` (the reset moves the places only, as before
+1.2.3), `T5_PRACTICE_DUMMY=game|block|
 crouch|walk|step|dash|backdash|kbd|wavedash`, `T5_PRACTICE_MENU`, `T5_PRACTICE_DIR` (see "Practice menu"), `T5_PRACTICE_LOG=<file>` (one line per action and the
 places of both fighters; `tools/practice_check.py` reads it).
 
@@ -282,6 +290,89 @@ frame:
 
 `tests/test_training.py` checks these gates in the source. Online matches
 run the code they ran before: CODE_VERSION is unchanged.
+
+### The reset is the round's first state (1.2.3)
+
+Player reports on 1.2.2: SELECT + 3 "takes the fighters' current positions and
+moves them near the starting area", "sometimes the sides flip", "they get
+stuck off the axis until I restart the game". Reproduced with a scripted pad
+(`tools/practice_state_check.py --places`, 17 resets): the places came back,
+but after sidesteps or a throw the game's own side flags stayed flipped (P1
+"on the right" at the left place: forward and back swapped, and it stayed so
+for every later reset), the thrown dummy ended 330 units off its place and a
+fighter stood up to 1.0 rad off the line between the two. A reset that writes
+places cannot put back what it does not know: the camera, the sides, the move
+a fighter is in, the axis.
+
+So the reset no longer writes places. At the first frame of the fight, before
+any input has reached it, the game keeps its **state** -- the same memory a
+rollback restores and a replay's seek puts back (`rb_state.cpp`
+`state_capture` / `state_restore`: program data, the game's heap, the main
+thread's stack and TLS; not the sound core, the GCM ring, the file manager or
+the music stream, which belong to other threads), with the random generators'
+host side, the main thread's registers and the async reader's token count. A
+reset puts all of it back at the top of the next frame, before that frame's
+pads are read: fighters, sides, facing, health, camera, round state, random
+numbers and the frame clock are those of the first frame. About 98 MB of
+memory while Practice runs, 6-8 ms for a reset; forgotten when the fight is
+left.
+
+- **Where**: `t5_hooks.cpp` `t5_practice_state()` (keep / put back / forget),
+  called by `practice.cpp` `t5_practice_boundary()`, which only the offline
+  frame of a game started for offline play calls (`g_offline`: no
+  `T5_NET_MODE`, no `T5_CTL_DIR`, no replay). `t5_practice_state()` refuses
+  everything else again by itself (netplay on, a replay, a recording, a
+  re-simulated frame, a persistent game, another thread). Online matches, the
+  persistent game of the Online tab, replays and spectating never reach it:
+  their code path is unchanged (CODE_VERSION unchanged; `tests/test_training.py`
+  `test_state_reset_only_in_an_offline_game`).
+- **When it is safe**: as for a replay's seek, the state is copied only while
+  the loaders (semaphores 8 and 10), the async reader, the geometry manager
+  and the draw manager are parked (waited for up to 50 ms, else tried again at
+  the next frame; after 120 frames the reset moves the places as before and
+  the log says so) and the GCM pump is held.
+- **The game's own mode state**: Practice stays the mode it was -- the mode
+  manager, the scene and its tasks are part of the state and are the same
+  objects as at the round's start (nothing is created or freed between a
+  round's first frame and a reset that the state does not cover: the main
+  thread opens no file and makes no kernel object in a fight, ROLLBACK.md 32).
+  The boot-state copy of the persistent game (DIRECTFIGHT.md "After a session
+  ends") is not involved: a persistent game does not use this reset.
+- **What is carried over**: what the player set in the game's own pause
+  menu since the round started -- MODE SELECT, TRAINING DUMMY, COUNTER
+  ATTACK, COMMAND CAPTURE, ATTACK DATA, HIT ANALYSIS and the menu's cursor.
+  The menu's values are the words at 0x1008EFF0.. (a second set at
+  0x1008F000) and the game acts on copies among the mode's settings at
+  0x1008EBF0.. (+4 the mode: 0 FREESTYLE, 1 VS CPU TRAINING; +0xC the cursor;
+  0x1008EC0F, 0x1008EC33, 0x1008EC63 / 67). The fight does not run while that
+  menu is open, so every word of 0x1008EBF0..0x1008EC80 and
+  0x1008EFE0..0x1008F010 that differs when the menu closes from what it was
+  when it opened is the menu's doing; those words are written again after
+  each reset (checked in the game: COUNTER ATTACK and HIT ANALYSIS switched
+  on, VS CPU TRAINING chosen -- the menu shows them after a reset). And
+  everything the practice tools keep on the host (their menu's settings, the
+  slots, a running recording or playback).
+- **RESTART AT, sides switched, back turned, the wall resets**: the state
+  first, then the places as before -- from two standing fighters, so nothing
+  waits and no move is cut.
+- **Sound**: sounds that play at the reset play to their end (the sound
+  system is not part of the state, as under rollback); the music goes on.
+
+Checked in the game (`tools/practice_state_check.py`, Lili vs Lili on the
+menu's first stage): 17 resets -- after walking away, sidesteps to both sides,
+both throws, a walk around the dummy, a launcher (reset in the air) and ten in
+a row -- each put both fighters at their first places to a unit, on their
+first sides, facing each other, standing; and with `T5_PRACTICE_STATE_TEST`
+(a scripted P1 for 1,800 frames, three resets; the state is kept once the
+harness has let go of the pad, because the hash covers the pads' own blocks)
+every frame after a reset had the gameplay hash the same frame had in the
+fresh round (5,403 frames, 0 different). `tools/practice_check.py` and
+`tools/practice_menu_check.py` pass with it (wall resets, sides switched,
+back turned, the remembered place).
+
+Known, older than this and not changed by it: with ATTACK DATA on TYPE 2 the
+byte the practice tools take for "the fight runs" (0x1008F083) stays 0, so
+the SELECT combos and the START menu do nothing until it is TYPE 1 again.
 
 ### How it works
 

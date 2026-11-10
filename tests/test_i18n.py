@@ -62,6 +62,7 @@ DEV_ONLY = {
     "login timeout", "idle timeout", "malformed message", "line too long", "hello first", "log in first",
     "unknown message X", "bad field: X", "bad field: name", "mode is quick or ranked", "winner is 0 (P1), 1 (P2) or null (draw)",
     "score is [P1 rounds, P2 rounds]", "chars is [P1 fighter, P2 fighter]", "costumes is [P1 button, P2 button]",
+    "costume is a confirm button 1-4 (0 = the default)",
     "fps is a number", "fps out of range",
     "unknown character X", "kind is casual or room",
     # problem reports (server/reports.py): the launcher's report connection never logs in

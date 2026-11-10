@@ -81,7 +81,7 @@ from .match_driver import MatchDriver, fps_from_logs, game_files, game_supports_
     game_supports_auto_skip_intro
 from .proto import DEFAULT_PORT, LobbyError
 from . import theme, tk_casual, tk_challenges, tk_rooms, tk_rules, tk_spectate, tk_tour, tk_views, tklist, winfront
-from . import tk_forget, tk_search
+from . import tk_costume, tk_forget, tk_search
 from .tk_private_chat import PrivateChat
 from .ranks import record_label as _record
 
@@ -462,6 +462,7 @@ class OnlineTab:
         for b in (self.b_passwd, self.b_codes):
             b.configure(state="normal" if me and not guest else "disabled")
         self.char_cb.configure(state="disabled" if self.set_locked else "readonly")
+        tk_costume.sync(self)                        # (its ranked costume number on the button)
         self.strict_check.configure(state="normal" if me and not guest else "disabled")
         self._set_friend_actions()
         self.private_chat.refresh()
@@ -844,6 +845,8 @@ class OnlineTab:
                         game_port=int(self.cfg.get("game_port", 0) or 0),
                         plain_passwords=bool(self.cfg.get("plain_passwords")), blind_ready=True,
                         ingame_pick=self._game_can_pick(),
+                        # (a game with the in-game select also starts a fight with buttons=: the ranked costume)
+                        ranked_costume=self._game_can_pick(),
                         match_rules=self._game_has_rules(),     # training rooms, the health handicap
                         life150=self._game_has_life150(),       # the handicap above 100 % (1.1.7)
                         ingame_rematch=self._game_has_ingame_ui(),
@@ -967,6 +970,10 @@ class OnlineTab:
             if client.ingame_pick and "ingame_pick" in (w.get("features") or []):
                 hint = t("Ranked match (accounts) or Quick match; then pick your fighter in the game (Select = "
                          "random). The character here is used when you do not pick in time.")
+                if tk_costume.client_takes_it(client):
+                    hint = t("Ranked: your fighter and costume from here. Quick match and casual: pick your fighter "
+                             "in the game (the confirm button is the costume, Select = random); the fighter here is "
+                             "used when you do not pick in time.")
             if w.get("motd"):
                 hint = w["motd"]
                 self.chat_line(hint)           # still reachable when short displays hide the play hint
@@ -1286,7 +1293,11 @@ class OnlineTab:
     def on_char(self):
         self._save_cfg()
         if self.client and self.client.me:
-            self.call(self.client.set_char, self._char_key())
+            key = self._char_key()
+            if tk_costume.client_takes_it(self.client):     # (the ranked costume goes with it: tk_costume.py)
+                self.call(self.client.set_char, key, tk_costume.remembered(self.cfg, key))
+            else:
+                self.call(self.client.set_char, key)
 
     def on_life(self):
         """The health handicap picker (tk_rules.py): remembered, and sent when the server and the game have it."""
@@ -1311,10 +1322,12 @@ class OnlineTab:
         fn = c.ranked_match if mode == "ranked" else c.quick_match
         opts = tk_search.options(self.cfg) if c.has_feature("mm_filters") else None    # (search options)
         on = tk_search.summary(self.cfg) if opts else ""
+        # the ranked costume (tk_costume.py), only to a server that takes it
+        kw = {"costume": tk_costume.remembered(self.cfg, self._char_key())} if tk_costume.client_takes_it(c) else {}
         def search():
             if self.client is not c or self._closed:
                 return
-            self.call(lambda: fn(*args, options=opts),
+            self.call(lambda: fn(*args, options=opts, **kw),
                       then=lambda _r: self._queue_status(self._searching_text(mode, strict) +
                                                          (" " + t("Search options: {options}.", options=on) if on else "")))
         if self.driver is not None:
@@ -2327,6 +2340,8 @@ class OnlineTab:
         elif k == "game_state":
             if n.get("state") in ("pick", "loading", "fight"):
                 self._game_forward(n.get("match"))
+            if n.get("own_pick"):
+                tk_costume.remember_pick(self, n["own_pick"])     # (a casual pick in the game: that costume next time)
             # the fight started: show who fights (with the in-game select, what the players picked)
             if n.get("state") == "fight" and n.get("chars") and self._match_info is not None:
                 self._match_info["fight"] = tuple(n["chars"])

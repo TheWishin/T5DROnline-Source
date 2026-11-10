@@ -11,6 +11,12 @@ part is in the README's status table.
   program) could triple a whole measurement, so later matches of a long session -- and the next game, through
   rb_cost.txt -- were played with one frame more input delay. The measurement now leaves out its few slowest and
   fastest frames, and one bad measurement can raise the kept cost by a quarter at most.
+- **Ranked: fighter and costume from the launcher.** The character select grid in the Online tab has a "Costume
+  (ranked)" row; the choice is remembered per fighter (also what you last picked on the game's select screen in a
+  casual match). A ranked set then starts every game, the first too, with both players' fighters and costumes --
+  no select screen in ranked. Your offline customization shows on the costume you chose. Casual matches keep the
+  game's own select screen. Needs the new lobby server and both players on this version; otherwise game 1 is
+  picked in the game as before.
 
 ### Speed
 - **Old graphics cards that hold frames back are named, and the game reacts** (report YESB6Y: a GT 730 of the

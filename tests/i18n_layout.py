@@ -666,6 +666,16 @@ class Walk:
             tab.charsel.open()
             self.screen("online character select")
             tab.charsel.close()
+            # 1.2.3: the ranked costume -- the longest fighter name with its number on the button ("Marshall Law ·
+            # 1"), and the grid's costume row with four costumes (Xiaoyu; tk_costume.py)
+            chosen = tab.char_var.get()
+            tab.char_var.set(tab.table.fighter_name("law"))
+            self.screen("online lobby, Marshall Law with a costume")
+            tab.char_var.set(tab.table.fighter_name("xiaoyu"))
+            tab.charsel.open()
+            self.screen("online character select, four costumes")
+            tab.charsel.close()
+            tab.char_var.set(chosen)
             # with the fighters' pictures (fighter_art.py; stand-ins of one colour: the walk has no game)
             from t5lobby import fighter_art, rank_art
             faces = fighter_art.FACES

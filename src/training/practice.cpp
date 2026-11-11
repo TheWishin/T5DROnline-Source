@@ -388,6 +388,29 @@ bool allowed()
         t5_netplay_enabled() == 0 && rd32(kGameType) == kGtPractice && rd32(kPhase) == 17;
 }
 
+/* The second gate, for the frames before the round's first state is kept (practice_logic.h neutral_before_keep):
+ * the same offline conditions as allowed(), the fight's loading and first frames instead of phase 17, and only in a
+ * game whose boundary hook runs (an offline game, never a persistent one). T5_PRACTICE_LOG: a line whenever the game
+ * type, the phase, the fight byte or the state changes (tests: where the fight's start is). */
+bool start_hold()
+{
+    const char* ctl = getenv("T5_CTL_DIR");
+    const uint32_t gt = rd32(kGameType), ph = rd32(kPhase);
+    const bool hold = g_cfg.on && g_cfg.offline && (!(ctl && *ctl) || t5_df_offline_practice()) &&
+        t5_netplay_enabled() == 0 && g_cfg.neutral_start &&
+        practice::neutral_before_keep(g_cfg.state, g_boundary_seen && g_snap == Snap::None, gt, ph);
+    if (g_cfg.log) {
+        static uint32_t was_gt = ~0u, was_ph = ~0u;
+        static int was_run = -1, was_snap = -1;
+        const int run = rd8(kRunning), snap = (int)g_snap;
+        if (gt != was_gt || ph != was_ph || run != was_run || snap != was_snap) {
+            was_gt = gt; was_ph = ph; was_run = run; was_snap = snap;
+            note("start watch: game type %u phase %u runs %d state %d neutral %d", gt, ph, run, snap, (int)hold);
+        }
+    }
+    return hold;
+}
+
 void note_place(const char* what)
 {
     if (!g_cfg.log) return;
@@ -600,23 +623,10 @@ extern "C" void t5_practice_pads(uint16_t* p1, uint16_t* p2)
 {
     if (!g_init) init();
     if (!g_cfg.on) return;
-    {   /* the frames before the round's first state is kept: nothing pressed reaches it (practice_logic.h) */
-        const char* ctl = getenv("T5_CTL_DIR");
-        const bool offline_here = g_cfg.offline && (!(ctl && *ctl) || t5_df_offline_practice()) && t5_netplay_enabled() == 0;
-        const uint32_t gt = rd32(kGameType), ph = rd32(kPhase);
-        const bool neutral = offline_here && g_cfg.neutral_start &&
-                             practice::neutral_before_keep(g_cfg.state, g_boundary_seen && g_snap == Snap::None, gt, ph);
-        if (g_cfg.log) {            /* tests: where the fight's start is, and what was held back there */
-            static uint32_t was_gt = ~0u, was_ph = ~0u;
-            static int was_run = -1, was_snap = -1;
-            const int run = rd8(kRunning), snap = (int)g_snap;
-            if (gt != was_gt || ph != was_ph || run != was_run || snap != was_snap) {
-                was_gt = gt; was_ph = ph; was_run = run; was_snap = snap;
-                note("start watch: game type %u phase %u runs %d state %d neutral %d", gt, ph, run, snap, (int)neutral);
-            }
-            if (neutral && (*p1 || *p2)) note("start watch: held back %04x %04x (phase %u runs %d)", *p1, *p2, ph, run);
-        }
-        if (neutral) { *p1 = 0; *p2 = 0; }
+    if (start_hold()) {         /* the frames before the round's first state is kept: nothing pressed reaches it */
+        if (g_cfg.log && (*p1 || *p2)) note("start watch: held back %04x %04x (phase %u runs %d)", *p1, *p2, rd32(kPhase), rd8(kRunning));
+        *p1 = 0;
+        *p2 = 0;
     }
     if (!allowed()) {
         if (g_in_practice) {

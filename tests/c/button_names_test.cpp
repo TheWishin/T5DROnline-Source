@@ -199,6 +199,23 @@ static void test_who_sees_it()
     /* defaults (training "frames", Versus off): Practice as before, Versus nothing */
     CHECK(offline_show(P, false, kShowFrames, kShowFrames, false, false, -1) == kShowFrames);
     CHECK(offline_show(false, false, kShowFrames, kShowFrames, V, false, -1) == kShowOff);
+    /* ... until F2 (or the pad's overlay button) is pressed there: the inputs, with the setting off and with
+     * the training overlay Off (report 2026-11-11: F2 did nothing in offline Versus) */
+    CHECK(versus_own_display(V, false, false, kShowFrames));
+    CHECK(versus_own_display(V, false, false, kShowOff));
+    CHECK(versus_switch_pressed(false, -1) == 1);
+    CHECK(offline_show(false, false, kShowFrames, kShowFrames, V, false, 1) == kShowInputs);
+    CHECK(offline_show(false, false, kShowOff, kShowOff, V, false, 1) == kShowInputs);
+    CHECK(versus_switch_pressed(false, 1) == 0);
+    CHECK(offline_show(false, false, kShowFrames, kShowFrames, V, false, 0) == kShowOff);
+    CHECK(versus_switch_pressed(false, 0) == 1);
+    /* with the setting on the first press switches it off, the next on again */
+    CHECK(versus_switch_pressed(true, -1) == 0);
+    CHECK(versus_switch_pressed(true, 0) == 1);
+    CHECK(versus_switch_pressed(true, 1) == 0);
+    /* F2's choice in Versus never reaches Practice or the other modes */
+    CHECK(offline_show(P, false, kShowOff, kShowOff, false, false, 1) == kShowOff);
+    CHECK(offline_show(false, false, kShowFrames, kShowFrames, false, false, 1) == kShowOff);
     /* the Versus setting: inputs, never frame data -- also with the training overlay Off */
     CHECK(offline_show(false, false, kShowFrames, kShowFrames, V, true, -1) == kShowInputs);
     CHECK(offline_show(false, false, kShowOff, kShowOff, V, true, -1) == kShowInputs);
@@ -221,7 +238,52 @@ static void test_who_sees_it()
     CHECK(offline_show(false, true, kShowOff, kShowOff, V, true, -1) == kShowInputs);
     CHECK(versus_own_display(V, true, false, kShowFrames));
     CHECK(!versus_own_display(false, true, false, kShowFrames));
-    CHECK(!versus_own_display(V, false, false, kShowFrames));
+    CHECK(!versus_own_display(false, false, false, kShowFrames));
+    CHECK(!versus_own_display(V, false, true, kShowFrames));
+}
+
+static uint16_t toggle(const std::string& s, bool* ok = nullptr) { return parse_overlay_toggle(s.data(), s.size(), ok); }
+
+static void test_overlay_button()
+{
+    bool ok = false;
+    /* default: R3, with no file text, no section, no line, an empty value */
+    CHECK(kOverlayToggleDefault == kPadR3);
+    CHECK(toggle("", &ok) == kPadR3 && ok);
+    CHECK(toggle("[port1]\nR3 = B10\n[names]\nR3 = X\n") == kPadR3);
+    CHECK(toggle("[overlay]\n") == kPadR3);
+    CHECK(toggle("[overlay]\ntoggle =\n") == kPadR3);
+    CHECK(toggle("[overlay]\ntoggle = ; nothing\n") == kPadR3);
+    /* one button, any case, blanks, comments, CRLF */
+    CHECK(toggle("[overlay]\ntoggle = L3\n") == kPadL3);
+    CHECK(toggle("[Overlay]\r\n  Toggle = select   ; the Back button\r\n") == kPadSelect);
+    CHECK(toggle("[overlay]\ntoggle=START # x\n") == kPadStart);
+    CHECK(toggle("[overlay]\ntoggle = L1\n") == kPadL1 && toggle("[overlay]\ntoggle = R1\n") == kPadR1);
+    CHECK(toggle("[overlay]\ntoggle = L2\n") == kPadL2 && toggle("[overlay]\ntoggle = R2\n") == kPadR2);
+    /* held together */
+    CHECK(toggle("[overlay]\ntoggle = SELECT+R3\n") == (kPadSelect | kPadR3));
+    CHECK(toggle("[overlay]\ntoggle = l1 + r1 + start\n") == (kPadL1 | kPadR1 | kPadStart));
+    /* off */
+    for (const char* v : { "off", "OFF", "none", "no", "0" })
+        CHECK(toggle(std::string("[overlay]\ntoggle = ") + v + "\n", &ok) == 0 && ok);
+    /* an unknown name, an attack button, a direction: no button at all, and said so */
+    for (const char* v : { "R4", "1", "CROSS", "LEFT", "R3+", "+R3", "R3+X", "R3 L3" }) {
+        ok = true;
+        CHECK(toggle(std::string("[overlay]\ntoggle = ") + v + "\n", &ok) == 0);
+        CHECK(!ok);
+    }
+    /* the runtime's ini rules: the last line of a key counts, the first section of a name; other keys and
+     * other sections' toggle lines are not ours */
+    CHECK(toggle("[overlay]\ntoggle = L3\ntoggle = SELECT\n") == kPadSelect);
+    CHECK(toggle("[overlay]\ntoggle = L3\n[overlay]\ntoggle = SELECT\n") == kPadL3);
+    CHECK(toggle("[general]\ntoggle = L3\n[overlay]\nother = L1\n;toggle = L2\n") == kPadR3);
+    CHECK(toggle("[overlay]\ntoggle = L3\n[port1]\ntoggle = SELECT\n") == kPadL3);
+    /* held: every button of the combination, on either player's pad; never with no button */
+    CHECK(overlay_toggle_held(kPadR3, kPadR3, 0) && overlay_toggle_held(kPadR3, 0, kPadR3 | 0x0040));
+    CHECK(!overlay_toggle_held(kPadR3, kPadL3, 0x00F0));
+    CHECK(!overlay_toggle_held(kPadSelect | kPadR3, kPadSelect, kPadR3));
+    CHECK(overlay_toggle_held(kPadSelect | kPadR3, 0, kPadSelect | kPadR3 | kPadL1));
+    CHECK(!overlay_toggle_held(0, 0xFFFF, 0xFFFF));
 }
 
 int main()
@@ -234,6 +296,7 @@ int main()
     test_pad_extras();
     test_width();
     test_who_sees_it();
+    test_overlay_button();
     if (g_fail) { printf("%d of %d checks FAILED\n", g_fail, g_checks); return 1; }
     printf("PASS %d checks\n", g_checks);
     return 0;

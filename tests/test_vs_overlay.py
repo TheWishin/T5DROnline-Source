@@ -81,7 +81,33 @@ class GameSideRulesTest(unittest.TestCase):
         self.assertIn("offline_show(", m.group(2))
         self.assertIn("g_cfg.vs", m.group(2))
         # never in a replay or a spectated match
-        self.assertRegex(self.src, r'_stricmp\(nm, ""\)\)\)\s*g_cfg\.vs = false')
+        self.assertRegex(self.src, r'_stricmp\(nm, ""\)\)\)\s*\{\s*g_cfg\.vs = false;\s*g_cfg\.replay = true;')
+        self.assertRegex(self.src, r"versus_own\s*=\s*!w\.online\s*&&\s*!g_cfg\.replay\s*&&")
+
+    def test_switches_work_while_every_display_is_off(self):
+        # report 2026-11-11: F2 did nothing in offline Versus. With the training overlay Off and the Versus
+        # setting off, the frame hook returned before it looked at F2 at all.
+        m = re.search(r"if \(g_cfg\.mode == kOff && g_f2_mode < 0 && g_f2_vs < 0 && !g_cfg\.vs[^{]*\{(.*?)\n    \}", self.src, re.S)
+        self.assertTrue(m, "the all-off path of t5_training_frame")
+        self.assertIn("hotkeys();", m.group(1))
+        self.assertRegex(m.group(1), r"if \(g_f2_mode < 0 && g_f2_vs < 0\) return;")
+        # F2 in Versus: the tested rule, from the setting; it prepares the overlay it switches on
+        m = re.search(r"if \(pressed && versus_own\) \{(.*?)\}", self.src, re.S)
+        self.assertTrue(m)
+        self.assertIn("versus_switch_pressed(g_cfg.vs, g_f2_vs)", m.group(1))
+        self.assertIn("rsx_overlay_prepare()", m.group(1))
+
+    def test_overlay_button_is_offline_and_read_only(self):
+        # the pad's button comes from the input ring (read only), in an offline fight only: online the ring
+        # also holds the other player's buttons
+        m = re.search(r"if \((g_toggle && [^{]*)\) \{(.*?)\}", self.src, re.S)
+        self.assertTrue(m)
+        for need in ("!w.online", "!g_cfg.replay", "w.phase == 17", "kGtDemo"):
+            self.assertIn(need, m.group(1))
+        self.assertIn("overlay_toggle_held(g_toggle, rd16(kRing + slot), rd16(kRing +", m.group(2))
+        # one press, one switch
+        self.assertRegex(self.src, r"poll_hotkey\(w\.versus_own, held && !g_pad_down\);\s*g_pad_down = held;")
+        self.assertRegex(self.src, r"g_toggle = parse_overlay_toggle\(text, len, &ok\)")
 
     def test_the_ring_is_only_read(self):
         for name, text in (("training.cpp", self.src), ("button_names.h", self.names)):
@@ -154,6 +180,10 @@ class SampleFileTest(unittest.TestCase):
         # as shipped every value is the default: no names section that is not a comment
         for line in text.splitlines():
             self.assertFalse(line.strip().lower().startswith("[names"), line)
+            self.assertFalse(line.strip().lower().startswith("[overlay"), line)
+        # the overlay button is documented there, with its default
+        self.assertIn(";[overlay]", text)
+        self.assertIn(";toggle = R3", text)
 
 
 if __name__ == "__main__":

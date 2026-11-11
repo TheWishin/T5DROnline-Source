@@ -207,23 +207,116 @@ inline float history_width(float widest_buttons_text)
 /* ---- who gets the input display in an offline fight -------------------------------
  * (not online, not a replay: the caller's rule). Practice, or every offline mode with
  * "also in the other offline modes": the training setting, switched by F2. Otherwise
- * only Versus with its own setting (off by default): the inputs, never frame data,
- * switched off and on by F2. */
+ * only Versus, on a switch of its own: the inputs, never frame data. Its setting
+ * (off by default) is where that switch starts; F2 or the pad's overlay button turns
+ * it on and off for the session -- also when the setting is off (before, F2 did
+ * nothing in Versus then, and nothing anywhere with the training overlay Off). */
 enum : int { kShowOff = 0, kShowInputs = 1, kShowFrames = 2 };
 
-/* Versus runs on its own setting (and F2 switches that one) */
+/* Versus runs on its own switch (and F2 switches that one); vs_setting is only where it starts */
 inline bool versus_own_display(bool versus, bool vs_setting, bool all, int training_setting)
 {
-    return versus && vs_setting && !(all && training_setting != kShowOff);
+    (void)vs_setting;
+    return versus && !(all && training_setting != kShowOff);
 }
+
+/* Versus' own switch now: F2's choice (vs_f2: -1 none, 0 off, 1 on), else the setting */
+inline bool versus_switch_on(bool vs_setting, int vs_f2) { return vs_f2 < 0 ? vs_setting : vs_f2 != 0; }
+/* ... and F2's choice after one more press */
+inline int versus_switch_pressed(bool vs_setting, int vs_f2) { return versus_switch_on(vs_setting, vs_f2) ? 0 : 1; }
 
 /* training_mode: the training setting or F2's choice; vs_f2: F2's choice in Versus (-1 none, 0 off, 1 on) */
 inline int offline_show(bool practice, bool all, int training_setting, int training_mode,
                         bool versus, bool vs_setting, int vs_f2)
 {
-    if (versus_own_display(versus, vs_setting, all, training_setting)) return vs_f2 == 0 ? kShowOff : kShowInputs;
+    if (versus_own_display(versus, vs_setting, all, training_setting))
+        return versus_switch_on(vs_setting, vs_f2) ? kShowInputs : kShowOff;
     if (practice || all) return training_mode;
     return kShowOff;
+}
+
+/* ---- the pad's overlay button (docs/TRAINING.md "Overlay button") -------------------
+ *   [overlay]
+ *   toggle = R3            one of L1 R1 L2 R2 L3 R3 START SELECT, or several held together
+ *                          (SELECT+R3); off / none / no / 0 = no pad button
+ * Does what F2 does, in offline fights only. Default R3 (no [overlay] section, no toggle
+ * line, or an empty value). A value with an unknown name switches the button off rather
+ * than guess. The attack buttons and the directions cannot be chosen. The ini rules are
+ * the names' (above). */
+constexpr uint16_t kOverlayToggleDefault = kPadR3;
+
+inline uint16_t overlay_toggle_mask(const char* v, size_t n, bool* ok = nullptr)
+{
+    using namespace names_detail;
+    static const struct { const char* key; uint16_t m; } t[] = {
+        { "L1", kPadL1 }, { "R1", kPadR1 }, { "L2", kPadL2 }, { "R2", kPadR2 },
+        { "L3", kPadL3 }, { "R3", kPadR3 }, { "START", kPadStart }, { "SELECT", kPadSelect },
+    };
+    if (ok) *ok = true;
+    trim(v, n);
+    if (!n) return kOverlayToggleDefault;
+    if (eq(v, n, "OFF") || eq(v, n, "NONE") || eq(v, n, "NO") || eq(v, n, "0")) return 0;
+    uint16_t mask = 0;
+    for (size_t pos = 0; pos <= n;) {
+        size_t end = pos;
+        while (end < n && v[end] != '+') end++;
+        const char* part = v + pos;
+        size_t pn = end - pos;
+        trim(part, pn);
+        uint16_t m = 0;
+        for (const auto& e : t) if (eq(part, pn, e.key)) m = e.m;
+        if (!m) { if (ok) *ok = false; return 0; }
+        mask |= m;
+        pos = end + 1;
+    }
+    return mask;
+}
+
+/* The overlay button in a controls.ini's text (pad mask; 0 = none). */
+inline uint16_t parse_overlay_toggle(const char* text, size_t len, bool* ok = nullptr)
+{
+    using namespace names_detail;
+    uint16_t mask = kOverlayToggleDefault;
+    if (ok) *ok = true;
+    bool seen = false, in = false;
+    for (size_t pos = 0; pos < len;) {
+        size_t end = pos;
+        while (end < len && text[end] != '\n') end++;
+        const char* s = text + pos;
+        size_t n = end - pos;
+        pos = end + 1;
+        trim(s, n);
+        if (!n || *s == ';' || *s == '#') continue;
+        if (*s == '[') {
+            const char* e = (const char*)memchr(s, ']', n);
+            in = false;
+            if (!e) continue;
+            const char* name = s + 1;
+            size_t nn = (size_t)(e - name);
+            trim(name, nn);
+            if (eq(name, nn, "OVERLAY") && !seen) { seen = true; in = true; }
+            continue;
+        }
+        if (!in) continue;
+        const char* eqs = (const char*)memchr(s, '=', n);
+        if (!eqs) continue;
+        const char* key = s;
+        size_t kn = (size_t)(eqs - s);
+        const char* val = eqs + 1;
+        size_t vn = n - kn - 1;
+        for (size_t i = 0; i < vn; i++)
+            if ((val[i] == ';' || val[i] == '#') && (i == 0 || space(val[i - 1]))) { vn = i; break; }
+        trim(key, kn);
+        if (!eq(key, kn, "TOGGLE")) continue;
+        mask = overlay_toggle_mask(val, vn, ok);
+    }
+    return mask;
+}
+
+/* The button (all of a combination) is held on either player's pad. */
+inline bool overlay_toggle_held(uint16_t mask, uint16_t pad1, uint16_t pad2)
+{
+    return mask && ((pad1 & mask) == mask || (pad2 & mask) == mask);
 }
 
 } // namespace training

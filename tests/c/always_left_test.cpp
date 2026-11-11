@@ -7,6 +7,7 @@
  * Built by tests/test_always_left.py with clang-cl.
  */
 #include <stdio.h>
+#include <initializer_list>
 
 #include "../../src/netplay/always_left.h"
 
@@ -75,6 +76,18 @@ int main()
     CHECK(!al::active(f), "offline Practice: normal");
     f.net = al::Net::Local; f.game_type = 4;
     CHECK(!al::active(f), "two players at one PC (netplay local mode), Versus: normal, as offline");
+    /* owner's report 2026-11-11 (1.2.2 with a screen side chosen): offline Versus showed P1 on the right with
+     * left/right against the picture. Neither choice mirrors an offline fight, with any of the legacy flags. */
+    for (al::Side side : { al::Side::Left, al::Side::Right })
+        for (al::Net net : { al::Net::Off, al::Net::Local })
+            for (uint32_t gt : { 0u, 4u, 9u, 10u })
+                for (int casual = 0; casual < 2; casual++)
+                    for (int slot = 0; slot < 2; slot++) {
+                        al::Frame o;
+                        o.enabled = true; o.side = side; o.net = net; o.game_type = gt; o.phase = 17;
+                        o.casual = casual != 0; o.local_slot = slot;
+                        CHECK(!al::active(o), "offline, any screen side: never mirrored");
+                    }
 
     CHECK(al::parse_enabled("1") && al::parse_enabled("on") && al::parse_enabled("TRUE") && al::parse_enabled("yes"),
           "1/on/true/yes");

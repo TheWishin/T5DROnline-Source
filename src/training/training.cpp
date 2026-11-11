@@ -116,6 +116,7 @@ struct Config {
     int  mode = kOff;
     bool all = false, online = false, de = false;
     bool vs = false;            /* T5_VS_OVERLAY=1: the input display in offline Versus */
+    bool replay = false;        /* a replay or a spectated match: no Versus of this PC's players, no overlay button */
     int  rows = 14;
     bool bottom = false;        /* T5_TRAINING_POS=bottom */
     bool stats = false;
@@ -184,7 +185,7 @@ void init()
       g_cfg.adv_offline = !(nm && *nm) && !(ctl && *ctl) && !(replay && *replay); }
     /* a replay or a spectated match is no Versus of this PC's players */
     { const char* nm = getenv("T5_NET_MODE"); const char* replay = getenv("T5_REPLAY_FILE");
-      if ((replay && *replay) || (nm && !_stricmp(nm, "replay"))) g_cfg.vs = false; }
+      if ((replay && *replay) || (nm && !_stricmp(nm, "replay"))) { g_cfg.vs = false; g_cfg.replay = true; } }
     if (const char* f = getenv("T5_TRAINING_TRACE"); f && *f && t5game::us_only("training trace (T5_TRAINING_TRACE)")) {
         g_cfg.trace = fopen(f, "wb");
         parse_trace_ranges(getenv("T5_TRAINING_TRACE_RANGES"));
@@ -202,6 +203,7 @@ void init()
 
 /* ---- the players' own button names (button_names.h) ---------------------------- */
 ButtonNames g_names;
+uint16_t g_toggle = kOverlayToggleDefault;   /* the pad's overlay button ([overlay] toggle; pad mask, 0 = none) */
 
 /* The controls.ini the runtime reads (pad_host_win32.c load_config): PS3_CONTROLS, else controls.ini next
  * to the exe, else in the working directory. Read once, like the runtime does. */
@@ -236,6 +238,11 @@ void load_names()
     size_t len = 0;
     if (!read_controls_ini(text, sizeof text, &len)) return;
     parse_button_names(text, len, g_names);
+    bool ok = true;
+    g_toggle = parse_overlay_toggle(text, len, &ok);
+    if (!ok) fprintf(stderr, "[training] controls.ini [overlay] toggle: unknown button name, no pad button switches the overlay\n");
+    else if (g_toggle != kOverlayToggleDefault)
+        fprintf(stderr, "[training] overlay button (controls.ini [overlay] toggle): pad mask 0x%04X%s\n", g_toggle, g_toggle ? "" : " (off)");
     for (int p = 0; p < 2; p++) {
         if (!g_names.any_custom(p)) continue;
         char line[kBtnCount * (kNameBytes + 8)];
@@ -261,6 +268,7 @@ int g_f2_mode = -1;             /* F2's choice for this session (-1: the setting
 int g_f2_vs = -1;               /* F2's choice in Versus on its own setting (-1: on) */
 bool g_named = false;           /* this frame's lists use the players' own names (offline) */
 bool g_f2_down = false;
+bool g_pad_down = false;        /* the pad's overlay button was held in the last fight frame */
 
 /* This path can only observe the existing live-frame hook. It has no guest
  * stores, game calls, input changes, overlay publication or network activity. */
@@ -381,24 +389,28 @@ bool window_focused()
     return pid == GetCurrentProcessId();
 }
 
-void poll_hotkey(bool versus_own)
+/* F2, or the pad's overlay button (pad: its press this frame; offline fights only, hotkeys() below) */
+void poll_hotkey(bool versus_own, bool pad)
 {
     const bool down = (GetAsyncKeyState(VK_F2) & 0x8000) != 0 && window_focused();
-    if (down && !g_f2_down && versus_own) {
-        g_f2_vs = g_f2_vs == 0 ? 1 : 0;
-        fprintf(stderr, "[training] F2: input display in Versus %s\n", g_f2_vs ? "on" : "off");
-    } else if (down && !g_f2_down) {
+    const bool pressed = (down && !g_f2_down) || pad;
+    const char* by = pad ? "overlay button" : "F2";
+    if (pressed && versus_own) {
+        g_f2_vs = versus_switch_pressed(g_cfg.vs, g_f2_vs);
+        if (g_f2_vs) rsx_overlay_prepare();
+        fprintf(stderr, "[training] %s: input display in Versus %s\n", by, g_f2_vs ? "on" : "off");
+    } else if (pressed) {
         const int cur = g_f2_mode >= 0 ? g_f2_mode : g_cfg.mode;
         g_f2_mode = (cur + 1) % 3;
         if (g_f2_mode != kOff) rsx_overlay_prepare();
-        fprintf(stderr, "[training] F2: %s\n", g_f2_mode == kOff ? "off" : g_f2_mode == kInputs ? "inputs" : "inputs and frame data");
+        fprintf(stderr, "[training] %s: %s\n", by, g_f2_mode == kOff ? "off" : g_f2_mode == kInputs ? "inputs" : "inputs and frame data");
     }
     g_f2_down = down;
 }
 #else
 /* F2 needs the key state of the game's window: the Metal backend's keyboard is the
  * runtime's, so on a Mac the overlay follows T5_TRAINING alone. */
-void poll_hotkey(bool) {}
+void poll_hotkey(bool, bool) {}
 #endif
 
 /* ---- drawing ----------------------------------------------------------------- */
@@ -680,6 +692,8 @@ extern "C" void t5_boot_cover_publish(void)
 /* One live frame boundary on the main thread (t5_hooks.cpp on_frame_start, not
  * called in re-simulated frames): the frame that just ran is complete. */
 static bool frame_body();
+struct Where { uint32_t phase, gt; bool netplay, online, versus_own; };
+static Where hotkeys();
 
 extern "C" void t5_training_frame(ppu_context* ctx)
 {
@@ -688,7 +702,11 @@ extern "C" void t5_training_frame(ppu_context* ctx)
     if (g_boot_cover_shown) return;   /* cover also works with T5_TRAINING=off */
     if (!g_init) init();
     if (g_cfg.trace) trace_frame();
-    if (g_cfg.mode == kOff && g_f2_mode < 0 && !g_cfg.vs && !g_cfg.trace && !g_cfg.diagnostic && !t5_practice_on()) return;
+    if (g_cfg.mode == kOff && g_f2_mode < 0 && g_f2_vs < 0 && !g_cfg.vs && !g_cfg.trace && !g_cfg.diagnostic && !t5_practice_on()) {
+        /* every display is off: only the switches are watched, until one of them turns a display on */
+        hotkeys();
+        if (g_f2_mode < 0 && g_f2_vs < 0) return;
+    }
     /* T5_TRAINING_STATS: wall time and this thread's own CPU time (cycles, so a
      * busy PC preempting the thread does not count) */
     LARGE_INTEGER t0, t1;
@@ -721,20 +739,39 @@ extern "C" void t5_training_frame(ppu_context* ctx)
     }
 }
 
-/* true in a fight */
-static bool frame_body()
+/* Where the frame is, and the overlay's switches: F2 and the pad's overlay button. Runs every live frame,
+ * also while every display is off (t5_training_frame), so that a switch can turn one on. */
+static Where hotkeys()
 {
-    const uint32_t phase = rd32(kPhase), gt = rd32(kGameType);
+    Where w;
+    w.phase = rd32(kPhase); w.gt = rd32(kGameType);
     /* Preserve the existing query's short circuit: np::enabled() can initialise
      * the netplay subsystem. Shadow-eligible launches always take this query;
      * launches which skip it are independently excluded by shadow_allowed. */
-    const bool netplay = !g_cfg.local_net && !g_cfg.online_game && t5_netplay_enabled() != 0;
-    const bool online = !g_cfg.local_net && !t5_df_offline_practice() && (g_cfg.online_game || netplay);
-    /* Versus on its own setting (T5_VS_OVERLAY), offline only: F2 switches that one there. An online
-     * match, a replay and a spectated match are never "Versus on this PC". */
-    const bool versus_own = !online && phase == 17 &&
-                            versus_own_display(gt == kGtVersus, g_cfg.vs, g_cfg.all, g_cfg.mode);
-    poll_hotkey(versus_own);
+    w.netplay = !g_cfg.local_net && !g_cfg.online_game && t5_netplay_enabled() != 0;
+    w.online = !g_cfg.local_net && !t5_df_offline_practice() && (g_cfg.online_game || w.netplay);
+    /* Versus on its own switch (it starts as T5_VS_OVERLAY says), offline only: F2 switches that one there.
+     * An online match, a replay and a spectated match are never "Versus on this PC". */
+    w.versus_own = !w.online && !g_cfg.replay && w.phase == 17 &&
+                   versus_own_display(w.gt == kGtVersus, g_cfg.vs, g_cfg.all, g_cfg.mode);
+    /* the pad's overlay button: the newest pad masks of the game's input ring (read only), in an offline
+     * fight only -- online the ring also holds the other player's buttons */
+    bool held = false;
+    if (g_toggle && !w.online && !g_cfg.replay && w.phase == 17 && w.gt != kGtDemo) {
+        const uint32_t slot = ((rd32(kRingWriteIdx) - 1u) & 15u) * 2u;
+        held = overlay_toggle_held(g_toggle, rd16(kRing + slot), rd16(kRing + 0x20 + slot));
+    }
+    poll_hotkey(w.versus_own, held && !g_pad_down);
+    g_pad_down = held;
+    return w;
+}
+
+/* true in a fight */
+static bool frame_body()
+{
+    const Where w = hotkeys();
+    const uint32_t phase = w.phase, gt = w.gt;
+    const bool netplay = w.netplay, online = w.online, versus_own = w.versus_own;
     const int mode = g_f2_mode >= 0 ? g_f2_mode : g_cfg.mode;
     const bool fight = phase == 17 && gt != kGtDemo;
     if (!fight) {

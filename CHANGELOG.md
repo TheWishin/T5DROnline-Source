@@ -58,15 +58,13 @@ the new lobby server.
 - **"Always see me on the left" no longer mirrors offline Versus** (report GMSUZH): with the setting on, a local
   Versus fight was shown from P2's side (P1 on the right, P1's left and right reversed). The setting now works in
   casual online matches only, as its text says; online it is unchanged.
-- **F2 switches the input display in offline Versus, and a pad button does too**: F2 did nothing in offline
-  Versus unless "Input display in offline Versus" was ticked, and nothing anywhere with the training overlay Off.
-  Now F2 shows and hides both players' inputs in any offline Versus fight (the setting only says how a fight
-  starts) and cycles the training overlay in Practice also when its setting is Off. New: a pad button does the same
-  in offline fights -- R3 by default, `[overlay] toggle = ...` in controls.ini for another one or `off`
-  (docs/TRAINING.md "Overlay button"). Never online; it only reads the game.
-- **Input display in offline Versus** (Settings -> Training overlay -> "Input display in offline Versus", off by
-  default; F2 in the game switches it): both players' inputs with how long each was held, as in Practice, without
-  frame data. Never online, never in a replay.
+- **Input display in offline Versus**: both players' inputs with how long each was held, as in Practice, without
+  frame data. F2 shows and hides it in any offline Versus fight; Settings -> Training overlay -> "Input display in
+  offline Versus" (off by default) only says how a fight starts. Never online, never in a replay.
+- **A pad button for the overlay, and F2 with the overlay Off**: F2 now also cycles the training overlay in Practice
+  when its setting is Off (it did nothing then). A pad button does what F2 does in offline fights -- R3 by default,
+  `[overlay] toggle = ...` in controls.ini for another one or `off` (docs/TRAINING.md "Overlay button"). Never
+  online; it only reads the game.
 - **Your own button names in the input display**: a `[names]` section in `controls.ini` (`[names1]` / `[names2]` per
   player) renames 1 2 3 4 (`1 = LP`) and lists L1 R1 L2 R2 L3 R3 START SELECT once they have a name (`L1 = TAG`), in
   Practice and offline Versus. Text on the picture only; nothing in the game changes (docs/TRAINING.md).

@@ -82,19 +82,56 @@ struct Pick {
     const char* why;     /* for the log */
 };
 
+/* One frame by measured cost (docs/NETPLAY.md "One frame by measured cost"). In the pair runs behind the rule
+ * (60 / 100 / 120 / 150 ms, 2 % loss, one frame of delay) the 99th-percentile rollback was one frame deeper than
+ * expected_depth() at every ping (3, 4, 5, 6 frames), so the rule plans with expected_depth(rtt, 1) + 1 and never
+ * beyond the 6 frames measured at 150 ms; above that the lobby's far-match delay applies anyway. */
+constexpr int kMeasuredDepthMax = 6;
+inline int p99_depth_one_frame(double rtt_ms)
+{
+    const int e = expected_depth(rtt_ms, 1);
+    return e < 0 ? -1 : e + 1;
+}
+
+/* The highest round trip (ms) at which the measured rule keeps one frame of delay for a slower-PC capacity `cap`:
+ * ceil(rtt / 33.4) + 1 <= min(cap, 6). -1 without a measurement, 0 when it never does. */
+inline double one_frame_up_to_ms(uint8_t cap)
+{
+    if (cap == kCapUnknown) return -1.0;
+    return 2.0 * kFrameMs * std::max(0, std::min<int>(cap, kMeasuredDepthMax) - 1);
+}
+
 /* The match's delay: `base` is the 1.2.0 auto pick (1 / 2 by the round trip), `ceiling` the session's lockstep
- * delay (never above it), `feel` the combined choice, `cap` the slower PC's capacity.
- *   Responsive  the base pick, nothing added.
+ * delay (never above it), `feel` the combined choice, `cap` the slower PC's capacity, `measured` true when BOTH
+ * PCs sent a measured capacity (then `cap` is the smaller of the two).
+ *   One frame by measured cost (Responsive and Balanced, both PCs measured): where the 1.2.0 pick is 2 only
+ *               because the round trip is above 60 ms, one frame is kept as long as the slower PC re-simulates
+ *               the 99th-percentile rollback of one frame of delay inside a frame (p99_depth_one_frame(rtt) <=
+ *               cap, at most 6).
+ *   Responsive  that pick, nothing added.
  *   Balanced    one frame more when the slower PC cannot re-simulate the expected depth inside a frame (its
  *               rollbacks would drop frames for both players: the game waits for the slower PC).
  *   Smooth      enough frames that at most two frames are predicted (at most two more than the base), and the
- *               capacity rule's frame on top when still needed. */
-inline Pick decide(int base, double rtt_ms, int ceiling, uint8_t feel, uint8_t cap)
+ *               capacity rule's frame on top when still needed.
+ * Without both measurements (a first match, an older game) everything is as it was. */
+inline Pick decide(int base, double rtt_ms, int ceiling, uint8_t feel, uint8_t cap, bool measured = false)
 {
     Pick p = { base, 0, expected_depth(rtt_ms, base), "base" };
-    if (feel == kResponsive) { p.why = "responsive: the base pick"; return p; }
+    int floor_ = base;      /* the lowest pick: the 1.2.0 one, or one frame where both PCs measured that it holds */
+    bool one = false;
+    if (measured && cap != kCapUnknown && feel != kSmooth && base > 1 && p.depth >= 0) {
+        const int d99 = p99_depth_one_frame(rtt_ms);
+        if (d99 <= (int)cap && d99 <= kMeasuredDepthMax) { floor_ = 1; one = true; }
+    }
+    if (feel == kResponsive) {
+        p.delay = one ? 1 : base;
+        p.extra = p.delay - base;
+        p.depth = expected_depth(rtt_ms, p.delay);
+        p.why = one ? "responsive: one frame, both PCs re-simulate that depth inside a frame" : "responsive: the base pick";
+        return p;
+    }
     if (p.depth < 0) { p.why = "no round trip: the base pick"; return p; }
-    int pick = base;
+    int pick = floor_;
     if (feel == kSmooth) {
         const int want = in_flight(rtt_ms) - 2;
         pick = std::max(pick, std::min(want, base + 2));
@@ -105,10 +142,11 @@ inline Pick decide(int base, double rtt_ms, int ceiling, uint8_t feel, uint8_t c
         p.why = feel == kSmooth ? "smooth + a frame for the slower PC's rollbacks"
                                 : "balanced: a frame for the slower PC's rollbacks";
     } else if (feel != kSmooth) {
-        p.why = cap == kCapUnknown ? "balanced: no PC measured yet, the base pick" : "balanced: both PCs keep up";
+        p.why = one ? "balanced: one frame, both PCs re-simulate that depth inside a frame"
+              : cap == kCapUnknown ? "balanced: no PC measured yet, the base pick" : "balanced: both PCs keep up";
     }
-    if (pick > ceiling) pick = std::max(base, ceiling);
-    if (pick < base) pick = base;
+    if (pick > ceiling) pick = std::max(floor_, ceiling);
+    if (pick < floor_) pick = floor_;
     p.delay = pick;
     p.extra = pick - base;
     p.depth = expected_depth(rtt_ms, pick);

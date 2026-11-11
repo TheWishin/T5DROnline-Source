@@ -65,3 +65,60 @@ update drills. The pairs use scripted pads and no offline save, so they show tha
 intact, not the mapping itself; the mapping is covered by the unit tests only (no real controller, no real
 quick match). Branch docs-123-018 (e046d819, made by another session in this worktree) has longer changelog
 entries for both fixes and is not merged here.
+
+## Release candidate for the owner's test (2026-11-11 afternoon)
+
+Branch release-123-final, on top of c5a10ffa (the input-delay merge stays reverted):
+
+| Commit | What |
+|---|---|
+| b43edf2c | Docs from docs-123-018 (e046d819), taken once: the long changelog entries for the Controller Setup online and the ring-end flip replace the two short lines of 44ca1717; "rb_cost.txt" -> "the saved measurement"; the stale README RAM bullet (1.2 GB / 8 GB) removed (it contradicted the 4 GB / 0.8 GB bullet above it); `lobby/tests/test_nat2.py` paths in NETPLAY.md. From compat-docs CLAIMS_CHECK.md, the two T5DR items marked FALSE: T19 "~3 MB a fight frame" -> "~4 MB" (RENDER_PERF.md measured 4.2-4.4 MB), T36 = the RAM bullet. docs-123-018's second commit 44c8a12d is the same change as b5038615 (already here) |
+| 2e2c4794 | Merge p1-swap-018 (d7e88267): F2 switches the offline Versus input display without the setting ticked and with the training overlay Off; a pad button does the same ([overlay] toggle, R3 by default), offline fights only. Not in c5a10ffa although tonight's test list has F2 and R3; clean merge |
+| 6eaaf1b1 | Changelog: that fix folded into the 1.2.3 "Input display in offline Versus" entry (the F2 part fixes a 1.2.3 feature) plus one entry for the overlay button / F2 with the overlay Off |
+| 3518bdc3 | `tests/test_practice_menu.py`: the full suite on 6eaaf1b1 failed `test_menu_shown_only_in_practice` (4th failure). The test matched the old local line `const bool online = ...`; since the merge the same condition is computed in `hotkeys()` (`w.online`, also while every display is off) and taken by `frame_body`. The test now checks that form. It fails the same way on d7e88267 itself (that branch did not run it). Tests are not in the player zip |
+
+The zip, the owner's test install and the pair below are built from 6eaaf1b1; 3518bdc3 changes only a test
+and this record only docs, so the shipped files are the same.
+
+| Check | Result |
+|---|---|
+| `tests/test_vs_overlay.py`, `test_always_left.py`, `test_screen_side.py` after the merge | 12 + 26 tests OK |
+| ps3recomp (`prepare_ps3recomp.py --source D:\t4-night\w018\ps3recomp`) | f17bcd3 + 96 patches applied, 13 s, `build/preflight/123b/ps3recomp` |
+| Player zip (`package_release.py --release --version 1.2.3`, inside vcvars64, LLVM 23.1.3 from rel123all's `build/rd/llvm`, `--keys` = the local keys file for the scan) | OK, 105 s. 95 imports checked; scan of folder and zip: 2,221 files, 275.7 MB, no game files, no lifted code, no keys |
+| `smoke_release.py` with the GUI checks | 14/14 passed (launcher offscreen: 5 tabs; starter with a package chosen alive after 15 s). Not code-signed |
+| Preflight step 1 (`release_notes.py --check`, on b43edf2c) | section for 1.2.3 found (94 lines) |
+| Preflight step 2 (`check_no_game_data.py`, index and `v1.2.2..HEAD`, on b43edf2c) | 1,102 files / 215 files, nothing game-derived |
+| Preflight step 7 (changelog date, no HTML comments, README + README.de release lines), on b43edf2c and again on 3518bdc3 | no leftovers |
+| Signing | owner (T5DR_RELEASE_SIGNING_KEY; not looked for). The launcher trusts update key c2acdfbc80f3c4c2 |
+| Rollback pair, the test install's own t5dr.exe both sides (RTT 100, 2 % loss, Kazuya vs Heihachi, stage 20, mash + moves; host with T5_VS_OVERLAY=1, T5_TRAINING=frames, T5_TRAINING_ALL=1) | 6,600 frames compared, 0 mismatching; 6,921 frames, 2-1, hash 66cb88a8ee951822 on both sides; 2,198 / 2,104 rollbacks, 58.8 / 59.0 fps |
+
+Zip: `D:\t4-night\w018\rel123final\build\preflight\123b\dist\T5DR-Online-1.2.3.zip`, 98,256,305 bytes,
+2,221 files, SHA-256 `0a05d352c837da8fc70a9e17d1c9a89cf9e7c9b6b0be600402a1e5e12470e799`.
+(An earlier zip of b43edf2c, before the merge, sha 27934fa9..., is replaced.)
+
+**Owner test install.** The zip unpacked into `D:\t4-night\w018\owner-test-123\T5DR-Online-1.2.3\` and built
+the way the launcher's BUILD GAME runs it: the bundled `python\python.exe tools\build_game.py --out
+<folder>\native --pkg <owner's .pkg> --rap <owner's .rap>`, cwd `native`, PYTHONUTF8=1, below normal. The package
+and license were read where they are (the .pkg in the owner's Downloads, the .rap in C:\T5DROnline\game);
+nothing was copied into a git tree. Keys fetched by the build's own keys step (39 entries). PARAM.SFO: NPUB30009
+version 01.00; program SHA-1 be80165b...a6a4 verified. Steps deps 1 s, keys 1 s, decrypt 1 s, unpack 13 s, lift
+39 s, spu 4 s, compile 46 s (24 files, t5dr_game.dll 37.1 MB) -- 105 s. Code id 026ae10eb5865121, crossplay
+t5x-b7bd005de04d (the merge of d7e88267 changes the code id; every 1.2.3 tester needs this same zip). The
+launcher's Play tab state for that folder: "Ready: NPUB30009 v01.00 ... verified". No shader warm-up was run
+(the launcher starts it itself). No launcher.json was written: the folder starts as a new player's folder.
+
+Boot: `tools/smoke/run.py --only boot_menu,practice` against the install's t5dr.exe and game/vfs (own cwd and empty
+gamedata, shader cache outside the install, muted, below normal): PASS, 29 checks, 88 s -- intro skipped, title
+at 60.0 fps, practice select 58.8, a 12-s practice fight at 59.9 fps. No game process left.
+
+**Unit tests and the whole preflight on the final code tree (3518bdc3).**
+
+| Run | Result |
+|---|---|
+| `tools/release_preflight.py --version 1.2.3 --llvm <rel123all LLVM> --ps3recomp-source D:\t4-night\w018\ps3recomp --keys <local keys> --keep`, worktree venv, in an own detached worktree `D:\t4-night\w018\rel123pf` (the script empties `build/preflight/` first) | Steps 1-5 OK in 3 min (changelog 98 lines; guard 1,102 index files and 225 files of v1.2.2..HEAD; 96 patches; zip 98,256,305 bytes, 2,221 files, scan OK, sha 13cca2ac...89e79 -- not byte-equal to the 123b zip, same sources; zip smoke 14/14 with the GUI checks). **PREFLIGHT FAILED at 6** only through the three known venv failures: 2,062 tests in 1,669 s, failures=3, skipped=15 -- test_compile_robust.Jobs.test_peak_memory_of_a_finished_process, test_release_tools.PeImports.test_python_exe, test_updater.Busy.test_process_list_sees_this_python (they fail the same way on main db9711a5 with this venv, see above). Step 7 is not reached by the script; run on its own on 3518bdc3: no leftovers. HEAVY.lock was held for steps 1-5 only |
+| The same discovery on 6eaaf1b1 (before the test fix) | 2,062 tests, failures=4 (the three above + test_practice_menu, fixed in 3518bdc3), skipped=15, 1,706 s |
+| `tests/ci_unittest.py -v --timeout 2400 test_layout_lobby_entry`, alone (other agents' games and the preflight's suite ran on the PC at the same time) | OK, 11 tests, 681 s |
+
+Not done: CI, update drills, signing, a lockstep pair and a ranked/quick match on the merged build (the one rollback
+pair above has scripted pads), anything with a real controller. Nothing was pushed, tagged, drafted, uploaded or
+deployed; the lobby server is unchanged (the ranked costume row and the win records need the new one).

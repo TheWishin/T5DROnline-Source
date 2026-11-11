@@ -17,11 +17,6 @@ the new lobby server.
   program) could triple a whole measurement, so later matches of a long session -- and the next game, through
   rb_cost.txt -- were played with one frame more input delay. The measurement now leaves out its few slowest and
   fastest frames, and one bad measurement can raise the kept cost by a quarter at most.
-- **Auto input delay follows the PC's measured speed**: with Auto, one frame of input delay now lasts up to 66 ms
-  ping on a modest PC and up to 100, 133 or 166 ms on a faster one, when both players send a measured speed. Ranked
-  keeps its fixed delay; the setting you choose yourself is unchanged. Less delay means more rollbacks at high ping:
-  on the test PC at 100 ms about a third of rollbacks overran their time budget with one frame (measured with scripted
-  inputs on one PC, not with two players).
 - **Ranked: fighter and costume from the launcher.** The character select grid in the Online tab has a "Costume
   (ranked)" row; the choice is remembered per fighter (also what you last picked on the game's select screen in a
   casual match). A ranked set then starts every game, the first too, with both players' fighters and costumes --

@@ -8,6 +8,8 @@
  * Read once per process, at the first live sample of a netplay session. Only this PC's exchanged sample
  * changes (netplay_core.cpp player_input): never a script, the peer's input, a re-simulated frame or a replay.
  */
+#include "../platform/t5_win.h"   /* _byteswap_ulong on every platform */
+
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>

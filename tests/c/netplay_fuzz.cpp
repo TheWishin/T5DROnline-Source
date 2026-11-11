@@ -62,6 +62,7 @@ extern "C" int t5_unlock_online_open(void) { return 0; }   /* src/directfight/df
 /* src/netplay/local_pad.cpp (which controller is this PC's player): no controller here */
 int np::local_player_sample(HostPadData* out) { memset(out, 0, sizeof *out); return 0; }
 np::PadInput np::always_left_input(np::PadInput in) { return in; }   /* always_left.cpp: off here */
+uint16_t np::game_setup_buttons(uint16_t buttons) { return buttons; }   /* game_setup.cpp: off here */
 
 using namespace np;
 

@@ -4599,3 +4599,36 @@ Practice has no rounds and no such frame.
 Not found: a spike on every EWGF. On this PC, with this build, 20 of 20 in Practice and 60 of 60 in fights cost what
 the table says; what a player doing them over and over meets is the lost picture above (three in a minute of
 Practice here), which needs the frame's size to move and takes an input read with it.
+
+## Offline press to screen: is any step a frame early? (branch `input-delay-018`, 2026-11-11)
+
+Owner's question: can the offline input delay go down without changing the game? Measured with the latency probe on
+the 1.2.3 candidate (`tools/latency_test.py`, Lili vs Asuka, stage 20, 8 runs of 70 jab taps, **363 presses used**,
+8 logical processors, window minimised, display 60.000 Hz with the display lock, 1.5 other processors busy), and
+every frame between the presses (31,564) from the same logs:
+
+| part (ms) | median | p90 | p99 |
+|---|---|---|---|
+| sample (press -> 1 ms sampler) | 1.11 | 1.42 | 2.12 |
+| the press waits for the next frame's read | 7.36 | 14.16 | 15.74 |
+| the game's own frame (read -> the move starts) | 16.67 | 16.85 | 17.05 |
+| sim + draw of the reacting frame | 2.86 | 3.13 | 3.38 |
+| translation | 1.32 | 1.41 | 1.51 |
+| present queue | 0.25 | 0.35 | 0.40 |
+| to the display's vblank (modelled, DWM clock) | 2.28 | 3.83 | 4.39 |
+| **total, press -> display** | **32.13** | **38.93** | **40.83** |
+| total without the press's wait for its frame | 23.39 | 24.72 | 25.02 |
+
+Per frame: the tick releases the frame and the pads are read 0.01 ms later (K -> B, p99 0.03); the flip is asked for
+2.8 ms after the read, translated 1.3 ms later, presented 0.26 ms after that; the tick sits 6.7 ms before the
+display's vblank (the lock's lead = the 99th percentile of tick -> present + 1.5 ms), so a finished picture waits
+2.3 ms for its refresh. The move starts one game frame after the read in 363 of 363 presses, never two.
+
+**Nothing waits a frame it does not need, so nothing was changed.** The pads are read at the latest moment the frame
+allows (at its tick), the present goes out when the frame is translated, and the tick is already placed just far
+enough before the refresh. What is left is the game's own frame (16.7 ms: Tekken starts a move the frame after it
+reads the button, on a PS3 too), the press's random wait for the next 60 Hz read (0-16.7 ms), 4.4 ms of work and
+2.3 ms of safety. The only knob is that safety (`PS3_DISPLAY_MARGIN_MS`, 1.5): lowering it wins at most ~1 ms and
+costs repeated pictures (already 11 of 4,008 refreshes in a run), so it stays. Not measured here: a real screen (a
+plain window is composed by DWM and can add a refresh; borderless fullscreen flips directly -- the launcher's default
+is still the window) and a real pad.

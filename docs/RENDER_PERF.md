@@ -4599,3 +4599,122 @@ Practice has no rounds and no such frame.
 Not found: a spike on every EWGF. On this PC, with this build, 20 of 20 in Practice and 60 of 60 in fights cost what
 the table says; what a player doing them over and over meets is the lost picture above (three in a minute of
 Practice here), which needs the frame's size to move and takes an input read with it.
+
+## 1.2.4 candidate: tier 1 and 2 cores (branch `t5-perf-019`, patch 0126)
+
+Question: is resource binding tier 1 (the Fermi GT 730 of GitHub #12 and report YESB6Y) the big cost on old PCs, and
+is there a change that keeps the picture and the game state and makes old PCs faster? Measured on this PC (7950X,
+RTX 3090, the 7950X's Radeon iGPU, WARP), base = `release-123-final` b43edf2c built as one `t5dr.exe`; 2c/4t stand-in
+= `--cpus 0xF000` + `tools/slow_core.py --busy 60 --period-us 1000` (uncalibrated: not a measured i3-3240), Lili vs
+Asuka, `fight_bench --polite`, window 12-40 s after fight start. Local evidence: `D:\t4-night\w018\perf019-work\runs`.
+
+### What tier 1 changes in the renderer
+
+Only patch 0081's binding path (`ld_tier1_path()`): units the fragment program does not sample are not bound (white
+texture, default sampler, no lookup / hash / upload / feedback copy / depth snapshot), a draw that differs from the
+one before only in such units keeps that draw's table, and the two main heaps are set once per command list. Tier 1
+also turns `[gpu-pass]` timestamps on by default (0075) and names the tier in the `[slow-frames]` verdict. The root
+signature is the same on every tier: one SRV table of 16, one sampler table of 16, a vertex-texture table of 4, two
+root CBVs (version 1.0, so descriptors volatile). `RSX_TIER1_PATH=1` already forces the path on a tier-3 card.
+
+Per fight frame (stage 20, `[xlat-stats]`): 835-841 draws, 1,879 state calls recorded of ~11,700 asked, **~895 table
+sets** (475 SRV + 420 sampler), 162-170 SRV and 32-40 sampler tables copied into the shader-visible heap. A tier-1
+driver that copies every set table into the card's binding slots copies ~895 x 16 = **~14,300 descriptors a frame**,
+whatever our path does (the path changes which tables, not how many are set). Every fight program samples units 0-2
+only (`units sampled 0x0007` on stages 20 and 30), so a 4-wide table would cut that to ~3,600 -- not done: it needs a
+second root signature, PSOs built against it (pipeline library and prewarm records) and a tier-1 card to show any
+gain; the cost per copied descriptor on Fermi is not known here.
+
+### Forced tier-1 path vs the normal path, same stage
+
+2c/4t stand-in, one run each (the GPU columns are timestamps of our own lists):
+
+| adapter | path | fps | walker CPU | translation | texture/sampler binding | GPU per frame | 3D pass |
+|---|---|---|---|---|---|---|---|
+| RTX 3090 | off | 59.64 | 2.11 ms | 3.34 ms | 0.47 ms | 1.59 ms | 1.70 ms / 614 draws |
+| RTX 3090 | on | 59.97 | 2.03 | 3.04 | 0.35 | 1.59 | 1.79 / 612 |
+| Radeon iGPU | off | 59.86 (one of two runs: `DXGI_ERROR_DEVICE_HUNG` at fight start, exit 12) | 2.15 | 3.47 | 0.45 | 2.90 | 2.25 / 612 |
+| Radeon iGPU | on | 59.94 | 2.10 | 2.83 | 0.35 | 2.93 | 2.12 / 605 |
+| WARP (8c/16t, software) | off | 18.9 | 1.31 | 48.95 (waits for WARP) | 0.28 | 46.4 (41.8 in `[gpu-pass]`) | 27.4 / 415 = 66 us a draw |
+| WARP | on | 17.9 | 1.64 | 53.69 | 0.28 | 50.9 (43.8) | 28.0 / 440 = 64 us a draw |
+
+GPU time does not move with the path on any of the three, WARP included (per draw the same within 3 %); the CPU side
+moves by 0.1 ms of binding. WARP's numbers also show what a GPU-bound frame looks like in our log: "translation"
+49-54 ms is the walker waiting for the GPU -- the shape of the i3-3240 + Fermi log's 27 ms "translation" (patch
+0123's analysis: ~20 ms of it GPU waiting), not 27 ms of descriptor work on the CPU.
+
+### Tried: the tier-1 path on every GPU -- dropped
+
+Made the default on every tier and measured paired against the base (alternating base / new, 3 + 3 runs per stage,
+2c/4t stand-in), medians:
+
+| stage | build | fps | walker CPU (frame log) | binding | ticker thread CPU (OS) | game CPU total | GPU |
+|---|---|---|---|---|---|---|---|
+| 20 | base | 59.97 | 2.12 ms | 0.48 | 2.09 | 19.1 | 2.94 |
+| 20 | path on | 60.00 | 2.09 | 0.34 | 2.00 | 18.9 | 3.00 |
+| 30 (pool) | base | 59.82 | 2.03 | 0.39 | 2.24 | 18.5 | 2.69 |
+| 30 (pool) | path on | 59.75 | 1.97 | 0.30 | 2.42 | 18.0 | 2.74 |
+
+Binding is 0.09-0.14 ms lower in every run, the frame log's walker CPU 0.03-0.06 ms lower, but the walker thread's
+own CPU time (GetThreadTimes) is lower on stage 20 and higher on stage 30, and fps, GPU and the game part do not move:
+no gain beyond run-to-run noise, so tier 2 and 3 keep their old binding. Patch 0126 keeps only the check below.
+
+### Patch 0126: the units the tier-1 path binds, checked
+
+`RSX_FP_TEX_MASK_CHECK=1` checks every fragment program the game binds: the units `rsx_fp_texture_mask` reports (the
+ones the tier-1 path binds) against the final HLSL of its PSO (after the alpha-test, unnormalised, shadow-compare and
+single-tap rewrites); any `rsx_tex[N]` / `rsx_texN` of another unit outside its declaration is logged as `-- WRONG`.
+`tests/c/fp_tex_mask_test.c` (built by `tests/test_perf_019.py`) does the same on 30,000 random programs (texture ops
+on random units, inline constants after any CONST source, random cube masks): 0 wrong; a mask that forgets TXB/TXL is
+caught 22,946 times, one that does not step over inline constants 18,425 times. Nothing changes unless the switch is
+set; no CODE_VERSION change.
+
+### 2 cores: where the time goes (2c/4t stand-in, Old PC settings)
+
+`--cpus 0xF000` + slow_core 60 % (1 ms period), `PS3_FP_SOFT_FMA=1 PS3_CRT_FMA3=0` (no FMA3, like Ivy Bridge),
+`RSX_TIER1_PATH=1`, Lowest internal resolution, stage blur / shadows / effects off; stage 20; 2-core mode on
+(`[sched] ... 2-core mode`, 1 vertex worker, idle spin 300). 59.95 fps, game part median 6.04 ms (p99 8.17),
+translation 2.75 ms, game CPU 18.1 ms a frame (1.09 processors). `tools/thread_profile.py`, 10 s per thread:
+
+| thread | CPU a frame | where |
+|---|---|---|
+| sound core (`spu`) | 4.23 ms | lifted DSP code: five `bnuscore_spu_func_*` 69 %, MFC transfers 4.5 % |
+| game thread (`main`) | 3.64 | flat: top guest function 5.4 %; guest memory access helpers ~8 %, indirect calls 3.4 %, HLE calls 2.4 %, skinning jobs it helps with 2.5 % |
+| skinning (`spurs-chain` + `spurs-job`) | 2.80 | -- (0064 / 0113) |
+| `NU::Draw::RequestManager` | 1.86 | guest code (the game's draw thread) |
+| translation (`ticker`) | 1.81 | `sink_end_impl` 16 %, FIFO walk 15.8 %, `blk_span` 10.8 %, texture hashing 9.5 %, QueryPerformanceCounter 6 % (the frame log's own timers; only with `PS3_FRAMELOG`) |
+| vertex worker | 1.46 | fetch / decode / remap 64 %, its idle spin ~18 % |
+| pad sampler | 1.41 | the benchmark's pad script file read every ms (a real pad: 1-3 % of a core, 0025) |
+
+Top three: the sound core, the game thread, skinning -- all guest code already on its fast paths (0064, 0066, 0113,
+0114); translation is fourth. Runtime-only and safe, tried: **no idle spin for the vertex worker in 2-core mode**
+(`RSX_VERTEX_SPIN=0`, stage 30, 3 runs each against the same build): its CPU 2.19 -> 1.86 ms a frame, context switches
+600 -> 2,500 a second, walker CPU 1.97 -> 1.98, fps and game CPU total unchanged (18.0 -> 18.1) -- the saving does not
+reach the game, not changed. On a real Ivy Bridge PAUSE is ~10 cycles instead of Zen 4's ~65, so 300 of them are
+~1 us there, even less to gain.
+
+In game with the final build (check only, path at its default): boot, title and a fight on stages 20, 30, 34, 1 and 33
+(`RSX_FP_TEX_MASK_CHECK=1`, every PSO decompiled: fresh shader cache per run): at least 90 / 130 / 60 / 70 / 70
+programs checked, **0 with a texture read outside the mask**; with the path on, stages 20 and 30 never sample a unit above 2 (`units sampled 0x0007`).
+
+### Same picture, same game (the tier-1 path forced against the old binding)
+
+- **Lockstep pair, pictures** (`rollback_net_test.py --mode1 off --mode2 off --fight lil,ask,20,1`, `T5_NET_SHOT=300,900,1500`
+  + `LD_SURF_DUMP` per game): host with the path on, joiner with it off, against a control pair of two base builds.
+  Shadow map (512 x 512) and both glow buffers (128 x 128): identical in all 3 shots of both pairs. The 3D target,
+  display buffers and backbuffer differ in both pairs alike -- the same rows (y 690-1439 of the 2048 x 1440 target,
+  the animated floor of stage 20, which follows the frame counters, not the lockstep frame), 413 / 534 / 511 rows
+  path-on vs path-off against 414 / 534 / 511 rows base vs base, 51,712 / 91,531 / 106,997 backbuffer pixels against
+  50,914 / 92,467 / 104,575. The upper part of every picture is byte-identical in both pairs: the path adds no
+  difference of its own.
+- **Lockstep**: both pairs 0 mismatching through frame 2,399, the same result hash on both PCs of each pair.
+- **Rollback pair**, path on (host) vs off (joiner), RTT 150 +-5 ms, 3 % loss, both mashing, Asuka vs Lili stage 20:
+  0 mismatching through frame 5,999 on both PCs, 1,982 / 1,966 rollbacks, 5,867 / 6,005 frames re-simulated.
+
+### For a tier-1 player (1.2.4)
+
+What a tier-1 log can settle that this PC cannot: `[gpu-pass]` per-pass times with `RSX_TIER1_PATH=0` against the
+default, and `[slow-frames]`' "GPU queue" (patch 0123) with VSync Off. If the 3D pass is per-draw bound there, the
+4-wide table (above) is the next step to try; if the frames are held (YESB6Y), it is the driver/display, not binding.
+Not seen here, for the iGPU owners: one `DXGI_ERROR_DEVICE_HUNG` at fight start in 3 runs on the Radeon iGPU (tier-1
+path off, 2c/4t stand-in) -- the open "iGPU hang at fight start" (1.1.4), still there on the 1.2.3 base.

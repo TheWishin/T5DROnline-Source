@@ -29,7 +29,11 @@ class Patch(unittest.TestCase):
 
     def test_after_every_other_patch(self):
         names = sorted(n for n in os.listdir(os.path.dirname(PATCH)) if n.endswith(".patch"))
-        self.assertEqual(names[-1], "0125-ring-end-flip.patch")
+        later = names[names.index("0125-ring-end-flip.patch") + 1:]
+        # a later patch (0126: the tier-1 mask check) may follow, but none of them touches cellGcmSys.c
+        for n in later:
+            with open(os.path.join(os.path.dirname(PATCH), n), encoding="utf-8") as f:
+                self.assertNotIn("diff --git a/libs/video/cellGcmSys.c", f.read(), n)
 
     def test_the_flip_wraps_by_the_same_rule_as_every_lap(self):
         p = patch_lines("+")

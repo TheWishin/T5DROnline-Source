@@ -1,0 +1,65 @@
+diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
+--- a/libs/video/rsx_live_draw.c
++++ b/libs/video/rsx_live_draw.c
+@@ -583,7 +583,10 @@
+ static unsigned g_ld_bind_tier;
+ /* Patch 0081: the resource binding tier 1 path (an old card such as the Fermi GT 730, whose driver emulates
+  * descriptor tables: every table a draw sets is copied into the card's binding slots). On by default with
+- * tier 1, RSX_TIER1_PATH=1 / =0 forces it on / off (measured on tier 3 here; tier 2/3 default unchanged). */
++ * tier 1, RSX_TIER1_PATH=1 / =0 forces it on / off (measured on tier 3 here; tier 2/3 default unchanged).
++ * Patch 0126: RSX_FP_TEX_MASK_CHECK=1 checks the units this path binds against every program's HLSL. Made
++ * the default on every GPU and measured on tier 3 (2c/4t stand-in): no CPU or GPU gain beyond run-to-run
++ * noise, so tier 2/3 stay as they were (docs/RENDER_PERF.md "1.2.4 candidate: tier 1"). */
+ static int g_ld_t1 = -1;
+ static u64 g_ld_t1_tables_kept;      /* draws that kept the previous draw's table (only unsampled units differed) */
+ static u64 g_ld_t1_unread;          /* texture units enabled but not sampled by the program (not bound on this path) */
+@@ -7418,6 +7421,41 @@
+                         "instructions, %d constant(s)%s)\n", (unsigned long long)checked, (unsigned long long)bad,
+                 outside ? " -- WRONG" : "", instrs, nset, all ? ", indexed: all" : "");
+ }
++/* Patch 0126, RSX_FP_TEX_MASK_CHECK=1 (tests): every fragment program's texture mask
++ * (rsx_fp_texture_mask: the units patch 0081's tier-1 path binds) checked against the final HLSL of its PSO
++ * (after the alpha-test, unnormalised, shadow-compare and single-tap rewrites): a texture of a unit
++ * outside the mask named anywhere but in its declaration is a read the path would leave white.
++ * [fp-texmask] lines count the programs and name any such unit. */
++static void ld_fp_tex_mask_check(const u8* uc, u32 size, const char* hlsl)
++{
++    static int on = -1;
++    static volatile LONG64 checked, bad;
++    if (on < 0) { const char* e = getenv("RSX_FP_TEX_MASK_CHECK"); on = e && *e == '1'; }
++    if (!on || !uc || !hlsl) return;
++    const u32 mask = rsx_fp_texture_mask(uc, size);
++    u32 outside = 0;
++    for (u32 u = 0; u < 16; u++) {
++        if ((mask >> u) & 1u) continue;
++        char arr[24], one[24];
++        snprintf(arr, sizeof arr, "rsx_tex[%u]", u);
++        snprintf(one, sizeof one, "rsx_tex%u", u);
++        if (strstr(hlsl, arr)) outside |= 1u << u;
++        for (const char* p = strstr(hlsl, one); p; p = strstr(p + 1, one)) {
++            const char c = p[strlen(one)];
++            if (c >= '0' && c <= '9') continue;                  /* rsx_tex1 in rsx_tex12 */
++            if (!strncmp(p + strlen(one), " : register", 11)) continue;   /* its declaration */
++            outside |= 1u << u;
++            break;
++        }
++    }
++    const LONG64 n = InterlockedIncrement64(&checked);
++    if (outside) InterlockedIncrement64(&bad);
++    if (outside || n == 1 || (n % 10) == 0)
++        fprintf(stderr, "[fp-texmask] check: %lld program(s), %lld with a texture read outside the mask%s "
++                        "(this one: %u bytes, mask 0x%04X%s0x%04X)\n", (long long)n, (long long)bad,
++                outside ? " -- WRONG" : "", size, mask, outside ? ", read outside " : ", outside ",
++                outside);
++}
+ /* Patch 0123: a draw copies only the transform constants its program can read into its constant
+  * block (the 8 KB of 512 vec4 + the viewport transform were copied whole into the upload heap for
+  * every draw that could not reuse the block before it: 4-7 MB a fight frame of write-combined
+@@ -7949,6 +7987,7 @@
+     g_ld_profile.total.decompile_qpc +=
+         (u64)(ld_profile_qpc() - decompile_begin);
+ #endif
++    if (fi > 0) ld_fp_tex_mask_check(fp_uc, fp_size, ps_hlsl);
+     /* LD_FORCE_GREEN=1: make every fragment program return solid green.
+      *
+      * The same trick as LD_CLEAR_TEST, applied one stage later. Clears are

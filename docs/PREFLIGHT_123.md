@@ -122,3 +122,28 @@ at 60.0 fps, practice select 58.8, a 12-s practice fight at 59.9 fps. No game pr
 Not done: CI, update drills, signing, a lockstep pair and a ranked/quick match on the merged build (the one rollback
 pair above has scripted pads), anything with a real controller. Nothing was pushed, tagged, drafted, uploaded or
 deployed; the lobby server is unchanged (the ranked costume row and the win records need the new one).
+
+## Practice-reset fix merged; the owner's test install replaced (2026-11-11, 16:00-16:30)
+
+| Commit | What |
+|---|---|
+| ab71527f | Merge practice-flake-018 (96a54034, based on c5a10ffa): a button pressed as the Practice round comes up was kept in the reset state and played again after every SELECT+3. Both pads are held neutral from the fight's loading (phase 7..16) until the state is kept (offline Practice only, `T5_PRACTICE_NEUTRAL_START=0` turns it off); tools/practice_state_check.py waits for the game. No conflicts with 2e2c4794 / 3518bdc3 (git merged practice.cpp, practice_logic.h, the tests and TRAINING.md by itself). One sentence added to the existing 1.2.3 Practice reset entry of the changelog |
+
+| Check (on ab71527f) | Result |
+|---|---|
+| test_training, test_practice_menu, test_practice_state_check, test_game_setup, test_netplay_fuzz (+ test_vs_overlay) | 23 + 10 + 8 + 5 + 1 (+ 12) = 59 tests OK |
+| Full discovery (`python -m unittest discover -s tests`, worktree venv, PS3RECOMP_DIR = 123c tree) | 2,070 tests in 1,642 s, failures=3 (only the known venv three: test_compile_robust.Jobs, test_release_tools.PeImports, test_updater.Busy), skipped=15 |
+| Player zip, procedure as above into `build/preflight/123c` (fresh 96-patch tree) | OK, 91 s; 95 imports checked; scan of folder and zip: 2,221 files, 275.7 MB, no game files, no lifted code, no keys |
+| `smoke_release.py` with the GUI checks | 14/14 passed |
+| Owner test install | Old folder renamed to `D:\t4-night\w018\owner-test-123\T5DR-Online-1.2.3-old` (nothing ran from it; it had no launcher.json and no save), new zip unpacked at the same path, BUILD GAME as before: 80 s, NPUB30009 v01.00, program verified, code id 5dc12e62a8b08b76, crossplay t5x-aca7330335c2. Launcher Play state: "Ready" |
+| Boot (`tools/smoke/run.py --only boot_menu,practice` on the install's game) | PASS, 29 checks |
+| `tools/practice_state_check.py` on the install's game (resets + frames) | PASS: 17 resets, 0 bad, 0 sides flipped, worst place 0 units, worst facing 0.00 rad; 3 resets x 1,801 frames = 5,403 frames compared with the fresh round, 0 different |
+| Lockstep pair on the install's game (RTT 60, `--mode1 off --mode2 off`, Kazuya vs Heihachi, stage 20, 3 rounds, mash + moves) -- the pair missing after the F2/R3 merge | 10,200 frames compared, 0 mismatching; 10,326 frames, 3-2, hash cc17ad78d06d5953 on both sides |
+
+Zip: `D:\t4-night\w018\rel123final\build\preflight\123c\dist\T5DR-Online-1.2.3.zip`, 98,258,061 bytes, 2,221 files,
+SHA-256 `3ef4046bcaf4eb99ba3e933c7f6070fcf75f217aba7bee371c4243753a966172`. It replaces the 123b zip (0a05d352...)
+for tonight's test.
+
+Not done on ab71527f: a rollback pair (the rollback pair above ran on 6eaaf1b1; the practice change is gated to
+offline Practice), the branch's own repro (mash_repro.py) on this build, the whole release_preflight.py run, CI,
+update drills, signing, anything with a real controller or a real two-PC match.

@@ -90,9 +90,12 @@ class PracticeMenuGateTest(unittest.TestCase):
                                    r"g_menu\.open\(\) \? 1 : 0;")
         # The persistent game's Practice is local until the fight/reset command;
         # genuine online play still goes through the online restrictions.
+        # (the gate is computed in hotkeys(), which also runs while every display is off, and frame_body takes it)
         self.assertRegex(self.training,
-                         r"const bool online = !g_cfg\.local_net && !t5_df_offline_practice\(\) && "
-                         r"\(g_cfg\.online_game \|\| netplay\);")
+                         r"w\.online = !g_cfg\.local_net && !t5_df_offline_practice\(\) && "
+                         r"\(g_cfg\.online_game \|\| w\.netplay\);")
+        self.assertRegex(self.training, r"const Where w = hotkeys\(\);\s*const uint32_t phase = w\.phase, gt = w\.gt;\s*"
+                                        r"const bool netplay = w\.netplay, online = w\.online,")
         # training.cpp draws it only offline, in Practice
         self.assertRegex(self.training, r"const bool menu = !online && gt == kGtPractice && t5_practice_menu_open\(\);")
         draw = self.src.split("void t5_practice_menu_draw(void)")[1]

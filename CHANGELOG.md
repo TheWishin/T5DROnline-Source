@@ -50,6 +50,12 @@ the new lobby server.
 - **"Always see me on the left" no longer mirrors offline Versus** (report GMSUZH): with the setting on, a local
   Versus fight was shown from P2's side (P1 on the right, P1's left and right reversed). The setting now works in
   casual online matches only, as its text says; online it is unchanged.
+- **F2 switches the input display in offline Versus, and a pad button does too**: F2 did nothing in offline
+  Versus unless "Input display in offline Versus" was ticked, and nothing anywhere with the training overlay Off.
+  Now F2 shows and hides both players' inputs in any offline Versus fight (the setting only says how a fight
+  starts) and cycles the training overlay in Practice also when its setting is Off. New: a pad button does the same
+  in offline fights -- R3 by default, `[overlay] toggle = ...` in controls.ini for another one or `off`
+  (docs/TRAINING.md "Overlay button"). Never online; it only reads the game.
 - **Input display in offline Versus** (Settings -> Training overlay -> "Input display in offline Versus", off by
   default; F2 in the game switches it): both players' inputs with how long each was held, as in Practice, without
   frame data. Never online, never in a replay.

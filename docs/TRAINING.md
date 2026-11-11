@@ -44,8 +44,8 @@ online" is ticked, and then it shows nothing about the opponent: no inputs
 The attract demo never shows it.
 
 **F2** in the game (while its window has the focus) cycles Off -> Inputs ->
-Inputs + frame data for the rest of the session, as long as the setting is not
-Off. The texts follow the launcher's language (`T5_TRAINING_LANG=de|en`;
+Inputs + frame data for the rest of the session -- also when the setting is
+Off. In offline fights a pad button does the same: see "Overlay button". The texts follow the launcher's language (`T5_TRAINING_LANG=de|en`;
 without it the Windows display language): German labels are `GEBLOCKT`,
 `TREFFER`, `KONTER`, `DANEBEN`, `AM BODEN`.
 
@@ -101,13 +101,37 @@ modern Tekken, for two players at one PC. It is its own setting: it works with
 the training overlay Off, shows the inputs only (no frame data), and only in
 Versus (not Arcade, Survival, ...; "Also in the other offline modes" is the
 setting for those, and when that one is on, it decides in Versus too, frame
-data included). **F2** switches it off and on for the session. Position and
-rows are the training overlay's (`T5_TRAINING_POS`, `T5_TRAINING_ROWS`).
+data included). **F2** (or the pad's overlay button) switches it on and off
+for the session -- the setting only says how a Versus fight starts, so F2 also
+shows the display when the setting is off. Position and rows are the training
+overlay's (`T5_TRAINING_POS`, `T5_TRAINING_ROWS`).
 
 It is never shown online, in a replay or while spectating: the game decides
 that itself (the same `online` rule as the frame data), whatever the launcher
 sends. Like the rest of the overlay it only reads the game ("The overlay never
 changes the game").
+
+## Overlay button
+
+A pad button does what F2 does: by default **R3** (the right stick's click,
+which Tekken does not use), on either player's pad. In Practice it cycles Off
+-> Inputs -> Inputs + frame data; in offline Versus it switches the input
+display on and off. It works in offline fights only -- never online, in a
+replay or while spectating -- and, like the display, only reads the game (the
+pad buttons of the frame that just ran, from the game's own input ring).
+
+Another button, or none, in `controls.ini` (the file the bindings are in):
+
+```ini
+[overlay]
+toggle = SELECT+R3   ; L1 R1 L2 R2 L3 R3 START SELECT, or several held together
+;toggle = off        ; no pad button; F2 still works
+```
+
+The names are the PS3 buttons, i.e. what your pad's buttons are bound to: to
+use a spare button of a stick, bind it to L3 or R3 on the Controls screen and
+name that one here. The attack buttons and the directions cannot be chosen. A
+line with an unknown name switches the pad button off (the game's log says so).
 
 ## Your own button names
 

@@ -216,6 +216,7 @@ already the limit.
   lockstep 2153f75c.. / b98364dc..); the joiner's log starts with `[cpu] runtime: SSE2 build ...`.
 
 Not done: a start on a real processor without SSE4.1 (none here); a full `package_release.py --release` run (the zip
-figure above is the two files compressed alone); `tests/test_sse2_baseline.py` `Bits` and the six SSE2
-ps3recomp suites were not run again after the SSE4.1 wrappers became macros (the SSE4.1 side is token-identical to
-before 0126, the SSE2 side unchanged from the probe, where they passed).
+figure above is the two files compressed alone); the six SSE2 ps3recomp suites (`tests/run_ps3recomp_tests.py`)
+were not run again after the SSE4.1 wrappers became macros (the SSE4.1 side is token-identical to before 0126, the
+SSE2 side unchanged from the probe, where they passed). `tests/test_sse2_baseline.py` including `Bits` (33 operations,
+400,000 operand sets, SSE4.1 vs SSE2 builds) passed again on this branch's tree.

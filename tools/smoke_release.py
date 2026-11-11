@@ -51,7 +51,7 @@ REQUIRED = [
     "python/python.exe", "python/pythonw.exe",
     "toolchain/llvm/bin/clang-cl.exe", "toolchain/llvm/bin/lld-link.exe", "toolchain/llvm/bin/llvm-profdata.exe",
     "tools/gamedll/t5dr_lifted.proftext", "tools/profile_check.py",
-    "runtime/t5dr.exe", "runtime/t5dr.lib",
+    "runtime/t5dr.exe", "runtime/t5dr.lib", "runtime/sse2/t5dr.exe", "runtime/sse2/t5dr.lib",
     "LICENSES/ps3recomp-MIT.txt", "LICENSES/Python-PSF.txt", "LICENSES/LLVM-LICENSE.TXT",
 ]
 REDIST = ("vcruntime", "msvcp", "concrt", "vcomp", "ucrtbased", "msvcr", "libomp", "python3")
@@ -257,7 +257,7 @@ def main():
     check("toolchain: clang-cl version", rc == 0 and f"clang version {want}" in out,
           out.splitlines()[0] if out else f"exit {rc}")
 
-    for rel in ("runtime/t5dr.exe", "T5DR Online.exe"):
+    for rel in ("runtime/t5dr.exe", "runtime/sse2/t5dr.exe", "T5DR Online.exe"):
         try:
             dlls = pe_imports(os.path.join(root, *rel.split("/")))
             bad = [d for d in dlls if not windows_dll(d)]

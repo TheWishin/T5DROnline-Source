@@ -82,8 +82,9 @@ tested between two real PCs over the internet (AMD/60 Hz vs Intel/240 Hz).
 
 ## Requirements
 
-**Minimum requirements:** Windows 10 or 11 (64-bit), a processor with SSE4.1
-(Intel Core 2 from 2008, any Core i3/i5/i7; AMD FX, A-series from 2012, Ryzen),
+**Minimum requirements:** Windows 10 or 11 (64-bit), any 64-bit Intel or AMD
+processor (one without SSE4.1 gets a slower build, see below; for 60 fps you
+need the 4-core processor named below anyway),
 a DirectX 12 graphics card (feature level 11_0: NVIDIA GeForce GTX 400 / GT 600
 and newer, AMD Radeon HD 7000 and newer, Intel HD 4400 and newer) and 4 GB RAM.
 For 60 fps in fights: a 4-core processor from about 2011 on (an Intel Core
@@ -103,16 +104,25 @@ In detail:
   current driver. That is about: NVIDIA GeForce GTX 400 / GT 600 or newer
   (Fermi cards such as the old GT 730 run, slowly: about 20-35 fps), AMD
   Radeon HD 7000 or newer, Intel HD 4400 (2013) or newer -- Intel HD 4000 and
-  older have no DirectX 12 driver. Tested on an NVIDIA RTX 3090, the Radeon
+  older have no DirectX 12 driver, and Intel's drivers from 15.40.44.5107 (2021)
+  on switch DirectX 12 off on HD 4200-5000 / Iris 5100-5200 (a security fix;
+  15.40.42.5063 and older still have it, untested here). Tested on an NVIDIA RTX 3090, the Radeon
   graphics of a Ryzen 7950X and Windows' software renderer (WARP); players
   play on GT 730s. Laptops with two graphics chips use the fast one by default.
-- A 64-bit Intel or AMD processor with SSE4.1: Intel Core 2 (2008) or newer,
-  AMD FX, A-series or Ryzen (2011) or newer. Older ones (Core 2 Quad Q6600,
-  Phenom II, Athlon II) cannot run it: the game says so when it starts, and
-  **Check my problem** says it before a build. AVX2 is not needed. The build
-  selects faster code automatically: AVX1 for Sandy/Ivy Bridge when Windows
-  supports it, x86-64-v3 for newer CPUs with its full feature set, and the
-  baseline otherwise.
+- A 64-bit Intel or AMD processor. AVX2 is not needed. The build selects
+  faster code automatically: AVX1 for Sandy/Ivy Bridge when Windows supports
+  it, x86-64-v3 for newer CPUs with its full feature set, and the baseline
+  otherwise.
+- Processors without SSE4.1 (Intel Core 2 before 2008 such as the E6000 and
+  Q6600, AMD Phenom II, Athlon II, Athlon 64 X2): BUILD GAME picks a second
+  build of the game for them by itself (`runtime\sse2`). It plays the same
+  game (online too, with anyone) but needs about 1.3 times the processor time
+  (measured on our PC: sound 1.4x, character animation 1.8x). These
+  processors are slow for the game. Our estimates (no such PC has run it
+  yet): Phenom II X4/X6 about 35-45 fps in fights, Core 2 Quad about 20-25,
+  Core 2 Duo 10-15 with broken sound. **Check my problem** tells you before
+  a build. Windows 11 24H2 and newer do not start on these processors
+  at all; Windows 10 does.
 - 4 GB RAM: the game uses about 0.8 GB (1.1 GB committed) in a fight; BUILD
   GAME runs as many compile jobs as the free memory allows.
 - Speed: fights held 60 fps with 4 CPU threads in our tests (fast desktop

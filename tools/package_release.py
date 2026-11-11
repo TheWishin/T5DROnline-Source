@@ -72,6 +72,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import zipfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -499,16 +500,27 @@ def add_llvm(stage, llvm):
     log(f"  llvm: {mb(dir_size(dst))} (clang resource headers {ver})")
 
 
-def add_prebuilt_host(stage, clang, jobs, version="0.0.0-dev"):
+def add_prebuilt_host(stage, clang, jobs, version="0.0.0-dev", sse2=True):
     """runtime/t5dr.exe + t5dr.lib: ps3recomp's runtime without any game code (CMake
     -DT5DR_GAME_DLL=ON), built from exactly the sources staged above, static C runtime
     (no Visual C++ redistributable needed). The player's PC then compiles only the
-    lifted code, into t5dr_game.dll (tools/build_game_dll.py)."""
+    lifted code, into t5dr_game.dll (tools/build_game_dll.py).
+
+    sse2 (docs/SSE2_BASELINE.md "Shipping it"): also runtime/sse2/t5dr.exe + t5dr.lib, the same runtime built with
+    -DT5DR_X86_BASELINE=ON for processors without SSE4.1; BUILD GAME picks it there (build_game.choose_runtime).
+    Same file name: the game DLL imports from "t5dr.exe". The normal runtime is built exactly as without it."""
+    build_host(stage, clang, jobs, version, baseline=False)
+    if sse2:
+        build_host(stage, clang, jobs, version, baseline=True)
+
+
+def build_host(stage, clang, jobs, version, baseline):
     pre = msvc_prefix()
     cm, nj = prereqs.cmake_ninja()
     if pre is None or not (clang[0] and cm and nj):
         fail("--prebuilt-host needs Visual Studio Build Tools (or an MSVC environment), clang-cl, CMake and Ninja")
-    tmp = tempfile.mkdtemp(prefix="t5dr_host_")
+    tmp = tempfile.mkdtemp(prefix="t5dr_host_sse2_" if baseline else "t5dr_host_")
+    rel = "runtime/sse2/t5dr.exe" if baseline else "runtime/t5dr.exe"
     try:
         args = [f'"{cm}"', "-S", f'"{stage}"', "-B", f'"{tmp}"', "-G", "Ninja", f'-DCMAKE_MAKE_PROGRAM="{nj}"',
                 "-DCMAKE_BUILD_TYPE=Release", "-DT5DR_GAME_DLL=ON", "-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded",
@@ -516,21 +528,37 @@ def add_prebuilt_host(stage, clang, jobs, version="0.0.0-dev"):
                 f'-DPS3RECOMP_DIR="{os.path.join(stage, "deps", "ps3recomp")}"', f'-DSPU_DIR="{tmp}"',
                 f'-DPython3_EXECUTABLE="{sys.executable}"',
                 f'-DCMAKE_C_COMPILER="{clang[0]}"', f'-DCMAKE_CXX_COMPILER="{clang[0]}"']
+        if baseline:
+            args.append("-DT5DR_X86_BASELINE=ON")
         build = f'"{cm}" --build "{tmp}"' + (f" -j {jobs}" if jobs else "")
         cmd = f'{pre}{" ".join(args)} && {build}'
         env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")   # no __pycache__ in the staged tools
-        log(f"  building the runtime host (clang-cl {clang[1]}{', -j %d' % jobs if jobs else ''}) ...")
+        t0 = time.time()
+        log(f"  building the runtime host{' for processors without SSE4.1 (T5DR_X86_BASELINE)' if baseline else ''}"
+            f" (clang-cl {clang[1]}{', -j %d' % jobs if jobs else ''}) ...")
         r = subprocess.run(cmd, shell=True, capture_output=True, text=True, env=env)
         if r.returncode:
             fail("host build failed:\n" + (r.stdout + r.stderr)[-4000:])
-        dst = os.path.join(stage, "runtime")
+        dst = os.path.join(stage, "runtime", "sse2") if baseline else os.path.join(stage, "runtime")
         for n in ("t5dr.exe", "t5dr.lib"):
             copy(os.path.join(tmp, n), os.path.join(dst, n))
-        log(f"  runtime/t5dr.exe: {os.path.getsize(os.path.join(dst, 't5dr.exe')):,} bytes")
-        # It must run on any x64 CPU with SSE4.1: AVX & co. only inside the C library's CPUID dispatch.
+        log(f"  {rel}: {os.path.getsize(os.path.join(dst, 't5dr.exe')):,} bytes, built in {time.time() - t0:.0f} s")
         objdump = os.path.join(os.path.dirname(clang[0]), "llvm-objdump.exe")
         mapf = os.path.join(tmp, "t5dr.map")
-        if os.path.exists(objdump) and os.path.exists(mapf):
+        if not (os.path.exists(objdump) and os.path.exists(mapf)):
+            log("  (no llvm-objdump next to clang-cl or no linker map: instruction-set check skipped)")
+        elif baseline:
+            # Nothing above SSE2 outside the C library's CPUID dispatch and the guarded ppu_fma_hw (tools/isa_audit.py)
+            r = subprocess.run([sys.executable, os.path.join(ROOT, "tools", "isa_audit.py"), os.path.join(dst, "t5dr.exe"),
+                                "--map", mapf, "--objdump", objdump,
+                                "--fail-on", "sse3,ssse3,sse4.1,sse4.2,popcnt,lzcnt,bmi,movbe,avx,aes"],
+                               capture_output=True, text=True, errors="replace")
+            if r.returncode:
+                fail(f"{rel} uses instructions beyond SSE2 outside the C library (it would crash on the processors "
+                     "it is for):\n" + r.stdout[-4000:])
+            log(f"  {rel}: nothing beyond SSE2 outside the C library's CPUID dispatch")
+        else:
+            # It must run on any x64 CPU with SSE4.1: AVX & co. only inside the C library's CPUID dispatch.
             dis = subprocess.run([objdump, "-d", "--no-show-raw-insn", os.path.join(dst, "t5dr.exe")],
                                  capture_output=True, text=True, errors="replace").stdout
             bad = check_binaries.isa_findings(dis, check_binaries.read_map(mapf))
@@ -538,8 +566,6 @@ def add_prebuilt_host(stage, clang, jobs, version="0.0.0-dev"):
                 fail("runtime/t5dr.exe uses instructions beyond SSE4.1 outside the C library (it would crash on "
                      "older CPUs):\n" + "\n".join(f"  {dict(c)} in {w}" for w, c in sorted(bad.items())[:20]))
             log("  runtime/t5dr.exe: nothing beyond SSE4.1 outside the C library's CPUID dispatch")
-        else:
-            log("  (no llvm-objdump next to clang-cl or no linker map: instruction-set check skipped)")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

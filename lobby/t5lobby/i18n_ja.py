@@ -2966,3 +2966,16 @@ MESSAGES.update({
     "Plug in the charger so the sound does not crackle.":
         "音が途切れないように、充電器を接続してください。",
 })
+# ---- t5-oldhw-019: the SSE2 runtime (tools/build_game.py choose_runtime, launcher core/problem_check)
+MESSAGES.update({
+    'This processor has no SSE4.1, and the game here was built for one that has it. Click BUILD GAME: it builds the version for this processor. Your saves are kept.':
+        'このプロセッサーには SSE4.1 がありませんが、ここにあるゲームは SSE4.1 対応のプロセッサー用にビルドされています。BUILD GAME をクリックすると、このプロセッサー用の版をビルドします。セーブは残ります。',
+    'The game here was built for processors without SSE4.1; this one has it. Click BUILD GAME for the faster version. Your saves are kept.':
+        'ここにあるゲームは SSE4.1 のないプロセッサー用にビルドされていますが、このプロセッサーには SSE4.1 があります。BUILD GAME をクリックすると、より速い版をビルドします。セーブは残ります。',
+    'This processor lacks the SSE4.1 instructions, and the game here was built for one that has them. Press BUILD GAME again: it builds the version for this processor.':
+        'このプロセッサーには SSE4.1 命令がありませんが、ここにあるゲームは SSE4.1 対応のプロセッサー用にビルドされています。もう一度 BUILD GAME を押すと、このプロセッサー用の版をビルドします。',
+    'Your processor has no SSE4.1: the game uses its slower build':
+        'プロセッサーに SSE4.1 がありません: ゲームは遅い版を使います',
+    'BUILD GAME picks the build for processors without SSE4.1 by itself. It needs about 1.3 times the processor time of the normal build, and these processors are slow for the game: expect well under 60 frames per second in fights (estimates: Phenom II X4/X6 about 35-45, Core 2 Quad about 20-25, Core 2 Duo 10-15 with broken sound). If the game stops at its start because the processor is too old, press BUILD GAME again.':
+        'BUILD GAME は SSE4.1 のないプロセッサー用の版を自動で選びます。通常版の約 1.3 倍のプロセッサー時間が必要で、これらのプロセッサーはこのゲームには遅いため、対戦中は 60 フレーム/秒を大きく下回ります（推定: Phenom II X4/X6 で約 35-45、Core 2 Quad で約 20-25、Core 2 Duo で 10-15、音も途切れます）。プロセッサーが古すぎるとしてゲームが起動時に止まる場合は、もう一度 BUILD GAME を押してください。',
+})

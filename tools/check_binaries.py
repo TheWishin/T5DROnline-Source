@@ -209,16 +209,22 @@ def check_release(folder, llvm_bin, host_map=None, log=print):
                 shipped |= py_shipped
             details["imports"][rel] = {"imports": sorted(normal), "delay": sorted(delay)}
             problems += import_problems(rel, normal, delay, shipped)
-    host = os.path.join(folder, "runtime", "t5dr.exe")
-    if os.path.exists(host):
-        normal, delay = imports(readobj, host)
+    # runtime\sse2\t5dr.exe: the same runtime for processors without SSE4.1 (package_release.py checks its
+    # instruction sets against SSE2 with tools/isa_audit.py when it builds it)
+    for parts in (("runtime", "t5dr.exe"), ("runtime", "sse2", "t5dr.exe")):
+        path, rel = os.path.join(folder, *parts), "\\".join(parts)
+        if not os.path.exists(path):
+            continue
+        normal, delay = imports(readobj, path)
         if "mfplat.dll" in normal:
-            problems.append(r"runtime\t5dr.exe imports mfplat.dll directly: it would not start on Windows N")
-        man = manifest_of(host)
+            problems.append(f"{rel} imports mfplat.dll directly: it would not start on Windows N")
+        man = manifest_of(path)
         if man is not None:
             for what, needle in MANIFEST_NEEDS.items():
                 if needle not in man:
-                    problems.append(rf"runtime\t5dr.exe's manifest lacks {what}")
+                    problems.append(f"{rel}'s manifest lacks {what}")
+    host = os.path.join(folder, "runtime", "t5dr.exe")
+    if os.path.exists(host):
         if host_map and os.path.exists(objdump):
             dis = subprocess.run([objdump, "-d", "--no-show-raw-insn", host], capture_output=True, text=True,
                                  errors="replace").stdout

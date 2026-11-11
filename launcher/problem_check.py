@@ -11,7 +11,8 @@ What it looks for (each only where the evidence is):
   unpack_memory    the last build ran out of memory while unpacking (MemoryError in build.log; GitHub #24)
   firewall         Windows Firewall blocks t5dr.exe (lobby/t5lobby/fwcheck.py, read-only)
   old_cpu          the processor lacks SSE4.1 (Core 2 before Penryn, Phenom II / Athlon II, Llano, Bobcat): the runtime
-                   is built for it and stops at its start (src/platform/cpu_check.cpp, exit code 14) -- 1.2.1
+                   is built for it and stops at its start (src/platform/cpu_check.cpp, exit code 14) -- 1.2.1; a
+                   release with runtime/sse2 builds its SSE2 runtime there: then a hint with the speed
   two_cores        the processor has 2 cores (i3-3240, i5-4210M: under ~20 frames per second in fights)
   gpu_tier1        the newest game log names a graphics card with resource binding tier 1 (old GT 730 and alike)
   wine             the launcher runs under Wine / Proton (ntdll's wine_get_version)
@@ -270,9 +271,23 @@ def cpu_features():
         return {}
     try:
         import ctypes
-        return {"sse41": bool(ctypes.windll.kernel32.IsProcessorFeaturePresent(37))}
+        has = bool(ctypes.windll.kernel32.IsProcessorFeaturePresent(37))
     except (OSError, AttributeError):
         return {}
+    if not has:
+        # Windows 10 before 2004 does not know feature 37 and says "no" on any processor: ask CPUID through the
+        # bundled clang (tools/build_game.py clang_has_sse41, the same answer BUILD GAME goes by)
+        try:
+            root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            if os.path.join(root, "tools") not in sys.path:
+                sys.path.insert(0, os.path.join(root, "tools"))
+            import build_game
+            import prereqs
+            if build_game.clang_has_sse41(prereqs.portable_llvm()) is True:
+                has = True
+        except Exception:   # noqa: BLE001 -- keep Windows' answer
+            pass
+    return {"sse41": has}
 
 
 def system_facts():
@@ -281,12 +296,30 @@ def system_facts():
         cores = report._physical_cores()
     except Exception:       # noqa: BLE001 -- a fact we cannot read is a fact we do not use
         cores = None
-    return dict({"cores": cores, "logical": os.cpu_count(), "wine": wine_version()}, **cpu_features())
+    return dict({"cores": cores, "logical": os.cpu_count(), "wine": wine_version(),
+                 "sse2_runtime": sse2_runtime_shipped()}, **cpu_features())
+
+
+def sse2_runtime_shipped():
+    """Whether this release carries runtime\\sse2\\t5dr.exe, the build for processors without SSE4.1."""
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return os.path.isfile(os.path.join(root, "runtime", "sse2", "t5dr.exe"))
 
 
 def check_pc(facts, out_dir=None):
     out = []
-    if facts.get("sse41") is False:
+    if facts.get("sse41") is False and facts.get("sse2_runtime"):
+        # BUILD GAME picks the SSE2 runtime by itself (tools/build_game.py choose_runtime): a hint, with the
+        # speed to expect. The fps figures are estimates from the development PC (docs/SSE2_BASELINE.md).
+        out.append(Finding(
+            "old_cpu", N_("Your processor has no SSE4.1: the game uses its slower build"),
+            N_("BUILD GAME picks the build for processors without SSE4.1 by itself. It needs about 1.3 times the "
+               "processor time of the normal build, and these processors are slow for the game: expect well under "
+               "60 frames per second in fights (estimates: Phenom II X4/X6 about 35-45, Core 2 Quad about 20-25, "
+               "Core 2 Duo 10-15 with broken sound). If the game stops at its start because the processor is too "
+               "old, press BUILD GAME again."),
+            N_("This PC: no SSE4.1."), help="this-processor-is-too-old-or-build-the-game-again", kind="hint"))
+    elif facts.get("sse41") is False:
         out.append(Finding(
             "old_cpu", N_("Your processor is too old for the game"),
             N_("The game needs a processor with SSE4.1: Intel Core 2 from 2008 on (E7000, E8000, Q8000, Q9000) or any "

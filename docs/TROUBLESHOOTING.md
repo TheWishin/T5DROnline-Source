@@ -456,8 +456,12 @@ machines cannot run the game.
 
 ### "This processor is too old" or "build the game again"
 
-- **No SSE4.1**: processors before about 2008 (Intel) or 2011 (AMD) cannot run
-  the game.
+- **No SSE4.1**: processors before about 2008 (Intel) or 2011 (AMD). Releases
+  with a `runtime\sse2` folder build a slower version of the game for them by
+  themselves (about 1.3 times the processor time; expect well under 60 fps in
+  fights). If the game still says "too old" at its start, the game was built
+  before or on another PC: press BUILD GAME again. Older releases cannot run
+  on these processors.
 - **"This game build was made on a PC whose processor has AVX2"**: the
   `native` folder was built on a newer PC and copied here. Press BUILD GAME on
   this PC. The build checks the processor and makes code that runs on it. Your

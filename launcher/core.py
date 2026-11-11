@@ -931,6 +931,33 @@ def game_exe(out):
     return os.path.abspath(run_game.game_command(out)[0][0])
 
 
+_THIS_PC_RUNTIME = []
+
+
+def this_pc_runtime():
+    """'sse41' or 'sse2': the prebuilt runtime BUILD GAME picks on this PC (build_game.runtime_for_this_pc; asked
+    once per launcher: on a PC whose Windows does not know SSE4.1 it runs the bundled clang for a moment)."""
+    if not _THIS_PC_RUNTIME:
+        try:
+            _THIS_PC_RUNTIME.append(build_game.runtime_for_this_pc(prereqs.portable_llvm())[0])
+        except Exception:   # noqa: BLE001 -- never stop the Play tab over this
+            _THIS_PC_RUNTIME.append("sse41")
+    return _THIS_PC_RUNTIME[0]
+
+
+def build_runtime(out):
+    """The runtime the build under `out` uses, from its stamp: 'sse41', 'sse2' or None (no stamp / an older build)."""
+    try:
+        with open(os.path.join(out, "build", "t5dr_build.json")) as f:
+            return json.load(f).get("runtime")
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
+RUNTIME_LOG = {"sse41": "[launcher] runtime: normal (SSE4.1)",
+               "sse2": "[launcher] runtime: SSE2 build for processors without SSE4.1 (runtime\\sse2)"}
+
+
 def game_state(out):
     """What the Play tab shows: dict(built, ok, text, needs_rebuild, elf_sha1)."""
     exe = game_exe(out)     # t5dr.exe; t5dr on macOS
@@ -962,6 +989,15 @@ def game_state(out):
         st["text"] = t("Build the game once (about 2 minutes): this version of the launcher changes the game code. "
                        "Click BUILD GAME. Your unpacked game and saves are kept; only the code is translated and "
                        "compiled again.")
+        return st
+    want = this_pc_runtime() if build_game.prebuilt_host_sse2() else None
+    if want and info.get("runtime", "sse41") != want:
+        # the release carries two runtimes (build_game.choose_runtime); this build has the other one
+        st["needs_rebuild"] = True
+        st["text"] = (t("This processor has no SSE4.1, and the game here was built for one that has it. Click BUILD "
+                        "GAME: it builds the version for this processor. Your saves are kept.") if want == "sse2" else
+                      t("The game here was built for processors without SSE4.1; this one has it. Click BUILD GAME "
+                        "for the faster version. Your saves are kept."))
         return st
     st["ok"] = True
     when = info.get("built", "?").replace("T", " ")
@@ -1231,6 +1267,10 @@ def explain_exit(code, lines, dialogs=(), gpu_adapter=None):
         return t("This PC's graphics card or driver cannot run Direct3D 12. Install the newest graphics driver "
                  "from AMD, Intel or NVIDIA.")
     if "[cpu] FATAL" in text:
+        if build_game.prebuilt_host_sse2():
+            # the normal runtime on a processor without SSE4.1: a build made before, or on another PC
+            return t("This processor lacks the SSE4.1 instructions, and the game here was built for one that has "
+                     "them. Press BUILD GAME again: it builds the version for this processor.")
         return t("This processor is too old for the game: it lacks the SSE4.1 instructions (processors from "
                  "about 2008 on have them).")
     if code == 14 or "was built for -march=" in text:
@@ -1493,6 +1533,11 @@ class GameRun:
             logf.write(note + "\n")
             logf.flush()
             log(note)
+        rt = build_runtime(self.out)
+        if rt in RUNTIME_LOG:
+            # which prebuilt runtime runs; the SSE2 one also says so itself ("[cpu] runtime: ...")
+            logf.write(RUNTIME_LOG[rt] + "\n")
+            logf.flush()
         si = None
         if IS_WIN and env_over.get("PS3_WINDOW_BACKGROUND"):
             # Also ask for minimized through STARTUPINFO. On its own this does NOT keep the

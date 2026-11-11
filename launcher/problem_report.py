@@ -798,8 +798,9 @@ def _gb(n):
     return f"{n / 2**30:.0f} GB" if n >= 2**30 else f"{n / 2**20:.0f} MB"
 
 
-GAME_LOG_FACTS = re.compile(r"^\[(?:gpu|display|pacing|cpu|sched|game-dll|netplay|power)\] "
-                            r"(?:adapter|res_scale|window on|display|stage blur|shadows|effects|FATAL|CPU budget|"
+GAME_LOG_FACTS = re.compile(r"^\[(?:gpu|display|pacing|cpu|sched|game-dll|netplay|power|launcher)\] "
+                            # "runtime:": which prebuilt runtime runs, normal or the SSE2 one (t5-oldhw-019)
+                            r"(?:adapter|res_scale|window on|display|stage blur|shadows|effects|FATAL|CPU budget|runtime:|"
                             r"built for|mode |lobby match|"
                             r"power saving|on AC|on battery|power source|internal resolution|frames in flight|"
                             # patch 0065: where the game's threads run (processors, placement, the three

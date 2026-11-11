@@ -552,6 +552,8 @@ def code_id():
             h.update(b"pgo:" + f.read().replace(b"\r\n", b"\n"))
     if prebuilt_host():
         h.update(sha1(os.path.join(HOST_DIR, "t5dr.exe")).encode())
+        if prebuilt_host_sse2():                    # the release's SSE2 runtime is part of it too
+            h.update(b"sse2:" + sha1(os.path.join(HOST_SSE2_DIR, "t5dr.exe")).encode())
         gd = os.path.join(ROOT, "tools", "gamedll")
         for dp, _, fns in sorted(os.walk(gd)):
             for n in sorted(fns):
@@ -576,6 +578,8 @@ def crossplay_group():
         h.update(f.read().replace(b"\r\n", b"\n"))
     if prebuilt_host():
         h.update(sha1(os.path.join(HOST_DIR, "t5dr.exe")).encode())
+        if prebuilt_host_sse2():                    # the release's SSE2 runtime is part of it too
+            h.update(b"sse2:" + sha1(os.path.join(HOST_SSE2_DIR, "t5dr.exe")).encode())
         gd = os.path.join(ROOT, "tools", "gamedll")
         for dp, _, fns in sorted(os.walk(gd)):
             for n in sorted(fns):
@@ -593,6 +597,96 @@ HOST_DIR = os.path.join(ROOT, "runtime")
 
 def prebuilt_host():
     return all(os.path.exists(os.path.join(HOST_DIR, n)) for n in ("t5dr.exe", "t5dr.lib"))
+
+
+# (docs/SSE2_BASELINE.md) A release also carries the runtime built for processors without SSE4.1 (CMake
+# T5DR_X86_BASELINE, ps3recomp patch 0126): runtime/sse2/t5dr.exe + t5dr.lib. Same file name as the normal one: the
+# game DLL imports from "t5dr.exe" by name, so the chosen runtime is copied to build/cmake/t5dr.exe as before and the
+# DLL is compiled for it (build_game_dll.py --simd sse2). Same game state on both (cross_build_test: 0 different
+# frames), about 1.3x the processor time. Chosen at BUILD GAME, never at start.
+HOST_SSE2_DIR = os.path.join(HOST_DIR, "sse2")
+PF_SSE3 = 13            # IsProcessorFeaturePresent: PF_SSE3_INSTRUCTIONS_AVAILABLE (every Windows 10)
+PF_SSE4_1 = 37          # PF_SSE4_1_INSTRUCTIONS_AVAILABLE: Windows 10 2004 on; older ones answer "no" on any CPU
+
+
+def prebuilt_host_sse2():
+    return all(os.path.exists(os.path.join(HOST_SSE2_DIR, n)) for n in ("t5dr.exe", "t5dr.lib"))
+
+
+def choose_runtime(sse2_shipped, forced=None, pf_sse41=None, clang_sse41=None, pf_sse3=None):
+    """('sse41' | 'sse2', why) -- which prebuilt runtime BUILD GAME uses. Pure (tests hand in every fact).
+
+    forced       T5DR_RUNTIME=sse2|sse41 (a test, or a player whose processor is misread), wins when that runtime exists
+    pf_sse41     Windows' IsProcessorFeaturePresent(37): True is certain; False also on SSE4.1 PCs with Windows 10
+                 before 2004, which do not know the feature
+    clang_sse41  the bundled clang's -march=native (reads CPUID itself): True/False, None when it did not run
+    pf_sse3      IsProcessorFeaturePresent(13): False = certainly no SSE4.1 either
+    Unknown means the normal runtime: wrongly picking it stops the game with a message naming the processor (the
+    old behaviour); wrongly picking the SSE2 one would only be slower, but it must never happen to a normal PC."""
+    if forced in ("sse2", "sse41"):
+        if forced == "sse2" and not sse2_shipped:
+            return "sse41", "T5DR_RUNTIME=sse2, but this folder has no runtime\\sse2 (an older release?)"
+        return forced, f"T5DR_RUNTIME={forced}"
+    if not sse2_shipped:
+        return "sse41", "no SSE2 runtime in this folder"
+    if pf_sse41:
+        return "sse41", "this processor has SSE4.1"
+    if clang_sse41 is True:
+        return "sse41", "this processor has SSE4.1 (CPUID)"
+    if clang_sse41 is False:
+        return "sse2", "this processor has no SSE4.1 (CPUID)"
+    if pf_sse3 is False:
+        return "sse2", "this processor has no SSE3, so no SSE4.1 either (Windows)"
+    return "sse41", "SSE4.1 unknown (assumed)"
+
+
+def _pf(feature):
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+        return bool(ctypes.windll.kernel32.IsProcessorFeaturePresent(feature))
+    except (OSError, AttributeError):
+        return None
+
+
+def clang_has_sse41(llvm_bin):
+    """Whether the bundled clang's -march=native defines __SSE4_1__ (LLVM reads CPUID): True/False/None.
+    T5DR_TEST_CPU_MODEL (e.g. core2 = no SSE4.1, penryn = with) stands in for this PC's processor in tests, as in
+    build_game_dll.host_cpu_level."""
+    cl = os.path.join(llvm_bin or "", "clang-cl.exe")
+    if not os.path.isfile(cl):
+        return None
+    import tempfile
+    with tempfile.TemporaryDirectory(prefix="t5dr_cpu_") as d:
+        src = os.path.join(d, "cpu_probe.c")
+        with open(src, "w") as f:
+            f.write("int x;\n")
+        try:
+            r = subprocess.run([cl, "/nologo", "/X", f"/clang:-march={os.environ.get('T5DR_TEST_CPU_MODEL', 'native')}",
+                                "/clang:-dM", "/E", "-TC", src], capture_output=True, text=True, encoding="utf-8",
+                               errors="replace", timeout=60,
+                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        except (OSError, subprocess.SubprocessError):
+            return None
+    macros = set(ln.split()[1] for ln in r.stdout.splitlines() if ln.startswith("#define "))
+    if r.returncode or "__x86_64__" not in macros:
+        return None
+    return "__SSE4_1__" in macros
+
+
+def runtime_for_this_pc(llvm_bin=None):
+    """('sse41' | 'sse2', why) for this PC (choose_runtime with the real facts)."""
+    forced = os.environ.get("T5DR_RUNTIME", "").strip().lower() or None
+    shipped = prebuilt_host_sse2()
+    if forced or not shipped:
+        return choose_runtime(shipped, forced)
+    test_model = bool(os.environ.get("T5DR_TEST_CPU_MODEL"))
+    pf41 = None if test_model else _pf(PF_SSE4_1)
+    if pf41:
+        return choose_runtime(shipped, pf_sse41=True)
+    return choose_runtime(shipped, pf_sse41=pf41, clang_sse41=clang_has_sse41(llvm_bin),
+                          pf_sse3=None if test_model else _pf(PF_SSE3))
 
 
 # --------------------------------------------------------------------------- steps
@@ -1259,18 +1353,25 @@ def compile_game_dll(a):
     if not llvm:
         fail("clang-cl.exe and lld-link.exe were not found in toolchain\\llvm\\bin. Download the release again.")
     os.makedirs(P.cmake, exist_ok=True)
-    for n in os.listdir(HOST_DIR):                  # t5dr.exe (+ anything shipped beside it)
+    simd, why = runtime_for_this_pc(llvm)
+    host = HOST_SSE2_DIR if simd == "sse2" else HOST_DIR
+    what = "SSE2 (runtime\\sse2, for processors without SSE4.1)" if simd == "sse2" else "normal"
+    print(f"  runtime: {what} -- {why}", flush=True)
+    for n in os.listdir(host):                      # t5dr.exe (+ anything shipped beside it)
         if n.lower().endswith((".exe", ".dll")):
-            src, dst = os.path.join(HOST_DIR, n), os.path.join(P.cmake, n)
+            src, dst = os.path.join(host, n), os.path.join(P.cmake, n)
             if not os.path.exists(dst) or sha1(src) != sha1(dst):
                 shutil.copy2(src, dst)
     run([PY, os.path.join(ROOT, "tools", "build_game_dll.py"), "--recomp", P.recomp, "--spu", P.spu,
-         "--deps", P.deps, "--host-lib", os.path.join(HOST_DIR, "t5dr.lib"),
+         "--deps", P.deps, "--host-lib", os.path.join(host, "t5dr.lib"),
          "--out", os.path.join(P.cmake, "t5dr_game.dll"), "--obj", os.path.join(P.build, "gamedll_obj"),
          "--llvm", llvm] + (["--force"] if a.force else [])
+        # the SSE2 runtime: lifted SPU code without -msse4.1, lifted PPU code for the x86-64 baseline
+        + (["--simd", "sse2"] if simd == "sse2" else [])
         # the shipped profile names the US program's functions; for another program it would only mislead clang
         + ([] if need_program()["pgo"] else ["--profile", "none"]))
-    write_stamp("clang-cl (header-free game DLL) from " + llvm)
+    # "runtime": which prebuilt runtime build/cmake/t5dr.exe is (the launcher names it in the game log)
+    write_stamp("clang-cl (header-free game DLL) from " + llvm, {"runtime": simd})
     print(f"\nbuilt {P.exe} + t5dr_game.dll")
 
 
@@ -1358,12 +1459,19 @@ def step_compile(a):
                           f'-DCMAKE_MAKE_PROGRAM="{ninja}"',
                           "-DCMAKE_BUILD_TYPE=Release", f'-DPS3RECOMP_DIR="{P.deps}"',
                           f'-DRECOMP_DIR="{P.recomp}"', f'-DSPU_DIR="{P.spu}"', f'-DPython3_EXECUTABLE="{PY}"']
-                         + compiler + pgo)
+                         + compiler + pgo
+                         # T5DR_X86_BASELINE=1: an SSE2-only build (CMakeLists.txt, docs/SSE2_BASELINE.md)
+                         + (["-DT5DR_X86_BASELINE=ON"] if os.environ.get("T5DR_X86_BASELINE") == "1" else
+                            ["-DT5DR_X86_BASELINE=OFF"] if os.environ.get("T5DR_X86_BASELINE") == "0" else [])
+                         # T5DR_LIFTED_ARCH=auto|x86-64-v3|avx|none: the lifted code's target CPU (measurements)
+                         + ([f'-DT5DR_LIFTED_ARCH={os.environ["T5DR_LIFTED_ARCH"]}']
+                            if os.environ.get("T5DR_LIFTED_ARCH") in ("auto", "x86-64-v3", "avx", "none") else []))
     build = f'"{cmake}" --build "{P.cmake}"'
     cmd = f'call "{vcvars}" >nul && {configure} && {build}'
     print("  >", cmd, flush=True)
     subprocess.run(cmd, shell=True, check=True)
-    write_stamp("clang-cl %d.%d + MSVC/Windows SDK (CMake)" % clang[1])
+    write_stamp("clang-cl %d.%d + MSVC/Windows SDK (CMake)" % clang[1],
+                {"runtime": "sse2" if os.environ.get("T5DR_X86_BASELINE") == "1" else "sse41"})
     print(f"\nbuilt {P.exe}")
 
 

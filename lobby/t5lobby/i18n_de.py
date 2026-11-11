@@ -3095,3 +3095,16 @@ MESSAGES.update({
     "Plug in the charger so the sound does not crackle.":
         "Netzteil anschließen, damit der Ton nicht knackt.",
 })
+# ---- t5-oldhw-019: the SSE2 runtime (tools/build_game.py choose_runtime, launcher core/problem_check)
+MESSAGES.update({
+    'This processor has no SSE4.1, and the game here was built for one that has it. Click BUILD GAME: it builds the version for this processor. Your saves are kept.':
+        'Diesem Prozessor fehlt SSE4.1, und das Spiel hier wurde für einen Prozessor mit SSE4.1 gebaut. Klicke auf BUILD GAME: Es baut die Version für diesen Prozessor. Deine Spielstände bleiben erhalten.',
+    'The game here was built for processors without SSE4.1; this one has it. Click BUILD GAME for the faster version. Your saves are kept.':
+        'Das Spiel hier wurde für Prozessoren ohne SSE4.1 gebaut; dieser hat SSE4.1. Klicke auf BUILD GAME für die schnellere Version. Deine Spielstände bleiben erhalten.',
+    'This processor lacks the SSE4.1 instructions, and the game here was built for one that has them. Press BUILD GAME again: it builds the version for this processor.':
+        'Diesem Prozessor fehlen die SSE4.1-Befehle, und das Spiel hier wurde für einen Prozessor mit ihnen gebaut. Drücke noch einmal BUILD GAME: Es baut die Version für diesen Prozessor.',
+    'Your processor has no SSE4.1: the game uses its slower build':
+        'Dein Prozessor hat kein SSE4.1: Das Spiel nutzt seine langsamere Version',
+    'BUILD GAME picks the build for processors without SSE4.1 by itself. It needs about 1.3 times the processor time of the normal build, and these processors are slow for the game: expect well under 60 frames per second in fights (estimates: Phenom II X4/X6 about 35-45, Core 2 Quad about 20-25, Core 2 Duo 10-15 with broken sound). If the game stops at its start because the processor is too old, press BUILD GAME again.':
+        'BUILD GAME wählt die Version für Prozessoren ohne SSE4.1 von selbst. Sie braucht etwa 1,3-mal so viel Prozessorzeit wie die normale, und diese Prozessoren sind für das Spiel langsam: Rechne mit deutlich unter 60 Bildern pro Sekunde in Kämpfen (Schätzungen: Phenom II X4/X6 etwa 35-45, Core 2 Quad etwa 20-25, Core 2 Duo 10-15 mit gestörtem Ton). Wenn das Spiel beim Start anhält, weil der Prozessor zu alt ist, drücke noch einmal BUILD GAME.',
+})

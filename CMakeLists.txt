@@ -28,6 +28,15 @@ set(PS3RECOMP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/deps/ps3recomp" CACHE PATH
 set(RECOMP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/build/recomp" CACHE PATH
     "Lifter output for this game: ppu_recomp.h + ppu_recomp_NNN.cpp")
 get_filename_component(PS3RECOMP_DIR "${PS3RECOMP_DIR}" ABSOLUTE)
+# T5DR_X86_BASELINE=ON (probe, docs/SSE2_BASELINE.md): everything for the x86-64 baseline (SSE2) -- the runtime and
+# the lifted SPU code without -msse4.1 (ps3recomp patch 0126: PS3RECOMP_X86_BASELINE, the SPU helpers' SSE2 forms
+# give the same bits), the lifted PPU code with T5DR_LIFTED_ARCH=none, and cpu_check.cpp no longer asks for SSE4.1.
+# For processors before Core 2 "Penryn" (2008) and AMD before Bulldozer. Same game state as the normal build.
+option(T5DR_X86_BASELINE "Build for x86-64 processors without SSE4.1 (SSE2 only)" OFF)
+if(T5DR_X86_BASELINE)
+    set(PS3RECOMP_X86_BASELINE ON CACHE BOOL "x86-64: build for the SSE2 baseline (no SSE4.1/SSSE3)" FORCE)
+    message(STATUS "x86-64 baseline build: no SSE4.1 anywhere")
+endif()
 get_filename_component(RECOMP_DIR "${RECOMP_DIR}" ABSOLUTE)
 
 if(NOT EXISTS "${PS3RECOMP_DIR}/runtime/ppu/ppu_loader.cpp")
@@ -151,6 +160,9 @@ endif()
 # game state on every CPU").
 set(T5DR_LIFTED_ARCH "auto" CACHE STRING "target CPU for the lifted code: auto, x86-64-v3, avx, native, none")
 set(_lifted_arch "${T5DR_LIFTED_ARCH}")
+if(T5DR_X86_BASELINE)
+    set(_lifted_arch "none")
+endif()
 if(_lifted_arch STREQUAL "auto")
     set(_lifted_arch "none")
     if(WIN32 AND Python3_EXECUTABLE)
@@ -393,6 +405,10 @@ if(WIN32)
     # Windows "N" editions have no Media Foundation (mfplat.dll) until the Media
     # Feature Pack is installed: loaded on first use, so the exe still starts
     # there and only the movies are skipped (ps3recomp patch 0031, mf_h264.cpp).
+    if(T5DR_X86_BASELINE)
+        set_property(SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/cpu_check.cpp" APPEND PROPERTY
+            COMPILE_DEFINITIONS T5DR_X86_BASELINE)
+    endif()
     target_link_options(t5dr PRIVATE /DELAYLOAD:mfplat.dll /DELAYLOAD:mfreadwrite.dll)
     target_link_libraries(t5dr PRIVATE delayimp)
     # Patch 0088: host overlay rasterizes installed Unicode glyphs with GDI.

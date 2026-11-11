@@ -15,6 +15,14 @@
 
 static void t5dr_cpu_check(void)
 {
+#ifdef T5DR_X86_BASELINE
+    /* The SSE2 baseline build (CMake T5DR_X86_BASELINE, ps3recomp patch 0126) runs on every x86-64 processor. */
+    /* Always one line, first in the game log: which runtime runs (launcher/problem_report.py reads it). */
+    fprintf(stderr, "[cpu] runtime: SSE2 build for processors without SSE4.1 (runtime\\sse2, about 1.3x the "
+                    "processor time of the normal build)\n");
+    fflush(stderr);
+    return;
+#endif
     int r[4] = {0, 0, 0, 0};
     __cpuid(r, 0);
     int ok = 0;

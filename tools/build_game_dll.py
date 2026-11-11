@@ -484,6 +484,9 @@ def main():
     ap.add_argument("--jobs", type=int, default=None,
                     help="compilers at once (default: one per processor, as many as fit in the free memory)")
     ap.add_argument("--force", action="store_true", help="recompile objects that look current")
+    ap.add_argument("--simd", choices=("sse41", "sse2"), default="sse41",
+                    help="sse2: the lifted SPU code without -msse4.1, for a processor without SSE4.1 (use with "
+                         "--march none and a runtime built with T5DR_X86_BASELINE); the same results")
     ap.add_argument("--march", default="auto",
                     help="target CPU of the lifted PPU code: auto (x86-64-v3 when this PC's CPU and Windows "
                          "support it, else avx when AVX1 is available, else none), x86-64-v3, avx, native, none")
@@ -540,6 +543,8 @@ def main():
     # tools/cross_build_test.py checks it).
     march = a.march
     why = ""
+    if a.simd == "sse2" and march == "auto":
+        march, why = "none", " (--simd sse2: no SSE4.1)"
     if march == "auto":
         march, missing = host_cpu_level(cl_cmd, obj)
         why = (" (this processor has AVX2, FMA, BMI2 and MOVBE)" if march == "x86-64-v3" else
@@ -587,7 +592,7 @@ def main():
     # or a forced --march): any change recompiles everything
     # (the options and the profile's content count too: a new profile recompiles everything)
     stamp_path = os.path.join(obj, "march.txt")
-    stamp_key = " ".join([march] + opt_opts)
+    stamp_key = " ".join([march] + opt_opts + ([a.simd] if a.simd != "sse41" else []))
     if any(use_opts.values()):
         with open(profile, "rb") as f:
             stamp_key += " profile-sha1=" + hashlib.sha1(f.read()).hexdigest()
@@ -607,7 +612,9 @@ def main():
     def command(src, o, attempt):
         cmd = cl_cmd + common
         if src.endswith(".c"):
-            cmd += ["/std:c17", "-TC", "/DSPU_USE_DISPATCH_MT", "-msse4.1"]   # as ps3recomp_runtime's INTERFACE option
+            cmd += ["/std:c17", "-TC", "/DSPU_USE_DISPATCH_MT"]
+            if a.simd == "sse41":
+                cmd += ["-msse4.1"]     # as ps3recomp_runtime's INTERFACE option; sse2: the helpers' SSE2 forms (patch 0126)
             cmd += ppu_opts     # same target CPU as the PPU code: the sound core ~7% cheaper with x86-64-v3 (CMakeLists.txt)
             if os.path.basename(os.path.dirname(src)).startswith("skin"):
                 cmd += ["/DSPU_FAST_FLOAT"]     # render-only skinning jobs: IEEE float ops (CMakeLists.txt)

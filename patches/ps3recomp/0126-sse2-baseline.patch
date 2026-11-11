@@ -1,0 +1,301 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -253,6 +253,7 @@
+ # ---------------------------------------------------------------------------
+ # Compiler flags
+ # ---------------------------------------------------------------------------
++option(PS3RECOMP_X86_BASELINE "x86-64: build for the SSE2 baseline (no SSE4.1/SSSE3)" OFF)
+ set(PS3RECOMP_HOST_ARM64 OFF)
+ if(CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64|ARM64")
+     set(PS3RECOMP_HOST_ARM64 ON)
+@@ -275,13 +276,16 @@
+         # SSE4.1 (any x86-64 since ~2008): pshufb/blendv for spu_shufb, the
+         # hottest SPU op in lifted audio code. x86-64 only; arm64 has the
+         # equivalent NEON ops in the base ISA and rejects -msse4.1.
+-        $<$<NOT:$<BOOL:${PS3RECOMP_HOST_ARM64}>>:-msse4.1>
++        # PS3RECOMP_X86_BASELINE (patch 0126): no -msse4.1 -- an SSE2-only runtime for
++        # processors before Core 2 "Penryn" / AMD before Bulldozer. spu_helpers.h then
++        # uses its SSE2 forms, which give the same bits.
++        $<$<NOT:$<OR:$<BOOL:${PS3RECOMP_HOST_ARM64}>,$<BOOL:${PS3RECOMP_X86_BASELINE}>>>:-msse4.1>
+     )
+     # The same for the C a port compiles against runtime/spu/spu_helpers.h --
+     # its lifted SPU images. Without it they get the per-lane float ops and the
+     # byte-loop shufb, and Tekken 5 DR's SPU sound core needed ~9 ms for each
+     # 5.33 ms audio tick. C only, so the lifted PPU C++ is not rebuilt for it.
+-    if(NOT PS3RECOMP_HOST_ARM64)
++    if(NOT PS3RECOMP_HOST_ARM64 AND NOT PS3RECOMP_X86_BASELINE)
+         target_compile_options(ps3recomp_runtime INTERFACE $<$<COMPILE_LANGUAGE:C>:-msse4.1>)
+     endif()
+ elseif(MSVC)
+diff --git a/runtime/spu/spu_helpers.h b/runtime/spu/spu_helpers.h
+--- a/runtime/spu/spu_helpers.h
++++ b/runtime/spu/spu_helpers.h
+@@ -85,6 +85,11 @@
+  * SPU byte s is s ^ 3, and an index with bit 7 set makes pshufb write zero. Integer
+  * operations only: the same bytes as the _ref loops for every input
+  * (tests/test_spu_int_sse.c: every shift count and position, random data). */
++/* An x86-64 build without SSE4.1 (the SSE2 baseline; patch 0126): the forms below marked
++ * SPU_X86_SSE2_ISA give the same bits as the SSE4.1 ones from SSE2 instructions alone. */
++#if !defined(__ARM_NEON) && !defined(__SSE4_1__) && (defined(__SSE2__) || defined(__x86_64__) || defined(_M_X64))
++#define SPU_X86_SSE2_ISA 1
++#endif
+ #if !defined(__ARM_NEON) && defined(__SSE4_1__) && !defined(SPU_SCALAR_HELPERS) && !defined(SPU_SCALAR_INT)
+ #define SPU_X86_PERM 1
+ #include <smmintrin.h>
+@@ -121,6 +126,58 @@
+     const __m128i ins = _mm_add_epi8(_mm_and_si128(i, _mm_set1_epi8((char)(s - 1))), _mm_set1_epi8((char)first));
+     return spu__x_st(_mm_blendv_epi8(_mm_add_epi8(i, _mm_set1_epi8(0x10)), ins, m));
+ }
++#elif defined(SPU_X86_SSE2_ISA) && !defined(SPU_SCALAR_HELPERS) && !defined(SPU_SCALAR_INT)
++/* The same operations for an x86-64 build without SSSE3/SSE4.1 (patch 0126: processors
++ * before Core 2 "Penryn" and AMD before Bulldozer). No pshufb there, so the byte shifts
++ * and rotates are done on the quadword as the big-endian number it is (SPU byte 0 = the
++ * top byte of _u32[0]): two 64-bit halves, a shift by 8 * count -- about 20 instructions
++ * where the scalar loop needs 90-200. The generate-controls form is the SSE4.1 one with
++ * the blend written as and/andnot (its mask is a whole-byte compare). The same bytes as
++ * the _ref loops and the SSE4.1 forms for every input (tests/test_spu_int_sse.c built
++ * without -msse4.1; tests/c/spu_sse2_cross_test.c compares the two builds). */
++#define SPU_X86_PERM 1
++#define SPU_X86_SSE2 1
++#include <emmintrin.h>
++static inline __m128i spu__x_ld(u128 a) { __m128i v; memcpy(&v, &a, 16); return v; }
++static inline u128 spu__x_st(__m128i v) { u128 r; memcpy(&r, &v, 16); return r; }
++static inline __m128i spu__x_pos(void) { return _mm_setr_epi8(3,2,1,0, 7,6,5,4, 11,10,9,8, 15,14,13,12); }
++static inline u128 spu__x_q(uint64_t hi, uint64_t lo) {
++    u128 r; r._u32[0]=(uint32_t)(hi>>32); r._u32[1]=(uint32_t)hi; r._u32[2]=(uint32_t)(lo>>32); r._u32[3]=(uint32_t)lo; return r;
++}
++#define SPU__X_HI(a) (((uint64_t)(a)._u32[0] << 32) | (a)._u32[1])
++#define SPU__X_LO(a) (((uint64_t)(a)._u32[2] << 32) | (a)._u32[3])
++/* rotate left by sh bytes: result SPU byte i = SPU byte (i + sh) & 15 */
++static inline u128 spu__x_rotby(u128 a, uint32_t sh) {
++    uint64_t hi = SPU__X_HI(a), lo = SPU__X_LO(a);
++    if (sh & 8) { const uint64_t t = hi; hi = lo; lo = t; }
++    const unsigned n = (sh & 7) * 8;                    /* 0..56: (x >> 1) >> (63 - n) is x >> (64 - n), 0 for n = 0 */
++    return spu__x_q((hi << n) | ((lo >> 1) >> (63 - n)), (lo << n) | ((hi >> 1) >> (63 - n)));
++}
++/* shift left by sh bytes (0..31): SPU byte i = SPU byte i + sh, zero from 16 on */
++static inline u128 spu__x_shlby(u128 a, uint32_t sh) {
++    uint64_t hi = SPU__X_HI(a), lo = SPU__X_LO(a);
++    sh &= 31;
++    if (sh & 16) return spu__x_q(0, 0);
++    if (sh & 8) { hi = lo; lo = 0; }
++    const unsigned n = (sh & 7) * 8;
++    return spu__x_q((hi << n) | ((lo >> 1) >> (63 - n)), lo << n);
++}
++/* shift right by sh bytes (0..31): SPU byte i = SPU byte i - sh, zero below sh */
++static inline u128 spu__x_shrby(u128 a, uint32_t sh) {
++    uint64_t hi = SPU__X_HI(a), lo = SPU__X_LO(a);
++    sh &= 31;
++    if (sh & 16) return spu__x_q(0, 0);
++    if (sh & 8) { lo = hi; hi = 0; }
++    const unsigned n = (sh & 7) * 8;
++    return spu__x_q(hi >> n, (lo >> n) | ((hi << 1) << (63 - n)));
++}
++static inline u128 spu__x_cxd(int pos, int s, int first) {
++    const __m128i i = spu__x_pos();
++    const __m128i m = _mm_cmpeq_epi8(_mm_and_si128(i, _mm_set1_epi8((char)~(s - 1))),
++                                     _mm_set1_epi8((char)(pos & 15 & ~(s - 1))));
++    const __m128i ins = _mm_add_epi8(_mm_and_si128(i, _mm_set1_epi8((char)(s - 1))), _mm_set1_epi8((char)first));
++    return spu__x_st(_mm_or_si128(_mm_andnot_si128(m, _mm_add_epi8(i, _mm_set1_epi8(0x10))), _mm_and_si128(m, ins)));
++}
+ #endif
+ 
+ /* Integer ops with a NEON form further down (end of file); the scalar definitions are
+@@ -435,6 +492,52 @@
+     }
+     u128 out; memcpy(&out, &r, 16); return out;
+ }
++#elif defined(SPU_X86_SSE2_ISA) && !defined(SPU_SCALAR_HELPERS) && !defined(SPU_SCALAR_INT)
++#include <emmintrin.h>
++#define SPU_SHUFB_SSE2 1
++/* Without pshufb (patch 0126): one pass of 16 table reads over {a, b} as they lie in
++ * memory. A selector s picks SPU byte s & 15 of a or (bit 4) b = byte ((s & 0x1F) ^ 3) of
++ * the 32 (xor 3 leaves bit 4), and the control byte for a result byte sits at that
++ * result byte's own position, so no byte order is converted anywhere. The indexes come
++ * out of the vector as two 64-bit words and the result goes back the same way (no
++ * store the following load would have to wait for). Special selectors as in the SSE4.1
++ * form: bit 7 clears the looked-up byte, 110 gives 0xFF, 111 gives 0x80. */
++static inline u128 spu_shufb(u128 a, u128 b, u128 c) {
++    __m128i C; memcpy(&C, &c, 16);
++    /* Whole words first: a control whose every word reads 4k, 4k+1, 4k+2, 4k+3 (k = 0..7) moves word k of {a, b}
++     * there -- what cwd/cdd controls and float-vector shuffles are -- as four 32-bit moves. In host order such a
++     * control word is 0x(4k)(4k+1)(4k+2)(4k+3): xor 0x00010203 leaves 4k in all four bytes. */
++    {
++        const __m128i x = _mm_xor_si128(C, _mm_set1_epi32(0x00010203));
++        const __m128i t = _mm_and_si128(x, _mm_set1_epi32(0x1C));
++        __m128i rep = _mm_or_si128(t, _mm_slli_epi32(t, 8));
++        rep = _mm_or_si128(rep, _mm_slli_epi32(rep, 16));
++        if (_mm_movemask_epi8(_mm_cmpeq_epi32(rep, x)) == 0xFFFF) {
++            uint32_t W[8], k[4]; memcpy(W, &a, 16); memcpy(W + 4, &b, 16);
++            _mm_storeu_si128((__m128i*)k, _mm_srli_epi32(t, 2));
++            u128 out;
++            out._u32[0] = W[k[0]]; out._u32[1] = W[k[1]]; out._u32[2] = W[k[2]]; out._u32[3] = W[k[3]];
++            return out;
++        }
++    }
++    uint8_t T[32]; memcpy(T, &a, 16); memcpy(T + 16, &b, 16);
++    const __m128i idx = _mm_xor_si128(_mm_and_si128(C, _mm_set1_epi8(0x1F)), _mm_set1_epi8(3));
++    const uint64_t i0 = (uint64_t)_mm_cvtsi128_si64(idx), i1 = (uint64_t)_mm_cvtsi128_si64(_mm_srli_si128(idx, 8));
++    uint64_t r0 = 0, r1 = 0;
++    for (int j = 0; j < 8; j++) {
++        r0 |= (uint64_t)T[(i0 >> (8 * j)) & 0xFF] << (8 * j);
++        r1 |= (uint64_t)T[(i1 >> (8 * j)) & 0xFF] << (8 * j);
++    }
++    __m128i r = _mm_set_epi64x((long long)r1, (long long)r0);
++    if (__builtin_expect(_mm_movemask_epi8(C) != 0, 0)) {
++        const __m128i neg = _mm_cmpgt_epi8(_mm_setzero_si128(), C);
++        const __m128i mC0 = _mm_cmpeq_epi8(_mm_and_si128(C, _mm_set1_epi8((char)0xC0)), _mm_set1_epi8((char)0xC0));
++        const __m128i mE0 = _mm_cmpeq_epi8(_mm_and_si128(C, _mm_set1_epi8((char)0xE0)), _mm_set1_epi8((char)0xE0));
++        const __m128i special = _mm_or_si128(_mm_andnot_si128(mE0, mC0), _mm_and_si128(mE0, _mm_set1_epi8((char)0x80)));
++        r = _mm_or_si128(_mm_andnot_si128(neg, r), special);
++    }
++    u128 out; memcpy(&out, &r, 16); return out;
++}
+ #elif defined(__ARM_NEON)
+ #include <arm_neon.h>
+ /* NEON version: tbl over the 32-byte {a,b} concatenation. SPU byte P lives at
+@@ -455,7 +558,7 @@
+     u128 out; vst1q_u8(out._u8, r); return out;
+ }
+ #endif
+-#if defined(__SSE4_1__) || defined(__ARM_NEON)
++#if defined(__SSE4_1__) || defined(__ARM_NEON) || defined(SPU_SHUFB_SSE2)
+ /* The byte loop stays as the reference (tests/test_spu_shufb.c checks both). */
+ static inline u128 spu_shufb_ref(u128 a, u128 b, u128 c) {
+     /* shufb is defined on SPU byte positions. Our u128 is host-native LE, so SPU
+@@ -906,16 +1009,33 @@
+ SPU__NV_INLINE u128 spu_fma(u128 a, u128 b, u128 c)  { return spu__nv_fma(a, b, c, 0, 0); }            /* a*b + c */
+ SPU__NV_INLINE u128 spu_fms(u128 a, u128 b, u128 c)  { return spu__nv_fma(a, b, c, 0, 0x80000000u); }  /* a*b - c */
+ SPU__NV_INLINE u128 spu_fnms(u128 a, u128 b, u128 c) { return spu__nv_fma(a, b, c, 0x80000000u, 0); }  /* c - a*b */
+-#elif defined(__SSE4_1__) && !defined(SPU_SCALAR_HELPERS)
++#elif (defined(__SSE4_1__) || defined(SPU_X86_SSE2_ISA)) && !defined(SPU_SCALAR_HELPERS)
+ /* The NEON fast path above, on x86 with SSE4.1: widen each half to f64x2 (exact), operate,
+  * clear the 29 low significand bits (truncation toward zero), narrow (exact). Lanes whose
+  * operands or result fall outside the ordinary range -- and fma lanes that rounded onto a
+  * 24-bit boundary -- are redone one by one (scalar fast path, else exact), as on arm64.
+  * The per-lane form costs four branchy lanes per op; Tekken 5 DR's sound core (FFT
+  * butterflies of fa/fs/fma) could not finish its 5.33 ms audio tick in time with it. */
+-#include <smmintrin.h>
+ #define SPU__SX_INLINE static inline __attribute__((always_inline))
+ #define SPU__SX_SLOW   static inline __attribute__((noinline, cold))
++/* The three instructions of this path that SSE2 lacks (patch 0126): pabsd, pcmpeqq and
++ * ptest. Their SSE2 forms compute the same values, so the whole path gives the same bits
++ * in a build without SSE4.1 (tests/c/spu_sse2_cross_test.c). */
++#if defined(__SSE4_1__)
++#include <smmintrin.h>
++#define spu__sx_abs32(x) _mm_abs_epi32(x)       /* macros: the SSE4.1 build's code stays token for token as before */
++#define spu__sx_eq64(a, b) _mm_cmpeq_epi64(a, b)
++#define spu__sx_any(m) !_mm_testz_si128(m, m)   /* (only use: '*bad = spu__sx_any(ext);') */
++#else
++#include <emmintrin.h>
++SPU__SX_INLINE __m128i spu__sx_abs32(__m128i x) {       /* (x ^ s) - s, s = the sign spread: INT_MIN stays, as pabsd */
++    const __m128i s = _mm_srai_epi32(x, 31); return _mm_sub_epi32(_mm_xor_si128(x, s), s);
++}
++SPU__SX_INLINE __m128i spu__sx_eq64(__m128i a, __m128i b) {   /* both dwords of a lane equal */
++    const __m128i e = _mm_cmpeq_epi32(a, b); return _mm_and_si128(e, _mm_shuffle_epi32(e, _MM_SHUFFLE(2, 3, 0, 1)));
++}
++SPU__SX_INLINE int spu__sx_any(__m128i m) { return _mm_movemask_epi8(_mm_cmpeq_epi8(m, _mm_setzero_si128())) != 0xFFFF; }
++#endif
+ SPU__SX_INLINE __m128i spu__sx_ld(u128 a) { __m128i v; memcpy(&v, &a, 16); return v; }
+ SPU__SX_INLINE u128 spu__sx_st(__m128i v) { u128 r; memcpy(&r, &v, 16); return r; }
+ /* A lane the fast path takes: an ordinary single (biased exponent 1..254) or a true zero
+@@ -939,13 +1059,13 @@
+  * boundary); zero lanes get their sign cleared (the SPU never produces -0). */
+ SPU__SX_INLINE __m128i spu__sx_trunc0(__m128d lo, __m128d hi, __m128i* ok, const __m128d* elo, const __m128d* ehi) {
+     const __m128i ulo = _mm_castpd_si128(lo), uhi = _mm_castpd_si128(hi), z = _mm_setzero_si128();
+-    const __m128i az = spu__sx_pack(_mm_cmpeq_epi64(_mm_slli_epi64(ulo, 1), z), _mm_cmpeq_epi64(_mm_slli_epi64(uhi, 1), z));
++    const __m128i az = spu__sx_pack(spu__sx_eq64(_mm_slli_epi64(ulo, 1), z), spu__sx_eq64(_mm_slli_epi64(uhi, 1), z));
+     const __m128i be = _mm_and_si128(spu__sx_pack(_mm_srli_epi64(ulo, 52), _mm_srli_epi64(uhi, 52)), _mm_set1_epi32(0x7FF));
+     __m128i good = _mm_and_si128(_mm_cmpgt_epi32(be, _mm_set1_epi32(1023 - 127)),     /* e >= -126 */
+                                  _mm_cmplt_epi32(be, _mm_set1_epi32(1023 + 128)));    /* e <= 127  */
+     if (elo) {
+         const __m128i low = _mm_set1_epi64x(0x1FFFFFFFll);
+-        const __m128i bnd = spu__sx_pack(_mm_cmpeq_epi64(_mm_and_si128(ulo, low), z), _mm_cmpeq_epi64(_mm_and_si128(uhi, low), z));
++        const __m128i bnd = spu__sx_pack(spu__sx_eq64(_mm_and_si128(ulo, low), z), spu__sx_eq64(_mm_and_si128(uhi, low), z));
+         const __m128i ez = spu__sx_pack(_mm_castpd_si128(_mm_cmpeq_pd(*elo, _mm_setzero_pd())),
+                                         _mm_castpd_si128(_mm_cmpeq_pd(*ehi, _mm_setzero_pd())));
+         good = _mm_and_si128(good, _mm_or_si128(_mm_andnot_si128(bnd, _mm_set1_epi32(-1)), ez));
+@@ -978,7 +1098,7 @@
+     const __m128i xa = spu__sx_ld(a), yb = spu__sx_ld(b);
+     const __m128i x = xa, y = _mm_xor_si128(yb, _mm_set1_epi32((int)negb));
+     /* the exponent-gap limit applies only between two nonzero terms */
+-    const __m128i gap = _mm_cmplt_epi32(_mm_abs_epi32(_mm_sub_epi32(spu__sx_bexp(x), spu__sx_bexp(y))), _mm_set1_epi32(30));
++    const __m128i gap = _mm_cmplt_epi32(spu__sx_abs32(_mm_sub_epi32(spu__sx_bexp(x), spu__sx_bexp(y))), _mm_set1_epi32(30));
+     const __m128i pre = _mm_and_si128(_mm_and_si128(spu__sx_plain0(x), spu__sx_plain0(y)),
+                                       _mm_or_si128(gap, _mm_or_si128(spu__sx_iszero(x), spu__sx_iszero(y))));
+     __m128i ok;
+@@ -1070,7 +1190,7 @@
+ SPU__SX_INLINE __m128i spu__nf_out(__m128 r, int* bad) {
+     const __m128i ri = _mm_castps_si128(r), m = spu__nf_abs(ri);
+     const __m128i ext = _mm_cmpgt_epi32(m, _mm_set1_epi32(0x7F7FFFFF));
+-    *bad = !_mm_testz_si128(ext, ext);
++    *bad = spu__sx_any(ext);
+     return _mm_andnot_si128(_mm_cmpgt_epi32(_mm_set1_epi32(0x00800000), m), ri);
+ }
+ SPU__SX_SLOW __m128i spu__nf_fa_slow(u128 a, u128 b, uint32_t negb) { return spu__sx_ld(spu__sx_fa(a, b, negb)); }
+@@ -2015,8 +2135,15 @@
+ static inline u128 spu_fsmb(u128 a) {
+     /* host bytes 0-7 are SPU bytes 0-7 (selector bits 15-8), 8-15 bits 7-0 */
+     const __m128i m = _mm_setr_epi8(16, 32, 64, -128, 1, 2, 4, 8, 16, 32, 64, -128, 1, 2, 4, 8);
++#if defined(SPU_X86_SSE2)
++    /* byte 1 of the selector in host bytes 0-7, byte 0 in 8-15, without pshufb (patch 0126) */
++    const __m128i t = _mm_cvtsi32_si128((int)a._u32[0]);
++    const __m128i v = _mm_shuffle_epi32(_mm_shufflelo_epi16(_mm_unpacklo_epi8(t, t), _MM_SHUFFLE(0, 0, 1, 1)),
++                                        _MM_SHUFFLE(1, 1, 0, 0));
++#else
+     const __m128i v = _mm_shuffle_epi8(_mm_cvtsi32_si128((int)a._u32[0]),
+                                        _mm_setr_epi8(1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0));
++#endif
+     return spu__x_st(_mm_cmpeq_epi8(_mm_and_si128(v, m), m));
+ }
+ #else
+diff --git a/runtime/spu/tests/test_spu_float_neon.c b/runtime/spu/tests/test_spu_float_neon.c
+--- a/runtime/spu/tests/test_spu_float_neon.c
++++ b/runtime/spu/tests/test_spu_float_neon.c
+@@ -32,7 +32,7 @@
+ 
+ int main(void)
+ {
+-#if !defined(__ARM_NEON) && !defined(__SSE4_1__)
++#if !defined(__ARM_NEON) && !defined(__SSE4_1__) && !defined(SPU_X86_SSE2_ISA)
+     puts("test_spu_float_neon: no NEON or SSE4.1, nothing to compare");
+     return 0;
+ #else
+diff --git a/runtime/spu/tests/test_spu_int_sse.c b/runtime/spu/tests/test_spu_int_sse.c
+--- a/runtime/spu/tests/test_spu_int_sse.c
++++ b/runtime/spu/tests/test_spu_int_sse.c
+@@ -81,12 +81,20 @@
+     for (long k = 0; k < 2000000; k++) {
+         const u128 a = rnd128(), b = rnd128();
+         u128 c = rnd128();
+-        const int mode = (int)(k % 4);
++        const int mode = (int)(k % 6);
+         for (int i = 0; i < 16; i++) {
+             if (mode == 0) c._u8[i] &= 0x1F;
+             else if (mode == 1) c._u8[i] = (uint8_t)((k + i * 17) & 0xFF);
+             else if (mode == 2 && (rnd() & 7)) c._u8[i] &= 0x7F;
+         }
++        if (mode >= 4) {          /* whole-word controls (patch 0126's SSE2 fast path), and near misses of them */
++            for (int w = 0; w < 4; w++) c._u32[w] = 0x00010203u + 0x04040404u * (rnd() & 7);
++            if (mode == 5) {
++                const uint32_t r = rnd();
++                if (r & 1) c._u8[(r >> 1) & 15] ^= (uint8_t)(1u << ((r >> 5) & 7));     /* one bit off */
++                else c._u32[(r >> 1) & 3] += 0x04040404u * ((r >> 3) & 15);            /* k up to 22: specials */
++            }
++        }
+         check("shufb", k, spu_shufb(a, b, c), spu_shufb_ref(a, b, c));
+     }
+     /* the fsm family: every selector value, with random bits above it */
+diff --git a/runtime/spu/tests/test_spu_shufb.c b/runtime/spu/tests/test_spu_shufb.c
+--- a/runtime/spu/tests/test_spu_shufb.c
++++ b/runtime/spu/tests/test_spu_shufb.c
+@@ -8,7 +8,7 @@
+ 
+ int main(void)
+ {
+-#if !defined(__SSE4_1__) && !defined(__ARM_NEON)
++#if !defined(__SSE4_1__) && !defined(__ARM_NEON) && !defined(SPU_SHUFB_SSE2)
+     puts("test_spu_shufb: built without SSE4.1 or NEON, nothing to compare");
+     return 0;
+ #else

@@ -164,6 +164,18 @@ class PcTest(Base):
         self.assertEqual(found[0].text()[1], "This PC: no SSE4.1.")
         self.assertEqual(pc.help_url(found[0]).split("#")[1], "this-processor-is-too-old-or-build-the-game-again")
         self.assertEqual(self.keys(facts=dict(FOUR, sse41=True)), [])
+        self.assertEqual(self.keys(facts=dict(FOUR, sse41=True, sse2_runtime=True)), [])
+
+    def test_processor_without_sse41_with_the_sse2_runtime(self):
+        # the release carries runtime/sse2: BUILD GAME uses it, so a hint with the speed, not a stop
+        found = pc.check(self.out, {"cores": 4, "logical": 4, "wine": None, "sse41": False, "sse2_runtime": True},
+                         no_fw)
+        self.assertEqual([(f.key, f.kind) for f in found], [("old_cpu", "hint")])
+        title, seen, fix = found[0].text()
+        self.assertIn("slower build", title)
+        self.assertEqual(seen, "This PC: no SSE4.1.")
+        self.assertIn("1.3 times", fix)
+        self.assertIn("estimates", fix)
 
     def test_wine_from_the_game_log(self):
         self.game_log("[wine] Wine 9.0 (Proton) Proton: GE-Proton10-4 on Linux -- RSX_VERTEX_THREADS=0 PS3_LWM_FAST=0\n")
@@ -184,7 +196,7 @@ class PcTest(Base):
 
     def test_facts_of_this_pc(self):
         f = pc.system_facts()
-        self.assertEqual(set(f) - {"sse41"}, {"cores", "logical", "wine"})
+        self.assertEqual(set(f) - {"sse41"}, {"cores", "logical", "wine", "sse2_runtime"})
         if os.name == "nt":
             self.assertTrue(f["sse41"])                 # (no PC that runs these tests lacks it)
         self.assertIsNone(f["wine"])                    # (the tests run on Windows itself)

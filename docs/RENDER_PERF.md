@@ -4387,7 +4387,9 @@ stage 20 (51 wraps in 50 s; on the pool stage 30, ~6 a second), and the recycle 
 translated the whole tail of the ring -- 2.8 ms (median), p90 4.0, max 6.2 a wrap -- polling with `Sleep(1)`. The
 skinning chain's queue (sc 130) is not a cause here: 0.00-0.17 ms a frame, 0.06 in the top 1 %; it only grows on the
 4 ms stop-go stand-in (0.57 -> 1.31 ms), where the main thread is also runnable but not running for 2 ms more (the
-stand-in itself). Two to three frames per 80 s run are the main thread's own CPU at 7-11 ms (cause not found yet).
+stand-in itself). Two to three frames per 80 s run are the main thread's own CPU at 7-11 ms (cause not found then;
+found since: two game frames between two logged flip requests, "A frame that ends at the ring's end" below, and the
+round's first frame).
 
 **Patch 0123, the ring wrap's wait woken by the walker**: the same wait condition and bound, but `WaitOnAddress` on
 the walker's drained position, woken when the walker publishes it (at most 1 ms a round, so the semaphore case is
@@ -4506,3 +4508,94 @@ Seen on the way, not followed up: one pair (simulated 500 Hz, stage 30) lost its
 joiner's packets stopped reaching the host through the test's UDP proxy, both games ended with
 `peer_timeout` / `peer_quit` (the rerun was fine); one pair hung in the loading before the select screen (async
 reader busy) while two other heavy jobs ran on this PC (the rerun was fine).
+
+## A frame that ends at the ring's end: one picture lost, two frames of work (patch 0125, branch `t5-spikes-018`)
+
+Two open items, one cause. (1) "Two to three frames per 80 s are the main thread's own CPU at 7-11 ms" (above). (2) The
+owner, 2026-11-10: the Electric Wind God Fist (f, n, d, d/f+2) gives frame-time spikes in offline Practice, with
+dropped inputs.
+
+**The EWGF itself costs almost nothing.** Scripted per frame (`T5_DF_SCRIPT`, as `tools/effects_test.py`: Kazuya vs
+Heihachi, stage 20, P2 walking in so every one hits), 20 times, 150 frames apart, against the plain Wind God Fist (2 one
+frame later: the same motion, launch and hit spark, a few arcs instead of the lightning) and the bare motion; frames
+-5..+90 around the press, this PC (16 logical processors, RTX 3090, 720p, below-normal priority beside other agents'
+runs), cache warm:
+
+| 20 x, stage 20 | game thread CPU p50 / p99 | game part p50 / p99 | translation p50 / p99 | draws p50 / max | lost pictures |
+|---|---|---|---|---|---|
+| EWGF (hits) | 2.40 / 3.05 ms | 2.62 / 5.09 | 1.31 / 1.64 | 724 / 846 | 0 |
+| WGF (hits) | 2.34 / 2.89 | 2.55 / 5.18 | 1.29 / 1.55 | 722 / 838 | 0 |
+| the motion alone | 2.23 / 2.69 | 2.47 / 5.08 | 1.23 / 1.44 | 698 / 726 | 0 |
+| frames between the moves (EWGF run) | 2.46 / 2.90 | 2.67 / 5.09 | 1.31 / 1.58 | 754 / 815 | |
+
+The lightning and the hit are 100-140 more draws for ~30 frames (9 frames after the 2), +0.2 ms of game thread and
++0.15 ms of translation in those frames; no pipeline is built from the second EWGF on (the first one on a stage whose
+effects are not in the cache yet is another matter: one Practice run on a stage this cache had not seen compiled 3
+shaders in two frames of its first hits, 23 and 61 ms -- the shader warm-up's subject, `tools/shader_warmup.py`). The same in
+offline Practice with a player's settings (`T5_PRACTICE=1`, `T5_TRAINING=frames`, the pads through `PS3_PAD_FILE`,
+20 of 20 EWGFs out): game thread 2.62 / 3.40 ms in the move's frames against 2.51 / 3.13 between them.
+
+**What does spike: a frame whose commands end in the last 4 KB of the command ring.** In the old build's runs above
+3 of ~3,500 Practice frames and 4 of 3,100 fight frames came 53-55 ms after the frame before them, with twice a
+frame's work on the main thread (4.2-5.8 ms where a frame is 2.4-2.6) -- the "7-11 ms" frames of the first item, which
+are two frames between two logged flip requests, not one slow frame. The latency log of one of them:
+
+| ms | event |
+|---|---|
+| 0.0 | tick: flip N done, the game starts frame N+1 (the pads are read) |
+| +2.9 | the game asks for N+1's flip -- **not** through the FIFO (no `F` line) |
+| +4.4 | a picture is presented with 0 draws: the walker has read none of N+1's commands |
+| +16.7 | the next tick is held a whole period: it waits for a flip in the FIFO that is not there (`PS3_LATE_FLIP`) |
+| +33.4 | the held tick and the next one together; the game starts frame N+2 (the pads are read again) |
+| +39.8 | N+2's flip, through the FIFO; its picture has both frames' draws (1,434 for ~720) |
+
+Cause: `cellGcmSetUserCommand` and `cellGcmSetFlip` (the title's two calls at the end of every frame) put their
+words into the title's command ring -- unless `current` is within `GCM_RECYCLE_SLACK` (4 KB) of the ring's end
+(`gcm_flip_into_fifo`, `libs/video/cellGcmSys.c`); then the user command was delivered at once and the flip made at call
+time. Tekken's ring is 4 MB and a fight frame writes 450-700 KB into it (`[cellGcmSys] ring wrapped at a flip`
+every 6-9 frames: the runtime wraps it at a flip once less than 256 KB are left), so a frame ends in the last 4 KB when
+k frames add up to the ring's size within 4 KB: never while every frame is the same size, about once in a thousand
+frames while the size moves -- and the size moves when effects come and go. That is the link to the EWGF: in the
+scripted fight the lost pictures sit 13, 48 and 48 frames after a press (three within 200 frames), and in Practice
+between two EWGFs. A lost picture is a tick without a frame: the pads are read at +0 and at +33 ms, so a direction
+held for one frame of a just-frame input (the neutral or the down of f, n, d, d/f+2) can fall between two reads -- the
+"dropped inputs".
+
+**Patch 0125.** Near the ring's end the two calls now do what the runtime does at a flip on every lap anyway: write
+the words and the JUMP to the ring's start (`current` = begin), by the same rule (the walker has left the first 128 KB
+of the ring); with fewer than 16 / 8 bytes left the JUMP comes first and the words go to the ring's start. Refused as
+before -- call time -- only when the walker is still in the ring's head. `PS3_GCM_RING_END=0` = before. The log says
+which happened (the first 4 and every 100th): `[cellGcmSys] frame ended N bytes before the ring's end: ring wrapped
+there, the flip stays in the FIFO` / `... flip made at call time, outside the FIFO (one picture is lost)`.
+Tests: `PS3_GCM_TEST_RING_SLACK=<bytes>` widens "the end" (more frames end there), `PS3_GCM_TEST_RING_WRAP=1` takes the
+JUMP-first way every time. `tools/frame_skips.py GT_LOG [--game-log LOG]` lists the lost pictures of a
+`PS3_GAME_THREAD_LOG` (exit 1 when there is one); `tests/test_ring_end_flip.py`.
+
+| scripted fight, stage 20 (the same frames in every run) | lost pictures | frames at the ring's end kept in the FIFO | longest frame |
+|---|---|---|---|
+| before (`PS3_GCM_RING_END=0`), 3,100 frames | 4 (flips 3012, 4118, 4153, 4303) | 0 | 54.5 ms |
+| patch 0125, 3,100 frames | 0 | 4 (the same flips) | 22.6 ms (the round's first frame, below) |
+| before, the end widened to 64 KB, 2,300 frames | 36 | 0 | 55.8 ms |
+| patch 0125, widened to 64 KB | 0 | all | 24.8 ms |
+| patch 0125, widened to 64 KB, JUMP first | 0 | all | 22.5 ms |
+| offline Practice, 20 EWGFs: before / patch 0125 | 3 / 0 | 0 / 3 | 54.2 / 19.5 ms in the moves' frames |
+
+Same game: rollback pairs (`rollback_net_test.py --rtt 60 --fight kaz,hei,20,3 --mash --moves`, 6,000 frames each):
+before vs before, patch vs patch, patch vs patch with the widened end and JUMP first, and patch (host) vs before
+(joiner): 0 mismatching frames through frame 5,999 on both PCs in all four (the pair before lost at least 4 + 1
+pictures, the pair with the patch none; the patched Practice run had one 116 ms and one 36 ms frame of its own, a
+single frame's work each: the translation thread stood still for 113 ms, not at a press and not at the ring's end --
+other jobs were starting on this PC). The ring and the context are not part of the compared state, and where the ring wraps
+already depended on the walker's position.
+
+**The other 7-8 ms frame is the game's own.** With the lost pictures gone the longest frames of a Versus fight are the
+first frame of each round (flip 1665 in every scripted run, 3410 for round 2: game thread 7.1-8.4 ms, the frame 22-24
+ms long) and one about 120 frames after a KO (5.8-6.3 ms). Timestamped samples of the main thread
+(`tools/thread_profile.py --thread main --rate 4000 --raw-time`) in that frame: 28 busy samples against 8 in a normal
+frame, 7 of them in the guest's `func_00283CD0` and 7 more in `func_00285F6C`, `func_000C78D8`, `func_003693A8` /
+`func_003698D8` (0.2 samples a frame otherwise) -- the title's round set-up, the same on a PS3; not changed. Offline
+Practice has no rounds and no such frame.
+
+Not found: a spike on every EWGF. On this PC, with this build, 20 of 20 in Practice and 60 of 60 in fights cost what
+the table says; what a player doing them over and over meets is the lost picture above (three in a minute of
+Practice here), which needs the frame's size to move and takes an input read with it.

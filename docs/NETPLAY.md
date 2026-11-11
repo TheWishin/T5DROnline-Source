@@ -356,8 +356,7 @@ opponent's input still on the way) and the slower PC's capacity (the smaller of 
 | Balanced (default) | the auto pick, one frame more when the slower PC cannot re-simulate E inside a frame (E > C): its rollbacks would drop frames, and the game waits for the slower PC |
 | Smooth | at least `ceil(rtt / 33.4 ms) + 1 - 2` (at most two frames predicted), at most two more than the auto pick, and the capacity frame on top when still needed |
 
-Never above the session's lockstep delay (`T5_NET_DELAY`, the lobby's suggestion) and never below the auto pick,
-except by the measured one-frame rule below.
+Never above the session's lockstep delay (`T5_NET_DELAY`, the lobby's suggestion) and never below the auto pick.
 The log: `online feel balanced (this player balanced, the opponent balanced), rollback capacity this PC 5 / opponent
 0 frame(s), expected depth 3 -> 3 frame(s): balanced: a frame for the slower PC's rollbacks`. The opt-in jitter rule
 (`T5_RB_NET_ADAPTIVE_DELAY`, docs/ROLLBACK_120.md) runs after it as before. A delay changed during a match would need
@@ -370,72 +369,6 @@ the same after the wall-time measurement (rb_new2: the host measured itself at c
 lockstep new / new; new host / 1.2.0 joiner and 1.2.0 host / new joiner (each falls back to the 1.2.0 rule, delay 2):
 0 mismatching frames, same hashes. `tools/replay_play.py` with the new build: 5 of 5 recordings identical (rollback,
 lockstep, both cross pairs).
-
-### One frame by measured cost (branch `input-delay-018`)
-
-Owner's target: one frame of input delay at every ping the PC can hold. Measured first (2026-11-11, release-123-final's
-exe, two games on this PC through `tools/rollback_net_test.py`'s proxy, 8 logical processors each, 2 % loss, both sides
-mashing with motion inputs = a rollback on nearly every third frame, one 3-round match per run, `T5_RB_NET_LOG=1` for
-every rollback's wall time; 4-5 other processors busy). Budget = what the capacity formula leaves a rollback
-(15 ms - L, about 12 ms here); this PC measured itself at L 3.0-3.3, R 0.4-0.7, S 3.2-3.9 ms = capacity 2-3.
-
-| round trip | delay | rollback depth p50 / p99 | rollback ms p50 / p99 | over the budget | fight frame ms p95 / p99 | fps |
-|---|---|---|---|---|---|---|
-| 60 ms | 1 | 1 / 3 | 3.2 / 15.4 | 4 % | 20.0 / 23.5 | 59.8 |
-| 100 ms | 1 | 3 / 4 | 9.8 / 21.5 | 33 % | 24.5 / 30.0 | 59.8 |
-| 100 ms | 2 | 2 / 4 | 6.1 / 18.1 | 17 % | 20.0 / 24.0 | 60.0 |
-| 120 ms | 1 | 3 / 5 | 10.6 / 24.7 | 39 % | 27.5 / 38.0 | 58.8 |
-| 150 ms | 1 | 4 / 6 | 13.3 / 26.3 | 65 % | 30.0 / 45.5 | 57.1 |
-| 150 ms | 2 | 3 / 4 | 10.3 / 20.4 | 26 % | 25.0 / 32.5 | 59.4 |
-| 60 ms, 4 cores without SMT each | 1 | 1 / 3 | 3.1 / 15.2 | 8 % | 19.5 / 22.0 | 60.0 |
-| 100 ms, 4 cores without SMT each | 1 | 3 / 4 | 9.5 / 19.1 | 31 % | 24.0 / 29.0 | 60.0 |
-
-(Host's numbers; the joiner's are within a millisecond. Every run: 0 mismatching frames, the same result hash on both
-sides.) By depth, all runs alike: 1 frame 3 ms (p99 5-6), 2 frames 6.5 (p99 14-16), 3 frames 10 (p99 19), 4 frames 15
-(p99 22-27), 5 frames 18 (p99 25-30). What it says:
-
-- The 99th-percentile rollback is one frame deeper than `expected_depth()` at every ping (3, 4, 5, 6 frames at 60,
-  100, 120, 150 ms with one frame of delay): loss and the packet's wait add a frame.
-- On this PC one frame of delay holds at 60 ms and not at 100 ms or above: a third of the rollbacks there end after
-  the budget and every twentieth fight frame takes 24 ms or more. Two frames at 100 ms look like one frame at 60 ms.
-- A fixed ping threshold cannot be right for every PC: what holds depends on S.
-
-**The rule** (`rollback_feel.h` `decide(..., measured)`, Responsive and Balanced; Smooth unchanged): when BOTH PCs
-sent a measured capacity and the 1.2.0 pick is 2 only because the round trip is above 60 ms, the match keeps **one
-frame as long as `ceil(rtt / 33.4 ms) + 1 <= C`** (the 99th-percentile depth of one frame of delay fits the slower
-PC's capacity), never beyond the 6 frames measured at 150 ms:
-
-| slower PC's capacity C | one frame up to |
-|---|---|
-| not measured on one of the PCs, or 0-2 | 60 ms (the 1.2.0 rule; Balanced still adds its frame below that when E > C) |
-| 3 (this dev PC under test load) | 66 ms |
-| 4 | 100 ms |
-| 5 | 133 ms |
-| 6 and more | 166 ms |
-
-Above that: 2 frames, and Balanced's frame for the slower PC as before. Fixed values (both players chose the same
-number, ranked's `T5L_RANKED_INPUT_DELAY`, the far-match and challenge delays of the lobby) are untouched, so ranked
-stays at the server's 2 frames. The host logs `one frame by measured cost: ...` when the rule lowered the pick. The
-delay is still one number the host picks once and both PCs use from the same frame: nothing the game simulates
-changes, no protocol change, an older game on either side gets the old pick from the same code path.
-
-Tested with the branch's exe (same harness, 2 % loss, mashing, auto / auto, Balanced; `rb_cost.txt` of this PC from
-the runs above on both sides = capacity 3 / 3, or `T5_RB_COST=2.0,0.4,2.0` = a capacity-6 PC), one match each:
-
-| run | round trip measured | capacity | delay picked | fight frame ms p95 / p99 (host) | sync | result hash |
-|---|---|---|---|---|---|---|
-| p060 | 61 ms | 3 / 3 | 1 (the rule; 1.2.3: 2) | 19.0 / 21.0 | 0 mismatching frames | same |
-| p064 | 65 ms | 3 / 3 | 1 (the rule; 1.2.3: 2) | 19.5 / 21.5 | 0 | same |
-| p100 | 101 ms | 3 / 3 | 2 | 19.0 / 22.5 | 0 | same |
-| p150 | 151 ms | 3 / 3 | 2 (Balanced's third frame cut by the harness's lockstep delay 2) | 25.0 / 32.0 | 0 | same |
-| q100 | 101 ms | 6 / 6 (forced) | 1 | 24.0 / 30.0 | 0 | same |
-| q150 | 151 ms | 6 / 6 (forced) | 1 | 30.5 / 44.0 | 0 | same |
-
-q100 / q150 prove the sync of one frame at those pings, not the smoothness: this PC is not a capacity-6 PC, and its
-frame times there are the ones the rule avoids. `tests/c/rollback_feel_test.cpp` (5,498 checks: the rule, the table
-against `decide()` at every ping 61-400 ms and capacity 0-15, the old call unchanged). Not verified: two real PCs, a
-real connection's jitter, a weak PC's own capacity (only this 7950X, 8 processors or 4 cores per game), human play
-(mashing rolls back far more often than a person: a person's frames are better at every row).
 
 ### Connection line
 

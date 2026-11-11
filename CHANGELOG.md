@@ -3,37 +3,12 @@
 All notable changes, newest first. The project is a test release. Short commit hashes are in parentheses. The state of each
 part is in the README's status table.
 
-## v1.2.4 (unreleased)
-
-**Processors without SSE4.1 (Core 2 before 2008, Phenom II, Athlon II) can now start the game.** Both players need
-1.2.4 (the lobby pairs equal versions only).
-
-### Old PCs
-- **Processors without SSE4.1 can play** (Intel Core 2 before 2008 such as the E6000 and Q6600, AMD Phenom II,
-  Athlon II, Athlon 64 X2; until now the game stopped at its start with "processor too old"). The release carries
-  a second build of the game (`runtime\sse2`), and BUILD GAME picks it by itself on such a processor. It plays the
-  same game as everyone else, online too, but needs about 1.3 times the processor time, and these processors are
-  slow for this game anyway. Our estimates (no such PC has run it yet): Phenom II X4/X6 about 35-45 fps in fights,
-  Core 2 Quad about 20-25, Core 2 Duo 10-15 with broken sound. Windows 11 24H2 and newer do not start on these
-  processors at all; Windows 10 does. Every other PC keeps the normal build, unchanged. (186d3d64)
-- **The launcher says which build fits this PC**: Check my problem tells you before a build that your processor
-  gets the slower build and what speed to expect; a game built for the other kind of processor (built before this
-  version, or on another PC) asks for BUILD GAME again on the Play tab -- your saves are kept. The game log names
-  the build that runs, so a problem report shows it. Texts in all languages. (186d3d64)
-
-### Diagnostics
-- **Texture check for old graphics cards** (`RSX_FP_TEX_MASK_CHECK=1` in Settings -> Extra settings, for testers):
-  on cards with resource binding tier 1 (the old Fermi GT 730) the game binds only the textures a shader reads.
-  The switch checks every shader against that and writes a `-- WRONG` line into the game log if one would miss a
-  texture. Nothing changes without it. Measured on the way: on these cards the texture binding is not what costs
-  the frames. (821978f9)
-
 ## v1.2.3 (2026-11-10)
 
 **Ranked matches start straight from the launcher's fighter and costume, win records show on the select and VS
 screens online, the Practice reset really resets, offline Versus gets an input display, the launcher counts your
-playtime and shares its settings between folders, and old PCs and old graphics cards lose fewer frames.** Both
-players need 1.2.3 (the lobby pairs equal versions only); the ranked costume choice and the win records also need
+playtime and shares its settings between folders, old PCs and old graphics cards lose fewer frames, and processors
+without SSE4.1 can start the game.** Both players need 1.2.3 (the lobby pairs equal versions only); the ranked costume choice and the win records also need
 the new lobby server.
 
 ### Online
@@ -79,6 +54,19 @@ the new lobby server.
   per-draw timing clock runs only with the frame log on. The picture is the same (every program checked against
   the shader the game runs); `RSX_VP_CONST_RANGE=0` copies whole blocks.
 
+### Old PCs
+- **Processors without SSE4.1 can play** (Intel Core 2 before 2008 such as the E6000 and Q6600, AMD Phenom II,
+  Athlon II, Athlon 64 X2; until now the game stopped at its start with "processor too old"). The release carries
+  a second build of the game (`runtime\sse2`), and BUILD GAME picks it by itself on such a processor. It plays the
+  same game as everyone else, online too, but needs about 1.3 times the processor time, and these processors are
+  slow for this game anyway. Our estimates (no such PC has run it yet): Phenom II X4/X6 about 35-45 fps in fights,
+  Core 2 Quad about 20-25, Core 2 Duo 10-15 with broken sound. Windows 11 24H2 and newer do not start on these
+  processors at all; Windows 10 does. Every other PC keeps the normal build, unchanged. (186d3d64)
+- **The launcher says which build fits this PC**: Check my problem tells you before a build that your processor
+  gets the slower build and what speed to expect; a game built for the other kind of processor (built before this
+  version, or on another PC) asks for BUILD GAME again on the Play tab -- your saves are kept. The game log names
+  the build that runs, so a problem report shows it. Texts in all languages. (186d3d64)
+
 ### Offline
 - **"Always see me on the left" no longer mirrors offline Versus** (report GMSUZH): with the setting on, a local
   Versus fight was shown from P2's side (P1 on the right, P1's left and right reversed). The setting now works in
@@ -119,6 +107,11 @@ the new lobby server.
   frames. The game measures every frame it shows, writes `flash.csv`, a `[flash-check] DARK ...` line in the game
   log and the picture of each dark frame into the folder. It can be left on while playing (a 1440p match kept 58.8 fps).
   Send the folder with a problem report.
+- **Texture check for old graphics cards** (`RSX_FP_TEX_MASK_CHECK=1` in Settings -> Extra settings, for testers):
+  on cards with resource binding tier 1 (the old Fermi GT 730) the game binds only the textures a shader reads.
+  The switch checks every shader against that and writes a `-- WRONG` line into the game log if one would miss a
+  texture. Nothing changes without it. Measured on the way: on these cards the texture binding is not what costs
+  the frames. (821978f9)
 
 ### Known issues
 - **Online, high ping: a fast double press can lose its second press.** Two quick presses of the same button

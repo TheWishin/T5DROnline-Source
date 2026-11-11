@@ -4600,7 +4600,7 @@ Not found: a spike on every EWGF. On this PC, with this build, 20 of 20 in Pract
 the table says; what a player doing them over and over meets is the lost picture above (three in a minute of
 Practice here), which needs the frame's size to move and takes an input read with it.
 
-## 1.2.4 candidate: tier 1 and 2 cores (branch `t5-perf-019`, patch 0127)
+## 1.2.3: tier 1 and 2 cores (branch `t5-perf-019`, patch 0127)
 
 Question: is resource binding tier 1 (the Fermi GT 730 of GitHub #12 and report YESB6Y) the big cost on old PCs, and
 is there a change that keeps the picture and the game state and makes old PCs faster? Measured on this PC (7950X,
@@ -4711,7 +4711,7 @@ programs checked, **0 with a texture read outside the mask**; with the path on, 
 - **Rollback pair**, path on (host) vs off (joiner), RTT 150 +-5 ms, 3 % loss, both mashing, Asuka vs Lili stage 20:
   0 mismatching through frame 5,999 on both PCs, 1,982 / 1,966 rollbacks, 5,867 / 6,005 frames re-simulated.
 
-### For a tier-1 player (1.2.4)
+### For a tier-1 player (1.2.3)
 
 What a tier-1 log can settle that this PC cannot: `[gpu-pass]` per-pass times with `RSX_TIER1_PATH=0` against the
 default, and `[slow-frames]`' "GPU queue" (patch 0123) with VSync Off. If the 3D pass is per-draw bound there, the

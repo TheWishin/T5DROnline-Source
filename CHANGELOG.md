@@ -8,8 +8,8 @@ part is in the README's status table.
 **Ranked matches start straight from the launcher's fighter and costume, win records show on the select and VS
 screens online, the Practice reset really resets, offline Versus gets an input display, the launcher counts your
 playtime and shares its settings between folders, old PCs and old graphics cards lose fewer frames, and processors
-without SSE4.1 can start the game.** Both players need 1.2.3 (the lobby pairs equal versions only); the ranked costume choice and the win records also need
-the new lobby server.
+without SSE4.1 can start the game.** Both players need 1.2.3 (the lobby pairs equal versions only); the ranked
+costume choice and the win records also need the new lobby server.
 
 ### Online
 - **One stall no longer adds an input delay frame to the next matches**: the Balanced online feel adds a frame when

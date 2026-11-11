@@ -147,3 +147,94 @@ for tonight's test.
 Not done on ab71527f: a rollback pair (the rollback pair above ran on 6eaaf1b1; the practice change is gated to
 offline Practice), the branch's own repro (mash_repro.py) on this build, the whole release_preflight.py run, CI,
 update drills, signing, anything with a real controller or a real two-PC match.
+
+## Final candidate release-123-next (b348206a): release gate, 2026-11-11/12
+
+Candidate: branch release-123-next at b348206a (worktree D:\t4-night\w018\rel123next): release-123-final 500be891 +
+integration-124 (SSE2 runtime patch 0126, RSX_FP_TEX_MASK_CHECK patch 0127, test_search_cli fix) + the 1.2.4
+changelog items folded into 1.2.3. Nothing was tagged, drafted, pushed, uploaded or deployed. Heavy runs under
+HEAVY.lock (23:43-00:23 and 00:26-00:32), below normal, muted. owner-test-123 and owner-test-123b were only read / run
+(their games started from their own folders with outputs elsewhere); nothing was written into them.
+
+**Verdict: every functional check passed. One smoke frame-rate check (`fps.practice-select`, threshold 58) failed 3 of
+9 times (52.4 / 57.0 / 57.2 fps, a single 5-s window on the select screen); the fights in the same runs held 58.6-60.**
+
+### 1. Unit tests
+
+| Run | Result |
+|---|---|
+| Full suite (`rel123next-suite-final.log`, another session, 23:14) | 2,115 tests, failures=3, skipped=15 -- only the known venv three (test_compile_robust.Jobs.test_peak_memory_of_a_finished_process, test_release_tools.PeImports.test_python_exe, test_updater.Busy.test_process_list_sees_this_python). Complete |
+| Full suite, this agent, 20:36-21:04 (`rel123next\build\preflight\123d\suite.log`) | the same: 2,115 tests, the same 3 failures, 15 skipped |
+| test_sse2_runtime / test_i18n / test_layout_lobby_entry, each alone (`ci_unittest.py --timeout 2400`) | 29 OK / 98 OK / 11 OK (569 s) |
+
+### 2. Preflight
+
+| Step | Result |
+|---|---|
+| 1 changelog (`release_notes.py --check`) | 1.2.3 section found (118 lines) |
+| 2 guard (`check_no_game_data.py`, index + v1.2.2..HEAD) | 1,112 / 273 files, nothing game-derived |
+| 3+4 ps3recomp + player zip (`package_release.py --release --version 1.2.3`, vcvars64, 98 patches on f17bcd3) | OK, 113 s. runtime\t5dr.exe 4,273,664 B ("nothing beyond SSE4.1"), runtime\sse2\t5dr.exe 4,257,792 B ("nothing beyond SSE2"), both t5dr.lib; 96 imports checked; scan of folder and zip: 2,225 files, 280.0 MB, no game files, no lifted code, no keys |
+| 5 zip smoke with the GUI checks | 15/15 (incl. imports of runtime\sse2\t5dr.exe) |
+| 7 changelog date / comments / README release lines | no leftovers |
+| signing | owner |
+| Game start on owner-test-123b (the owner's tested install; build record runtime sse41, code id ac8ec056f36c659b) | boot to title and practice fight: practice fight reached, fights 58.6 / 59.0 fps; `fps.practice-select` 52.4 and 57.0 (FAIL, the flaky check above). practice_state_check PASS: 17 resets, 0 bad, 0 sides flipped, 0 units off; 5,403 frames vs the fresh round, 0 different |
+
+Zip: `D:\t4-night\w018\rel123next\build\preflight\123d\dist\T5DR-Online-1.2.3.zip`, 100,022,888 bytes, 2,225 files,
+SHA-256 `6b400269f6286fa41655f5bb86cf5a15c551d1fcc90bc4b9ac1aaf1fe6b2b162` (the zip of owner-test-123b).
+release_preflight.py itself was not run as one script: it empties build/preflight/, which holds this zip.
+
+### 3. SSE2 runtime
+
+Second install `pm123\sse2` from the zip, BUILD GAME with `T5DR_RUNTIME=sse2`: build log "runtime: SSE2 (runtime\sse2,
+for processors without SSE4.1) -- T5DR_RUNTIME=sse2", record runtime sse2, the game's t5dr.exe byte-identical to
+runtime\sse2\t5dr.exe, code id ac8ec056f36c659b (= the normal build). Boot: PASS (29 checks, practice fight).
+
+| Pair, normal host (owner-test-123b) vs SSE2 joiner, RTT 60, Kazuya vs Heihachi, stage 20, mash + moves | Result |
+|---|---|
+| Rollback | 6,600 frames compared, 0 mismatching; 6,921 frames, 2-1, hash 80443e21f1b07ea8 on both sides; 722 / 299 rollbacks; 58.6 / 58.9 fps |
+| Lockstep (`--mode1 off --mode2 off`) | 4,200 frames compared, 0 mismatching; 4,544 frames, 0-2, hash 0ba769fc0b9d3535 on both sides |
+
+This PC has SSE4.1: the SSE2 build ran here, not on a real old processor.
+
+### 4. Upgrade from the 22:00 candidate
+
+Copy of owner-test-123\T5DR-Online-1.2.3 (built by the 1.2.3 test candidate, code id 5dc12e62a8b08b76, no runtime in its
+record) -> pm123\upg; that copy's own updater installed the new zip (update_drill's local path: unpack with the old
+updater's checks, swap step, new launcher started and confirmed): **PASS**, "updated to 1.2.3; the new launcher runs".
+Play tab then: "Build the game once ... this version of the launcher changes the game code" (the code-id text, not
+the runtime text). BUILD GAME 53 s: "runtime: normal -- this processor has SSE4.1", record runtime sse41, code id
+ac8ec056f36c659b, Play tab "Ready". Boot PASS.
+
+### 5. Player matrix
+
+Every launcher started here had T5_SETTINGS_DIR / T5_ONLINE_DIR in pm123 (never the owner's settings or login).
+
+| Case | Result |
+|---|---|
+| (a) fresh folder, BUILD GAME with a bare PATH (System32 only: no winget, no system Python, no PYTHON* variables) | build 99 s exit 0, runtime normal, Play tab Ready; boot: practice fight reached, fight 60 fps; `fps.title` 53.1 once (FAIL), 59.9 in the re-run, which had `fps.practice-select` 57.2 (FAIL) |
+| (c) launcher via `T5DR Online.exe`, bare PATH | PASS (the folder's pythonw runs after 15 s) |
+| (c) launcher via `T5DR Online.exe`, full PATH with the system Python 3.12 and winget | PASS |
+| (b) the zip extracted over a built 1.2.0 folder (copy of build\w120\gate_player, 2,225 files overwritten) | launcher PASS; Play tab asks for BUILD GAME (code id); build 78 s, runtime normal, Ready; boot PASS |
+| (b) 1.2.0's own updater -> the new zip (`tools/update_drill.py --old-zip 1.2.0 --new-zip`) | UPDATE DRILL PASS; then BUILD GAME 87 s, runtime normal, Ready; boot PASS |
+| (d) without winget | covered by (a): winget not on PATH, the build and the game need nothing from it |
+
+### 6. Interrupted states
+
+| Case | Result |
+|---|---|
+| BUILD GAME killed 4 s into `[unpack]` | Play tab "The game is not built yet" (not Ready); the next run unpacks again (no stamp was written) |
+| BUILD GAME killed 15 s into `[compile]` | Play tab "Build the game once ..." (not Ready); the third run: deps/keys/decrypt/unpack/lift/spu "already done", compile again, exit 0, Ready; boot PASS |
+| Update killed 2.5 s in while staging (1.2.0 copy) | folder still 1.2.0; a stale `<folder>.update` left |
+| Update's swap step killed while it waited for a program from the folder | folder still 1.2.0, no result.json; stale `.update` (new, plan, runner, swap.log) left |
+| Update again | PASS: the stale staging folder is replaced, updated to 1.2.3, new launcher runs and confirms; `T5DR Online.exe` afterwards PASS; BUILD GAME 77 s, runtime normal, Ready; boot PASS (30 checks) |
+
+Not tried: a kill in the middle of the swap's moves (the moves take under a second here), and starting the old
+launcher between the update kills and the retry.
+
+### Not verified
+
+A real processor without SSE4.1 (all SSE2 runs on this PC), a real pad, a real two-PC match, Windows 10, the lobby
+server's new features (not deployed), CI, signing, the update drill from the published 1.2.2 (no 1.2.2 zip on this
+PC; 1.2.0's was used), and the update download path (a local zip was used).
+
+Logs: D:\t4-night\w018\pm123\pm.log (driver pm.py), pm123\logs (builds, pairs, practice check), pm123\smoke\*\report.md.

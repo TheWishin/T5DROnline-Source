@@ -15,7 +15,7 @@ the new lobby server.
 - **One stall no longer adds an input delay frame to the next matches**: the Balanced online feel adds a frame when
   a PC's measured rollback cost is too high. One rollback that met a stall (a pipeline built at first sight, another
   program) could triple a whole measurement, so later matches of a long session -- and the next game, through
-  rb_cost.txt -- were played with one frame more input delay. The measurement now leaves out its few slowest and
+  the saved measurement -- were played with one frame more input delay. The measurement now leaves out its few slowest and
   fastest frames, and one bad measurement can raise the kept cost by a quarter at most.
 - **Ranked: fighter and costume from the launcher.** The character select grid in the Online tab has a "Costume
   (ranked)" row; the choice is remembered per fighter (also what you last picked on the game's select screen in a
@@ -28,7 +28,10 @@ the new lobby server.
   ranked record, any other match all counted matches; guests have none. Settings -> "Show win records in online
   matches" (on by default); shown only when both players allow it and both are on this version, with the new lobby
   server.
-- Online: controller shortcuts (L1, R1, L2, R2, 1-3) work in quick match
+- **Your own Controller Setup works in online matches** (report on 1.2.2: shortcuts on L1 R1 L2 R2 did nothing in a
+  quick match). An online game plays on a fresh save of its own, where the game's Controller Setup has the shortcuts
+  off. Your offline save's setup (shoulder-button shortcuts, face-button layout) is now applied to this PC's buttons
+  before they are sent, so both games still simulate the same thing. `T5_PAD_SETUP_SAVE=0` turns it off.
 
 ### Speed
 - **Old graphics cards that hold frames back are named, and the game reacts** (report YESB6Y: a GT 730 of the
@@ -42,9 +45,12 @@ the new lobby server.
   the game's draw thread waited for the renderer with 1 ms sleeps; it is now woken as soon as the renderer is done
   (1.5-2.1 ms instead of 2.7-3.1 ms a wrap). On a 2-core stand-in the frames that took longer than 8.5 ms fell from
   0.5 % to 0.1 %. `PS3_GCM_RECYCLE_WAKE=0` puts the old wait back.
-- Practice-free EWGF frames no longer lose inputs at the ring end
+- **A picture that ended at the very end of the command ring is no longer shown late** (about one fight frame in a
+  thousand, when the size of a frame changes, for example with the electric effect of Electric Wind God Fist): the
+  frame had no draws, the next screen tick was held for a whole period and the game ran two frames for one picture
+  (53-55 ms, one pad read lost). `PS3_GCM_RING_END=0` puts the old way back.
 - **Less work for the render translation**: each draw copies only the transform constants its vertex program
-  reads into the graphics card's upload memory (the 8 KB block was copied whole: ~3 MB a fight frame), and the
+  reads into the graphics card's upload memory (the 8 KB block was copied whole: ~4 MB a fight frame), and the
   per-draw timing clock runs only with the frame log on. The picture is the same (every program checked against
   the shader the game runs); `RSX_VP_CONST_RANGE=0` copies whole blocks.
 

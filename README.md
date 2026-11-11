@@ -126,8 +126,6 @@ In detail:
 - Any folder you can write to, on any drive, also with spaces or letters like
   ü or Ł in the name, or in your user name. Not in Program Files, not in a
   OneDrive folder, and keep the path short (under about 150 characters).
-- RAM: the game used about 1.2 GB on the development PC. We have not tested
-  small PCs. 8 GB or more is a safe guess.
 - About 1.5 GB of free disk space. After the build it uses about 1.1 GB, plus
   the 90 MB zip.
 - An internet connection during the first build. About 50 KB of public key data

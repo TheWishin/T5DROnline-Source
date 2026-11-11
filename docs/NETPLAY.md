@@ -1235,7 +1235,7 @@ and before the opening waited for the opponent's start, 8 of 20 poison pairs wen
 those moved onto the direct path at the first burst, 35 s into the match, while the stub games kept
 exchanging packets (the eighth was still on the relay when the 45 s ended). With the final code the
 same setting gives 20 of 20 direct at once, so the bridge is left for what the punch cannot know
-about; `tests/test_nat2.py` (RelayUpgradeTest) opens the direct path in the middle of a relayed match
+about; `lobby/tests/test_nat2.py` (RelayUpgradeTest) opens the direct path in the middle of a relayed match
 and checks that both sides switch and the games' packets keep flowing. A real game pair (two t5dr.exe,
 `lobby/tools/two_players.py --exe ... --relay`) played 3,600 lockstep frames in sync at 60 fps through
 two bridges and the relay; stub games through the same path finished a match with a confirmed result.
@@ -1248,7 +1248,7 @@ on receipt, 30 ms, the server's window); a 1.1.1 server gives it the longer wind
 endpoint) and the second chance, so 1.1.0 clients behind a symmetric NAT next to a port-restricted one
 get through as well; a 1.1.1 client paired with a 1.1.0 one starts on receipt like it, with the low-TTL
 opening; a 1.1.1 client with a 1.1.0 server behaves like 1.1.0 except that it still forwards its port
-when allowed. `tests/test_nat2.py` runs the clients and server of the newest release tag in git
+when allowed. `lobby/tests/test_nat2.py` runs the clients and server of the newest release tag in git
 (v1.0.0) against this tree in the simulator (skipped in a checkout without tags).
 
 **Limits.**

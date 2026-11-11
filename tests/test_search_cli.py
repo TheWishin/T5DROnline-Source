@@ -109,7 +109,10 @@ class SearchWaitsForTheGameState(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.dir, True)
         env = mock.patch.dict(os.environ, T5_ONLINE_DIR=os.path.join(self.dir, "online"), T5_LANG="en", T5_PAD_NAV="0",
                               T5_NOTIFY="0", T5_FW_CHECK="0", T5_PORTMAP="0", T5DR_NO_UPDATE_CHECK="1", T5_DISCORD="0",
-                              T5_NET_BIND="127.0.0.1")
+                              T5_NET_BIND="127.0.0.1",
+                              # (an OpenRecomp-FGC window open on this PC would hold the saved login back:
+                              # lobby/tests/util.py turns the check off only when imported, inside this patch)
+                              T5_COEXIST_CHECK="0")
         env.start()
         self.addCleanup(env.stop)
         try:

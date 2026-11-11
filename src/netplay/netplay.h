@@ -101,6 +101,11 @@ int   local_player_sample(HostPadData* out);
  * samples only. */
 PadInput always_left_input(PadInput in);
 
+/* The player's own Controller Setup online (game_setup.cpp, docs/NETPLAY.md "The game's Controller Setup
+ * online"): this PC's held buttons as the face buttons that mean the same under the default setup, in a fight;
+ * else unchanged. Live samples only. */
+uint16_t game_setup_buttons(uint16_t buttons);
+
 void  note(const char* fmt, ...);
 
 /* ---- session health (docs/NETPLAY.md "Connection problems") ---------------

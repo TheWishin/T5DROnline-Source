@@ -28,6 +28,7 @@ the new lobby server.
   ranked record, any other match all counted matches; guests have none. Settings -> "Show win records in online
   matches" (on by default); shown only when both players allow it and both are on this version, with the new lobby
   server.
+- Online: controller shortcuts (L1, R1, L2, R2, 1-3) work in quick match
 
 ### Speed
 - **Old graphics cards that hold frames back are named, and the game reacts** (report YESB6Y: a GT 730 of the
@@ -41,6 +42,7 @@ the new lobby server.
   the game's draw thread waited for the renderer with 1 ms sleeps; it is now woken as soon as the renderer is done
   (1.5-2.1 ms instead of 2.7-3.1 ms a wrap). On a 2-core stand-in the frames that took longer than 8.5 ms fell from
   0.5 % to 0.1 %. `PS3_GCM_RECYCLE_WAKE=0` puts the old wait back.
+- Practice-free EWGF frames no longer lose inputs at the ring end
 - **Less work for the render translation**: each draw copies only the transform constants its vertex program
   reads into the graphics card's upload memory (the 8 KB block was copied whole: ~3 MB a fight frame), and the
   per-draw timing clock runs only with the frame log on. The picture is the same (every program checked against

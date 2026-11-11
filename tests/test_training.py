@@ -195,7 +195,18 @@ class PracticeGateTest(unittest.TestCase):
         self.assertIn("(!(ctl && *ctl) || t5_df_offline_practice())", gate.group(1))
         body = self.src.split("void t5_practice_pads(")[1]
         first = body.split("if (!allowed())")[0]
-        self.assertNotRegex(first, r"\*p[12]\s*=|\bput\w*\(", "nothing changes before the gate")
+        # Before it, only the second gate (practice-flake-018): both pads neutral until the round's first state is
+        # kept, behind start_hold() with the same offline conditions (practice_logic.h neutral_before_keep).
+        hold = re.search(r"if \(start_hold\(\)\) \{(.*?)\n    \}", first, re.S)
+        self.assertIsNotNone(hold)
+        self.assertEqual(re.findall(r"\*p[12]\s*=\s*[^;]*;", hold.group(1)), ["*p1 = 0;", "*p2 = 0;"])
+        self.assertNotRegex(first.replace(hold.group(0), ""), r"\*p[12]\s*=|\bput\w*\(", "nothing changes before the gate")
+        start = re.search(r"bool start_hold\(\)\s*\{(.*?)\n\}", self.src, re.S)
+        self.assertIsNotNone(start)
+        for need in ("g_cfg.on", "g_cfg.offline", "(!(ctl && *ctl) || t5_df_offline_practice())",
+                     "t5_netplay_enabled() == 0", "g_boundary_seen", "practice::neutral_before_keep("):
+            self.assertIn(need, start.group(1))
+        self.assertNotRegex(start.group(1), r"\bput\w*\(|\*p[12]")
         for env in ("T5_NET_MODE", "T5_CTL_DIR", "T5_REPLAY_FILE"):
             with open(os.path.join(TRAINING, "practice.cpp"), encoding="utf-8") as f:
                 self.assertIn(env, f.read())

@@ -181,6 +181,7 @@ struct Cfg {
     uint32_t test_frames = 0; /* T5_PRACTICE_STATE_TEST=N[:K]: a scripted P1 for N frames, the hash of every frame, K resets */
     uint32_t test_resets = 0;
     bool test_refuse = false; /* T5_PRACTICE_STATE=refuse (tests): the state is kept but never comes back */
+    bool neutral_start = true;/* the pads neutral until the round's first state is kept (T5_PRACTICE_NEUTRAL_START=0: off) */
     std::string dir = "practice";   /* T5_PRACTICE_DIR ("" = keep nothing) */
     FILE* log = nullptr;
 } g_cfg;
@@ -231,6 +232,7 @@ bool g_no_wall = false;      /* the status line says that the last wall reset fo
  * be kept) the reset moves the places as before. */
 enum class Snap : uint8_t { None, Have, Failed };
 Snap g_snap = Snap::None;
+bool g_boundary_seen = false;          /* t5_practice_boundary runs in this game (an offline game; never a persistent one) */
 int g_snap_tries = 0;
 PAction g_restore = PAction::None;     /* the reset that waits for the state (at the next boundary) */
 int g_restore_tries = 0;
@@ -282,6 +284,7 @@ void init()
     if (const char* f = getenv("T5_PRACTICE_LOG"); f && *f) g_cfg.log = fopen(f, "w");
     if (const char* st = getenv("T5_PRACTICE_STATE"); st && *st == '0') g_cfg.state = false;
     else if (st && *st == 'r') g_cfg.test_refuse = true;
+    if (const char* ns = getenv("T5_PRACTICE_NEUTRAL_START"); ns && *ns == '0') g_cfg.neutral_start = false;
     if (const char* t = getenv("T5_PRACTICE_STATE_TEST"); t && *t) {
         char* e;
         g_cfg.test_frames = (uint32_t)strtoul(t, &e, 10);
@@ -383,6 +386,29 @@ bool allowed()
     const char* ctl = getenv("T5_CTL_DIR");
     return g_cfg.on && g_cfg.offline && (!(ctl && *ctl) || t5_df_offline_practice()) &&
         t5_netplay_enabled() == 0 && rd32(kGameType) == kGtPractice && rd32(kPhase) == 17;
+}
+
+/* The second gate, for the frames before the round's first state is kept (practice_logic.h neutral_before_keep):
+ * the same offline conditions as allowed(), the fight's loading and first frames instead of phase 17, and only in a
+ * game whose boundary hook runs (an offline game, never a persistent one). T5_PRACTICE_LOG: a line whenever the game
+ * type, the phase, the fight byte or the state changes (tests: where the fight's start is). */
+bool start_hold()
+{
+    const char* ctl = getenv("T5_CTL_DIR");
+    const uint32_t gt = rd32(kGameType), ph = rd32(kPhase);
+    const bool hold = g_cfg.on && g_cfg.offline && (!(ctl && *ctl) || t5_df_offline_practice()) &&
+        t5_netplay_enabled() == 0 && g_cfg.neutral_start &&
+        practice::neutral_before_keep(g_cfg.state, g_boundary_seen && g_snap == Snap::None, gt, ph);
+    if (g_cfg.log) {
+        static uint32_t was_gt = ~0u, was_ph = ~0u;
+        static int was_run = -1, was_snap = -1;
+        const int run = rd8(kRunning), snap = (int)g_snap;
+        if (gt != was_gt || ph != was_ph || run != was_run || snap != was_snap) {
+            was_gt = gt; was_ph = ph; was_run = run; was_snap = snap;
+            note("start watch: game type %u phase %u runs %d state %d neutral %d", gt, ph, run, snap, (int)hold);
+        }
+    }
+    return hold;
 }
 
 void note_place(const char* what)
@@ -597,6 +623,11 @@ extern "C" void t5_practice_pads(uint16_t* p1, uint16_t* p2)
 {
     if (!g_init) init();
     if (!g_cfg.on) return;
+    if (start_hold()) {         /* the frames before the round's first state is kept: nothing pressed reaches it */
+        if (g_cfg.log && (*p1 || *p2)) note("start watch: held back %04x %04x (phase %u runs %d)", *p1, *p2, rd32(kPhase), rd8(kRunning));
+        *p1 = 0;
+        *p2 = 0;
+    }
     if (!allowed()) {
         if (g_in_practice) {
             /* the player's own TRAINING DUMMY back -- only while this is still offline Practice */
@@ -890,6 +921,7 @@ extern "C" void t5_practice_boundary(void)
 {
     if (!g_init) init();
     if (!g_cfg.on || !g_cfg.state) return;
+    g_boundary_seen = true;
     if (!allowed()) {
         if (g_snap != Snap::None) {
             t5_practice_state(3);

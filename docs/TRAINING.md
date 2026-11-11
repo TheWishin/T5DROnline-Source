@@ -355,6 +355,17 @@ left.
   and the draw manager are parked (waited for up to 50 ms, else tried again at
   the next frame; after 120 frames the reset moves the places as before and
   the log says so) and the GCM pump is held.
+- **Nothing pressed before it** (practice-flake-018): the game keeps recent
+  presses, and a fighter acts on one at its first frame that can act -- so a
+  button pressed in the last frames before the round came up was part of the
+  kept state, and every reset played it again (the 1.2.3 candidate's failing
+  check: a kick tapped as the round came up, then the same kick after each of
+  17 resets, P1 359 units off its place). Both pads are now neutral from the
+  fight's loading (fight phase word 7..16, which takes no input -- online
+  sends neutral there too) through its first frames until the state is kept
+  (`practice_logic.h` `neutral_before_keep`; offline Practice with the state
+  reset only; `T5_PRACTICE_NEUTRAL_START=0` turns it off for tests). The
+  select screens (phase 1..5) are not touched.
 - **The game's own mode state**: Practice stays the mode it was -- the mode
   manager, the scene and its tasks are part of the state and are the same
   objects as at the round's start (nothing is created or freed between a

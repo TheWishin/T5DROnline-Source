@@ -72,7 +72,9 @@ the new lobby server.
   the reset moved the fighters near the start instead of resetting, sometimes flipped the sides, and could leave
   them off the axis until the game was restarted. The game now keeps the state of the fight's first frame and puts
   it back; what you set in the game's pause menu since (mode, dummy, counter attack, command capture, attack data)
-  is kept. Offline games only. `T5_PRACTICE_STATE=0` = the old reset.
+  is kept. Offline games only. `T5_PRACTICE_STATE=0` = the old reset. A button pressed as the round comes up is
+  no longer part of that state (it was played again after every reset): the pads count from the round's first
+  frame (`T5_PRACTICE_NEUTRAL_START=0` = as before).
 
 ### Launcher
 - **Playtime on the Play tab**: the launcher counts the time the game it started runs (offline and online; not a

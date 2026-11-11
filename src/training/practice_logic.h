@@ -249,6 +249,18 @@ inline uint16_t test_script(uint32_t f, bool right)
     default: return 0;
     }
 }
+/* The round's first state (practice.cpp t5_practice_boundary) is the game's memory at the top of the first frame
+ * the fight runs. A button pressed in the frames just before it is already in that memory -- the game keeps recent
+ * presses and a fighter acts on one at its first frame that can act -- so every reset played that press again
+ * (1.2.3 candidate: a kick tapped as the round came up, then the same kick after each of 17 resets, P1 359 units
+ * off its place). Both pads are therefore neutral from the fight's loading (fight phase word 7..16: loading and
+ * intros, which take no input -- online sends neutral there too) through its first frames until the state is
+ * kept (or could not be kept). The select screens (phase 1..5) are never touched. */
+constexpr uint32_t kGameTypePractice = 10;
+inline bool neutral_before_keep(bool state_on, bool waiting_for_keep, uint32_t game_type, uint32_t phase)
+{
+    return state_on && waiting_for_keep && game_type == kGameTypePractice && phase >= 7 && phase <= 17;
+}
 inline PAction restart_action(Restart r)
 {
     switch (r) {

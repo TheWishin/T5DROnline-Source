@@ -460,6 +460,21 @@ static void test_combo_and_latch()
     CHECK(!l.frame(kCross));
 }
 
+/* neutral_before_keep: from the fight's loading (phase 7) through its first frames (17) until the round's first
+ * state is kept, never on a select screen (1..5), never in another game type, never once kept or with the state off */
+static void test_neutral_before_keep()
+{
+    for (uint32_t ph = 0; ph <= 20; ph++) {
+        const bool fight_start = ph >= 7 && ph <= 17;
+        CHECK(neutral_before_keep(true, true, kGameTypePractice, ph) == fight_start);
+        CHECK(!neutral_before_keep(true, false, kGameTypePractice, ph));   /* kept, or could not be kept */
+        CHECK(!neutral_before_keep(false, true, kGameTypePractice, ph));   /* T5_PRACTICE_STATE=0 */
+        for (uint32_t gt : { 0u, 1u, 2u, 4u, 9u })                          /* arcade, ghost, demo, VS, survival */
+            CHECK(!neutral_before_keep(true, true, gt, ph));
+    }
+    for (uint32_t ph = 1; ph <= 5; ph++) CHECK(!neutral_before_keep(true, true, kGameTypePractice, ph));   /* select */
+}
+
 int main()
 {
     test_menu_navigation();
@@ -473,6 +488,7 @@ int main()
     test_movement();
     test_restart_places();
     test_combo_and_latch();
+    test_neutral_before_keep();
     if (g_fail) {
         printf("FAILED %d of %d checks\n", g_fail, g_checks);
         return 1;

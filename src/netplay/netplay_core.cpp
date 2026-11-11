@@ -920,13 +920,18 @@ void decide_rb_delay_locked()
             const uint8_t theirs_cap = s.peer_cost_known ? s.peer_cost.cap : feel::kCapUnknown;
             const uint8_t f = feel::combine(s.rb_feel, theirs_feel);
             const uint8_t cap = feel::slower(mine.cap, theirs_cap);
-            const feel::Pick fp = feel::decide(pick, rtt, s.delay, f, cap);
+            /* one frame by measured cost (rollback_feel.h): only when both PCs sent a measured capacity */
+            const bool measured = mine.cap != feel::kCapUnknown && theirs_cap != feel::kCapUnknown;
+            const feel::Pick fp = feel::decide(pick, rtt, s.delay, f, cap, measured);
             auto capstr = [](uint8_t c) { return c == feel::kCapUnknown ? std::string("?") : std::to_string(c); };
             note("online feel %s (this player %s, the opponent %s), rollback capacity this PC %s / opponent %s frame(s), "
                  "expected depth %d -> %d frame(s): %s", feel::name(f), feel::name(s.rb_feel),
                  s.peer_cost_known ? feel::name(theirs_feel) : "an older game", capstr(mine.cap).c_str(),
                  capstr(theirs_cap).c_str(), fp.depth, fp.delay, fp.why);
-            s.rb_feel_extra = fp.extra;
+            s.rb_feel_extra = std::max(0, fp.extra);
+            if (fp.delay < pick)
+                note("one frame by measured cost: the slower PC's capacity %u frame(s) covers the deepest rollbacks of one frame of delay up to a %.0f ms round trip",
+                     (unsigned)cap, feel::one_frame_up_to_ms(cap));
             pick = fp.delay;
         }
         if (s.rb_adaptive_delay && s.mode == Mode::Host) {

@@ -43,6 +43,36 @@ STATE = re.compile(r"^(\d+) (.+?): round \d+ phase \d+ P1 y (\S+) hips \S+ move 
                    r"dummy y (\S+) hips \S+ move (\w+) class \w+ act (\d) right (\d)")
 HASH = re.compile(r"^\d+ hash (\d+) (\d+) (\w+)$")
 HEALTH = re.compile(r"^\d+ test (\d+) (\d+) health (-?\d+) (-?\d+)$")
+WATCH = re.compile(r"^\d+ start watch: game type (\d+) phase (\d+)")
+GT_PRACTICE = 10
+TRIES = 3          # whole runs at most: a title menu that lost a press (landed elsewhere) gets a new game
+
+
+def game_type(lines):
+    """The game type the practice log saw last (start watch lines, games since practice-flake-018), None = unknown."""
+    gt = None
+    for ln in lines:
+        m = WATCH.match(ln)
+        if m:
+            gt = int(m[1])
+    return gt
+
+
+def frames_done(lines, frames, passes):
+    """The frames run is over once the last reset's last frame has its hash."""
+    for ln in lines:
+        m = HASH.match(ln)
+        if m and int(m[1]) == passes and int(m[2]) == frames:
+            return True
+    return False
+
+
+def read_lines(path):
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            return f.read().splitlines()
+    except OSError:
+        return []
 
 
 def sel(g, btn="CROSS"):
@@ -78,7 +108,7 @@ def launcher(g):
     g.release()
 
 
-def drive_resets(g):
+def drive_resets(g, log=None):
     g.wait(2)
     g.hold("LEFT")                                      # walk away
     g.wait(2)
@@ -237,25 +267,46 @@ def check_frames(lines, frames, passes):
 
 
 def run(out, exe, root, env, drive):
+    """One game through the title menu into Practice, then `drive`. The title menu takes a DOWN only once it is
+    fully in; a press that comes a few frames early is lost and the cursor ends one entry short (1.2.3 candidate,
+    run c1: SURVIVAL, "no round start in the practice log"). The game type the practice log reports after the
+    menu says where the cursor went: anything but Practice is the harness's miss, and the run starts again with a
+    new game (TRIES runs at most; each retry is printed). Players are not involved: they see the cursor."""
+    for attempt in range(1, TRIES + 1):
+        d = out if attempt == 1 else f"{out}_try{attempt}"
+        lines, landed = run_once(d, exe, root, env, drive)
+        if landed is None or landed == GT_PRACTICE:
+            return lines
+        print(f"  harness: the title menu landed on game type {landed}, not Practice ({GT_PRACTICE}): "
+              f"a menu press was lost (try {attempt} of {TRIES})" + (", again with a new game" if attempt < TRIES else ""))
+    return None
+
+
+def run_once(out, exe, root, env, drive):
+    """-> (practice log lines or None, game type after the menu or None)"""
     log = os.path.join(out, "practice.log")
     env = dict({"T5_PRACTICE": "1", "T5_PRACTICE_LOG": log, "T5_PRACTICE_DIR": "-", "T5_TRAINING": "frames",
                 "PS3_AUDIO_MUTE": "1"}, **env)
     g = Game(out, exe=exe, root=root, env=env)
+    landed = None
     try:
         g.start()
         if sc.to_title(g):
             g.phase("practice-select", "menu")
+            g.wait(1.5)                                 # the menu's last fade-in frames take no press
             sc.pick_mode(g, sc.PRACTICE, wait=3.0)
-            if sc.start_fight(g, skip=False):
+            landed = game_type(read_lines(log))
+            if landed is not None and landed != GT_PRACTICE:
+                g.event("menu", f"landed on game type {landed}, not Practice")
+            elif sc.start_fight(g, skip=False):
                 g.release()
-                drive(g)
+                drive(g, log)
     finally:
         g.stop()
     if not os.path.exists(log):
         print("no practice log: the game did not reach the fight, or T5_PRACTICE did not take")
-        return None
-    with open(log, encoding="utf-8", errors="replace") as f:
-        return f.read().splitlines()
+        return None, landed
+    return read_lines(log), landed
 
 
 def main():
@@ -283,8 +334,16 @@ def main():
         results.append("resets: " + r[1])
     if a.only != "resets" and not a.places:
         print("frames")
+
+        def drive_frames(g, log):
+            """Until the last reset's last frame is in the log: the frames are the game's, not the wall clock's
+            (a loaded PC runs below 60 fps; the 1.2.3 candidate's failing run stopped 90 frames short)."""
+            t_end = g.now() + a.frames * (a.passes + 1) / 60 * 3 + 60
+            while g.now() < t_end and not frames_done(read_lines(log), a.frames, a.passes):
+                g.wait(1.0)
+            g.wait(0.5)
         lines = run(os.path.join(out, "frames"), exe, root, {"T5_PRACTICE_STATE_TEST": f"{a.frames}:{a.passes}"},
-                    lambda g: g.wait(a.frames * (a.passes + 1) / 60 + 8))
+                    drive_frames)
         r = check_frames(lines, a.frames, a.passes) if lines is not None else (False, "no log")
         ok &= r[0]
         results.append("frames: " + r[1])
